@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/sage/edge_inference.schema.json",
+  "title": "SAGE Edge Inference Configuration",
+  "description": "Defines tier assignments and inference rules for automatic graph edge creation during ingestion. Three tiers based on cost of false positives. Staging table isolates suggested edges (Tier 2) from the production graph. See SAGE Architecture Reference Section 3.4.7.",
+  "type": "object",
+  "required": ["tier_assignments"],
+  "additionalProperties": false,
+  "properties": {
+    "tier_assignments": {
+      "type": "array",
+      "description": "Maps edge types to inference tiers with optional inference rules. Every edge type in the vault's edge taxonomy should have an assignment. Unassigned edge types default to Tier 3 (manual only).",
+      "items": {
+        "type": "object",
+        "required": ["edge_type", "tier"],
+        "additionalProperties": false,
+        "properties": {
+          "edge_type": {
+            "type": "string",
+            "enum": ["supersedes", "derived_from", "covers", "references", "bundles_with", "authoritative_for", "depends_on", "sync_target"],
+            "description": "The edge type being assigned to a tier."
+          },
+          "tier": {
+            "type": "integer",
+            "enum": [1, 2, 3],
+            "description": "Inference tier. 1: auto-create (deterministic, no review). 2: auto-suggest (placed in staging table for batch review). 3: manual only (requires human or agent judgment)."
+          },
+          "inference_rules": {
+            "type": "array",
+            "description": "Rules for how this edge type is inferred during ingestion. Required for Tier 1 and Tier 2 assignments. Not applicable for Tier 3.",
+            "items": {
+              "type": "object",
+              "required": ["method"],
+              "additionalProperties": false,
+              "properties": {
+                "method": {
+                  "type": "string",
+                  "enum": ["version_chain", "re_ingestion", "filename_code_match", "filename_co_location", "content_reference"],
+                  "description": "Inference method. version_chain: filename version numbers (v15 supersedes v14 through v1). re_ingestion: change detection triggered re-ingestion. filename_code_match: target document code appears in this document's filename. filename_co_location: documents share a code and workflow stage. content_reference: textual cross-references within document content (Phase 2)."
+                },
+                "pattern": {
+                  "type": "string",
+                  "description": "For filename-based methods: a pattern or regex describing how to identify the relationship from filename segments. For content_reference: a pattern describing what to look for in content."
+                },
+                "source_segment": {
+                  "type": "string",
+                  "description": "The filename segment on the source document that participates in the match."
+                },
+                "target_segment": {
+                  "type": "string",
+                  "description": "The filename segment on the target document that participates in the match."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "staging_review_grouping": {
+      "type": "string",
+      "enum": ["by_edge_type", "by_source_document", "by_ingestion_batch"],
+      "default": "by_edge_type",
+      "description": "How Tier 2 suggested edges are grouped for batch review in the human application."
+    }
+  }
+}

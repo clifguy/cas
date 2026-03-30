@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/sage/vault_config.schema.json",
+  "title": "SAGE Vault Configuration",
+  "description": "Top-level vault configuration schema. A domain instantiation produces a single YAML file that validates against this schema. Sub-schemas are referenced for document types, lifecycle, source adapters, metadata extraction, and edge inference. See SAGE Architecture Reference Sections 4.7, 7.2, and 8.3.",
+  "type": "object",
+  "required": ["vault", "document_types", "lifecycle", "source_adapters", "metadata_extraction", "edge_inference"],
+  "additionalProperties": false,
+  "properties": {
+    "vault": {
+      "type": "object",
+      "description": "Vault identity and storage configuration.",
+      "required": ["id", "name", "owner", "storage_root", "brain_root", "visibility"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*$",
+          "description": "Vault identifier. Unique within the CAS installation."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable display name for this vault."
+        },
+        "owner": {
+          "type": "string",
+          "description": "User or team that owns this vault."
+        },
+        "storage_root": {
+          "type": "string",
+          "description": "Root directory for source files managed by this vault. Absolute path. Must be outside cloud-synced directories."
+        },
+        "brain_root": {
+          "type": "string",
+          "description": "Directory containing this vault's content store and graph store databases. Absolute path. Must be outside cloud-synced directories (SQLite and LanceDB are incompatible with cloud sync)."
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["personal", "team", "org"],
+          "description": "Access scope for this vault."
+        },
+        "members": {
+          "type": "array",
+          "description": "Users with access to this vault. Each entry specifies a user and their vault-level role.",
+          "items": {
+            "type": "object",
+            "required": ["user_id", "role"],
+            "additionalProperties": false,
+            "properties": {
+              "user_id": {
+                "type": "string",
+                "description": "Reference to a registered SAGE User entity."
+              },
+              "role": {
+                "type": "string",
+                "enum": ["reader", "editor", "admin"],
+                "description": "Vault-level role. Distinct from document-level editor permissions."
+              }
+            }
+          }
+        }
+      }
+    },
+    "document_types": {
+      "$ref": "document_types.schema.json",
+      "description": "Document type definitions for this vault's domain vocabulary."
+    },
+    "lifecycle": {
+      "$ref": "lifecycle.schema.json",
+      "description": "Lifecycle state machine configuration for this vault."
+    },
+    "source_adapters": {
+      "$ref": "source_adapters.schema.json",
+      "description": "Source adapter registry and configuration."
+    },
+    "metadata_extraction": {
+      "$ref": "metadata_extraction.schema.json",
+      "description": "Metadata extraction pipeline configuration."
+    },
+    "edge_inference": {
+      "$ref": "edge_inference.schema.json",
+      "description": "Edge inference tier assignments and rules."
+    },
+    "access_control_defaults": {
+      "type": "object",
+      "description": "Default access control settings for new documents in this vault.",
+      "additionalProperties": false,
+      "properties": {
+        "new_documents_restricted": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, new documents are created with the ingesting user as the sole editor. If false (default), new documents are open (no editors registered, any registered user can write)."
+        }
+      }
+    },
+    "abstraction": {
+      "type": "object",
+      "description": "Configuration for the semantic abstract generation stage of the ingestion pipeline (CAS-ADR-011).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to generate semantic abstracts during ingestion. If false or if the LLM is unavailable, ingestion completes without the abstract and flags the document for deferred generation."
+        },
+        "model": {
+          "type": "string",
+          "description": "LLM model identifier for abstract generation. Should be a local model for Phase 1."
+        },
+        "max_abstract_tokens": {
+          "type": "integer",
+          "minimum": 50,
+          "description": "Upper bound on abstract length in tokens. Actual length is density-proportional."
+        }
+      }
+    }
+  }
+}

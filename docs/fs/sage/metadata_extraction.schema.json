@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/sage/metadata_extraction.schema.json",
+  "title": "SAGE Metadata Extraction Configuration",
+  "description": "Defines the vault-configured two-stage metadata extraction pipeline: filename extraction then content extraction. Precedence: manual entry overrides content extraction overrides filename extraction. See SAGE Architecture Reference Section 3.4.6.",
+  "type": "object",
+  "required": ["review_required"],
+  "additionalProperties": false,
+  "properties": {
+    "review_required": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether extracted metadata requires interactive confirmation before populating the document record. Set to false for vaults with trusted naming conventions (e.g., PIM Health). Set to true for vaults where naming conventions are less reliable."
+    },
+    "filename_extraction": {
+      "type": "object",
+      "description": "Stage 1: parse the source filename and map segments to metadata fields.",
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "description": "A template pattern with named segments enclosed in braces. Example: '{date}_{project}_{code}_{title}_{version}'. Segment names correspond to document record fields where extracted values are stored."
+        },
+        "separator": {
+          "type": "string",
+          "default": "_",
+          "description": "Character(s) separating segments in the filename."
+        },
+        "segment_fields": {
+          "type": "object",
+          "description": "Maps segment names from the pattern to document record fields. Keys are segment names; values are target field names on the document record.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "code_to_doc_type": {
+          "type": "array",
+          "description": "Ordered list of mapping rules from filename code segments to doc_type values. Compound keys (code + title or code + other segment) take precedence over code-only mappings. Evaluated in order; first match wins.",
+          "items": {
+            "type": "object",
+            "required": ["doc_type"],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "The code segment value to match."
+              },
+              "title_contains": {
+                "type": "string",
+                "description": "Optional compound key: title segment must contain this substring for the mapping to apply. Enables disambiguation when a single code prefix resolves to different doc_types based on document identity."
+              },
+              "segment_match": {
+                "type": "object",
+                "description": "Optional compound key: additional segment values that must match. Keys are segment names; values are required values or substring matches.",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "doc_type": {
+                "type": "string",
+                "description": "The doc_type value to assign when this rule matches. Must be a value defined in document_types."
+              }
+            }
+          }
+        }
+      }
+    },
+    "content_extraction": {
+      "type": "array",
+      "description": "Stage 2: rules for extracting metadata from known locations within the document content after the source adapter produces the projection. Content extraction can confirm, override, or supplement filename-derived values.",
+      "items": {
+        "type": "object",
+        "required": ["source_type", "target_field", "extraction_method"],
+        "additionalProperties": false,
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "description": "The source_type this rule applies to (e.g., 'markdown', 'docx', 'pdf'). A rule applies only to documents of the matching source type."
+          },
+          "target_field": {
+            "type": "string",
+            "description": "The document record field to populate with the extracted value."
+          },
+          "extraction_method": {
+            "type": "string",
+            "enum": ["yaml_frontmatter_key", "running_header", "pdf_property", "regex", "heading_content"],
+            "description": "How to extract the value. yaml_frontmatter_key: read a named key from YAML frontmatter (Markdown). running_header: extract from Word document running header text. pdf_property: read from PDF document properties. regex: apply a regular expression to the projection text. heading_content: extract text under a specific heading path."
+          },
+          "extraction_key": {
+            "type": "string",
+            "description": "Method-specific key. For yaml_frontmatter_key: the YAML key name. For running_header: not used (extracts full header text). For pdf_property: the property name. For regex: the regular expression with a named capture group. For heading_content: the heading path (e.g., 'Section 1 > Title')."
+          }
+        }
+      }
+    }
+  }
+}

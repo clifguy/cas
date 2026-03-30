@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/root_harness/agent.schema.json",
+  "title": "ROOT Harness Agent Registration Schema",
+  "description": "Defines the agent registration record for ROOT Harness. Every agent is also registered as a SAGE User entity (shared identifier). The SAGE User provides identity for data-layer operations; the ROOT Harness record provides configuration for execution-layer operations. See ROOT Harness Architecture Reference Sections 2.3 and 4.1.",
+  "type": "object",
+  "required": ["agents"],
+  "additionalProperties": false,
+  "properties": {
+    "agents": {
+      "type": "array",
+      "description": "The set of agents registered for this domain instantiation.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["agent_id", "display_name", "agent_type", "autonomy_level", "capabilities", "policy_ref"],
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "Unique identifier, matching the SAGE User entity ID. Permanent; an agent that is retired is marked inactive but the SAGE User record persists for provenance."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Human-readable name for logs and UI display."
+          },
+          "agent_type": {
+            "type": "string",
+            "enum": ["steward", "orchestrator"],
+            "description": "Agent classification per the two-type taxonomy (CAS-ADR-010). Stewards own canonical artifacts. Orchestrators own coordination lifecycles. Everything else is a tool, not an agent."
+          },
+          "owned_artifact": {
+            "type": ["string", "null"],
+            "default": null,
+            "description": "For stewards: identifier of the canonical artifact this agent owns. Null for orchestrators. When populated, designates the agent as a steward with exclusive authority over the named artifact. The vault_steward is a specialized steward that owns access to the vault's search and discovery surface rather than a single document."
+          },
+          "decision_log_enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether this agent has a SAGE-managed decision log as a companion artifact (CAS-ADR-012). Steward decision logs capture artifact-scoped operational judgment. Orchestrator decision logs capture coordination-scoped judgment."
+          },
+          "autonomy_level": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "Decision authority on the five-level scale. 1: fully supervised (human executes). 2: approval-gated (human approves each action). 3: checkpoint-gated (human reviews at checkpoints). 4: exception-gated (escalates only on exceptions). 5: fully autonomous (post-hoc audit only). Assigned per agent per domain; not an intrinsic property of the agent."
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "Declared capabilities this agent can perform (e.g., 'terminology_audit', 'format_check', 'content_draft', 'vault_search', 'blast_radius_analysis'). Used by orchestrators for dispatch decisions."
+          },
+          "policy_ref": {
+            "type": "string",
+            "description": "Reference to the policy configuration governing this agent's behavioral constraints. Must match a policy_id in the policy configuration."
+          },
+          "llm_config": {
+            "type": "object",
+            "description": "LLM provider, model, and parameters for this agent's inference calls.",
+            "required": ["provider", "model"],
+            "additionalProperties": false,
+            "properties": {
+              "provider": {
+                "type": "string",
+                "description": "LLM provider identifier (e.g., 'anthropic', 'openai')."
+              },
+              "model": {
+                "type": "string",
+                "description": "Model identifier (e.g., 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'). Default is Claude Opus 4.6; Sonnet or Haiku appropriate for mechanical tasks."
+              },
+              "temperature": {
+                "type": "number",
+                "minimum": 0.0,
+                "maximum": 2.0,
+                "default": 0.0,
+                "description": "Sampling temperature."
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Maximum tokens per LLM call for this agent."
+              },
+              "system_prompt_ref": {
+                "type": "string",
+                "description": "Reference to the system prompt template for this agent. Templates are stored outside this schema (in the domain's configuration directory or as SAGE-managed documents)."
+              }
+            }
+          },
+          "active": {
+            "type": "boolean",
+            "default": true,
+            "description": "Whether this agent is currently active. Inactive agents are retained for provenance but not dispatched."
+          }
+        }
+      }
+    }
+  }
+}

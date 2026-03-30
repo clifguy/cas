@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/root_harness/pipeline.schema.json",
+  "title": "ROOT Harness Pipeline Configuration",
+  "description": "Defines pipeline stages, transitions, gatekeeper bindings, and precondition expressions for a domain. Pipeline stages represent the workflow states that documents pass through; they are distinct from SAGE lifecycle states. See ROOT Harness Architecture Reference Section 7.3 and Instantiation Checklist items #7, #10.",
+  "type": "object",
+  "required": ["stages", "transitions"],
+  "additionalProperties": false,
+  "properties": {
+    "stages": {
+      "type": "array",
+      "description": "Named pipeline stages for this domain. Ordered by typical workflow progression, though transitions define the actual valid paths.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["value", "label"],
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Machine identifier for the pipeline stage."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable display name."
+          },
+          "description": {
+            "type": "string",
+            "description": "What work happens in this stage."
+          },
+          "applicable_doc_types": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Which doc_types participate in this stage. If omitted, the stage applies to all doc_types."
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "description": "Valid transitions between pipeline stages. Each transition may have gatekeeper bindings and preconditions.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["from_stage", "to_stage"],
+        "additionalProperties": false,
+        "properties": {
+          "from_stage": {
+            "type": "string",
+            "description": "Source pipeline stage. Use '(entry)' for the initial transition when a document enters the pipeline."
+          },
+          "to_stage": {
+            "type": "string",
+            "description": "Target pipeline stage."
+          },
+          "gatekeeper": {
+            "type": "object",
+            "description": "The steward agent responsible for governing this transition. The steward evaluates preconditions, assembles evidence, and routes the decision (approve, reject with remediation, or escalate to human).",
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string",
+                "description": "Reference to the registered agent that governs this transition."
+              },
+              "escalation_policy": {
+                "type": "string",
+                "enum": ["block_and_report", "escalate_to_human", "skip_with_warning"],
+                "default": "escalate_to_human",
+                "description": "What happens when preconditions fail and the gatekeeper cannot resolve them autonomously."
+              }
+            }
+          },
+          "preconditions": {
+            "type": "array",
+            "description": "Conditions that must be satisfied before the transition is permitted. Evaluated by the governing steward using SAGE Core API calls (check_preconditions, traverse, get_editors).",
+            "items": {
+              "type": "object",
+              "required": ["check", "description"],
+              "additionalProperties": false,
+              "properties": {
+                "check": {
+                  "type": "string",
+                  "enum": [
+                    "lifecycle_status",
+                    "required_edges_exist",
+                    "editor_registered",
+                    "dependent_documents_complete",
+                    "metadata_fields_populated",
+                    "custom"
+                  ],
+                  "description": "The type of precondition check. lifecycle_status: document must be in a specified lifecycle state. required_edges_exist: specified edge types must exist on the document. editor_registered: specified editors must be registered. dependent_documents_complete: documents linked by depends_on edges must be in a completed state. metadata_fields_populated: specified metadata fields must have values. custom: a domain-specific expression."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "Human-readable description of what this precondition verifies."
+                },
+                "parameters": {
+                  "type": "object",
+                  "description": "Check-specific parameters. For lifecycle_status: {required_status: 'active'}. For required_edges_exist: {edge_types: ['covers', 'bundles_with']}. For metadata_fields_populated: {fields: ['doc_type', 'project']}. For custom: {expression: '...'}.",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "requires_human_approval": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether this transition requires explicit human-in-the-loop approval via a LangGraph interrupt node, regardless of precondition status. See Instantiation Checklist item #12."
+          }
+        }
+      }
+    }
+  }
+}

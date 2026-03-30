@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/root_harness/policy.schema.json",
+  "title": "ROOT Harness Policy Configuration Schema",
+  "description": "Defines behavioral constraints for agents: permitted operations, scope restrictions, autonomy level, LLM configuration, and tool-level approval policy. Policy enforcement is a ROOT Harness concern (execution layer), distinct from SAGE's editor-based write control (data layer). See ROOT Harness Architecture Reference Sections 4.3 and 4.4.",
+  "type": "object",
+  "required": ["policies"],
+  "additionalProperties": false,
+  "properties": {
+    "policies": {
+      "type": "array",
+      "description": "Policy configurations for this domain. Each agent's policy_ref references a policy_id in this array.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["policy_id", "label", "permitted_operations"],
+        "additionalProperties": false,
+        "properties": {
+          "policy_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "description": "Unique identifier for this policy. Referenced by agent registration records via policy_ref."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable name for this policy."
+          },
+          "description": {
+            "type": "string",
+            "description": "What this policy is intended for and which agents typically use it."
+          },
+          "permitted_operations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "discover",
+                "organize",
+                "ingest",
+                "link",
+                "traverse",
+                "check_preconditions",
+                "register_user",
+                "set_editors",
+                "get_editors",
+                "export_projection",
+                "eval_retrieval",
+                "refresh_views",
+                "update_metadata",
+                "set_lifecycle"
+              ]
+            },
+            "description": "SAGE Core API operations this agent is permitted to call. A mechanical formatting agent might have [discover, update_metadata, ingest] but not set_lifecycle. A steward governing transitions might have [discover, traverse, check_preconditions, set_lifecycle, update_metadata]."
+          },
+          "scope_restrictions": {
+            "type": "object",
+            "description": "Constraints on which documents the agent can operate on within its permitted operations.",
+            "additionalProperties": false,
+            "properties": {
+              "doc_types": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "If specified, the agent can only operate on documents of these doc_types."
+              },
+              "lifecycle_states": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "If specified, the agent can only operate on documents in these lifecycle states. Example: a terminology audit agent restricted to 'active' documents."
+              },
+              "pipeline_stages": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "If specified, the agent can only operate on documents in these pipeline stages."
+              }
+            }
+          },
+          "approval_policy": {
+            "type": "object",
+            "description": "Tool-level approval configuration (CAS-ADR-013). Defines which tool calls require human approval before execution. The approval callback is the fine-grained complement to workflow-level interrupt nodes: interrupts gate transitions; approval callbacks gate individual tool calls within a node.",
+            "additionalProperties": false,
+            "properties": {
+              "default_action": {
+                "type": "string",
+                "enum": ["allow", "require_approval"],
+                "default": "allow",
+                "description": "Default behavior for tool calls not explicitly listed in the rules. 'allow' permits execution without approval. 'require_approval' requires approval for all unlisted operations."
+              },
+              "rules": {
+                "type": "array",
+                "description": "Ordered list of approval rules. First matching rule wins.",
+                "items": {
+                  "type": "object",
+                  "required": ["operation", "action"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "operation": {
+                      "type": "string",
+                      "description": "The SAGE Core API operation or MCP tool call this rule applies to. Use '*' for all operations."
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": ["allow", "require_approval", "deny"],
+                      "description": "allow: execute without approval. require_approval: route to human before execution. deny: block and surface denial to the agent as an error so it can adjust its approach."
+                    },
+                    "condition": {
+                      "type": "string",
+                      "description": "Optional condition expression for when this rule applies. Example: 'lifecycle_status == active' or 'doc_type in [patent_draft, glossary]'. If omitted, the rule applies unconditionally for the named operation."
+                    }
+                  }
+                }
+              },
+              "denial_response_format": {
+                "type": "string",
+                "enum": ["error_message", "structured_feedback"],
+                "default": "error_message",
+                "description": "How denials and rejections are surfaced to the agent. error_message: a plain text error. structured_feedback: a structured object with reason, suggested_alternative, and escalation_path."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

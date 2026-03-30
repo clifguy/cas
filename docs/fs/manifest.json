@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/manifest.json",
+  "title": "CAS Formal Substrate Manifest",
+  "description": "Version tracking, schema inventory, and source references for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their source references back to the architecture documents.",
+  "manifest_version": "0.1",
+  "manifest_date": "2026-03-30",
+  "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
+  "organization": {
+    "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. API operation contracts (OpenAPI specs) will be added in v0.2.",
+    "structure": {
+      "sage/": "SAGE configuration schemas. vault_config.schema.json is the root; it $ref's to the five sub-schemas.",
+      "root_harness/": "ROOT Harness configuration schemas for orchestration, agents, policies, and workflows."
+    }
+  },
+  "schemas": [
+    {
+      "path": "sage/vault_config.schema.json",
+      "title": "SAGE Vault Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
+      "source_references": [
+        "SAGE Architecture Reference v1.2, Sections 4.7, 8.3",
+        "ROOT Harness Architecture Reference v0.5, Section 7.2"
+      ],
+      "instantiation_checklist_items": [1]
+    },
+    {
+      "path": "sage/document_types.schema.json",
+      "title": "SAGE Document Types",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines the doc_type enum for a vault's domain vocabulary. Sole Tier 2 metadata field.",
+      "source_references": [
+        "SAGE Architecture Reference v1.2, Section 4.4.2"
+      ],
+      "instantiation_checklist_items": [2]
+    },
+    {
+      "path": "sage/lifecycle.schema.json",
+      "title": "SAGE Lifecycle State Machine",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines lifecycle states and valid transitions. Base set is always present; domains extend it.",
+      "source_references": [
+        "SAGE Architecture Reference v1.2, Section 4.8"
+      ],
+      "instantiation_checklist_items": [3]
+    },
+    {
+      "path": "sage/source_adapters.schema.json",
+      "title": "SAGE Source Adapter Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines which source adapters are enabled for a vault and their per-adapter configuration.",
+      "source_references": [
+        "SAGE Architecture Reference v1.2, Sections 3.4.1 through 3.4.4"
+      ],
+      "instantiation_checklist_items": [4]
+    },
+    {
+      "path": "sage/metadata_extraction.schema.json",
+      "title": "SAGE Metadata Extraction Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines the two-stage metadata extraction pipeline: filename patterns with code-to-doc_type maps, then content extraction rules.",
+      "source_references": [
+        "SAGE Architecture Reference v1.2, Section 3.4.6"
+      ],
+      "instantiation_checklist_items": [5]
+    },
+    {
+      "path": "sage/edge_inference.schema.json",
+      "title": "SAGE Edge Inference Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines three-tier edge inference model: tier assignments, inference rules, and staging table behavior.",
+      "source_references": [
+        "SAGE Architecture Reference v1.2, Section 3.4.7"
+      ],
+      "instantiation_checklist_items": [6]
+    },
+    {
+      "path": "root_harness/pipeline.schema.json",
+      "title": "ROOT Harness Pipeline Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines pipeline stages, transitions, gatekeeper bindings, and precondition expressions.",
+      "source_references": [
+        "ROOT Harness Architecture Reference v0.5, Sections 7.3, 7.5"
+      ],
+      "instantiation_checklist_items": [7, 10]
+    },
+    {
+      "path": "root_harness/agent.schema.json",
+      "title": "ROOT Harness Agent Registration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines agent registration records: type, owned artifact, autonomy level, capabilities, policy reference, LLM configuration.",
+      "source_references": [
+        "ROOT Harness Architecture Reference v0.5, Sections 2.3, 4.1, 4.2",
+        "CAS-ADR-010: Steward agent model",
+        "CAS-ADR-012: Decision logs"
+      ],
+      "instantiation_checklist_items": [8]
+    },
+    {
+      "path": "root_harness/policy.schema.json",
+      "title": "ROOT Harness Policy Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines behavioral constraints: permitted operations, scope restrictions, and tool-level approval policy.",
+      "source_references": [
+        "ROOT Harness Architecture Reference v0.5, Sections 4.3, 4.4",
+        "CAS-ADR-013: Typed event stream (approval policy)"
+      ],
+      "instantiation_checklist_items": [9]
+    },
+    {
+      "path": "root_harness/workflow.schema.json",
+      "title": "ROOT Harness Workflow Graph",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Defines LangGraph workflow definitions: nodes, edges, state dictionary, and interrupt placement.",
+      "source_references": [
+        "ROOT Harness Architecture Reference v0.5, Sections 3.2, 3.4, 7.3"
+      ],
+      "instantiation_checklist_items": [11, 12]
+    }
+  ],
+  "deferred_to_v0_2": [
+    {
+      "item": "SAGE Core API OpenAPI specification",
+      "reason": "API operation contract. PIM Health does not instantiate against it; it consumes the API.",
+      "source_references": ["SAGE Architecture Reference v1.2, Section 7"]
+    },
+    {
+      "item": "ROOT Harness Orchestration API OpenAPI specification",
+      "reason": "API operation contract. Needed at code-implementation time, not domain-instantiation time.",
+      "source_references": ["ROOT Harness Architecture Reference v0.5, Section 2.5"]
+    },
+    {
+      "item": "Event stream schema",
+      "reason": "API contract consumed by monitoring tools and the CAS Application, not a configuration schema.",
+      "source_references": ["ROOT Harness Architecture Reference v0.5, Section 2.6", "CAS-ADR-013"]
+    },
+    {
+      "item": "Human-in-the-loop interrupt contracts",
+      "reason": "API contract between ROOT Harness and the CAS Application.",
+      "source_references": ["ROOT Harness Architecture Reference v0.5, Section 3.4"]
+    }
+  ],
+  "revision_history": [
+    {
+      "version": "0.1",
+      "date": "2026-03-30",
+      "summary": "Initial draft. Ten configuration schemas across SAGE (6) and ROOT Harness (4), covering all twelve items in the ROOT Harness instantiation checklist. JSON Schema draft 2020-12. API operation contracts deferred to v0.2."
+    }
+  ]
+}

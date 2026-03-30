@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/sage/lifecycle.schema.json",
+  "title": "SAGE Lifecycle State Machine Configuration",
+  "description": "Defines lifecycle states and valid transitions for documents in a vault. The base state machine (active, superseded, completed, archived) is always present. Vaults may define additional states and transitions. See SAGE Architecture Reference Section 4.8.",
+  "type": "object",
+  "required": ["states", "transitions"],
+  "additionalProperties": false,
+  "properties": {
+    "states": {
+      "type": "array",
+      "description": "All lifecycle states available in this vault, including the base set and any domain-specific additions.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["value", "label"],
+        "additionalProperties": false,
+        "properties": {
+          "value": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Machine identifier for the lifecycle state."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable display name."
+          },
+          "description": {
+            "type": "string",
+            "description": "Semantics of this state. For base states: active (in the system), superseded (newer version exists), completed (work done, no replacement), archived (long-term storage)."
+          },
+          "is_terminal": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether this state represents an end state from which no further transitions are expected under normal operation. Archived is terminal by default but reactivation is permitted as an exceptional case."
+          }
+        }
+      }
+    },
+    "transitions": {
+      "type": "array",
+      "description": "Valid state transitions. SAGE enforces transition validity; the orchestration layer determines when to trigger transitions.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["from_state", "action", "to_state"],
+        "additionalProperties": false,
+        "properties": {
+          "from_state": {
+            "type": "string",
+            "description": "Source state. Use '(new)' for the initial ingestion transition."
+          },
+          "action": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "The action that triggers this transition. Base actions: ingest, supersede, complete, archive, reactivate."
+          },
+          "to_state": {
+            "type": "string",
+            "description": "Target state after the transition."
+          },
+          "semantics": {
+            "type": "string",
+            "description": "What this transition means. Key distinction: supersede means a newer version exists (supersedes edge created); complete means work is done but no replacement was needed."
+          },
+          "creates_edge": {
+            "type": "string",
+            "description": "If this transition automatically creates a graph edge, the edge_type value. The supersede action creates a 'supersedes' edge from the new version to the old."
+          }
+        }
+      }
+    },
+    "base_states_required": {
+      "type": "boolean",
+      "const": true,
+      "default": true,
+      "description": "The base state set (active, superseded, completed, archived) and base transitions (ingest, supersede, complete, archive, reactivate) are always present. Domain-specific states and transitions extend this base; they do not replace it."
+    }
+  }
+}

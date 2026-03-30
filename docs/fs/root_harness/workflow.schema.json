@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/root_harness/workflow.schema.json",
+  "title": "ROOT Harness Workflow Graph Schema",
+  "description": "Defines LangGraph workflow definitions that ROOT Harness can load and execute. Each workflow is a StateGraph with typed nodes, conditional edges, interrupt placement, and a state dictionary structure. Interrupt placement is a property of nodes within the workflow, not a separate configuration. See ROOT Harness Architecture Reference Sections 3.2, 3.4, 7.3, and Instantiation Checklist items #11 and #12.",
+  "type": "object",
+  "required": ["workflows"],
+  "additionalProperties": false,
+  "properties": {
+    "workflows": {
+      "type": "array",
+      "description": "Workflow definitions for this domain. Each workflow is a named LangGraph StateGraph.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["workflow_id", "label", "entry_node", "nodes", "edges", "state_schema"],
+        "additionalProperties": false,
+        "properties": {
+          "workflow_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "description": "Unique identifier for this workflow. Used by trigger_workflow in the Orchestration API."
+          },
+          "label": {
+            "type": "string",
+            "description": "Human-readable name (e.g., 'New Document Ingestion', 'Terminology Harmonization', 'Quality Audit')."
+          },
+          "description": {
+            "type": "string",
+            "description": "What this workflow accomplishes and when it is triggered."
+          },
+          "entry_node": {
+            "type": "string",
+            "description": "The node_id where execution begins."
+          },
+          "nodes": {
+            "type": "array",
+            "description": "Nodes in the workflow graph. Each node represents an agent action.",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["node_id", "label", "node_type", "agent_ref"],
+              "additionalProperties": false,
+              "properties": {
+                "node_id": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]*$",
+                  "description": "Unique identifier within this workflow."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Human-readable name for this node."
+                },
+                "node_type": {
+                  "type": "string",
+                  "enum": ["action", "router", "interrupt", "fan_out", "merge", "end"],
+                  "description": "Node classification. action: an agent performs work. router: evaluates state and selects next node. interrupt: pauses for human-in-the-loop approval. fan_out: dispatches parallel subtasks. merge: aggregates parallel results. end: terminal node."
+                },
+                "agent_ref": {
+                  "type": ["string", "null"],
+                  "description": "Reference to the agent_id that executes this node. Null for structural nodes (merge, end) that do not invoke an agent."
+                },
+                "interrupt_config": {
+                  "type": "object",
+                  "description": "Configuration for interrupt nodes. Defines what information the interrupt provides and what response options are available. Only applicable when node_type is 'interrupt'.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "prompt_template": {
+                      "type": "string",
+                      "description": "Template for the decision context presented to the human reviewer. May reference state dictionary fields."
+                    },
+                    "response_options": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["value", "label"],
+                        "additionalProperties": false,
+                        "properties": {
+                          "value": {
+                            "type": "string",
+                            "description": "Machine value for this response option."
+                          },
+                          "label": {
+                            "type": "string",
+                            "description": "Human-readable label."
+                          },
+                          "routes_to": {
+                            "type": "string",
+                            "description": "The node_id to route to when this option is selected. Overrides normal edge routing."
+                          }
+                        }
+                      },
+                      "description": "Available response options for the human reviewer."
+                    },
+                    "evidence_fields": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "State dictionary fields to include as supporting evidence in the interrupt descriptor."
+                    },
+                    "timeout_minutes": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "Optional timeout. If 0 or omitted, the interrupt waits indefinitely."
+                    }
+                  }
+                },
+                "fan_out_config": {
+                  "type": "object",
+                  "description": "Configuration for fan_out nodes. Only applicable when node_type is 'fan_out'.",
+                  "additionalProperties": false,
+                  "properties": {
+                    "parallel_nodes": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "node_ids to execute in parallel."
+                    },
+                    "merge_node": {
+                      "type": "string",
+                      "description": "node_id of the merge node that aggregates results."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "edges": {
+            "type": "array",
+            "description": "Edges defining control flow between nodes.",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["from_node", "to_node"],
+              "additionalProperties": false,
+              "properties": {
+                "from_node": {
+                  "type": "string",
+                  "description": "Source node_id."
+                },
+                "to_node": {
+                  "type": "string",
+                  "description": "Target node_id."
+                },
+                "condition": {
+                  "type": "string",
+                  "description": "For conditional edges from router nodes: an expression evaluated against the state dictionary that must be true for this edge to be selected. If omitted, the edge is unconditional (sequential flow)."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "Human-readable description of when this edge is taken. Useful for conditional edges."
+                }
+              }
+            }
+          },
+          "state_schema": {
+            "type": "object",
+            "description": "Schema for the typed state dictionary that flows through the workflow. Each node receives the current state and returns an updated state. The state dictionary carries execution context, not document content.",
+            "required": ["fields"],
+            "additionalProperties": false,
+            "properties": {
+              "fields": {
+                "type": "array",
+                "description": "Fields in the state dictionary.",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "type"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Field name in the state dictionary."
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": ["string", "integer", "boolean", "array", "object", "null"],
+                      "description": "JSON type of this field."
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "What this field represents in the workflow context."
+                    },
+                    "required": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Whether this field must be present in the initial state when the workflow is triggered."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
