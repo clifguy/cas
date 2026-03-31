@@ -1,0 +1,9 @@
+states:
+  - value: active
+    label: Active
+  - value: reviewed
+    label: Reviewed
+transitions:
+  - from_state: active
+    action: Do-Something
+    to_state: reviewed

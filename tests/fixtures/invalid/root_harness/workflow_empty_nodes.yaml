@@ -1,0 +1,12 @@
+workflows:
+  - workflow_id: test_workflow
+    label: Test Workflow
+    entry_node: start
+    nodes: []
+    edges:
+      - from_node: start
+        to_node: start
+    state_schema:
+      fields:
+        - name: doc_id
+          type: string

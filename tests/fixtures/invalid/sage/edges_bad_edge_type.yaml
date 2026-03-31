@@ -1,0 +1,5 @@
+tier_assignments:
+  - edge_type: related_to
+    tier: 1
+    inference_rules:
+      - method: version_chain

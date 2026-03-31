@@ -1,0 +1,79 @@
+{
+  "title": "CAS Test Plan Manifest",
+  "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
+  "manifest_version": "0.1",
+  "manifest_date": "2026-03-31",
+  "tiers": {
+    "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
+    "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
+    "3": "Domain integration tests: end-to-end validation with PIM Health configs and representative workflows."
+  },
+  "test_specs": [
+    {
+      "path": "tests/sage/contract_tests.md",
+      "tier": 1,
+      "title": "SAGE Contract Tests",
+      "status": "specified",
+      "covers": [
+        "docs/fs/sage/vault_config.schema.json",
+        "docs/fs/sage/document_types.schema.json",
+        "docs/fs/sage/lifecycle.schema.json",
+        "docs/fs/sage/source_adapters.schema.json",
+        "docs/fs/sage/metadata_extraction.schema.json",
+        "docs/fs/sage/edge_inference.schema.json",
+        "docs/fs/sage/decision_log.schema.json",
+        "docs/fs/sage/sage_core_api.openapi.yaml"
+      ],
+      "test_count": 53
+    },
+    {
+      "path": "tests/root_harness/contract_tests.md",
+      "tier": 1,
+      "title": "ROOT Harness Contract Tests",
+      "status": "specified",
+      "covers": [
+        "docs/fs/root_harness/pipeline.schema.json",
+        "docs/fs/root_harness/agent.schema.json",
+        "docs/fs/root_harness/policy.schema.json",
+        "docs/fs/root_harness/workflow.schema.json",
+        "docs/fs/root_harness/orchestration_api_openapi.yaml",
+        "docs/fs/root_harness/event_stream_schema.json",
+        "docs/fs/root_harness/interrupt.schema.json"
+      ],
+      "test_count": 58
+    },
+    {
+      "path": "tests/cross_cutting/boundary_tests.md",
+      "tier": 2,
+      "title": "Cross-Cutting Boundary Tests",
+      "status": "stub",
+      "covers": [],
+      "test_count": 0
+    },
+    {
+      "path": "tests/cross_cutting/domain_instantiation_tests.md",
+      "tier": 3,
+      "title": "Domain Instantiation Tests",
+      "status": "specified",
+      "covers": [
+        "domains/pim_health/sage_vault_config.yaml",
+        "domains/pim_health/pipeline.yaml",
+        "domains/pim_health/agents.yaml",
+        "domains/pim_health/policies.yaml",
+        "domains/pim_health/workflows.yaml"
+      ],
+      "test_count": 11
+    }
+  ],
+  "fixture_directories": {
+    "valid": "domains/pim_health/ (referenced in place, not copied)",
+    "invalid": "tests/fixtures/invalid/{sage,root_harness}/"
+  },
+  "revision_history": [
+    {
+      "version": "0.1",
+      "date": "2026-03-31",
+      "summary": "Initial manifest. Four test spec files covering tiers 1-3. Scaffolding: pyproject.toml, conftest.py, SchemaValidator helper."
+    }
+  ]
+}

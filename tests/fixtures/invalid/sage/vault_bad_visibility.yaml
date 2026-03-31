@@ -1,0 +1,26 @@
+vault:
+  id: test-vault
+  name: Test Vault
+  owner: tester
+  storage_root: /data/vaults/test
+  brain_root: /data/brains/test
+  visibility: public
+document_types:
+  doc_types:
+    - value: note
+      label: Note
+lifecycle:
+  states:
+    - value: active
+      label: Active
+  transitions:
+    - from_state: "(new)"
+      action: ingest
+      to_state: active
+source_adapters:
+  adapters:
+    - source_type: markdown
+      enabled: true
+metadata_extraction: {}
+edge_inference:
+  tier_assignments: []

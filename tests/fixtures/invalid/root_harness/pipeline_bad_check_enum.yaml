@@ -1,0 +1,9 @@
+stages:
+  - value: drafting
+    label: Drafting
+transitions:
+  - from_stage: "(entry)"
+    to_stage: drafting
+    preconditions:
+      - check: approval_received
+        description: Approval must be received before entering drafting.

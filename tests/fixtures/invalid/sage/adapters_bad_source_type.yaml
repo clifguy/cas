@@ -1,0 +1,3 @@
+adapters:
+  - source_type: csv
+    enabled: true

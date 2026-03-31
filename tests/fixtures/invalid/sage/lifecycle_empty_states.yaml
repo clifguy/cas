@@ -1,0 +1,5 @@
+states: []
+transitions:
+  - from_state: "(new)"
+    action: ingest
+    to_state: active

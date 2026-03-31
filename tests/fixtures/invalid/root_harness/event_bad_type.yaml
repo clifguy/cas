@@ -1,0 +1,6 @@
+event_id: evt_001
+event_type: agent.spawned
+timestamp: "2026-03-31T12:00:00Z"
+workflow_execution_id: wfx_001
+agent_id: test_agent
+agent_type: steward

@@ -1,0 +1,24 @@
+[project]
+name = "cas"
+version = "0.1.0"
+description = "Clif's Agentic System: SAGE, ROOT Harness, and CAS Application"
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "jsonschema[format]>=4.23",
+    "referencing>=0.35",
+    "pyyaml>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

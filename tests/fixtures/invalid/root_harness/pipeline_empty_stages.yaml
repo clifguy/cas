@@ -1,0 +1,4 @@
+stages: []
+transitions:
+  - from_stage: "(entry)"
+    to_stage: drafting

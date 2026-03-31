@@ -1,0 +1,7 @@
+agents:
+  - agent_id: test_agent
+    display_name: Test Agent
+    agent_type: steward
+    autonomy_level: 3
+    capabilities: []
+    policy_ref: default_policy

@@ -1,0 +1,5 @@
+tier_assignments:
+  - edge_type: supersedes
+    tier: 1
+    inference_rules:
+      - method: semantic_similarity

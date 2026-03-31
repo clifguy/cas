@@ -1,0 +1,6 @@
+policies:
+  - policy_id: bad-ops-policy
+    label: Bad Operations Policy
+    permitted_operations:
+      - discover
+      - delete
