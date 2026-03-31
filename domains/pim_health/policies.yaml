@@ -1,0 +1,244 @@
+# =============================================================================
+# PIM Health Domain Instantiation: ROOT Harness Policy Configuration
+# =============================================================================
+#
+# Validates against: docs/fs/root_harness/policy.schema.json (FS v0.1)
+# Instantiation checklist item: #9
+# Target path: ~/repos/cas/domains/pim_health/policies.yaml
+#
+# Policies define behavioral constraints for agents: permitted SAGE Core API
+# operations, scope restrictions, and tool-level approval policy. Policy
+# enforcement is a ROOT Harness concern (execution layer), distinct from
+# SAGE's editor-based write control (data layer).
+#
+# Design principle: stewards own mutations; orchestrators don't. Orchestrators
+# request mutations through stewards, so their permitted operations are
+# predominantly read/traverse. The pipeline orchestrator is the sole
+# orchestrator with set_lifecycle permission (for stage transitions).
+# =============================================================================
+
+policies:
+  # ---------------------------------------------------------------------------
+  # Reference Steward (Read-Heavy)
+  #
+  # Shared policy for stewards that serve high-frequency reads with rare
+  # mutations. Assigned to: formatting_stds_steward, integration_catalog_steward.
+  # ---------------------------------------------------------------------------
+  - policy_id: reference_steward_read_heavy
+    label: "Reference Steward (Read-Heavy)"
+    description: >-
+      For stewards of reference documents with high read frequency and
+      rare mutations. Permits discovery, traversal, export, metadata
+      updates, and ingestion. Mutations (ingest, set_lifecycle) require
+      approval because reference documents have portfolio-wide impact
+      when updated.
+    permitted_operations:
+      - discover
+      - ingest
+      - traverse
+      - check_preconditions
+      - export_projection
+      - update_metadata
+      - set_lifecycle
+    scope_restrictions:
+      lifecycle_states:
+        - active
+    approval_policy:
+      default_action: allow
+      rules:
+        - operation: set_lifecycle
+          action: require_approval
+        - operation: ingest
+          action: require_approval
+      denial_response_format: structured_feedback
+
+  # ---------------------------------------------------------------------------
+  # Glossary Steward Policy
+  #
+  # Similar to reference_steward_read_heavy but with set_lifecycle permission
+  # (the glossary steward governs the conformance->content_development
+  # re-entry transition) and heightened ingestion approval because every
+  # glossary version bump triggers cross-patent propagation (Content Rule 8c).
+  # ---------------------------------------------------------------------------
+  - policy_id: glossary_steward_policy
+    label: "Glossary Steward"
+    description: >-
+      For the glossary steward. Extends the reference steward profile
+      with set_lifecycle permission and mandatory ingestion approval.
+      Glossary updates have cross-patent blast radius; every ingestion
+      triggers the Content Rule 8c propagation chain.
+    permitted_operations:
+      - discover
+      - ingest
+      - traverse
+      - check_preconditions
+      - export_projection
+      - update_metadata
+      - set_lifecycle
+    scope_restrictions:
+      lifecycle_states:
+        - active
+    approval_policy:
+      default_action: allow
+      rules:
+        - operation: ingest
+          action: require_approval
+          # Glossary ingestion is high-impact: triggers blast radius
+          # analysis and cross-patent definition propagation.
+        - operation: set_lifecycle
+          action: require_approval
+      denial_response_format: structured_feedback
+
+  # ---------------------------------------------------------------------------
+  # Vault Steward Policy
+  #
+  # Read-only search and discovery surface. No mutation operations permitted.
+  # The vault steward never writes to documents; it mediates cross-artifact
+  # infrastructure queries for orchestrators.
+  # ---------------------------------------------------------------------------
+  - policy_id: vault_steward_policy
+    label: "Vault Steward"
+    description: >-
+      For the vault steward. Read-only operations for semantic search,
+      blast radius analysis, and graph traversal across the vault. No
+      mutation permissions. No doc_type restriction (must search across
+      all document types).
+    permitted_operations:
+      - discover
+      - traverse
+      - check_preconditions
+      - eval_retrieval
+      - refresh_views
+    # No scope_restrictions: vault steward searches across all types
+    # and lifecycle states.
+    approval_policy:
+      default_action: allow
+      # No approval rules needed; all operations are read-only.
+      rules: []
+      denial_response_format: structured_feedback
+
+  # ---------------------------------------------------------------------------
+  # Patent Steward Policy
+  #
+  # Full mutation authority over patent specifications. Ingestion and lifecycle
+  # transitions require approval because they are high-consequence operations
+  # in a patent prosecution context.
+  # ---------------------------------------------------------------------------
+  - policy_id: patent_steward_policy
+    label: "Patent Steward"
+    description: >-
+      For per-patent steward instances. Full read and mutation authority
+      over patent drafts and technical disclosures. Ingestion (new
+      versions) and lifecycle transitions (stage advancement, filing)
+      require approval. Content modifications within a version
+      (update_metadata) are permitted without approval.
+    permitted_operations:
+      - discover
+      - ingest
+      - traverse
+      - check_preconditions
+      - export_projection
+      - update_metadata
+      - set_lifecycle
+      - get_editors
+    scope_restrictions:
+      doc_types:
+        - patent_draft
+        - technical_disclosure
+    approval_policy:
+      default_action: allow
+      rules:
+        - operation: ingest
+          action: require_approval
+          # Ingesting a new patent version creates supersedes edges and
+          # may trigger sync_target propagation.
+        - operation: set_lifecycle
+          action: require_approval
+          # Lifecycle transitions (especially active->filed) are
+          # irreversible in a patent prosecution context.
+      denial_response_format: structured_feedback
+
+  # ---------------------------------------------------------------------------
+  # Planning Orchestrator Policy
+  #
+  # Read-only. The planning orchestrator collaborates with Clif to produce
+  # work plans; it does not execute mutations. Its oversight comes from
+  # Level 2 (approval-gated) interrupt nodes, not tool-level approval.
+  # ---------------------------------------------------------------------------
+  - policy_id: planning_orchestrator_policy
+    label: "Planning Orchestrator"
+    description: >-
+      For the planning orchestrator. Read-only operations for
+      prerequisite evaluation and scope analysis. No mutation
+      permissions. Human oversight is provided by Level 2
+      interrupt nodes in workflow definitions, not by tool-level
+      approval policy.
+    permitted_operations:
+      - discover
+      - traverse
+      - check_preconditions
+      - get_editors
+    # No scope_restrictions: planning needs visibility across all
+    # doc_types and lifecycle states to evaluate prerequisites.
+    approval_policy:
+      default_action: allow
+      rules: []
+      denial_response_format: structured_feedback
+
+  # ---------------------------------------------------------------------------
+  # Pipeline Orchestrator Policy
+  #
+  # Read-heavy with set_lifecycle for stage transitions. Stage transitions
+  # require approval because they advance documents through the filing
+  # pipeline (high-consequence, ordered progression).
+  # ---------------------------------------------------------------------------
+  - policy_id: pipeline_orchestrator_policy
+    label: "Pipeline Orchestrator"
+    description: >-
+      For the pipeline orchestrator. Read operations plus set_lifecycle
+      for pipeline stage transitions. Stage transitions require approval;
+      all other operations are permitted without approval.
+    permitted_operations:
+      - discover
+      - traverse
+      - check_preconditions
+      - get_editors
+      - set_lifecycle
+    # No scope_restrictions: pipeline orchestrator needs visibility
+    # across all doc_types to coordinate cross-artifact work.
+    approval_policy:
+      default_action: allow
+      rules:
+        - operation: set_lifecycle
+          action: require_approval
+          # Pipeline stage transitions are the core governance
+          # mechanism; each requires explicit approval.
+      denial_response_format: structured_feedback
+
+  # ---------------------------------------------------------------------------
+  # Checklist Orchestrator Policy
+  #
+  # Read-only. The checklist orchestrator manages session-level execution
+  # state; all document mutations are delegated to the patent steward.
+  # No approval policy needed because it performs no mutations.
+  # ---------------------------------------------------------------------------
+  - policy_id: checklist_orchestrator_policy
+    label: "Checklist Orchestrator"
+    description: >-
+      For the checklist orchestrator. Read-only operations for
+      precondition verification and state inspection. All document
+      mutations are delegated to the owning patent steward. No
+      approval policy needed; Level 4 exception-gating handles
+      escalation through the failure taxonomy.
+    permitted_operations:
+      - discover
+      - traverse
+      - check_preconditions
+      - export_projection
+    # No scope_restrictions: checklist orchestrator needs to read
+    # reference documents (glossary, formatting standards) during
+    # conformance function execution.
+    approval_policy:
+      default_action: allow
+      rules: []
+      denial_response_format: structured_feedback

@@ -35,7 +35,6 @@
               "type": "string",
               "enum": [
                 "discover",
-                "organize",
                 "ingest",
                 "link",
                 "traverse",

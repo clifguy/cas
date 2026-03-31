@@ -1,0 +1,753 @@
+# =============================================================================
+# PIM Health Domain Instantiation: ROOT Harness Workflow Graph Definitions
+# =============================================================================
+#
+# Validates against: docs/fs/root_harness/workflow.schema.json (FS v0.1)
+# Instantiation checklist items: #11 (workflow graphs), #12 (interrupt placement)
+# Target path: ~/repos/cas/domains/pim_health/workflows.yaml
+#
+# Five workflows covering PIM Health operational patterns:
+#   1. document_ingestion     - New file ingestion pipeline
+#   2. patent_pipeline_advance - Advance a patent through one pipeline stage
+#   3. terminology_propagation - Glossary version bump propagation
+#   4. checklist_execution     - Single checklist-governed function execution
+#   5. redline_cycle           - Attorney redline revision cycle
+#
+# Interrupt placement (Item #12):
+#   - patent_pipeline_advance: 3 interrupts (handoff, filing approval, submission)
+#   - terminology_propagation: 1 interrupt (blast radius review)
+#   - document_ingestion, checklist_execution, redline_cycle: no interrupts
+# =============================================================================
+
+workflows:
+  # ===========================================================================
+  # 1. DOCUMENT INGESTION
+  #
+  # Entry point for all documents. Runs the ingestion pipeline: adapter
+  # selection, metadata extraction, edge inference, lifecycle assignment,
+  # pipeline stage assignment. Fully automatic for trusted PIM naming
+  # conventions. No interrupts.
+  # ===========================================================================
+  - workflow_id: document_ingestion
+    label: "New Document Ingestion"
+    description: >-
+      Triggered when a new file is detected in a watched directory or manually
+      submitted for ingestion. Selects the appropriate source adapter, extracts
+      metadata from the filename, infers edges, assigns lifecycle state and
+      pipeline stage, and generates a semantic abstract.
+    entry_node: select_adapter
+
+    nodes:
+      - node_id: select_adapter
+        label: "Select Source Adapter"
+        node_type: action
+        agent_ref: vault_steward
+        # Vault steward matches source_type to enabled adapters.
+
+      - node_id: extract_metadata
+        label: "Extract Metadata from Filename"
+        node_type: action
+        agent_ref: vault_steward
+        # Applies filename_extraction pattern and code_to_doc_type rules.
+
+      - node_id: infer_edges
+        label: "Infer Graph Edges"
+        node_type: action
+        agent_ref: vault_steward
+        # Applies tier assignments: Tier 1 edges auto-created, Tier 2
+        # edges placed in staging table.
+
+      - node_id: route_by_doc_type
+        label: "Route by Document Type"
+        node_type: router
+        agent_ref: null
+        # Routes to pipeline stage assignment (patents) or reference
+        # current (reference docs).
+
+      - node_id: assign_pipeline_stage
+        label: "Assign Initial Pipeline Stage"
+        node_type: action
+        agent_ref: vault_steward
+        # Sets pipeline_stage to ingested for patent documents.
+
+      - node_id: assign_reference_current
+        label: "Assign Reference Current"
+        node_type: action
+        agent_ref: vault_steward
+        # Sets pipeline_stage to reference_current for reference docs.
+
+      - node_id: generate_abstract
+        label: "Generate Semantic Abstract"
+        node_type: action
+        agent_ref: vault_steward
+        # LLM-generated semantic abstract per vault abstraction config.
+        # If LLM is unavailable, flags for deferred generation.
+
+      - node_id: ingestion_complete
+        label: "Ingestion Complete"
+        node_type: end
+        agent_ref: null
+
+    edges:
+      - from_node: select_adapter
+        to_node: extract_metadata
+
+      - from_node: extract_metadata
+        to_node: infer_edges
+
+      - from_node: infer_edges
+        to_node: route_by_doc_type
+
+      - from_node: route_by_doc_type
+        to_node: assign_pipeline_stage
+        condition: "doc_type in ['patent_draft', 'technical_disclosure']"
+        label: "Patent or TD: enter filing pipeline"
+
+      - from_node: route_by_doc_type
+        to_node: assign_reference_current
+        condition: >-
+          doc_type in ['glossary', 'formatting_standards',
+          'integration_catalog', 'reference_document', 'template']
+        label: "Reference type: enter steady state"
+
+      - from_node: route_by_doc_type
+        to_node: assign_pipeline_stage
+        condition: >-
+          doc_type in ['work_plan', 'checklist', 'session_context',
+          'patent_figure']
+        label: "Workflow artifact: ingested stage only"
+
+      - from_node: assign_pipeline_stage
+        to_node: generate_abstract
+
+      - from_node: assign_reference_current
+        to_node: generate_abstract
+
+      - from_node: generate_abstract
+        to_node: ingestion_complete
+
+    state_schema:
+      fields:
+        - name: document_id
+          type: string
+          description: "SAGE document ID assigned during ingestion."
+          required: false
+        - name: source_path
+          type: string
+          description: "Filesystem path of the source file being ingested."
+          required: true
+        - name: source_type
+          type: string
+          description: "Detected source type (docx, markdown)."
+          required: false
+        - name: doc_type
+          type: string
+          description: "Extracted doc_type from filename mapping."
+          required: false
+        - name: metadata
+          type: object
+          description: "Extracted metadata fields (date, project, code, title, version)."
+          required: false
+        - name: inferred_edges
+          type: array
+          description: "Edges inferred during ingestion, tagged by tier."
+          required: false
+        - name: pipeline_stage
+          type: string
+          description: "Assigned pipeline stage."
+          required: false
+        - name: abstract_generated
+          type: boolean
+          description: "Whether the semantic abstract was successfully generated."
+          required: false
+
+
+  # ===========================================================================
+  # 2. PATENT PIPELINE ADVANCE
+  #
+  # Advances a patent through one pipeline stage. Evaluates gatekeeper
+  # preconditions, dispatches work agents, verifies completion, and
+  # transitions the document. Contains the three human-gate interrupts.
+  #
+  # This is the most complex workflow: it handles both automatic transitions
+  # (where preconditions are met and no human approval is needed) and
+  # gated transitions (where human approval is required).
+  # ===========================================================================
+  - workflow_id: patent_pipeline_advance
+    label: "Patent Pipeline Advance"
+    description: >-
+      Advances a patent document through one pipeline stage transition.
+      Triggered by the pipeline orchestrator after a work plan identifies the
+      next stage, or manually by Clif. Evaluates preconditions via the patent
+      steward, dispatches appropriate agents for the stage's work, verifies
+      completion criteria, and executes the transition.
+    entry_node: evaluate_preconditions
+
+    nodes:
+      - node_id: evaluate_preconditions
+        label: "Evaluate Preconditions"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward queries SAGE for current state, then evaluates
+        # preconditions defined in the pipeline transition config.
+
+      - node_id: preconditions_router
+        label: "Preconditions Met?"
+        node_type: router
+        agent_ref: null
+
+      - node_id: dispatch_work
+        label: "Dispatch Stage Work"
+        node_type: action
+        agent_ref: pipeline_orchestrator
+        # Pipeline orchestrator dispatches the appropriate agent(s) for
+        # the target stage. For checklist-governed functions, this
+        # triggers the checklist_execution sub-workflow.
+
+      - node_id: verify_completion
+        label: "Verify Completion Criteria"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward verifies all completion criteria for the
+        # stage's functions are satisfied.
+
+      - node_id: completion_router
+        label: "Stage Complete?"
+        node_type: router
+        agent_ref: null
+
+      - node_id: approve_transition
+        label: "Approve Transition"
+        node_type: interrupt
+        agent_ref: null
+        # HUMAN GATE. Pauses for Clif's approval on transitions that
+        # require it (attorney_handoff, approved, attorney_review).
+        # Skipped for transitions where requires_human_approval is false.
+        interrupt_config:
+          prompt_template: >-
+            Pipeline transition for {document_title}: {current_stage} ->
+            {target_stage}. All preconditions satisfied. All completion
+            criteria verified. Review the evidence and approve or reject.
+          response_options:
+            - value: approve
+              label: "Approve transition"
+              routes_to: execute_transition
+            - value: reject_with_remediation
+              label: "Reject (return to work)"
+              routes_to: report_status
+          evidence_fields:
+            - document_title
+            - current_stage
+            - target_stage
+            - precondition_results
+            - completion_summary
+          timeout_minutes: 0             # Wait indefinitely
+
+      - node_id: execute_transition
+        label: "Execute Transition"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward calls SAGE set_lifecycle to advance the
+        # pipeline stage.
+
+      - node_id: report_blockers
+        label: "Report Blockers"
+        node_type: end
+        agent_ref: null
+        # Preconditions not met. Reports what is missing.
+
+      - node_id: report_status
+        label: "Report Status"
+        node_type: end
+        agent_ref: null
+        # Completion not verified or transition rejected.
+
+      - node_id: advance_complete
+        label: "Advance Complete"
+        node_type: end
+        agent_ref: null
+
+    edges:
+      - from_node: evaluate_preconditions
+        to_node: preconditions_router
+
+      - from_node: preconditions_router
+        to_node: dispatch_work
+        condition: "preconditions_met == true"
+        label: "All preconditions satisfied"
+
+      - from_node: preconditions_router
+        to_node: report_blockers
+        condition: "preconditions_met == false"
+        label: "Preconditions not met"
+
+      - from_node: dispatch_work
+        to_node: verify_completion
+
+      - from_node: verify_completion
+        to_node: completion_router
+
+      - from_node: completion_router
+        to_node: approve_transition
+        condition: "stage_complete == true AND requires_human_approval == true"
+        label: "Complete, human approval required"
+
+      - from_node: completion_router
+        to_node: execute_transition
+        condition: "stage_complete == true AND requires_human_approval == false"
+        label: "Complete, no human approval needed"
+
+      - from_node: completion_router
+        to_node: report_status
+        condition: "stage_complete == false"
+        label: "Not yet complete"
+
+      - from_node: approve_transition
+        to_node: execute_transition
+        label: "Approved (default path; rejection routes via interrupt config)"
+
+      - from_node: execute_transition
+        to_node: advance_complete
+
+    state_schema:
+      fields:
+        - name: document_id
+          type: string
+          description: "SAGE document ID of the patent being advanced."
+          required: true
+        - name: document_title
+          type: string
+          description: "Human-readable patent title for interrupt descriptors."
+          required: true
+        - name: current_stage
+          type: string
+          description: "Current pipeline stage."
+          required: true
+        - name: target_stage
+          type: string
+          description: "Target pipeline stage for this transition."
+          required: true
+        - name: patent_origin
+          type: string
+          description: "TD or PV. Determines which pipeline variant applies."
+          required: true
+        - name: requires_human_approval
+          type: boolean
+          description: "Whether this transition requires human-in-the-loop approval."
+          required: true
+        - name: preconditions_met
+          type: boolean
+          description: "Result of precondition evaluation."
+          required: false
+        - name: precondition_results
+          type: object
+          description: "Detailed results of each precondition check."
+          required: false
+        - name: stage_complete
+          type: boolean
+          description: "Whether all completion criteria are satisfied."
+          required: false
+        - name: completion_summary
+          type: object
+          description: "Summary of completion criteria verification."
+          required: false
+        - name: work_plan_ref
+          type: string
+          description: "Reference to the Part Work Plan governing this patent."
+          required: false
+
+
+  # ===========================================================================
+  # 3. TERMINOLOGY PROPAGATION
+  #
+  # Triggered by a Glossary version bump. Identifies all patents with stale
+  # sync versions, presents the blast radius for review (interrupt), then
+  # fans out definition propagation to approved patents.
+  # ===========================================================================
+  - workflow_id: terminology_propagation
+    label: "Terminology Propagation"
+    description: >-
+      Triggered when the glossary steward ingests a new Glossary version.
+      Implements Content Rule 8(c): identifies all patents whose last-synced
+      Glossary version is older than the current version, presents the blast
+      radius for human review, then fans out definition propagation to each
+      approved patent via its steward.
+    entry_node: identify_stale_patents
+
+    nodes:
+      - node_id: identify_stale_patents
+        label: "Identify Stale Patents"
+        node_type: action
+        agent_ref: vault_steward
+        # Vault steward traverses sync_target edges and compares
+        # last-synced versions against the current Glossary version.
+
+      - node_id: review_blast_radius
+        label: "Review Blast Radius"
+        node_type: interrupt
+        agent_ref: null
+        # HUMAN GATE. Clif reviews which patents will be updated and
+        # the scope of definition changes before propagation proceeds.
+        interrupt_config:
+          prompt_template: >-
+            Glossary updated to v{new_glossary_version}. {stale_count}
+            patents have stale definitions. Changed terms:
+            {changed_terms}. Review the affected patents and approve
+            propagation scope.
+          response_options:
+            - value: approve_all
+              label: "Propagate to all stale patents"
+              routes_to: fan_out_propagation
+            - value: approve_subset
+              label: "Propagate to selected patents only"
+              routes_to: fan_out_propagation
+            - value: abort
+              label: "Abort propagation"
+              routes_to: propagation_complete
+          evidence_fields:
+            - new_glossary_version
+            - changed_terms
+            - stale_patents
+            - stale_count
+          timeout_minutes: 0
+
+      - node_id: fan_out_propagation
+        label: "Fan Out Propagation"
+        node_type: fan_out
+        agent_ref: null
+        # Dispatches parallel propagation tasks to each approved patent.
+        fan_out_config:
+          parallel_nodes: []             # Populated dynamically from approved_patents
+          merge_node: merge_results
+
+      - node_id: propagate_definitions
+        label: "Propagate Definitions to Patent"
+        node_type: action
+        agent_ref: patent_steward
+        # Per-patent node: patent steward executes programmatic
+        # DEFINITIONS propagation (Content Rule 8b mechanics).
+        # Verbatim extraction from Glossary; no LLM paraphrasing.
+
+      - node_id: merge_results
+        label: "Merge Propagation Results"
+        node_type: merge
+        agent_ref: null
+        # Aggregates success/failure from parallel propagation tasks.
+
+      - node_id: update_sync_tracker
+        label: "Update Sync Tracker"
+        node_type: action
+        agent_ref: glossary_steward
+        # Glossary steward updates the Portfolio Work Plan's Glossary
+        # Sync Tracker with new sync versions for each propagated patent.
+
+      - node_id: propagation_complete
+        label: "Propagation Complete"
+        node_type: end
+        agent_ref: null
+
+    edges:
+      - from_node: identify_stale_patents
+        to_node: review_blast_radius
+
+      - from_node: review_blast_radius
+        to_node: fan_out_propagation
+        label: "Approved (all or subset)"
+
+      - from_node: fan_out_propagation
+        to_node: propagate_definitions
+        label: "Per-patent parallel dispatch"
+
+      - from_node: propagate_definitions
+        to_node: merge_results
+
+      - from_node: merge_results
+        to_node: update_sync_tracker
+
+      - from_node: update_sync_tracker
+        to_node: propagation_complete
+
+    state_schema:
+      fields:
+        - name: new_glossary_version
+          type: string
+          description: "Version string of the newly ingested Glossary."
+          required: true
+        - name: previous_glossary_version
+          type: string
+          description: "Version string of the prior Glossary."
+          required: true
+        - name: changed_terms
+          type: array
+          description: "List of terms that changed between versions."
+          required: false
+        - name: stale_patents
+          type: array
+          description: >-
+            Patents whose last-synced Glossary version is older than
+            the current version. Each entry includes document_id,
+            title, and last_synced_version.
+          required: false
+        - name: stale_count
+          type: integer
+          description: "Count of stale patents."
+          required: false
+        - name: approved_patents
+          type: array
+          description: "Subset of stale_patents approved for propagation."
+          required: false
+        - name: propagation_results
+          type: array
+          description: >-
+            Per-patent propagation results (success, failure, terms
+            propagated, new sync version).
+          required: false
+
+
+  # ===========================================================================
+  # 4. CHECKLIST FUNCTION EXECUTION
+  #
+  # Manages a single checklist-governed function: precondition verification,
+  # session management, completion criteria verification, work plan status
+  # update. Level 4 (exception-gated). No interrupts; escalates only on
+  # exceptions via the failure taxonomy.
+  # ===========================================================================
+  - workflow_id: checklist_execution
+    label: "Checklist Function Execution"
+    description: >-
+      Triggered by the pipeline orchestrator when a checklist-governed function
+      (CV-2, CV-3, CV-4, CD-1, CD-2, CD-3, QA-1, FP-1) is dispatched.
+      The checklist orchestrator manages the session lifecycle against the
+      checklist instance as the authoritative state machine.
+    entry_node: verify_preconditions
+
+    nodes:
+      - node_id: verify_preconditions
+        label: "Verify Function Preconditions"
+        node_type: action
+        agent_ref: checklist_orchestrator
+        # Verifies all required inputs are present (uploaded files,
+        # prior function outputs, reference documents). Per PWP
+        # Precondition Gates section.
+
+      - node_id: preconditions_router
+        label: "Preconditions Satisfied?"
+        node_type: router
+        agent_ref: null
+
+      - node_id: execute_sessions
+        label: "Execute Checklist Sessions"
+        node_type: action
+        agent_ref: checklist_orchestrator
+        # Manages multi-session execution per the checklist instance.
+        # Each session: load state, execute steps, checkpoint, verify.
+        # The patent steward performs actual document modifications;
+        # the checklist orchestrator manages sequencing.
+
+      - node_id: verify_completion
+        label: "Verify Completion Criteria"
+        node_type: action
+        agent_ref: checklist_orchestrator
+        # Verifies all completion criteria from the function's
+        # PWP section are satisfied.
+
+      - node_id: completion_router
+        label: "Function Complete?"
+        node_type: router
+        agent_ref: null
+
+      - node_id: update_work_plan
+        label: "Update Work Plan Status"
+        node_type: action
+        agent_ref: pipeline_orchestrator
+        # Pipeline orchestrator updates the Part Work Plan with
+        # function completion status, metrics, and version progression.
+
+      - node_id: halt_missing_inputs
+        label: "Halt: Missing Inputs"
+        node_type: end
+        agent_ref: null
+        # Preconditions not met. Reports missing inputs and halts.
+
+      - node_id: report_incomplete
+        label: "Report Incomplete"
+        node_type: end
+        agent_ref: null
+        # Completion criteria not satisfied. Reports status.
+
+      - node_id: function_complete
+        label: "Function Complete"
+        node_type: end
+        agent_ref: null
+
+    edges:
+      - from_node: verify_preconditions
+        to_node: preconditions_router
+
+      - from_node: preconditions_router
+        to_node: execute_sessions
+        condition: "preconditions_met == true"
+        label: "All inputs present"
+
+      - from_node: preconditions_router
+        to_node: halt_missing_inputs
+        condition: "preconditions_met == false"
+        label: "Missing required inputs"
+
+      - from_node: execute_sessions
+        to_node: verify_completion
+
+      - from_node: verify_completion
+        to_node: completion_router
+
+      - from_node: completion_router
+        to_node: update_work_plan
+        condition: "function_complete == true"
+        label: "All criteria satisfied"
+
+      - from_node: completion_router
+        to_node: report_incomplete
+        condition: "function_complete == false"
+        label: "Criteria not yet satisfied"
+
+      - from_node: update_work_plan
+        to_node: function_complete
+
+    state_schema:
+      fields:
+        - name: document_id
+          type: string
+          description: "SAGE document ID of the patent being worked."
+          required: true
+        - name: function_id
+          type: string
+          description: "Function identifier (e.g., CV-2, CD-1, QA-1)."
+          required: true
+        - name: checklist_id
+          type: string
+          description: "SAGE document ID of the checklist instance."
+          required: false
+        - name: work_plan_ref
+          type: string
+          description: "Reference to the Part Work Plan."
+          required: true
+        - name: preconditions_met
+          type: boolean
+          description: "Result of precondition verification."
+          required: false
+        - name: missing_inputs
+          type: array
+          description: "List of missing required inputs if preconditions fail."
+          required: false
+        - name: session_count
+          type: integer
+          description: "Number of sessions executed so far."
+          required: false
+        - name: current_session
+          type: integer
+          description: "Current session number."
+          required: false
+        - name: function_complete
+          type: boolean
+          description: "Whether all completion criteria are satisfied."
+          required: false
+        - name: completion_results
+          type: object
+          description: "Detailed results of completion criteria verification."
+          required: false
+
+
+  # ===========================================================================
+  # 5. REDLINE REVISION CYCLE
+  #
+  # Processes Roman's redlines: patent steward applies revisions, produces
+  # updated spec, returns to attorney_review stage. Supports multiple
+  # iterative rounds. No interrupts; the human gates are at pipeline
+  # transitions (approved -> attorney_review), not within the revision cycle.
+  # ===========================================================================
+  - workflow_id: redline_cycle
+    label: "Redline Revision Cycle"
+    description: >-
+      Triggered when a redline is received from Roman during the attorney
+      review stage. The patent steward processes the marked-up document,
+      applies revisions, and produces an updated specification. The pipeline
+      orchestrator transitions the document back to attorney_review when
+      the revision is complete. Repeatable for multiple rounds.
+    entry_node: receive_redline
+
+    nodes:
+      - node_id: receive_redline
+        label: "Receive Redline Document"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward ingests Roman's marked-up document and
+        # identifies the scope of requested changes.
+
+      - node_id: apply_revisions
+        label: "Apply Revisions"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward applies redline revisions to the
+        # specification, preserving patent prose register,
+        # terminology governance, and content rules.
+
+      - node_id: verify_revision
+        label: "Verify Revision Quality"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward verifies the revision addresses all redline
+        # items and the spec remains internally consistent.
+
+      - node_id: prepare_return
+        label: "Prepare Return Package"
+        node_type: action
+        agent_ref: patent_steward
+        # Patent steward produces the final revised spec with updated
+        # version number, revision history entry, and filename.
+
+      - node_id: cycle_complete
+        label: "Redline Cycle Complete"
+        node_type: end
+        agent_ref: null
+        # Pipeline orchestrator transitions the document from
+        # redline_revision back to attorney_review.
+
+    edges:
+      - from_node: receive_redline
+        to_node: apply_revisions
+
+      - from_node: apply_revisions
+        to_node: verify_revision
+
+      - from_node: verify_revision
+        to_node: prepare_return
+
+      - from_node: prepare_return
+        to_node: cycle_complete
+
+    state_schema:
+      fields:
+        - name: document_id
+          type: string
+          description: "SAGE document ID of the patent being revised."
+          required: true
+        - name: redline_source
+          type: string
+          description: "Path or reference to Roman's redline document."
+          required: true
+        - name: redline_items
+          type: array
+          description: "Identified redline items to address."
+          required: false
+        - name: revisions_applied
+          type: array
+          description: "Record of revisions applied."
+          required: false
+        - name: revision_verified
+          type: boolean
+          description: "Whether the revision passed quality verification."
+          required: false
+        - name: new_version
+          type: string
+          description: "Version string of the revised specification."
+          required: false

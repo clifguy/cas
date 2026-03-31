@@ -1,0 +1,441 @@
+# =============================================================================
+# PIM Health Domain Instantiation: SAGE Vault Configuration
+# =============================================================================
+#
+# Validates against: docs/fs/sage/vault_config.schema.json (FS v0.1)
+# Instantiation checklist items: #1 through #6
+# Target path: ~/repos/cas/domains/pim_health/sage_vault_config.yaml
+#
+# This file configures the SAGE layer for the PIM Health patent portfolio
+# domain. It is the root configuration; sub-sections correspond to the five
+# SAGE sub-schemas ($ref'd from vault_config.schema.json).
+#
+# Source authorities referenced:
+#   - Master Glossary (terminology governance)
+#   - Formatting Standards (finished-document state)
+#   - Part Work Plan Template (execution procedures)
+#   - Portfolio Work Plan (portfolio status)
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Item #1: Vault Identity and Storage
+# Schema: vault_config.schema.json > properties.vault
+# -----------------------------------------------------------------------------
+vault:
+  id: pim_health
+  name: "PIM Health Patent Portfolio"
+  owner: clif                          # CTO; sole user in Phase 1
+  storage_root: "~/data/cas/pim_health/sources"
+  brain_root: "~/data/cas/pim_health/brain"
+  visibility: personal                 # Single-user Phase 1; upgrade to team
+                                       # when Team 2/3 are onboarded
+  # No members array needed at personal visibility.
+
+
+# -----------------------------------------------------------------------------
+# Item #2: Document Types (doc_type enum)
+# Schema: sage/document_types.schema.json
+#
+# Design principle: each type gets its own entry when it requires different
+# pipeline treatment, agent jurisdiction, or governance rules. Types that share
+# all three are merged.
+# -----------------------------------------------------------------------------
+document_types:
+  doc_types:
+    - value: patent_draft
+      label: "Patent Draft"
+      description: >-
+        PV series provisional patent applications including PVMaster.
+        All traverse the filing pipeline (conversion through filing).
+
+    - value: technical_disclosure
+      label: "Technical Disclosure"
+      description: >-
+        TD series technical disclosure documents. Similar pipeline to
+        patent drafts but with lighter governance. Source material for
+        TD-to-PV conversion.
+
+    - value: glossary
+      label: "Master Glossary"
+      description: >-
+        Terminology authority for the portfolio. Unique steward with
+        cross-patent blast radius on every update. Binary governance:
+        every term is governed (capitalized, in glossary, in DEFINITIONS)
+        or ungoverned (lowercase, never in DEFINITIONS).
+
+    - value: formatting_standards
+      label: "Formatting Standards"
+      description: >-
+        Document-state authority. Defines what a correctly formatted
+        finished document looks like. Evaluated against the finished
+        document without reference to workflow or portfolio status.
+
+    - value: integration_catalog
+      label: "Integration Catalog"
+      description: >-
+        Functional descriptions authority for cross-patent integration
+        points. Unique steward. Source for CF-1 cross-reference
+        remediation (Mode C verbatim sync).
+
+    - value: reference_document
+      label: "Reference Document"
+      description: >-
+        Other REF-series documents (Architectural Q&A, Report
+        Specifications, PA Report Specifications). Shared governance;
+        no dedicated steward per document.
+
+    - value: work_plan
+      label: "Work Plan"
+      description: >-
+        Execution planning artifacts: Portfolio Work Plan and
+        instantiated Part Work Plans. Orchestrator working state.
+
+    - value: checklist
+      label: "Checklist"
+      description: >-
+        Session-level state machines for checklist-governed functions.
+        Instantiated from the Checklist Template. Orchestrator working
+        state.
+
+    - value: session_context
+      label: "Session Context"
+      description: >-
+        CPML session exports. Ingested for provenance tracking and
+        searchability. Not actively governed after ingestion.
+
+    - value: patent_figure
+      label: "Patent Figure"
+      description: >-
+        Figure PNGs and draw.io source files. Leo's deliverables
+        produced from FigureSpecs. Managed as pipeline artifacts
+        but not content-searchable.
+
+    - value: template
+      label: "Template"
+      description: >-
+        Reusable templates (Part Work Plan Template, Checklist Template,
+        Figure Spec Template). Reference artifacts that govern execution
+        procedures.
+
+
+# -----------------------------------------------------------------------------
+# Item #3: Lifecycle States and Transitions
+# Schema: sage/lifecycle.schema.json
+#
+# Base states (active, superseded, completed, archived) are always present.
+# PIM Health adds one domain-specific state: filed.
+#
+# Design note: "draft" was considered and rejected. Pipeline stages (ROOT
+# Harness) handle the draft-to-review-to-final progression. Lifecycle states
+# handle the broader identity question: "is this the current version?"
+# -----------------------------------------------------------------------------
+lifecycle:
+  base_states_required: true
+
+  states:
+    # --- Base states (required) ---
+    - value: active
+      label: "Active"
+      description: >-
+        In the system, current version. The default state after ingestion.
+      is_terminal: false
+
+    - value: superseded
+      label: "Superseded"
+      description: >-
+        A newer version of this document exists. The supersedes edge
+        links the new version to this one.
+      is_terminal: false
+
+    - value: completed
+      label: "Completed"
+      description: >-
+        Work on this document is done and no replacement was needed.
+        Used for non-patent documents where work concludes (e.g.,
+        a session context after export).
+      is_terminal: false
+
+    - value: archived
+      label: "Archived"
+      description: >-
+        Long-term storage. Terminal under normal operation, but
+        reactivation is permitted as an exceptional case.
+      is_terminal: true
+
+    # --- Domain-specific state ---
+    - value: filed
+      label: "Filed"
+      description: >-
+        Patent submitted to USPTO. Document is frozen. Distinct from
+        completed because filed patents cannot be revised; they can
+        only be superseded by continuations or continuation-in-part
+        applications.
+      is_terminal: true
+
+  transitions:
+    # --- Base transitions ---
+    - from_state: "(new)"
+      action: ingest
+      to_state: active
+      semantics: >-
+        New document enters the system. Default lifecycle state.
+
+    - from_state: active
+      action: supersede
+      to_state: superseded
+      semantics: >-
+        A newer version of this document has been ingested. The new
+        version's ingestion creates a supersedes edge automatically.
+      creates_edge: supersedes
+
+    - from_state: active
+      action: complete
+      to_state: completed
+      semantics: >-
+        Work is done and no replacement is needed. Used for non-patent
+        documents (session contexts, completed checklists).
+
+    - from_state: active
+      action: archive
+      to_state: archived
+      semantics: "Move active document to long-term storage."
+
+    - from_state: superseded
+      action: archive
+      to_state: archived
+      semantics: "Archive a superseded document."
+
+    - from_state: completed
+      action: archive
+      to_state: archived
+      semantics: "Archive a completed document."
+
+    - from_state: archived
+      action: reactivate
+      to_state: active
+      semantics: >-
+        Exceptional case. Reactivate an archived document for further
+        work.
+
+    # --- Domain-specific transitions ---
+    - from_state: active
+      action: file
+      to_state: filed
+      semantics: >-
+        Patent draft submitted to USPTO via Roman. Document is frozen
+        at the filed version.
+
+    - from_state: filed
+      action: archive
+      to_state: archived
+      semantics: "Archive a filed patent for long-term storage."
+
+
+# -----------------------------------------------------------------------------
+# Item #4: Source Adapters
+# Schema: sage/source_adapters.schema.json
+#
+# Two adapters enabled: docx (primary format) and markdown (workflow
+# artifacts). PDF is disabled in Phase 1. xlsx is not in the FS v0.1
+# source_type enum; schema extension deferred to FS v0.2. xlsx templates
+# are stored in storage_root without an active adapter.
+# -----------------------------------------------------------------------------
+source_adapters:
+  adapters:
+    - source_type: docx
+      enabled: true
+      config:
+        watch_paths:
+          - "patents"                  # PV and TD series
+          - "references"               # Glossary, FS, IC, other REFs
+        file_extensions:
+          - ".docx"
+        # heading_style_map: default (Heading 1-9). PIM template uses
+        # standard Word heading styles; no custom mapping needed.
+
+    - source_type: markdown
+      enabled: true
+      config:
+        watch_paths:
+          - "workflow"                 # Work plans, checklists, session contexts
+          - "templates"                # Part Work Plan Template, Checklist Template, etc.
+        file_extensions:
+          - ".md"
+
+    - source_type: pdf
+      enabled: false
+      # Disabled in Phase 1. PDFs are generated outputs, not managed
+      # inputs. Enable later if Roman sends marked-up PDFs.
+
+
+# -----------------------------------------------------------------------------
+# Item #5: Metadata Extraction
+# Schema: sage/metadata_extraction.schema.json
+#
+# PIM Health has a rigorous naming convention. Filename is the sole version
+# authority (Claude sometimes forgets to bump the running header). No content
+# extraction rules.
+#
+# Standard filename: 2026-03-09_PIM_REF_Glossary_v8_4.docx
+# Pattern: {date}_{project}_{code}_{title}_{version}
+#
+# Parsing note: title and version segments use underscores internally.
+# The parser needs positional logic: first segment = date, second = project,
+# third = code, everything before the final v-prefixed segment = title,
+# final v-prefixed segment = version.
+# -----------------------------------------------------------------------------
+metadata_extraction:
+  review_required: false               # PIM naming conventions are trusted
+
+  filename_extraction:
+    pattern: "{date}_{project}_{code}_{title}_{version}"
+    separator: "_"
+    segment_fields:
+      date: doc_date
+      project: project
+      code: doc_code
+      title: title
+      version: version
+
+    # Ordered list: first match wins. Compound keys (code + title_contains)
+    # take precedence over code-only mappings.
+    code_to_doc_type:
+      # --- Compound keys for REF disambiguation ---
+      - code: "REF"
+        title_contains: "Glossary"
+        doc_type: glossary
+
+      - code: "REF"
+        title_contains: "FormattingStandards"
+        doc_type: formatting_standards
+
+      - code: "REF"
+        title_contains: "IntegrationCatalog"
+        doc_type: integration_catalog
+
+      - code: "REF"
+        doc_type: reference_document    # Fallback for remaining REFs
+
+      # --- Patent drafts ---
+      - code: "PVMaster"
+        doc_type: patent_draft
+
+      # PV01 through PV13 (and beyond). The code segment is "PV##".
+      # Implementation note: this requires prefix matching on "PV"
+      # followed by digits; the schema's string match may need a
+      # regex-capable implementation.
+      - code: "PV"
+        doc_type: patent_draft
+
+      # --- Technical disclosures ---
+      # TD08, TD09, etc. Same prefix-match note as PV.
+      - code: "TD"
+        doc_type: technical_disclosure
+
+  # No content_extraction rules. Filename is the sole metadata source.
+  # If the running header version disagrees with the filename, that is
+  # a formatting defect for a steward to flag, not a metadata correction.
+
+
+# -----------------------------------------------------------------------------
+# Item #6: Edge Inference
+# Schema: sage/edge_inference.schema.json
+#
+# Three tiers:
+#   Tier 1 (auto-create): deterministic, no review needed
+#   Tier 2 (auto-suggest): staged for batch review
+#   Tier 3 (manual only): requires human or agent judgment
+# -----------------------------------------------------------------------------
+edge_inference:
+  tier_assignments:
+    # --- Tier 1: Auto-create (deterministic) ---
+    - edge_type: supersedes
+      tier: 1
+      inference_rules:
+        - method: version_chain
+          # PIM filenames encode version: v10_2 supersedes v10_1 through
+          # v1_0 for the same project + code + title combination.
+          source_segment: version
+          target_segment: version
+
+    - edge_type: sync_target
+      tier: 1
+      inference_rules:
+        - method: re_ingestion
+          # When a source authority (glossary, formatting standards) is
+          # re-ingested, its existing sync_target edges identify documents
+          # needing reconciliation. The edges already exist; re-ingestion
+          # triggers the check.
+
+    # --- Tier 2: Auto-suggest (staged for review) ---
+    - edge_type: covers
+      tier: 2
+      inference_rules:
+        - method: filename_code_match
+          # A work plan or checklist whose filename contains a patent code
+          # (e.g., PV06) suggests a covers relationship.
+          source_segment: code
+          target_segment: code
+
+    - edge_type: references
+      tier: 2
+      inference_rules:
+        - method: content_reference
+          # Phase 2: textual cross-references detected in document content.
+          # Phase 1: no active inference rule; effectively manual until
+          # content scanning is implemented.
+          pattern: "cross-reference detection (Phase 2)"
+
+    - edge_type: bundles_with
+      tier: 2
+      inference_rules:
+        - method: filename_co_location
+          # Documents sharing a code and date (same-day deliverables).
+          # Reasonable suggestion but co-location is not definitive.
+          source_segment: code
+          target_segment: code
+
+    # --- Tier 3: Manual only ---
+    - edge_type: derived_from
+      tier: 3
+      # Requires human judgment about intellectual lineage. Cannot be
+      # inferred from filenames or content patterns.
+
+    - edge_type: authoritative_for
+      tier: 3
+      # Source authority relationships are architectural decisions:
+      # Glossary -> terminology, Formatting Standards -> document state,
+      # Integration Catalog -> functional descriptions. Set once during
+      # instantiation, not inferred.
+
+    - edge_type: depends_on
+      tier: 3
+      # Dependency relationships between patents require domain knowledge
+      # of the portfolio structure (e.g., PVMaster depends on all PV
+      # patents for architectural coherence).
+
+  staging_review_grouping: by_source_document
+  # Most natural for PIM workflow: "here is what we inferred when
+  # PV06 v6_12 was ingested."
+
+
+# -----------------------------------------------------------------------------
+# Access Control Defaults
+# Schema: vault_config.schema.json > properties.access_control_defaults
+# -----------------------------------------------------------------------------
+access_control_defaults:
+  new_documents_restricted: false      # Single-user Phase 1; Clif is sole user
+
+
+# -----------------------------------------------------------------------------
+# Abstraction (Semantic Abstract Generation)
+# Schema: vault_config.schema.json > properties.abstraction
+# -----------------------------------------------------------------------------
+abstraction:
+  enabled: true
+  model: "Qwen3-30B-A3B-Instruct-2507"  # Local LLM via MLX per Deployment Model v0.6.
+                                       # Runs on Apple Silicon with no API dependency.
+                                       # CAS-ADR-011: abstract generation uses a local model.
+  max_abstract_tokens: 500             # Patent docs are dense; 500 tokens
+                                       # provides adequate semantic coverage

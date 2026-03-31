@@ -1,0 +1,403 @@
+# =============================================================================
+# PIM Health Domain Instantiation: ROOT Harness Pipeline Configuration
+# =============================================================================
+#
+# Validates against: docs/fs/root_harness/pipeline.schema.json (FS v0.1)
+# Instantiation checklist items: #7, #10
+# Target path: ~/repos/cas/domains/pim_health/pipeline.yaml
+#
+# Defines pipeline stages, transitions, gatekeeper bindings, and precondition
+# expressions for the PIM Health patent filing pipeline.
+#
+# Two pipeline variants are defined by the Part Work Plan Template v20:
+#   TD->PV: CV-1 -> CV-2 -> CV-3 -> CD-1 -> CD-2 -> CV-4 -> handoff ->
+#           CD-3 -> CD-4 -> CF-1..CF-5 -> QA-1 -> FP-1 -> FP-2
+#   PV->PV: CD-1 -> CD-2 -> handoff -> CD-3 -> CD-4 -> CF-1..CF-5 ->
+#           QA-1 -> FP-1 -> FP-2
+#
+# Pipeline stages group at the category level, not the individual function
+# level. Individual function tracking belongs to the orchestrator's work
+# plan state. Pipeline stages answer "where is this document in the overall
+# workflow?" while function tracking answers "what is the next step?"
+# =============================================================================
+
+stages:
+  # -------------------------------------------------------------------------
+  # Universal entry stage
+  # -------------------------------------------------------------------------
+  - value: ingested
+    label: "Ingested"
+    description: >-
+      Document received into SAGE. Metadata extracted from filename.
+      Edge inference complete. No pipeline work performed yet.
+    # applicable_doc_types omitted: applies to all types.
+
+  # -------------------------------------------------------------------------
+  # Patent filing pipeline stages (ordered by typical progression)
+  # -------------------------------------------------------------------------
+  - value: conversion
+    label: "Conversion"
+    description: >-
+      CV-1 (Skeleton and Verbatim Insertion), CV-2 (Content Migration),
+      CV-3 (Source Fidelity Audit and Remediation). TD-to-PV conversion.
+      Skipped entirely for PV-native patents.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: content_development
+    label: "Content Development (Pre-Handoff)"
+    description: >-
+      CD-1 (Invention Improvements), CD-2 (Pseudocode Authoring), and
+      CV-4 (Net-New Authoring, TD->PV only). Pre-handoff content work
+      that gives Roman the broadest possible disclosure for claims
+      drafting. CV-4 is grouped here (not in conversion) because the
+      Part Work Plan sequences it after CD-1/CD-2 and before the
+      attorney handoff.
+    applicable_doc_types:
+      - patent_draft
+      - technical_disclosure
+
+  - value: attorney_handoff
+    label: "Attorney Handoff"
+    description: >-
+      Blocking wait state. Specification sent to Roman for claims
+      drafting. No pipeline work occurs; the transition out is triggered
+      by claims arrival. After CV-4 for TD->PV; after CD-2 for PV->PV.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: claims_integration
+    label: "Claims Integration"
+    description: >-
+      CD-3 (Claim Verification and Gap Remediation) and CD-4 (Exemplary
+      Methods). Post-handoff content work integrating Roman's claims
+      into the specification.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: conformance
+    label: "Conformance"
+    description: >-
+      CF-1 (Cross-Reference Remediation), CF-2 (Prior Art Placement
+      Audit), CF-3 (Terminology and Content Conformance), CF-4 (Patent
+      Profanity Audit), CF-5 (101 Strengthening Audit). All five
+      conformance functions verify and remediate the specification
+      against portfolio standards.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: quality_assurance
+    label: "Quality Assurance"
+    description: >-
+      QA-1 (Systematic Specification Audit). Comprehensive quality
+      review using the cross-patent pattern library.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: filing_preparation
+    label: "Filing Preparation"
+    description: >-
+      FP-1 (Figure Creation) and FP-2 (Pre-Filing Assembly). Final
+      preparation before attorney submission. FP-1 is the most
+      labor-intensive function in the pipeline and runs last to
+      prevent rework from post-figure specification changes.
+    applicable_doc_types:
+      - patent_draft
+
+  # -------------------------------------------------------------------------
+  # Post-pipeline stages (attorney review through filing)
+  # -------------------------------------------------------------------------
+  - value: approved
+    label: "Approved"
+    description: >-
+      Human-approved and ready for attorney submission. All pipeline
+      functions complete; specification meets filing standards.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: attorney_review
+    label: "Attorney Review"
+    description: >-
+      Specification sent to Roman. Awaiting redline return. Supports
+      multiple iterative rounds (attorney_review <-> redline_revision).
+    applicable_doc_types:
+      - patent_draft
+
+  - value: redline_revision
+    label: "Redline Revision"
+    description: >-
+      Roman's redlines received. Clif/Claude revising the specification
+      to address attorney feedback. Returns to attorney_review when
+      the revised spec is sent back.
+    applicable_doc_types:
+      - patent_draft
+
+  - value: filed
+    label: "Filed"
+    description: >-
+      Roman confirms filing with USPTO. Terminal pipeline stage.
+      Triggers the filed lifecycle transition (active -> filed).
+    applicable_doc_types:
+      - patent_draft
+
+  # -------------------------------------------------------------------------
+  # Reference document steady state
+  # -------------------------------------------------------------------------
+  - value: reference_current
+    label: "Reference Current"
+    description: >-
+      Steady state for reference documents. No filing pipeline;
+      governance is ongoing. Updates produce new versions (supersedes
+      lifecycle transition) rather than pipeline progression.
+    applicable_doc_types:
+      - glossary
+      - formatting_standards
+      - integration_catalog
+      - reference_document
+      - template
+
+
+# =============================================================================
+# Transitions
+#
+# Includes gatekeeper bindings (Item #10) and preconditions. Each transition
+# specifies the governing steward, escalation policy, and conditions that
+# must be satisfied before the transition is permitted.
+# =============================================================================
+transitions:
+  # -------------------------------------------------------------------------
+  # Entry transitions
+  # -------------------------------------------------------------------------
+  - from_stage: "(entry)"
+    to_stage: ingested
+    # No gatekeeper; automatic on ingestion for all documents.
+
+  - from_stage: "(entry)"
+    to_stage: reference_current
+    gatekeeper:
+      agent_id: vault_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: metadata_fields_populated
+        description: "doc_type must be extracted from filename."
+        parameters:
+          fields:
+            - doc_type
+      - check: custom
+        description: >-
+          Document type must be a reference type (glossary,
+          formatting_standards, integration_catalog, reference_document,
+          or template).
+        parameters:
+          expression: >-
+            doc_type in ['glossary', 'formatting_standards',
+            'integration_catalog', 'reference_document', 'template']
+
+  # -------------------------------------------------------------------------
+  # Ingested -> first pipeline stage
+  # -------------------------------------------------------------------------
+  - from_stage: ingested
+    to_stage: conversion
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: metadata_fields_populated
+        description: "Core metadata must be populated from filename."
+        parameters:
+          fields:
+            - doc_type
+            - version
+            - doc_code
+      - check: custom
+        description: "Patent origin must be TD (conversion required)."
+        parameters:
+          expression: "patent_origin == 'TD'"
+
+  - from_stage: ingested
+    to_stage: content_development
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: metadata_fields_populated
+        description: "Core metadata must be populated from filename."
+        parameters:
+          fields:
+            - doc_type
+            - version
+            - doc_code
+      - check: custom
+        description: "Patent origin must be PV (no conversion needed)."
+        parameters:
+          expression: "patent_origin == 'PV'"
+
+  # -------------------------------------------------------------------------
+  # Filing pipeline progression
+  # -------------------------------------------------------------------------
+  - from_stage: conversion
+    to_stage: content_development
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: >-
+          Conversion functions CV-1, CV-2, and CV-3 must be marked
+          complete in the Part Work Plan.
+        parameters:
+          expression: "work_plan.cv1_complete AND work_plan.cv2_complete AND work_plan.cv3_complete"
+
+  - from_stage: content_development
+    to_stage: attorney_handoff
+    requires_human_approval: true        # HUMAN GATE: spec disclosure to Roman
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: >-
+          Pre-handoff content functions must be complete. For TD->PV:
+          CD-1, CD-2, and CV-4. For PV->PV: CD-1 and CD-2.
+        parameters:
+          expression: >-
+            work_plan.cd1_complete AND work_plan.cd2_complete
+            AND (patent_origin == 'PV' OR work_plan.cv4_complete)
+      - check: editor_registered
+        description: "Clif must be registered as editor (human approval gate)."
+        parameters:
+          editors:
+            - clif
+
+  - from_stage: attorney_handoff
+    to_stage: claims_integration
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "Claims must have been received from Roman."
+        parameters:
+          expression: "work_plan.claims_received == true"
+
+  - from_stage: claims_integration
+    to_stage: conformance
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "CD-3 and CD-4 must be complete."
+        parameters:
+          expression: "work_plan.cd3_complete AND work_plan.cd4_complete"
+
+  - from_stage: conformance
+    to_stage: quality_assurance
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "All five conformance functions must be complete."
+        parameters:
+          expression: >-
+            work_plan.cf1_complete AND work_plan.cf2_complete
+            AND work_plan.cf3_complete AND work_plan.cf4_complete
+            AND work_plan.cf5_complete
+
+  - from_stage: quality_assurance
+    to_stage: filing_preparation
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "QA-1 must be complete."
+        parameters:
+          expression: "work_plan.qa1_complete"
+
+  - from_stage: filing_preparation
+    to_stage: approved
+    requires_human_approval: true        # HUMAN GATE: filing approval
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "FP-1 and FP-2 must be complete."
+        parameters:
+          expression: "work_plan.fp1_complete AND work_plan.fp2_complete"
+      - check: lifecycle_status
+        description: "Document must still be in active lifecycle state."
+        parameters:
+          required_status: active
+
+  # -------------------------------------------------------------------------
+  # Post-pipeline: attorney review and filing
+  # -------------------------------------------------------------------------
+  - from_stage: approved
+    to_stage: attorney_review
+    requires_human_approval: true        # HUMAN GATE: submission to Roman
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: editor_registered
+        description: "Clif must be registered as editor."
+        parameters:
+          editors:
+            - clif
+
+  - from_stage: attorney_review
+    to_stage: redline_revision
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "Redline document received from Roman."
+        parameters:
+          expression: "work_plan.redline_received == true"
+
+  - from_stage: redline_revision
+    to_stage: attorney_review
+    # Supports multiple iterative rounds. Revised spec returned to Roman.
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "Redline revision complete; spec returned to Roman."
+        parameters:
+          expression: "work_plan.revision_complete == true"
+
+  - from_stage: attorney_review
+    to_stage: filed
+    gatekeeper:
+      agent_id: patent_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: "Roman has confirmed filing with USPTO."
+        parameters:
+          expression: "work_plan.filing_confirmed == true"
+
+  # -------------------------------------------------------------------------
+  # Non-standard re-entry
+  # -------------------------------------------------------------------------
+  - from_stage: conformance
+    to_stage: content_development
+    gatekeeper:
+      agent_id: glossary_steward
+      escalation_policy: escalate_to_human
+    preconditions:
+      - check: custom
+        description: >-
+          Glossary or Formatting Standards version has advanced since
+          the last conformance pass. Patent re-enters the pipeline for
+          updated content development. Handles the non-standard history
+          case where a patent returns after a long hiatus.
+        parameters:
+          expression: >-
+            glossary_version > work_plan.last_synced_glossary_version
+            OR fs_version > work_plan.last_synced_fs_version
