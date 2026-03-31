@@ -27,7 +27,7 @@ tests/             # Test plan and test code
 
 Do not memorize these; read them when you need current project state:
 
-- **Project status:** `CAS_Project_Tracker_v{N}.md` (root directory) — artifact versions, pending work, sequence, open considerations.
+- **Project status:** `CAS_Project_Tracker.md` (root directory) — artifact versions, pending work, sequence, open considerations.
 - **Architectural decisions:** `docs/cas_adr_store.json` — all CAS ADRs with full rationale. Single source of truth for design decisions.
 - **Schema inventory:** `docs/fs/manifest.json` — what schemas exist, their versions, and roles.
 - **Architecture documents:** `docs/ref/*.docx` — read with `pandoc -t plain` when you need architectural detail. These are Word files; do not attempt to edit them in Claude Code.
