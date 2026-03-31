@@ -1,0 +1,1188 @@
+# =============================================================================
+# ROOT Harness Orchestration API — OpenAPI Specification
+# =============================================================================
+#
+# Formal Substrate artifact for CAS (Clif's Agentic System).
+# Target path: ~/repos/cas/docs/fs/root_harness/orchestration_api.openapi.yaml
+#
+# Source authority: ROOT Harness Architecture Reference, Section 2.5
+# (Orchestration API Surface), Section 2.3 (Agent Registration Model),
+# Section 2.6 (Event Stream), and Section 2.7 (Human-in-the-Loop
+# Interrupt Pattern).
+#
+# This specification defines the REST surface consumed by the CAS
+# Application (human-facing client), MCP adapter (AI client protocol),
+# and CLI tools. MCP tool schemas are derived from this spec by the
+# MCP adapter layer; they are not defined here.
+#
+# Architectural invariants enforced by this API:
+#   - Workflow-scoped: all execution operations are scoped to a workflow
+#     execution ID returned by trigger_workflow.
+#   - Agent identity: every agent is registered and referenced by a
+#     stable agent_id that matches its SAGE User entity.
+#   - Two-type taxonomy: agent_type is steward or orchestrator
+#     (CAS-ADR-010).
+#   - Named operations: interrupt resolution uses structured descriptors,
+#     not freeform text (interrupt.schema.json).
+#
+# Related CAS ADRs: 001, 008, 010, 012, 013.
+# Related FS schemas: event_stream.schema.json, interrupt.schema.json.
+# =============================================================================
+
+openapi: "3.1.0"
+
+info:
+  title: ROOT Harness Orchestration API
+  version: "0.1.0"
+  description: >-
+    Orchestration API for ROOT Harness, the agent management and workflow
+    execution component of CAS. Exposes workflow triggering, status
+    monitoring, human-in-the-loop interrupt resolution, agent registration,
+    pipeline status queries, and real-time event streaming.
+  contact:
+    name: CAS Project
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8100
+    description: Phase 1 local development (FastAPI)
+
+# =============================================================================
+# Paths
+# =============================================================================
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Workflow Execution
+  # ---------------------------------------------------------------------------
+
+  /workflows:
+    post:
+      operationId: trigger_workflow
+      summary: Start a named workflow with input parameters.
+      description: >-
+        Launches a new workflow execution. The workflow definition must
+        be registered in the domain's workflow configuration. ROOT Harness
+        validates the input parameters against the workflow's state_schema
+        before dispatching.
+
+
+        Returns immediately with the workflow execution ID. The caller
+        can monitor progress via get_status (polling) or subscribe_events
+        (real-time stream).
+
+
+        If the workflow's state_schema defines required success criteria
+        fields, they must be present in the input parameters (sprint
+        contract pattern).
+      tags: [Workflow Execution]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerWorkflowRequest"
+      responses:
+        "201":
+          description: Workflow execution started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowExecution"
+        "400":
+          description: >-
+            Invalid request. The workflow name is not registered, or
+            the input parameters do not satisfy the workflow's
+            state_schema.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /workflows/{execution_id}:
+    get:
+      operationId: get_status
+      summary: Query the current state of a workflow execution.
+      description: >-
+        Returns the execution state including current node, overall
+        status, pending interrupts (if any), and a summary of completed
+        nodes. Useful for polling-based monitoring and for checking
+        whether a workflow is awaiting human input.
+
+
+        For real-time monitoring, prefer subscribe_events over repeated
+        get_status calls.
+      tags: [Workflow Execution]
+      parameters:
+        - $ref: "#/components/parameters/ExecutionId"
+      responses:
+        "200":
+          description: Current workflow execution state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowStatus"
+        "404":
+          description: Workflow execution not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Human-in-the-Loop
+  # ---------------------------------------------------------------------------
+
+  /workflows/{execution_id}/approve:
+    post:
+      operationId: approve
+      summary: Resolve a pending interrupt with approval, rejection, or modification.
+      description: >-
+        Responds to a human-in-the-loop interrupt. The resolution must
+        reference a valid option_id from the interrupt's response_options.
+
+
+        On approval (effect: resume), execution resumes from the
+        checkpoint. On rejection (effect: reject), the workflow routes
+        to the rejection handler node. On defer (effect: defer), the
+        interrupt is re-queued. On modify (effect: modify),
+        modified_parameters are validated against the option's
+        parameter_schema and execution resumes with the adjusted values.
+
+
+        See interrupt.schema.json for the full interrupt descriptor
+        and approval policy contracts.
+      tags: [Human-in-the-Loop]
+      parameters:
+        - $ref: "#/components/parameters/ExecutionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveRequest"
+      responses:
+        "200":
+          description: Interrupt resolved. Returns updated execution state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowStatus"
+        "400":
+          description: >-
+            Invalid resolution. The option_id is not in the interrupt's
+            response_options, or modified_parameters do not satisfy the
+            option's parameter_schema, or the selected option requires
+            a comment but none was provided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Workflow execution or interrupt not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            Interrupt is not in pending status. It may have been
+            already resolved or expired.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /workflows/pending:
+    get:
+      operationId: list_pending
+      summary: List all workflow executions with pending interrupts.
+      description: >-
+        Returns all interrupt descriptors across all workflow executions
+        that are currently awaiting human input. Each descriptor includes
+        the full context needed for the human to make a decision:
+        what is proposed, why, supporting evidence, and available
+        response options.
+
+
+        Optionally filtered by workflow name or agent ID. Results are
+        ordered by raised_at (oldest first) to surface the longest-
+        waiting interrupts.
+      tags: [Human-in-the-Loop]
+      parameters:
+        - name: workflow_name
+          in: query
+          required: false
+          description: Filter by workflow definition name.
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          required: false
+          description: Filter by the agent that raised the interrupt.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of pending interrupt descriptors.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingInterruptsResponse"
+
+  # ---------------------------------------------------------------------------
+  # Event Stream
+  # ---------------------------------------------------------------------------
+
+  /workflows/{execution_id}/events:
+    get:
+      operationId: subscribe_events
+      summary: Subscribe to the real-time typed event stream for a workflow.
+      description: >-
+        Returns a stream of typed AgentEvent records for the specified
+        workflow execution. Each event is a JSON object conforming to
+        event_stream.schema.json.
+
+
+        The stream begins with a synthetic workflow.started event (or
+        the current state if the workflow is already in progress) and
+        continues until the workflow completes, fails, or the client
+        disconnects.
+
+
+        This endpoint defines the HTTP surface (SSE) consumed by the
+        CAS Application and CLI. MCP clients receive the same event
+        records through stdio-compatible streaming in Phase 1, with
+        SSE or WebSocket transport added in Phase 2. The event schema
+        is transport-independent (CAS-ADR-013).
+      tags: [Event Stream]
+      parameters:
+        - $ref: "#/components/parameters/ExecutionId"
+        - name: last_event_id
+          in: query
+          required: false
+          description: >-
+            Resume from a specific event. The stream will replay
+            events after this ID. Supports reconnection without
+            missing events.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  Server-sent events. Each event's data field contains
+                  a JSON-serialized AgentEvent object conforming to
+                  event_stream.schema.json.
+        "404":
+          description: Workflow execution not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Agent Management
+  # ---------------------------------------------------------------------------
+
+  /agents:
+    post:
+      operationId: register_agent
+      summary: Register a new agent with capabilities and policy configuration.
+      description: >-
+        Registers an agent in ROOT Harness and creates a corresponding
+        SAGE User entity with the same agent_id. The dual registration
+        serves two purposes: SAGE uses the identity for provenance
+        tracking and editor-based access control; ROOT Harness uses
+        it for dispatch, policy lookup, and execution logging.
+
+
+        Agent identity is permanent. An agent that is retired is marked
+        inactive in ROOT Harness but its SAGE User record persists,
+        preserving provenance.
+      tags: [Agent Management]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterAgentRequest"
+      responses:
+        "201":
+          description: Agent registered in both ROOT Harness and SAGE.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRegistration"
+        "400":
+          description: >-
+            Invalid registration. Missing required fields, invalid
+            agent_type, autonomy_level out of range, or policy_ref
+            not found in domain configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            Agent ID already registered, or owned_artifact is already
+            claimed by another steward.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /agents/{agent_id}:
+    get:
+      operationId: get_agent
+      summary: Retrieve an agent's registration record.
+      description: >-
+        Returns the full registration record including capabilities,
+        policy reference, autonomy level, and current status.
+      tags: [Agent Management]
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: Agent registration record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRegistration"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /agents/{agent_id}/history:
+    get:
+      operationId: get_agent_history
+      summary: Query execution history for a specific agent.
+      description: >-
+        Returns an array of execution records for the specified agent,
+        ordered by timestamp (newest first). Each record includes the
+        workflow context, inputs, outputs, decisions made, and duration.
+
+
+        Useful for auditing agent behavior, debugging unexpected
+        outcomes, and building the agent's decision context for
+        future executions.
+      tags: [Agent Management]
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of records to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: workflow_name
+          in: query
+          required: false
+          description: Filter by workflow definition name.
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          description: >-
+            Return only records after this timestamp (ISO 8601).
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Agent execution history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentHistoryResponse"
+        "404":
+          description: Agent not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Pipeline Status
+  # ---------------------------------------------------------------------------
+
+  /pipelines/{pipeline_id}/status:
+    get:
+      operationId: get_pipeline_status
+      summary: Query the status of all documents in a domain pipeline.
+      description: >-
+        Returns an array of document status records showing each
+        document's current pipeline stage, lifecycle status, any
+        blocking conditions, and the responsible agent. Provides
+        a dashboard view of pipeline progress for the CAS Application.
+
+
+        The pipeline_id corresponds to the pipeline definition in
+        the domain instantiation's pipeline.yaml configuration.
+      tags: [Pipeline Status]
+      parameters:
+        - $ref: "#/components/parameters/PipelineId"
+        - name: stage
+          in: query
+          required: false
+          description: Filter by pipeline stage.
+          schema:
+            type: string
+        - name: blocked_only
+          in: query
+          required: false
+          description: Return only documents with unresolved blockers.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Pipeline status report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineStatusResponse"
+        "404":
+          description: Pipeline not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  # ---------------------------------------------------------------------------
+  # Reusable Parameters
+  # ---------------------------------------------------------------------------
+
+  parameters:
+    ExecutionId:
+      name: execution_id
+      in: path
+      required: true
+      description: Workflow execution identifier returned by trigger_workflow.
+      schema:
+        type: string
+
+    AgentId:
+      name: agent_id
+      in: path
+      required: true
+      description: >-
+        Agent identifier. Matches both the ROOT Harness registration
+        and the SAGE User entity.
+      schema:
+        type: string
+
+    PipelineId:
+      name: pipeline_id
+      in: path
+      required: true
+      description: >-
+        Pipeline definition identifier from the domain instantiation's
+        pipeline.yaml configuration.
+      schema:
+        type: string
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Enumerations
+    # -------------------------------------------------------------------------
+
+    AgentType:
+      type: string
+      enum: [steward, orchestrator]
+      description: >-
+        Two-type agent taxonomy (CAS-ADR-010). Stewards own canonical
+        artifacts; orchestrators own coordination lifecycles.
+
+    AutonomyLevel:
+      type: integer
+      minimum: 1
+      maximum: 5
+      description: >-
+        Five-level autonomy scale. 1: fully supervised. 2: approval-
+        gated. 3: checkpoint-gated. 4: exception-gated. 5: fully
+        autonomous. Assigned per agent per domain instantiation.
+
+    ExecutionStatus:
+      type: string
+      enum:
+        - running
+        - suspended
+        - completed
+        - failed
+        - cancelled
+      description: >-
+        Overall status of a workflow execution. "suspended" indicates
+        the workflow is paused at an interrupt awaiting human input.
+
+    AgentStatus:
+      type: string
+      enum: [active, inactive]
+      description: >-
+        Agent lifecycle status. Inactive agents are not dispatched
+        but their SAGE User records persist for provenance.
+
+    # -------------------------------------------------------------------------
+    # Core Entities
+    # -------------------------------------------------------------------------
+
+    AgentRegistration:
+      type: object
+      description: >-
+        Full agent registration record. Combines ROOT Harness execution
+        configuration with SAGE User identity. Source authority: ROOT
+        Harness Architecture Reference Section 2.3.
+      required:
+        - agent_id
+        - display_name
+        - agent_type
+        - autonomy_level
+        - capabilities
+        - policy_ref
+        - llm_config
+        - status
+        - registered_at
+      properties:
+        agent_id:
+          type: string
+          description: >-
+            Unique identifier matching the SAGE User entity ID.
+            Permanent; survives agent retirement.
+        display_name:
+          type: string
+          description: Human-readable name for logs and UI display.
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        owned_artifact:
+          type: ["string", "null"]
+          description: >-
+            For stewards: SAGE document ID of the canonical artifact
+            this agent owns. Null for orchestrators. When populated,
+            designates the agent as steward with exclusive authority
+            over the named artifact.
+        decision_log_id:
+          type: ["string", "null"]
+          description: >-
+            SAGE document ID of the agent's companion decision log
+            (CAS-ADR-012). Null if the domain instantiation does not
+            assign a decision log to this agent.
+        autonomy_level:
+          $ref: "#/components/schemas/AutonomyLevel"
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: >-
+            Declared capabilities (e.g., "terminology_audit",
+            "format_check", "content_draft", "lifecycle_management").
+            Used by orchestrators for agent selection during
+            workflow planning.
+        policy_ref:
+          type: string
+          description: >-
+            Reference to the policy configuration governing this
+            agent's behavioral constraints. Resolved against the
+            domain instantiation's policies.yaml.
+        llm_config:
+          $ref: "#/components/schemas/LLMConfig"
+        status:
+          $ref: "#/components/schemas/AgentStatus"
+        registered_at:
+          type: string
+          format: date-time
+          description: Registration timestamp.
+
+    LLMConfig:
+      type: object
+      description: >-
+        LLM configuration for an agent. Determines which model the
+        agent uses and its inference parameters.
+      required: [provider, model]
+      properties:
+        provider:
+          type: string
+          description: LLM provider identifier (e.g., "anthropic", "local_mlx").
+        model:
+          type: string
+          description: Model identifier (e.g., "claude-sonnet-4-6", "qwen3-30b-a3b").
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 0
+          description: Sampling temperature. Lower values for deterministic tasks.
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum completion tokens per request.
+        token_budget:
+          type: ["integer", "null"]
+          description: >-
+            Optional per-execution token budget. When set, the agent's
+            total token consumption across all LLM calls in a single
+            workflow execution is capped at this value. Exceeding the
+            budget triggers the LLM failure recovery path.
+
+    WorkflowExecution:
+      type: object
+      description: >-
+        Returned by trigger_workflow. Contains the execution ID needed
+        for all subsequent operations on this workflow run.
+      required:
+        - execution_id
+        - workflow_name
+        - status
+        - started_at
+      properties:
+        execution_id:
+          type: string
+          description: >-
+            Unique identifier for this workflow execution. Used by
+            get_status, approve, and subscribe_events.
+        workflow_name:
+          type: string
+          description: Name of the workflow definition being executed.
+        status:
+          $ref: "#/components/schemas/ExecutionStatus"
+        started_at:
+          type: string
+          format: date-time
+
+    WorkflowStatus:
+      type: object
+      description: >-
+        Comprehensive status of a workflow execution. Returned by
+        get_status and approve.
+      required:
+        - execution_id
+        - workflow_name
+        - status
+        - current_node
+        - started_at
+      properties:
+        execution_id:
+          type: string
+        workflow_name:
+          type: string
+        status:
+          $ref: "#/components/schemas/ExecutionStatus"
+        current_node:
+          type: ["string", "null"]
+          description: >-
+            LangGraph node currently executing or suspended at.
+            Null if the workflow has completed or failed.
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: ["string", "null"]
+          format: date-time
+          description: Null if still running or suspended.
+        duration_ms:
+          type: ["integer", "null"]
+          minimum: 0
+          description: >-
+            Total elapsed time in milliseconds. Null if still running.
+        pending_interrupts:
+          type: array
+          items:
+            $ref: "#/components/schemas/InterruptSummary"
+          default: []
+          description: >-
+            Interrupts currently awaiting human input. Empty if the
+            workflow is running freely or completed.
+        completed_nodes:
+          type: array
+          items:
+            type: string
+          default: []
+          description: >-
+            Node IDs that have completed execution, in order of
+            completion. Provides progress visibility.
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+          description: >-
+            Error details if status is "failed". Null otherwise.
+        output_summary:
+          type: ["object", "null"]
+          additionalProperties: true
+          description: >-
+            Workflow output summary if status is "completed".
+            Structure varies by workflow definition.
+
+    InterruptSummary:
+      type: object
+      description: >-
+        Compact interrupt representation for embedding in
+        WorkflowStatus. The full interrupt descriptor is returned
+        by list_pending.
+      required:
+        - interrupt_id
+        - interrupt_type
+        - description
+        - raised_at
+      properties:
+        interrupt_id:
+          type: string
+        interrupt_type:
+          type: string
+        description:
+          type: string
+          description: Human-readable summary of what the interrupt requests.
+        raised_at:
+          type: string
+          format: date-time
+        agent_id:
+          type: string
+          description: Agent that raised the interrupt.
+
+    # -------------------------------------------------------------------------
+    # Pipeline Status
+    # -------------------------------------------------------------------------
+
+    DocumentPipelineStatus:
+      type: object
+      description: >-
+        Status of a single document within a domain pipeline.
+      required:
+        - document_id
+        - title
+        - current_stage
+        - lifecycle_status
+      properties:
+        document_id:
+          type: string
+          description: SAGE document ID.
+        title:
+          type: string
+        current_stage:
+          type: string
+          description: >-
+            Current pipeline stage (e.g., "draft", "review",
+            "filing_ready", "filed").
+        lifecycle_status:
+          type: string
+          description: SAGE lifecycle status.
+        responsible_agent:
+          type: ["string", "null"]
+          description: >-
+            Agent ID of the steward responsible for this document
+            at its current stage. Null if no agent is assigned.
+        blockers:
+          type: array
+          items:
+            $ref: "#/components/schemas/Blocker"
+          default: []
+          description: >-
+            Conditions preventing the document from advancing to
+            the next pipeline stage. Empty if the document is
+            clear to advance.
+        last_activity_at:
+          type: ["string", "null"]
+          format: date-time
+          description: Timestamp of the most recent action on this document.
+
+    Blocker:
+      type: object
+      description: >-
+        A condition preventing a document from advancing in the
+        pipeline.
+      required: [type, description]
+      properties:
+        type:
+          type: string
+          enum:
+            - precondition_failed
+            - approval_pending
+            - agent_error
+            - dependency_unmet
+          description: Classification of the blocking condition.
+        description:
+          type: string
+          description: Human-readable explanation of the blocker.
+        related_document_id:
+          type: ["string", "null"]
+          description: >-
+            SAGE document ID of a related document involved in
+            the blocking condition (e.g., an unmet dependency).
+        interrupt_id:
+          type: ["string", "null"]
+          description: >-
+            Interrupt ID if the blocker is an approval_pending
+            type. Enables direct navigation to the approval UI.
+
+    # -------------------------------------------------------------------------
+    # Agent History
+    # -------------------------------------------------------------------------
+
+    AgentExecutionRecord:
+      type: object
+      description: >-
+        A single execution record from an agent's history.
+      required:
+        - record_id
+        - workflow_execution_id
+        - workflow_name
+        - node_id
+        - started_at
+        - completed_at
+        - duration_ms
+      properties:
+        record_id:
+          type: string
+        workflow_execution_id:
+          type: string
+        workflow_name:
+          type: string
+        node_id:
+          type: string
+          description: LangGraph node where the agent executed.
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        duration_ms:
+          type: integer
+          minimum: 0
+        tool_calls:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Number of tool calls made during this execution.
+        llm_calls:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Number of LLM requests made.
+        total_tokens:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Total tokens consumed (prompt + completion).
+        decisions:
+          type: array
+          items:
+            type: string
+          default: []
+          description: >-
+            Summary of decisions made during this execution (e.g.,
+            "approved lifecycle transition to filed",
+            "deferred terminology update pending review").
+        outcome:
+          type: string
+          enum: [success, failure, interrupted]
+          description: How the execution concluded.
+        error_code:
+          type: ["string", "null"]
+          description: Error code if outcome is "failure".
+
+    # -------------------------------------------------------------------------
+    # Request Schemas
+    # -------------------------------------------------------------------------
+
+    TriggerWorkflowRequest:
+      type: object
+      required: [workflow_name]
+      properties:
+        workflow_name:
+          type: string
+          description: >-
+            Name of the workflow definition to execute. Must be
+            registered in the domain instantiation's workflows.yaml.
+        input_params:
+          type: object
+          additionalProperties: true
+          default: {}
+          description: >-
+            Input parameters for the workflow. Validated against the
+            workflow's state_schema before dispatch. Structure varies
+            by workflow definition.
+
+    RegisterAgentRequest:
+      type: object
+      required:
+        - agent_id
+        - display_name
+        - agent_type
+        - autonomy_level
+        - capabilities
+        - policy_ref
+        - llm_config
+      properties:
+        agent_id:
+          type: string
+          description: >-
+            Desired agent ID. Must be unique across the domain.
+            A SAGE User entity with this ID is created as part
+            of registration.
+        display_name:
+          type: string
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        owned_artifact:
+          type: ["string", "null"]
+          description: >-
+            SAGE document ID of the artifact this agent owns.
+            Required for stewards; null for orchestrators.
+        autonomy_level:
+          $ref: "#/components/schemas/AutonomyLevel"
+        capabilities:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        policy_ref:
+          type: string
+        llm_config:
+          $ref: "#/components/schemas/LLMConfig"
+
+    ApproveRequest:
+      type: object
+      description: >-
+        Resolves a pending interrupt. See interrupt.schema.json for
+        the authoritative contract.
+      required: [interrupt_id, resolution]
+      properties:
+        interrupt_id:
+          type: string
+          description: ID of the interrupt to resolve.
+        resolution:
+          type: string
+          description: >-
+            The option_id selected from the interrupt's
+            response_options.
+        comment:
+          type: ["string", "null"]
+          description: >-
+            Optional free-text comment. Required if the selected
+            option has requires_comment set to true.
+        modified_parameters:
+          type: ["object", "null"]
+          additionalProperties: true
+          description: >-
+            Modified parameters for "modify" effect options. Must
+            conform to the selected option's parameter_schema.
+
+    # -------------------------------------------------------------------------
+    # Response Schemas
+    # -------------------------------------------------------------------------
+
+    PendingInterruptsResponse:
+      type: object
+      required: [interrupts, total_count]
+      properties:
+        interrupts:
+          type: array
+          items:
+            $ref: "#/components/schemas/InterruptDescriptor"
+          description: >-
+            Full interrupt descriptors ordered by raised_at
+            (oldest first).
+        total_count:
+          type: integer
+          description: Total number of pending interrupts matching the filters.
+
+    InterruptDescriptor:
+      type: object
+      description: >-
+        Full interrupt descriptor as returned by list_pending.
+        See interrupt.schema.json for the authoritative contract.
+        This inline definition mirrors that schema for OpenAPI
+        tooling compatibility.
+      required:
+        - interrupt_id
+        - workflow_execution_id
+        - workflow_name
+        - agent_id
+        - agent_type
+        - node_id
+        - origin
+        - interrupt_type
+        - description
+        - response_options
+        - raised_at
+        - status
+      properties:
+        interrupt_id:
+          type: string
+        workflow_execution_id:
+          type: string
+        workflow_name:
+          type: string
+        agent_id:
+          type: string
+        agent_type:
+          $ref: "#/components/schemas/AgentType"
+        node_id:
+          type: string
+        origin:
+          type: string
+          enum: [interrupt_node, approval_callback]
+        interrupt_type:
+          type: string
+        description:
+          type: string
+        evidence:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          default: []
+        proposed_action:
+          type: object
+          additionalProperties: true
+        response_options:
+          type: array
+          items:
+            type: object
+            required: [option_id, label, effect]
+            properties:
+              option_id:
+                type: string
+              label:
+                type: string
+              description:
+                type: string
+              effect:
+                type: string
+                enum: [resume, reject, defer, modify]
+              is_default:
+                type: boolean
+                default: false
+              requires_comment:
+                type: boolean
+                default: false
+              parameter_schema:
+                type: ["object", "null"]
+                additionalProperties: true
+          minItems: 1
+        raised_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        timeout_seconds:
+          type: ["integer", "null"]
+          minimum: 0
+        resolved_at:
+          type: ["string", "null"]
+          format: date-time
+        resolved_by:
+          type: ["string", "null"]
+        resolution:
+          type: ["string", "null"]
+        resolution_comment:
+          type: ["string", "null"]
+
+    AgentHistoryResponse:
+      type: object
+      required: [agent_id, records]
+      properties:
+        agent_id:
+          type: string
+        records:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentExecutionRecord"
+        total_count:
+          type: integer
+          description: >-
+            Total records available (before limit). Useful for
+            pagination decisions.
+
+    PipelineStatusResponse:
+      type: object
+      required: [pipeline_id, documents]
+      properties:
+        pipeline_id:
+          type: string
+        documents:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentPipelineStatus"
+        total_count:
+          type: integer
+        blocked_count:
+          type: integer
+          description: Number of documents with unresolved blockers.
+
+    # -------------------------------------------------------------------------
+    # Error Response
+    # -------------------------------------------------------------------------
+
+    ErrorResponse:
+      type: object
+      description: Uniform error envelope for all endpoints.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >-
+            Machine-readable error code (e.g., "workflow_not_found",
+            "invalid_state_schema", "interrupt_already_resolved").
+        message:
+          type: string
+          description: Human-readable error description.
+        detail:
+          type: ["object", "null"]
+          additionalProperties: true
+          description: >-
+            Additional context. Structure varies by error type.
+
+    ErrorDetail:
+      type: ["object", "null"]
+      description: >-
+        Error details embedded in WorkflowStatus when status is
+        "failed". Same structure as ErrorResponse but nullable.
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        detail:
+          type: ["object", "null"]
+          additionalProperties: true
+
+# =============================================================================
+# Tags
+# =============================================================================
+
+tags:
+  - name: Workflow Execution
+    description: Start, monitor, and manage workflow executions.
+  - name: Human-in-the-Loop
+    description: Interrupt resolution and pending approval management.
+  - name: Event Stream
+    description: Real-time typed event stream (CAS-ADR-013).
+  - name: Agent Management
+    description: Agent registration, retrieval, and execution history.
+  - name: Pipeline Status
+    description: Domain pipeline progress and blocker tracking.

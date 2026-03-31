@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/sage/decision_log.schema.json",
+  "title": "Decision Log",
+  "description": "Schema for SAGE-managed decision logs owned by steward and orchestrator agents. A decision log is a companion artifact that captures operational judgment not recorded in artifact revision histories: decisions not to act, decisions deferred, and cross-artifact reasoning. Logs are append-only; revised judgments are recorded as new entries with a back-reference to the superseded entry. See CAS-ADR-012.",
+
+  "type": "object",
+  "required": [
+    "agent_id",
+    "agent_type",
+    "entries"
+  ],
+  "additionalProperties": false,
+
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "description": "Identifier of the steward or orchestrator that owns this log. Must match a registered agent in the vault's user table."
+    },
+    "agent_type": {
+      "type": "string",
+      "enum": ["steward", "orchestrator"],
+      "description": "Agent taxonomy type. Determines which entry categories are expected: stewards produce artifact-scoped judgment (not_acted, deferred); orchestrators produce coordination-scoped judgment (cross_artifact_reasoning, plus not_acted and deferred for their own coordination decisions)."
+    },
+    "owned_artifact_id": {
+      "type": ["string", "null"],
+      "description": "Document ID of the agent's primary canonical artifact. Present for stewards (which own a single artifact); null for orchestrators and for the vault_steward (which owns the discovery surface, not a single document)."
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DecisionLogEntry"
+      },
+      "description": "Append-only sequence of decision log entries. New entries are appended at the end; existing entries are never modified or removed. The array order is chronological (oldest first)."
+    }
+  },
+
+  "$defs": {
+    "DecisionLogEntry": {
+      "type": "object",
+      "description": "A single recorded judgment. Covers three gap categories that artifact revision histories cannot represent: decisions not to act, decisions deferred, and cross-artifact reasoning.",
+      "required": [
+        "entry_id",
+        "timestamp",
+        "category",
+        "summary",
+        "context",
+        "rationale"
+      ],
+      "additionalProperties": false,
+
+      "properties": {
+        "entry_id": {
+          "type": "string",
+          "description": "Unique identifier within this log. Assigned by the owning agent at entry creation time. Used as the target of supersedes_entry_id back-references."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of when the judgment was recorded."
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "not_acted",
+            "deferred",
+            "cross_artifact_reasoning"
+          ],
+          "description": "Judgment category. 'not_acted': a potential change was evaluated and rejected. 'deferred': an issue was identified but resolution depends on factors outside the agent's current scope or timing. 'cross_artifact_reasoning': rationale for coordinating a multi-artifact operation in a specific sequence (primarily orchestrator entries, but stewards may record cross-artifact observations relevant to their owned artifact)."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Concise statement of the judgment. Should be intelligible without reading the full context and rationale, supporting efficient cross-log search by the vault_steward."
+        },
+        "context": {
+          "type": "string",
+          "description": "What triggered the evaluation. May reference a workflow run, a discovered inconsistency, a user request, or an upstream event. Provides the 'why was this considered' frame."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why this conclusion was reached. For not_acted entries, explains why no change was warranted. For deferred entries, identifies the blocking factor or timing concern. For cross_artifact_reasoning entries, explains the sequencing or coordination logic."
+        },
+        "related_document_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "SAGE document IDs involved in the judgment. For steward entries, typically includes the owned artifact and any documents examined during the evaluation. For orchestrator entries, includes the artifacts whose coordination prompted the reasoning."
+        },
+        "supersedes_entry_id": {
+          "type": ["string", "null"],
+          "description": "Back-reference to a prior entry in this log that this entry revises. Null for original judgments. When present, the referenced entry's judgment is considered superseded by this one, paralleling ADR supersession semantics. The superseded entry remains in the log (append-only invariant)."
+        },
+        "workflow_run_id": {
+          "type": ["string", "null"],
+          "description": "Identifier of the ROOT Harness workflow execution that produced this judgment. Links the decision log entry to the event stream and LangGraph checkpoint for full execution context. Null for judgments recorded outside a workflow run."
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Freeform tags for cross-log pattern discovery via the vault_steward. Domain instantiations may define tag conventions (e.g., 'terminology-audit', 'lifecycle-transition', 'filing-readiness')."
+        }
+      }
+    }
+  }
+}

@@ -26,8 +26,8 @@ vault:
   id: pim_health
   name: "PIM Health Patent Portfolio"
   owner: clif                          # CTO; sole user in Phase 1
-  storage_root: "~/data/cas/pim_health/sources"
-  brain_root: "~/data/cas/pim_health/brain"
+  storage_root: "~/sage_vaults/pim_health/sources"
+  brain_root: "~/sage_vaults/pim_health/brain"
   visibility: personal                 # Single-user Phase 1; upgrade to team
                                        # when Team 2/3 are onboarded
   # No members array needed at personal visibility.

@@ -1,0 +1,1464 @@
+# =============================================================================
+# SAGE Core API — OpenAPI Specification
+# =============================================================================
+#
+# Formal Substrate artifact for CAS (Clif's Agentic System).
+# Target path: ~/repos/cas/docs/fs/sage/sage_core_api.openapi.yaml
+#
+# Source authority: SAGE Architecture Reference, Section 7 (Core API
+# Operations) and supporting sections (Object Model, Retrieval Architecture,
+# Access Control and Governance, Lifecycle State Machine).
+#
+# This specification defines the REST surface consumed by the MCP adapter,
+# the CAS Application (human-facing client), and any future protocol adapter.
+# MCP tool schemas are derived from this spec by the MCP adapter layer; they
+# are not defined here.
+#
+# Architectural invariants enforced by this API:
+#   - No-delete invariant: no DELETE endpoints exist for documents or edges.
+#   - Vault isolation: every endpoint is scoped to a single vault.
+#   - Named operations: set_lifecycle and update_metadata are separate
+#     endpoints per CAS-ADR-014.
+#
+# Related CAS ADRs: 001, 008, 011, 014.
+# =============================================================================
+
+openapi: "3.1.0"
+
+info:
+  title: SAGE Core API
+  version: "0.1.0"
+  description: >-
+    Protocol-neutral Core API for SAGE (Salience-Aware Graph Engine). Exposes
+    discovery, ingestion, lifecycle management, graph operations, and access
+    control for a vault-scoped knowledge infrastructure system.
+  contact:
+    name: CAS Project
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8000
+    description: Phase 1 local development (FastAPI)
+
+# =============================================================================
+# Paths
+# =============================================================================
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Retrieval
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/discover:
+    post:
+      operationId: discover
+      summary: Retrieve documents by semantic search, deterministic extraction, or verification comparison.
+      description: >-
+        The primary retrieval operation. Supports three modes:
+
+
+        - **semantic**: Vector similarity search, optionally fused with BM25
+          keyword matching. Returns ranked chunks with relevance scores.
+
+        - **deterministic**: Exact content extraction by document ID and heading
+          path. Bypasses vector search entirely. Used for governed content
+          transfer between documents or agents.
+
+        - **verification**: Compares content from a target document against an
+          authoritative source deterministically. Returns match/mismatch results.
+
+
+        Results can be scoped (all, authoritative, specific, filtered) and
+        filtered by metadata criteria. Pagination is cursor-based.
+      tags: [Retrieval]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DiscoverRequest"
+      responses:
+        "200":
+          description: Retrieval results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoverResponse"
+        "400":
+          description: Invalid parameters (unknown mode, scope, or filter field).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault not found, or document not found (for specific/deterministic scope).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Document Lifecycle and Metadata
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/documents/{document_id}/lifecycle:
+    post:
+      operationId: set_lifecycle
+      summary: Execute a lifecycle transition on a document.
+      description: >-
+        Transitions a document through the vault's lifecycle state machine.
+        Valid actions depend on the document's current state:
+
+        - active → supersede, complete, archive
+
+        - superseded → archive
+
+        - completed → archive
+
+        - archived → reactivate
+
+
+        Vaults may define additional domain-specific states and transitions
+        (e.g., PIM Health adds "filed").
+
+
+        The supersede action requires new_version_id to create the supersedes
+        edge linking the replacement document to this one.
+      tags: [Document Lifecycle]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetLifecycleRequest"
+      responses:
+        "200":
+          description: Transition completed. Returns updated document record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "400":
+          description: Invalid action value.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Caller is not a registered editor for this document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault or document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            Transition not valid from the document's current lifecycle state.
+            The request is well-formed, but the state machine rejects it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/documents/{document_id}/metadata:
+    patch:
+      operationId: update_metadata
+      summary: Modify mutable metadata fields on a document.
+      description: >-
+        Partial update of mutable metadata fields. Only the fields present
+        in the request body are modified; absent fields are unchanged.
+
+
+        Mutable fields: title, tags, project, doc_type, authority_scope,
+        version_label.
+
+
+        Immutable fields (id, source_type, source_path, created_by,
+        created_at, source_content_hash, adapter_version) cannot be modified
+        through this endpoint. System-managed fields (last_modified_by,
+        updated_at) are set automatically by the API.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMetadataRequest"
+      responses:
+        "200":
+          description: Metadata updated. Returns updated document record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "400":
+          description: Invalid field name or value (e.g., unknown doc_type for this vault).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Caller is not a registered editor for this document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault or document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Ingestion
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/documents:
+    post:
+      operationId: ingest
+      summary: Ingest a source artifact into the vault.
+      description: >-
+        Triggers the three-stage ingestion pipeline:
+
+        1. **Projection**: The source adapter reads the native format and
+           produces structured text with heading hierarchy metadata.
+
+        2. **Indexing**: The projection is chunked and embedded into the
+           content store.
+
+        3. **Abstraction**: A local LLM generates a density-proportional
+           semantic abstract (if enabled in vault configuration).
+
+
+        The endpoint returns immediately after Stage 1 (projection) with the
+        new document record and pipeline_status set to "projecting_complete".
+        Stages 2 and 3 continue asynchronously. Callers can poll via GET on
+        the document endpoint or subscribe to the ROOT Harness event stream
+        for completion notifications.
+
+
+        Records provenance: source_content_hash, adapter_version, created_by.
+      tags: [Ingestion]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+      responses:
+        "201":
+          description: >-
+            Document record created; ingestion pipeline in progress.
+            The pipeline_status field indicates current stage.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        "400":
+          description: Invalid adapter or configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            Ingestion failure. The source adapter could not produce a valid
+            projection (file not found, unsupported format, corrupt content).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/documents/{document_id}:
+    get:
+      operationId: get_document
+      summary: Retrieve a document record by ID.
+      description: >-
+        Returns the full document record including all metadata tiers,
+        lifecycle status, and pipeline status. Does not include projection
+        content; use discover (deterministic mode) for targeted content
+        extraction or export_projection for file-based inspection.
+        Useful for polling ingestion progress after an async ingest call.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Document record.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+        "404":
+          description: Vault or document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Graph Operations
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/edges:
+    post:
+      operationId: link
+      summary: Create a typed graph edge between two documents.
+      description: >-
+        Creates a directed edge from source_id to target_id with the
+        specified edge type. Optional notes and rationale fields provide
+        human-readable context.
+
+
+        Edge type semantics are defined in the Edge Type Taxonomy (SAGE
+        Architecture Reference Section 4.6). The edge is created directly
+        in the production edge table (not staged) regardless of the vault's
+        edge inference tier assignments, because this is an explicit
+        human-or-agent action, not an inference.
+      tags: [Graph]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LinkRequest"
+      responses:
+        "201":
+          description: Edge created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Edge"
+        "400":
+          description: Invalid edge type or self-referential edge.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Caller is not a registered editor for the source document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault, source document, or target document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/traverse:
+    post:
+      operationId: traverse
+      summary: Walk the graph from a starting document.
+      description: >-
+        Traverses the graph from a starting document, following edges of
+        the specified type(s) in the given direction, up to the specified
+        depth. Uses recursive CTEs against the graph store.
+
+
+        Returns a tree of traversal nodes, each containing the document
+        summary, the edge that led to it, and the traversal depth.
+      tags: [Graph]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TraverseRequest"
+      responses:
+        "200":
+          description: Traversal results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraverseResponse"
+        "400":
+          description: Invalid edge type or direction.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault or starting document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/preconditions/{function_id}:
+    get:
+      operationId: check_preconditions
+      summary: Verify that all depends_on targets exist and are in valid state.
+      description: >-
+        Checks all depends_on edges originating from the specified function
+        document. For each dependency, verifies that the target document
+        exists and is in a valid lifecycle state (active or completed, not
+        superseded or archived).
+
+
+        Returns an overall pass/fail and individual dependency results.
+      tags: [Graph]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - name: function_id
+          in: path
+          required: true
+          description: Document ID of the function whose preconditions to check.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Precondition check results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreconditionResult"
+        "404":
+          description: Vault or function document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Access Control
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/users:
+    post:
+      operationId: register_user
+      summary: Register a user (human or agent) in the vault's user table.
+      description: >-
+        Registers a new actor for provenance tracking and access control.
+        Both human users and agent identities are registered through this
+        endpoint. The user ID is assigned by SAGE at registration time.
+      tags: [Access Control]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterUserRequest"
+      responses:
+        "201":
+          description: User registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid user type or missing required field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/documents/{document_id}/editors:
+    put:
+      operationId: set_editors
+      summary: Set the editor list for a document.
+      description: >-
+        Replaces the full editor list for a document. Sending an empty
+        array restores default-open access (any registered user can
+        read and write). Sending one or more user IDs restricts write
+        access to that set; all other registered users become read-only
+        for this document.
+      tags: [Access Control]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetEditorsRequest"
+      responses:
+        "200":
+          description: Editor list updated. Returns the current editor list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EditorList"
+        "400":
+          description: One or more user IDs are not registered in this vault.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault or document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    get:
+      operationId: get_editors
+      summary: Return the editor list for a document.
+      description: >-
+        Returns the list of users registered as editors. An empty list
+        means the document is in default-open mode (any registered user
+        can write).
+      tags: [Access Control]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Editor list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EditorList"
+        "404":
+          description: Vault or document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Utilities
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/documents/{document_id}/export:
+    post:
+      operationId: export_projection
+      summary: Write stored projection to a Markdown file for inspection.
+      description: >-
+        Exports the stored projection text for a document to a specified
+        file path. Used for debugging and manual inspection of the
+        adapter's output. The projection is the structured plain-text
+        rendering produced by the source adapter during ingestion.
+      tags: [Utilities]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportProjectionRequest"
+      responses:
+        "200":
+          description: Projection exported successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [document_id, output_path]
+                properties:
+                  document_id:
+                    type: string
+                  output_path:
+                    type: string
+                    description: Absolute path of the written file.
+        "404":
+          description: Vault or document not found, or no projection stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/eval-retrieval:
+    post:
+      operationId: eval_retrieval
+      summary: Run retrieval health assertions against the vault.
+      description: >-
+        Executes a suite of retrieval assertions configured for the vault
+        and returns a pass/fail health report. Each assertion tests whether
+        a known query returns expected documents within the top-k results.
+        Used as a smoke test after bulk ingestion or configuration changes.
+      tags: [Utilities]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Retrieval health report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvalRetrievalResult"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/refresh-views:
+    post:
+      operationId: refresh_views
+      summary: Regenerate symlink-based browsable folder views.
+      description: >-
+        Optional utility. Regenerates filesystem symlink directories
+        organized by doc_type or lifecycle status from the current graph
+        state. The human application and API are the primary interfaces;
+        symlink views are a convenience for filesystem-level browsing.
+      tags: [Utilities]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Views regenerated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vault_id, views_generated]
+                properties:
+                  vault_id:
+                    type: string
+                  views_generated:
+                    type: integer
+                    description: Number of symlink directories created or updated.
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  # ---------------------------------------------------------------------------
+  # Reusable Parameters
+  # ---------------------------------------------------------------------------
+
+  parameters:
+    VaultId:
+      name: vault_id
+      in: path
+      required: true
+      description: Vault identifier. All operations are scoped to a single vault.
+      schema:
+        type: string
+
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      description: Immutable document identifier (short hash + title hint).
+      schema:
+        type: string
+
+  # ---------------------------------------------------------------------------
+  # Schemas
+  # ---------------------------------------------------------------------------
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Enumerations
+    # -------------------------------------------------------------------------
+
+    SourceType:
+      type: string
+      enum: [markdown, docx, pdf, email, onenote, teams_chat]
+      description: >-
+        Source artifact format. Determines which source adapter processes
+        the file during ingestion.
+
+    EdgeType:
+      type: string
+      enum:
+        - supersedes
+        - derived_from
+        - covers
+        - references
+        - bundles_with
+        - authoritative_for
+        - depends_on
+        - sync_target
+      description: >-
+        Typed, directed relationship between documents. See SAGE
+        Architecture Reference Section 4.6 for semantics and traversal
+        use cases.
+
+    LifecycleStatus:
+      type: string
+      enum: [active, superseded, completed, archived]
+      description: >-
+        Base lifecycle states. Vaults may define additional domain-specific
+        states (e.g., "filed" in PIM Health). The base set is always
+        present.
+
+    LifecycleAction:
+      type: string
+      enum: [supersede, complete, archive, reactivate]
+      description: >-
+        Base lifecycle transition actions. Vaults may define additional
+        domain-specific actions (e.g., "file" in PIM Health).
+
+    RetrievalMode:
+      type: string
+      enum: [semantic, deterministic, verification]
+      description: >-
+        Retrieval guarantee level. Semantic returns ranked approximate
+        results. Deterministic returns exact content by address.
+        Verification compares content against an authoritative source.
+
+    RetrievalScope:
+      type: string
+      enum: [all, authoritative, specific, filtered]
+      description: >-
+        Controls which documents are eligible for retrieval, independent
+        of mode.
+
+    UserType:
+      type: string
+      enum: [human, agent]
+      description: Actor type for provenance and access control.
+
+    PipelineStatus:
+      type: string
+      enum:
+        - projection_complete
+        - indexing_in_progress
+        - indexing_complete
+        - abstraction_in_progress
+        - abstraction_complete
+        - abstraction_skipped
+        - failed
+      description: >-
+        Tracks progress of the three-stage ingestion pipeline.
+        "abstraction_skipped" indicates the vault has abstraction
+        disabled or the LLM was unavailable (graceful degradation
+        per CAS-ADR-011).
+
+    TraversalDirection:
+      type: string
+      enum: [outbound, inbound, both]
+      description: Edge traversal direction relative to the starting document.
+
+    # -------------------------------------------------------------------------
+    # Core Entities
+    # -------------------------------------------------------------------------
+
+    Document:
+      type: object
+      description: >-
+        The primary entity in SAGE. Represents a single source artifact
+        with its identity, metadata, relationships, and lifecycle state
+        managed in the graph store.
+      required:
+        - id
+        - title
+        - source_type
+        - source_path
+        - lifecycle_status
+        - created_by
+        - created_at
+        - last_modified_by
+        - updated_at
+        - indexed_at
+        - pipeline_status
+      properties:
+        id:
+          type: string
+          description: Immutable, assigned at creation (short hash + hint from title).
+        title:
+          type: string
+          description: Human-readable display name, editable via update_metadata.
+        source_type:
+          $ref: "#/components/schemas/SourceType"
+        source_path:
+          type: string
+          description: Location of the original artifact (local file path or URI).
+        lifecycle_status:
+          type: string
+          description: >-
+            Current lifecycle state. Uses the base LifecycleStatus enum
+            plus any vault-defined extensions.
+        version_label:
+          type: string
+          nullable: true
+          description: Human-readable version indicator (v1, v2, draft, final, etc.).
+        project:
+          type: string
+          nullable: true
+          description: Project or workstream identifier.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Freeform tags, extractable from YAML frontmatter or assigned manually.
+        authority_scope:
+          type: string
+          nullable: true
+          description: Content domain this document governs, if authoritative.
+        doc_type:
+          type: string
+          nullable: true
+          description: >-
+            Vault-configured document type (Tier 2 metadata). Values are
+            defined in the vault's document_types configuration.
+        source_content_hash:
+          type: string
+          description: Hash of source file content at last ingestion (provenance).
+        adapter_version:
+          type: string
+          description: Version of the source adapter used at last ingestion.
+        created_by:
+          type: string
+          description: User ID of the actor (human or agent) that created this document.
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp.
+        last_modified_by:
+          type: string
+          description: >-
+            User ID of the actor responsible for the most recent
+            modification. Set to created_by at document creation;
+            updated on lifecycle transitions and metadata changes.
+        updated_at:
+          type: string
+          format: date-time
+          description: Last modification timestamp.
+        projected_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Last time the source adapter ran against this source.
+        indexed_at:
+          type: string
+          format: date-time
+          description: Last time projection was chunked and embedded into content store.
+        semantic_abstract:
+          type: string
+          nullable: true
+          description: >-
+            LLM-generated abstract with density-proportional length.
+            Generated at ingestion Stage 3, regenerated on re-ingestion.
+            Null if abstraction is disabled or pending (CAS-ADR-011).
+        pipeline_status:
+          $ref: "#/components/schemas/PipelineStatus"
+        tier3_metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            Source-type-specific metadata (Tier 3). Structure varies by
+            source_type. Stored as key-value pairs in the graph store.
+
+    DocumentSummary:
+      type: object
+      description: Compact document representation for list and search results.
+      required:
+        - id
+        - title
+        - lifecycle_status
+        - source_type
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        lifecycle_status:
+          type: string
+        source_type:
+          $ref: "#/components/schemas/SourceType"
+        version_label:
+          type: string
+          nullable: true
+        project:
+          type: string
+          nullable: true
+        doc_type:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+
+    Edge:
+      type: object
+      description: >-
+        A typed, directed relationship between two documents in the
+        graph store.
+      required:
+        - source_id
+        - target_id
+        - edge_type
+        - created_at
+      properties:
+        source_id:
+          type: string
+          description: Origin document ID.
+        target_id:
+          type: string
+          description: Target document ID.
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+        created_at:
+          type: string
+          format: date-time
+        notes:
+          type: string
+          nullable: true
+          description: Optional annotation on why the relationship exists.
+        rationale:
+          type: string
+          nullable: true
+          description: >-
+            Decision rationale for this relationship. Particularly
+            valuable on supersedes edges for capturing why the
+            transition occurred (CAS-ADR-011).
+
+    User:
+      type: object
+      description: >-
+        Any actor (human or agent) registered in the vault. Serves
+        provenance tracking and access control.
+      required:
+        - id
+        - display_name
+        - type
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Immutable, assigned at registration.
+        display_name:
+          type: string
+        type:
+          $ref: "#/components/schemas/UserType"
+        created_at:
+          type: string
+          format: date-time
+
+    # -------------------------------------------------------------------------
+    # Request Schemas
+    # -------------------------------------------------------------------------
+
+    DiscoverRequest:
+      type: object
+      description: >-
+        Retrieval request. Required fields vary by mode:
+
+        - semantic: query is required.
+
+        - deterministic: document_id and heading_path are required.
+
+        - verification: document_id and authority_document_id are required.
+      required: [mode]
+      properties:
+        query:
+          type: string
+          description: >-
+            Search query text. Required for semantic mode. Optional for
+            filtered scope (used as additional relevance signal).
+        mode:
+          $ref: "#/components/schemas/RetrievalMode"
+        scope:
+          $ref: "#/components/schemas/RetrievalScope"
+          default: all
+        filters:
+          $ref: "#/components/schemas/RetrievalFilters"
+        document_id:
+          type: string
+          description: >-
+            Target document for deterministic extraction or verification.
+            Required for deterministic and verification modes.
+        heading_path:
+          type: string
+          description: >-
+            Heading hierarchy path for deterministic extraction
+            (e.g., "Section 3 > Definitions > Normalization").
+            Required for deterministic mode.
+        authority_document_id:
+          type: string
+          description: >-
+            Authoritative source document for verification mode.
+            The content at document_id is compared against this source.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+          description: Maximum number of results to return.
+        cursor:
+          type: string
+          nullable: true
+          description: >-
+            Opaque pagination cursor from a previous response.
+            Pass to retrieve the next page of results.
+        use_hybrid:
+          type: boolean
+          default: false
+          description: >-
+            Enable hybrid retrieval (vector + BM25 fusion) in semantic
+            mode. Valuable when queries contain both natural language
+            and specific identifiers.
+
+    RetrievalFilters:
+      type: object
+      description: >-
+        Metadata filters applied before retrieval. Used when scope
+        is "filtered", but also applicable as additional constraints
+        with other scopes.
+      properties:
+        doc_type:
+          type: string
+          description: Filter by vault-configured document type.
+        project:
+          type: string
+          description: Filter by project identifier.
+        lifecycle_status:
+          type: string
+          description: Filter by lifecycle state.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Filter by tags (documents must have all specified tags).
+        document_ids:
+          type: array
+          items:
+            type: string
+          description: >-
+            Restrict to a specific set of documents. Used with
+            scope "specific".
+
+    SetLifecycleRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          description: >-
+            Lifecycle transition action. Base actions: supersede, complete,
+            archive, reactivate. Vaults may define additional actions.
+        new_version_id:
+          type: string
+          description: >-
+            Document ID of the replacement version. Required when
+            action is "supersede". SAGE creates a supersedes edge from
+            the new version to this document.
+
+    UpdateMetadataRequest:
+      type: object
+      description: >-
+        Partial update of mutable document metadata. Only fields present
+        in the request are modified.
+      properties:
+        title:
+          type: string
+        version_label:
+          type: string
+        project:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        doc_type:
+          type: string
+          description: Must be a valid value in the vault's document_types configuration.
+        authority_scope:
+          type: string
+          nullable: true
+
+    IngestRequest:
+      type: object
+      required: [source, adapter]
+      properties:
+        source:
+          type: string
+          description: >-
+            Path or URI to the source artifact. Resolved relative to
+            the vault's storage_root.
+        adapter:
+          $ref: "#/components/schemas/SourceType"
+          description: >-
+            Source adapter to use for projection. Must be an enabled
+            adapter in the vault's source_adapters configuration.
+        config:
+          type: object
+          additionalProperties: true
+          description: >-
+            Adapter-specific configuration overrides. Structure depends
+            on the adapter type.
+        created_by:
+          type: string
+          description: >-
+            User ID of the actor initiating ingestion. Used for
+            provenance tracking. Phase 2+ implementations may derive
+            this from the authenticated caller identity.
+
+    LinkRequest:
+      type: object
+      required: [source_id, target_id, edge_type]
+      properties:
+        source_id:
+          type: string
+          description: Origin document ID.
+        target_id:
+          type: string
+          description: Target document ID.
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+        notes:
+          type: string
+          nullable: true
+          description: Optional annotation.
+        rationale:
+          type: string
+          nullable: true
+          description: Decision rationale for creating this relationship.
+
+    TraverseRequest:
+      type: object
+      required: [start_id]
+      properties:
+        start_id:
+          type: string
+          description: Document ID to start traversal from.
+        edge_type:
+          oneOf:
+            - $ref: "#/components/schemas/EdgeType"
+            - type: array
+              items:
+                $ref: "#/components/schemas/EdgeType"
+          description: >-
+            Edge type(s) to follow. If omitted, all edge types are
+            traversed. Accepts a single type or an array.
+        direction:
+          $ref: "#/components/schemas/TraversalDirection"
+          default: outbound
+        depth:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 3
+          description: Maximum traversal depth.
+
+    RegisterUserRequest:
+      type: object
+      required: [display_name, type]
+      properties:
+        display_name:
+          type: string
+          description: Human-readable name for the user or agent.
+        type:
+          $ref: "#/components/schemas/UserType"
+
+    SetEditorsRequest:
+      type: object
+      required: [user_ids]
+      properties:
+        user_ids:
+          type: array
+          items:
+            type: string
+          description: >-
+            User IDs to set as editors. An empty array restores
+            default-open access.
+
+    ExportProjectionRequest:
+      type: object
+      required: [output_path]
+      properties:
+        output_path:
+          type: string
+          description: >-
+            File path to write the projection Markdown file. Resolved
+            relative to the vault's storage_root.
+
+    # -------------------------------------------------------------------------
+    # Response Schemas
+    # -------------------------------------------------------------------------
+
+    DiscoverResponse:
+      type: object
+      required: [mode, results]
+      properties:
+        mode:
+          $ref: "#/components/schemas/RetrievalMode"
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/DiscoverHit"
+        total_available:
+          type: integer
+          description: >-
+            Total number of results available (before pagination).
+            May be approximate for semantic mode.
+        cursor:
+          type: string
+          nullable: true
+          description: >-
+            Pagination cursor for the next page. Null if no more
+            results are available.
+
+    DiscoverHit:
+      type: object
+      description: >-
+        A single retrieval result. Fields populated depend on the
+        retrieval mode.
+      required: [document]
+      properties:
+        document:
+          $ref: "#/components/schemas/DocumentSummary"
+        chunk_content:
+          type: string
+          description: >-
+            Retrieved text content. For semantic mode, the matching
+            chunk. For deterministic mode, the extracted content at
+            the specified heading path.
+        heading_path:
+          type: string
+          nullable: true
+          description: >-
+            Heading hierarchy path of the retrieved chunk
+            (e.g., "Section 3 > Definitions > Normalization").
+        relevance_score:
+          type: number
+          nullable: true
+          description: >-
+            Relevance score (semantic mode only). Higher is more
+            relevant. Scale depends on the retrieval implementation.
+        match_result:
+          $ref: "#/components/schemas/VerificationMatch"
+
+    VerificationMatch:
+      type: object
+      nullable: true
+      description: >-
+        Verification mode result. Compares content from the target
+        document against the authoritative source.
+      properties:
+        matches:
+          type: boolean
+          description: True if the content matches the authoritative source.
+        authority_content:
+          type: string
+          description: Content from the authoritative source document.
+        target_content:
+          type: string
+          description: Content from the target document being verified.
+        differences:
+          type: string
+          nullable: true
+          description: >-
+            Human-readable description of differences, if any.
+
+    IngestResponse:
+      type: object
+      description: >-
+        Returned immediately after Stage 1 (projection). The document
+        record is created; indexing and abstraction continue asynchronously.
+      required: [document, pipeline_status]
+      properties:
+        document:
+          $ref: "#/components/schemas/Document"
+        pipeline_status:
+          $ref: "#/components/schemas/PipelineStatus"
+
+    TraverseResponse:
+      type: object
+      required: [start_id, nodes]
+      properties:
+        start_id:
+          type: string
+          description: The document ID traversal started from.
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TraversalNode"
+
+    TraversalNode:
+      type: object
+      description: >-
+        A node encountered during graph traversal, with the edge that
+        led to it and the depth at which it was found.
+      required: [document, edge, depth]
+      properties:
+        document:
+          $ref: "#/components/schemas/DocumentSummary"
+        edge:
+          $ref: "#/components/schemas/Edge"
+        depth:
+          type: integer
+          description: Traversal depth (1 = direct neighbor of start node).
+
+    PreconditionResult:
+      type: object
+      required: [function_id, satisfied, checks]
+      properties:
+        function_id:
+          type: string
+        satisfied:
+          type: boolean
+          description: True if all dependencies are satisfied.
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreconditionCheck"
+
+    PreconditionCheck:
+      type: object
+      required: [target_id, required, actual, satisfied]
+      properties:
+        target_id:
+          type: string
+          description: Document ID of the dependency target.
+        required:
+          type: string
+          description: >-
+            Required condition (e.g., "exists and lifecycle_status
+            in [active, completed]").
+        actual:
+          type: string
+          description: Actual state found (e.g., "active", "not found").
+        satisfied:
+          type: boolean
+
+    EditorList:
+      type: object
+      required: [document_id, editors]
+      properties:
+        document_id:
+          type: string
+        editors:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+          description: >-
+            Current editors. Empty array means default-open access.
+
+    EvalRetrievalResult:
+      type: object
+      required: [vault_id, passed, assertion_count, failure_count, failures]
+      properties:
+        vault_id:
+          type: string
+        passed:
+          type: boolean
+          description: True if all assertions passed.
+        assertion_count:
+          type: integer
+        failure_count:
+          type: integer
+        failures:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssertionFailure"
+
+    AssertionFailure:
+      type: object
+      required: [query, expected_document_id, top_k_checked, found]
+      properties:
+        query:
+          type: string
+          description: The assertion query that failed.
+        expected_document_id:
+          type: string
+          description: Document ID expected in the top-k results.
+        top_k_checked:
+          type: integer
+          description: How many top results were checked.
+        found:
+          type: boolean
+          description: Whether the expected document appeared in top-k.
+        actual_rank:
+          type: integer
+          nullable: true
+          description: >-
+            Rank at which the expected document appeared, if found
+            outside the assertion's top-k threshold.
+
+    # -------------------------------------------------------------------------
+    # Error Response
+    # -------------------------------------------------------------------------
+
+    ErrorResponse:
+      type: object
+      description: >-
+        Uniform error envelope for all endpoints.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: >-
+            Machine-readable error code (e.g., "invalid_lifecycle_transition",
+            "document_not_found", "editor_permission_denied").
+        message:
+          type: string
+          description: Human-readable error description.
+        detail:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            Additional context. Structure varies by error type
+            (e.g., current_state and attempted_action for lifecycle
+            transition errors).
+
+  # ---------------------------------------------------------------------------
+  # Tags
+  # ---------------------------------------------------------------------------
+
+tags:
+  - name: Retrieval
+    description: Semantic search, deterministic extraction, and verification comparison.
+  - name: Document Lifecycle
+    description: Lifecycle state transitions (CAS-ADR-014).
+  - name: Document Metadata
+    description: Document record access and mutable metadata updates.
+  - name: Ingestion
+    description: Three-stage ingestion pipeline (projection, indexing, abstraction).
+  - name: Graph
+    description: Edge creation, graph traversal, and precondition checking.
+  - name: Access Control
+    description: User registration and editor-based write control.
+  - name: Utilities
+    description: Projection export, retrieval health checks, and filesystem views.

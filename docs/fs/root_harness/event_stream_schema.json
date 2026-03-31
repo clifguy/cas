@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/root_harness/event_stream.schema.json",
+  "title": "AgentEvent",
+  "description": "Schema for typed event records emitted by the ROOT Harness event stream during workflow execution. The CAS Application and MCP clients subscribe via subscribe_events to receive these records in real time. The event taxonomy is CAS-specific, reflecting the steward/orchestrator model rather than a generic trace vocabulary. Seven categories: workflow lifecycle, node transitions, tool interactions, LLM cycles, interrupt lifecycle, steward governance, and checkpoint operations. See CAS-ADR-013.",
+
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "timestamp",
+    "workflow_execution_id",
+    "agent_id",
+    "agent_type"
+  ],
+  "additionalProperties": false,
+
+  "properties": {
+
+    "event_id": {
+      "type": "string",
+      "description": "Unique identifier for this event. Assigned by ROOT Harness at emission time. Monotonically increasing within a workflow execution to support ordering guarantees."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "workflow.started",
+        "workflow.completed",
+        "workflow.failed",
+        "node.entered",
+        "node.exited",
+        "tool.call",
+        "tool.result",
+        "llm.request",
+        "llm.response",
+        "interrupt.raised",
+        "interrupt.resolved",
+        "governance.mutation_proposed",
+        "governance.mutation_committed",
+        "checkpoint.saved",
+        "checkpoint.resumed"
+      ],
+      "description": "Dotted event type identifier. The prefix identifies the category; the suffix identifies the specific action within that category."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the event was emitted."
+    },
+    "workflow_execution_id": {
+      "type": "string",
+      "description": "Identifier of the workflow execution that produced this event. Matches the value returned by trigger_workflow and accepted by subscribe_events."
+    },
+    "agent_id": {
+      "type": "string",
+      "description": "Identifier of the agent that emitted the event. For workflow-level events (workflow.*, checkpoint.*), this is the orchestrator. For node-level events, this is the agent executing the node."
+    },
+    "agent_type": {
+      "type": "string",
+      "enum": ["steward", "orchestrator"],
+      "description": "Agent taxonomy type of the emitting agent."
+    },
+
+    "workflow_name": {
+      "type": "string",
+      "description": "Name of the workflow definition. Present on workflow.* events."
+    },
+    "input_params": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Input parameters passed to trigger_workflow. Present on workflow.started."
+    },
+    "output_summary": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "description": "Summary of workflow outputs. Present on workflow.completed. Structure varies by workflow definition."
+    },
+
+    "node_id": {
+      "type": "string",
+      "description": "LangGraph node identifier. Present on node.*, tool.*, llm.*, governance.*, and checkpoint.* events to identify the execution context."
+    },
+    "node_type": {
+      "type": "string",
+      "description": "Node classification (e.g., 'agent_action', 'router', 'interrupt', 'merge'). Present on node.* events."
+    },
+
+    "tool_name": {
+      "type": "string",
+      "description": "Name of the tool invoked. For SAGE API calls, this is the operation name (e.g., 'discover', 'set_lifecycle'). For MCP tools, this is the MCP tool identifier. Present on tool.* events."
+    },
+    "operation": {
+      "type": "string",
+      "description": "The specific operation being performed. For tool.* events, mirrors tool_name for SAGE operations or provides the MCP method. For governance.* events, identifies the SAGE mutation operation (set_lifecycle, update_metadata, ingest, link)."
+    },
+    "arguments": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Arguments passed to the tool call. Present on tool.call. Sensitive fields may be redacted based on domain configuration."
+    },
+    "success": {
+      "type": "boolean",
+      "description": "Whether the tool call or LLM request succeeded. Present on tool.result."
+    },
+
+    "model": {
+      "type": "string",
+      "description": "LLM model identifier. Present on llm.* events."
+    },
+    "purpose": {
+      "type": "string",
+      "description": "Human-readable description of why the LLM was invoked (e.g., 'generate semantic abstract', 'evaluate preconditions', 'plan next steps'). Present on llm.* events."
+    },
+    "prompt_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of prompt tokens consumed. Present on llm.response. May be an estimate on llm.request (as prompt_token_estimate)."
+    },
+    "completion_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of completion tokens generated. Present on llm.response."
+    },
+
+    "interrupt_id": {
+      "type": "string",
+      "description": "Unique identifier for the interrupt instance. Present on interrupt.* events. Matches the ID used by the approve operation on the Orchestration API."
+    },
+    "interrupt_type": {
+      "type": "string",
+      "description": "Classification of the interrupt (e.g., 'checkpoint_review', 'approval_required', 'exception_escalation'). Domain instantiations may define additional types. Present on interrupt.* events."
+    },
+    "interrupt_description": {
+      "type": "string",
+      "description": "Human-readable description of what the interrupt is requesting. Present on interrupt.raised."
+    },
+    "response_options": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/InterruptOption"
+      },
+      "description": "Available response options for this interrupt. Present on interrupt.raised."
+    },
+    "resolution": {
+      "type": "string",
+      "description": "The response option selected by the human. Present on interrupt.resolved."
+    },
+    "resolved_by": {
+      "type": "string",
+      "description": "User ID of the human who resolved the interrupt. Present on interrupt.resolved."
+    },
+
+    "document_id": {
+      "type": "string",
+      "description": "SAGE document ID that is the target of a governance action. Present on governance.* events."
+    },
+    "mutation_description": {
+      "type": "string",
+      "description": "Human-readable description of the proposed mutation. Present on governance.mutation_proposed."
+    },
+    "requires_approval": {
+      "type": "boolean",
+      "description": "Whether this mutation requires human approval per the agent's approval policy. Present on governance.mutation_proposed."
+    },
+
+    "checkpoint_id": {
+      "type": "string",
+      "description": "LangGraph checkpoint identifier. Present on checkpoint.* events."
+    },
+
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Duration in milliseconds. Context-dependent: wall-clock time for a node execution (node.exited), tool call (tool.result), LLM round-trip (llm.response), or total workflow run (workflow.completed, workflow.failed)."
+    },
+    "error": {
+      "$ref": "#/$defs/EventError",
+      "description": "Error details when an operation fails. Present on workflow.failed and tool.result (when success is false)."
+    }
+  },
+
+  "$defs": {
+    "InterruptOption": {
+      "type": "object",
+      "required": ["option_id", "label"],
+      "additionalProperties": false,
+      "description": "A selectable response option presented to the human during an interrupt. This is an intentional subset of the authoritative InterruptOption in interrupt.schema.json, which additionally defines effect, requires_comment, and parameter_schema. The event stream carries only the fields needed for observability; the full option contract is available via the list_pending operation.",
+      "properties": {
+        "option_id": {
+          "type": "string",
+          "description": "Machine-readable identifier for this option. Passed back in the approve operation and recorded in the interrupt.resolved event's resolution field."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable label displayed in the CAS Application."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional longer description of what this option does."
+        },
+        "is_default": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this option is pre-selected in the CAS Application UI."
+        }
+      }
+    },
+    "EventError": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "description": "Error details attached to failure events.",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "Machine-readable error code. For SAGE failures, mirrors the SAGE Core API error code. For LLM failures, uses ROOT Harness error codes (e.g., 'llm_timeout', 'token_budget_exceeded')."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error description."
+        },
+        "detail": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "description": "Additional context. Structure varies by error type."
+        }
+      }
+    }
+  },
+
+  "allOf": [
+    {
+      "if": {
+        "properties": { "event_type": { "enum": ["workflow.started", "workflow.completed", "workflow.failed"] } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["workflow_name"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "workflow.started" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["input_params"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "workflow.completed" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["duration_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "workflow.failed" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["error", "duration_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "enum": ["node.entered", "node.exited"] } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "node_type"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "node.exited" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["duration_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "tool.call" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "tool_name", "operation", "arguments"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "tool.result" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "tool_name", "operation", "success", "duration_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "llm.request" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "model", "purpose"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "llm.response" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "model", "purpose", "prompt_tokens", "completion_tokens", "duration_ms"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "interrupt.raised" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "interrupt_id", "interrupt_type", "interrupt_description", "response_options"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "interrupt.resolved" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "interrupt_id", "interrupt_type", "resolution", "resolved_by"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "governance.mutation_proposed" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "document_id", "operation", "mutation_description", "requires_approval"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "const": "governance.mutation_committed" } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "document_id", "operation"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "event_type": { "enum": ["checkpoint.saved", "checkpoint.resumed"] } },
+        "required": ["event_type"]
+      },
+      "then": {
+        "required": ["node_id", "checkpoint_id"]
+      }
+    }
+  ]
+}

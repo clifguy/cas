@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/root_harness/interrupt.schema.json",
+  "title": "Interrupt Contracts",
+  "description": "Schema for human-in-the-loop interrupt descriptors and tool-level approval policies. Interrupt descriptors are the runtime data structures created when workflow execution requires human input, persisted for the list_pending operation, and resolved via the approve operation on the Orchestration API. Approval policies are per-agent configuration that determines which tool calls trigger approval-callback interrupts. Two interrupt origins exist: interrupt nodes (autonomy Level 3, gate workflow-level transitions) and approval callbacks (Levels 1-2, gate individual tool calls within a node). Both produce the same descriptor structure. See ROOT Harness Architecture Reference Sections 2.5, 2.7, 4.4, and 5.2.",
+
+  "$defs": {
+
+    "InterruptDescriptor": {
+      "type": "object",
+      "description": "The complete interrupt record. Created when an interrupt is raised, persisted until resolved, returned by list_pending, and acted on by approve. The CAS Application renders these as actionable cards for human review.",
+      "required": [
+        "interrupt_id",
+        "workflow_execution_id",
+        "workflow_name",
+        "agent_id",
+        "agent_type",
+        "node_id",
+        "origin",
+        "interrupt_type",
+        "description",
+        "response_options",
+        "raised_at",
+        "status"
+      ],
+      "additionalProperties": false,
+
+      "properties": {
+        "interrupt_id": {
+          "type": "string",
+          "description": "Unique identifier for this interrupt instance. Used by the approve operation and referenced by interrupt.raised/resolved events in the event stream."
+        },
+        "workflow_execution_id": {
+          "type": "string",
+          "description": "Identifier of the suspended workflow execution."
+        },
+        "workflow_name": {
+          "type": "string",
+          "description": "Name of the workflow definition. Included for human context in list_pending results without requiring a separate get_status call."
+        },
+        "agent_id": {
+          "type": "string",
+          "description": "Identifier of the agent whose execution triggered the interrupt."
+        },
+        "agent_type": {
+          "type": "string",
+          "enum": ["steward", "orchestrator"],
+          "description": "Agent taxonomy type of the agent that triggered the interrupt."
+        },
+        "node_id": {
+          "type": "string",
+          "description": "LangGraph node where execution is suspended."
+        },
+        "origin": {
+          "type": "string",
+          "enum": ["interrupt_node", "approval_callback"],
+          "description": "How the interrupt was triggered. 'interrupt_node': a LangGraph interrupt node paused workflow execution at a defined checkpoint (autonomy Level 3). 'approval_callback': the agent's approval policy intercepted a tool call that requires human approval before execution (Levels 1-2)."
+        },
+        "interrupt_type": {
+          "type": "string",
+          "description": "Classification of the interrupt. Base types: 'checkpoint_review' (interrupt_node origin, scheduled review point), 'approval_required' (approval_callback origin, tool call awaiting approval), 'exception_escalation' (either origin, agent encountered a condition outside its policy bounds). Domain instantiations may define additional types."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what the interrupt is requesting. For interrupt_node origin: what the agent proposes to do and why. For approval_callback origin: what tool call is being requested and what it will do."
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceItem"
+          },
+          "default": [],
+          "description": "Supporting information the agent has assembled for the human reviewer. May include document excerpts, precondition check results, prior decision log entries, or any context that helps the human make an informed decision."
+        },
+        "proposed_action": {
+          "$ref": "#/$defs/ProposedAction",
+          "description": "Structured representation of the action the agent proposes. Present on approval_callback interrupts (the tool call being gated) and optionally on interrupt_node interrupts (the next workflow step being proposed)."
+        },
+        "response_options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InterruptOption"
+          },
+          "minItems": 1,
+          "description": "Available response options for the human. Every interrupt has at least one option. Typical patterns: approve/reject for binary decisions; approve/reject/modify for decisions where the human might want to adjust parameters; approve/reject/defer for decisions that can be postponed."
+        },
+        "raised_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp when the interrupt was raised."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected", "expired"],
+          "description": "Current status. 'pending': awaiting human response. 'approved': human selected an approval option; execution resumed. 'rejected': human selected a rejection option; workflow routed to rejection handler. 'expired': interrupt timed out per the timeout_seconds configuration (if set)."
+        },
+        "timeout_seconds": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Optional timeout in seconds. If the interrupt is not resolved within this period, status transitions to 'expired' and the workflow routes to a timeout handler. Null means no timeout (interrupt waits indefinitely). Configured per interrupt placement in the workflow definition."
+        },
+        "resolved_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO 8601 timestamp when the interrupt was resolved. Null while status is 'pending'."
+        },
+        "resolved_by": {
+          "type": ["string", "null"],
+          "description": "User ID of the human who resolved the interrupt. Null while status is 'pending'."
+        },
+        "resolution": {
+          "type": ["string", "null"],
+          "description": "The option_id selected by the human from response_options. Null while status is 'pending'. For 'expired' status, set to the timeout handler's default option if one is configured."
+        },
+        "resolution_comment": {
+          "type": ["string", "null"],
+          "description": "Optional free-text comment provided by the human when resolving. Useful for capturing rationale that doesn't fit the structured response options. Null if no comment was provided."
+        }
+      }
+    },
+
+    "InterruptOption": {
+      "type": "object",
+      "description": "A selectable response option presented to the human during an interrupt. This is the authoritative definition; the event stream schema's InterruptOption mirrors this structure.",
+      "required": ["option_id", "label", "effect"],
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "type": "string",
+          "description": "Machine-readable identifier for this option. Passed back in the approve operation's resolution field."
+        },
+        "label": {
+          "type": "string",
+          "description": "Short human-readable label displayed in the CAS Application (e.g., 'Approve', 'Reject', 'Defer')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Longer description of what selecting this option will do."
+        },
+        "effect": {
+          "type": "string",
+          "enum": ["resume", "reject", "defer", "modify"],
+          "description": "Semantic effect on the workflow. 'resume': execution continues from the checkpoint. 'reject': workflow routes to the rejection handler node. 'defer': interrupt is re-raised after a configured delay or condition. 'modify': human provides modified parameters; execution continues with the modifications."
+        },
+        "is_default": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this option is pre-selected in the CAS Application UI. At most one option per interrupt should be default."
+        },
+        "requires_comment": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the human must provide a resolution_comment when selecting this option. Typically true for 'reject' and 'modify' effects to capture rationale."
+        },
+        "parameter_schema": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "description": "JSON Schema for additional parameters the human must provide when selecting this option. Used with 'modify' effect to capture adjusted values (e.g., a revised threshold, an alternative document ID). Null for options that need no additional input."
+        }
+      }
+    },
+
+    "EvidenceItem": {
+      "type": "object",
+      "description": "A piece of supporting information assembled by the agent for human review.",
+      "required": ["type", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "document_excerpt",
+            "precondition_result",
+            "decision_log_entry",
+            "metric",
+            "diff",
+            "free_text"
+          ],
+          "description": "Classification of the evidence. Determines how the CAS Application renders it."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable label for this evidence item (e.g., 'Current lifecycle status', 'Precondition check results', 'Proposed changes')."
+        },
+        "content": {
+          "type": "string",
+          "description": "The evidence content. For document_excerpt: the extracted text. For precondition_result: a formatted summary. For diff: a unified diff or structured comparison. For metric: a formatted value with label. For free_text: agent-generated explanation."
+        },
+        "document_id": {
+          "type": ["string", "null"],
+          "description": "SAGE document ID associated with this evidence, if applicable. Enables the CAS Application to link evidence to its source document."
+        },
+        "heading_path": {
+          "type": ["string", "null"],
+          "description": "Heading path within the document where this evidence was extracted. Present for document_excerpt type."
+        }
+      }
+    },
+
+    "ProposedAction": {
+      "type": "object",
+      "description": "Structured representation of the action awaiting approval. For approval_callback interrupts, this is the intercepted tool call. For interrupt_node interrupts, this is the next workflow step being proposed.",
+      "required": ["operation"],
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "type": "string",
+          "description": "The operation being proposed. For SAGE API calls, this is the operation name (e.g., 'set_lifecycle', 'update_metadata', 'ingest'). For MCP tool calls, this is the MCP tool identifier. For workflow transitions, this is the target node ID."
+        },
+        "target_document_id": {
+          "type": ["string", "null"],
+          "description": "SAGE document ID that would be affected by the operation, if applicable."
+        },
+        "parameters": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "description": "Parameters that would be passed to the operation. For tool calls, these are the call arguments. Sensitive fields may be redacted based on domain configuration."
+        },
+        "expected_effect": {
+          "type": "string",
+          "description": "Human-readable description of what the operation will do if approved (e.g., 'Transition PV06 from active to filed', 'Update tags to include terminology-audit-complete')."
+        }
+      }
+    },
+
+    "ApproveRequest": {
+      "type": "object",
+      "description": "Request body for the approve Orchestration API operation. Resolves a pending interrupt.",
+      "required": ["interrupt_id", "resolution"],
+      "additionalProperties": false,
+      "properties": {
+        "interrupt_id": {
+          "type": "string",
+          "description": "Identifier of the interrupt to resolve."
+        },
+        "resolution": {
+          "type": "string",
+          "description": "The option_id selected from the interrupt's response_options."
+        },
+        "comment": {
+          "type": ["string", "null"],
+          "description": "Optional free-text comment. Required if the selected option has requires_comment set to true."
+        },
+        "modified_parameters": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "description": "Modified parameters for 'modify' effect options. Must conform to the selected option's parameter_schema. Null for non-modify resolutions."
+        }
+      }
+    },
+
+    "ApprovalPolicy": {
+      "type": "object",
+      "description": "Per-agent configuration that determines which tool calls require human approval before execution. Part of the agent's policy_ref configuration. The approval policy is the fine-grained complement to interrupt nodes: interrupt nodes gate workflow-level transitions; the approval policy gates individual tool calls within a node's execution. See ROOT Harness Architecture Reference Section 4.4.",
+      "required": ["rules", "default_action"],
+      "additionalProperties": false,
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ApprovalRule"
+          },
+          "description": "Ordered list of approval rules. Evaluated in order; the first matching rule determines whether approval is required. If no rule matches, the default_action applies."
+        },
+        "default_action": {
+          "type": "string",
+          "enum": ["allow", "require_approval"],
+          "description": "Action taken when no rule matches. 'allow': tool call proceeds without approval. 'require_approval': tool call is intercepted for human approval. Conservative configurations use 'require_approval' as default; permissive configurations use 'allow'."
+        },
+        "denial_behavior": {
+          "type": "string",
+          "enum": ["error", "skip", "alternative"],
+          "default": "error",
+          "description": "How a denied tool call is surfaced to the agent. 'error': the denial is returned as an error, allowing the agent to adjust its approach. 'skip': the tool call is silently skipped. 'alternative': the agent receives a pre-configured alternative response. 'error' is the default and recommended behavior."
+        }
+      }
+    },
+
+    "ApprovalRule": {
+      "type": "object",
+      "description": "A single rule in the approval policy. Matches tool calls by operation name and optional conditions, then specifies whether approval is required.",
+      "required": ["operations", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "SAGE Core API operation names or MCP tool identifiers that this rule matches. Use '*' as a wildcard to match all operations."
+        },
+        "conditions": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "description": "Optional conditions that narrow the match beyond operation name. Structure is domain-specific (e.g., {'lifecycle_action': 'archive'} to match only archive transitions, or {'doc_type': 'patent_specification'} to match operations on specific document types). Null means the rule matches solely on operation name."
+        },
+        "action": {
+          "type": "string",
+          "enum": ["allow", "require_approval"],
+          "description": "Whether matching tool calls are allowed without approval or require human approval."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable explanation of the rule's purpose. Aids configuration review and debugging."
+        }
+      }
+    }
+  },
+
+  "type": "object",
+  "description": "Container referencing the primary types defined in this schema. The InterruptDescriptor is the central data structure; other types are consumed by specific Orchestration API operations or agent configuration.",
+  "properties": {
+    "$comment": {
+      "type": "string",
+      "const": "This schema defines $defs only. Instances are InterruptDescriptor objects (returned by list_pending), ApproveRequest objects (sent to approve), or ApprovalPolicy objects (embedded in agent policy_ref configuration). Validators should reference the specific $defs type, e.g., {\"$ref\": \"interrupt.schema.json#/$defs/InterruptDescriptor\"}."
+    }
+  }
+}

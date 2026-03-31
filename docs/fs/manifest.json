@@ -1,14 +1,14 @@
 {
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
-  "manifest_version": "0.1",
-  "manifest_date": "2026-03-30",
+  "manifest_version": "1.0",
+  "manifest_date": "2026-03-31",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
-    "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. API operation contracts (OpenAPI specs) will be added in v0.2.",
+    "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
     "structure": {
-      "sage/": "SAGE configuration schemas. vault_config.schema.json is the root; it $ref's to the five sub-schemas.",
-      "root_harness/": "ROOT Harness configuration schemas for orchestration, agents, policies, and workflows."
+      "sage/": "SAGE configuration schemas, Core API OpenAPI specification, and data model schemas. vault_config.schema.json is the root configuration schema; it $ref's to the five sub-schemas.",
+      "root_harness/": "ROOT Harness configuration schemas, Orchestration API OpenAPI specification, event stream schema, and interrupt contracts."
     }
   },
   "schemas": [
@@ -73,6 +73,22 @@
       ]
     },
     {
+      "path": "sage/sage_core_api.openapi.yaml",
+      "title": "SAGE Core API",
+      "status": "draft",
+      "version": "0.1",
+      "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
+      "instantiation_checklist_items": []
+    },
+    {
+      "path": "sage/decision_log.schema.json",
+      "title": "Decision Log",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Schema for SAGE-managed decision logs owned by steward and orchestrator agents. Captures operational judgment not recorded in artifact revision histories: decisions not to act, decisions deferred, and cross-artifact reasoning. Append-only with supersession back-references. See CAS-ADR-012.",
+      "instantiation_checklist_items": []
+    },
+    {
       "path": "root_harness/pipeline.schema.json",
       "title": "ROOT Harness Pipeline Configuration",
       "status": "draft",
@@ -113,35 +129,43 @@
         11,
         12
       ]
+    },
+    {
+      "path": "root_harness/orchestration_api.openapi.yaml",
+      "title": "ROOT Harness Orchestration API",
+      "status": "draft",
+      "version": "0.1",
+      "role": "OpenAPI 3.1.0 specification for the ROOT Harness Orchestration API. Defines the REST surface for workflow triggering, status monitoring, human-in-the-loop interrupt resolution, agent registration, pipeline status queries, and real-time event streaming. Consumed by the CAS Application, MCP adapter, and CLI. Source authority: ROOT Harness Architecture Reference Section 2.5.",
+      "instantiation_checklist_items": []
+    },
+    {
+      "path": "root_harness/event_stream.schema.json",
+      "title": "AgentEvent",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Schema for typed event records emitted by the ROOT Harness event stream during workflow execution. Seven event categories: workflow lifecycle, node transitions, tool interactions, LLM cycles, interrupt lifecycle, steward governance, and checkpoint operations. Consumed by the CAS Application and MCP clients via subscribe_events. See CAS-ADR-013.",
+      "instantiation_checklist_items": []
+    },
+    {
+      "path": "root_harness/interrupt.schema.json",
+      "title": "Interrupt Contracts",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Schema for human-in-the-loop interrupt descriptors and tool-level approval policies. Defines InterruptDescriptor (runtime data structure for pending interrupts), ApproveRequest (resolution payload for the approve operation), and ApprovalPolicy (per-agent configuration for tool-call approval gating). Two interrupt origins: interrupt nodes (autonomy Level 3) and approval callbacks (Levels 1-2). See ROOT Harness Architecture Reference Sections 2.5, 2.7, 4.4, and 5.2.",
+      "instantiation_checklist_items": []
     }
   ],
-  "deferred_to_v0_2": [
-    {
-      "item": "SAGE Core API OpenAPI specification",
-      "reason": "API operation contract. PIM Health does not instantiate against it; it consumes the API."
-    },
-    {
-      "item": "ROOT Harness Orchestration API OpenAPI specification",
-      "reason": "API operation contract. Needed at code-implementation time, not domain-instantiation time."
-    },
-    {
-      "item": "Event stream schema",
-      "reason": "API contract consumed by monitoring tools and the CAS Application, not a configuration schema."
-    },
-    {
-      "item": "Human-in-the-loop interrupt contracts",
-      "reason": "API contract between ROOT Harness and the CAS Application."
-    },
-    {
-      "item": "Decision log entry schema",
-      "reason": "Data model schema for decision log records (CAS-ADR-012). v0.1 scope is configuration schemas; data model schemas are deferred alongside API contracts and the document object model."
-    }
-  ],
+  "deferred": [],
   "revision_history": [
     {
       "version": "0.1",
       "date": "2026-03-30",
       "summary": "Initial draft. Ten configuration schemas across SAGE (6) and ROOT Harness (4), covering all twelve items in the ROOT Harness instantiation checklist. JSON Schema draft 2020-12. API operation contracts deferred to v0.2. Developed against SAGE Architecture Reference v1.3 and ROOT Harness Architecture Reference v0.5."
+    },
+    {
+      "version": "1.0",
+      "date": "2026-03-31",
+      "summary": "API contracts and data model schemas. Added five artifacts resolving all deferred items from v0.1: (1) SAGE Core API OpenAPI specification (sage/sage_core_api.openapi.yaml), 14 operations across 7 tags, developed against SAGE Architecture Reference v1.4 Section 7. (2) ROOT Harness Orchestration API OpenAPI specification (root_harness/orchestration_api.openapi.yaml), 9 operations across 5 tags, developed against ROOT Harness Architecture Reference v1.0 Section 2.5. (3) Event stream schema (root_harness/event_stream.schema.json), 15 event types in 7 categories per CAS-ADR-013. (4) Interrupt contracts and approval policy schema (root_harness/interrupt.schema.json), covering InterruptDescriptor, ApproveRequest, ApprovalPolicy, and supporting types. (5) Decision log schema (sage/decision_log.schema.json), three entry categories per CAS-ADR-012. Promoted to v1.0: all contributions listed in SAGE Architecture Reference Section 8.3 and ROOT Harness Architecture Reference Section 8.2 are present with no known gaps."
     }
   ]
 }
