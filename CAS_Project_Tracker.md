@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v18
+**Version:** v19
 **Last updated:** 2026-04-06
 
 ---
@@ -87,13 +87,14 @@
 - v1.1 delivered 2026-04-05. SAGE tier 2 behavioral design decisions applied. Seven schema changes across sage_core_api.openapi.yaml and vault_config.schema.json: (1) Document.indexed_at made nullable (null until indexing completes). (2) Document.pipeline_error added (failure description). (3) Edge.id added (auto-generated, enables duplicate edge disambiguation). (4) TraversalNode.edge_count added (deduplication signal). (5) IngestRequest.force added (duplicate detection bypass for failure recovery). (6) SetLifecycleResponse schema added with optional warnings array. (7) retrieval_health section added to vault config. Also: 409 duplicate content response on ingest endpoint; abstraction.enabled description updated for strict quality gate. PIM Health config validated against updated schema.
 - No further pending corrections or revisions identified.
 
-### 8. Test Plan (v0.2)
+### 8. Test Plan (v0.3)
 
 - Contract-driven test specifications derived from the Formal Substrate. Each formal specification becomes a testable assertion.
 - Depends on: Formal Substrate v1.1 (delivered).
 - v0.1 delivered 2026-03-31. Three-tier test plan: tier 1 (contract tests from schemas and API specs), tier 2 (behavioral tests, requires design decisions), tier 3 (domain integration tests). Scaffolding: pyproject.toml with test dependencies, SchemaValidator helper with $ref registry for JSON Schema draft 2020-12, conftest.py with shared fixtures, test plan manifest. 122 test specifications across four Markdown files: SAGE contract tests (53 tests, 8 schemas), ROOT Harness contract tests (58 tests, 7 schemas), domain instantiation tests (11 tests, cross-reference integrity), boundary tests (stub for tier 2). 22 invalid YAML fixtures exercising schema constraint violations. All PIM Health configs validated against schemas. All invalid fixtures verified as correctly rejected.
 - v0.2 delivered 2026-04-05. SAGE tier 2 behavioral test specifications. 19 design decisions across 7 SAGE subsystems (graph store, access control, lifecycle, ingestion, retrieval, graph operations, utilities) resolved through structured question-and-answer specification. 42 behavioral tests in tests/sage/behavioral_tests.md. Cross-cutting boundary tests expanded from stub to 12 tests (6 fully specified from SAGE decisions, 6 stubs awaiting ROOT Harness tier 2 decisions). Test plan manifest updated to v0.2.
-- Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
+- v0.3 delivered 2026-04-06. SAGE adapter test specifications. 25 tests across 2 production adapters: LanceDB ContentStore (17 tests covering initialization, indexing, removal, vector search, BM25 search, heading prefix retrieval, persistence, edge cases) and nomic-embed-text EmbeddingProvider (8 tests covering dimension, determinism, normalization, batch behavior, similarity, edge cases). Encodes 13 design decisions for production adapter implementations. Test plan manifest updated to v0.3.
+- Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation. Qwen3 AbstractionProvider adapter test specs to be developed before step 19.
 
 ### 9. Working Code (In Progress)
 
@@ -172,7 +173,8 @@
 14. ~~Test Plan v0.2: SAGE tier 2 behavioral specs~~ (completed 2026-04-05, 42 behavioral tests + 12 boundary tests + 7 schema changes)
 15. ~~Working Code: SAGE Core API~~ (completed 2026-04-05, 5 vertical slices, 86 tests)
 16. ~~Working Code: MCP adapter, server entry point, test vault~~ (completed 2026-04-06, 11 tools, 25 tests, multi-vault)
-17. Working Code: LanceDB content store + nomic-embed-text embedding provider ← **next**
-18. Working Code: Qwen3 abstraction provider
-19. Working Code: Manual testing of SAGE with real PIM documents
-20. Working Code: ROOT Harness implementation
+17. ~~Test Plan v0.3: SAGE adapter test specs~~ (completed 2026-04-06, 25 adapter tests encoding 13 design decisions)
+18. Working Code: LanceDB content store + nomic-embed-text embedding provider ← **next**
+19. Working Code: Qwen3 abstraction provider
+20. Working Code: Manual testing of SAGE with real PIM documents
+21. Working Code: ROOT Harness implementation
