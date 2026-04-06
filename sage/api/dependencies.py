@@ -4,6 +4,7 @@ from fastapi import Depends, Path, Request
 
 from sage.api.errors import VaultNotFoundError
 from sage.config import VaultConfig
+from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
@@ -45,6 +46,10 @@ async def get_user_service(request: Request) -> UserService:
 
 async def get_ingestion_service(request: Request) -> IngestionService:
     return request.app.state.ingestion_service
+
+
+async def get_graph_ops_service(request: Request) -> GraphOpsService:
+    return request.app.state.graph_ops_service
 
 
 async def get_config(request: Request) -> VaultConfig:

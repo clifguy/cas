@@ -116,6 +116,18 @@ class PipelineIncompleteError(SAGEError):
         )
 
 
+class SelfReferentialEdgeError(SAGEError):
+    """400: source_id and target_id are the same document."""
+
+    def __init__(self, document_id: str) -> None:
+        super().__init__(
+            "self_referential_edge",
+            f"Cannot create edge from document {document_id} to itself",
+            400,
+            {"document_id": document_id},
+        )
+
+
 class AdapterNotFoundError(SAGEError):
     """400: no adapter registered for source type."""
 

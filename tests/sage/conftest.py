@@ -17,6 +17,7 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig, build_transition_table
 from sage.models.enums import SourceType
+from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
@@ -164,6 +165,16 @@ def pim_lifecycle_service(graph_store, lock_manager, pim_health_config_obj):
 @pytest.fixture
 def metadata_service(graph_store, lock_manager, minimal_config):
     return MetadataService(graph_store, lock_manager, minimal_config)
+
+
+@pytest.fixture
+def graph_ops_service(graph_store, minimal_config):
+    return GraphOpsService(graph_store, minimal_config)
+
+
+@pytest.fixture
+def pim_graph_ops_service(graph_store, pim_health_config_obj):
+    return GraphOpsService(graph_store, pim_health_config_obj)
 
 
 @pytest.fixture

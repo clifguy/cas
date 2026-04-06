@@ -166,3 +166,104 @@ async def test_wrong_vault_404(client):
     resp = await client.get("/sage_vaults/wrong_vault/documents/anything")
     assert resp.status_code == 404
     assert resp.json()["code"] == "vault_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Graph operations (Slice 2)
+# ---------------------------------------------------------------------------
+
+async def test_link_201(app, client):
+    """POST /edges creates an edge and returns 201."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    assert resp1.status_code == 201
+    doc_id_a = resp1.json()["document"]["id"]
+
+    # Create a second source file for a distinct document
+    from pathlib import Path
+
+    storage_root = Path(app.state.config.vault.storage_root).expanduser()
+    (storage_root / "test" / "sample2.md").write_text(
+        "# Second Document\n\nDifferent content."
+    )
+
+    resp2 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample2.md", "adapter": "markdown"},
+    )
+    assert resp2.status_code == 201
+    doc_id_b = resp2.json()["document"]["id"]
+
+    resp3 = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "source_id": doc_id_a,
+            "target_id": doc_id_b,
+            "edge_type": "references",
+            "rationale": "test link",
+        },
+    )
+    assert resp3.status_code == 201
+    body = resp3.json()
+    assert body["source_id"] == doc_id_a
+    assert body["target_id"] == doc_id_b
+    assert body["edge_type"] == "references"
+    assert "id" in body
+
+
+async def test_link_self_referential_400(client):
+    """POST /edges with same source and target returns 400."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "source_id": doc_id,
+            "target_id": doc_id,
+            "edge_type": "references",
+        },
+    )
+    assert resp2.status_code == 400
+    assert resp2.json()["code"] == "self_referential_edge"
+
+
+async def test_check_preconditions_200(client):
+    """GET /preconditions/{id} returns precondition result."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.get(
+        f"/sage_vaults/test_vault/preconditions/{doc_id}"
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["function_id"] == doc_id
+    assert body["satisfied"] is True  # No dependencies = vacuously satisfied
+    assert body["checks"] == []
+
+
+async def test_traverse_200(client):
+    """POST /traverse returns traversal result."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.post(
+        "/sage_vaults/test_vault/traverse",
+        json={"start_id": doc_id},
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["start_id"] == doc_id
+    assert isinstance(body["nodes"], list)

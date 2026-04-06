@@ -8,7 +8,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from sage.models.enums import EdgeType, PipelineStatus, SourceType, UserType
+from sage.models.enums import (
+    EdgeType,
+    PipelineStatus,
+    SourceType,
+    TraversalDirection,
+    UserType,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +113,46 @@ class RegisterUserRequest(BaseModel):
 class IngestResponse(BaseModel):
     document: Document
     pipeline_status: PipelineStatus
+
+
+class LinkRequest(BaseModel):
+    source_id: str
+    target_id: str
+    edge_type: EdgeType
+    notes: str | None = None
+    rationale: str | None = None
+
+
+class TraverseRequest(BaseModel):
+    start_id: str
+    edge_type: EdgeType | None = None
+    direction: TraversalDirection = TraversalDirection.OUTBOUND
+    depth: int = Field(default=3, ge=1, le=50)
+
+
+class TraversalNode(BaseModel):
+    document: DocumentSummary
+    edge: Edge
+    depth: int
+    edge_count: int = 1
+
+
+class TraverseResponse(BaseModel):
+    start_id: str
+    nodes: list[TraversalNode]
+
+
+class PreconditionCheck(BaseModel):
+    target_id: str
+    required: str
+    actual: str
+    satisfied: bool
+
+
+class PreconditionResult(BaseModel):
+    function_id: str
+    satisfied: bool
+    checks: list[PreconditionCheck]
 
 
 # ---------------------------------------------------------------------------

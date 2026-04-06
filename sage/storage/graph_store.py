@@ -226,6 +226,119 @@ class GraphStore:
         return [self._row_to_edge(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Graph traversal
+    # ------------------------------------------------------------------
+
+    async def traverse(
+        self,
+        start_id: str,
+        edge_type: str | None,
+        direction: str,
+        depth: int,
+    ) -> list[dict]:
+        """Recursive CTE traversal returning raw dicts for service-layer dedup."""
+        return await asyncio.to_thread(
+            self._traverse_sync, start_id, edge_type, direction, depth
+        )
+
+    def _traverse_sync(
+        self,
+        start_id: str,
+        edge_type: str | None,
+        direction: str,
+        depth: int,
+    ) -> list[dict]:
+        conn = self._get_connection()
+
+        # Build direction-specific column references:
+        #   outbound: follow source_id -> target_id
+        #   inbound:  follow target_id -> source_id
+        #   both:     union of outbound and inbound
+        def _edge_select(from_col: str, to_col: str, alias: str = "seed") -> str:
+            """SQL fragment selecting edges in one direction."""
+            type_filter = " AND e.edge_type = ?" if edge_type else ""
+            return (
+                f"SELECT e.id AS edge_id, e.{to_col} AS doc_id, "
+                f"e.edge_type, e.created_at AS edge_created_at, "
+                f"e.notes, e.rationale, e.source_id, e.target_id, "
+                f"1 AS depth "
+                f"FROM edges e "
+                f"WHERE e.{from_col} = ?{type_filter}"
+            )
+
+        def _recursive_step(from_col: str, to_col: str) -> str:
+            type_filter = " AND e.edge_type = ?" if edge_type else ""
+            return (
+                f"SELECT e.id AS edge_id, e.{to_col} AS doc_id, "
+                f"e.edge_type, e.created_at AS edge_created_at, "
+                f"e.notes, e.rationale, e.source_id, e.target_id, "
+                f"t.depth + 1 AS depth "
+                f"FROM edges e "
+                f"INNER JOIN traversal t ON e.{from_col} = t.doc_id "
+                f"WHERE t.depth < ?{type_filter}"
+            )
+
+        params: list = []
+
+        if direction == "outbound":
+            seed = _edge_select("source_id", "target_id")
+            params += [start_id] + ([edge_type] if edge_type else [])
+            recurse = _recursive_step("source_id", "target_id")
+            params += [depth] + ([edge_type] if edge_type else [])
+        elif direction == "inbound":
+            seed = _edge_select("target_id", "source_id")
+            params += [start_id] + ([edge_type] if edge_type else [])
+            recurse = _recursive_step("target_id", "source_id")
+            params += [depth] + ([edge_type] if edge_type else [])
+        else:  # both
+            seed_out = _edge_select("source_id", "target_id")
+            seed_in = _edge_select("target_id", "source_id")
+            seed = f"{seed_out} UNION ALL {seed_in}"
+            params += [start_id] + ([edge_type] if edge_type else [])
+            params += [start_id] + ([edge_type] if edge_type else [])
+            recurse_out = _recursive_step("source_id", "target_id")
+            recurse_in = _recursive_step("target_id", "source_id")
+            recurse = f"{recurse_out} UNION ALL {recurse_in}"
+            params += [depth] + ([edge_type] if edge_type else [])
+            params += [depth] + ([edge_type] if edge_type else [])
+
+        sql = (
+            f"WITH RECURSIVE traversal AS (\n"
+            f"  {seed}\n"
+            f"  UNION ALL\n"
+            f"  {recurse}\n"
+            f")\n"
+            f"SELECT t.*, "
+            f"d.id AS d_id, d.title, d.lifecycle_status, d.source_type, "
+            f"d.version_label, d.project, d.doc_type, d.tags "
+            f"FROM traversal t "
+            f"INNER JOIN documents d ON t.doc_id = d.id"
+        )
+
+        rows = conn.execute(sql, params).fetchall()
+        results = []
+        for row in rows:
+            results.append({
+                "edge_id": row["edge_id"],
+                "doc_id": row["doc_id"],
+                "edge_type": row["edge_type"],
+                "edge_created_at": row["edge_created_at"],
+                "notes": row["notes"],
+                "rationale": row["rationale"],
+                "source_id": row["source_id"],
+                "target_id": row["target_id"],
+                "depth": row["depth"],
+                "d_title": row["title"],
+                "d_lifecycle_status": row["lifecycle_status"],
+                "d_source_type": row["source_type"],
+                "d_version_label": row["version_label"],
+                "d_project": row["project"],
+                "d_doc_type": row["doc_type"],
+                "d_tags": row["tags"],
+            })
+        return results
+
+    # ------------------------------------------------------------------
     # User operations
     # ------------------------------------------------------------------
 
