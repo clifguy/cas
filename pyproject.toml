@@ -9,6 +9,10 @@ dependencies = [
     "pydantic>=2.9",
     "pyyaml>=6.0",
     "mcp>=1.0",
+    "lancedb>=0.20",
+    "sentence-transformers>=3.0",
+    "einops>=0.8",
+    "pyarrow>=17.0",
 ]
 
 [project.optional-dependencies]

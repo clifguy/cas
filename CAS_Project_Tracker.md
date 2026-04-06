@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v19
+**Version:** v20
 **Last updated:** 2026-04-06
 
 ---
@@ -105,7 +105,9 @@
 - Server entry point delivered 2026-04-06. `python -m sage <config.yaml>` starts FastAPI/Swagger UI on localhost:8000 for manual testing.
 - Test vault created 2026-04-06. Minimal vault config with 3 doc types (note, spec, reference), standard lifecycle, markdown adapter, abstraction disabled. Storage at ~/sage_vaults/test/. MCP settings updated to load both test and pim_health vaults. [Vault config moved to ~/sage_vaults/test/vault_config.yaml 2026-04-06.]
 - PIM Health vault storage configured 2026-04-06. brain at ~/sage_vaults/pim_health/brain/, sources symlinked to ~/Library/CloudStorage/OneDrive-pimhealth/sage_sources (cloud-synced document store, stable symlink path for future vault mover).
-- Pending: LanceDB content store adapter (replacing StubContentStore), nomic-embed-text embedding provider (replacing StubEmbeddingProvider), Qwen3 abstraction provider (replacing StubAbstractionProvider). These are the remaining components before SAGE can operate on real documents with persistent vector storage and semantic search.
+- GraphStore thread safety fix delivered 2026-04-06. Replaced single shared sqlite3.Connection with a thread-local connection pool backed by a bounded ThreadPoolExecutor (configurable max_connections, default 4). Each pool thread lazily creates its own connection with WAL mode and foreign keys enabled, eliminating an intermittent InterfaceError where background pipeline tasks and request handlers concurrently accessed the same connection via asyncio.to_thread's unbounded default pool. 111 tests passing.
+- LanceDB content store + nomic-embed-text embedding provider delivered 2026-04-06. Production adapters replacing StubContentStore and StubEmbeddingProvider. LanceDBContentStore: lazy table creation, cosine vector search, native FTS with eager rebuild after mutations, structural heading prefix matching with SQL escaping. NomicEmbeddingProvider: nomic-ai/nomic-embed-text-v1.5 via sentence-transformers, 768-dim L2-normalized output, eager model load with dimension validation probe. Wired into mcp_init.py (StubAbstractionProvider remains). 25 adapter tests passing (136 total). Dependencies: lancedb, sentence-transformers, einops, pyarrow.
+- Pending: Qwen3 abstraction provider (replacing StubAbstractionProvider). This is the remaining adapter before SAGE can operate with full pipeline capabilities including semantic abstracts.
 
 ### 10. PIM Health Instance (v0.1)
 
@@ -174,7 +176,7 @@
 15. ~~Working Code: SAGE Core API~~ (completed 2026-04-05, 5 vertical slices, 86 tests)
 16. ~~Working Code: MCP adapter, server entry point, test vault~~ (completed 2026-04-06, 11 tools, 25 tests, multi-vault)
 17. ~~Test Plan v0.3: SAGE adapter test specs~~ (completed 2026-04-06, 25 adapter tests encoding 13 design decisions)
-18. Working Code: LanceDB content store + nomic-embed-text embedding provider ← **next**
-19. Working Code: Qwen3 abstraction provider
+18. ~~Working Code: LanceDB content store + nomic-embed-text embedding provider~~ (completed 2026-04-06, 2 production adapters, 25 adapter tests, 136 total)
+19. Working Code: Qwen3 abstraction provider ← **next**
 20. Working Code: Manual testing of SAGE with real PIM documents
 21. Working Code: ROOT Harness implementation

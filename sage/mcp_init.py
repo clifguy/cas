@@ -3,7 +3,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from sage.adapters.stubs import StubAbstractionProvider, StubContentStore, StubEmbeddingProvider
+from sage.adapters.content_store_lancedb import LanceDBContentStore
+from sage.adapters.embedding_nomic import NomicEmbeddingProvider
+from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import VaultConfig, load_vault_config
 from sage.models.enums import SourceType
 from sage.services.graph_ops import GraphOpsService
@@ -51,9 +53,10 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
 
     lock_manager = DocumentLockManager()
 
-    # Stub adapters for Phase 1 (swap for real implementations later)
-    content_store = StubContentStore()
-    embedding_provider = StubEmbeddingProvider()
+    # Production adapters for content store and embeddings;
+    # stub for abstraction (Qwen3 adapter not yet implemented)
+    content_store = LanceDBContentStore(brain_root)
+    embedding_provider = NomicEmbeddingProvider()
     abstraction_provider = StubAbstractionProvider()
 
     # Source adapters
