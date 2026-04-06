@@ -520,3 +520,212 @@ filter expressions to prevent query failures or incorrect matches.
 during force re-ingestion. However, index_chunks should also be safe to call
 directly without a preceding remove, preventing duplicate chunks from
 accumulating if the caller forgets the removal step.
+
+---
+
+## 3. Qwen3 AbstractionProvider
+
+Tests for the production abstraction provider: Qwen3-30B-A3B-Instruct-2507 via
+MLX on Apple Silicon. The provider implements the single-method
+`AbstractionProvider` interface (`generate_abstract(text, max_tokens) -> str`).
+
+These tests validate local LLM inference behavior. They are slower than the
+embedding and content store tests (model load + generation latency) and should
+be marked accordingly in the test runner.
+
+Test environment: requires MLX and the Qwen3-30B-A3B-Instruct-2507 model
+weights available locally. Tests that validate model output quality use
+conservative assertions (non-empty, bounded length, semantic relevance smoke
+test) rather than exact string matching, since LLM output is inherently
+variable across model versions.
+
+### TEST-SAGE-AD-026: Provider init loads model eagerly and fails fast
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider)
+**Category:** initialization
+**Decision:** The provider loads the MLX model during `__init__` and validates
+that inference is functional. If the model cannot be loaded, init raises
+immediately.
+
+**Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
+
+**Input:** Construct a Qwen3AbstractionProvider with valid model path.
+
+**Expected:**
+- Construction completes without error
+- Model is loaded into memory (not deferred to first `generate_abstract` call)
+
+**Negative input:** Construct with `model_path="/nonexistent/model/path"`.
+
+**Negative expected:**
+- Raises an exception during `__init__`
+- Error message includes the model path
+
+**Rationale:** Same fail-fast pattern as the embedding provider (AD-008).
+Deferred loading would allow the vault to initialize successfully but fail on
+the first ingestion, which is harder to diagnose. Eager loading surfaces
+configuration errors at startup.
+
+### TEST-SAGE-AD-027: Generated abstract is a non-empty string
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** output_shape
+**Decision:** `generate_abstract` always returns a non-empty string on success.
+
+**Precondition:** Provider initialized with valid model.
+
+**Input:** `generate_abstract("The document describes a method for synchronizing
+patient health records across distributed clinical systems using a
+conflict-free replicated data type (CRDT). The approach ensures eventual
+consistency while preserving the causal ordering of clinical events.", 200)`
+
+**Expected:**
+- Returns a `str`
+- Length is greater than 0 after stripping whitespace
+- Contains no leading/trailing whitespace
+
+**Rationale:** The document record stores `semantic_abstract` as a nullable
+string. A null value means "not yet generated" (pipeline in progress or
+abstraction skipped). An empty string would be ambiguous -- indistinguishable
+from a generation failure that returned empty output. The provider must return
+substantive content or raise an exception.
+
+### TEST-SAGE-AD-028: Output respects max_tokens upper bound
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** output_constraint
+**Decision:** The returned abstract does not exceed `max_tokens` in token count.
+The provider passes `max_tokens` as the generation limit to the MLX inference
+call.
+
+**Precondition:** Provider initialized with valid model.
+
+**Input:** `generate_abstract(long_document_text, 100)` where
+`long_document_text` is a multi-paragraph technical passage (500+ words).
+
+**Expected:**
+- The returned abstract, when tokenized by the model's tokenizer, contains
+  at most 100 tokens
+- The abstract is still coherent (not truncated mid-word or mid-sentence)
+
+**Rationale:** The vault schema defines `max_abstract_tokens` with a minimum of
+50. The PIM Health vault sets this to 500. The provider must honor this bound
+to ensure abstracts are consistently sized for retrieval and display. The
+model's generation parameters (not post-hoc truncation) should enforce this,
+so output remains coherent at the boundary.
+
+### TEST-SAGE-AD-029: Same input produces identical output (deterministic)
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** determinism
+**Decision:** Same text + same max_tokens produces the same abstract.
+Achieved by setting temperature=0 (or equivalent greedy decoding) in the MLX
+inference configuration.
+
+**Precondition:** Provider initialized with valid model.
+
+**Input:** Call `generate_abstract(sample_text, 200)` twice with the same input.
+
+**Expected:**
+- Both calls return identical strings
+
+**Rationale:** Deterministic output ensures that re-ingesting the same document
+(force re-ingestion, BH-019) produces the same abstract. Non-determinism would
+cause the semantic_abstract field to change on re-ingestion even when the
+source content has not changed, creating spurious update noise.
+
+### TEST-SAGE-AD-030: Short input produces a valid abstract
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** edge_case
+**Decision:** Very short input text (a few words or a single sentence) produces
+a valid non-empty abstract without error.
+
+**Precondition:** Provider initialized with valid model.
+
+**Input:** `generate_abstract("Brief note about record linkage.", 200)`
+
+**Expected:**
+- Returns a non-empty string
+- No exception raised
+
+**Rationale:** Some documents may have minimal content after projection (e.g.,
+a short note or a stub document). The provider must handle this gracefully.
+The abstract may be shorter than max_tokens -- that is correct behavior for
+low-density input.
+
+### TEST-SAGE-AD-031: Long input does not crash
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** edge_case
+**Decision:** Input text exceeding the model's context window is handled without
+raising an unrecoverable error. The provider truncates input to fit the context
+window before generation.
+
+**Precondition:** Provider initialized with valid model.
+
+**Input:** `generate_abstract(very_long_text, 200)` where `very_long_text` is
+50,000+ characters of repeated technical prose.
+
+**Expected:**
+- Returns a non-empty string (abstract of the truncated input)
+- No exception raised
+- The abstract reflects content from the beginning of the input (truncation
+  preserves leading content, not trailing)
+
+**Rationale:** PIM patent documents can be lengthy. While the pipeline-level
+existing-abstract bypass (planned for step 20) will reduce how often long
+documents reach the LLM, the provider must not crash when they do. Truncation
+is preferred over failure because the leading content of a well-structured
+document (title, abstract, introduction) typically carries the highest
+information density.
+
+### TEST-SAGE-AD-032: Abstract is semantically related to input
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** quality
+**Decision:** The generated abstract contains concepts present in the source
+text. This is a smoke test, not a comprehensive quality evaluation.
+
+**Precondition:** Provider initialized with valid model. Embedding provider
+initialized (for similarity measurement).
+
+**Input:** `generate_abstract(technical_passage_about_health_records, 200)`
+
+**Expected:**
+- Embed both the input text and the generated abstract using the embedding
+  provider
+- `cosine_similarity(input_embedding, abstract_embedding) > 0.5`
+- The abstract mentions at least one key concept from the input (verified by
+  keyword overlap, not exact substring matching)
+
+**Rationale:** Analogous to AD-005 (semantic similarity smoke test for
+embeddings). If the abstraction provider generates text unrelated to the input,
+the semantic_abstract field becomes noise rather than a useful retrieval signal.
+This test catches catastrophic model failures (wrong prompt template,
+garbled output) without asserting specific wording.
+
+### TEST-SAGE-AD-033: LLM runtime error propagates as exception
+
+**Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider.generate_abstract)
+**Category:** error_handling
+**Decision:** If the MLX inference fails mid-generation (out of memory, model
+corruption, hardware error), the exception propagates to the caller. The
+provider does not catch and swallow LLM errors.
+
+**Precondition:** Provider initialized with valid model, then model state
+corrupted or inference forced to fail (e.g., via monkey-patching the MLX
+generate call to raise RuntimeError).
+
+**Input:** `generate_abstract("any text", 200)` with inference rigged to fail.
+
+**Expected:**
+- Raises an exception (RuntimeError or subclass)
+- Exception message describes the failure
+- No partial or empty string is returned
+
+**Rationale:** The ingestion pipeline (BH-024) depends on the exception to set
+`pipeline_status: "failed"` and record `pipeline_error`. If the provider
+swallows the error and returns empty or partial output, the pipeline would
+incorrectly mark the document as `abstraction_complete` with a degraded
+abstract, violating the strict quality gate.

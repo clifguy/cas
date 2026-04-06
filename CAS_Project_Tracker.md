@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v20
+**Version:** v21
 **Last updated:** 2026-04-06
 
 ---
@@ -16,7 +16,7 @@
 | 5 | ADR Store | v1.10 (schema), 14 ADRs | Development | — |
 | 6 | Formatting Standards | v1.0 | Development | — |
 | 7 | Formal Substrate | v1.1 | Development | — |
-| 8 | Test Plan | v0.2 (tier 1 + SAGE tier 2 behavioral) | Development | — |
+| 8 | Test Plan | v0.4 (tier 1 + SAGE tier 2 behavioral + adapter) | Development | — |
 | 9 | Working Code | — | Planned | — |
 
 ## Domain Instantiation Documents
@@ -94,7 +94,9 @@
 - v0.1 delivered 2026-03-31. Three-tier test plan: tier 1 (contract tests from schemas and API specs), tier 2 (behavioral tests, requires design decisions), tier 3 (domain integration tests). Scaffolding: pyproject.toml with test dependencies, SchemaValidator helper with $ref registry for JSON Schema draft 2020-12, conftest.py with shared fixtures, test plan manifest. 122 test specifications across four Markdown files: SAGE contract tests (53 tests, 8 schemas), ROOT Harness contract tests (58 tests, 7 schemas), domain instantiation tests (11 tests, cross-reference integrity), boundary tests (stub for tier 2). 22 invalid YAML fixtures exercising schema constraint violations. All PIM Health configs validated against schemas. All invalid fixtures verified as correctly rejected.
 - v0.2 delivered 2026-04-05. SAGE tier 2 behavioral test specifications. 19 design decisions across 7 SAGE subsystems (graph store, access control, lifecycle, ingestion, retrieval, graph operations, utilities) resolved through structured question-and-answer specification. 42 behavioral tests in tests/sage/behavioral_tests.md. Cross-cutting boundary tests expanded from stub to 12 tests (6 fully specified from SAGE decisions, 6 stubs awaiting ROOT Harness tier 2 decisions). Test plan manifest updated to v0.2.
 - v0.3 delivered 2026-04-06. SAGE adapter test specifications. 25 tests across 2 production adapters: LanceDB ContentStore (17 tests covering initialization, indexing, removal, vector search, BM25 search, heading prefix retrieval, persistence, edge cases) and nomic-embed-text EmbeddingProvider (8 tests covering dimension, determinism, normalization, batch behavior, similarity, edge cases). Encodes 13 design decisions for production adapter implementations. Test plan manifest updated to v0.3.
-- Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation. Qwen3 AbstractionProvider adapter test specs to be developed before step 19.
+- v0.4 delivered 2026-04-06. Qwen3 AbstractionProvider adapter test specifications. 8 tests (AD-026 through AD-033) covering initialization (eager model load, fail-fast), output shape (non-empty string, max_tokens bound), determinism (greedy decoding), edge cases (short input, long input truncation), semantic quality smoke test, and error propagation. Encodes 8 design decisions for the production abstraction provider (Qwen3-30B-A3B-Instruct-2507 via MLX). Test plan manifest updated to v0.4.
+- Deferred to step 20: pipeline-level bypass for documents with existing abstract sections (e.g., patent ABSTRACT headings). Vault-configurable option to prefer existing abstracts over LLM generation.
+- Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
 ### 9. Working Code (In Progress)
 
@@ -177,6 +179,7 @@
 16. ~~Working Code: MCP adapter, server entry point, test vault~~ (completed 2026-04-06, 11 tools, 25 tests, multi-vault)
 17. ~~Test Plan v0.3: SAGE adapter test specs~~ (completed 2026-04-06, 25 adapter tests encoding 13 design decisions)
 18. ~~Working Code: LanceDB content store + nomic-embed-text embedding provider~~ (completed 2026-04-06, 2 production adapters, 25 adapter tests, 136 total)
+18a. ~~Test Plan v0.4: Qwen3 AbstractionProvider adapter test specs~~ (completed 2026-04-06, 8 tests encoding 8 design decisions)
 19. Working Code: Qwen3 abstraction provider ← **next**
 20. Working Code: Manual testing of SAGE with real PIM documents
 21. Working Code: ROOT Harness implementation
