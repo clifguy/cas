@@ -1,10 +1,12 @@
-"""Ingestion Pipeline tests: BH-018 through BH-026.
+"""Ingestion Pipeline tests: BH-018 through BH-026, BH-049 through BH-052.
 
 Covers duplicate detection, force re-ingestion, pipeline failure quarantine,
-LLM failure handling, abstraction_skipped, and async pipeline execution.
+LLM failure handling, abstraction_skipped, async pipeline execution, and
+source file provenance (source_modified_at).
 """
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -210,3 +212,123 @@ async def test_bh_026_async_pipeline(
     assert fetched.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
     assert fetched.indexed_at is not None
     assert fetched.semantic_abstract is not None
+
+
+# ---------------------------------------------------------------------------
+# BH-049: New document ingestion sets source_modified_at from file mtime
+# ---------------------------------------------------------------------------
+
+async def test_bh_049_source_modified_at_set_on_ingest(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    full_path = _create_test_file(tmp_vault_dir, "patents/doc_mtime.md")
+
+    # Set a known mtime in the past
+    known_mtime = datetime(2023, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+    os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
+
+    request = IngestRequest(
+        source="patents/doc_mtime.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, status = await ingestion_service.ingest(request, "test_vault")
+    assert status == 201
+
+    assert doc.source_modified_at is not None
+    assert doc.source_modified_at.tzinfo is not None  # timezone-aware
+    assert abs((doc.source_modified_at - known_mtime).total_seconds()) < 1.0
+
+
+# ---------------------------------------------------------------------------
+# BH-050: Force re-ingestion updates source_modified_at
+# ---------------------------------------------------------------------------
+
+async def test_bh_050_force_reingestion_updates_source_modified_at(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    full_path = _create_test_file(tmp_vault_dir, "patents/doc_mtime_force.md")
+
+    # Set old mtime
+    old_mtime = datetime(2022, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    os.utime(full_path, (full_path.stat().st_atime, old_mtime.timestamp()))
+
+    request = IngestRequest(
+        source="patents/doc_mtime_force.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    doc1, _ = await ingestion_service.ingest(request, "test_vault")
+    await asyncio.sleep(0.2)
+
+    original_source_mtime = doc1.source_modified_at
+
+    # Touch the file to update mtime
+    new_mtime = datetime(2024, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
+    os.utime(full_path, (full_path.stat().st_atime, new_mtime.timestamp()))
+
+    force_request = IngestRequest(
+        source="patents/doc_mtime_force.md",
+        adapter=SourceType.MARKDOWN,
+        force=True,
+    )
+    doc2, status2 = await ingestion_service.ingest(force_request, "test_vault")
+    assert status2 == 200
+
+    # Retrieve from store to verify persistence
+    fetched = await graph_store.get_document(doc2.id)
+    assert abs((fetched.source_modified_at - new_mtime).total_seconds()) < 1.0
+    assert fetched.source_modified_at != original_source_mtime
+
+
+# ---------------------------------------------------------------------------
+# BH-051: source_modified_at round-trips through graph store
+# ---------------------------------------------------------------------------
+
+async def test_bh_051_source_modified_at_round_trip(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    full_path = _create_test_file(tmp_vault_dir, "patents/doc_roundtrip.md")
+
+    known_mtime = datetime(2021, 3, 10, 8, 30, 0, tzinfo=timezone.utc)
+    os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
+
+    request = IngestRequest(
+        source="patents/doc_roundtrip.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, _ = await ingestion_service.ingest(request, "test_vault")
+
+    fetched = await graph_store.get_document(doc.id)
+    assert fetched.source_modified_at is not None
+    assert fetched.source_modified_at.tzinfo is not None
+    assert abs((fetched.source_modified_at - known_mtime).total_seconds()) < 1.0
+
+
+# ---------------------------------------------------------------------------
+# BH-052: created_at remains SAGE ingestion time, distinct from source_modified_at
+# ---------------------------------------------------------------------------
+
+async def test_bh_052_created_at_is_ingestion_time(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    full_path = _create_test_file(tmp_vault_dir, "patents/doc_old.md")
+
+    # Set mtime well in the past
+    old_mtime = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+    os.utime(full_path, (full_path.stat().st_atime, old_mtime.timestamp()))
+
+    before_ingest = datetime.now(timezone.utc)
+
+    request = IngestRequest(
+        source="patents/doc_old.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, _ = await ingestion_service.ingest(request, "test_vault")
+
+    # created_at should be close to now, not the old file mtime
+    assert abs((doc.created_at - before_ingest).total_seconds()) < 5.0
+
+    # source_modified_at should match the old mtime
+    assert abs((doc.source_modified_at - old_mtime).total_seconds()) < 1.0
+
+    # They must be different
+    assert doc.created_at != doc.source_modified_at

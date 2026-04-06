@@ -938,6 +938,96 @@ Creating a `by_doc_type/null/` or `by_doc_type/unclassified/` directory
 would be misleading. The lifecycle view always has a value (documents enter
 the vault as `active`), so it is always complete.
 
+---
+
+## 9. Source File Provenance
+
+### TEST-SAGE-BH-049: New document ingestion sets source_modified_at from file mtime
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (Document.source_modified_at)
+**Category:** ingestion, provenance
+**Decision:** The markdown adapter extracts `st_mtime` from the source file
+and passes it through `ProjectionResult.metadata`. The ingestion service
+parses it and stores it as `source_modified_at` on the Document.
+
+**Precondition:** SAGE vault initialized. Source file exists with a known
+modification time (set via `os.utime` for determinism).
+
+**Input:** `ingest(source="test.md", adapter="markdown")`
+
+**Expected:**
+- `doc.source_modified_at` is not None
+- `doc.source_modified_at` is a timezone-aware datetime (UTC)
+- `doc.source_modified_at` matches the file's `st_mtime` (within 1-second tolerance)
+
+**Rationale:** The source file's modification timestamp is a vital provenance
+signal for graph ordering and retrieval relevance. Ingestion time (`created_at`)
+is an operational detail; `source_modified_at` reflects when the content was
+last changed at its origin.
+
+### TEST-SAGE-BH-050: Force re-ingestion updates source_modified_at
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (Document.source_modified_at)
+**Category:** ingestion, provenance
+**Decision:** On force re-ingestion, `source_modified_at` is updated to the
+file's current `st_mtime`, even if the content hash is unchanged.
+
+**Precondition:** Document already ingested. Source file touched (mtime updated)
+but content unchanged.
+
+**Input:** `ingest(source="test.md", adapter="markdown", force=True)`
+
+**Expected:**
+- `doc.source_modified_at` reflects the file's new mtime
+- `doc.source_modified_at` differs from the original ingestion's value
+- `doc.created_at` is unchanged (still the original SAGE ingestion time)
+
+**Rationale:** Force re-ingestion is a recovery mechanism. The file's mtime
+may have changed (e.g., after a restore or copy), and the document record
+should reflect the current state of the source.
+
+### TEST-SAGE-BH-051: source_modified_at round-trips through graph store
+
+**Artifact:** `sage/storage/graph_store.py` (insert_document, get_document)
+**Category:** graph_store, serialization
+**Decision:** `source_modified_at` is serialized as ISO 8601 text in SQLite
+and deserialized back to a datetime on retrieval, following the same pattern
+as `projected_at` and `indexed_at`.
+
+**Precondition:** SAGE vault initialized.
+
+**Input:** Insert a Document with `source_modified_at` set to a known datetime.
+Retrieve it via `get_document`.
+
+**Expected:**
+- Retrieved `doc.source_modified_at` equals the original value
+- The value is a timezone-aware datetime
+
+**Rationale:** Nullable datetime fields must survive the SQLite TEXT round-trip.
+This test guards the serialization and deserialization paths.
+
+### TEST-SAGE-BH-052: created_at remains SAGE ingestion time, distinct from source_modified_at
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (Document.created_at, Document.source_modified_at)
+**Category:** ingestion, provenance
+**Decision:** `created_at` records when SAGE first processed the document.
+`source_modified_at` records the source file's filesystem mtime. The two
+fields serve different purposes and are set independently.
+
+**Precondition:** Source file with mtime set to a date well in the past
+(e.g., 2020-01-01).
+
+**Input:** `ingest(source="old_file.md", adapter="markdown")`
+
+**Expected:**
+- `doc.created_at` is close to the current time (within 5 seconds)
+- `doc.source_modified_at` matches the file's old mtime
+- `doc.created_at != doc.source_modified_at`
+
+**Rationale:** `created_at` as ingestion timestamp is useful for debugging
+batch import issues. `source_modified_at` is the provenance signal for
+content chronology. Conflating the two would lose one of those signals.
+
 
 ---
 
@@ -954,3 +1044,4 @@ These design decisions require modifications to the Formal Substrate:
 7. **Vault config** -- add `retrieval_health.assertions_file` optional string field.
 8. **PipelineStatus enum** -- no change needed; `abstraction_skipped` semantics are clarified
    by test assertions but the enum value is unchanged.
+9. **Document.source_modified_at** -- add nullable date-time field. Source file mtime extracted by adapter at ingestion.

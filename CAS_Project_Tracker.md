@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v22
+**Version:** v24
 **Last updated:** 2026-04-06
 
 ---
@@ -15,8 +15,8 @@
 | 4 | Deployment Model | v1.0 | Development | — |
 | 5 | ADR Store | v1.10 (schema), 14 ADRs | Development | — |
 | 6 | Formatting Standards | v1.0 | Development | — |
-| 7 | Formal Substrate | v1.1 | Development | — |
-| 8 | Test Plan | v0.4 (tier 1 + SAGE tier 2 behavioral + adapter) | Development | — |
+| 7 | Formal Substrate | v1.2 | Development | — |
+| 8 | Test Plan | v0.5 (tier 1 + SAGE tier 2 behavioral + adapter + provenance) | Development | — |
 | 9 | Working Code | — | Planned | — |
 
 ## Domain Instantiation Documents
@@ -85,6 +85,7 @@
 - v0.1 updated 2026-03-30. Schema review and manifest cleanup: removed organize from policy.schema.json permitted_operations enum (CAS-ADR-014). Manifest: removed errant $schema/$id keywords (manifest is a data document, not a schema), added decision log entry schema to deferred list (CAS-ADR-012), removed source_references from all schema and deferred entries (architecture documents point to the substrate, not the reverse; provenance recorded in revision history only).
 - v1.0 delivered 2026-03-31. API contracts and data model schemas resolving all five deferred items from v0.1: (1) SAGE Core API OpenAPI specification (sage/sage_core_api.openapi.yaml), 14 operations across 7 tags, developed against SAGE Architecture Reference v1.4 Section 7. (2) ROOT Harness Orchestration API OpenAPI specification (root_harness/orchestration_api.openapi.yaml), 9 operations across 5 tags, developed against ROOT Harness Architecture Reference v1.0 Section 2.5. (3) Event stream schema (root_harness/event_stream.schema.json), 15 event types in 7 categories per CAS-ADR-013. (4) Interrupt contracts and approval policy schema (root_harness/interrupt.schema.json), covering InterruptDescriptor, ApproveRequest, ApprovalPolicy, and supporting types. (5) Decision log schema (sage/decision_log.schema.json), three entry categories per CAS-ADR-012. Promoted to v1.0: all contributions listed in SAGE Architecture Reference Section 8.3 and ROOT Harness Architecture Reference Section 8.2 are present with no known gaps.
 - v1.1 delivered 2026-04-05. SAGE tier 2 behavioral design decisions applied. Seven schema changes across sage_core_api.openapi.yaml and vault_config.schema.json: (1) Document.indexed_at made nullable (null until indexing completes). (2) Document.pipeline_error added (failure description). (3) Edge.id added (auto-generated, enables duplicate edge disambiguation). (4) TraversalNode.edge_count added (deduplication signal). (5) IngestRequest.force added (duplicate detection bypass for failure recovery). (6) SetLifecycleResponse schema added with optional warnings array. (7) retrieval_health section added to vault config. Also: 409 duplicate content response on ingest endpoint; abstraction.enabled description updated for strict quality gate. PIM Health config validated against updated schema.
+- v1.2 delivered 2026-04-06. Source file provenance. Added Document.source_modified_at (nullable date-time) to sage_core_api.openapi.yaml. Captures the source file's filesystem modification timestamp at ingestion time, extracted by source adapters from st_mtime. Distinct from created_at (SAGE ingestion timestamp). Null for non-file sources or adapters that do not provide it.
 - No further pending corrections or revisions identified.
 
 ### 8. Test Plan (v0.3)
@@ -95,6 +96,7 @@
 - v0.2 delivered 2026-04-05. SAGE tier 2 behavioral test specifications. 19 design decisions across 7 SAGE subsystems (graph store, access control, lifecycle, ingestion, retrieval, graph operations, utilities) resolved through structured question-and-answer specification. 42 behavioral tests in tests/sage/behavioral_tests.md. Cross-cutting boundary tests expanded from stub to 12 tests (6 fully specified from SAGE decisions, 6 stubs awaiting ROOT Harness tier 2 decisions). Test plan manifest updated to v0.2.
 - v0.3 delivered 2026-04-06. SAGE adapter test specifications. 25 tests across 2 production adapters: LanceDB ContentStore (17 tests covering initialization, indexing, removal, vector search, BM25 search, heading prefix retrieval, persistence, edge cases) and nomic-embed-text EmbeddingProvider (8 tests covering dimension, determinism, normalization, batch behavior, similarity, edge cases). Encodes 13 design decisions for production adapter implementations. Test plan manifest updated to v0.3.
 - v0.4 delivered 2026-04-06. Qwen3 AbstractionProvider adapter test specifications. 8 tests (AD-026 through AD-033) covering initialization (eager model load, fail-fast), output shape (non-empty string, max_tokens bound), determinism (greedy decoding), edge cases (short input, long input truncation), semantic quality smoke test, and error propagation. Encodes 8 design decisions for the production abstraction provider (Qwen3-30B-A3B-Instruct-2507 via MLX). Test plan manifest updated to v0.4.
+- v0.5 delivered 2026-04-06. Source file provenance test specifications. 4 behavioral tests (BH-049 through BH-052) covering source_modified_at on new ingestion, force re-ingestion update, graph store round-trip, and created_at/source_modified_at distinction. 1 adapter test (AD-034) covering markdown adapter extraction of st_mtime into ProjectionResult.metadata. Test plan manifest updated to v0.5.
 - Deferred to step 20: pipeline-level bypass for documents with existing abstract sections (e.g., patent ABSTRACT headings). Vault-configurable option to prefer existing abstracts over LLM generation.
 - Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
@@ -111,6 +113,8 @@
 - LanceDB content store + nomic-embed-text embedding provider delivered 2026-04-06. Production adapters replacing StubContentStore and StubEmbeddingProvider. LanceDBContentStore: lazy table creation, cosine vector search, native FTS with eager rebuild after mutations, structural heading prefix matching with SQL escaping. NomicEmbeddingProvider: nomic-ai/nomic-embed-text-v1.5 via sentence-transformers, 768-dim L2-normalized output, eager model load with dimension validation probe. Wired into mcp_init.py (StubAbstractionProvider remains). 25 adapter tests passing (136 total). Dependencies: lancedb, sentence-transformers, einops, pyarrow.
 - Qwen3 abstraction provider delivered 2026-04-06. Production AbstractionProvider using Qwen3-30B-A3B-Instruct-2507-4bit via MLX on Apple Silicon. Eager model load with fail-fast init, greedy decoding for deterministic output, context-window-aware input truncation preserving leading content. Conditional wiring in mcp_init.py: Qwen3 provider when abstraction enabled and model configured, StubAbstractionProvider otherwise. mlx-lm added as optional dependency (`pip install -e ".[mlx]"`). PIM Health vault config updated to full HuggingFace model ID. 9 adapter tests passing (AD-026 through AD-033). 145 total tests passing.
 - All three SAGE production adapters now delivered: LanceDB ContentStore, nomic-embed-text EmbeddingProvider, Qwen3 AbstractionProvider. SAGE pipeline is fully operational for ingestion with semantic abstract generation.
+- Source file provenance delivered 2026-04-06. Added Document.source_modified_at (nullable datetime) across all layers: Pydantic model, SQLite schema with ALTER TABLE migration for existing databases, graph store serialization/deserialization, markdown adapter (extracts st_mtime via Path.stat()), and ingestion service (both new-document and force-re-ingestion paths). created_at remains as SAGE ingestion timestamp. 5 new tests passing (BH-049 through BH-052, AD-034). 150 total tests passing.
+- SAGE MCP server registered in Claude Desktop 2026-04-06. Configuration at ~/Library/Application Support/Claude/claude_desktop_config.json. Launches .venv Python with both vaults (test, pim_health) via stdio transport. Vault config paths use absolute paths to ~/sage_vaults/{vault_id}/vault_config.yaml (tilde expansion not reliable in JSON config files). Claude Desktop Cowork mode can now discover and call all 11 SAGE tools.
 
 ### 10. PIM Health Instance (v0.1)
 

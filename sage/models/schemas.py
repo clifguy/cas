@@ -42,6 +42,7 @@ class Document(BaseModel):
     updated_at: datetime
     projected_at: datetime | None = None
     indexed_at: datetime | None = None
+    source_modified_at: datetime | None = None
     semantic_abstract: str | None = None
     pipeline_status: PipelineStatus = PipelineStatus.PROJECTION_COMPLETE
     pipeline_error: str | None = None

@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.4",
+  "manifest_version": "0.5",
   "manifest_date": "2026-04-06",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -52,7 +52,7 @@
         "docs/fs/sage/lifecycle.schema.json",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 48,
+      "test_count": 52,
       "decision_date": "2026-04-06"
     },
     {
@@ -94,9 +94,9 @@
         "sage/adapters/interfaces.py",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 33,
+      "test_count": 34,
       "decision_date": "2026-04-06",
-      "notes": "nomic-embed-text EmbeddingProvider (8 tests), LanceDB ContentStore (17 tests), Qwen3 AbstractionProvider (8 tests)."
+      "notes": "nomic-embed-text EmbeddingProvider (8 tests), LanceDB ContentStore (17 tests), Qwen3 AbstractionProvider (8 tests), Markdown adapter provenance (1 test)."
     }
   ],
   "fixture_directories": {
@@ -123,6 +123,11 @@
       "version": "0.4",
       "date": "2026-04-06",
       "summary": "Qwen3 AbstractionProvider adapter test specifications. 8 tests (AD-026 through AD-033) covering initialization (eager model load, fail-fast), output shape (non-empty string, max_tokens bound), determinism, edge cases (short input, long input truncation), semantic quality smoke test, and error propagation. Encodes 8 design decisions for the production abstraction provider (Qwen3-30B-A3B-Instruct-2507 via MLX)."
+    },
+    {
+      "version": "0.5",
+      "date": "2026-04-06",
+      "summary": "Source file provenance. 4 behavioral tests (BH-049 through BH-052) covering source_modified_at on new ingestion, force re-ingestion update, graph store round-trip, and created_at/source_modified_at distinction. 1 adapter test (AD-034) for markdown adapter st_mtime extraction. Formal Substrate updated to v1.2 (Document.source_modified_at added to OpenAPI spec)."
     }
   ]
 }

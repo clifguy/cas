@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS documents (
     updated_at TEXT NOT NULL,         -- ISO 8601
     projected_at TEXT,                -- ISO 8601, nullable
     indexed_at TEXT,                  -- ISO 8601, nullable (BH-007)
+    source_modified_at TEXT,          -- ISO 8601, nullable (BH-049)
     semantic_abstract TEXT,           -- nullable
     pipeline_status TEXT NOT NULL DEFAULT 'projection_complete',
     pipeline_error TEXT,              -- nullable (BH-022, BH-024)
@@ -64,6 +65,11 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);",
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);",
+]
+
+MIGRATIONS = [
+    # v1 -> v2: source file provenance (BH-049)
+    "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;",
 ]
 
 ALL_DDL = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, *INDEXES]

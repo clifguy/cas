@@ -1,12 +1,14 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-033).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-034).
 
 Production adapter tests for nomic-embed-text EmbeddingProvider, LanceDB
-ContentStore, and Qwen3 AbstractionProvider. Embedding and content store
-tests require nomic-embed-text (~270MB download on first run). Abstraction
-tests require mlx-lm and Qwen3 model weights (~16GB download on first run).
+ContentStore, Qwen3 AbstractionProvider, and Markdown source adapter
+provenance. Embedding and content store tests require nomic-embed-text
+(~270MB download on first run). Abstraction tests require mlx-lm and
+Qwen3 model weights (~16GB download on first run). Markdown adapter tests
+have no external dependencies.
 
 Tests are organized in implementation dependency order: embedding provider
-first, then content store, then abstraction provider.
+first, then content store, then abstraction provider, then markdown adapter.
 """
 
 import math
@@ -670,3 +672,34 @@ class TestQwen3AbstractionProvider:
 
         with pytest.raises(RuntimeError, match="Simulated MLX inference failure"):
             await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+
+
+# ── Markdown Adapter: Source Provenance ────────────────────────────
+
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+
+class TestMarkdownAdapterProvenance:
+    """AD-034: Markdown adapter extracts source_modified_at from file mtime."""
+
+    async def test_ad_034_source_modified_at_in_metadata(self, tmp_path):
+        """AD-034: Markdown adapter populates source_modified_at from st_mtime."""
+        adapter = MarkdownAdapter()
+
+        test_file = tmp_path / "test_provenance.md"
+        test_file.write_text("# Test\n\nContent for provenance test.")
+
+        # Set a known mtime
+        known_mtime = datetime(2023, 4, 20, 10, 0, 0, tzinfo=timezone.utc)
+        os.utime(test_file, (test_file.stat().st_atime, known_mtime.timestamp()))
+
+        result = await adapter.project(test_file)
+
+        assert "source_modified_at" in result.metadata
+        parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
+        assert parsed.tzinfo is not None  # timezone-aware
+        assert abs((parsed - known_mtime).total_seconds()) < 1.0

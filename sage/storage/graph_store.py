@@ -16,7 +16,7 @@ from typing import Any, Callable, TypeVar
 
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, UserType
 from sage.models.schemas import Document, Edge, User
-from sage.storage.migrations import ALL_DDL
+from sage.storage.migrations import ALL_DDL, MIGRATIONS
 
 T = TypeVar("T")
 
@@ -61,6 +61,12 @@ class GraphStore:
         conn = self._get_connection()
         for ddl in ALL_DDL:
             conn.execute(ddl)
+        # Apply ALTER TABLE migrations idempotently for existing databases
+        for migration in MIGRATIONS:
+            try:
+                conn.execute(migration)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         conn.commit()
 
     async def close(self) -> None:
@@ -88,8 +94,9 @@ class GraphStore:
                 version_label, project, tags, authority_scope, doc_type,
                 source_content_hash, adapter_version, created_by, created_at,
                 last_modified_by, updated_at, projected_at, indexed_at,
+                source_modified_at,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc.id,
                 doc.title,
@@ -109,6 +116,7 @@ class GraphStore:
                 doc.updated_at.isoformat(),
                 doc.projected_at.isoformat() if doc.projected_at else None,
                 doc.indexed_at.isoformat() if doc.indexed_at else None,
+                doc.source_modified_at.isoformat() if doc.source_modified_at else None,
                 doc.semantic_abstract,
                 doc.pipeline_status.value,
                 doc.pipeline_error,
@@ -464,6 +472,11 @@ class GraphStore:
             indexed_at=(
                 datetime.fromisoformat(row["indexed_at"])
                 if row["indexed_at"]
+                else None
+            ),
+            source_modified_at=(
+                datetime.fromisoformat(row["source_modified_at"])
+                if row["source_modified_at"]
                 else None
             ),
             semantic_abstract=row["semantic_abstract"],

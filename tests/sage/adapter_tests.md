@@ -729,3 +729,32 @@ generate call to raise RuntimeError).
 swallows the error and returns empty or partial output, the pipeline would
 incorrectly mark the document as `abstraction_complete` with a degraded
 abstract, violating the strict quality gate.
+
+---
+
+## 4. Markdown Adapter -- Source Provenance
+
+### TEST-SAGE-AD-034: Markdown adapter extracts source_modified_at from file mtime
+
+**Artifact:** `sage/source_adapters/markdown_adapter.py` (MarkdownAdapter.project)
+**Category:** provenance, metadata
+**Decision:** The markdown adapter calls `source_path.stat()` to extract the
+file's `st_mtime` and includes it in `ProjectionResult.metadata` as an
+ISO 8601 string keyed as `"source_modified_at"`.
+
+**Precondition:** Temporary markdown file created with a known modification
+time (set via `os.utime` for determinism).
+
+**Input:** `adapter.project(source_path)`
+
+**Expected:**
+- `result.metadata["source_modified_at"]` is a string
+- Parsing it with `datetime.fromisoformat()` succeeds
+- The parsed datetime is timezone-aware (UTC)
+- The parsed datetime matches the file's `st_mtime` (within 1-second tolerance)
+
+**Rationale:** File-based adapters are the natural point to extract filesystem
+metadata. Centralizing this in the ingestion service would couple it to
+filesystem assumptions that don't apply to all adapter types (e.g., future
+API-based adapters). The ISO 8601 string format keeps `ProjectionResult.metadata`
+serializable without importing datetime into the base adapter module.

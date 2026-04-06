@@ -886,6 +886,14 @@ components:
             Last time projection was chunked and embedded into content store.
             Null until indexing completes (pipeline_status reaches
             indexing_complete). Not updated by abstraction (Stage 3).
+        source_modified_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Modification timestamp of the source file at time of ingestion.
+            Extracted by source adapters from filesystem metadata (st_mtime).
+            Null for non-file sources or when the adapter does not provide it.
         semantic_abstract:
           type: string
           nullable: true

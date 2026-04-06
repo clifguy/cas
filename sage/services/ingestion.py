@@ -82,6 +82,13 @@ class IngestionService:
 
         now = datetime.now(timezone.utc)
 
+        source_modified_at_str = projection.metadata.get("source_modified_at")
+        source_modified_at = (
+            datetime.fromisoformat(source_modified_at_str)
+            if source_modified_at_str
+            else None
+        )
+
         if existing is not None and request.force:
             # Force re-ingestion: reuse existing record (BH-019)
             updates = {
@@ -92,6 +99,7 @@ class IngestionService:
                 "updated_at": now.isoformat(),
                 "semantic_abstract": None,
                 "indexed_at": None,
+                "source_modified_at": source_modified_at_str,
             }
             doc = await self._store.update_document(existing.id, updates)
             http_status = 200
@@ -117,6 +125,7 @@ class IngestionService:
                 last_modified_by=created_by,
                 updated_at=now,
                 projected_at=now,
+                source_modified_at=source_modified_at,
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
             )
             await self._store.insert_document(doc)

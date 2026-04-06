@@ -5,6 +5,7 @@ Computes SHA-256 of source file bytes for content_hash.
 
 import hashlib
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
@@ -23,12 +24,17 @@ class MarkdownAdapter(SourceAdapter):
         headings = self._parse_headings(text)
         title = self._extract_title(headings, source_path)
 
+        source_mtime = datetime.fromtimestamp(
+            source_path.stat().st_mtime, tz=timezone.utc
+        )
+
         return ProjectionResult(
             text=text,
             headings=headings,
             content_hash=content_hash,
             adapter_version=self.VERSION,
             title=title,
+            metadata={"source_modified_at": source_mtime.isoformat()},
         )
 
     def _parse_headings(self, text: str) -> list[HeadingNode]:
