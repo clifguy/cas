@@ -1,59 +1,84 @@
 """SQLite graph store for SAGE documents, edges, and users.
 
-WAL mode enabled at startup (BH-004). All async methods use
-asyncio.to_thread() to avoid blocking the event loop.
+WAL mode enabled per-connection (BH-004). Each thread in the executor
+pool gets its own connection via threading.local(), allowing concurrent
+reads under WAL mode while SQLite serializes writes internally.
 """
 
 import asyncio
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Callable, TypeVar
 
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, UserType
 from sage.models.schemas import Document, Edge, User
 from sage.storage.migrations import ALL_DDL
 
+T = TypeVar("T")
+
 
 class GraphStore:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, max_connections: int = 4) -> None:
         self._db_path = db_path
-        self._conn: sqlite3.Connection | None = None
+        self._max_connections = max_connections
+        self._executor: ThreadPoolExecutor | None = None
+        self._local = threading.local()
+        self._all_connections: list[sqlite3.Connection] = []
+        self._all_connections_lock = threading.Lock()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Return the thread-local connection, creating one if needed."""
+        conn: sqlite3.Connection | None = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            self._local.conn = conn
+            with self._all_connections_lock:
+                self._all_connections.append(conn)
+        return conn
+
+    async def _run(self, fn: Callable[..., T], *args: Any) -> T:
+        """Dispatch a sync callable to the connection-pool executor."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, fn, *args)
 
     async def initialize(self) -> None:
-        """Create database, enable WAL mode (BH-004), run migrations."""
+        """Create database, start executor pool, run migrations."""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(self._initialize_sync)
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._max_connections,
+            thread_name_prefix="sage-graph",
+        )
+        await self._run(self._initialize_sync)
 
     def _initialize_sync(self) -> None:
         conn = self._get_connection()
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
         for ddl in ALL_DDL:
             conn.execute(ddl)
         conn.commit()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(
-                str(self._db_path),
-                check_same_thread=False,
-            )
-            self._conn.row_factory = sqlite3.Row
-        return self._conn
-
     async def close(self) -> None:
-        if self._conn is not None:
-            conn = self._conn
-            self._conn = None
-            await asyncio.to_thread(conn.close)
+        if self._executor is not None:
+            executor = self._executor
+            self._executor = None
+            executor.shutdown(wait=True)
+        with self._all_connections_lock:
+            for conn in self._all_connections:
+                conn.close()
+            self._all_connections.clear()
 
     # ------------------------------------------------------------------
     # Document operations
     # ------------------------------------------------------------------
 
     async def insert_document(self, doc: Document) -> None:
-        await asyncio.to_thread(self._insert_document_sync, doc)
+        await self._run(self._insert_document_sync, doc)
 
     def _insert_document_sync(self, doc: Document) -> None:
         conn = self._get_connection()
@@ -93,7 +118,7 @@ class GraphStore:
         conn.commit()
 
     async def get_document(self, doc_id: str) -> Document | None:
-        return await asyncio.to_thread(self._get_document_sync, doc_id)
+        return await self._run(self._get_document_sync, doc_id)
 
     def _get_document_sync(self, doc_id: str) -> Document | None:
         conn = self._get_connection()
@@ -105,7 +130,7 @@ class GraphStore:
         return self._row_to_document(row)
 
     async def update_document(self, doc_id: str, updates: dict) -> Document | None:
-        return await asyncio.to_thread(self._update_document_sync, doc_id, updates)
+        return await self._run(self._update_document_sync, doc_id, updates)
 
     def _update_document_sync(self, doc_id: str, updates: dict) -> Document | None:
         conn = self._get_connection()
@@ -130,7 +155,7 @@ class GraphStore:
 
     async def list_all_documents(self) -> list[Document]:
         """Return all documents in the graph store."""
-        return await asyncio.to_thread(self._list_all_documents_sync)
+        return await self._run(self._list_all_documents_sync)
 
     def _list_all_documents_sync(self) -> list[Document]:
         conn = self._get_connection()
@@ -140,7 +165,7 @@ class GraphStore:
     async def find_by_source_path_and_hash(
         self, source_path: str, content_hash: str
     ) -> Document | None:
-        return await asyncio.to_thread(
+        return await self._run(
             self._find_by_source_path_and_hash_sync, source_path, content_hash
         )
 
@@ -157,7 +182,7 @@ class GraphStore:
         return self._row_to_document(row)
 
     async def find_by_source_path(self, source_path: str) -> list[Document]:
-        return await asyncio.to_thread(self._find_by_source_path_sync, source_path)
+        return await self._run(self._find_by_source_path_sync, source_path)
 
     def _find_by_source_path_sync(self, source_path: str) -> list[Document]:
         conn = self._get_connection()
@@ -171,7 +196,7 @@ class GraphStore:
     # ------------------------------------------------------------------
 
     async def insert_edge(self, edge: Edge) -> None:
-        await asyncio.to_thread(self._insert_edge_sync, edge)
+        await self._run(self._insert_edge_sync, edge)
 
     def _insert_edge_sync(self, edge: Edge) -> None:
         conn = self._get_connection()
@@ -193,7 +218,7 @@ class GraphStore:
     async def get_edges_by_source(
         self, source_id: str, edge_type: str | None = None
     ) -> list[Edge]:
-        return await asyncio.to_thread(
+        return await self._run(
             self._get_edges_by_source_sync, source_id, edge_type
         )
 
@@ -215,7 +240,7 @@ class GraphStore:
     async def get_edges_by_target(
         self, target_id: str, edge_type: str | None = None
     ) -> list[Edge]:
-        return await asyncio.to_thread(
+        return await self._run(
             self._get_edges_by_target_sync, target_id, edge_type
         )
 
@@ -246,7 +271,7 @@ class GraphStore:
         depth: int,
     ) -> list[dict]:
         """Recursive CTE traversal returning raw dicts for service-layer dedup."""
-        return await asyncio.to_thread(
+        return await self._run(
             self._traverse_sync, start_id, edge_type, direction, depth
         )
 
@@ -352,7 +377,7 @@ class GraphStore:
     # ------------------------------------------------------------------
 
     async def insert_user(self, user: User) -> None:
-        await asyncio.to_thread(self._insert_user_sync, user)
+        await self._run(self._insert_user_sync, user)
 
     def _insert_user_sync(self, user: User) -> None:
         conn = self._get_connection()
@@ -363,7 +388,7 @@ class GraphStore:
         conn.commit()
 
     async def get_user(self, user_id: str) -> User | None:
-        return await asyncio.to_thread(self._get_user_sync, user_id)
+        return await self._run(self._get_user_sync, user_id)
 
     def _get_user_sync(self, user_id: str) -> User | None:
         conn = self._get_connection()
@@ -375,7 +400,7 @@ class GraphStore:
         return self._row_to_user(row)
 
     async def get_user_by_display_name(self, display_name: str) -> User | None:
-        return await asyncio.to_thread(
+        return await self._run(
             self._get_user_by_display_name_sync, display_name
         )
 
@@ -389,7 +414,7 @@ class GraphStore:
         return self._row_to_user(row)
 
     async def list_users(self) -> list[User]:
-        return await asyncio.to_thread(self._list_users_sync)
+        return await self._run(self._list_users_sync)
 
     def _list_users_sync(self) -> list[User]:
         conn = self._get_connection()
@@ -401,7 +426,7 @@ class GraphStore:
     # ------------------------------------------------------------------
 
     async def get_journal_mode(self) -> str:
-        return await asyncio.to_thread(self._get_journal_mode_sync)
+        return await self._run(self._get_journal_mode_sync)
 
     def _get_journal_mode_sync(self) -> str:
         conn = self._get_connection()
