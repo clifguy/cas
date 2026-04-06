@@ -14,7 +14,7 @@ provider first (produces vectors consumed by content store tests), then content
 store.
 
 Test environment: tests use the test vault brain at `~/sage_vaults/test/brain/`
-for LanceDB storage, referencing `domains/test/sage_vault_config.yaml`.
+for LanceDB storage, referencing `~/sage_vaults/test/vault_config.yaml`.
 
 ---
 

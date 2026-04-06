@@ -13,6 +13,7 @@ from tests.helpers.schema_validation import SchemaValidator
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PIM_HEALTH_DIR = PROJECT_ROOT / "domains" / "pim_health"
+SAGE_VAULTS_DIR = Path.home() / "sage_vaults"
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"
 
 
@@ -42,8 +43,8 @@ def _load_yaml(path: Path) -> Any:
 
 @pytest.fixture(scope="session")
 def pim_health_config() -> dict[str, Any]:
-    """Load PIM Health sage_vault_config.yaml (full composed config)."""
-    return _load_yaml(PIM_HEALTH_DIR / "sage_vault_config.yaml")
+    """Load PIM Health vault_config.yaml from the vault root."""
+    return _load_yaml(SAGE_VAULTS_DIR / "pim_health" / "vault_config.yaml")
 
 
 @pytest.fixture(scope="session")

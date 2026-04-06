@@ -77,7 +77,7 @@
       "title": "Domain Instantiation Tests",
       "status": "specified",
       "covers": [
-        "domains/pim_health/sage_vault_config.yaml",
+        "~/sage_vaults/pim_health/vault_config.yaml",
         "domains/pim_health/pipeline.yaml",
         "domains/pim_health/agents.yaml",
         "domains/pim_health/policies.yaml",

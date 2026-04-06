@@ -149,7 +149,7 @@ independent of abstraction.
 
 ### TEST-SAGE-BH-009: Vault owner auto-registered at initialization
 
-**Artifact:** SAGE vault initialization, `sage_vault_config.yaml` (vault.owner)
+**Artifact:** SAGE vault initialization, `vault_config.yaml` (vault.owner)
 **Category:** access_control
 **Decision:** Vault init reads owner from config and auto-creates user record.
 

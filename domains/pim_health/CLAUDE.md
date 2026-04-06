@@ -4,13 +4,14 @@ Patent portfolio management domain. First and most complex CAS domain instantiat
 
 ## Files
 
-Five YAML configuration files validated against Formal Substrate v1.0 schemas:
+Four ROOT Harness YAML configuration files validated against Formal Substrate v1.0 schemas:
 
-- `sage_vault_config.yaml` — vault identity, document types, lifecycle, adapters, metadata extraction, edge inference
 - `pipeline.yaml` — pipeline stages, transitions, gatekeeper bindings, preconditions
 - `agents.yaml` — agent registrations (stewards and orchestrators)
 - `policies.yaml` — behavioral constraints per agent role
 - `workflows.yaml` — LangGraph workflow definitions
+
+The SAGE vault configuration lives at `~/sage_vaults/pim_health/vault_config.yaml` (outside the repository). The vault is the source of truth for its own configuration.
 
 ## Domain-Specific Terms
 

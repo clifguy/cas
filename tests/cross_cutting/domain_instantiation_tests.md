@@ -7,10 +7,10 @@ their schemas and maintain cross-reference integrity.
 
 ## Schema Validation Smoke Tests
 
-### TEST-DI-SM-001: PIM Health sage_vault_config.yaml validates
+### TEST-DI-SM-001: PIM Health vault_config.yaml validates
 
 **Artifact:** `docs/fs/sage/vault_config.schema.json`
-**Input:** Load `domains/pim_health/sage_vault_config.yaml`
+**Input:** Load `~/sage_vaults/pim_health/vault_config.yaml`
 **Expected:** PASS
 **Rationale:** Root schema with $ref composition against production config.
 
@@ -71,8 +71,8 @@ their schemas and maintain cross-reference integrity.
 
 ### TEST-DI-XR-004: Pipeline doc_types reference valid document types
 
-**Artifacts:** `domains/pim_health/pipeline.yaml`, `domains/pim_health/sage_vault_config.yaml`
-**Constraint:** Every `applicable_doc_types` value in pipeline stages must match a `doc_type.value` in sage_vault_config.yaml.
+**Artifacts:** `domains/pim_health/pipeline.yaml`, `~/sage_vaults/pim_health/vault_config.yaml`
+**Constraint:** Every `applicable_doc_types` value in pipeline stages must match a `doc_type.value` in vault_config.yaml.
 
 **Input:** Load both files. Extract all applicable_doc_types values. Extract all doc_type values.
 **Expected:** Every applicable doc type is present in the doc_type value set.
@@ -80,8 +80,8 @@ their schemas and maintain cross-reference integrity.
 
 ### TEST-DI-XR-005: Policy scope doc_types reference valid document types
 
-**Artifacts:** `domains/pim_health/policies.yaml`, `domains/pim_health/sage_vault_config.yaml`
-**Constraint:** Every `scope_restrictions.doc_types` value must match a `doc_type.value` in sage_vault_config.yaml.
+**Artifacts:** `domains/pim_health/policies.yaml`, `~/sage_vaults/pim_health/vault_config.yaml`
+**Constraint:** Every `scope_restrictions.doc_types` value must match a `doc_type.value` in vault_config.yaml.
 
 **Input:** Load both files. Extract all scope doc_types. Extract all doc_type values.
 **Expected:** Every scope doc type is present in the doc_type value set.

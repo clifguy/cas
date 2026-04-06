@@ -16,12 +16,14 @@ docs/
     root_harness/  # ROOT Harness config schemas + Orchestration API OpenAPI
   ref/             # Architecture reference documents (.docx)
 domains/
-  pim_health/      # PIM Health domain instantiation (YAML configs)
+  pim_health/      # PIM Health ROOT Harness configs (agents, pipeline, policies, workflows)
 sage/              # SAGE source code (Core API, adapters, storage layer)
 root_harness/      # ROOT Harness source code (orchestration, agents, workflows)
 app/               # CAS Application (HTML5 client)
 tests/             # Test plan and test code
 ```
+
+SAGE vault configurations live outside the repository at `~/sage_vaults/{vault_id}/vault_config.yaml`. Each vault is self-describing; its config is the source of truth for vault identity, document types, lifecycle, adapters, metadata extraction, and edge inference.
 
 ## Reference Data (Read On Demand)
 

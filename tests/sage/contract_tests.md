@@ -118,7 +118,7 @@ abstraction:
 **Category:** valid
 **Constraint:** Real domain config validates against root schema with $ref composition
 
-**Input:** Load `domains/pim_health/sage_vault_config.yaml`
+**Input:** Load `~/sage_vaults/pim_health/vault_config.yaml`
 
 **Expected:** PASS
 **Rationale:** Proves $ref composition works end-to-end with a production config.
