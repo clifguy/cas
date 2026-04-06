@@ -1,4 +1,4 @@
-"""Utilities router: export_projection and eval_retrieval endpoints."""
+"""Utilities router: export_projection, eval_retrieval, refresh_views."""
 
 from fastapi import APIRouter, Depends, Path
 
@@ -7,6 +7,7 @@ from sage.models.schemas import (
     EvalRetrievalResult,
     ExportProjectionRequest,
     ExportProjectionResponse,
+    RefreshViewsResponse,
 )
 from sage.services.utilities import UtilitiesService
 
@@ -32,3 +33,11 @@ async def eval_retrieval(
     service: UtilitiesService = Depends(get_utilities_service),
 ) -> EvalRetrievalResult:
     return await service.eval_retrieval(vault_id)
+
+
+@router.post("/refresh-views", response_model=RefreshViewsResponse)
+async def refresh_views(
+    vault_id: str = Depends(get_vault_id),
+    service: UtilitiesService = Depends(get_utilities_service),
+) -> RefreshViewsResponse:
+    return await service.refresh_views(vault_id)

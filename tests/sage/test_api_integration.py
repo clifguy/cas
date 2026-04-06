@@ -382,3 +382,20 @@ async def test_eval_retrieval_not_configured_400(client):
     resp = await client.post("/sage_vaults/test_vault/eval-retrieval")
     assert resp.status_code == 400
     assert resp.json()["code"] == "assertions_not_configured"
+
+
+async def test_refresh_views_200(client):
+    """POST /refresh-views returns 200 with views_generated count."""
+    # Ingest a document so there's something to generate views for
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    assert resp1.status_code == 201
+
+    resp2 = await client.post("/sage_vaults/test_vault/refresh-views")
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["vault_id"] == "test_vault"
+    assert isinstance(body["views_generated"], int)
+    assert body["views_generated"] >= 1  # at least by_lifecycle/active

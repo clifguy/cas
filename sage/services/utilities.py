@@ -1,6 +1,6 @@
-"""Utility services: export_projection and eval_retrieval.
+"""Utility services: export_projection, eval_retrieval, refresh_views.
 
-Covers behavioral tests BH-038 through BH-042.
+Covers behavioral tests BH-038 through BH-048.
 
 export_projection: Write stored projection text to a Markdown file.
   - Path containment: output_path must resolve within storage_root (BH-038, BH-040).
@@ -9,9 +9,19 @@ export_projection: Write stored projection text to a Markdown file.
 eval_retrieval: Run retrieval health assertions against the vault.
   - Assertions loaded from a separate YAML file (BH-041).
   - Missing or malformed file produces clear errors (BH-042).
+
+refresh_views: Regenerate symlink-based browsable folder views.
+  - Both by_doc_type/ and by_lifecycle/ views always generated (BH-043).
+  - Symlinks target original source files via relative paths (BH-044).
+  - Full regeneration on each call (BH-045).
+  - Failed-pipeline documents included (BH-046).
+  - Empty categories produce no directory (BH-047).
+  - Null doc_type excluded from by_doc_type/ view (BH-048).
 """
 
 import logging
+import os
+import shutil
 from pathlib import Path
 
 import yaml
@@ -31,6 +41,7 @@ from sage.models.schemas import (
     AssertionFailure,
     EvalRetrievalResult,
     ExportProjectionResponse,
+    RefreshViewsResponse,
 )
 from sage.storage.graph_store import GraphStore
 
@@ -197,3 +208,91 @@ class UtilitiesService:
             failure_count=len(failures),
             failures=failures,
         )
+
+    # ------------------------------------------------------------------
+    # refresh_views (BH-043 through BH-048)
+    # ------------------------------------------------------------------
+
+    async def refresh_views(self, vault_id: str) -> RefreshViewsResponse:
+        """Regenerate symlink-based browsable folder views.
+
+        Creates two view dimensions under {storage_root}/views/:
+          - by_doc_type/{doc_type}/ -- one directory per distinct doc_type
+          - by_lifecycle/{lifecycle_status}/ -- one directory per distinct status
+
+        Symlinks target the original source files via relative paths (BH-044).
+        Full regeneration: the views/ directory is wiped and rebuilt (BH-045).
+        Failed-pipeline documents are included (BH-046).
+        Empty categories produce no directory (BH-047).
+        Documents with null doc_type are excluded from by_doc_type/ (BH-048).
+        """
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        views_root = storage_root / "views"
+
+        # Full regeneration: wipe existing views (BH-045)
+        if views_root.exists():
+            shutil.rmtree(views_root)
+
+        # Fetch all documents from graph store
+        documents = await self._graph.list_all_documents()
+
+        # Build view buckets
+        by_doc_type: dict[str, list] = {}
+        by_lifecycle: dict[str, list] = {}
+
+        for doc in documents:
+            # by_doc_type: skip null doc_type (BH-048)
+            if doc.doc_type is not None:
+                by_doc_type.setdefault(doc.doc_type, []).append(doc)
+
+            # by_lifecycle: always has a value
+            by_lifecycle.setdefault(doc.lifecycle_status, []).append(doc)
+
+        views_generated = 0
+
+        # Generate by_doc_type/ directories (BH-047: only non-empty)
+        for doc_type, docs in by_doc_type.items():
+            type_dir = views_root / "by_doc_type" / doc_type
+            type_dir.mkdir(parents=True, exist_ok=True)
+            for doc in docs:
+                self._create_source_symlink(storage_root, type_dir, doc.source_path)
+            views_generated += 1
+
+        # Generate by_lifecycle/ directories (BH-047: only non-empty)
+        for status, docs in by_lifecycle.items():
+            status_dir = views_root / "by_lifecycle" / status
+            status_dir.mkdir(parents=True, exist_ok=True)
+            for doc in docs:
+                self._create_source_symlink(storage_root, status_dir, doc.source_path)
+            views_generated += 1
+
+        return RefreshViewsResponse(
+            vault_id=vault_id,
+            views_generated=views_generated,
+        )
+
+    @staticmethod
+    def _create_source_symlink(
+        storage_root: Path, link_dir: Path, source_path: str
+    ) -> None:
+        """Create a relative symlink from link_dir to the source file.
+
+        Symlink name is the original filename. If a name collision occurs
+        (two documents with the same filename), append a numeric suffix.
+        """
+        source_abs = storage_root / source_path
+        filename = source_abs.name
+
+        link_path = link_dir / filename
+        if link_path.exists() or link_path.is_symlink():
+            # Name collision: append numeric suffix
+            stem = source_abs.stem
+            suffix = source_abs.suffix
+            counter = 2
+            while link_path.exists() or link_path.is_symlink():
+                link_path = link_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        # Compute relative path from link_dir to source file (BH-044)
+        rel_target = os.path.relpath(source_abs, link_dir)
+        link_path.symlink_to(rel_target)

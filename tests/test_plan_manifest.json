@@ -52,8 +52,8 @@
         "docs/fs/sage/lifecycle.schema.json",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 42,
-      "decision_date": "2026-04-05"
+      "test_count": 48,
+      "decision_date": "2026-04-06"
     },
     {
       "path": "tests/cross_cutting/boundary_tests.md",

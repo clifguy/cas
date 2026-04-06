@@ -217,6 +217,11 @@ class AssertionFailure(BaseModel):
     actual_rank: int | None = None
 
 
+class RefreshViewsResponse(BaseModel):
+    vault_id: str
+    views_generated: int
+
+
 class EvalRetrievalResult(BaseModel):
     vault_id: str
     passed: bool

@@ -128,6 +128,15 @@ class GraphStore:
         conn.commit()
         return self._get_document_sync(doc_id)
 
+    async def list_all_documents(self) -> list[Document]:
+        """Return all documents in the graph store."""
+        return await asyncio.to_thread(self._list_all_documents_sync)
+
+    def _list_all_documents_sync(self) -> list[Document]:
+        conn = self._get_connection()
+        rows = conn.execute("SELECT * FROM documents").fetchall()
+        return [self._row_to_document(r) for r in rows]
+
     async def find_by_source_path_and_hash(
         self, source_path: str, content_hash: str
     ) -> Document | None:

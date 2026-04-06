@@ -802,6 +802,143 @@ allows assertion maintenance independent of vault configuration.
 **Rationale:** Clear error for operational misconfiguration.
 
 
+### TEST-SAGE-BH-043: refresh_views generates by_doc_type and by_lifecycle directories
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (refresh_views)
+**Category:** utilities, filesystem
+**Decision:** Both view dimensions (doc_type and lifecycle_status) are always
+generated. Output location is `{storage_root}/views/by_doc_type/` and
+`{storage_root}/views/by_lifecycle/`.
+
+**Precondition:** Vault with three documents:
+- doc_a: `doc_type: "patent"`, `lifecycle_status: "active"`
+- doc_b: `doc_type: "patent"`, `lifecycle_status: "superseded"`
+- doc_c: `doc_type: "glossary"`, `lifecycle_status: "active"`
+
+**Input:** `refresh_views()`
+
+**Expected:**
+- HTTP 200
+- `views_generated` >= 3 (at least: `by_doc_type/patent`, `by_doc_type/glossary`,
+  `by_lifecycle/active`)
+- Directory `{storage_root}/views/by_doc_type/patent/` exists with symlinks to
+  doc_a and doc_b source files
+- Directory `{storage_root}/views/by_doc_type/glossary/` exists with symlink to
+  doc_c source file
+- Directory `{storage_root}/views/by_lifecycle/active/` exists with symlinks to
+  doc_a and doc_c source files
+- Directory `{storage_root}/views/by_lifecycle/superseded/` exists with symlink to
+  doc_b source file
+
+**Rationale:** Both dimensions are cheap to generate and useful for different
+browsing patterns. No configuration needed for what is always a small number
+of directories.
+
+### TEST-SAGE-BH-044: Symlinks point to original source files
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (refresh_views)
+**Category:** utilities, filesystem
+**Decision:** Symlinks target the original source files at
+`{storage_root}/{source_path}`.
+
+**Precondition:** Document ingested from `patents/claim_set.docx`.
+
+**Input:** `refresh_views()`
+
+**Expected:**
+- Symlink in `views/by_doc_type/{doc_type}/` resolves to
+  `{storage_root}/patents/claim_set.docx`
+- Symlink target is a relative path (not absolute) to remain valid if the
+  vault root is moved
+- Symlink name is the original filename (`claim_set.docx`)
+
+**Rationale:** Humans browsing the filesystem want to open the original file,
+not the structured projection. Relative symlink targets survive vault relocation.
+
+### TEST-SAGE-BH-045: refresh_views performs full regeneration
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (refresh_views)
+**Category:** utilities, filesystem
+**Decision:** Full regeneration: the `views/` directory is wiped and rebuilt
+from current graph state on each call.
+
+**Precondition:** Document doc_a initially `active`. Run `refresh_views()`.
+Then `set_lifecycle(action: "archive")` on doc_a.
+
+**Input:** `refresh_views()` (second call, after lifecycle change)
+
+**Expected:**
+- `views/by_lifecycle/active/` no longer contains a symlink to doc_a
+- `views/by_lifecycle/archived/` contains a symlink to doc_a
+- No stale symlinks remain from the previous generation
+
+**Rationale:** Full regeneration is the simplest correct approach. The endpoint
+description says "regenerate," not "update." The number of documents in a
+personal vault makes incremental updates unnecessary.
+
+### TEST-SAGE-BH-046: Failed-pipeline documents appear in views
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (refresh_views)
+**Category:** utilities, filesystem, pipeline_interaction
+**Decision:** Views reflect graph state, not retrieval eligibility. Documents
+with failed pipelines appear in views like any other document.
+
+**Precondition:** Document doc_a with `pipeline_status: failed`,
+`lifecycle_status: active`, `doc_type: "patent"`.
+
+**Input:** `refresh_views()`
+
+**Expected:**
+- Symlink to doc_a appears in `views/by_lifecycle/active/`
+- Symlink to doc_a appears in `views/by_doc_type/patent/`
+
+**Rationale:** The filesystem view is for human browsing, not retrieval. A human
+might want to find a failed document precisely to diagnose the failure. Hiding
+quarantined documents from the filesystem would be inconsistent with
+`get_document` returning them (BH-022).
+
+### TEST-SAGE-BH-047: Empty doc_type or lifecycle status produces no directory
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (refresh_views)
+**Category:** utilities, filesystem
+**Decision:** Only create subdirectories that contain at least one symlink.
+`views_generated` counts the number of subdirectories created.
+
+**Precondition:** Vault with one document: `doc_type: "patent"`,
+`lifecycle_status: "active"`.
+
+**Input:** `refresh_views()`
+
+**Expected:**
+- `views/by_doc_type/patent/` exists (one symlink)
+- `views/by_lifecycle/active/` exists (one symlink)
+- No other subdirectories under `by_doc_type/` or `by_lifecycle/`
+- `views_generated: 2`
+
+**Rationale:** Empty directories are clutter. The view count gives the caller
+a quick signal of vault shape without listing directory contents.
+
+### TEST-SAGE-BH-048: Documents with null doc_type excluded from by_doc_type view
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (refresh_views)
+**Category:** utilities, filesystem
+**Decision:** Documents without a doc_type assignment are not represented in
+the `by_doc_type/` view. They still appear in the `by_lifecycle/` view.
+
+**Precondition:** Document doc_a with `doc_type: null`, `lifecycle_status: "active"`.
+
+**Input:** `refresh_views()`
+
+**Expected:**
+- `views/by_doc_type/` has no subdirectory containing a symlink to doc_a
+- `views/by_lifecycle/active/` contains a symlink to doc_a
+
+**Rationale:** A null doc_type means the document has not been classified.
+Creating a `by_doc_type/null/` or `by_doc_type/unclassified/` directory
+would be misleading. The lifecycle view always has a value (documents enter
+the vault as `active`), so it is always complete.
+
+
 ---
 
 ## Schema Changes Required
