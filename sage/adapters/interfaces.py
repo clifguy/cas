@@ -51,6 +51,16 @@ class ContentStore(ABC):
     async def search_bm25(self, query: str, limit: int = 10) -> list[SearchResult]:
         """BM25 keyword search."""
 
+    @abstractmethod
+    async def get_chunks_by_heading_prefix(
+        self, document_id: str, heading_prefix: str
+    ) -> list[Chunk]:
+        """Return chunks whose heading_path starts with the given prefix.
+
+        Used by deterministic retrieval mode. Returns chunks in document
+        order (by chunk_index).
+        """
+
 
 class EmbeddingProvider(ABC):
     """Interface for text embedding (sentence-transformers in production)."""

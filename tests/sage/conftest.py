@@ -11,6 +11,7 @@ from pathlib import Path
 
 from sage.adapters.stubs import (
     FailingAbstractionProvider,
+    SeededEmbeddingProvider,
     StubAbstractionProvider,
     StubContentStore,
     StubEmbeddingProvider,

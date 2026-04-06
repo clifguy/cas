@@ -1,7 +1,6 @@
-"""Graph operations: link, check_preconditions, traverse, discover stub."""
+"""Graph operations: link, check_preconditions, traverse."""
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 
 from sage.api.dependencies import get_graph_ops_service, get_vault_id
 from sage.models.schemas import (
@@ -41,25 +40,3 @@ async def traverse(
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> TraverseResponse:
     return await service.traverse(request)
-
-
-@router.post("/discover")
-async def discover(
-    request: dict,
-    vault_id: str = Depends(get_vault_id),
-    service: GraphOpsService = Depends(get_graph_ops_service),
-) -> JSONResponse:
-    """Minimal stub: gates deterministic mode on pipeline status (BH-021).
-
-    Full discover implementation replaces this in Slice 3.
-    """
-    mode = request.get("mode")
-    document_id = request.get("document_id")
-
-    if mode == "deterministic" and document_id:
-        await service.check_pipeline_for_retrieval(document_id)
-
-    return JSONResponse(
-        status_code=501,
-        content={"code": "not_implemented", "message": "Discover not yet implemented"},
-    )

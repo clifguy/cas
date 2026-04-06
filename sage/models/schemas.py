@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
+    RetrievalMode,
+    RetrievalScope,
     SourceType,
     TraversalDirection,
     UserType,
@@ -153,6 +155,45 @@ class PreconditionResult(BaseModel):
     function_id: str
     satisfied: bool
     checks: list[PreconditionCheck]
+
+
+# ---------------------------------------------------------------------------
+# Discover (retrieval) models
+# ---------------------------------------------------------------------------
+
+class RetrievalFilters(BaseModel):
+    doc_type: str | None = None
+    project: str | None = None
+    lifecycle_status: str | None = None
+    tags: list[str] | None = None
+    document_ids: list[str] | None = None
+
+
+class DiscoverRequest(BaseModel):
+    mode: RetrievalMode
+    query: str | None = None
+    scope: RetrievalScope = RetrievalScope.ALL
+    filters: RetrievalFilters | None = None
+    document_id: str | None = None
+    heading_path: str | None = None
+    authority_document_id: str | None = None
+    limit: int = Field(default=10, ge=1, le=100)
+    cursor: str | None = None
+    use_hybrid: bool = False
+
+
+class DiscoverHit(BaseModel):
+    document: DocumentSummary
+    chunk_content: str | None = None
+    heading_path: str | None = None
+    relevance_score: float | None = None
+
+
+class DiscoverResponse(BaseModel):
+    mode: RetrievalMode
+    results: list[DiscoverHit]
+    total_available: int
+    cursor: str | None = None
 
 
 # ---------------------------------------------------------------------------

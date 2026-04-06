@@ -116,6 +116,18 @@ class PipelineIncompleteError(SAGEError):
         )
 
 
+class HeadingNotFoundError(SAGEError):
+    """404: heading path not found in document (BH-030)."""
+
+    def __init__(self, heading_path: str, document_id: str) -> None:
+        super().__init__(
+            "heading_not_found",
+            f"Heading '{heading_path}' not found in document {document_id}",
+            404,
+            {"heading_path": heading_path, "document_id": document_id},
+        )
+
+
 class SelfReferentialEdgeError(SAGEError):
     """400: source_id and target_id are the same document."""
 

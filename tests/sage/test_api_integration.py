@@ -267,3 +267,65 @@ async def test_traverse_200(client):
     body = resp2.json()
     assert body["start_id"] == doc_id
     assert isinstance(body["nodes"], list)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval (Slice 3)
+# ---------------------------------------------------------------------------
+
+async def test_discover_semantic_200(client):
+    """POST /discover with semantic mode returns 200."""
+    # Ingest a document first
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    assert resp1.status_code == 201
+
+    # Wait for background pipeline
+    await asyncio.sleep(0.5)
+
+    resp2 = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "semantic", "query": "sample content"},
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["mode"] == "semantic"
+    assert isinstance(body["results"], list)
+
+
+async def test_discover_deterministic_200(app, client):
+    """POST /discover with deterministic mode returns matching chunks."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    assert resp1.status_code == 201
+    doc_id = resp1.json()["document"]["id"]
+
+    # Wait for background pipeline to index chunks
+    await asyncio.sleep(0.5)
+
+    resp2 = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={
+            "mode": "deterministic",
+            "document_id": doc_id,
+            "heading_path": "Sample Document",
+        },
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["mode"] == "deterministic"
+    assert len(body["results"]) > 0
+
+
+async def test_discover_semantic_missing_query_422(client):
+    """POST /discover semantic mode without query returns validation error."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "semantic"},
+    )
+    # Missing query for semantic mode = 400
+    assert resp.status_code == 400
