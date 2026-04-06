@@ -61,6 +61,13 @@ class ContentStore(ABC):
         order (by chunk_index).
         """
 
+    @abstractmethod
+    async def get_all_chunks(self, document_id: str) -> list[Chunk]:
+        """Return all chunks for a document in document order.
+
+        Used by export_projection to reconstruct the projection text.
+        """
+
 
 class EmbeddingProvider(ABC):
     """Interface for text embedding (sentence-transformers in production)."""

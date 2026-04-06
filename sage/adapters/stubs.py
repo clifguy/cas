@@ -93,6 +93,11 @@ class StubContentStore(ContentStore):
         matched.sort(key=lambda c: c.chunk_index)
         return matched
 
+    async def get_all_chunks(self, document_id: str) -> list[Chunk]:
+        """Return all chunks for a document in document order."""
+        chunks = self._store.get(document_id, [])
+        return sorted(chunks, key=lambda c: c.chunk_index)
+
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""

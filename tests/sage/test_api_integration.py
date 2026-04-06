@@ -329,3 +329,56 @@ async def test_discover_semantic_missing_query_422(client):
     )
     # Missing query for semantic mode = 400
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Utilities (Slice 4)
+# ---------------------------------------------------------------------------
+
+async def test_export_projection_200(app, client):
+    """POST /documents/{id}/export writes projection and returns 200."""
+    # Ingest a document
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    assert resp1.status_code == 201
+    doc_id = resp1.json()["document"]["id"]
+
+    # Wait for pipeline to index chunks
+    await asyncio.sleep(0.5)
+
+    resp2 = await client.post(
+        f"/sage_vaults/test_vault/documents/{doc_id}/export",
+        json={"output_path": "exports/test_export.md"},
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["document_id"] == doc_id
+    assert "exports/test_export.md" in body["output_path"]
+
+
+async def test_export_projection_path_traversal_400(client):
+    """POST /documents/{id}/export with ../ path returns 400."""
+    # Ingest first
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    await asyncio.sleep(0.5)
+
+    resp2 = await client.post(
+        f"/sage_vaults/test_vault/documents/{doc_id}/export",
+        json={"output_path": "../../etc/passwd"},
+    )
+    assert resp2.status_code == 400
+    assert resp2.json()["code"] == "path_traversal_denied"
+
+
+async def test_eval_retrieval_not_configured_400(client):
+    """POST /eval-retrieval without assertions config returns 400."""
+    resp = await client.post("/sage_vaults/test_vault/eval-retrieval")
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "assertions_not_configured"

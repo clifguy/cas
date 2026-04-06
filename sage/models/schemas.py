@@ -197,6 +197,35 @@ class DiscoverResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Utility models
+# ---------------------------------------------------------------------------
+
+class ExportProjectionRequest(BaseModel):
+    output_path: str
+
+
+class ExportProjectionResponse(BaseModel):
+    document_id: str
+    output_path: str
+
+
+class AssertionFailure(BaseModel):
+    query: str
+    expected_document_id: str
+    top_k_checked: int
+    found: bool
+    actual_rank: int | None = None
+
+
+class EvalRetrievalResult(BaseModel):
+    vault_id: str
+    passed: bool
+    assertion_count: int
+    failure_count: int
+    failures: list[AssertionFailure]
+
+
+# ---------------------------------------------------------------------------
 # Error response
 # ---------------------------------------------------------------------------
 

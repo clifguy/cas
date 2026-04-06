@@ -10,6 +10,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.user_service import UserService
+from sage.services.utilities import UtilitiesService
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -55,6 +56,10 @@ async def get_graph_ops_service(request: Request) -> GraphOpsService:
 
 async def get_retrieval_service(request: Request) -> RetrievalService:
     return request.app.state.retrieval_service
+
+
+async def get_utilities_service(request: Request) -> UtilitiesService:
+    return request.app.state.utilities_service
 
 
 async def get_config(request: Request) -> VaultConfig:

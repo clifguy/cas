@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from sage.adapters.stubs import StubAbstractionProvider, StubContentStore, StubEmbeddingProvider
 from sage.api.errors import register_exception_handlers
-from sage.api.routers import documents, graph_ops, ingestion, lifecycle, metadata, retrieval, users
+from sage.api.routers import documents, graph_ops, ingestion, lifecycle, metadata, retrieval, users, utilities
 from sage.config import VaultConfig, load_vault_config
 from sage.models.enums import SourceType
 from sage.services.graph_ops import GraphOpsService
@@ -16,6 +16,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.user_service import UserService
+from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
@@ -78,6 +79,14 @@ async def _initialize_services(app: FastAPI, config: VaultConfig) -> None:
     )
     app.state.retrieval_service = retrieval_service
 
+    utilities_service = UtilitiesService(
+        graph_store=graph_store,
+        content_store=content_store,
+        embedding_provider=embedding_provider,
+        config=config,
+    )
+    app.state.utilities_service = utilities_service
+
 
 def create_app(config_path: Path | None = None, config: VaultConfig | None = None) -> FastAPI:
     """Create and configure the SAGE Core API application.
@@ -117,5 +126,6 @@ def create_app(config_path: Path | None = None, config: VaultConfig | None = Non
     app.include_router(users.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(graph_ops.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(retrieval.router, prefix="/sage_vaults/{vault_id}")
+    app.include_router(utilities.router, prefix="/sage_vaults/{vault_id}")
 
     return app

@@ -163,6 +163,65 @@ class SourceFileNotFoundError(SAGEError):
         )
 
 
+class PathTraversalDeniedError(SAGEError):
+    """400: output_path resolves outside vault storage_root (BH-038, BH-040)."""
+
+    def __init__(self, output_path: str) -> None:
+        super().__init__(
+            "path_traversal_denied",
+            f"Path resolves outside vault storage root: {output_path}",
+            400,
+            {"output_path": output_path},
+        )
+
+
+class NoProjectionError(SAGEError):
+    """404: document has no stored projection."""
+
+    def __init__(self, document_id: str) -> None:
+        super().__init__(
+            "no_projection",
+            f"No projection stored for document {document_id}",
+            404,
+            {"document_id": document_id},
+        )
+
+
+class AssertionsFileNotFoundError(SAGEError):
+    """400: retrieval health assertions file not found (BH-042)."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            "assertions_file_not_found",
+            f"Assertions file not found: {path}",
+            400,
+            {"assertions_file": path},
+        )
+
+
+class AssertionsFileInvalidError(SAGEError):
+    """400: retrieval health assertions file is malformed (BH-042)."""
+
+    def __init__(self, path: str, reason: str) -> None:
+        super().__init__(
+            "assertions_file_invalid",
+            f"Assertions file invalid: {reason}",
+            400,
+            {"assertions_file": path, "reason": reason},
+        )
+
+
+class AssertionsNotConfiguredError(SAGEError):
+    """400: no assertions_file configured in vault config."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "assertions_not_configured",
+            "No retrieval_health.assertions_file configured for this vault",
+            400,
+        )
+
+
 class VaultNotFoundError(SAGEError):
     """404: vault_id does not match loaded config."""
 
