@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pydantic>=2.9",
     "pyyaml>=6.0",
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]

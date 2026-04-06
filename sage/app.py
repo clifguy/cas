@@ -5,87 +5,26 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from sage.adapters.stubs import StubAbstractionProvider, StubContentStore, StubEmbeddingProvider
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import documents, graph_ops, ingestion, lifecycle, metadata, retrieval, users, utilities
 from sage.config import VaultConfig, load_vault_config
-from sage.models.enums import SourceType
-from sage.services.graph_ops import GraphOpsService
-from sage.services.ingestion import IngestionService
-from sage.services.lifecycle import LifecycleService
-from sage.services.metadata import MetadataService
-from sage.services.retrieval import RetrievalService
-from sage.services.user_service import UserService
-from sage.services.utilities import UtilitiesService
-from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.graph_store import GraphStore
-from sage.storage.locks import DocumentLockManager
+from sage.mcp_init import initialize_services
 
 
 async def _initialize_services(app: FastAPI, config: VaultConfig) -> None:
     """Initialize all services and store them in app.state."""
-    brain_root = Path(config.vault.brain_root).expanduser()
-    brain_root.mkdir(parents=True, exist_ok=True)
+    services = await initialize_services(config)
 
-    graph_store = GraphStore(brain_root / "graph.db")
-    await graph_store.initialize()
-
-    lock_manager = DocumentLockManager()
-
-    # Stub adapters for Phase 1 (swap for real implementations later)
-    content_store = StubContentStore()
-    embedding_provider = StubEmbeddingProvider()
-    abstraction_provider = StubAbstractionProvider()
-
-    # Source adapters
-    source_adapters = {
-        SourceType.MARKDOWN: MarkdownAdapter(),
-    }
-
-    # Services
-    user_service = UserService(graph_store, config)
-    lifecycle_service = LifecycleService(graph_store, lock_manager, config)
-    metadata_service = MetadataService(graph_store, lock_manager, config)
-    ingestion_service = IngestionService(
-        graph_store=graph_store,
-        lock_manager=lock_manager,
-        content_store=content_store,
-        embedding_provider=embedding_provider,
-        abstraction_provider=abstraction_provider,
-        config=config,
-        source_adapters=source_adapters,
-    )
-
-    # Bootstrap vault owner (BH-009)
-    await user_service.bootstrap_owner()
-
-    # Store in app.state for dependency injection
-    app.state.config = config
-    app.state.graph_store = graph_store
-    app.state.lock_manager = lock_manager
-    app.state.user_service = user_service
-    app.state.lifecycle_service = lifecycle_service
-    app.state.metadata_service = metadata_service
-    app.state.ingestion_service = ingestion_service
-
-    graph_ops_service = GraphOpsService(graph_store, config)
-    app.state.graph_ops_service = graph_ops_service
-
-    retrieval_service = RetrievalService(
-        graph_store=graph_store,
-        content_store=content_store,
-        embedding_provider=embedding_provider,
-        config=config,
-    )
-    app.state.retrieval_service = retrieval_service
-
-    utilities_service = UtilitiesService(
-        graph_store=graph_store,
-        content_store=content_store,
-        embedding_provider=embedding_provider,
-        config=config,
-    )
-    app.state.utilities_service = utilities_service
+    app.state.config = services.config
+    app.state.graph_store = services.graph_store
+    app.state.lock_manager = services.lock_manager
+    app.state.user_service = services.user_service
+    app.state.lifecycle_service = services.lifecycle_service
+    app.state.metadata_service = services.metadata_service
+    app.state.ingestion_service = services.ingestion_service
+    app.state.graph_ops_service = services.graph_ops_service
+    app.state.retrieval_service = services.retrieval_service
+    app.state.utilities_service = services.utilities_service
 
 
 def create_app(config_path: Path | None = None, config: VaultConfig | None = None) -> FastAPI:
