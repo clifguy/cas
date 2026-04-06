@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.1",
-  "manifest_date": "2026-03-31",
+  "manifest_version": "0.3",
+  "manifest_date": "2026-04-06",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -84,6 +84,19 @@
         "domains/pim_health/workflows.yaml"
       ],
       "test_count": 11
+    },
+    {
+      "path": "tests/sage/adapter_tests.md",
+      "tier": 2,
+      "title": "SAGE Adapter Tests",
+      "status": "specified",
+      "covers": [
+        "sage/adapters/interfaces.py",
+        "docs/fs/sage/vault_config.schema.json"
+      ],
+      "test_count": 25,
+      "decision_date": "2026-04-06",
+      "notes": "LanceDB ContentStore (17 tests) and nomic-embed-text EmbeddingProvider (8 tests). Qwen3 AbstractionProvider deferred to step 18."
     }
   ],
   "fixture_directories": {
@@ -100,6 +113,11 @@
       "version": "0.2",
       "date": "2026-04-05",
       "summary": "SAGE tier 2 behavioral test specifications. 42 tests across 7 subsystems encoding 19 design decisions (document ID generation, concurrency model, lifecycle error semantics, ingestion duplicate detection, pipeline failure quarantine, retrieval fusion, graph deduplication, path security, retrieval health assertions). Cross-cutting boundary tests expanded from stub to 12 tests (6 specified, 6 stubs awaiting ROOT Harness decisions). Schema changes identified for formal substrate update."
+    },
+    {
+      "version": "0.3",
+      "date": "2026-04-06",
+      "summary": "SAGE adapter test specifications. 25 tests across 2 adapters: LanceDB ContentStore (17 tests covering initialization, indexing, removal, vector search, BM25 search, heading prefix retrieval, persistence, edge cases) and nomic-embed-text EmbeddingProvider (8 tests covering dimension, determinism, normalization, batch behavior, similarity, edge cases). Encodes 13 design decisions for production adapter implementations."
     }
   ]
 }
