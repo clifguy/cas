@@ -1,0 +1,89 @@
+# =============================================================================
+# Test Vault: SAGE Vault Configuration
+# =============================================================================
+#
+# Minimal vault for human testing of SAGE before production use.
+# Exercises the full lifecycle, graph, and retrieval surface with
+# simple doc types and a standard lifecycle state machine.
+# =============================================================================
+
+
+vault:
+  id: test
+  name: "Test Vault"
+  owner: clif
+  storage_root: "~/sage_vaults/test/sources"
+  brain_root: "~/sage_vaults/test/brain"
+  visibility: personal
+
+
+document_types:
+  doc_types:
+    - value: note
+      label: "Note"
+      description: "General-purpose test document."
+    - value: spec
+      label: "Specification"
+      description: "Technical specification or design document."
+    - value: reference
+      label: "Reference"
+      description: "External reference material."
+
+
+lifecycle:
+  base_states_required: true
+  states:
+    - value: active
+      label: "Active"
+    - value: superseded
+      label: "Superseded"
+    - value: completed
+      label: "Completed"
+    - value: archived
+      label: "Archived"
+      is_terminal: true
+  transitions:
+    - from_state: "(new)"
+      action: ingest
+      to_state: active
+    - from_state: active
+      action: supersede
+      to_state: superseded
+      creates_edge: supersedes
+    - from_state: active
+      action: complete
+      to_state: completed
+    - from_state: active
+      action: archive
+      to_state: archived
+    - from_state: superseded
+      action: archive
+      to_state: archived
+    - from_state: completed
+      action: archive
+      to_state: archived
+    - from_state: archived
+      action: reactivate
+      to_state: active
+
+
+source_adapters:
+  adapters:
+    - source_type: markdown
+      enabled: true
+
+
+metadata_extraction:
+  review_required: false
+
+
+edge_inference:
+  tier_assignments:
+    - edge_type: supersedes
+      tier: 1
+      inference_rules:
+        - method: version_chain
+
+
+abstraction:
+  enabled: false
