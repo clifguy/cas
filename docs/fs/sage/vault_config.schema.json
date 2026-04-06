@@ -101,7 +101,7 @@
         "enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Whether to generate semantic abstracts during ingestion. If false or if the LLM is unavailable, ingestion completes without the abstract and flags the document for deferred generation."
+          "description": "Whether to generate semantic abstracts during ingestion. If false, ingestion completes with pipeline_status 'abstraction_skipped'. If true and the LLM fails at runtime, pipeline_status is 'failed' (strict quality gate)."
         },
         "model": {
           "type": "string",
@@ -111,6 +111,17 @@
           "type": "integer",
           "minimum": 50,
           "description": "Upper bound on abstract length in tokens. Actual length is density-proportional."
+        }
+      }
+    },
+    "retrieval_health": {
+      "type": "object",
+      "description": "Configuration for retrieval health smoke tests (eval_retrieval endpoint).",
+      "additionalProperties": false,
+      "properties": {
+        "assertions_file": {
+          "type": "string",
+          "description": "Path to a YAML file containing retrieval health assertions, relative to the domain configuration directory. Each assertion specifies a query, an expected document ID, and a top-k threshold."
         }
       }
     }

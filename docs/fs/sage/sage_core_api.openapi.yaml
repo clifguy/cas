@@ -144,7 +144,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Document"
+                $ref: "#/components/schemas/SetLifecycleResponse"
         "400":
           description: Invalid action value.
           content:
@@ -167,6 +167,8 @@ paths:
           description: >-
             Transition not valid from the document's current lifecycle state.
             The request is well-formed, but the state machine rejects it.
+            Detail includes current_state, attempted_action, and valid_actions
+            (list of actions valid from the current state).
           content:
             application/json:
               schema:
@@ -280,6 +282,16 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            Duplicate content. A document already exists with the same
+            source_path and source_content_hash. Detail includes
+            existing_document_id and source_content_hash. Use force: true
+            to bypass duplicate detection and re-run the pipeline.
           content:
             application/json:
               schema:
@@ -797,7 +809,6 @@ components:
         - created_at
         - last_modified_by
         - updated_at
-        - indexed_at
         - pipeline_status
       properties:
         id:
@@ -870,7 +881,11 @@ components:
         indexed_at:
           type: string
           format: date-time
-          description: Last time projection was chunked and embedded into content store.
+          nullable: true
+          description: >-
+            Last time projection was chunked and embedded into content store.
+            Null until indexing completes (pipeline_status reaches
+            indexing_complete). Not updated by abstraction (Stage 3).
         semantic_abstract:
           type: string
           nullable: true
@@ -880,6 +895,14 @@ components:
             Null if abstraction is disabled or pending (CAS-ADR-011).
         pipeline_status:
           $ref: "#/components/schemas/PipelineStatus"
+        pipeline_error:
+          type: string
+          nullable: true
+          description: >-
+            Failure description when pipeline_status is "failed". Null
+            when pipeline has not failed. Contains the error message
+            from the failed pipeline stage (projection, indexing, or
+            abstraction).
         tier3_metadata:
           type: object
           nullable: true
@@ -923,13 +946,21 @@ components:
       type: object
       description: >-
         A typed, directed relationship between two documents in the
-        graph store.
+        graph store. Duplicate edges (same source, target, type) are
+        permitted; each has a unique id.
       required:
+        - id
         - source_id
         - target_id
         - edge_type
         - created_at
       properties:
+        id:
+          type: string
+          description: >-
+            Unique edge identifier, auto-generated at creation.
+            Required for disambiguation when duplicate edges exist
+            between the same document pair.
         source_id:
           type: string
           description: Origin document ID.
@@ -1133,6 +1164,15 @@ components:
             User ID of the actor initiating ingestion. Used for
             provenance tracking. Phase 2+ implementations may derive
             this from the authenticated caller identity.
+        force:
+          type: boolean
+          default: false
+          description: >-
+            When true, bypasses duplicate content detection and re-runs
+            the full pipeline on the existing document record (if one
+            exists with the same source_path and source_content_hash).
+            Returns 200 (re-processed) instead of 201 (new). The
+            document ID is preserved. Use for pipeline failure recovery.
 
     LinkRequest:
       type: object
@@ -1291,6 +1331,26 @@ components:
           description: >-
             Human-readable description of differences, if any.
 
+    SetLifecycleResponse:
+      type: object
+      description: >-
+        Returned after a successful lifecycle transition. Includes the
+        updated document record and optional warnings (e.g., when the
+        ingestion pipeline is still in progress).
+      required: [document]
+      properties:
+        document:
+          $ref: "#/components/schemas/Document"
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Advisory messages about non-blocking concerns. Present when
+            the document's pipeline_status is non-terminal at the time
+            of the lifecycle transition. Absent or empty when there are
+            no warnings.
+
     IngestResponse:
       type: object
       description: >-
@@ -1319,16 +1379,28 @@ components:
       type: object
       description: >-
         A node encountered during graph traversal, with the edge that
-        led to it and the depth at which it was found.
-      required: [document, edge, depth]
+        led to it and the depth at which it was found. When multiple
+        edges of the same type connect to the same target, the target
+        appears once with the most recent edge shown and edge_count
+        indicating the total.
+      required: [document, edge, depth, edge_count]
       properties:
         document:
           $ref: "#/components/schemas/DocumentSummary"
         edge:
           $ref: "#/components/schemas/Edge"
+          description: >-
+            The most recent edge leading to this document (by created_at).
         depth:
           type: integer
           description: Traversal depth (1 = direct neighbor of start node).
+        edge_count:
+          type: integer
+          minimum: 1
+          default: 1
+          description: >-
+            Total number of edges of the traversed type(s) connecting
+            to this document. Greater than 1 when duplicate edges exist.
 
     PreconditionResult:
       type: object

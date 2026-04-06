@@ -166,6 +166,11 @@
       "version": "1.0",
       "date": "2026-03-31",
       "summary": "API contracts and data model schemas. Added five artifacts resolving all deferred items from v0.1: (1) SAGE Core API OpenAPI specification (sage/sage_core_api.openapi.yaml), 14 operations across 7 tags, developed against SAGE Architecture Reference v1.4 Section 7. (2) ROOT Harness Orchestration API OpenAPI specification (root_harness/orchestration_api.openapi.yaml), 9 operations across 5 tags, developed against ROOT Harness Architecture Reference v1.0 Section 2.5. (3) Event stream schema (root_harness/event_stream.schema.json), 15 event types in 7 categories per CAS-ADR-013. (4) Interrupt contracts and approval policy schema (root_harness/interrupt.schema.json), covering InterruptDescriptor, ApproveRequest, ApprovalPolicy, and supporting types. (5) Decision log schema (sage/decision_log.schema.json), three entry categories per CAS-ADR-012. Promoted to v1.0: all contributions listed in SAGE Architecture Reference Section 8.3 and ROOT Harness Architecture Reference Section 8.2 are present with no known gaps."
+    },
+    {
+      "version": "1.1",
+      "date": "2026-04-05",
+      "summary": "SAGE tier 2 behavioral design decisions applied to schemas. Seven changes to sage_core_api.openapi.yaml and vault_config.schema.json: (1) Document.indexed_at changed from required to nullable (null until indexing completes). (2) Document.pipeline_error added as nullable string (failure description when pipeline_status is failed). (3) Edge.id added as required auto-generated field (enables duplicate edge disambiguation). (4) TraversalNode.edge_count added (deduplication signal for traversal results). (5) IngestRequest.force added as boolean (bypasses duplicate detection for pipeline failure recovery). (6) SetLifecycleResponse schema added with optional warnings array (pipeline status advisory). (7) vault_config.schema.json: retrieval_health section added with assertions_file field. Also added 409 duplicate content response to ingest endpoint. Updated abstraction.enabled description to reflect strict quality gate decision (LLM failure = failed, not skipped)."
     }
   ]
 }

@@ -1,7 +1,7 @@
 # CAS Project Tracker
 
-**Version:** v16
-**Last updated:** 2026-04-01
+**Version:** v17
+**Last updated:** 2026-04-05
 
 ---
 
@@ -15,8 +15,8 @@
 | 4 | Deployment Model | v1.0 | Development | — |
 | 5 | ADR Store | v1.10 (schema), 14 ADRs | Development | — |
 | 6 | Formatting Standards | v1.0 | Development | — |
-| 7 | Formal Substrate | v1.0 | Development | — |
-| 8 | Test Plan | v0.1 (scaffolding + tier 1 specs) | Development | — |
+| 7 | Formal Substrate | v1.1 | Development | — |
+| 8 | Test Plan | v0.2 (tier 1 + SAGE tier 2 behavioral) | Development | — |
 | 9 | Working Code | — | Planned | — |
 
 ## Domain Instantiation Documents
@@ -78,20 +78,22 @@
 - v1.0 delivered 2026-03-30. Instantiation deliverable format flexibility. Updated INST type code description and post-table guidance to acknowledge that deliverables may be YAML configuration directories. Promoted to v1.0: all sections have complete coverage with no known gaps.
 - No further pending corrections or revisions identified.
 
-### 7. Formal Substrate (v1.0)
+### 7. Formal Substrate (v1.1)
 
 - Independent CAS artifact per CAS-ADR-008. Directory of structured JSON Schema files and OpenAPI specifications at docs/fs/, organized by component (sage/, root_harness/) with a manifest.json at the root.
 - v0.1 delivered 2026-03-30. Ten configuration schemas across SAGE (6) and ROOT Harness (4), covering all twelve items in the ROOT Harness instantiation checklist. JSON Schema draft 2020-12. Individual files per format-follows-access-pattern principle.
 - v0.1 updated 2026-03-30. Schema review and manifest cleanup: removed organize from policy.schema.json permitted_operations enum (CAS-ADR-014). Manifest: removed errant $schema/$id keywords (manifest is a data document, not a schema), added decision log entry schema to deferred list (CAS-ADR-012), removed source_references from all schema and deferred entries (architecture documents point to the substrate, not the reverse; provenance recorded in revision history only).
 - v1.0 delivered 2026-03-31. API contracts and data model schemas resolving all five deferred items from v0.1: (1) SAGE Core API OpenAPI specification (sage/sage_core_api.openapi.yaml), 14 operations across 7 tags, developed against SAGE Architecture Reference v1.4 Section 7. (2) ROOT Harness Orchestration API OpenAPI specification (root_harness/orchestration_api.openapi.yaml), 9 operations across 5 tags, developed against ROOT Harness Architecture Reference v1.0 Section 2.5. (3) Event stream schema (root_harness/event_stream.schema.json), 15 event types in 7 categories per CAS-ADR-013. (4) Interrupt contracts and approval policy schema (root_harness/interrupt.schema.json), covering InterruptDescriptor, ApproveRequest, ApprovalPolicy, and supporting types. (5) Decision log schema (sage/decision_log.schema.json), three entry categories per CAS-ADR-012. Promoted to v1.0: all contributions listed in SAGE Architecture Reference Section 8.3 and ROOT Harness Architecture Reference Section 8.2 are present with no known gaps.
+- v1.1 delivered 2026-04-05. SAGE tier 2 behavioral design decisions applied. Seven schema changes across sage_core_api.openapi.yaml and vault_config.schema.json: (1) Document.indexed_at made nullable (null until indexing completes). (2) Document.pipeline_error added (failure description). (3) Edge.id added (auto-generated, enables duplicate edge disambiguation). (4) TraversalNode.edge_count added (deduplication signal). (5) IngestRequest.force added (duplicate detection bypass for failure recovery). (6) SetLifecycleResponse schema added with optional warnings array. (7) retrieval_health section added to vault config. Also: 409 duplicate content response on ingest endpoint; abstraction.enabled description updated for strict quality gate. PIM Health config validated against updated schema.
 - No further pending corrections or revisions identified.
 
-### 8. Test Plan (v0.1)
+### 8. Test Plan (v0.2)
 
-- Contract-driven test specifications derived from the Formal Substrate v1.0. Each formal specification becomes a testable assertion.
-- Depends on: Formal Substrate v1.0 (delivered).
+- Contract-driven test specifications derived from the Formal Substrate. Each formal specification becomes a testable assertion.
+- Depends on: Formal Substrate v1.1 (delivered).
 - v0.1 delivered 2026-03-31. Three-tier test plan: tier 1 (contract tests from schemas and API specs), tier 2 (behavioral tests, requires design decisions), tier 3 (domain integration tests). Scaffolding: pyproject.toml with test dependencies, SchemaValidator helper with $ref registry for JSON Schema draft 2020-12, conftest.py with shared fixtures, test plan manifest. 122 test specifications across four Markdown files: SAGE contract tests (53 tests, 8 schemas), ROOT Harness contract tests (58 tests, 7 schemas), domain instantiation tests (11 tests, cross-reference integrity), boundary tests (stub for tier 2). 22 invalid YAML fixtures exercising schema constraint violations. All PIM Health configs validated against schemas. All invalid fixtures verified as correctly rejected.
-- Pending: tier 2 behavioral test specifications for SAGE storage/lifecycle layer (error semantics, concurrent access, LLM unavailability). To be developed one subsystem ahead of implementation.
+- v0.2 delivered 2026-04-05. SAGE tier 2 behavioral test specifications. 19 design decisions across 7 SAGE subsystems (graph store, access control, lifecycle, ingestion, retrieval, graph operations, utilities) resolved through structured question-and-answer specification. 42 behavioral tests in tests/sage/behavioral_tests.md. Cross-cutting boundary tests expanded from stub to 12 tests (6 fully specified from SAGE decisions, 6 stubs awaiting ROOT Harness tier 2 decisions). Test plan manifest updated to v0.2.
+- Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
 ### 9. Working Code (Planned)
 
@@ -161,5 +163,5 @@
 11. ~~Claude Code transition~~ (completed 2026-03-31, CLAUDE.md files and CPML v3.0)
 12. ~~Commit documentation artifacts to repo~~ (completed 2026-03-31, docs/ref/, ADR store, tracker, CLAUDE.md files)
 13. ~~Test Plan v0.1~~ (completed 2026-03-31, scaffolding + 122 tier 1/3 contract test specs + 22 invalid fixtures)
-14. Test Plan: tier 2 behavioral specs for SAGE storage/lifecycle ← **next**
-15. Working Code
+14. ~~Test Plan v0.2: SAGE tier 2 behavioral specs~~ (completed 2026-04-05, 42 behavioral tests + 12 boundary tests + 7 schema changes)
+15. Working Code: SAGE implementation ← **next**
