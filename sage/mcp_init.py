@@ -53,11 +53,18 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
 
     lock_manager = DocumentLockManager()
 
-    # Production adapters for content store and embeddings;
-    # stub for abstraction (Qwen3 adapter not yet implemented)
+    # Production adapters for content store and embeddings
     content_store = LanceDBContentStore(brain_root)
     embedding_provider = NomicEmbeddingProvider()
-    abstraction_provider = StubAbstractionProvider()
+
+    # Abstraction: Qwen3 via MLX when enabled, stub otherwise
+    if config.abstraction.enabled and config.abstraction.model:
+        from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+        abstraction_provider = Qwen3AbstractionProvider(
+            model_id=config.abstraction.model,
+        )
+    else:
+        abstraction_provider = StubAbstractionProvider()
 
     # Source adapters
     source_adapters = {

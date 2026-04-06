@@ -1,11 +1,12 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-025).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-033).
 
-Production adapter tests for LanceDB ContentStore and nomic-embed-text
-EmbeddingProvider. These tests require the nomic-embed-text model to be
-available via sentence-transformers (~270MB download on first run).
+Production adapter tests for nomic-embed-text EmbeddingProvider, LanceDB
+ContentStore, and Qwen3 AbstractionProvider. Embedding and content store
+tests require nomic-embed-text (~270MB download on first run). Abstraction
+tests require mlx-lm and Qwen3 model weights (~16GB download on first run).
 
 Tests are organized in implementation dependency order: embedding provider
-first (produces vectors consumed by content store tests), then content store.
+first, then content store, then abstraction provider.
 """
 
 import math
@@ -29,12 +30,21 @@ try:
 except ImportError:
     _HAS_LANCEDB = False
 
+try:
+    from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+    _HAS_QWEN3 = True
+except (ImportError, RuntimeError):
+    _HAS_QWEN3 = False
+
 
 requires_embedding = pytest.mark.skipif(
     not _HAS_EMBEDDING, reason="sentence-transformers or nomic model not available"
 )
 requires_lancedb = pytest.mark.skipif(
     not _HAS_LANCEDB, reason="lancedb not available"
+)
+requires_qwen3 = pytest.mark.skipif(
+    not _HAS_QWEN3, reason="mlx-lm or Qwen3 model not available"
 )
 
 
@@ -545,3 +555,118 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 3. Qwen3 AbstractionProvider
+# ══════════════════════════════════════════════════════════════════════
+
+QWEN3_MODEL_ID = "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit"
+
+SAMPLE_TEXT = (
+    "The document describes a method for synchronizing patient health records "
+    "across distributed clinical systems using a conflict-free replicated data "
+    "type (CRDT). The approach ensures eventual consistency while preserving "
+    "the causal ordering of clinical events. The system handles concurrent "
+    "updates from multiple hospital sites without requiring a central "
+    "coordinator, reducing single points of failure in the health information "
+    "exchange infrastructure."
+)
+
+
+@pytest.fixture(scope="module")
+def qwen3_provider():
+    """Module-scoped abstraction provider (model loads once for all tests)."""
+    if not _HAS_QWEN3:
+        pytest.skip("mlx-lm or Qwen3 model not available")
+    return Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+
+
+@requires_qwen3
+class TestQwen3AbstractionProvider:
+    """Tests AD-026 through AD-033."""
+
+    def test_ad_026_init_succeeds(self, qwen3_provider):
+        """AD-026: Provider init loads model eagerly."""
+        assert qwen3_provider._model is not None
+        assert qwen3_provider._tokenizer is not None
+
+    def test_ad_026_init_fails_on_bad_model(self):
+        """AD-026: Provider init fails fast if model unavailable."""
+        with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
+            Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
+
+    async def test_ad_027_non_empty_output(self, qwen3_provider):
+        """AD-027: Generated abstract is a non-empty string."""
+        result = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+        assert isinstance(result, str)
+        assert len(result.strip()) > 0
+        assert result == result.strip()  # No leading/trailing whitespace
+
+    async def test_ad_028_max_tokens_bound(self, qwen3_provider):
+        """AD-028: Output respects max_tokens upper bound."""
+        # Use a longer input to encourage full-length generation
+        long_text = SAMPLE_TEXT * 5
+        result = await qwen3_provider.generate_abstract(long_text, 100)
+
+        # Tokenize the result using the model's tokenizer
+        tokens = qwen3_provider._tokenizer.encode(result)
+        assert len(tokens) <= 100, (
+            f"Abstract has {len(tokens)} tokens, expected at most 100"
+        )
+
+    async def test_ad_029_deterministic(self, qwen3_provider):
+        """AD-029: Same input produces identical output."""
+        r1 = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+        r2 = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+        assert r1 == r2
+
+    async def test_ad_030_short_input(self, qwen3_provider):
+        """AD-030: Short input produces a valid abstract."""
+        result = await qwen3_provider.generate_abstract(
+            "Brief note about record linkage.", 200
+        )
+        assert isinstance(result, str)
+        assert len(result.strip()) > 0
+
+    async def test_ad_031_long_input(self, qwen3_provider):
+        """AD-031: Long input does not crash."""
+        # 50,000+ characters of repeated technical prose
+        very_long_text = SAMPLE_TEXT * 200
+        assert len(very_long_text) > 50_000
+
+        result = await qwen3_provider.generate_abstract(very_long_text, 200)
+        assert isinstance(result, str)
+        assert len(result.strip()) > 0
+
+    async def test_ad_032_semantic_quality(
+        self, qwen3_provider, embedding_provider
+    ):
+        """AD-032: Abstract is semantically related to input."""
+        abstract = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+
+        # Embed both input and abstract
+        vecs = await embedding_provider.embed([SAMPLE_TEXT, abstract])
+        similarity = _cosine_sim(vecs[0], vecs[1])
+
+        assert similarity > 0.5, (
+            f"cosine_similarity={similarity:.4f}, expected > 0.5"
+        )
+
+        # Keyword overlap: at least one key concept appears in the abstract
+        key_terms = ["health", "record", "clinical", "CRDT", "synchron"]
+        abstract_lower = abstract.lower()
+        matches = [t for t in key_terms if t.lower() in abstract_lower]
+        assert len(matches) >= 1, (
+            f"No key terms found in abstract. Terms checked: {key_terms}"
+        )
+
+    async def test_ad_033_error_propagation(self, qwen3_provider, monkeypatch):
+        """AD-033: LLM runtime error propagates as exception."""
+        def failing_generate(*args, **kwargs):
+            raise RuntimeError("Simulated MLX inference failure")
+
+        monkeypatch.setattr(qwen3_provider, "_generate_fn", failing_generate)
+
+        with pytest.raises(RuntimeError, match="Simulated MLX inference failure"):
+            await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)

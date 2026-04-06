@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v21
+**Version:** v22
 **Last updated:** 2026-04-06
 
 ---
@@ -109,7 +109,8 @@
 - PIM Health vault storage configured 2026-04-06. brain at ~/sage_vaults/pim_health/brain/, sources symlinked to ~/Library/CloudStorage/OneDrive-pimhealth/sage_sources (cloud-synced document store, stable symlink path for future vault mover).
 - GraphStore thread safety fix delivered 2026-04-06. Replaced single shared sqlite3.Connection with a thread-local connection pool backed by a bounded ThreadPoolExecutor (configurable max_connections, default 4). Each pool thread lazily creates its own connection with WAL mode and foreign keys enabled, eliminating an intermittent InterfaceError where background pipeline tasks and request handlers concurrently accessed the same connection via asyncio.to_thread's unbounded default pool. 111 tests passing.
 - LanceDB content store + nomic-embed-text embedding provider delivered 2026-04-06. Production adapters replacing StubContentStore and StubEmbeddingProvider. LanceDBContentStore: lazy table creation, cosine vector search, native FTS with eager rebuild after mutations, structural heading prefix matching with SQL escaping. NomicEmbeddingProvider: nomic-ai/nomic-embed-text-v1.5 via sentence-transformers, 768-dim L2-normalized output, eager model load with dimension validation probe. Wired into mcp_init.py (StubAbstractionProvider remains). 25 adapter tests passing (136 total). Dependencies: lancedb, sentence-transformers, einops, pyarrow.
-- Pending: Qwen3 abstraction provider (replacing StubAbstractionProvider). This is the remaining adapter before SAGE can operate with full pipeline capabilities including semantic abstracts.
+- Qwen3 abstraction provider delivered 2026-04-06. Production AbstractionProvider using Qwen3-30B-A3B-Instruct-2507-4bit via MLX on Apple Silicon. Eager model load with fail-fast init, greedy decoding for deterministic output, context-window-aware input truncation preserving leading content. Conditional wiring in mcp_init.py: Qwen3 provider when abstraction enabled and model configured, StubAbstractionProvider otherwise. mlx-lm added as optional dependency (`pip install -e ".[mlx]"`). PIM Health vault config updated to full HuggingFace model ID. 9 adapter tests passing (AD-026 through AD-033). 145 total tests passing.
+- All three SAGE production adapters now delivered: LanceDB ContentStore, nomic-embed-text EmbeddingProvider, Qwen3 AbstractionProvider. SAGE pipeline is fully operational for ingestion with semantic abstract generation.
 
 ### 10. PIM Health Instance (v0.1)
 
@@ -180,6 +181,6 @@
 17. ~~Test Plan v0.3: SAGE adapter test specs~~ (completed 2026-04-06, 25 adapter tests encoding 13 design decisions)
 18. ~~Working Code: LanceDB content store + nomic-embed-text embedding provider~~ (completed 2026-04-06, 2 production adapters, 25 adapter tests, 136 total)
 18a. ~~Test Plan v0.4: Qwen3 AbstractionProvider adapter test specs~~ (completed 2026-04-06, 8 tests encoding 8 design decisions)
-19. Working Code: Qwen3 abstraction provider ← **next**
-20. Working Code: Manual testing of SAGE with real PIM documents
+19. ~~Working Code: Qwen3 abstraction provider~~ (completed 2026-04-06, production adapter via MLX, 9 tests, 145 total)
+20. Working Code: Manual testing of SAGE with real PIM documents ← **next**
 21. Working Code: ROOT Harness implementation
