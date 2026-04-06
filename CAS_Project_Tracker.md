@@ -1,7 +1,7 @@
 # CAS Project Tracker
 
-**Version:** v17
-**Last updated:** 2026-04-05
+**Version:** v18
+**Last updated:** 2026-04-06
 
 ---
 
@@ -95,10 +95,16 @@
 - v0.2 delivered 2026-04-05. SAGE tier 2 behavioral test specifications. 19 design decisions across 7 SAGE subsystems (graph store, access control, lifecycle, ingestion, retrieval, graph operations, utilities) resolved through structured question-and-answer specification. 42 behavioral tests in tests/sage/behavioral_tests.md. Cross-cutting boundary tests expanded from stub to 12 tests (6 fully specified from SAGE decisions, 6 stubs awaiting ROOT Harness tier 2 decisions). Test plan manifest updated to v0.2.
 - Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
-### 9. Working Code (Planned)
+### 9. Working Code (In Progress)
 
 - Implementation of SAGE, ROOT Harness, and domain instantiation configurations.
 - Depends on: Formal Substrate (delivered), Test Plan. (Git setup completed 2026-03-26.)
+- SAGE Core API delivered 2026-04-05. Five vertical slices: (1) graph store, lifecycle, ingestion pipeline; (2) graph operations -- link, traverse, check_preconditions; (3) retrieval -- semantic, hybrid RRF, deterministic discover; (4) utilities -- export_projection, eval_retrieval; (5) refresh_views -- symlink-based browsable folder views. FastAPI application factory with dependency injection. 86 tests passing. Phase 1 adapters are stubs (in-memory content store, zero-vector embeddings, placeholder abstractions).
+- MCP adapter delivered 2026-04-06. Thin translation layer per SAGE Architecture Reference Client Access Architecture. 11 MCP tools mapping to Core API service methods. Multi-vault support (vault_id parameter on every tool). stdio transport for Phase 1. Shared initialization logic extracted so FastAPI and MCP entry points reuse the same setup. 25 tests passing (111 total).
+- Server entry point delivered 2026-04-06. `python -m sage <config.yaml>` starts FastAPI/Swagger UI on localhost:8000 for manual testing.
+- Test vault created 2026-04-06. Minimal vault config at domains/test/ with 3 doc types (note, spec, reference), standard lifecycle, markdown adapter, abstraction disabled. Storage at ~/sage_vaults/test/. MCP settings updated to load both test and pim_health vaults.
+- PIM Health vault storage configured 2026-04-06. brain at ~/sage_vaults/pim_health/brain/, sources symlinked to ~/Library/CloudStorage/OneDrive-pimhealth/sage_sources (cloud-synced document store, stable symlink path for future vault mover).
+- Pending: LanceDB content store adapter (replacing StubContentStore), nomic-embed-text embedding provider (replacing StubEmbeddingProvider), Qwen3 abstraction provider (replacing StubAbstractionProvider). These are the remaining components before SAGE can operate on real documents with persistent vector storage and semantic search.
 
 ### 10. PIM Health Instance (v0.1)
 
@@ -164,4 +170,9 @@
 12. ~~Commit documentation artifacts to repo~~ (completed 2026-03-31, docs/ref/, ADR store, tracker, CLAUDE.md files)
 13. ~~Test Plan v0.1~~ (completed 2026-03-31, scaffolding + 122 tier 1/3 contract test specs + 22 invalid fixtures)
 14. ~~Test Plan v0.2: SAGE tier 2 behavioral specs~~ (completed 2026-04-05, 42 behavioral tests + 12 boundary tests + 7 schema changes)
-15. Working Code: SAGE implementation ← **next**
+15. ~~Working Code: SAGE Core API~~ (completed 2026-04-05, 5 vertical slices, 86 tests)
+16. ~~Working Code: MCP adapter, server entry point, test vault~~ (completed 2026-04-06, 11 tools, 25 tests, multi-vault)
+17. Working Code: LanceDB content store + nomic-embed-text embedding provider ← **next**
+18. Working Code: Qwen3 abstraction provider
+19. Working Code: Manual testing of SAGE with real PIM documents
+20. Working Code: ROOT Harness implementation
