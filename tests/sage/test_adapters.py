@@ -703,3 +703,571 @@ class TestMarkdownAdapterProvenance:
         parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
         assert parsed.tzinfo is not None  # timezone-aware
         assert abs((parsed - known_mtime).total_seconds()) < 1.0
+
+
+# ── Docx Adapter ────────────────────────────────────────────────────
+
+import hashlib
+
+try:
+    import docx
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from lxml import etree
+
+    _HAS_DOCX = True
+except ImportError:
+    _HAS_DOCX = False
+
+requires_docx = pytest.mark.skipif(
+    not _HAS_DOCX, reason="python-docx not available"
+)
+
+
+def _make_docx(tmp_path: Path, filename: str = "test.docx") -> Path:
+    """Create a minimal empty .docx and return its path."""
+    doc = docx.Document()
+    path = tmp_path / filename
+    doc.save(str(path))
+    return path
+
+
+def _add_heading_with_style(doc, text: str, style_name: str) -> None:
+    """Add a paragraph with the given built-in heading style."""
+    doc.add_paragraph(text, style=style_name)
+
+
+def _add_table(doc, rows: list[list[str]]) -> None:
+    """Add a table with the given cell data."""
+    table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+    for i, row_data in enumerate(rows):
+        for j, cell_text in enumerate(row_data):
+            table.cell(i, j).text = cell_text
+
+
+def _inject_numbering(doc, abstract_num_xml: str, num_xml: str) -> None:
+    """Inject numbering definitions into the document's numbering part.
+
+    Creates the numbering part if it doesn't exist, then appends the
+    provided abstractNum and num elements.
+    """
+    # Ensure numbering part exists by adding and removing a dummy list
+    doc.add_paragraph("dummy", style="List Bullet")
+    # Remove the dummy paragraph
+    body = doc.element.body
+    body.remove(body[-1])
+
+    numbering_part = doc.part.numbering_part
+    numbering_elm = numbering_part.numbering_definitions._numbering
+
+    # Parse and append abstractNum
+    abstract_elem = etree.fromstring(abstract_num_xml)
+    numbering_elm.append(abstract_elem)
+
+    # Parse and append num
+    num_elem = etree.fromstring(num_xml)
+    numbering_elm.append(num_elem)
+
+
+def _set_paragraph_numbering(paragraph, num_id: int, ilvl: int) -> None:
+    """Set w:numPr on a paragraph to reference a numbering definition."""
+    pPr = paragraph._element.get_or_add_pPr()
+    numPr = etree.SubElement(pPr, qn("w:numPr"))
+    ilvl_elem = etree.SubElement(numPr, qn("w:ilvl"))
+    ilvl_elem.set(qn("w:val"), str(ilvl))
+    numId_elem = etree.SubElement(numPr, qn("w:numId"))
+    numId_elem.set(qn("w:val"), str(num_id))
+
+
+def _inject_cross_ref_field(paragraph, instruction: str, display_text: str) -> None:
+    """Inject a complex field (fldChar begin/separate/end) into a paragraph.
+
+    Simulates a cross-reference field like REF _Ref12345 \\r \\h with a
+    cached display value.
+    """
+    p_elem = paragraph._element
+    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    # Begin
+    r_begin = etree.SubElement(p_elem, qn("w:r"))
+    fc_begin = etree.SubElement(r_begin, qn("w:fldChar"))
+    fc_begin.set(qn("w:fldCharType"), "begin")
+
+    # Instruction
+    r_instr = etree.SubElement(p_elem, qn("w:r"))
+    instr_text = etree.SubElement(r_instr, qn("w:instrText"))
+    instr_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    instr_text.text = instruction
+
+    # Separate
+    r_sep = etree.SubElement(p_elem, qn("w:r"))
+    fc_sep = etree.SubElement(r_sep, qn("w:fldChar"))
+    fc_sep.set(qn("w:fldCharType"), "separate")
+
+    # Display text (cached result)
+    r_display = etree.SubElement(p_elem, qn("w:r"))
+    t_display = etree.SubElement(r_display, qn("w:t"))
+    t_display.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+    t_display.text = display_text
+
+    # End
+    r_end = etree.SubElement(p_elem, qn("w:r"))
+    fc_end = etree.SubElement(r_end, qn("w:fldChar"))
+    fc_end.set(qn("w:fldCharType"), "end")
+
+
+# Standard decimal numbering XML for heading levels 0-2
+DECIMAL_ABSTRACT_NUM_XML = """
+<w:abstractNum w:abstractNumId="100"
+    xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:lvl w:ilvl="0">
+    <w:start w:val="1"/>
+    <w:numFmt w:val="decimal"/>
+    <w:lvlText w:val="%1"/>
+    <w:lvlJc w:val="left"/>
+  </w:lvl>
+  <w:lvl w:ilvl="1">
+    <w:start w:val="1"/>
+    <w:numFmt w:val="decimal"/>
+    <w:lvlText w:val="%1.%2"/>
+    <w:lvlJc w:val="left"/>
+  </w:lvl>
+  <w:lvl w:ilvl="2">
+    <w:start w:val="1"/>
+    <w:numFmt w:val="decimal"/>
+    <w:lvlText w:val="%1.%2.%3"/>
+    <w:lvlJc w:val="left"/>
+  </w:lvl>
+</w:abstractNum>
+"""
+
+DECIMAL_NUM_XML = """
+<w:num w:numId="100"
+    xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNumId w:val="100"/>
+</w:num>
+"""
+
+# Mixed numbering: Roman, decimal, lowercase alpha
+MIXED_ABSTRACT_NUM_XML = """
+<w:abstractNum w:abstractNumId="200"
+    xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:lvl w:ilvl="0">
+    <w:start w:val="1"/>
+    <w:numFmt w:val="upperRoman"/>
+    <w:lvlText w:val="%1"/>
+    <w:lvlJc w:val="left"/>
+  </w:lvl>
+  <w:lvl w:ilvl="1">
+    <w:start w:val="1"/>
+    <w:numFmt w:val="decimal"/>
+    <w:lvlText w:val="%1.%2"/>
+    <w:lvlJc w:val="left"/>
+  </w:lvl>
+  <w:lvl w:ilvl="2">
+    <w:start w:val="1"/>
+    <w:numFmt w:val="lowerLetter"/>
+    <w:lvlText w:val="%1.%2.%3"/>
+    <w:lvlJc w:val="left"/>
+  </w:lvl>
+</w:abstractNum>
+"""
+
+MIXED_NUM_XML = """
+<w:num w:numId="200"
+    xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:abstractNumId w:val="200"/>
+</w:num>
+"""
+
+
+@requires_docx
+class TestDocxAdapter:
+    """AD-035 through AD-052: Docx source adapter tests."""
+
+    async def test_ad_035_basic_projection(self, tmp_path):
+        """AD-035: Basic projection returns valid ProjectionResult."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Introduction", style="Heading 1")
+        doc.add_paragraph("This is the introduction text.")
+        path = tmp_path / "basic.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert isinstance(result.text, str)
+        assert len(result.text) > 0
+        assert len(result.headings) == 1
+        assert result.headings[0].text == "Introduction"
+        assert isinstance(result.content_hash, str)
+        assert len(result.content_hash) == 64  # SHA-256 hex
+        assert result.title == "Introduction"
+        assert result.adapter_version == DocxAdapter.VERSION
+
+    async def test_ad_036_heading_style_map_config(self, tmp_path):
+        """AD-036: Heading extraction uses heading_style_map config."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("My Title", style="Title")
+        doc.add_paragraph("Body under title.")
+        path = tmp_path / "custom_style.docx"
+        doc.save(str(path))
+
+        config = {"heading_style_map": {"Title": 1}}
+        result = await adapter.project(path, config=config)
+
+        assert len(result.headings) == 1
+        assert result.headings[0].level == 1
+        assert result.headings[0].text == "My Title"
+
+    async def test_ad_037_default_heading_styles(self, tmp_path):
+        """AD-037: Default heading styles work without explicit config."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Level One", style="Heading 1")
+        doc.add_paragraph("Level Two", style="Heading 2")
+        doc.add_paragraph("Level Three", style="Heading 3")
+        path = tmp_path / "defaults.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert len(result.headings) == 3
+        assert result.headings[0].level == 1
+        assert result.headings[1].level == 2
+        assert result.headings[2].level == 3
+
+    async def test_ad_038_heading_hierarchy_paths(self, tmp_path):
+        """AD-038: Heading hierarchy paths use ' > ' separator."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Chapter", style="Heading 1")
+        doc.add_paragraph("Section", style="Heading 2")
+        doc.add_paragraph("Subsection", style="Heading 3")
+        path = tmp_path / "hierarchy.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.headings[0].path == "Chapter"
+        assert result.headings[1].path == "Chapter > Section"
+        assert result.headings[2].path == "Chapter > Section > Subsection"
+
+    async def test_ad_039_title_extraction_fallback(self, tmp_path):
+        """AD-039: Title from first level-1 heading, fallback to filename."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+
+        # With H1 heading
+        doc1 = docx.Document()
+        doc1.add_paragraph("My Document Title", style="Heading 1")
+        path1 = tmp_path / "with_title.docx"
+        doc1.save(str(path1))
+        result1 = await adapter.project(path1)
+        assert result1.title == "My Document Title"
+
+        # Without H1 heading (only H2)
+        doc2 = docx.Document()
+        doc2.add_paragraph("A Subsection", style="Heading 2")
+        path2 = tmp_path / "no_h1_title.docx"
+        doc2.save(str(path2))
+        result2 = await adapter.project(path2)
+        assert result2.title == "no_h1_title"
+
+    async def test_ad_040_content_hash_is_raw_bytes(self, tmp_path):
+        """AD-040: content_hash is SHA-256 of raw .docx bytes."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Hash test content.")
+        path = tmp_path / "hash_test.docx"
+        doc.save(str(path))
+
+        expected_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        result = await adapter.project(path)
+        assert result.content_hash == expected_hash
+
+    async def test_ad_041_source_modified_at(self, tmp_path):
+        """AD-041: source_modified_at extracted from file mtime."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Provenance test.")
+        path = tmp_path / "provenance.docx"
+        doc.save(str(path))
+
+        known_mtime = datetime(2023, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+        os.utime(path, (path.stat().st_atime, known_mtime.timestamp()))
+
+        result = await adapter.project(path)
+
+        assert "source_modified_at" in result.metadata
+        parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
+        assert parsed.tzinfo is not None
+        assert abs((parsed - known_mtime).total_seconds()) < 1.0
+
+    async def test_ad_042_table_extraction(self, tmp_path):
+        """AD-042: Table content extracted as pipe-delimited text rows."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Data Section", style="Heading 1")
+        _add_table(doc, [["Name", "Value"], ["alpha", "1"], ["beta", "2"]])
+        path = tmp_path / "table.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert "| Name | Value |" in result.text
+        assert "| alpha | 1 |" in result.text
+        assert "| beta | 2 |" in result.text
+
+    async def test_ad_043_mixed_content_ordering(self, tmp_path):
+        """AD-043: Mixed headings, paragraphs, tables in correct order."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Overview", style="Heading 1")
+        doc.add_paragraph("Intro paragraph.")
+        _add_table(doc, [["A", "B"], ["1", "2"]])
+        doc.add_paragraph("Details", style="Heading 2")
+        doc.add_paragraph("Detail paragraph.")
+        path = tmp_path / "mixed.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert len(result.headings) == 2
+        assert result.headings[0].text == "Overview"
+        assert result.headings[1].text == "Details"
+        # Table content should be under "Overview" heading
+        assert "| A | B |" in result.headings[0].content
+        assert "Intro paragraph." in result.headings[0].content
+
+    async def test_ad_044_empty_document(self, tmp_path):
+        """AD-044: Empty document produces valid result with filename title."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        path = tmp_path / "empty_doc.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.title == "empty_doc"
+        assert result.headings == []
+        assert isinstance(result.text, str)
+        assert isinstance(result.content_hash, str)
+
+    async def test_ad_045_custom_style_map_override(self, tmp_path):
+        """AD-045: Custom heading_style_map overrides defaults."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Custom Top", style="Title")
+        doc.add_paragraph("Standard H1", style="Heading 1")
+        path = tmp_path / "override.docx"
+        doc.save(str(path))
+
+        # "Title" mapped to level 1; defaults still apply for "Heading 1"
+        config = {"heading_style_map": {"Title": 1}}
+        result = await adapter.project(path, config=config)
+
+        titles = [h for h in result.headings if h.text == "Custom Top"]
+        assert len(titles) == 1
+        assert titles[0].level == 1
+
+        h1s = [h for h in result.headings if h.text == "Standard H1"]
+        assert len(h1s) == 1
+        assert h1s[0].level == 1
+
+    async def test_ad_046_body_under_heading(self, tmp_path):
+        """AD-046: Non-heading paragraphs appear as content under nearest heading."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Section A", style="Heading 1")
+        doc.add_paragraph("First body paragraph.")
+        doc.add_paragraph("Second body paragraph.")
+        doc.add_paragraph("Section B", style="Heading 1")
+        doc.add_paragraph("Third body paragraph.")
+        path = tmp_path / "body.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert "First body paragraph." in result.headings[0].content
+        assert "Second body paragraph." in result.headings[0].content
+        assert "Third body paragraph." in result.headings[1].content
+        assert "First body paragraph." not in result.headings[1].content
+
+    async def test_ad_047_adapter_version(self, tmp_path):
+        """AD-047: adapter_version matches DocxAdapter.VERSION."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Version check.")
+        path = tmp_path / "version.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+        assert result.adapter_version == DocxAdapter.VERSION
+
+    async def test_ad_048_decimal_heading_numbering(self, tmp_path):
+        """AD-048: Decimal heading numbering prepended to heading text."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
+
+        # Two H1 headings, second with an H2 child
+        p1 = doc.add_paragraph("Introduction", style="Heading 1")
+        _set_paragraph_numbering(p1, num_id=100, ilvl=0)
+
+        p2 = doc.add_paragraph("Background", style="Heading 1")
+        _set_paragraph_numbering(p2, num_id=100, ilvl=0)
+
+        p3 = doc.add_paragraph("Definitions", style="Heading 2")
+        _set_paragraph_numbering(p3, num_id=100, ilvl=1)
+
+        path = tmp_path / "numbered.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.headings[0].text == "1 Introduction"
+        assert result.headings[1].text == "2 Background"
+        assert result.headings[2].text == "2.1 Definitions"
+
+    async def test_ad_049_numbering_counter_reset(self, tmp_path):
+        """AD-049: Child counters reset when parent level increments."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
+
+        # H1 -> H2, H2 -> H1 -> H2 (second H2 should restart at .1)
+        p1 = doc.add_paragraph("Part A", style="Heading 1")
+        _set_paragraph_numbering(p1, num_id=100, ilvl=0)
+        p2 = doc.add_paragraph("Sub One", style="Heading 2")
+        _set_paragraph_numbering(p2, num_id=100, ilvl=1)
+        p3 = doc.add_paragraph("Sub Two", style="Heading 2")
+        _set_paragraph_numbering(p3, num_id=100, ilvl=1)
+        p4 = doc.add_paragraph("Part B", style="Heading 1")
+        _set_paragraph_numbering(p4, num_id=100, ilvl=0)
+        p5 = doc.add_paragraph("Sub One Again", style="Heading 2")
+        _set_paragraph_numbering(p5, num_id=100, ilvl=1)
+
+        path = tmp_path / "reset.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.headings[0].text == "1 Part A"
+        assert result.headings[1].text == "1.1 Sub One"
+        assert result.headings[2].text == "1.2 Sub Two"
+        assert result.headings[3].text == "2 Part B"
+        assert result.headings[4].text == "2.1 Sub One Again"
+
+    async def test_ad_050_custom_numbering_formats(self, tmp_path):
+        """AD-050: upperRoman and lowerLetter numbering formats."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        _inject_numbering(doc, MIXED_ABSTRACT_NUM_XML, MIXED_NUM_XML)
+
+        p1 = doc.add_paragraph("First Chapter", style="Heading 1")
+        _set_paragraph_numbering(p1, num_id=200, ilvl=0)
+        p2 = doc.add_paragraph("First Section", style="Heading 2")
+        _set_paragraph_numbering(p2, num_id=200, ilvl=1)
+        p3 = doc.add_paragraph("First Item", style="Heading 3")
+        _set_paragraph_numbering(p3, num_id=200, ilvl=2)
+
+        path = tmp_path / "roman.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.headings[0].text == "I First Chapter"
+        assert result.headings[1].text == "I.1 First Section"
+        assert result.headings[2].text == "I.1.a First Item"
+
+    async def test_ad_051_cross_reference_field(self, tmp_path):
+        """AD-051: Cross-ref field cached results in text, instructions excluded."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("References", style="Heading 1")
+
+        # Add paragraph with text + cross-reference field
+        p = doc.add_paragraph()
+        p.add_run("See Section ")
+        _inject_cross_ref_field(p, " REF _Ref12345 \\r \\h ", "1.1")
+        p.add_run(" for details.")
+
+        path = tmp_path / "crossref.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        # Cached display value should appear
+        assert "See Section 1.1 for details." in result.text
+        # Field instruction should NOT appear
+        assert "REF _Ref12345" not in result.text
+        assert "instrText" not in result.text
+
+    async def test_ad_052_mixed_numbering_formats(self, tmp_path):
+        """AD-052: Multi-level numbering with mixed formats (I.2.a)."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        _inject_numbering(doc, MIXED_ABSTRACT_NUM_XML, MIXED_NUM_XML)
+
+        # Two top-level chapters, each with subsections
+        p1 = doc.add_paragraph("Alpha", style="Heading 1")
+        _set_paragraph_numbering(p1, num_id=200, ilvl=0)
+        p2 = doc.add_paragraph("Sub Alpha", style="Heading 2")
+        _set_paragraph_numbering(p2, num_id=200, ilvl=1)
+        p3 = doc.add_paragraph("Detail A", style="Heading 3")
+        _set_paragraph_numbering(p3, num_id=200, ilvl=2)
+        p4 = doc.add_paragraph("Detail B", style="Heading 3")
+        _set_paragraph_numbering(p4, num_id=200, ilvl=2)
+        p5 = doc.add_paragraph("Beta", style="Heading 1")
+        _set_paragraph_numbering(p5, num_id=200, ilvl=0)
+        p6 = doc.add_paragraph("Sub Beta", style="Heading 2")
+        _set_paragraph_numbering(p6, num_id=200, ilvl=1)
+
+        path = tmp_path / "mixed_fmt.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.headings[0].text == "I Alpha"
+        assert result.headings[1].text == "I.1 Sub Alpha"
+        assert result.headings[2].text == "I.1.a Detail A"
+        assert result.headings[3].text == "I.1.b Detail B"
+        assert result.headings[4].text == "II Beta"
+        assert result.headings[5].text == "II.1 Sub Beta"

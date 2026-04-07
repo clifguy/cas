@@ -13,6 +13,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     "einops>=0.8",
     "pyarrow>=17.0",
+    "python-docx>=1.1",
 ]
 
 [project.optional-dependencies]

@@ -15,6 +15,7 @@ from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
+from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
@@ -69,6 +70,7 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
     # Source adapters
     source_adapters = {
         SourceType.MARKDOWN: MarkdownAdapter(),
+        SourceType.DOCX: DocxAdapter(),
     }
 
     # Services
