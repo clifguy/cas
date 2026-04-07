@@ -10,6 +10,7 @@ The ingest endpoint returns immediately after Stage 1 (BH-026).
 import asyncio
 import hashlib
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +45,40 @@ class IngestionService:
         self._config = config
         self._adapters = source_adapters or {}
 
+    def _ensure_vault_local(
+        self, source_path: Path, storage_root: Path
+    ) -> str:
+        """Return a vault-relative path to the source file, copying it
+        into ``{storage_root}/imports/`` if it lives outside the vault.
+
+        Internal files (already under *storage_root*) are returned as-is
+        with a normalized relative path.  External files are copied
+        verbatim; on filename collision a content-hash suffix is appended.
+
+        Returns:
+            Vault-relative path string (e.g. ``patents/doc.md`` or
+            ``imports/doc_a1b2c3d4.md``).
+        """
+        try:
+            relative = source_path.relative_to(storage_root)
+            return str(relative)
+        except ValueError:
+            pass  # external file -- fall through to import
+
+        imports_dir = storage_root / "imports"
+        imports_dir.mkdir(exist_ok=True)
+
+        dest = imports_dir / source_path.name
+        if dest.exists():
+            # Collision: disambiguate with 8-char content hash
+            content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()[:8]
+            stem = source_path.stem
+            suffix = source_path.suffix
+            dest = imports_dir / f"{stem}_{content_hash}{suffix}"
+
+        shutil.copy2(source_path, dest)
+        return str(dest.relative_to(storage_root))
+
     async def ingest(
         self, request: IngestRequest, vault_id: str
     ) -> tuple[Document, int]:
@@ -62,19 +97,31 @@ class IngestionService:
         if adapter is None:
             raise AdapterNotFoundError(request.adapter)
 
-        # Resolve source path relative to vault storage_root
-        storage_root = Path(self._config.vault.storage_root).expanduser()
-        source_path = storage_root / request.source
+        # Resolve source path: relative to storage_root, or absolute external
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        source_input = Path(request.source)
+
+        if source_input.is_absolute():
+            source_path = source_input
+        else:
+            source_path = storage_root / request.source
+
         if not source_path.exists():
             from sage.api.errors import SourceFileNotFoundError
             raise SourceFileNotFoundError(request.source)
 
+        # Import external files into the vault (BH-053 through BH-057)
+        source_path = source_path.resolve()
+        vault_relative = self._ensure_vault_local(source_path, storage_root)
+
         # Stage 1: Projection (synchronous)
-        projection = await adapter.project(source_path, request.config)
+        projection = await adapter.project(
+            storage_root / vault_relative, request.config
+        )
 
         # Check for duplicates (BH-018, BH-019)
         existing = await self._store.find_by_source_path_and_hash(
-            request.source, projection.content_hash
+            vault_relative, projection.content_hash
         )
 
         if existing is not None and not request.force:
@@ -110,13 +157,13 @@ class IngestionService:
             # New document
             created_by = request.created_by or self._config.vault.owner
             doc_id = generate_document_id(
-                request.source, now.isoformat(), projection.title
+                vault_relative, now.isoformat(), projection.title
             )
             doc = Document(
                 id=doc_id,
                 title=projection.title,
                 source_type=request.adapter,
-                source_path=request.source,
+                source_path=vault_relative,
                 lifecycle_status="active",
                 source_content_hash=projection.content_hash,
                 adapter_version=projection.adapter_version,

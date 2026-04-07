@@ -332,3 +332,152 @@ async def test_bh_052_created_at_is_ingestion_time(
 
     # They must be different
     assert doc.created_at != doc.source_modified_at
+
+
+# ---------------------------------------------------------------------------
+# BH-053: External file is copied verbatim to imports/ subdirectory
+# ---------------------------------------------------------------------------
+
+async def test_bh_053_external_file_copied_to_imports(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """When source resolves outside storage_root, the file is copied
+    verbatim into {storage_root}/imports/ and the original bytes are
+    preserved exactly."""
+    # Create a file outside storage_root
+    external_dir = tmp_path / "ephemeral_session"
+    external_dir.mkdir()
+    external_file = external_dir / "checklist.md"
+    content = "# Checklist\n\nItem one.\nItem two.\n"
+    external_file.write_text(content)
+
+    request = IngestRequest(
+        source=str(external_file),  # absolute path
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, status = await ingestion_service.ingest(request, "test_vault")
+    assert status == 201
+
+    # The file must exist in imports/
+    storage_root = tmp_vault_dir / "sources"
+    imported = storage_root / "imports" / "checklist.md"
+    assert imported.exists()
+    assert imported.read_text() == content
+
+
+# ---------------------------------------------------------------------------
+# BH-054: Imported file source_path records vault-relative path
+# ---------------------------------------------------------------------------
+
+async def test_bh_054_imported_source_path_is_vault_relative(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """The document record's source_path must be vault-relative
+    (imports/filename.ext), not the original absolute path."""
+    external_file = tmp_path / "external_doc.md"
+    external_file.write_text("# External\n\nContent.\n")
+
+    request = IngestRequest(
+        source=str(external_file),
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, status = await ingestion_service.ingest(request, "test_vault")
+    assert status == 201
+    assert doc.source_path == "imports/external_doc.md"
+
+
+# ---------------------------------------------------------------------------
+# BH-055: Name collision on import appends 8-char content hash
+# ---------------------------------------------------------------------------
+
+async def test_bh_055_import_name_collision_appends_hash(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """When imports/ already contains a file with the same name but
+    different content, the new file gets an 8-char content hash
+    appended before the extension."""
+    storage_root = tmp_vault_dir / "sources"
+    imports_dir = storage_root / "imports"
+    imports_dir.mkdir()
+
+    # Pre-populate imports/ with a file named "report.md"
+    existing = imports_dir / "report.md"
+    existing.write_text("# Old report\n\nOriginal content.\n")
+
+    # Create an external file with the same name but different content
+    external_file = tmp_path / "report.md"
+    new_content = "# New report\n\nDifferent content.\n"
+    external_file.write_text(new_content)
+
+    request = IngestRequest(
+        source=str(external_file),
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, status = await ingestion_service.ingest(request, "test_vault")
+    assert status == 201
+
+    # source_path should be imports/report_<8-char-hash>.md
+    assert doc.source_path.startswith("imports/report_")
+    assert doc.source_path.endswith(".md")
+    # Extract the hash portion
+    stem = Path(doc.source_path).stem  # e.g. "report_a1b2c3d4"
+    hash_suffix = stem.split("_", 1)[1]
+    assert len(hash_suffix) == 8
+
+    # The disambiguated file must exist and contain the new content
+    imported = storage_root / doc.source_path
+    assert imported.exists()
+    assert imported.read_text() == new_content
+
+    # The original file must be untouched
+    assert existing.read_text() == "# Old report\n\nOriginal content.\n"
+
+
+# ---------------------------------------------------------------------------
+# BH-056: File already inside storage_root is not copied
+# ---------------------------------------------------------------------------
+
+async def test_bh_056_internal_file_not_copied(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Files already under storage_root are ingested in place without
+    copying. source_path is the normalized relative path."""
+    _create_test_file(tmp_vault_dir, "patents/internal.md", "# Internal\n\nContent.\n")
+
+    request = IngestRequest(
+        source="patents/internal.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, status = await ingestion_service.ingest(request, "test_vault")
+    assert status == 201
+    assert doc.source_path == "patents/internal.md"
+
+    # No imports/ directory should have been created
+    imports_dir = tmp_vault_dir / "sources" / "imports"
+    assert not imports_dir.exists()
+
+
+# ---------------------------------------------------------------------------
+# BH-057: imports/ directory is created on demand
+# ---------------------------------------------------------------------------
+
+async def test_bh_057_imports_dir_created_on_demand(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """The imports/ subdirectory is created automatically on the first
+    external file import; it does not need to pre-exist."""
+    imports_dir = tmp_vault_dir / "sources" / "imports"
+    assert not imports_dir.exists()
+
+    external_file = tmp_path / "fresh.md"
+    external_file.write_text("# Fresh\n\nNew content.\n")
+
+    request = IngestRequest(
+        source=str(external_file),
+        adapter=SourceType.MARKDOWN,
+    )
+    doc, status = await ingestion_service.ingest(request, "test_vault")
+    assert status == 201
+
+    assert imports_dir.exists()
+    assert (imports_dir / "fresh.md").exists()

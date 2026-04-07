@@ -106,7 +106,9 @@ async def sage_ingest(
 
     Args:
         vault_id: Target vault identifier.
-        source: Source file path relative to the vault's storage_root.
+        source: Source file path relative to the vault's storage_root,
+            or an absolute path to an external file. External files are
+            copied verbatim into the vault's imports/ directory.
         adapter: Source format adapter (markdown, docx, pdf, email, onenote, teams_chat).
         config: Adapter-specific configuration (optional).
         created_by: Creator name. Defaults to vault owner.
