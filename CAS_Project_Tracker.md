@@ -1,7 +1,7 @@
 # CAS Project Tracker
 
-**Version:** v24
-**Last updated:** 2026-04-06
+**Version:** v25
+**Last updated:** 2026-04-08
 
 ---
 
@@ -17,16 +17,17 @@
 | 6 | Formatting Standards | v1.0 | Development | — |
 | 7 | Formal Substrate | v1.2 | Development | — |
 | 8 | Test Plan | v0.5 (tier 1 + SAGE tier 2 behavioral + adapter + provenance) | Development | — |
-| 9 | Working Code | — | Planned | — |
+| 9 | CAS Application Spec | v0.4 | Development | — |
+| 10 | Working Code | — | Planned | — |
 
 ## Domain Instantiation Documents
 
 | # | Artifact | Current Version | Status | Next Version |
 |---|----------|----------------|--------|--------------|
-| 10 | PIM Health Instance | v0.1 | Development | — |
-| 11 | Resurrection Instance | — | Planned | v0.1 |
-| 12 | College Basketball Instance | — | Not started | — |
-| 13 | Personal Instance | — | Not started | — |
+| 11 | PIM Health Instance | v0.1 | Development | — |
+| 12 | Resurrection Instance | — | Planned | v0.1 |
+| 13 | College Basketball Instance | — | Not started | — |
+| 14 | Personal Instance | — | Not started | — |
 
 ---
 
@@ -100,7 +101,34 @@
 - Deferred to step 20: pipeline-level bypass for documents with existing abstract sections (e.g., patent ABSTRACT headings). Vault-configurable option to prefer existing abstracts over LLM generation.
 - Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
-### 9. Working Code (In Progress)
+### 9. CAS Application Spec (v0.4)
+
+- Specification for the human-facing CAS Application web client.
+- v0.1 delivered 2026-04-06. Initial draft establishing the SAGE interface: technology stack (NiceGUI), navigation structure, six views (Dashboard, Ingest, Review, Search, Document Detail, Graph Explorer).
+- v0.2 delivered 2026-04-08. Scope correction: this document covers the full CAS Application, not solely the SAGE interface.
+- v0.3 delivered 2026-04-08. Disambiguation pass resolving eleven ambiguities to definitive specifications.
+- v0.4 delivered 2026-04-08. Technology stack revision: replaced NiceGUI with React SPA served by FastAPI Python backend. vis.js imported directly as a React component. Node.js required at build time only.
+- React wireframe v0.4 delivered 2026-04-08. All six views rendered with static mock data mirroring SAGE API response shapes. Committed as `61745fa`.
+- **Approved architectural decisions for application backend:**
+  - Directory scan and batch ingestion are application-layer orchestration, not SAGE Core API operations. The browser cannot access the filesystem; the FastAPI application backend handles directory walking, file hashing, adapter matching, and per-file ingestion loops.
+  - SAGE provides a single new endpoint: `POST /sage_vaults/{vault_id}/hash-check` (accepts `{ hashes: string[] }`, returns matches with document IDs). This enables the scan preview's new/modified/unchanged status determination without side effects.
+  - The application backend serves the compiled React frontend as static files. One uvicorn process, one port, everything local.
+  - Application backend routers mount on the same FastAPI instance as SAGE Core API routers (separate URL prefix `/app/` vs `/sage_vaults/`). Structured as if communicating over HTTP for future separation.
+  - Batch ingestion progress streamed to browser via Server-Sent Events (SSE).
+- **New application backend endpoints needed:**
+  - `POST /app/scan` -- walk directory, hash files, match adapters, check hashes against SAGE
+  - `POST /app/ingest` -- iterate selected files, call SAGE single-document ingest per file, stream progress via SSE
+- **New SAGE Core API endpoint needed:**
+  - `POST /sage_vaults/{vault_id}/hash-check` -- bulk hash existence check against graph store
+- **Other SAGE API gaps identified during wireframe development:**
+  - Vault listing endpoint (`GET /sage_vaults`) -- enumerate available vaults
+  - Vault statistics endpoint -- document counts, edge counts, storage sizes
+  - Staging edges endpoints -- list, confirm, dismiss Tier 2 suggested edges
+  - Pending metadata endpoint -- query documents awaiting metadata confirmation
+  - Pipeline status filtering on discover endpoint
+- Pending: test spec for all six views, application backend endpoints, and SAGE API additions.
+
+### 10. Working Code (In Progress)
 
 - Implementation of SAGE, ROOT Harness, and domain instantiation configurations.
 - Depends on: Formal Substrate (delivered), Test Plan. (Git setup completed 2026-03-26.)
@@ -117,7 +145,7 @@
 - Source file provenance delivered 2026-04-06. Added Document.source_modified_at (nullable datetime) across all layers: Pydantic model, SQLite schema with ALTER TABLE migration for existing databases, graph store serialization/deserialization, markdown adapter (extracts st_mtime via Path.stat()), and ingestion service (both new-document and force-re-ingestion paths). created_at remains as SAGE ingestion timestamp. 5 new tests passing (BH-049 through BH-052, AD-034). 150 total tests passing.
 - SAGE MCP server registered in Claude Desktop 2026-04-06. Configuration at ~/Library/Application Support/Claude/claude_desktop_config.json. Launches .venv Python with both vaults (test, pim_health) via stdio transport. Vault config paths use absolute paths to ~/sage_vaults/{vault_id}/vault_config.yaml (tilde expansion not reliable in JSON config files). Claude Desktop Cowork mode can now discover and call all 11 SAGE tools.
 
-### 10. PIM Health Instance (v0.1)
+### 11. PIM Health Instance (v0.1)
 
 - Independent domain instantiation per CAS-ADR-005. The deliverable is the YAML configuration files themselves, not a separate prose document. Well-commented YAML serves both consumers (humans reading domain setup, code loading configuration at runtime) from a single source of truth, following the same format-follows-access-pattern reasoning that made the Formal Substrate a directory of JSON Schema files.
 - First and most complex domain instantiation.
@@ -125,17 +153,17 @@
 - YAML files updated 2026-03-30: removed organize from permitted_operations in three policies (CAS-ADR-014), added set_lifecycle to reference_steward_read_heavy, corrected target paths from root_harness/ subdirectory to flat domain directory.
 - No further pending corrections or revisions identified.
 
-### 11. Resurrection Instance (Planned)
+### 12. Resurrection Instance (Planned)
 
 - IT Department management domain instantiation.
 - Scope and timeline to be determined.
 
-### 12. College Basketball Instance (Not started)
+### 13. College Basketball Instance (Not started)
 
 - Analytics and scouting data management domain instantiation.
 - No work begun.
 
-### 13. Personal Instance (Not started)
+### 14. Personal Instance (Not started)
 
 - General-purpose knowledge management domain instantiation.
 - No work begun.
@@ -187,5 +215,13 @@
 18. ~~Working Code: LanceDB content store + nomic-embed-text embedding provider~~ (completed 2026-04-06, 2 production adapters, 25 adapter tests, 136 total)
 18a. ~~Test Plan v0.4: Qwen3 AbstractionProvider adapter test specs~~ (completed 2026-04-06, 8 tests encoding 8 design decisions)
 19. ~~Working Code: Qwen3 abstraction provider~~ (completed 2026-04-06, production adapter via MLX, 9 tests, 145 total)
-20. Working Code: Manual testing of SAGE with real PIM documents ← **next**
-21. Working Code: ROOT Harness implementation
+20. Working Code: Manual testing of SAGE with real PIM documents
+20a. ~~Working Code: Docx source adapter~~ (completed 2026-04-06, 18 adapter tests)
+20b. ~~Working Code: Source file provenance~~ (completed 2026-04-06, 5 tests)
+21. ~~CAS Application Spec v0.4~~ (completed 2026-04-08, technology stack revision to React SPA)
+22. ~~CAS Application: React wireframe v0.4~~ (completed 2026-04-08, 6 views with mock data)
+23. CAS Application: Test spec for all views + application backend endpoints ← **next**
+24. CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata)
+25. CAS Application: Application backend (scan, batch ingest with SSE)
+26. CAS Application: Frontend production code with API integration
+27. Working Code: ROOT Harness implementation
