@@ -329,15 +329,16 @@ complementing the web UI's Metadata Review tab.
 
 ## 7. app_scan_directory
 
-### TEST-APP-MCP-015: app_scan_directory returns file list with status
+### TEST-APP-MCP-015: app_scan_directory returns file list with parsed metadata
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-018
 **Category:** mcp_tool, app_backend
 
 **Decision:** `app_scan_directory(vault_id, directory, max_depth=None)` walks the
-directory, matches files against vault adapters, hashes files, checks hashes
-against the vault, and returns the scan results. The tool reuses the same scan
-logic as the `POST /app/scan` HTTP endpoint.
+directory, matches files against vault adapters, hashes files, parses filenames
+using the vault's metadata_extraction config, checks hashes against the vault,
+and returns the scan results. The tool reuses the same scan logic as the
+`POST /app/scan` HTTP endpoint.
 
 **Precondition:** Vault initialized. Directory exists with mixed file types,
 including files already ingested and files with no matching adapter.
@@ -346,12 +347,20 @@ including files already ingested and files with no matching adapter.
 
 **Expected:**
 - Returns valid JSON string
-- Parsed result is an object with `files` array and optional `warnings` array
-- Each file object includes: `filename`, `path`, `size`, `detected_adapter`, `status`
-- Status values: "new", "modified", "unchanged", "no_adapter"
+- Parsed result is an object with `files` array and `warnings` array
+- Each file object includes:
+  - `file_path`: absolute path to the file
+  - `file_hash`: `"sha256:..."` content hash
+  - `source_modified_at`: ISO 8601 timestamp from st_mtime
+  - `adapter`: detected adapter name (or null)
+  - `parsed_metadata`: object with `title`, `date`, `project`, `codes`,
+    `version`, `doc_type`
+  - `sage_status`: one of "new", "modified", "unchanged", "no_adapter"
 
 **Rationale:** MCP clients (e.g., Claude Desktop) can preview directory contents
-before triggering ingestion, matching the Ingest view's scan preview step.
+with parsed filename metadata before triggering ingestion, matching the Ingest
+view's scan preview step. Parsed metadata enables the client to show doc_type
+and version information in the scan preview.
 
 ### TEST-APP-MCP-016: app_scan_directory validates directory existence
 
@@ -417,33 +426,36 @@ can decide how to present warnings.
 
 ### TEST-APP-MCP-019: app_batch_ingest processes files and returns summary
 
-**Artifact:** `sage/mcp_server.py`, TEST-APP-BE-022, TEST-APP-BE-024
+**Artifact:** `sage/mcp_server.py`, TEST-APP-BE-022, TEST-APP-BE-024, TEST-APP-BE-032
 **Category:** mcp_tool, app_backend
 
-**Decision:** `app_batch_ingest(vault_id, files)` accepts a list of file
-objects (`{ path, adapter }`) and processes them sequentially via SAGE's
-single-document ingest. Returns the summary object when all files are done.
-The tool runs synchronously from the caller's perspective.
+**Decision:** `app_batch_ingest(vault_id, files)` accepts a list of file objects
+(`{ file_path, adapter, parsed_metadata? }`) and processes them sequentially via
+SAGE's single-document ingest with two-phase edge inference. Returns the summary
+object when all files are done. The tool runs synchronously from the caller's
+perspective. Each file's `parsed_metadata` (if provided) is passed to SAGE's
+IngestRequest.metadata for single-call ingestion with metadata.
 
 **Precondition:** Vault initialized. Two valid source files exist.
 
-**Input:** Call `app_batch_ingest("test_vault", [{"path": "/path/doc1.md", "adapter": "markdown"}, {"path": "/path/doc2.md", "adapter": "markdown"}])`.
+**Input:** Call `app_batch_ingest("test_vault", [{"file_path": "/path/doc1.md", "adapter": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}}, {"file_path": "/path/doc2.md", "adapter": "markdown"}])`.
 
 **Expected:**
 - Returns valid JSON string (blocks until all files processed)
 - Parsed result is a summary object with:
   - `documents_created`: `{ "new": N, "new_version": M }`
   - `metadata_pending` (integer)
-  - `edges_created` (object by type)
-  - `edges_staged` (object by type)
+  - `edges_created` (object by edge type, Tier 1 edges)
+  - `edges_staged` (object by edge type, Tier 2 edges)
+  - `edges_dropped` (integer, edges involving failed ingestions)
   - `abstracts_generated` (integer)
   - `abstracts_deferred` (integer)
   - `error_count` (integer)
   - `errors` (array of `{ filename, message }` for any failures)
 
 **Rationale:** The MCP tool returns the same summary shape as the SSE endpoint's
-final event. Synchronous return simplifies the caller's logic since MCP tools
-are request/response.
+final event, including edge inference results. Synchronous return simplifies the
+caller's logic since MCP tools are request/response.
 
 ### TEST-APP-MCP-020: app_batch_ingest emits MCP progress notifications
 

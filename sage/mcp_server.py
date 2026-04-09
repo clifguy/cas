@@ -407,6 +407,370 @@ async def sage_refresh_views(vault_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# SAGE API tools for CAS Application (MCP-001 through MCP-014)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def sage_list_vaults() -> str:
+    """Enumerate all configured vaults. No vault_id parameter -- operates
+    across all registered vaults.
+    """
+    summaries = []
+    for vid, svc in _vaults.items():
+        summaries.append({
+            "id": vid,
+            "name": svc.config.vault.name,
+            "description": getattr(svc.config.vault, "description", None),
+            "storage_root": svc.config.vault.storage_root,
+        })
+    return json.dumps(summaries, indent=2)
+
+
+@mcp.tool()
+async def sage_vault_stats(vault_id: str) -> str:
+    """Vault statistics and health indicators.
+
+    Args:
+        vault_id: Target vault identifier.
+    """
+    try:
+        v = _get_vault(vault_id)
+        gs = v.graph_store
+
+        total_docs = len(await gs.list_all_documents())
+        by_lifecycle = await gs.get_document_counts_by_field("lifecycle_status")
+        by_doc_type = await gs.get_document_counts_by_field("doc_type")
+        by_adapter = await gs.get_document_counts_by_field("source_type")
+        by_pipeline = await gs.get_document_counts_by_field("pipeline_status")
+
+        total_edges = await gs.get_total_edge_count()
+        by_edge_type = await gs.get_edge_counts_by_type()
+
+        staging_count = await gs.count_staging_edges()
+        pending_meta = len(await gs.list_pending_metadata_documents())
+
+        deferred = by_pipeline.get("abstraction_skipped", 0)
+        failed = by_pipeline.get("failed", 0)
+        last_ingestion = await gs.get_last_ingestion_at()
+
+        result = {
+            "total_documents": total_docs,
+            "by_lifecycle_state": by_lifecycle,
+            "by_doc_type": by_doc_type,
+            "by_source_adapter": by_adapter,
+            "total_edges": total_edges,
+            "by_edge_type": by_edge_type,
+            "staging_edge_count": staging_count,
+            "lancedb_size_bytes": 0,
+            "sqlite_size_bytes": 0,
+            "last_ingestion_at": last_ingestion,
+            "health": {
+                "pending_metadata_count": pending_meta,
+                "pending_edge_count": staging_count,
+                "deferred_abstract_count": deferred,
+                "failed_ingestion_count": failed,
+            },
+        }
+        return json.dumps(result, indent=2, default=str)
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+@mcp.tool()
+async def sage_hash_check(vault_id: str, hashes: list[str]) -> str:
+    """Bulk hash existence check against the graph store.
+
+    Args:
+        vault_id: Target vault identifier.
+        hashes: List of content hash strings (e.g. "sha256:abc...").
+    """
+    try:
+        v = _get_vault(vault_id)
+        matches = await v.graph_store.find_documents_by_hashes(hashes)
+        result = {}
+        for h in hashes:
+            if h in matches:
+                result[h] = {"exists": True, "document_id": matches[h]}
+            else:
+                result[h] = {"exists": False}
+        return json.dumps(result, indent=2)
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+@mcp.tool()
+async def sage_list_staging_edges(vault_id: str) -> str:
+    """List Tier 2 suggested edges awaiting review.
+
+    Args:
+        vault_id: Target vault identifier.
+    """
+    try:
+        v = _get_vault(vault_id)
+        edges = await v.graph_store.list_staging_edges()
+        return json.dumps(
+            [e.model_dump(mode="json") for e in edges], indent=2, default=str
+        )
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+@mcp.tool()
+async def sage_confirm_staging_edge(vault_id: str, edge_id: str) -> str:
+    """Confirm a staging edge: move it to the production edge table.
+
+    Args:
+        vault_id: Target vault identifier.
+        edge_id: Staging edge identifier.
+    """
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from sage.models.schemas import Edge, StagingEdge
+
+    try:
+        v = _get_vault(vault_id)
+        gs = v.graph_store
+        staging = await gs.get_staging_edge(edge_id)
+        if staging is None:
+            from sage.api.errors import StagingEdgeNotFoundError
+            raise StagingEdgeNotFoundError(edge_id)
+
+        production = Edge(
+            id=str(_uuid.uuid4()),
+            source_id=staging.source_id,
+            target_id=staging.target_id,
+            edge_type=staging.edge_type,
+            created_at=datetime.now(timezone.utc),
+            notes=f"Confirmed from staging edge {edge_id}",
+            rationale=staging.inference_evidence,
+        )
+        await gs.insert_edge(production)
+        await gs.delete_staging_edge(edge_id)
+        return _serialize({
+            "confirmed": True,
+            "staging_edge_id": edge_id,
+            "production_edge_id": production.id,
+        })
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+@mcp.tool()
+async def sage_dismiss_staging_edge(vault_id: str, edge_id: str) -> str:
+    """Dismiss a staging edge: delete it without creating a production edge.
+
+    Args:
+        vault_id: Target vault identifier.
+        edge_id: Staging edge identifier.
+    """
+    try:
+        v = _get_vault(vault_id)
+        gs = v.graph_store
+        staging = await gs.get_staging_edge(edge_id)
+        if staging is None:
+            from sage.api.errors import StagingEdgeNotFoundError
+            raise StagingEdgeNotFoundError(edge_id)
+        await gs.delete_staging_edge(edge_id)
+        return _serialize({"dismissed": True, "staging_edge_id": edge_id})
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+@mcp.tool()
+async def sage_pending_metadata(vault_id: str) -> str:
+    """List documents with unconfirmed metadata.
+
+    Args:
+        vault_id: Target vault identifier.
+    """
+    try:
+        v = _get_vault(vault_id)
+        docs = await v.graph_store.list_pending_metadata_documents()
+        items = []
+        for doc in docs:
+            items.append({
+                "document": json.loads(_serialize(doc)),
+                "extracted_fields": {},
+            })
+        return json.dumps(items, indent=2, default=str)
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Application backend tools (MCP-015 through MCP-022)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def app_scan_directory(
+    vault_id: str,
+    directory: str,
+    max_depth: int | None = None,
+) -> str:
+    """Walk a directory, match files against vault adapters, hash files,
+    parse filenames, and check hashes against the SAGE vault.
+
+    Args:
+        vault_id: Target vault identifier.
+        directory: Absolute path to the directory to scan.
+        max_depth: Max recursion depth (null = unlimited, 0 = no recursion).
+    """
+    from app.backend.scan import scan_directory
+
+    try:
+        v = _get_vault(vault_id)
+        d = Path(directory)
+        if not d.is_dir():
+            return json.dumps({
+                "error": "invalid_directory",
+                "message": "Directory not found or not readable",
+            }, indent=2)
+
+        results, warnings = await scan_directory(
+            directory=d,
+            vault_config=v.config,
+            graph_store=v.graph_store,
+            max_depth=max_depth,
+        )
+        files = []
+        for r in results:
+            files.append(r.to_dict())
+        return json.dumps({"files": files, "warnings": warnings}, indent=2, default=str)
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+@mcp.tool()
+async def app_batch_ingest(
+    vault_id: str,
+    files: list[dict],
+) -> str:
+    """Ingest multiple files with two-phase edge inference. Returns a
+    summary when complete.
+
+    Args:
+        vault_id: Target vault identifier.
+        files: List of file objects. Each has: file_path (str), adapter (str),
+            and optional parsed_metadata (dict with title, date, project,
+            codes, version, doc_type).
+    """
+    from app.backend.edge_inference import (
+        EdgeInferenceEngine,
+        InferenceItem,
+        resolve_and_execute,
+    )
+    from app.backend.filename_parser import ParsedMetadata
+    from sage.models.enums import SourceType
+
+    try:
+        v = _get_vault(vault_id)
+
+        if not files:
+            return json.dumps({
+                "error": "empty_file_list",
+                "message": "No files selected for ingestion",
+            }, indent=2)
+
+        # Build inference items
+        engine = EdgeInferenceEngine()
+        scan_items: list[InferenceItem] = []
+        for f in files:
+            pm = f.get("parsed_metadata")
+            if pm:
+                parsed = ParsedMetadata(
+                    title=pm.get("title", Path(f["file_path"]).stem),
+                    date=pm.get("date"),
+                    project=pm.get("project"),
+                    codes=pm.get("codes", []),
+                    version=pm.get("version"),
+                    doc_type=pm.get("doc_type"),
+                )
+            else:
+                parsed = ParsedMetadata(title=Path(f["file_path"]).stem)
+            scan_items.append(InferenceItem(ref=f["file_path"], is_existing=False, parsed=parsed))
+
+        # Existing vault docs for edge plan context
+        existing_items: list[InferenceItem] = []
+        all_docs = await v.graph_store.list_all_documents()
+        for doc in all_docs:
+            existing_items.append(InferenceItem(
+                ref=doc.id, is_existing=True,
+                parsed=ParsedMetadata(
+                    title=doc.title, project=doc.project,
+                    codes=doc.tags, version=doc.version_label,
+                    doc_type=doc.doc_type,
+                ),
+            ))
+
+        edge_plan = engine.build_edge_plan(scan_items, existing_items)
+
+        # Per-file ingestion
+        path_to_id: dict[str, str] = {}
+        errors: list[dict] = []
+        docs_new = 0
+        docs_version = 0
+        abstracts_generated = 0
+        abstracts_deferred = 0
+
+        for f in files:
+            try:
+                metadata_dict: dict[str, str] | None = None
+                pm = f.get("parsed_metadata")
+                if pm:
+                    metadata_dict = {}
+                    for k in ("title", "date", "project", "doc_type"):
+                        if pm.get(k):
+                            if k == "date":
+                                metadata_dict["date"] = pm[k]
+                            else:
+                                metadata_dict[k] = pm[k]
+                    if pm.get("codes"):
+                        metadata_dict["codes"] = ",".join(pm["codes"]) if isinstance(pm["codes"], list) else pm["codes"]
+                    if pm.get("version"):
+                        metadata_dict["version_label"] = pm["version"]
+
+                request = IngestRequest(
+                    source=f["file_path"],
+                    adapter=SourceType(f["adapter"]),
+                    metadata=metadata_dict or None,
+                )
+                doc, status = await v.ingestion_service.ingest(request, vault_id)
+                path_to_id[f["file_path"]] = doc.id
+                if status == 201:
+                    docs_new += 1
+                else:
+                    docs_version += 1
+                if v.config.abstraction.enabled:
+                    abstracts_generated += 1
+                else:
+                    abstracts_deferred += 1
+            except Exception as exc:
+                errors.append({"filename": Path(f["file_path"]).name, "message": str(exc)})
+
+        # Post-ingest edge creation
+        edge_result = await resolve_and_execute(
+            edge_plan, path_to_id, v.graph_store, v.graph_ops_service,
+        )
+
+        summary = {
+            "documents_created": {"new": docs_new, "new_version": docs_version},
+            "metadata_pending": docs_new + docs_version,
+            "edges_created": edge_result.edges_created,
+            "edges_staged": edge_result.edges_staged,
+            "edges_dropped": edge_result.edges_dropped,
+            "abstracts_generated": abstracts_generated,
+            "abstracts_deferred": abstracts_deferred,
+            "error_count": len(errors),
+            "errors": errors,
+        }
+        return json.dumps(summary, indent=2, default=str)
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
