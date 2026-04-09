@@ -1,22 +1,80 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useParams, useOutletContext } from 'react-router-dom';
-import { vaults, getDocument, getEdgesForDocument, getDocumentTitle } from '../mock/data';
+import type { VaultContext } from '../App';
+import type { Document, Edge } from '../api/types';
+import { getDocument } from '../api/documents';
+import { traverse } from '../api/graph';
+import { createEdge } from '../api/graph';
 
 export default function DocumentDetail() {
   const { id } = useParams<{ id: string }>();
-  const { vaultId } = useOutletContext<{ vaultId: string }>();
-  const doc = id ? getDocument(vaultId, id) : undefined;
-  const edges = id ? getEdgesForDocument(vaultId, id) : [];
-  const vault = vaults[vaultId];
+  const { vaultId } = useOutletContext<VaultContext>();
+  const [doc, setDoc] = useState<Document | null>(null);
+  const [edges, setEdges] = useState<Edge[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [showEdgeDialog, setShowEdgeDialog] = useState(false);
+  const [newEdgeType, setNewEdgeType] = useState('covers');
+  const [newTargetId, setNewTargetId] = useState('');
+  const [neighborTitles, setNeighborTitles] = useState<Record<string, string>>({});
 
+  useEffect(() => {
+    if (!id) return;
+    setLoading(true);
+    setError('');
+
+    Promise.all([
+      getDocument(vaultId, id),
+      traverse(vaultId, { start_id: id, direction: 'both', depth: 1 }),
+    ])
+      .then(([document, traverseResp]) => {
+        setDoc(document);
+        const edgeList = traverseResp.nodes.map(n => n.edge);
+        setEdges(edgeList);
+        // Build a title map from traversal results
+        const titles: Record<string, string> = {};
+        for (const node of traverseResp.nodes) {
+          titles[node.document.id] = node.document.title;
+        }
+        setNeighborTitles(titles);
+        setLoading(false);
+      })
+      .catch(err => {
+        setError(err.message ?? 'Failed to load document');
+        setLoading(false);
+      });
+  }, [vaultId, id]);
+
+  if (loading) return <div>Loading document...</div>;
+  if (error) return <div style={{ color: '#c62828' }}>Error: {error}</div>;
   if (!doc) return <div>Document not found.</div>;
 
   // Group edges by type
-  const edgeGroups: Record<string, typeof edges> = {};
+  const edgeGroups: Record<string, Edge[]> = {};
   for (const e of edges) {
     if (!edgeGroups[e.edge_type]) edgeGroups[e.edge_type] = [];
     edgeGroups[e.edge_type].push(e);
+  }
+
+  function resolveTitle(docId: string): string {
+    if (docId === id) return doc?.title ?? docId;
+    return neighborTitles[docId] ?? docId;
+  }
+
+  async function handleCreateEdge() {
+    if (!id || !newTargetId) return;
+    try {
+      const newEdge = await createEdge(vaultId, {
+        source_id: id,
+        target_id: newTargetId,
+        edge_type: newEdgeType,
+      });
+      setEdges(prev => [...prev, newEdge]);
+      setShowEdgeDialog(false);
+      setNewTargetId('');
+    } catch {
+      // handle error silently for now
+    }
   }
 
   return (
@@ -32,7 +90,6 @@ export default function DocumentDetail() {
         <Badge label={doc.pipeline_status.replace(/_/g, ' ')} color="#6a1b9a" />
       </div>
 
-      {/* Metadata Panel */}
       <Section title="Metadata - Tier 1 (Core)">
         <MetaTable rows={[
           ['Document ID', doc.id],
@@ -75,7 +132,6 @@ export default function DocumentDetail() {
         ]} />
       </Section>
 
-      {/* Semantic Abstract */}
       {doc.semantic_abstract && (
         <Section title="Semantic Abstract">
           <div style={{ fontSize: 13, lineHeight: 1.6, color: '#444', fontStyle: 'italic' }}>
@@ -84,7 +140,6 @@ export default function DocumentDetail() {
         </Section>
       )}
 
-      {/* Projection Preview */}
       {doc.projection_text && (
         <Section title="Projection Preview">
           <div style={{
@@ -102,11 +157,6 @@ export default function DocumentDetail() {
         </Section>
       )}
 
-      <button style={{ ...btnStyle, marginBottom: 16, background: '#eee', color: '#333' }} disabled>
-        Open Source File
-      </button>
-
-      {/* Edge List */}
       <Section title="Edges">
         {Object.keys(edgeGroups).length === 0 ? (
           <div style={{ color: '#666' }}>No edges for this document.</div>
@@ -123,7 +173,7 @@ export default function DocumentDetail() {
                   <div key={e.id} style={{ fontSize: 13, marginBottom: 4, paddingLeft: 12 }}>
                     {direction}{' '}
                     <Link to={`/documents/${relatedId}`} style={{ color: '#1565c0' }}>
-                      {getDocumentTitle(vaultId, relatedId)}
+                      {resolveTitle(relatedId)}
                     </Link>
                     {e.notes && <span style={{ color: '#999', fontSize: 11 }}> - {e.notes}</span>}
                   </div>
@@ -143,39 +193,33 @@ export default function DocumentDetail() {
         </div>
       </Section>
 
-      {/* Manual Edge Creation Dialog */}
       {showEdgeDialog && (
-        <div style={{
-          border: '1px solid #ddd',
-          borderRadius: 4,
-          padding: 16,
-          marginTop: 8,
-          background: '#fafafa',
-        }}>
+        <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 16, marginTop: 8, background: '#fafafa' }}>
           <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Create Edge</h4>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div>
               <label style={filterLabelStyle}>Edge type</label>
-              <select style={{ padding: '4px 8px' }}>
+              <select value={newEdgeType} onChange={e => setNewEdgeType(e.target.value)} style={{ padding: '4px 8px' }}>
+                <option value="covers">covers</option>
+                <option value="derived_from">derived_from</option>
+                <option value="references">references</option>
+                <option value="bundles_with">bundles_with</option>
                 <option value="authoritative_for">authoritative_for</option>
                 <option value="depends_on">depends_on</option>
                 <option value="sync_target">sync_target</option>
-                <option value="covers">covers</option>
-                <option value="derived_from">derived_from</option>
-                <option value="bundles_with">bundles_with</option>
-                <option value="references">references</option>
               </select>
             </div>
             <div>
-              <label style={filterLabelStyle}>Target document</label>
-              <select style={{ padding: '4px 8px' }}>
-                <option value="">Select...</option>
-                {vault?.documents.filter(d => d.id !== id).map(d => (
-                  <option key={d.id} value={d.id}>{d.title}</option>
-                ))}
-              </select>
+              <label style={filterLabelStyle}>Target document ID</label>
+              <input
+                type="text"
+                value={newTargetId}
+                onChange={e => setNewTargetId(e.target.value)}
+                placeholder="Enter document ID"
+                style={{ padding: '4px 8px' }}
+              />
             </div>
-            <button style={btnStyle} onClick={() => setShowEdgeDialog(false)}>Create</button>
+            <button style={btnStyle} onClick={handleCreateEdge}>Create</button>
             <button style={{ ...btnStyle, background: '#eee', color: '#333' }} onClick={() => setShowEdgeDialog(false)}>Cancel</button>
           </div>
         </div>
@@ -183,8 +227,6 @@ export default function DocumentDetail() {
     </div>
   );
 }
-
-// -- Sub-components --
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -212,40 +254,12 @@ function MetaTable({ rows }: { rows: [string, string][] }) {
 
 function Badge({ label, color }: { label: string; color: string }) {
   return (
-    <span style={{
-      padding: '2px 10px',
-      borderRadius: 3,
-      fontSize: 11,
-      fontWeight: 600,
-      background: `${color}18`,
-      color,
-      textTransform: 'capitalize',
-    }}>
+    <span style={{ padding: '2px 10px', borderRadius: 3, fontSize: 11, fontWeight: 600, background: `${color}18`, color, textTransform: 'capitalize' }}>
       {label}
     </span>
   );
 }
 
-const btnStyle: React.CSSProperties = {
-  padding: '6px 16px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: '#333',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const filterLabelStyle: React.CSSProperties = {
-  display: 'block',
-  fontSize: 11,
-  color: '#666',
-  marginBottom: 4,
-  fontWeight: 500,
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: '5px 10px',
-  borderBottom: '1px solid #eee',
-  fontSize: 13,
-};
+const btnStyle: React.CSSProperties = { padding: '6px 16px', border: '1px solid #ccc', borderRadius: 4, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 13 };
+const filterLabelStyle: React.CSSProperties = { display: 'block', fontSize: 11, color: '#666', marginBottom: 4, fontWeight: 500 };
+const tdStyle: React.CSSProperties = { padding: '5px 10px', borderBottom: '1px solid #eee', fontSize: 13 };

@@ -1,18 +1,11 @@
 import { useState } from 'react';
 import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
-import { vaults, type Document } from '../mock/data';
-
-// Filter configurations for dashboard drill-down links
-const filterDefs: Record<string, { field: keyof Document; heading: (v: string) => string }> = {
-  pipeline_status: { field: 'pipeline_status', heading: v => ({ abstraction_skipped: 'Deferred Abstracts', failed: 'Failed Ingestions' }[v] ?? v) },
-  lifecycle_status: { field: 'lifecycle_status', heading: v => `Lifecycle: ${v}` },
-  doc_type: { field: 'doc_type', heading: v => `Doc Type: ${v.replace(/_/g, ' ')}` },
-  source_type: { field: 'source_type', heading: v => `Source Adapter: ${v}` },
-};
+import type { VaultContext } from '../App';
+import type { DiscoverHit } from '../api/types';
+import { discover } from '../api/discover';
 
 export default function Search() {
-  const { vaultId } = useOutletContext<{ vaultId: string }>();
-  const vault = vaults[vaultId];
+  const { vaultId, vault } = useOutletContext<VaultContext>();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'hybrid' | 'semantic' | 'keyword'>('hybrid');
@@ -20,39 +13,80 @@ export default function Search() {
   const [docTypeFilter, setDocTypeFilter] = useState('');
   const [lifecycleFilters, setLifecycleFilters] = useState<string[]>([]);
   const [projectFilter, setProjectFilter] = useState('');
+  const [results, setResults] = useState<DiscoverHit[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [filterResults, setFilterResults] = useState<DiscoverHit[] | null>(null);
+  const [filterHeading, setFilterHeading] = useState('');
 
   if (!vault) return <div>Vault not found.</div>;
 
-  // Check for any dashboard drill-down filter
-  let filteredDocuments: Document[] | null = null;
-  let filterHeading = '';
-  for (const [param, def] of Object.entries(filterDefs)) {
-    const value = searchParams.get(param);
-    if (value) {
-      filteredDocuments = vault.documents.filter(d => String(d[def.field]) === value);
-      filterHeading = def.heading(value);
-      break;
-    }
+  // Check for dashboard drill-down filter params
+  const filterDefs: Record<string, { filterKey: string; heading: (v: string) => string }> = {
+    pipeline_status: { filterKey: 'pipeline_status', heading: v => ({ abstraction_skipped: 'Deferred Abstracts', failed: 'Failed Ingestions' }[v] ?? v) },
+    lifecycle_status: { filterKey: 'lifecycle_status', heading: v => `Lifecycle: ${v}` },
+    doc_type: { filterKey: 'doc_type', heading: v => `Doc Type: ${v.replace(/_/g, ' ')}` },
+    source_type: { filterKey: 'doc_type', heading: v => `Source Adapter: ${v}` }, // approximate via discover
+  };
+
+  // On first render with filter params, execute filtered discover
+  const filterParam = Object.keys(filterDefs).find(p => searchParams.has(p));
+  if (filterParam && !filterResults && !searching) {
+    const value = searchParams.get(filterParam)!;
+    const def = filterDefs[filterParam];
+    setSearching(true);
+    setFilterHeading(def.heading(value));
+    discover(vaultId, {
+      mode: 'semantic',
+      query: value,
+      filters: { [def.filterKey]: value },
+      limit: 100,
+    })
+      .then(resp => {
+        setFilterResults(resp.results);
+        setSearching(false);
+      })
+      .catch(() => {
+        setFilterResults([]);
+        setSearching(false);
+      });
   }
 
-  const results = hasSearched ? vault.search_results : [];
-
-  function handleSearch(e: React.FormEvent) {
+  async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    setHasSearched(true);
+    if (!query.trim()) return;
+    setSearching(true);
+    try {
+      const filters: Record<string, string> = {};
+      if (docTypeFilter) filters.doc_type = docTypeFilter;
+      if (projectFilter) filters.project = projectFilter;
+
+      const useHybrid = mode === 'hybrid';
+      const resp = await discover(vaultId, {
+        mode: 'semantic',
+        query: query.trim(),
+        filters: Object.keys(filters).length > 0 ? filters : undefined,
+        use_hybrid: useHybrid,
+        limit: 20,
+      });
+      setResults(resp.results);
+      setHasSearched(true);
+    } catch {
+      setResults([]);
+      setHasSearched(true);
+    }
+    setSearching(false);
   }
 
-  // If showing a filtered document list, render that instead of search
-  if (filteredDocuments) {
-    const showErrorColumn = searchParams.has('pipeline_status');
+  // Dashboard drill-down view
+  if (filterResults !== null) {
     return (
       <div>
         <h1 style={{ margin: '0 0 4px', textTransform: 'capitalize' }}>{filterHeading}</h1>
         <p style={{ margin: '0 0 16px', fontSize: 13, color: '#666' }}>
-          {filteredDocuments.length} document{filteredDocuments.length !== 1 ? 's' : ''}
+          {filterResults.length} result{filterResults.length !== 1 ? 's' : ''}
         </p>
-        {filteredDocuments.length === 0 ? (
+        {filterResults.length === 0 ? (
           <div style={{ color: '#999' }}>No documents match this filter.</div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -61,22 +95,18 @@ export default function Search() {
                 <th style={thStyle}>Title</th>
                 <th style={thStyle}>Type</th>
                 <th style={thStyle}>Status</th>
-                <th style={thStyle}>Pipeline</th>
-                {showErrorColumn && <th style={thStyle}>Error</th>}
               </tr>
             </thead>
             <tbody>
-              {filteredDocuments.map(doc => (
-                <tr key={doc.id}>
+              {filterResults.map(hit => (
+                <tr key={hit.document.id}>
                   <td style={tdStyle}>
-                    <Link to={`/documents/${doc.id}`} style={{ color: '#1565c0', textDecoration: 'none' }}>
-                      {doc.title}
+                    <Link to={`/documents/${hit.document.id}`} style={{ color: '#1565c0', textDecoration: 'none' }}>
+                      {hit.document.title}
                     </Link>
                   </td>
-                  <td style={tdStyle}>{doc.doc_type?.replace(/_/g, ' ') ?? '-'}</td>
-                  <td style={tdStyle}>{doc.lifecycle_status}</td>
-                  <td style={tdStyle}>{doc.pipeline_status.replace(/_/g, ' ')}</td>
-                  {showErrorColumn && <td style={tdStyle}>{doc.pipeline_error ?? '-'}</td>}
+                  <td style={tdStyle}>{hit.document.doc_type?.replace(/_/g, ' ') ?? '-'}</td>
+                  <td style={tdStyle}>{hit.document.lifecycle_status}</td>
                 </tr>
               ))}
             </tbody>
@@ -93,7 +123,6 @@ export default function Search() {
     <div>
       <h1 style={{ margin: '0 0 16px' }}>Search</h1>
 
-      {/* Query interface */}
       <form onSubmit={handleSearch} style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
           <input
@@ -112,10 +141,11 @@ export default function Search() {
             <option value="semantic">Semantic</option>
             <option value="keyword">Keyword</option>
           </select>
-          <button type="submit" style={btnStyle}>Search</button>
+          <button type="submit" style={btnStyle} disabled={searching}>
+            {searching ? 'Searching...' : 'Search'}
+          </button>
         </div>
 
-        {/* Filter toggle */}
         <button
           type="button"
           onClick={() => setShowFilters(!showFilters)}
@@ -124,7 +154,6 @@ export default function Search() {
           {showFilters ? 'Hide filters' : 'Show filters'}
         </button>
 
-        {/* Filters */}
         {showFilters && (
           <div style={{ marginTop: 8, padding: 12, background: '#f9f9f9', border: '1px solid #eee', borderRadius: 4 }}>
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
@@ -179,8 +208,7 @@ export default function Search() {
         )}
       </form>
 
-      {/* Results */}
-      {!hasSearched && (
+      {!hasSearched && !searching && (
         <div style={{ color: '#999', marginTop: 32, textAlign: 'center' }}>Enter a query to search.</div>
       )}
 
@@ -189,10 +217,7 @@ export default function Search() {
       )}
 
       {results.map((hit) => (
-        <div key={hit.document.id} style={{
-          borderBottom: '1px solid #eee',
-          padding: '16px 0',
-        }}>
+        <div key={hit.document.id} style={{ borderBottom: '1px solid #eee', padding: '16px 0' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
             <Link to={`/documents/${hit.document.id}`} style={{ fontSize: 15, fontWeight: 600, color: '#1565c0', textDecoration: 'none' }}>
               {hit.document.title}
@@ -217,57 +242,14 @@ export default function Search() {
               {hit.chunk_content}
             </div>
           )}
-
-          {/* Show semantic abstract from the full document list if available */}
-          {vault.documents.find(d => d.id === hit.document.id)?.semantic_abstract && (
-            <div style={{ fontSize: 12, color: '#888', fontStyle: 'italic', marginTop: 4 }}>
-              {vault.documents.find(d => d.id === hit.document.id)!.semantic_abstract}
-            </div>
-          )}
         </div>
       ))}
     </div>
   );
 }
 
-const btnStyle: React.CSSProperties = {
-  padding: '8px 20px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: '#333',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 14,
-};
-
-const filterLabelStyle: React.CSSProperties = {
-  display: 'block',
-  fontSize: 11,
-  color: '#666',
-  marginBottom: 4,
-  fontWeight: 500,
-};
-
-const badgeStyle: React.CSSProperties = {
-  padding: '1px 8px',
-  borderRadius: 3,
-  fontSize: 10,
-  fontWeight: 600,
-  background: '#e3f2fd',
-  color: '#1565c0',
-  textTransform: 'capitalize',
-};
-
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '6px 10px',
-  borderBottom: '2px solid #ddd',
-  fontSize: 12,
-  color: '#666',
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  borderBottom: '1px solid #eee',
-  fontSize: 13,
-};
+const btnStyle: React.CSSProperties = { padding: '8px 20px', border: '1px solid #ccc', borderRadius: 4, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 14 };
+const filterLabelStyle: React.CSSProperties = { display: 'block', fontSize: 11, color: '#666', marginBottom: 4, fontWeight: 500 };
+const badgeStyle: React.CSSProperties = { padding: '1px 8px', borderRadius: 3, fontSize: 10, fontWeight: 600, background: '#e3f2fd', color: '#1565c0', textTransform: 'capitalize' };
+const thStyle: React.CSSProperties = { textAlign: 'left', padding: '6px 10px', borderBottom: '2px solid #ddd', fontSize: 12, color: '#666' };
+const tdStyle: React.CSSProperties = { padding: '6px 10px', borderBottom: '1px solid #eee', fontSize: 13 };

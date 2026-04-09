@@ -1,9 +1,10 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { vaults } from '../mock/data';
+import type { VaultSummary } from '../api/types';
 
 interface SidebarProps {
   activeVault: string;
   onVaultChange: (vaultId: string) => void;
+  vaultList: VaultSummary[];
 }
 
 const navItems = [
@@ -13,7 +14,7 @@ const navItems = [
   { to: '/search', label: 'Search' },
 ];
 
-export default function Sidebar({ activeVault, onVaultChange }: SidebarProps) {
+export default function Sidebar({ activeVault, onVaultChange, vaultList }: SidebarProps) {
   const navigate = useNavigate();
 
   return (
@@ -37,8 +38,8 @@ export default function Sidebar({ activeVault, onVaultChange }: SidebarProps) {
           }}
           style={{ width: '100%', padding: '4px 6px' }}
         >
-          {Object.entries(vaults).map(([id, v]) => (
-            <option key={id} value={id}>{v.identity.name}</option>
+          {vaultList.map(v => (
+            <option key={v.id} value={v.id}>{v.name}</option>
           ))}
         </select>
       </div>

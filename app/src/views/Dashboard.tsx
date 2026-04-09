@@ -1,56 +1,85 @@
+import { useState, useEffect } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
-import { vaults, getVaultStats } from '../mock/data';
+import type { VaultContext } from '../App';
+import type { VaultStats } from '../api/types';
+import { getVaultStats } from '../api/vaults';
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
 
 export default function Dashboard() {
-  const { vaultId } = useOutletContext<{ vaultId: string }>();
-  const vault = vaults[vaultId];
-  const stats = getVaultStats(vaultId);
-  if (!vault || !stats) return <div>Vault not found.</div>;
+  const { vaultId, vault } = useOutletContext<VaultContext>();
+  const [stats, setStats] = useState<VaultStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const { identity } = vault;
+  useEffect(() => {
+    setLoading(true);
+    setError('');
+    getVaultStats(vaultId)
+      .then(data => {
+        setStats(data);
+        setLoading(false);
+      })
+      .catch(err => {
+        setError(err.message ?? 'Failed to load stats');
+        setLoading(false);
+      });
+  }, [vaultId]);
+
+  if (!vault) return <div>Vault not found.</div>;
+  if (loading) return <div>Loading statistics...</div>;
+  if (error) return <div style={{ color: '#c62828' }}>Error: {error}</div>;
+  if (!stats) return null;
 
   return (
     <div>
       {/* Vault Identity */}
-      <h1 style={{ margin: '0 0 4px' }}>{identity.name}</h1>
-      <p style={{ margin: '0 0 4px', color: '#666' }}>{identity.description}</p>
-      <p style={{ margin: '0 0 24px', color: '#999', fontSize: 12 }}>{identity.storage_root}</p>
+      <h1 style={{ margin: '0 0 4px' }}>{vault.name}</h1>
+      <p style={{ margin: '0 0 4px', color: '#666' }}>{vault.description}</p>
+      <p style={{ margin: '0 0 24px', color: '#999', fontSize: 12 }}>{vault.storage_root}</p>
 
       {/* Statistics */}
       <Section title="Statistics">
         {/* Documents */}
         <StatGroupLabel>Documents</StatGroupLabel>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
-          <CountCard value={stats.totalDocuments} label="Total" />
-          <BreakdownCard label="By Lifecycle" data={stats.byLifecycle} linkParam="lifecycle_status" />
-          <BreakdownCard label="By Doc Type" data={stats.byDocType} formatKey={k => k.replace(/_/g, ' ')} linkParam="doc_type" />
-          <BreakdownCard label="By Source Adapter" data={stats.byAdapter} linkParam="source_type" />
+          <CountCard value={stats.total_documents} label="Total" />
+          <BreakdownCard label="By Lifecycle" data={stats.by_lifecycle_state} linkParam="lifecycle_status" />
+          <BreakdownCard label="By Doc Type" data={stats.by_doc_type} formatKey={k => k.replace(/_/g, ' ')} linkParam="doc_type" />
+          <BreakdownCard label="By Source Adapter" data={stats.by_source_adapter} linkParam="source_type" />
         </div>
 
         {/* Edges */}
         <StatGroupLabel>Edges</StatGroupLabel>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
-          <CountCard value={stats.totalEdges} label="Total" />
-          <BreakdownCard label="By Type" data={stats.byEdgeType} formatKey={k => k.replace(/_/g, ' ')} />
-          <CountCard value={stats.stagingEdgeCount} label="Staging" />
+          <CountCard value={stats.total_edges} label="Total" />
+          <BreakdownCard label="By Type" data={stats.by_edge_type} formatKey={k => k.replace(/_/g, ' ')} />
+          <CountCard value={stats.staging_edge_count} label="Staging" />
         </div>
 
         {/* Storage */}
         <StatGroupLabel>Storage</StatGroupLabel>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-          <CountCard value={stats.lancedbSize} label="LanceDB" />
-          <CountCard value={stats.sqliteSize} label="SQLite" />
-          <CountCard value={new Date(stats.lastIngestion).toLocaleDateString()} label="Last Ingestion" />
+          <CountCard value={formatBytes(stats.lancedb_size_bytes)} label="LanceDB" />
+          <CountCard value={formatBytes(stats.sqlite_size_bytes)} label="SQLite" />
+          <CountCard
+            value={stats.last_ingestion_at ? new Date(stats.last_ingestion_at).toLocaleDateString() : '-'}
+            label="Last Ingestion"
+          />
         </div>
       </Section>
 
       {/* Health Indicators */}
       <Section title="Health Indicators">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <HealthCard label="Pending metadata review" count={stats.pendingMetadata} linkTo="/review?tab=metadata" />
-          <HealthCard label="Pending edge review" count={stats.pendingEdges} linkTo="/review?tab=edges" />
-          <HealthCard label="Deferred abstracts" count={stats.deferredAbstracts} linkTo="/search?pipeline_status=abstraction_skipped" />
-          <HealthCard label="Failed ingestions" count={stats.failedIngestions.length} linkTo="/search?pipeline_status=failed" />
+          <HealthCard label="Pending metadata review" count={stats.health.pending_metadata_count} linkTo="/review?tab=metadata" />
+          <HealthCard label="Pending edge review" count={stats.health.pending_edge_count} linkTo="/review?tab=edges" />
+          <HealthCard label="Deferred abstracts" count={stats.health.deferred_abstract_count} linkTo="/search?pipeline_status=abstraction_skipped" />
+          <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
         </div>
       </Section>
 
@@ -61,7 +90,6 @@ export default function Dashboard() {
             <tr>
               <th style={thStyle}>Adapter</th>
               <th style={thStyle}>Extensions</th>
-              <th style={thStyle}>Version</th>
               <th style={thStyle}>Enabled</th>
             </tr>
           </thead>
@@ -70,7 +98,6 @@ export default function Dashboard() {
               <tr key={a.source_type}>
                 <td style={tdStyle}>{a.source_type}</td>
                 <td style={tdStyle}>{a.extensions.join(', ')}</td>
-                <td style={tdStyle}>{a.version}</td>
                 <td style={tdStyle}>{a.enabled ? 'Yes' : 'No'}</td>
               </tr>
             ))}

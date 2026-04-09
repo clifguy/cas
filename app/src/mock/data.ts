@@ -100,12 +100,45 @@ export interface PendingMetadata {
   }>;
 }
 
-export interface ScanFile {
+export interface ParsedMetadataItem {
+  title: string;
+  date: string | null;
+  project: string | null;
+  codes: string[];
+  version: string | null;
+  doc_type: string | null;
+}
+
+export interface ScanResultItem {
+  file_path: string;
+  file_hash: string;
+  source_modified_at: string;
+  adapter: string | null;
+  parsed_metadata: ParsedMetadataItem;
+  sage_status: 'new' | 'modified' | 'unchanged' | 'no_adapter';
+}
+
+export interface IngestProgressEvent {
+  event_type: 'progress';
+  file_index: number;
+  total_files: number;
   filename: string;
-  path: string;
-  size: number;
-  detected_adapter: string | null;
-  status: 'new' | 'modified' | 'unchanged' | 'no_adapter';
+  stage: string;
+  status: 'started' | 'completed' | 'failed';
+  document_id?: string;
+  error?: string;
+}
+
+export interface IngestSummaryEvent {
+  event_type: 'summary';
+  documents_created: { new: number; new_version: number };
+  metadata_pending: number;
+  edges_created: Record<string, number>;
+  edges_staged: Record<string, number>;
+  edges_dropped: number;
+  abstracts_generated: number;
+  abstracts_deferred: number;
+  error_count: number;
 }
 
 export interface VaultData {
@@ -118,7 +151,7 @@ export interface VaultData {
   staging_edges: StagingEdge[];
   pending_metadata: PendingMetadata[];
   search_results: DiscoverHit[];
-  scan_files: ScanFile[];
+  mock_scan_results: ScanResultItem[];
 }
 
 // --- Mock Data ---
@@ -469,14 +502,68 @@ const pimSearchResults: DiscoverHit[] = [
   },
 ];
 
-const pimScanFiles: ScanFile[] = [
-  { filename: 'CD-05_ClinicalPathway_v1.docx', path: '/Users/clifguy/pim_inbox/CD-05_ClinicalPathway_v1.docx', size: 285000, detected_adapter: 'docx', status: 'new' },
-  { filename: 'PIM_Architecture_Overview_v3.docx', path: '/Users/clifguy/pim_inbox/PIM_Architecture_Overview_v3.docx', size: 412000, detected_adapter: 'docx', status: 'modified' },
-  { filename: 'PIM_Integration_Catalog.md', path: '/Users/clifguy/pim_inbox/PIM_Integration_Catalog.md', size: 18200, detected_adapter: 'markdown', status: 'unchanged' },
-  { filename: 'meeting_recording.mp4', path: '/Users/clifguy/pim_inbox/meeting_recording.mp4', size: 52400000, detected_adapter: null, status: 'no_adapter' },
-  { filename: 'Q2_Planning_Notes.md', path: '/Users/clifguy/pim_inbox/Q2_Planning_Notes.md', size: 4300, detected_adapter: 'markdown', status: 'new' },
-  { filename: 'Prior_Art_Analysis.pdf', path: '/Users/clifguy/pim_inbox/Prior_Art_Analysis.pdf', size: 1240000, detected_adapter: 'pdf', status: 'new' },
+const pimScanResults: ScanResultItem[] = [
+  {
+    file_path: '/Users/clifguy/pim_inbox/CD-05_ClinicalPathway_v1.docx',
+    file_hash: 'sha256:e3b0c44298fc1c149afbf4c8996fb924',
+    source_modified_at: '2026-04-05T14:20:00Z',
+    adapter: 'docx',
+    parsed_metadata: { title: 'ClinicalPathway', date: null, project: null, codes: ['CD-05'], version: 'v1', doc_type: 'patent_draft' },
+    sage_status: 'new',
+  },
+  {
+    file_path: '/Users/clifguy/pim_inbox/PIM_Architecture_Overview_v3.docx',
+    file_hash: 'sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
+    source_modified_at: '2026-04-06T09:15:00Z',
+    adapter: 'docx',
+    parsed_metadata: { title: 'Architecture Overview', date: null, project: 'PIM', codes: [], version: 'v3', doc_type: 'technical_disclosure' },
+    sage_status: 'modified',
+  },
+  {
+    file_path: '/Users/clifguy/pim_inbox/PIM_Integration_Catalog.md',
+    file_hash: 'sha256:intcat789000111222333444555666777',
+    source_modified_at: '2026-03-09T17:00:00Z',
+    adapter: 'markdown',
+    parsed_metadata: { title: 'Integration Catalog', date: null, project: 'PIM', codes: [], version: null, doc_type: 'reference' },
+    sage_status: 'unchanged',
+  },
+  {
+    file_path: '/Users/clifguy/pim_inbox/meeting_recording.mp4',
+    file_hash: 'sha256:mp4hash000111222333444555666777888',
+    source_modified_at: '2026-04-02T16:00:00Z',
+    adapter: null,
+    parsed_metadata: { title: 'meeting_recording', date: null, project: null, codes: [], version: null, doc_type: null },
+    sage_status: 'no_adapter',
+  },
+  {
+    file_path: '/Users/clifguy/pim_inbox/Q2_Planning_Notes.md',
+    file_hash: 'sha256:q2plan000111222333444555666777888',
+    source_modified_at: '2026-04-01T10:30:00Z',
+    adapter: 'markdown',
+    parsed_metadata: { title: 'Q2 Planning Notes', date: null, project: null, codes: [], version: null, doc_type: 'meeting_notes' },
+    sage_status: 'new',
+  },
+  {
+    file_path: '/Users/clifguy/pim_inbox/Prior_Art_Analysis.pdf',
+    file_hash: 'sha256:priorart000111222333444555666777',
+    source_modified_at: '2026-03-28T08:45:00Z',
+    adapter: 'pdf',
+    parsed_metadata: { title: 'Prior Art Analysis', date: null, project: null, codes: [], version: null, doc_type: 'reference' },
+    sage_status: 'new',
+  },
 ];
+
+export const mockIngestSummary: IngestSummaryEvent = {
+  event_type: 'summary',
+  documents_created: { new: 2, new_version: 1 },
+  metadata_pending: 3,
+  edges_created: { supersedes: 1 },
+  edges_staged: { covers: 2 },
+  edges_dropped: 0,
+  abstracts_generated: 2,
+  abstracts_deferred: 1,
+  error_count: 0,
+};
 
 // --- Vault assembly ---
 
@@ -513,7 +600,7 @@ export const vaults: Record<string, VaultData> = {
     staging_edges: pimStagingEdges,
     pending_metadata: pimPendingMetadata,
     search_results: pimSearchResults,
-    scan_files: pimScanFiles,
+    mock_scan_results: pimScanResults,
   },
   personal_notes: {
     identity: {
@@ -542,7 +629,7 @@ export const vaults: Record<string, VaultData> = {
     staging_edges: [],
     pending_metadata: [],
     search_results: [],
-    scan_files: [],
+    mock_scan_results: [],
   },
 };
 

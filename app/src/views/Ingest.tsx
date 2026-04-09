@@ -1,64 +1,136 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
-import { vaults, type ScanFile } from '../mock/data';
+import type { VaultContext } from '../App';
+import type { ScanResultItem, IngestProgressEvent, IngestSummaryEvent } from '../api/types';
+import { scanDirectory, startIngestion } from '../api/ingest';
 
 export default function Ingest() {
-  const { vaultId } = useOutletContext<{ vaultId: string }>();
-  const vault = vaults[vaultId];
+  const { vaultId, vault } = useOutletContext<VaultContext>();
   const [step, setStep] = useState(1);
+
+  // Step 1 state
   const [directory, setDirectory] = useState('');
-  const [files, setFiles] = useState<(ScanFile & { selected: boolean })[]>([]);
-  const [progress, setProgress] = useState({ current: 0, total: 0, currentFile: '', stage: '' });
-  const [log, setLog] = useState<string[]>([]);
-  const timerRef = useRef<number | null>(null);
+  const [maxDepth, setMaxDepth] = useState('');
+  const [scanError, setScanError] = useState('');
+  const [scanning, setScanning] = useState(false);
+
+  // Step 2 state
+  const [files, setFiles] = useState<(ScanResultItem & { selected: boolean })[]>([]);
+  const [scanWarnings, setScanWarnings] = useState<string[]>([]);
+
+  // Step 3 state
+  const [progress, setProgress] = useState({ current: 0, total: 0, filename: '', stage: '', status: '' });
+  const [log, setLog] = useState<{ filename: string; status: string; error?: string }[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Step 4 state
+  const [summary, setSummary] = useState<IngestSummaryEvent | null>(null);
 
   if (!vault) return <div>Vault not found.</div>;
 
-  function handleScan() {
+  async function handleScan() {
     if (!directory.trim()) return;
-    const enriched = vault.scan_files.map(f => ({
-      ...f,
-      selected: f.status === 'new' || f.status === 'modified',
-    }));
-    setFiles(enriched);
-    setStep(2);
+    setScanError('');
+    setScanning(true);
+
+    try {
+      const depth = maxDepth ? parseInt(maxDepth, 10) : undefined;
+      const result = await scanDirectory(vaultId, directory.trim(), depth);
+      const enriched = result.files.map(f => ({
+        ...f,
+        selected: f.sage_status === 'new' || f.sage_status === 'modified',
+      }));
+      setFiles(enriched);
+      setScanWarnings(result.warnings);
+      setStep(2);
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Scan failed');
+    } finally {
+      setScanning(false);
+    }
   }
 
-  function handleIngest() {
+  async function handleIngest() {
     const selected = files.filter(f => f.selected);
-    setProgress({ current: 0, total: selected.length, currentFile: '', stage: '' });
+    setProgress({ current: 0, total: selected.length, filename: '', stage: '', status: '' });
     setLog([]);
+    setSummary(null);
     setStep(3);
 
-    const stages = ['projection', 'indexing', 'abstraction'];
-    let idx = 0;
-    let stageIdx = 0;
+    const controller = new AbortController();
+    abortRef.current = controller;
 
-    timerRef.current = window.setInterval(() => {
-      if (idx >= selected.length) {
-        if (timerRef.current) clearInterval(timerRef.current);
+    const ingestFiles = selected
+      .filter(f => f.adapter !== null)
+      .map(f => ({
+        file_path: f.file_path,
+        adapter: f.adapter!,
+        parsed_metadata: f.parsed_metadata,
+      }));
+
+    try {
+      await startIngestion(vaultId, ingestFiles, (event) => {
+        if (event.event_type === 'progress') {
+          const pe = event as IngestProgressEvent;
+          if (pe.status === 'completed' || pe.status === 'failed') {
+            setProgress(_prev => ({
+              current: pe.file_index + 1,
+              total: pe.total_files,
+              filename: pe.filename,
+              stage: pe.stage,
+              status: pe.status,
+            }));
+            setLog(prev => [...prev, {
+              filename: pe.filename,
+              status: pe.status,
+              error: pe.error,
+            }]);
+          } else if (pe.status === 'started') {
+            setProgress(prev => ({
+              ...prev,
+              filename: pe.filename,
+              stage: pe.stage,
+              status: pe.status,
+            }));
+          }
+        } else if (event.event_type === 'summary') {
+          setSummary(event as IngestSummaryEvent);
+          setStep(4);
+        }
+      }, controller.signal);
+
+      // If stream ended without summary (shouldn't happen), advance anyway
+      setStep(prev => prev === 3 ? 4 : prev);
+    } catch (err) {
+      if (controller.signal.aborted) {
+        // Cancelled by user -- advance to results with whatever summary we have
         setStep(4);
-        return;
+      } else {
+        setLog(prev => [...prev, { filename: 'ERROR', status: 'failed', error: String(err) }]);
+        setStep(4);
       }
-      const file = selected[idx];
-      const stage = stages[stageIdx];
-      setProgress({ current: idx + 1, total: selected.length, currentFile: file.filename, stage });
-      setLog(prev => [...prev, `[${stage}] ${file.filename}`]);
-      stageIdx++;
-      if (stageIdx >= stages.length) {
-        stageIdx = 0;
-        idx++;
-      }
-    }, 400);
+    }
   }
 
   useEffect(() => {
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    return () => {
+      abortRef.current?.abort();
+    };
   }, []);
 
   function handleCancel() {
-    if (timerRef.current) clearInterval(timerRef.current);
-    setStep(4);
+    abortRef.current?.abort();
+  }
+
+  function handleReset() {
+    setStep(1);
+    setDirectory('');
+    setMaxDepth('');
+    setScanError('');
+    setFiles([]);
+    setScanWarnings([]);
+    setLog([]);
+    setSummary(null);
   }
 
   return (
@@ -85,56 +157,82 @@ export default function Ingest() {
       {step === 1 && (
         <div>
           <label style={{ display: 'block', marginBottom: 4, fontWeight: 500 }}>Directory path</label>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <input
               type="text"
               value={directory}
-              onChange={e => setDirectory(e.target.value)}
+              onChange={e => { setDirectory(e.target.value); setScanError(''); }}
               placeholder="/path/to/source/directory"
               style={{ flex: 1, padding: '6px 10px' }}
             />
-            <button onClick={handleScan} style={btnStyle}>Scan</button>
+            <button onClick={handleScan} style={btnStyle} disabled={scanning || !directory.trim()}>
+              {scanning ? 'Scanning...' : 'Scan'}
+            </button>
           </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+            <label style={{ fontSize: 13, color: '#666' }}>Max depth</label>
+            <input
+              type="number"
+              min={1}
+              value={maxDepth}
+              onChange={e => setMaxDepth(e.target.value)}
+              placeholder="unlimited"
+              style={{ width: 80, padding: '6px 10px', fontSize: 13 }}
+            />
+          </div>
+          {scanError && (
+            <div style={{ color: '#c62828', fontSize: 13, marginTop: 4 }}>{scanError}</div>
+          )}
         </div>
       )}
 
       {/* Step 2: Scan Preview */}
       {step === 2 && (
         <div>
-          <SummaryBar files={files} />
+          <ScanSummaryBar files={files} />
+          {scanWarnings.length > 0 && (
+            <div style={{ color: '#f57f17', fontSize: 12, marginTop: 4 }}>
+              {scanWarnings.map((w, i) => <div key={i}>{w}</div>)}
+            </div>
+          )}
           <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
             <thead>
               <tr>
                 <th style={thStyle}></th>
                 <th style={thStyle}>Filename</th>
-                <th style={thStyle}>Size</th>
                 <th style={thStyle}>Adapter</th>
+                <th style={thStyle}>Doc Type</th>
+                <th style={thStyle}>Version</th>
+                <th style={thStyle}>Project</th>
                 <th style={thStyle}>Status</th>
               </tr>
             </thead>
             <tbody>
-              {files.map((f, i) => (
-                <tr key={f.path}>
-                  <td style={tdStyle}>
-                    <input
-                      type="checkbox"
-                      checked={f.selected}
-                      disabled={f.status === 'no_adapter'}
-                      onChange={e => {
-                        const updated = [...files];
-                        updated[i] = { ...f, selected: e.target.checked };
-                        setFiles(updated);
-                      }}
-                    />
-                  </td>
-                  <td style={tdStyle}>{f.filename}</td>
-                  <td style={tdStyle}>{formatSize(f.size)}</td>
-                  <td style={tdStyle}>{f.detected_adapter ?? '-'}</td>
-                  <td style={tdStyle}>
-                    <StatusBadge status={f.status} />
-                  </td>
-                </tr>
-              ))}
+              {files.map((f, i) => {
+                const filename = f.file_path.split('/').pop() ?? f.file_path;
+                return (
+                  <tr key={f.file_path}>
+                    <td style={tdStyle}>
+                      <input
+                        type="checkbox"
+                        checked={f.selected}
+                        disabled={f.sage_status === 'no_adapter'}
+                        onChange={e => {
+                          const updated = [...files];
+                          updated[i] = { ...f, selected: e.target.checked };
+                          setFiles(updated);
+                        }}
+                      />
+                    </td>
+                    <td style={tdStyle}>{filename}</td>
+                    <td style={tdStyle}>{f.adapter ?? '-'}</td>
+                    <td style={tdStyle}>{f.parsed_metadata.doc_type ?? '-'}</td>
+                    <td style={tdStyle}>{f.parsed_metadata.version ?? '-'}</td>
+                    <td style={tdStyle}>{f.parsed_metadata.project ?? '-'}</td>
+                    <td style={tdStyle}><StatusBadge status={f.sage_status} /></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
@@ -150,7 +248,8 @@ export default function Ingest() {
       {step === 3 && (
         <div>
           <div style={{ marginBottom: 12 }}>
-            <strong>{progress.currentFile}</strong> - {progress.stage}
+            <strong>{progress.filename || 'Starting...'}</strong>
+            {progress.stage && <> - {progress.stage}</>}
           </div>
           <div style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>
             {progress.current} of {progress.total} files
@@ -174,7 +273,12 @@ export default function Ingest() {
             fontSize: 12,
             fontFamily: 'monospace',
           }}>
-            {log.map((line, i) => <div key={i}>{line}</div>)}
+            {log.map((entry, i) => (
+              <div key={i} style={{ color: entry.status === 'failed' ? '#c62828' : '#333' }}>
+                [{entry.status}] {entry.filename}
+                {entry.error && <span style={{ color: '#c62828' }}> - {entry.error}</span>}
+              </div>
+            ))}
           </div>
           <button onClick={handleCancel} style={{ ...btnStyle, marginTop: 12, background: '#c62828', color: '#fff' }}>
             Cancel
@@ -186,15 +290,47 @@ export default function Ingest() {
       {step === 4 && (
         <div>
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>Ingestion Complete</h2>
-          <table style={{ borderCollapse: 'collapse' }}>
-            <tbody>
-              <tr><td style={tdStyle}>Documents created</td><td style={tdStyle}>3 (2 new, 1 new version)</td></tr>
-              <tr><td style={tdStyle}>Metadata extracted</td><td style={tdStyle}>2 pending confirmation</td></tr>
-              <tr><td style={tdStyle}>Edges inferred</td><td style={tdStyle}>Tier 1 auto-created: 1 supersedes. Tier 2 staged: 2 covers</td></tr>
-              <tr><td style={tdStyle}>Abstracts</td><td style={tdStyle}>2 generated, 1 deferred</td></tr>
-              <tr><td style={tdStyle}>Errors</td><td style={tdStyle}>0</td></tr>
-            </tbody>
-          </table>
+          {summary ? (
+            <table style={{ borderCollapse: 'collapse' }}>
+              <tbody>
+                <tr>
+                  <td style={tdStyle}>Documents created</td>
+                  <td style={tdStyle}>{summary.documents_created.new + summary.documents_created.new_version} ({summary.documents_created.new} new, {summary.documents_created.new_version} new version)</td>
+                </tr>
+                <tr>
+                  <td style={tdStyle}>Metadata pending</td>
+                  <td style={tdStyle}>{summary.metadata_pending} documents</td>
+                </tr>
+                <tr>
+                  <td style={tdStyle}>Edges (Tier 1 auto-created)</td>
+                  <td style={tdStyle}>
+                    {Object.keys(summary.edges_created).length > 0
+                      ? Object.entries(summary.edges_created).map(([type, count]) => `${count} ${type}`).join(', ')
+                      : 'None'}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={tdStyle}>Edges (Tier 2 staged)</td>
+                  <td style={tdStyle}>
+                    {Object.keys(summary.edges_staged).length > 0
+                      ? Object.entries(summary.edges_staged).map(([type, count]) => `${count} ${type}`).join(', ')
+                      : 'None'}
+                    {summary.edges_dropped > 0 && <span style={{ color: '#f57f17' }}> ({summary.edges_dropped} dropped)</span>}
+                  </td>
+                </tr>
+                <tr>
+                  <td style={tdStyle}>Abstracts</td>
+                  <td style={tdStyle}>{summary.abstracts_generated} generated, {summary.abstracts_deferred} deferred</td>
+                </tr>
+                <tr>
+                  <td style={tdStyle}>Errors</td>
+                  <td style={tdStyle}>{summary.error_count}</td>
+                </tr>
+              </tbody>
+            </table>
+          ) : (
+            <p style={{ color: '#666' }}>Ingestion was cancelled or ended without a summary.</p>
+          )}
           <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
             <Link to="/review?tab=metadata" style={{ ...btnStyle, textDecoration: 'none', textAlign: 'center' }}>
               Review Metadata
@@ -202,7 +338,7 @@ export default function Ingest() {
             <Link to="/review?tab=edges" style={{ ...btnStyle, textDecoration: 'none', textAlign: 'center' }}>
               Review Edges
             </Link>
-            <button onClick={() => { setStep(1); setDirectory(''); setFiles([]); setLog([]); }} style={{ ...btnStyle, background: '#eee', color: '#333' }}>
+            <button onClick={handleReset} style={{ ...btnStyle, background: '#eee', color: '#333' }}>
               Ingest More
             </button>
           </div>
@@ -214,13 +350,17 @@ export default function Ingest() {
 
 // -- Sub-components --
 
-function SummaryBar({ files }: { files: { status: string }[] }) {
+function ScanSummaryBar({ files }: { files: { sage_status: string }[] }) {
   const total = files.length;
-  const withAdapter = files.filter(f => f.status !== 'no_adapter').length;
+  const withAdapter = files.filter(f => f.sage_status !== 'no_adapter').length;
   const noAdapter = total - withAdapter;
+  const newCount = files.filter(f => f.sage_status === 'new').length;
+  const modifiedCount = files.filter(f => f.sage_status === 'modified').length;
   return (
     <div style={{ display: 'flex', gap: 16, fontSize: 13, color: '#666' }}>
-      <span>Total files: <strong>{total}</strong></span>
+      <span>Total: <strong>{total}</strong></span>
+      <span>New: <strong>{newCount}</strong></span>
+      <span>Modified: <strong>{modifiedCount}</strong></span>
       <span>With adapter: <strong>{withAdapter}</strong></span>
       <span>No adapter: <strong>{noAdapter}</strong></span>
     </div>
@@ -240,19 +380,13 @@ function StatusBadge({ status }: { status: string }) {
       borderRadius: 3,
       fontSize: 11,
       fontWeight: 600,
-      background: `${colors[status]}18`,
-      color: colors[status],
+      background: `${colors[status] ?? '#999'}18`,
+      color: colors[status] ?? '#999',
       textTransform: 'capitalize',
     }}>
       {status === 'no_adapter' ? 'No adapter' : status}
     </span>
   );
-}
-
-function formatSize(bytes: number): string {
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
-  return `${bytes} B`;
 }
 
 const btnStyle: React.CSSProperties = {

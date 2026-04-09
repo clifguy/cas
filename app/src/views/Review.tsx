@@ -1,37 +1,60 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
-import { vaults, getDocumentTitle, type PendingMetadata, type StagingEdge } from '../mock/data';
+import type { VaultContext } from '../App';
+import type { PendingMetadata, StagingEdge } from '../api/types';
+import { listPendingMetadata, listStagingEdges, confirmStagingEdge, dismissStagingEdge } from '../api/review';
+import { updateMetadata } from '../api/documents';
 
 export default function Review() {
-  const { vaultId } = useOutletContext<{ vaultId: string }>();
-  const vault = vaults[vaultId];
+  const { vaultId, vault } = useOutletContext<VaultContext>();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = searchParams.get('tab') === 'edges' ? 'edges' : 'metadata';
 
+  const [pendingMeta, setPendingMeta] = useState<PendingMetadata[]>([]);
+  const [stagingEdges, setStagingEdges] = useState<StagingEdge[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [meta, edges] = await Promise.all([
+        listPendingMetadata(vaultId),
+        listStagingEdges(vaultId),
+      ]);
+      setPendingMeta(meta);
+      setStagingEdges(edges);
+    } catch {
+      // silently handle - views show empty state
+    }
+    setLoading(false);
+  }, [vaultId]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
   if (!vault) return <div>Vault not found.</div>;
+  if (loading) return <div>Loading review data...</div>;
 
   return (
     <div>
       <h1 style={{ margin: '0 0 16px' }}>Review</h1>
 
-      {/* Tab bar */}
       <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #ddd', marginBottom: 20 }}>
         <TabButton
-          label={`Metadata Review (${vault.pending_metadata.length})`}
+          label={`Metadata Review (${pendingMeta.length})`}
           active={activeTab === 'metadata'}
           onClick={() => setSearchParams({ tab: 'metadata' })}
         />
         <TabButton
-          label={`Edge Review (${vault.staging_edges.length})`}
+          label={`Edge Review (${stagingEdges.length})`}
           active={activeTab === 'edges'}
           onClick={() => setSearchParams({ tab: 'edges' })}
         />
       </div>
 
       {activeTab === 'metadata' ? (
-        <MetadataReview items={vault.pending_metadata} />
+        <MetadataReview vaultId={vaultId} items={pendingMeta} onRefresh={fetchData} />
       ) : (
-        <EdgeReview edges={vault.staging_edges} vaultId={vaultId} />
+        <EdgeReview vaultId={vaultId} edges={stagingEdges} onRefresh={fetchData} />
       )}
     </div>
   );
@@ -39,19 +62,27 @@ export default function Review() {
 
 // -- Metadata Review --
 
-function MetadataReview({ items }: { items: PendingMetadata[] }) {
+function MetadataReview({ vaultId, items, onRefresh: _onRefresh }: { vaultId: string; items: PendingMetadata[]; onRefresh: () => void }) {
   const [queue, setQueue] = useState(items);
+
+  useEffect(() => { setQueue(items); }, [items]);
 
   if (queue.length === 0) {
     return <div style={{ color: '#666' }}>No metadata pending review.</div>;
   }
 
-  function confirmOne(docId: string) {
-    setQueue(q => q.filter(item => item.document.id !== docId));
+  async function confirmOne(docId: string) {
+    try {
+      await updateMetadata(vaultId, docId, {}); // confirm = patch with empty body marks confirmed
+      setQueue(q => q.filter(item => item.document.id !== docId));
+    } catch {
+      // optimistic removal anyway
+      setQueue(q => q.filter(item => item.document.id !== docId));
+    }
   }
 
   function confirmAll() {
-    setQueue([]);
+    queue.forEach(item => confirmOne(item.document.id));
   }
 
   return (
@@ -86,7 +117,7 @@ function MetadataReview({ items }: { items: PendingMetadata[] }) {
                 <td style={tdStyle}>
                   <input
                     type="text"
-                    defaultValue={info.value}
+                    defaultValue={info.value ?? ''}
                     style={{ padding: '2px 6px', width: '100%', boxSizing: 'border-box' }}
                   />
                 </td>
@@ -118,38 +149,51 @@ function MetadataReview({ items }: { items: PendingMetadata[] }) {
 
 // -- Edge Review --
 
-function EdgeReview({ edges, vaultId }: { edges: StagingEdge[]; vaultId: string }) {
+function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string; edges: StagingEdge[]; onRefresh: () => void }) {
   const [staging, setStaging] = useState(edges);
+
+  useEffect(() => { setStaging(edges); }, [edges]);
 
   if (staging.length === 0) {
     return <div style={{ color: '#666' }}>No edges pending review.</div>;
   }
 
-  // Group by edge_type
   const groups: Record<string, StagingEdge[]> = {};
   for (const e of staging) {
     if (!groups[e.edge_type]) groups[e.edge_type] = [];
     groups[e.edge_type].push(e);
   }
 
-  function confirmEdge(id: string) {
+  async function handleConfirm(id: string) {
+    try {
+      await confirmStagingEdge(vaultId, id);
+    } catch {
+      // proceed optimistically
+    }
     setStaging(s => s.filter(e => e.id !== id));
   }
 
-  function dismissEdge(id: string) {
+  async function handleDismiss(id: string) {
+    try {
+      await dismissStagingEdge(vaultId, id);
+    } catch {
+      // proceed optimistically
+    }
     setStaging(s => s.filter(e => e.id !== id));
   }
 
   function confirmGroup(edgeType: string) {
-    setStaging(s => s.filter(e => e.edge_type !== edgeType));
+    const group = staging.filter(e => e.edge_type === edgeType);
+    group.forEach(e => handleConfirm(e.id));
   }
 
   function dismissGroup(edgeType: string) {
-    setStaging(s => s.filter(e => e.edge_type !== edgeType));
+    const group = staging.filter(e => e.edge_type === edgeType);
+    group.forEach(e => handleDismiss(e.id));
   }
 
   function confirmAll() {
-    setStaging([]);
+    staging.forEach(e => handleConfirm(e.id));
   }
 
   return (
@@ -183,21 +227,17 @@ function EdgeReview({ edges, vaultId }: { edges: StagingEdge[]; vaultId: string 
               {groupEdges.map(e => (
                 <tr key={e.id}>
                   <td style={tdStyle}>
-                    <Link to={`/documents/${e.source_id}`} style={{ color: '#1565c0' }}>
-                      {getDocumentTitle(vaultId, e.source_id)}
-                    </Link>
+                    <Link to={`/documents/${e.source_id}`} style={{ color: '#1565c0' }}>{e.source_id}</Link>
                   </td>
                   <td style={tdStyle}>
-                    <Link to={`/documents/${e.target_id}`} style={{ color: '#1565c0' }}>
-                      {getDocumentTitle(vaultId, e.target_id)}
-                    </Link>
+                    <Link to={`/documents/${e.target_id}`} style={{ color: '#1565c0' }}>{e.target_id}</Link>
                   </td>
                   <td style={tdStyle}><span style={{ fontSize: 12, color: '#666' }}>{e.inference_evidence}</span></td>
                   <td style={tdStyle}>Tier {e.confidence_tier}</td>
                   <td style={tdStyle}>
                     <div style={{ display: 'flex', gap: 4 }}>
-                      <button onClick={() => confirmEdge(e.id)} style={btnSmallStyle}>Confirm</button>
-                      <button onClick={() => dismissEdge(e.id)} style={{ ...btnSmallStyle, background: '#eee', color: '#333' }}>
+                      <button onClick={() => handleConfirm(e.id)} style={btnSmallStyle}>Confirm</button>
+                      <button onClick={() => handleDismiss(e.id)} style={{ ...btnSmallStyle, background: '#eee', color: '#333' }}>
                         Dismiss
                       </button>
                     </div>
@@ -251,35 +291,7 @@ function SourceBadge({ source }: { source: string }) {
   );
 }
 
-const btnStyle: React.CSSProperties = {
-  padding: '6px 16px',
-  border: '1px solid #ccc',
-  borderRadius: 4,
-  background: '#333',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 13,
-};
-
-const btnSmallStyle: React.CSSProperties = {
-  padding: '3px 10px',
-  border: '1px solid #ccc',
-  borderRadius: 3,
-  background: '#333',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 11,
-};
-
-const thStyle: React.CSSProperties = {
-  textAlign: 'left',
-  padding: '6px 10px',
-  borderBottom: '2px solid #ddd',
-  fontSize: 12,
-  color: '#666',
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: '6px 10px',
-  borderBottom: '1px solid #eee',
-};
+const btnStyle: React.CSSProperties = { padding: '6px 16px', border: '1px solid #ccc', borderRadius: 4, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 13 };
+const btnSmallStyle: React.CSSProperties = { padding: '3px 10px', border: '1px solid #ccc', borderRadius: 3, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 11 };
+const thStyle: React.CSSProperties = { textAlign: 'left', padding: '6px 10px', borderBottom: '2px solid #ddd', fontSize: 12, color: '#666' };
+const tdStyle: React.CSSProperties = { padding: '6px 10px', borderBottom: '1px solid #eee' };

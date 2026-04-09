@@ -16,6 +16,9 @@ from sage.models.schemas import (
     HashCheckMatch,
     HashCheckRequest,
     HealthIndicators,
+    VaultAdapterInfo,
+    VaultDocTypeEntry,
+    VaultLifecycleState,
     VaultStatsResponse,
     VaultSummary,
 )
@@ -30,12 +33,36 @@ async def list_vaults(request: Request) -> list[VaultSummary]:
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
     results = []
     for vault_id, services in registry.items():
-        vault = services.config.vault
+        cfg = services.config
+        vault = cfg.vault
+
+        doc_types = [
+            VaultDocTypeEntry(value=dt.value, label=dt.label)
+            for dt in cfg.document_types.doc_types
+        ]
+        lifecycle_states = [
+            VaultLifecycleState(
+                value=s.value, label=s.label, is_terminal=s.is_terminal
+            )
+            for s in cfg.lifecycle.states
+        ]
+        adapters = []
+        for src_type, adapter_cfg in cfg.source_adapters.items():
+            if isinstance(adapter_cfg, dict):
+                adapters.append(VaultAdapterInfo(
+                    source_type=src_type,
+                    enabled=adapter_cfg.get("enabled", True),
+                    extensions=adapter_cfg.get("extensions", []),
+                ))
+
         results.append(VaultSummary(
             id=vault.id,
             name=vault.name,
             description=getattr(vault, "description", None),
             storage_root=vault.storage_root,
+            doc_types=doc_types,
+            lifecycle_states=lifecycle_states,
+            adapters=adapters,
         ))
     return results
 

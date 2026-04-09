@@ -238,11 +238,31 @@ class EvalRetrievalResult(BaseModel):
 # Vault listing and statistics (BE-001 through BE-006)
 # ---------------------------------------------------------------------------
 
+class VaultDocTypeEntry(BaseModel):
+    value: str
+    label: str
+
+
+class VaultLifecycleState(BaseModel):
+    value: str
+    label: str
+    is_terminal: bool = False
+
+
+class VaultAdapterInfo(BaseModel):
+    source_type: str
+    enabled: bool
+    extensions: list[str]
+
+
 class VaultSummary(BaseModel):
     id: str
     name: str
     description: str | None = None
     storage_root: str
+    doc_types: list[VaultDocTypeEntry] = Field(default_factory=list)
+    lifecycle_states: list[VaultLifecycleState] = Field(default_factory=list)
+    adapters: list[VaultAdapterInfo] = Field(default_factory=list)
 
 
 class HealthIndicators(BaseModel):
