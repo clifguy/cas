@@ -97,31 +97,41 @@ class EdgeInferenceEngine:
 
         Groups items by title identity, sorts by normalized version,
         creates a linear chain: each version supersedes its immediate
-        predecessor.
+        predecessor. A versionless file in a group with versioned files
+        is treated as the original (sorts before all versions).
         """
         edges: list[PlannedEdge] = []
 
         # Group by (title, project) -- version chain identity
         groups: dict[tuple[str, str | None], list[InferenceItem]] = {}
         for item in items:
-            if item.parsed.version is None:
-                continue  # EI-018: null version excluded
             key = (item.parsed.title.lower(), item.parsed.project)
             groups.setdefault(key, []).append(item)
 
         for _key, group in groups.items():
-            if len(group) < 2:
-                continue  # EI-017: need at least 2 versions
+            # Need at least one versioned item to form a chain
+            versioned = [it for it in group if it.parsed.version is not None]
+            if not versioned:
+                continue  # all versionless, nothing to chain
 
-            # Sort by normalized version ascending
+            if len(group) < 2:
+                continue  # EI-017: need at least 2 items
+
+            # Sort by normalized version ascending.
+            # None version -> (0,0,0), sorts before any real version.
             sorted_group = sorted(
-                group, key=lambda it: normalize_version(it.parsed.version)  # type: ignore[arg-type]
+                group,
+                key=lambda it: normalize_version(it.parsed.version)
+                if it.parsed.version is not None
+                else (0, 0, 0),
             )
 
             # Linear chain: each version supersedes its immediate predecessor
             for i in range(1, len(sorted_group)):
                 newer = sorted_group[i]
                 older = sorted_group[i - 1]
+                newer_label = newer.parsed.version or "(original)"
+                older_label = older.parsed.version or "(original)"
                 edges.append(PlannedEdge(
                     source_ref=newer.ref,
                     target_ref=older.ref,
@@ -129,8 +139,8 @@ class EdgeInferenceEngine:
                     tier=1,
                     method="version_chain",
                     evidence=(
-                        f"{newer.parsed.version} supersedes "
-                        f"{older.parsed.version} "
+                        f"{newer_label} supersedes "
+                        f"{older_label} "
                         f"(title: {newer.parsed.title})"
                     ),
                 ))

@@ -11,7 +11,7 @@ export default function Search() {
   const [mode, setMode] = useState<'hybrid' | 'semantic' | 'keyword'>('hybrid');
   const [showFilters, setShowFilters] = useState(false);
   const [docTypeFilter, setDocTypeFilter] = useState('');
-  const [lifecycleFilters, setLifecycleFilters] = useState<string[]>([]);
+  const [lifecycleFilter, setLifecycleFilter] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [results, setResults] = useState<DiscoverHit[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -59,6 +59,7 @@ export default function Search() {
     try {
       const filters: Record<string, string> = {};
       if (docTypeFilter) filters.doc_type = docTypeFilter;
+      if (lifecycleFilter) filters.lifecycle_status = lifecycleFilter;
       if (projectFilter) filters.project = projectFilter;
 
       const useHybrid = mode === 'hybrid';
@@ -173,24 +174,16 @@ export default function Search() {
 
               <div>
                 <label style={filterLabelStyle}>Lifecycle state</label>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <select
+                  value={lifecycleFilter}
+                  onChange={e => setLifecycleFilter(e.target.value)}
+                  style={{ padding: '4px 8px' }}
+                >
+                  <option value="">All</option>
                   {vault.lifecycle_states.map(ls => (
-                    <label key={ls.value} style={{ fontSize: 12, display: 'flex', alignItems: 'center', gap: 3 }}>
-                      <input
-                        type="checkbox"
-                        checked={lifecycleFilters.includes(ls.value)}
-                        onChange={e => {
-                          if (e.target.checked) {
-                            setLifecycleFilters([...lifecycleFilters, ls.value]);
-                          } else {
-                            setLifecycleFilters(lifecycleFilters.filter(v => v !== ls.value));
-                          }
-                        }}
-                      />
-                      {ls.label}
-                    </label>
+                    <option key={ls.value} value={ls.value}>{ls.label}</option>
                   ))}
-                </div>
+                </select>
               </div>
 
               <div>

@@ -38,6 +38,9 @@ _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[_ ](.*)")
 _TRAILING_VERSION_RE = re.compile(
     r"(?:^|[_ ])(v\d+(?:[._]\d+)*)$", re.IGNORECASE
 )
+# Post-split date: a segment that is exactly YYYY-MM-DD. Catches dates
+# that appear after a project prefix (e.g. PIM_2026-01-06_Title).
+_SEGMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def normalize_version(version_str: str) -> tuple[int, int, int]:
@@ -135,11 +138,13 @@ class FilenameParser:
                 project = remaining[0]
             remaining = remaining[1:]
 
-        # Codes: via known_code_patterns (remaining segments)
+        # Codes and dates: via known_code_patterns and YYYY-MM-DD pattern
         still_remaining: list[str] = []
         for seg in remaining:
             if self._is_code(seg):
                 codes.append(seg)
+            elif date is None and _SEGMENT_DATE_RE.match(seg):
+                date = seg
             else:
                 still_remaining.append(seg)
 

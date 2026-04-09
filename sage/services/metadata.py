@@ -57,9 +57,11 @@ class MetadataService:
                     raise InvalidDocTypeError(request.doc_type, valid_types)
                 updates["doc_type"] = request.doc_type
 
-            if updates:
-                updates["last_modified_by"] = modified_by
-                updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-                doc = await self._store.update_document(document_id, updates)
+            # Mark metadata as confirmed on every update_metadata call,
+            # even with an empty body (pure confirmation without edits).
+            updates["metadata_confirmed"] = True
+            updates["last_modified_by"] = modified_by
+            updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+            doc = await self._store.update_document(document_id, updates)
 
             return doc

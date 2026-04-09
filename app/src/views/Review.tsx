@@ -13,9 +13,11 @@ export default function Review() {
   const [pendingMeta, setPendingMeta] = useState<PendingMetadata[]>([]);
   const [stagingEdges, setStagingEdges] = useState<StagingEdge[]>([]);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState('');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    setFetchError('');
     try {
       const [meta, edges] = await Promise.all([
         listPendingMetadata(vaultId),
@@ -23,8 +25,9 @@ export default function Review() {
       ]);
       setPendingMeta(meta);
       setStagingEdges(edges);
-    } catch {
-      // silently handle - views show empty state
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to load review data';
+      setFetchError(msg);
     }
     setLoading(false);
   }, [vaultId]);
@@ -33,6 +36,7 @@ export default function Review() {
 
   if (!vault) return <div>Vault not found.</div>;
   if (loading) return <div>Loading review data...</div>;
+  if (fetchError) return <div style={{ color: '#c62828' }}>Error: {fetchError}</div>;
 
   return (
     <div>
@@ -62,27 +66,41 @@ export default function Review() {
 
 // -- Metadata Review --
 
-function MetadataReview({ vaultId, items, onRefresh: _onRefresh }: { vaultId: string; items: PendingMetadata[]; onRefresh: () => void }) {
+function MetadataReview({ vaultId, items, onRefresh }: { vaultId: string; items: PendingMetadata[]; onRefresh: () => void }) {
   const [queue, setQueue] = useState(items);
+  const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => { setQueue(items); }, [items]);
+
+  function setFieldEdit(docId: string, field: string, value: string) {
+    setEdits(prev => ({
+      ...prev,
+      [docId]: { ...prev[docId], [field]: value },
+    }));
+  }
 
   if (queue.length === 0) {
     return <div style={{ color: '#666' }}>No metadata pending review.</div>;
   }
 
   async function confirmOne(docId: string) {
+    setErrors(prev => { const next = { ...prev }; delete next[docId]; return next; });
     try {
-      await updateMetadata(vaultId, docId, {}); // confirm = patch with empty body marks confirmed
+      const docEdits = edits[docId] ?? {};
+      await updateMetadata(vaultId, docId, docEdits);
       setQueue(q => q.filter(item => item.document.id !== docId));
-    } catch {
-      // optimistic removal anyway
-      setQueue(q => q.filter(item => item.document.id !== docId));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Confirmation failed';
+      setErrors(prev => ({ ...prev, [docId]: msg }));
     }
   }
 
-  function confirmAll() {
-    queue.forEach(item => confirmOne(item.document.id));
+  async function confirmAll() {
+    for (const item of queue) {
+      await confirmOne(item.document.id);
+    }
+    onRefresh();
   }
 
   return (
@@ -104,13 +122,15 @@ function MetadataReview({ vaultId, items, onRefresh: _onRefresh }: { vaultId: st
         <tbody>
           {queue.map(item => {
             const fields = Object.entries(item.extracted_fields);
+            const docError = errors[item.document.id];
             return fields.map(([field, info], fi) => (
-              <tr key={`${item.document.id}-${field}`}>
+              <tr key={`${item.document.id}-${field}`} style={docError ? { background: '#fff3f3' } : undefined}>
                 {fi === 0 && (
                   <td style={{ ...tdStyle, verticalAlign: 'top' }} rowSpan={fields.length}>
                     <Link to={`/documents/${item.document.id}`} style={{ color: '#1565c0' }}>
                       {item.document.title}
                     </Link>
+                    {docError && <div style={{ color: '#c62828', fontSize: 11, marginTop: 4 }}>{docError}</div>}
                   </td>
                 )}
                 <td style={tdStyle}>{field}</td>
@@ -118,6 +138,7 @@ function MetadataReview({ vaultId, items, onRefresh: _onRefresh }: { vaultId: st
                   <input
                     type="text"
                     defaultValue={info.value ?? ''}
+                    onChange={e => setFieldEdit(item.document.id, field, e.target.value)}
                     style={{ padding: '2px 6px', width: '100%', boxSizing: 'border-box' }}
                   />
                 </td>
@@ -151,6 +172,7 @@ function MetadataReview({ vaultId, items, onRefresh: _onRefresh }: { vaultId: st
 
 function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string; edges: StagingEdge[]; onRefresh: () => void }) {
   const [staging, setStaging] = useState(edges);
+  const [edgeErrors, setEdgeErrors] = useState<Record<string, string>>({});
 
   useEffect(() => { setStaging(edges); }, [edges]);
 
@@ -165,21 +187,25 @@ function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string
   }
 
   async function handleConfirm(id: string) {
+    setEdgeErrors(prev => { const next = { ...prev }; delete next[id]; return next; });
     try {
       await confirmStagingEdge(vaultId, id);
-    } catch {
-      // proceed optimistically
+      setStaging(s => s.filter(e => e.id !== id));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Confirm failed';
+      setEdgeErrors(prev => ({ ...prev, [id]: msg }));
     }
-    setStaging(s => s.filter(e => e.id !== id));
   }
 
   async function handleDismiss(id: string) {
+    setEdgeErrors(prev => { const next = { ...prev }; delete next[id]; return next; });
     try {
       await dismissStagingEdge(vaultId, id);
-    } catch {
-      // proceed optimistically
+      setStaging(s => s.filter(e => e.id !== id));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Dismiss failed';
+      setEdgeErrors(prev => ({ ...prev, [id]: msg }));
     }
-    setStaging(s => s.filter(e => e.id !== id));
   }
 
   function confirmGroup(edgeType: string) {
@@ -225,7 +251,7 @@ function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string
             </thead>
             <tbody>
               {groupEdges.map(e => (
-                <tr key={e.id}>
+                <tr key={e.id} style={edgeErrors[e.id] ? { background: '#fff3f3' } : undefined}>
                   <td style={tdStyle}>
                     <Link to={`/documents/${e.source_id}`} style={{ color: '#1565c0' }}>{e.source_id}</Link>
                   </td>
@@ -241,6 +267,7 @@ function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string
                         Dismiss
                       </button>
                     </div>
+                    {edgeErrors[e.id] && <div style={{ color: '#c62828', fontSize: 11, marginTop: 4 }}>{edgeErrors[e.id]}</div>}
                   </td>
                 </tr>
               ))}

@@ -16,6 +16,7 @@ export default function DocumentDetail() {
   const [showEdgeDialog, setShowEdgeDialog] = useState(false);
   const [newEdgeType, setNewEdgeType] = useState('covers');
   const [newTargetId, setNewTargetId] = useState('');
+  const [edgeError, setEdgeError] = useState('');
   const [neighborTitles, setNeighborTitles] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -63,6 +64,7 @@ export default function DocumentDetail() {
 
   async function handleCreateEdge() {
     if (!id || !newTargetId) return;
+    setEdgeError('');
     try {
       const newEdge = await createEdge(vaultId, {
         source_id: id,
@@ -72,8 +74,9 @@ export default function DocumentDetail() {
       setEdges(prev => [...prev, newEdge]);
       setShowEdgeDialog(false);
       setNewTargetId('');
-    } catch {
-      // handle error silently for now
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to create edge';
+      setEdgeError(msg);
     }
   }
 
@@ -200,6 +203,7 @@ export default function DocumentDetail() {
             <div>
               <label style={filterLabelStyle}>Edge type</label>
               <select value={newEdgeType} onChange={e => setNewEdgeType(e.target.value)} style={{ padding: '4px 8px' }}>
+                <option value="supersedes">supersedes</option>
                 <option value="covers">covers</option>
                 <option value="derived_from">derived_from</option>
                 <option value="references">references</option>
@@ -220,8 +224,9 @@ export default function DocumentDetail() {
               />
             </div>
             <button style={btnStyle} onClick={handleCreateEdge}>Create</button>
-            <button style={{ ...btnStyle, background: '#eee', color: '#333' }} onClick={() => setShowEdgeDialog(false)}>Cancel</button>
+            <button style={{ ...btnStyle, background: '#eee', color: '#333' }} onClick={() => { setShowEdgeDialog(false); setEdgeError(''); }}>Cancel</button>
           </div>
+          {edgeError && <div style={{ color: '#c62828', fontSize: 12, marginTop: 8 }}>{edgeError}</div>}
         </div>
       )}
     </div>

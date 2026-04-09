@@ -497,8 +497,8 @@ class TestVersionChain:
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
         assert len(supersedes) == 0
 
-    def test_ei_018_null_version_excluded(self):
-        """Null version excluded from version chaining."""
+    def test_ei_018_null_version_is_original(self):
+        """Versionless file treated as original, sorts before all versions."""
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem("f0", False, ParsedMetadata("Neural-Analysis", version=None, doc_type="technical_disclosure")),
@@ -507,9 +507,20 @@ class TestVersionChain:
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
-        assert len(supersedes) == 1  # v2 -> v1 only
-        assert supersedes[0].source_ref == "f2"
-        assert supersedes[0].target_ref == "f1"
+        assert len(supersedes) == 2  # v2 -> v1 -> original
+        assert any(e.source_ref == "f2" and e.target_ref == "f1" for e in supersedes)
+        assert any(e.source_ref == "f1" and e.target_ref == "f0" for e in supersedes)
+
+    def test_ei_018b_all_versionless_no_chain(self):
+        """All-versionless group produces no edges."""
+        engine = EdgeInferenceEngine()
+        items = [
+            InferenceItem("f0", False, ParsedMetadata("Report", version=None, doc_type="report")),
+            InferenceItem("f1", False, ParsedMetadata("Report", version=None, doc_type="report")),
+        ]
+        plan = engine.build_edge_plan(items, [])
+        supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
+        assert len(supersedes) == 0
 
 
 # ---------------------------------------------------------------------------
