@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v25
+**Version:** v26
 **Last updated:** 2026-04-08
 
 ---
@@ -16,7 +16,7 @@
 | 5 | ADR Store | v1.10 (schema), 14 ADRs | Development | — |
 | 6 | Formatting Standards | v1.0 | Development | — |
 | 7 | Formal Substrate | v1.2 | Development | — |
-| 8 | Test Plan | v0.5 (tier 1 + SAGE tier 2 behavioral + adapter + provenance) | Development | — |
+| 8 | Test Plan | v0.7 (tier 1 + SAGE tier 2 behavioral + adapter + provenance + app + MCP) | Development | — |
 | 9 | CAS Application Spec | v0.4 | Development | — |
 | 10 | Working Code | — | Planned | — |
 
@@ -98,6 +98,8 @@
 - v0.3 delivered 2026-04-06. SAGE adapter test specifications. 25 tests across 2 production adapters: LanceDB ContentStore (17 tests covering initialization, indexing, removal, vector search, BM25 search, heading prefix retrieval, persistence, edge cases) and nomic-embed-text EmbeddingProvider (8 tests covering dimension, determinism, normalization, batch behavior, similarity, edge cases). Encodes 13 design decisions for production adapter implementations. Test plan manifest updated to v0.3.
 - v0.4 delivered 2026-04-06. Qwen3 AbstractionProvider adapter test specifications. 8 tests (AD-026 through AD-033) covering initialization (eager model load, fail-fast), output shape (non-empty string, max_tokens bound), determinism (greedy decoding), edge cases (short input, long input truncation), semantic quality smoke test, and error propagation. Encodes 8 design decisions for the production abstraction provider (Qwen3-30B-A3B-Instruct-2507 via MLX). Test plan manifest updated to v0.4.
 - v0.5 delivered 2026-04-06. Source file provenance test specifications. 4 behavioral tests (BH-049 through BH-052) covering source_modified_at on new ingestion, force re-ingestion update, graph store round-trip, and created_at/source_modified_at distinction. 1 adapter test (AD-034) covering markdown adapter extraction of st_mtime into ProjectionResult.metadata. Test plan manifest updated to v0.5.
+- v0.6 delivered 2026-04-08. CAS Application test specifications. 55 frontend UI behavior tests (TEST-APP-UI-001 through UI-055) covering all 6 views: navigation and vault selector (3), Dashboard (6), Ingest four-step workflow (11), Metadata Review (5), Edge Review (6), Search (5), Document Detail (6), Graph Explorer (13). 30 backend tests (TEST-APP-BE-001 through BE-030) covering 6 new SAGE API endpoints (vault listing, vault statistics, hash-check, staging edges, pending metadata, pipeline status filter on discover) and 2 application backend endpoints (directory scan, batch ingest via SSE). Encodes design decisions for: SSE event format (structured JSON with event_type, file_index, stage, status), scan depth control (optional max_depth, default unlimited), hash algorithm alignment (SHA-256 matching SAGE), per-file error isolation (batch continues after individual failures), endpoint URL prefix separation (/app/ vs /sage_vaults/). Test plan manifest updated to v0.6.
+- v0.7 delivered 2026-04-08. CAS Application MCP tool test specifications. 25 tests (TEST-APP-MCP-001 through MCP-025) covering 9 new MCP tools added to sage/mcp_server.py: sage_list_vaults (2 tests), sage_vault_stats (3 tests), sage_hash_check (2 tests), sage_list_staging_edges (2 tests), sage_confirm/dismiss_staging_edge (3 tests), sage_pending_metadata (2 tests), app_scan_directory (4 tests), app_batch_ingest (4 tests), cross-cutting conventions (3 tests). Encodes design decisions for single-server topology (SAGE + app tools share vault registry), synchronous batch ingest with MCP progress notifications, and naming prefix convention (sage_* vs app_*). Test plan manifest updated to v0.7.
 - Deferred to step 20: pipeline-level bypass for documents with existing abstract sections (e.g., patent ABSTRACT headings). Vault-configurable option to prefer existing abstracts over LLM generation.
 - Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
@@ -126,7 +128,22 @@
   - Staging edges endpoints -- list, confirm, dismiss Tier 2 suggested edges
   - Pending metadata endpoint -- query documents awaiting metadata confirmation
   - Pipeline status filtering on discover endpoint
-- Pending: test spec for all six views, application backend endpoints, and SAGE API additions.
+- **Approved MCP decisions:**
+  - Single MCP server for both SAGE and app tools. Both need the same vault configs and service instances; app backend tools depend on SAGE services (hash-check for scan, ingest for batch). Tool naming prefix disambiguates: `sage_*` vs `app_*`.
+  - Batch ingest over MCP uses synchronous completion with MCP progress notifications. The tool runs the full per-file SAGE ingest loop, emits progress notifications matching the SSE event shape, and returns the summary object on completion. This is the MCP-native equivalent of SSE streaming.
+- **New MCP tools (9 total, added to existing sage/mcp_server.py):**
+  - `sage_list_vaults` -- enumerate configured vaults (no vault_id parameter)
+  - `sage_vault_stats` -- vault statistics and health indicators
+  - `sage_hash_check` -- bulk hash existence check
+  - `sage_list_staging_edges` -- list Tier 2 suggested edges awaiting review
+  - `sage_confirm_staging_edge` -- move staging edge to production table
+  - `sage_dismiss_staging_edge` -- delete staging edge
+  - `sage_pending_metadata` -- list documents awaiting metadata confirmation
+  - `app_scan_directory` -- walk directory, hash, match adapters, check against SAGE
+  - `app_batch_ingest` -- per-file SAGE ingest with progress notifications, returns summary
+- Test specifications delivered 2026-04-08 (Test Plan v0.6): 55 frontend UI tests + 30 backend tests. See Test Plan section above for details.
+- MCP tool test specifications delivered 2026-04-08 (Test Plan v0.7): 25 tests for 9 new tools. See Test Plan section above for details.
+- Pending: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata, pipeline status filter). Specified in tests/app/backend_tests.md (TEST-APP-BE-001 through BE-016).
 
 ### 10. Working Code (In Progress)
 
@@ -220,8 +237,10 @@
 20b. ~~Working Code: Source file provenance~~ (completed 2026-04-06, 5 tests)
 21. ~~CAS Application Spec v0.4~~ (completed 2026-04-08, technology stack revision to React SPA)
 22. ~~CAS Application: React wireframe v0.4~~ (completed 2026-04-08, 6 views with mock data)
-23. CAS Application: Test spec for all views + application backend endpoints ← **next**
-24. CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata)
-25. CAS Application: Application backend (scan, batch ingest with SSE)
-26. CAS Application: Frontend production code with API integration
-27. Working Code: ROOT Harness implementation
+23. ~~CAS Application: Test spec for all views + application backend endpoints~~ (completed 2026-04-08, 55 UI tests + 30 backend tests)
+23a. ~~CAS Application: MCP tool test specs for 9 new tools (7 SAGE + 2 app)~~ (completed 2026-04-08, 25 tests)
+24. CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata) ← **next**
+25. CAS Application: MCP tools for new SAGE endpoints + app backend (9 tools in sage/mcp_server.py)
+26. CAS Application: Application backend (scan, batch ingest with SSE)
+27. CAS Application: Frontend production code with API integration
+28. Working Code: ROOT Harness implementation

@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.5",
-  "manifest_date": "2026-04-06",
+  "manifest_version": "0.7",
+  "manifest_date": "2026-04-08",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -97,6 +97,44 @@
       "test_count": 34,
       "decision_date": "2026-04-06",
       "notes": "nomic-embed-text EmbeddingProvider (8 tests), LanceDB ContentStore (17 tests), Qwen3 AbstractionProvider (8 tests), Markdown adapter provenance (1 test)."
+    },
+    {
+      "path": "tests/app/frontend_tests.md",
+      "tier": 2,
+      "title": "CAS Application Frontend Tests",
+      "status": "specified",
+      "covers": [
+        "docs/ref/2026-04-08_CAS_REF_App-Spec_v0_4.docx"
+      ],
+      "test_count": 55,
+      "decision_date": "2026-04-08",
+      "notes": "UI behavior tests for all 6 views: Dashboard (6 tests), Ingest (11 tests), Metadata Review (5 tests), Edge Review (6 tests), Search (5 tests), Document Detail (6 tests), Graph Explorer (13 tests), Navigation/vault selector (3 tests)."
+    },
+    {
+      "path": "tests/app/backend_tests.md",
+      "tier": 2,
+      "title": "CAS Application Backend Tests",
+      "status": "specified",
+      "covers": [
+        "docs/ref/2026-04-08_CAS_REF_App-Spec_v0_4.docx",
+        "docs/fs/sage/sage_core_api.openapi.yaml"
+      ],
+      "test_count": 30,
+      "decision_date": "2026-04-08",
+      "notes": "New SAGE API endpoints (vault listing 2, vault statistics 4, hash-check 3, staging edges 4, pending metadata 2, pipeline status filter 1) and application backend endpoints (scan 5, batch ingest via SSE 7, conventions 2)."
+    },
+    {
+      "path": "tests/app/mcp_tests.md",
+      "tier": 2,
+      "title": "CAS Application MCP Tool Tests",
+      "status": "specified",
+      "covers": [
+        "sage/mcp_server.py",
+        "docs/fs/sage/sage_core_api.openapi.yaml"
+      ],
+      "test_count": 25,
+      "decision_date": "2026-04-08",
+      "notes": "9 new MCP tools: sage_list_vaults (2), sage_vault_stats (3), sage_hash_check (2), sage_list_staging_edges (2), sage_confirm/dismiss_staging_edge (3), sage_pending_metadata (2), app_scan_directory (4), app_batch_ingest (4), cross-cutting conventions (3). Single-server topology, sync-with-progress for batch ingest."
     }
   ],
   "fixture_directories": {
@@ -128,6 +166,16 @@
       "version": "0.5",
       "date": "2026-04-06",
       "summary": "Source file provenance. 4 behavioral tests (BH-049 through BH-052) covering source_modified_at on new ingestion, force re-ingestion update, graph store round-trip, and created_at/source_modified_at distinction. 1 adapter test (AD-034) for markdown adapter st_mtime extraction. Formal Substrate updated to v1.2 (Document.source_modified_at added to OpenAPI spec)."
+    },
+    {
+      "version": "0.6",
+      "date": "2026-04-08",
+      "summary": "CAS Application test specifications. 55 frontend UI behavior tests (TEST-APP-UI-001 through UI-055) covering all 6 views: navigation and vault selector, Dashboard, Ingest (4-step workflow), Metadata Review, Edge Review, Search, Document Detail, Graph Explorer. 30 backend tests (TEST-APP-BE-001 through BE-030) covering 6 new SAGE API endpoints (vault listing, vault statistics, hash-check, staging edges, pending metadata, pipeline status filter on discover) and 2 application backend endpoints (directory scan, batch ingest via SSE) plus conventions. Encodes design decisions for SSE event format, scan depth control, hash algorithm alignment, per-file error isolation, and endpoint URL prefix separation."
+    },
+    {
+      "version": "0.7",
+      "date": "2026-04-08",
+      "summary": "CAS Application MCP tool test specifications. 25 tests (TEST-APP-MCP-001 through MCP-025) covering 9 new MCP tools added to sage/mcp_server.py: sage_list_vaults (2 tests), sage_vault_stats (3 tests), sage_hash_check (2 tests), sage_list_staging_edges (2 tests), sage_confirm/dismiss_staging_edge (3 tests), sage_pending_metadata (2 tests), app_scan_directory (4 tests), app_batch_ingest (4 tests), cross-cutting conventions (3 tests). Encodes design decisions for single-server topology (SAGE + app tools share vault registry), synchronous batch ingest with MCP progress notifications, and naming prefix convention (sage_* vs app_*)."
     }
   ]
 }
