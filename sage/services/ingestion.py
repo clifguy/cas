@@ -178,6 +178,12 @@ class IngestionService:
             await self._store.insert_document(doc)
             http_status = 201
 
+        # Apply caller-supplied metadata if provided
+        if request.metadata:
+            metadata_updates = self._build_metadata_updates(request.metadata)
+            if metadata_updates:
+                doc = await self._store.update_document(doc.id, metadata_updates)
+
         # Schedule background pipeline (Stages 2-3) (BH-026)
         asyncio.create_task(
             self._run_background_pipeline(doc.id, projection)
@@ -273,6 +279,28 @@ class IngestionService:
                 "semantic_abstract": abstract,
                 "updated_at": now.isoformat(),
             })
+
+    @staticmethod
+    def _build_metadata_updates(metadata: dict[str, str]) -> dict:
+        """Convert caller-supplied metadata dict to document field updates.
+
+        Known fields are mapped to document columns. Unknown fields are
+        stored but have no schema-enforced semantics.
+        """
+        KNOWN_FIELDS = {
+            "title", "version_label", "project", "doc_type",
+            "authority_scope", "date",
+        }
+        updates: dict = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if key in KNOWN_FIELDS:
+                updates[key] = value
+            elif key == "codes":
+                # codes stored as comma-separated string -> tags list
+                updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
+        return updates
 
     def _chunk_projection(
         self, document_id: str, projection: ProjectionResult

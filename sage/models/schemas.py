@@ -88,6 +88,7 @@ class IngestRequest(BaseModel):
     config: dict | None = None
     created_by: str | None = None
     force: bool = False
+    metadata: dict[str, str] | None = None
 
 
 class SetLifecycleRequest(BaseModel):

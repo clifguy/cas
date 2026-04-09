@@ -1,0 +1,169 @@
+"""Directory scan service (BE-017 through BE-021).
+
+Walks a directory, matches files to adapters by extension, hashes each
+file, parses filenames, and checks hashes against a SAGE vault to
+determine new/modified/unchanged status.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from app.backend.filename_parser import FilenameParser, ParsedMetadata
+from sage.config import VaultConfig
+from sage.models.enums import SourceType
+from sage.storage.graph_store import GraphStore
+
+logger = logging.getLogger(__name__)
+
+# File extension to SourceType adapter mapping
+EXTENSION_TO_ADAPTER: dict[str, str] = {
+    ".md": SourceType.MARKDOWN.value,
+    ".markdown": SourceType.MARKDOWN.value,
+    ".docx": SourceType.DOCX.value,
+}
+
+
+@dataclass
+class ScanResult:
+    file_path: str
+    file_hash: str
+    source_modified_at: str
+    adapter: str | None
+    parsed_metadata: ParsedMetadata
+    sage_status: str  # "new", "modified", "unchanged", "no_adapter"
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        return d
+
+
+def _compute_file_hash(path: Path) -> str:
+    """Compute SHA-256 hash of file content with sha256: prefix."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return f"sha256:{h.hexdigest()}"
+
+
+def _get_mtime_iso(path: Path) -> str:
+    """Get file modification time as ISO 8601 string."""
+    mtime = path.stat().st_mtime
+    dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+    return dt.isoformat()
+
+
+def _detect_adapter(path: Path) -> str | None:
+    """Detect adapter from file extension."""
+    return EXTENSION_TO_ADAPTER.get(path.suffix.lower())
+
+
+def _walk_directory(
+    directory: Path, max_depth: int | None
+) -> tuple[list[Path], list[str]]:
+    """Walk directory with optional depth limit. Returns (files, warnings)."""
+    files: list[Path] = []
+    warnings: list[str] = []
+
+    def _walk(current: Path, depth: int) -> None:
+        if max_depth is not None and depth > max_depth:
+            return
+        try:
+            entries = sorted(current.iterdir())
+        except PermissionError:
+            warnings.append(f"Permission denied: {current}")
+            return
+
+        for entry in entries:
+            if entry.name.startswith(".") or entry.name.startswith("~$"):
+                continue  # Skip hidden files and Word temp files
+            try:
+                if entry.is_file():
+                    files.append(entry)
+                elif entry.is_dir():
+                    _walk(entry, depth + 1)
+            except PermissionError:
+                warnings.append(f"Permission denied: {entry}")
+
+    _walk(directory, 0)
+    return files, warnings
+
+
+async def scan_directory(
+    directory: Path,
+    vault_config: VaultConfig,
+    graph_store: GraphStore,
+    max_depth: int | None = None,
+) -> tuple[list[ScanResult], list[str]]:
+    """Scan a directory and return file metadata with SAGE status.
+
+    Args:
+        directory: Absolute path to scan.
+        vault_config: Vault configuration (for metadata_extraction config).
+        graph_store: For hash-check against existing documents.
+        max_depth: Max recursion depth (None = unlimited, 0 = no recursion).
+
+    Returns:
+        (scan_results, warnings): Results for each file, plus permission warnings.
+    """
+    parser = FilenameParser(vault_config.metadata_extraction)
+
+    # Walk directory
+    file_paths, warnings = _walk_directory(directory, max_depth)
+
+    # Compute hashes and detect adapters
+    file_infos: list[tuple[Path, str, str | None, str]] = []
+    hashes_to_check: list[str] = []
+
+    for path in file_paths:
+        adapter = _detect_adapter(path)
+        file_hash = _compute_file_hash(path)
+        mtime = _get_mtime_iso(path)
+        file_infos.append((path, file_hash, adapter, mtime))
+        if adapter is not None:
+            hashes_to_check.append(file_hash)
+
+    # Bulk hash check against vault
+    hash_matches = await graph_store.find_documents_by_hashes(hashes_to_check)
+
+    # Also check by source path for "modified" detection
+    # A file is "modified" if its path matches an existing doc but hash differs
+    all_source_paths = [
+        str(p) for p, _h, a, _m in file_infos if a is not None
+    ]
+    path_to_existing: dict[str, str] = {}
+    for sp in all_source_paths:
+        docs = await graph_store.find_by_source_path(sp)
+        if docs:
+            path_to_existing[sp] = docs[0].source_content_hash
+
+    # Build results
+    results: list[ScanResult] = []
+    for path, file_hash, adapter, mtime in file_infos:
+        parsed = parser.parse(path.stem)
+
+        if adapter is None:
+            status = "no_adapter"
+        elif file_hash in hash_matches:
+            status = "unchanged"
+        elif str(path) in path_to_existing:
+            status = "modified"
+        else:
+            status = "new"
+
+        results.append(ScanResult(
+            file_path=str(path),
+            file_hash=file_hash,
+            source_modified_at=mtime,
+            adapter=adapter,
+            parsed_metadata=parsed,
+            sage_status=status,
+        ))
+
+    return results, warnings

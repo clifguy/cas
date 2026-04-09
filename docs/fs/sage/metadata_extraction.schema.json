@@ -35,7 +35,7 @@
         },
         "known_code_patterns": {
           "type": "array",
-          "description": "List of regex patterns that identify code segments in filenames. The filename parser uses these to distinguish code segments from other content during tolerant parsing. Code recognition is independent of doc_type mapping: a segment matching any pattern here is classified as a code regardless of whether a code_to_doc_type or keyword_to_doc_type rule maps it. Patterns are matched case-insensitively against individual filename segments.",
+          "description": "List of regex patterns that identify code segments in filenames. The filename parser uses these to distinguish code segments from other content during tolerant parsing. Code recognition is independent of doc_type mapping: a segment matching any pattern here is classified as a code regardless of whether a code_to_doc_type or keyword_to_doc_type rule maps it. Patterns are matched case-sensitively against individual filename segments (patterns define their own character classes).",
           "items": {
             "type": "string",
             "description": "A regular expression pattern matching a code segment value. Example: '^[A-Z]+-\\d+$' matches codes like 'PAT-001'. Example: '^[A-Z]{2,5}$' matches short uppercase codes like 'REF' or 'DISC'."

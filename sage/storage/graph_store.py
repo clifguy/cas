@@ -203,6 +203,18 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_document(r) for r in rows]
 
+    async def find_documents_by_title(self, title: str) -> list[Document]:
+        """Find all documents with a matching title (case-insensitive)."""
+        return await self._run(self._find_documents_by_title_sync, title)
+
+    def _find_documents_by_title_sync(self, title: str) -> list[Document]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE LOWER(title) = LOWER(?)",
+            (title,),
+        ).fetchall()
+        return [self._row_to_document(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Edge operations
     # ------------------------------------------------------------------

@@ -25,6 +25,7 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
+from app.backend.router import router as app_backend_router
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
 
@@ -126,5 +127,8 @@ def create_app(
     app.include_router(utilities.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(staging_edges.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(pending_metadata.router, prefix="/sage_vaults/{vault_id}")
+
+    # Application backend endpoints (BE-017 through BE-035)
+    app.include_router(app_backend_router)
 
     return app

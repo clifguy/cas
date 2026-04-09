@@ -188,7 +188,8 @@ extension.
 
 **Decision:** A filename segment is classified as a code if and only if it matches
 at least one pattern in the vault's known_code_patterns list. Patterns are matched
-case-insensitively. Code recognition is independent of doc_type mapping.
+case-sensitively (patterns define their own character classes, e.g. `[A-Z]` means
+uppercase only). Code recognition is independent of doc_type mapping.
 
 **Precondition:** Vault config with known_code_patterns `["^[A-Z]{2,8}$",
 "^[A-Z]+-\\d+$"]`.

@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v29
+**Version:** v30
 **Last updated:** 2026-04-08
 
 ---
@@ -176,6 +176,7 @@
 - Source file provenance delivered 2026-04-06. Added Document.source_modified_at (nullable datetime) across all layers: Pydantic model, SQLite schema with ALTER TABLE migration for existing databases, graph store serialization/deserialization, markdown adapter (extracts st_mtime via Path.stat()), and ingestion service (both new-document and force-re-ingestion paths). created_at remains as SAGE ingestion timestamp. 5 new tests passing (BH-049 through BH-052, AD-034). 150 total tests passing.
 - SAGE MCP server registered in Claude Desktop 2026-04-06. Configuration at ~/Library/Application Support/Claude/claude_desktop_config.json. Launches .venv Python with both vaults (test, pim_health) via stdio transport. Vault config paths use absolute paths to ~/sage_vaults/{vault_id}/vault_config.yaml (tilde expansion not reliable in JSON config files). Claude Desktop Cowork mode can now discover and call all 11 SAGE tools.
 - SAGE API additions for CAS Application delivered 2026-04-08. Multi-vault app factory evolution: app.state.vault_registry (dict[str, SAGEServices]) replaces single-vault app.state, same pattern MCP already uses. All dependency injection resolves via vault_id lookup. Backward compatible with existing tests. Six new endpoint groups: (1) GET /sage_vaults -- vault listing across all vaults (no vault_id prefix). (2) GET /sage_vaults/{vault_id}/stats -- ten dashboard statistics plus health indicators (pending_metadata_count, pending_edge_count, deferred_abstract_count, failed_ingestion_count), computed on demand. (3) POST /sage_vaults/{vault_id}/hash-check -- bulk hash existence check for scan preview. (4) GET /sage_vaults/{vault_id}/staging-edges + POST confirm/dismiss -- Tier 2 staging edge review workflow. (5) GET /sage_vaults/{vault_id}/pending-metadata -- documents with unconfirmed metadata. (6) pipeline_status filter added to RetrievalFilters on discover endpoint. New DDL: staging_edges table, metadata_confirmed column on documents. VaultIdentity.description field added to vault config model. 16 tests passing (TEST-APP-BE-001 through BE-016). 189 total tests passing.
+- CAS Application backend delivered 2026-04-08. Four new modules in app/backend/: (1) filename_parser.py -- tolerant, content-aware filename parser using vault metadata_extraction config. Segment recognition (date via YYYY-MM-DD, version via v-prefix from right, codes via known_code_patterns, project via positional heuristic). Two-phase doc_type resolution (keyword_to_doc_type before code_to_doc_type). Case-sensitive code pattern matching. (2) edge_inference.py -- two-phase edge inference engine. Pre-ingest: builds edge plan from parsed metadata + existing vault documents. Two active methods: version_chain (Tier 1, supersedes, linear chain with normalized version tuples) and filename_code_match (Tier 2, covers, workflow-to-content direction only). Post-ingest: resolves file paths to document IDs, Tier 1 via link(), Tier 2 via staging insertion, drops edges for failed ingestions. (3) scan.py -- directory scan service with recursive walk (configurable depth), adapter detection by extension, SHA-256 hashing, filename parsing, and bulk hash-check against vault for new/modified/unchanged status. (4) router.py -- FastAPI router on /app/ prefix: POST /app/scan returns files with parsed metadata and status; POST /app/ingest streams per-file progress via SSE with two-phase edge inference and summary event. SAGE modifications: IngestRequest.metadata field added to Pydantic model; ingestion service applies caller-supplied metadata (title, version_label, project, doc_type, codes->tags) after document creation; GraphStore.find_documents_by_title() added for version chain lookups; app backend router mounted in app factory. Schema correction: known_code_patterns matching changed from case-insensitive to case-sensitive. 43 tests passing (EI-001 through EI-030, BE-017 through BE-033). 232 total tests passing.
 
 ### 11. PIM Health Instance (v0.1)
 
@@ -259,7 +260,7 @@
 24. ~~CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata)~~ (completed 2026-04-08, 6 endpoint groups, 16 tests)
 25. ~~Formal Substrate v1.2 update: edge inference schema changes (known_code_patterns, keyword_to_doc_type, IngestRequest.metadata)~~ (completed 2026-04-08)
 26. ~~Test Plan v0.8: edge inference and revised app backend test specs (30 new EI tests + 5 revised/new BE tests)~~ (completed 2026-04-08)
-27. CAS Application: Application backend (scan with filename parsing, batch ingest with edge inference and SSE) ← **next**
-28. CAS Application: MCP tools for all new endpoints (9 SAGE + app tools)
+27. ~~CAS Application: Application backend (scan with filename parsing, batch ingest with edge inference and SSE)~~ (completed 2026-04-08, 4 modules, 43 tests)
+28. CAS Application: MCP tools for all new endpoints (9 SAGE + app tools) ← **next**
 29. CAS Application: Frontend production code with API integration
 30. Working Code: ROOT Harness implementation
