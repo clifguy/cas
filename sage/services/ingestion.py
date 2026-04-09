@@ -289,7 +289,7 @@ class IngestionService:
         """
         KNOWN_FIELDS = {
             "title", "version_label", "project", "doc_type",
-            "authority_scope", "date",
+            "authority_scope",
         }
         updates: dict = {}
         for key, value in metadata.items():
