@@ -300,6 +300,9 @@ class IngestionService:
             elif key == "codes":
                 # codes stored as comma-separated string -> tags list
                 updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
+        # Default to "misc" when no doc_type was resolved by the caller
+        if "doc_type" not in updates:
+            updates["doc_type"] = "misc"
         return updates
 
     def _chunk_projection(

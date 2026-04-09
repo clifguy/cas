@@ -45,6 +45,7 @@ def _pim_metadata_extraction():
         "filename_extraction": {
             "pattern": "{date}_{project}_{code}_{title}_{version}",
             "separator": "_",
+            "project_identifier": "PIM",
             "segment_fields": {
                 "date": "doc_date",
                 "project": "project",

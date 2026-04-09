@@ -71,10 +71,9 @@ class FilenameParser:
         # code_to_doc_type rules (evaluated second)
         self._code_rules = fe.get("code_to_doc_type", [])
 
-        # Known project identifiers (from segment_fields if configured)
-        self._project_id: str | None = fe.get("segment_fields", {}).get(
-            "project"
-        )
+        # Explicit project identifier (e.g. "PIM") for disambiguating
+        # the first segment from codes during parsing.
+        self._project_id: str | None = fe.get("project_identifier")
 
     def parse(self, filename_stem: str) -> ParsedMetadata:
         """Parse a filename stem (no extension) into structured metadata.
@@ -121,13 +120,22 @@ class FilenameParser:
         project: str | None = None
         codes: list[str] = []
 
-        # Project: first short uppercase segment.  Extracted positionally
-        # before code detection so that "PIM" is not consumed as a code.
+        # Project vs code: the first short uppercase segment could be
+        # either a project identifier (PIM) or a code (PV07).  When
+        # project_identifier is configured, use it for an exact match.
+        # Otherwise fall back to the original heuristic (first short
+        # uppercase segment that is not a code).
         if remaining and len(remaining[0]) <= 5 and remaining[0].isupper():
-            project = remaining[0]
+            if (self._project_id
+                    and remaining[0].upper() == self._project_id.upper()):
+                project = remaining[0]
+            elif self._is_code(remaining[0]):
+                codes.append(remaining[0])
+            else:
+                project = remaining[0]
             remaining = remaining[1:]
 
-        # Codes: via known_code_patterns
+        # Codes: via known_code_patterns (remaining segments)
         still_remaining: list[str] = []
         for seg in remaining:
             if self._is_code(seg):
@@ -180,7 +188,14 @@ class FilenameParser:
             if rule_code is None:
                 continue
 
-            matching_codes = [c for c in codes if c.upper() == rule_code.upper()]
+            # Prefix match: rule code "PV" matches extracted codes PV01,
+            # PV07, etc.  Exact-match rules (REF, PVMaster) naturally
+            # work because startswith covers equality.  Order in the
+            # config controls precedence (PVMaster before PV).
+            matching_codes = [
+                c for c in codes
+                if c.upper().startswith(rule_code.upper())
+            ]
             if not matching_codes:
                 continue
 
