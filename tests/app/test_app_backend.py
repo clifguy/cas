@@ -285,6 +285,69 @@ class TestFilenameParserDocType:
 
 
 # ---------------------------------------------------------------------------
+# 2c. Filename Parser: Source Type Constraint on Doc Types
+# ---------------------------------------------------------------------------
+
+
+class TestFilenameParserSourceTypeConstraint:
+    """Tests for source_types constraint on doc_type definitions.
+
+    When a doc_type has a source_types list, it should only be resolved
+    for files whose adapter matches. Non-matching adapters skip the rule.
+    """
+
+    def _parser(self):
+        doc_types = [
+            {"value": "patent_draft", "source_types": ["docx"]},
+            {"value": "technical_disclosure", "source_types": ["docx"]},
+            {"value": "checklist"},  # no constraint
+            {"value": "report"},
+            {"value": "glossary"},
+        ]
+        return FilenameParser(_pim_metadata_extraction(), doc_types=doc_types)
+
+    def test_constrained_doc_type_matches_adapter(self):
+        """PV code resolves to patent_draft when adapter is docx."""
+        p = self._parser()
+        result = p.parse("PIM_PV06_Claim-Set_v6", adapter="docx")
+        assert result.doc_type == "patent_draft"
+
+    def test_constrained_doc_type_skipped_for_wrong_adapter(self):
+        """PV code does not resolve to patent_draft for markdown adapter."""
+        p = self._parser()
+        result = p.parse("PIM_PV06_Terminology_Audit_v1_0", adapter="markdown")
+        assert result.doc_type != "patent_draft"
+
+    def test_constrained_doc_type_skipped_for_no_adapter(self):
+        """PV code does not resolve to patent_draft when adapter is None."""
+        p = self._parser()
+        result = p.parse("PIM_PV06_SomeFile_v1", adapter=None)
+        assert result.doc_type != "patent_draft"
+
+    def test_unconstrained_doc_type_any_adapter(self):
+        """Doc type without source_types resolves for any adapter."""
+        p = self._parser()
+        r1 = p.parse("PIM_PV06_Checklist_v3", adapter="markdown")
+        assert r1.doc_type == "checklist"
+        r2 = p.parse("PIM_PV06_Checklist_v3", adapter="docx")
+        assert r2.doc_type == "checklist"
+
+    def test_no_doc_types_config_ignores_constraint(self):
+        """Parser without doc_types config behaves as before (no constraint)."""
+        p = FilenameParser(_pim_metadata_extraction())
+        result = p.parse("PIM_PV06_Claim-Set_v6", adapter="markdown")
+        assert result.doc_type == "patent_draft"  # no constraint applied
+
+    def test_constrained_doc_type_matches_with_explicit_adapter(self):
+        """Constraint only passes when adapter explicitly matches."""
+        p = self._parser()
+        r_docx = p.parse("PIM_TD08_Analysis_v1", adapter="docx")
+        assert r_docx.doc_type == "technical_disclosure"
+        r_md = p.parse("PIM_TD08_Analysis_v1", adapter="markdown")
+        assert r_md.doc_type != "technical_disclosure"
+
+
+# ---------------------------------------------------------------------------
 # 2b. Filename Parser: Pre-split Date/Version Extraction
 # ---------------------------------------------------------------------------
 

@@ -112,7 +112,12 @@ async def scan_directory(
     Returns:
         (scan_results, warnings): Results for each file, plus permission warnings.
     """
-    parser = FilenameParser(vault_config.metadata_extraction)
+    doc_types_raw = [
+        {"value": dt.value, "source_types": dt.source_types}
+        for dt in vault_config.document_types.doc_types
+        if dt.source_types is not None
+    ] or None
+    parser = FilenameParser(vault_config.metadata_extraction, doc_types=doc_types_raw)
 
     # Walk directory
     file_paths, warnings = _walk_directory(directory, max_depth)
@@ -146,7 +151,7 @@ async def scan_directory(
     # Build results
     results: list[ScanResult] = []
     for path, file_hash, adapter, mtime in file_infos:
-        parsed = parser.parse(path.stem)
+        parsed = parser.parse(path.stem, adapter=adapter)
 
         if adapter is None:
             status = "no_adapter"

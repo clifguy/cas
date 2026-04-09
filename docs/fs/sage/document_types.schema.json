@@ -29,6 +29,15 @@
           "description": {
             "type": "string",
             "description": "Brief description of what this document type represents in the domain."
+          },
+          "source_types": {
+            "type": "array",
+            "description": "Optional constraint restricting this doc_type to files ingested via specific source adapters. When present, filename-based doc_type resolution skips this type for files whose adapter is not in the list. Omit for doc_types valid across all adapters.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "uniqueItems": true
           }
         }
       }

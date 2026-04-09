@@ -56,6 +56,7 @@ class DocTypeEntry(BaseModel):
     value: str
     label: str
     description: str | None = None
+    source_types: list[str] | None = None
 
 
 class DocumentTypesConfig(BaseModel):

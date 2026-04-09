@@ -59,7 +59,11 @@ def normalize_version(version_str: str) -> tuple[int, int, int]:
 class FilenameParser:
     """Parse filenames using vault metadata_extraction config."""
 
-    def __init__(self, metadata_extraction: dict) -> None:
+    def __init__(
+        self,
+        metadata_extraction: dict,
+        doc_types: list[dict] | None = None,
+    ) -> None:
         fe = metadata_extraction.get("filename_extraction", {})
         self._separator = fe.get("separator", "_")
 
@@ -78,7 +82,14 @@ class FilenameParser:
         # the first segment from codes during parsing.
         self._project_id: str | None = fe.get("project_identifier")
 
-    def parse(self, filename_stem: str) -> ParsedMetadata:
+        # Source type constraints from doc_type definitions. Maps
+        # doc_type value -> allowed adapter list (or None if unconstrained).
+        self._source_type_constraints: dict[str, list[str] | None] = {}
+        if doc_types:
+            for dt in doc_types:
+                self._source_type_constraints[dt["value"]] = dt.get("source_types")
+
+    def parse(self, filename_stem: str, adapter: str | None = None) -> ParsedMetadata:
         """Parse a filename stem (no extension) into structured metadata.
 
         Extraction proceeds in two phases:
@@ -156,7 +167,7 @@ class FilenameParser:
         )
 
         # Resolve doc_type
-        doc_type = self._resolve_doc_type(title, codes)
+        doc_type = self._resolve_doc_type(title, codes, adapter)
 
         return ParsedMetadata(
             title=title,
@@ -171,8 +182,24 @@ class FilenameParser:
         """Check if a segment matches any known_code_pattern."""
         return any(p.match(segment) for p in self._code_patterns)
 
+    def _is_allowed_doc_type(self, doc_type: str, adapter: str | None) -> bool:
+        """Check if doc_type is allowed for the given adapter.
+
+        Returns True if no constraints are configured for this doc_type.
+        When constraints exist, the adapter must be in the allowed list.
+        A None adapter (no adapter matched) fails any constraint check,
+        since files without a recognized adapter cannot satisfy a
+        source_type requirement.
+        """
+        allowed = self._source_type_constraints.get(doc_type)
+        if allowed is None:
+            return True
+        if adapter is None:
+            return False
+        return adapter in allowed
+
     def _resolve_doc_type(
-        self, title: str, codes: list[str]
+        self, title: str, codes: list[str], adapter: str | None = None
     ) -> str | None:
         """Resolve doc_type: keyword_to_doc_type first, then code_to_doc_type."""
         # Phase 1: keyword_to_doc_type (EI-009)
@@ -181,7 +208,9 @@ class FilenameParser:
             segment_name = rule.get("segment", "title")
             if segment_name == "title" and keyword:
                 if keyword.lower() in title.lower():
-                    return rule["doc_type"]
+                    candidate = rule["doc_type"]
+                    if self._is_allowed_doc_type(candidate, adapter):
+                        return candidate
 
         # Phase 2: code_to_doc_type (EI-010)
         # Compound keys first (rules with title_contains or segment_match),
@@ -216,6 +245,8 @@ class FilenameParser:
                 # segment_match is present but we can't evaluate it.
                 continue
 
-            return rule["doc_type"]
+            candidate = rule["doc_type"]
+            if self._is_allowed_doc_type(candidate, adapter):
+                return candidate
 
         return None
