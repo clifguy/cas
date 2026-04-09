@@ -92,4 +92,13 @@ MIGRATIONS = [
     "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;",
 ]
 
-ALL_DDL = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE, *INDEXES]
+TABLES = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE]
+
+# Indexes and other DDL that depend on columns added by MIGRATIONS.
+# Must run AFTER migrations so that indexes on new columns (e.g.,
+# metadata_confirmed) succeed against existing databases where
+# CREATE TABLE IF NOT EXISTS was a no-op.
+POST_MIGRATION_DDL = INDEXES
+
+# Legacy alias used by tests and graph_store prior to ordering fix.
+ALL_DDL = [*TABLES, *INDEXES]

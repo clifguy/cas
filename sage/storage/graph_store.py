@@ -16,7 +16,7 @@ from typing import Any, Callable, TypeVar
 
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, UserType
 from sage.models.schemas import Document, Edge, StagingEdge, User
-from sage.storage.migrations import ALL_DDL, MIGRATIONS
+from sage.storage.migrations import MIGRATIONS, POST_MIGRATION_DDL, TABLES
 
 T = TypeVar("T")
 
@@ -59,14 +59,18 @@ class GraphStore:
 
     def _initialize_sync(self) -> None:
         conn = self._get_connection()
-        for ddl in ALL_DDL:
+        # 1. Create tables (IF NOT EXISTS -- no-op for existing databases)
+        for ddl in TABLES:
             conn.execute(ddl)
-        # Apply ALTER TABLE migrations idempotently for existing databases
+        # 2. Apply ALTER TABLE migrations so new columns exist before indexes
         for migration in MIGRATIONS:
             try:
                 conn.execute(migration)
             except sqlite3.OperationalError:
                 pass  # Column already exists
+        # 3. Create indexes (may reference columns added by migrations)
+        for ddl in POST_MIGRATION_DDL:
+            conn.execute(ddl)
         conn.commit()
 
     async def close(self) -> None:
