@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.7",
+  "manifest_version": "0.8",
   "manifest_date": "2026-04-08",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -119,9 +119,9 @@
         "docs/ref/2026-04-08_CAS_REF_App-Spec_v0_4.docx",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 30,
+      "test_count": 35,
       "decision_date": "2026-04-08",
-      "notes": "New SAGE API endpoints (vault listing 2, vault statistics 4, hash-check 3, staging edges 4, pending metadata 2, pipeline status filter 1) and application backend endpoints (scan 5, batch ingest via SSE 7, conventions 2)."
+      "notes": "New SAGE API endpoints (vault listing 2, vault statistics 4, hash-check 3, staging edges 4, pending metadata 2, pipeline status filter 1) and application backend endpoints (scan 5, batch ingest via SSE 7, edge inference integration 3, conventions 2). BE-018 revised for parsed metadata in scan results. BE-025 revised for metadata dict in ingest calls. BE-029/030 renumbered to BE-034/035."
     },
     {
       "path": "tests/app/mcp_tests.md",
@@ -135,6 +135,20 @@
       "test_count": 25,
       "decision_date": "2026-04-08",
       "notes": "9 new MCP tools: sage_list_vaults (2), sage_vault_stats (3), sage_hash_check (2), sage_list_staging_edges (2), sage_confirm/dismiss_staging_edge (3), sage_pending_metadata (2), app_scan_directory (4), app_batch_ingest (4), cross-cutting conventions (3). Single-server topology, sync-with-progress for batch ingest."
+    },
+    {
+      "path": "tests/app/edge_inference_tests.md",
+      "tier": 2,
+      "title": "CAS Application Edge Inference Tests",
+      "status": "specified",
+      "covers": [
+        "docs/fs/sage/metadata_extraction.schema.json",
+        "docs/fs/sage/edge_inference.schema.json",
+        "docs/fs/sage/sage_core_api.openapi.yaml"
+      ],
+      "test_count": 30,
+      "decision_date": "2026-04-08",
+      "notes": "Filename parser (12 tests: segment recognition, date/version/code detection, doc_type resolution via keyword_to_doc_type and code_to_doc_type), version_chain inference (6 tests: normalization, linear chain, grouping by title, existing vault documents, null version exclusion), filename_code_match inference (6 tests: workflow-to-content direction, workflow-to-workflow exclusion, cross-batch matching, multi-code edges), two-phase orchestration (6 tests: pre-ingest edge plan, post-ingest resolution, tier-based creation, failed ingestion handling)."
     }
   ],
   "fixture_directories": {
@@ -176,6 +190,11 @@
       "version": "0.7",
       "date": "2026-04-08",
       "summary": "CAS Application MCP tool test specifications. 25 tests (TEST-APP-MCP-001 through MCP-025) covering 9 new MCP tools added to sage/mcp_server.py: sage_list_vaults (2 tests), sage_vault_stats (3 tests), sage_hash_check (2 tests), sage_list_staging_edges (2 tests), sage_confirm/dismiss_staging_edge (3 tests), sage_pending_metadata (2 tests), app_scan_directory (4 tests), app_batch_ingest (4 tests), cross-cutting conventions (3 tests). Encodes design decisions for single-server topology (SAGE + app tools share vault registry), synchronous batch ingest with MCP progress notifications, and naming prefix convention (sage_* vs app_*)."
+    },
+    {
+      "version": "0.8",
+      "date": "2026-04-08",
+      "summary": "Edge inference and revised app backend test specifications. New file: tests/app/edge_inference_tests.md with 30 tests (TEST-APP-EI-001 through EI-030) across 5 sections: filename parser segment recognition (8 tests), doc_type resolution (4 tests), version_chain inference (6 tests), filename_code_match inference (6 tests), two-phase orchestration (6 tests). Encodes design decisions for tolerant filename parser (all segments nullable except title, known_code_patterns from vault config, keyword_to_doc_type precedence over code_to_doc_type), linear version chains (immediate predecessor only), directed workflow-to-content code matching, and pre-ingest/post-ingest edge plan separation. Backend tests revised: TEST-APP-BE-018 updated for parsed_metadata in scan results, TEST-APP-BE-025 updated for metadata dict in SAGE ingest calls, 3 new tests (BE-031 through BE-033) for edge inference integration in batch ingest, convention tests renumbered to BE-034/BE-035. Backend test count: 30 -> 35."
     }
   ]
 }

@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v27
+**Version:** v29
 **Last updated:** 2026-04-08
 
 ---
@@ -16,7 +16,7 @@
 | 5 | ADR Store | v1.10 (schema), 14 ADRs | Development | — |
 | 6 | Formatting Standards | v1.0 | Development | — |
 | 7 | Formal Substrate | v1.2 | Development | — |
-| 8 | Test Plan | v0.7 (tier 1 + SAGE tier 2 behavioral + adapter + provenance + app + MCP) | Development | — |
+| 8 | Test Plan | v0.8 (tier 1 + SAGE tier 2 behavioral + adapter + provenance + app + MCP + edge inference) | Development | — |
 | 9 | CAS Application Spec | v0.4 | Development | — |
 | 10 | Working Code | — | Planned | — |
 
@@ -87,6 +87,7 @@
 - v1.0 delivered 2026-03-31. API contracts and data model schemas resolving all five deferred items from v0.1: (1) SAGE Core API OpenAPI specification (sage/sage_core_api.openapi.yaml), 14 operations across 7 tags, developed against SAGE Architecture Reference v1.4 Section 7. (2) ROOT Harness Orchestration API OpenAPI specification (root_harness/orchestration_api.openapi.yaml), 9 operations across 5 tags, developed against ROOT Harness Architecture Reference v1.0 Section 2.5. (3) Event stream schema (root_harness/event_stream.schema.json), 15 event types in 7 categories per CAS-ADR-013. (4) Interrupt contracts and approval policy schema (root_harness/interrupt.schema.json), covering InterruptDescriptor, ApproveRequest, ApprovalPolicy, and supporting types. (5) Decision log schema (sage/decision_log.schema.json), three entry categories per CAS-ADR-012. Promoted to v1.0: all contributions listed in SAGE Architecture Reference Section 8.3 and ROOT Harness Architecture Reference Section 8.2 are present with no known gaps.
 - v1.1 delivered 2026-04-05. SAGE tier 2 behavioral design decisions applied. Seven schema changes across sage_core_api.openapi.yaml and vault_config.schema.json: (1) Document.indexed_at made nullable (null until indexing completes). (2) Document.pipeline_error added (failure description). (3) Edge.id added (auto-generated, enables duplicate edge disambiguation). (4) TraversalNode.edge_count added (deduplication signal). (5) IngestRequest.force added (duplicate detection bypass for failure recovery). (6) SetLifecycleResponse schema added with optional warnings array. (7) retrieval_health section added to vault config. Also: 409 duplicate content response on ingest endpoint; abstraction.enabled description updated for strict quality gate. PIM Health config validated against updated schema.
 - v1.2 delivered 2026-04-06. Source file provenance. Added Document.source_modified_at (nullable date-time) to sage_core_api.openapi.yaml. Captures the source file's filesystem modification timestamp at ingestion time, extracted by source adapters from st_mtime. Distinct from created_at (SAGE ingestion timestamp). Null for non-file sources or adapters that do not provide it.
+- v1.2 updated 2026-04-08. Edge inference schema support. Three changes: (1) metadata_extraction.schema.json: added known_code_patterns (regex list for code segment recognition during tolerant filename parsing) and keyword_to_doc_type (keyword-based doc_type mapping evaluated before code_to_doc_type, resolves mis-classification of workflow artifacts containing domain-specific codes). Updated filename_extraction description to document tolerant parser behavior. (2) sage_core_api.openapi.yaml: added metadata property to IngestRequest (optional string-valued object for caller-supplied metadata fields from parsed filename segments). (3) manifest.json version and revision history updated.
 - No further pending corrections or revisions identified.
 
 ### 8. Test Plan (v0.3)
@@ -100,6 +101,7 @@
 - v0.5 delivered 2026-04-06. Source file provenance test specifications. 4 behavioral tests (BH-049 through BH-052) covering source_modified_at on new ingestion, force re-ingestion update, graph store round-trip, and created_at/source_modified_at distinction. 1 adapter test (AD-034) covering markdown adapter extraction of st_mtime into ProjectionResult.metadata. Test plan manifest updated to v0.5.
 - v0.6 delivered 2026-04-08. CAS Application test specifications. 55 frontend UI behavior tests (TEST-APP-UI-001 through UI-055) covering all 6 views: navigation and vault selector (3), Dashboard (6), Ingest four-step workflow (11), Metadata Review (5), Edge Review (6), Search (5), Document Detail (6), Graph Explorer (13). 30 backend tests (TEST-APP-BE-001 through BE-030) covering 6 new SAGE API endpoints (vault listing, vault statistics, hash-check, staging edges, pending metadata, pipeline status filter on discover) and 2 application backend endpoints (directory scan, batch ingest via SSE). Encodes design decisions for: SSE event format (structured JSON with event_type, file_index, stage, status), scan depth control (optional max_depth, default unlimited), hash algorithm alignment (SHA-256 matching SAGE), per-file error isolation (batch continues after individual failures), endpoint URL prefix separation (/app/ vs /sage_vaults/). Test plan manifest updated to v0.6.
 - v0.7 delivered 2026-04-08. CAS Application MCP tool test specifications. 25 tests (TEST-APP-MCP-001 through MCP-025) covering 9 new MCP tools added to sage/mcp_server.py: sage_list_vaults (2 tests), sage_vault_stats (3 tests), sage_hash_check (2 tests), sage_list_staging_edges (2 tests), sage_confirm/dismiss_staging_edge (3 tests), sage_pending_metadata (2 tests), app_scan_directory (4 tests), app_batch_ingest (4 tests), cross-cutting conventions (3 tests). Encodes design decisions for single-server topology (SAGE + app tools share vault registry), synchronous batch ingest with MCP progress notifications, and naming prefix convention (sage_* vs app_*). Test plan manifest updated to v0.7.
+- v0.8 delivered 2026-04-08. Edge inference and revised app backend test specifications. New file: tests/app/edge_inference_tests.md with 30 tests (TEST-APP-EI-001 through EI-030) across 5 sections: filename parser segment recognition (8 tests), doc_type resolution (4 tests), version_chain inference (6 tests), filename_code_match inference (6 tests), two-phase orchestration (6 tests). Encodes design decisions for tolerant filename parser (all segments nullable except title, known_code_patterns from vault config, keyword_to_doc_type precedence), linear version chains (immediate predecessor only), directed workflow-to-content code matching, and pre-ingest/post-ingest edge plan separation. Backend tests revised: TEST-APP-BE-018 updated for parsed_metadata in scan results, TEST-APP-BE-025 updated for metadata dict in SAGE ingest calls, 3 new tests (BE-031 through BE-033) for edge inference integration, convention tests renumbered to BE-034/BE-035. Backend test count: 30 -> 35. Test plan manifest updated to v0.8.
 - Deferred to step 20: pipeline-level bypass for documents with existing abstract sections (e.g., patent ABSTRACT headings). Vault-configurable option to prefer existing abstracts over LLM generation.
 - Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
@@ -145,6 +147,17 @@
 - MCP tool test specifications delivered 2026-04-08 (Test Plan v0.7): 25 tests for 9 new tools. See Test Plan section above for details.
 - SAGE API additions delivered 2026-04-08. All 6 endpoint groups implemented (vault listing, stats, hash-check, staging edges, pending metadata, pipeline status filter on discover). 16 tests passing (TEST-APP-BE-001 through BE-016). See Working Code section for full details.
 - Pending: Application backend endpoints (scan, batch ingest with SSE). Specified in tests/app/backend_tests.md (TEST-APP-BE-017 through BE-030).
+- **Approved edge inference design decisions (2026-04-08):**
+  - Edge inference is an app backend service, not a SAGE Core API operation. SAGE provides the state substrate (link() for Tier 1, staging edges for Tier 2). The app owns batch-level context and inference logic.
+  - The inference engine operates on parsed filename metadata, not raw filenames. The filename parser is a tolerant, content-aware parser: all segments nullable except title. Recognizes date (YYYY-MM-DD pattern), version (v-prefix from right), project (known identifier), and codes (from known_code_patterns list). Files without date codes use st_mtime as fallback. Codes extracted as a list (documents may carry multiple codes with different roles).
+  - Two-phase inference for bulk ingest: (1) pre-ingest analysis builds an edge plan from the full file manifest + existing vault documents; (2) post-ingest edge creation resolves filenames to document IDs and executes link()/staging insertion. No edge preview in first pass.
+  - Phase 1 active methods: version_chain (Tier 1, supersedes) and filename_code_match (Tier 2, covers). Deferred to Phase 2: filename_co_location (pending ZIP adapter), content_reference. re_ingestion is N/A for initial bulk (requires pre-existing sync_target edges).
+  - Version comparison: normalize to (major, minor, patch) tuple. v7 = (7,0,0), v10_2 = (10,2,0), v8_4_1 = (8,4,1). Linear chain only: each version supersedes its immediate actual predecessor, not all prior versions.
+  - filename_code_match fires between workflow artifacts (checklist, work_plan, session_context, template) and content artifacts (patent_draft, technical_disclosure, glossary, etc.) sharing a code. Direction: workflow artifact is source, content artifact is target. Workflow-to-workflow pairs sharing a code get no automatic edge.
+  - Existing vault documents included in the comparison set. Parsed metadata segments (codes, version, date, project, doc_type) stored as SAGE document metadata via extended IngestRequest.
+  - Scan result shape: file_path, file_hash, source_modified_at, adapter, parsed metadata (title, date, project, codes list, version, doc_type), sage_status (new/modified/unchanged).
+  - IngestRequest extended with metadata dict (single call per document, not ingest + update_metadata).
+  - Two Formal Substrate schema changes required: (1) known_code_patterns list in metadata_extraction (code recognition independent of doc_type mapping); (2) keyword_to_doc_type list in metadata_extraction (keyword match evaluated before code_to_doc_type, resolves mis-classification of workflow artifacts containing patent codes).
 
 ### 10. Working Code (In Progress)
 
@@ -199,6 +212,8 @@
 
 ## Flagged for Discussion
 
+- **Supersedes edge chain specification (architecture correction).** The SAGE Architecture Reference does not specify whether supersedes edges form a linear chain (v7→v6→v5) or an exhaustive graph (v7→v6, v7→v5, v7→v4, ...). Design decision 2026-04-08: linear chain only. Each version supersedes its immediate actual predecessor. The architecture reference should be corrected to state this explicitly.
+- **filename_co_location deferred to Phase 2.** The bundles_with inference method via filename_co_location is deferred until a ZIP adapter is available. The primary use case (patent draft bundled with its figure package) requires ZIP support. Flag for inclusion when ZIP adapter is implemented.
 - **Self-evaluation scope.** Steward self-review of plans and checklists appears sound (validated by Clif's experience across hundreds of PIM sessions). Independent evaluation may be needed for finished artifacts, where the producing agent has accumulated context-level commitment to its own decisions. The failure mode is strongest when evaluating effort-intensive completed work, not lightweight pre-execution plans. Needs further analysis to determine where CAS draws the line.
 - **Formal Substrate as plan-shape authority (partially resolved).** The Formal Substrate defines the mechanism for valid plan shape: the workflow schema's state_schema section specifies required fields, types, and constraints for each workflow's state dictionary. ROOT Harness enforces plan validity at execution time by validating initial state against the state_schema before dispatching. The separation-of-concerns pattern holds: Formal Substrate says "plans must have this shape," ROOT Harness says "I won't run plans that don't have this shape." Remaining: the specific plan-shape constraints (which fields constitute a valid plan, what success criteria look like) are defined per domain instantiation. PIM Health will be the first test of whether the mechanism is expressive enough.
 
@@ -242,7 +257,9 @@
 23. ~~CAS Application: Test spec for all views + application backend endpoints~~ (completed 2026-04-08, 55 UI tests + 30 backend tests)
 23a. ~~CAS Application: MCP tool test specs for 9 new tools (7 SAGE + 2 app)~~ (completed 2026-04-08, 25 tests)
 24. ~~CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata)~~ (completed 2026-04-08, 6 endpoint groups, 16 tests)
-25. CAS Application: MCP tools for new SAGE endpoints + app backend (9 tools in sage/mcp_server.py) ← **next**
-26. CAS Application: Application backend (scan, batch ingest with SSE)
-27. CAS Application: Frontend production code with API integration
-28. Working Code: ROOT Harness implementation
+25. ~~Formal Substrate v1.2 update: edge inference schema changes (known_code_patterns, keyword_to_doc_type, IngestRequest.metadata)~~ (completed 2026-04-08)
+26. ~~Test Plan v0.8: edge inference and revised app backend test specs (30 new EI tests + 5 revised/new BE tests)~~ (completed 2026-04-08)
+27. CAS Application: Application backend (scan with filename parsing, batch ingest with edge inference and SSE) ← **next**
+28. CAS Application: MCP tools for all new endpoints (9 SAGE + app tools)
+29. CAS Application: Frontend production code with API integration
+30. Working Code: ROOT Harness implementation

@@ -419,18 +419,21 @@ POST /app/scan
 **Rationale:** Server-side validation is required because the browser cannot
 access the local filesystem. Fast failure prevents wasted work.
 
-### TEST-APP-BE-018: POST /app/scan returns file list with status
+### TEST-APP-BE-018: POST /app/scan returns file list with status and parsed metadata
 
-**Artifact:** App Spec v0.4, Section 6.2 (Scan Preview)
+**Artifact:** App Spec v0.4, Section 6.2 (Scan Preview); project tracker (edge
+inference design decisions, scan result shape)
 **Category:** app_backend
 
-**Decision:** The scan endpoint walks the directory recursively (unlimited
-depth by default), matches files against vault adapters by extension, hashes
-each file, and checks hashes against SAGE (via hash-check endpoint). Returns
-a list of files with status.
+**Decision:** The scan endpoint walks the directory recursively (unlimited depth
+by default), matches files against vault adapters by extension, hashes each file,
+checks hashes against SAGE (via hash-check endpoint), and parses filenames using
+the vault's metadata_extraction config. Returns a list of files with status and
+parsed metadata.
 
 **Precondition:** Directory with files matching and not matching vault adapters.
-Some files already ingested.
+Some files already ingested. Vault has metadata_extraction config with
+known_code_patterns and keyword_to_doc_type.
 
 **Input:**
 ```json
@@ -444,16 +447,30 @@ POST /app/scan
 **Expected:**
 - 200 response
 - Body is an array of scan result objects
-- Each object includes: `filename`, `path`, `size`, `detected_adapter`, `status`
-- Status is one of: "new", "modified", "unchanged", "no_adapter"
-- Files with no adapter match: `detected_adapter` is null, `status` is "no_adapter"
-- New files (hash not in vault): `status` is "new"
-- Modified files (hash differs from stored): `status` is "modified"
-- Unchanged files (hash matches stored): `status` is "unchanged"
+- Each object includes:
+  - `file_path`: absolute path to the file
+  - `file_hash`: `"sha256:..."` content hash
+  - `source_modified_at`: ISO 8601 timestamp from st_mtime
+  - `adapter`: detected adapter name (or null)
+  - `parsed_metadata`: object containing:
+    - `title`: string (always present)
+    - `date`: string or null (YYYY-MM-DD)
+    - `project`: string or null
+    - `codes`: array of strings (may be empty)
+    - `version`: string or null (raw v-prefixed string)
+    - `doc_type`: string or null (resolved via keyword_to_doc_type then
+      code_to_doc_type)
+  - `sage_status`: one of "new", "modified", "unchanged", "no_adapter"
+- Files with no adapter match: `adapter` is null, `sage_status` is "no_adapter",
+  `parsed_metadata` still populated (parsing is independent of adapter detection)
+- New files (hash not in vault): `sage_status` is "new"
+- Modified files (path exists in vault but hash differs): `sage_status` is
+  "modified"
+- Unchanged files (hash matches stored): `sage_status` is "unchanged"
 
 **Rationale:** The scan endpoint encapsulates the full scan workflow (walk,
-match, hash, check) in a single server-side operation, which the browser cannot
-perform directly.
+match, hash, check, parse) in a single server-side operation. Parsed metadata
+enables the edge inference engine to build an edge plan before ingestion begins.
 
 ### TEST-APP-BE-019: POST /app/scan respects optional depth limit
 
@@ -619,28 +636,35 @@ edges_staged_by_type, abstracts_generated, abstracts_deferred, error_count.
 Results Summary without requiring a second API call. Stream closure signals
 completion to the EventSource client.
 
-### TEST-APP-BE-025: Ingestion calls SAGE single-document ingest per file
+### TEST-APP-BE-025: Ingestion calls SAGE single-document ingest with metadata per file
 
-**Artifact:** Project tracker (application backend decisions)
+**Artifact:** Project tracker (application backend decisions); FS v1.2
+(IngestRequest.metadata)
 **Category:** app_backend
 
 **Decision:** The application backend calls SAGE's existing single-document
 ingest endpoint (`POST /sage_vaults/{vault_id}/documents`) for each selected
-file in sequence. Batch ingestion is application-layer orchestration, not a
-SAGE Core API operation.
+file in sequence. Each call includes the `metadata` dict populated from the
+scan result's parsed_metadata (title, date, project, codes, version, doc_type).
+Batch ingestion is application-layer orchestration, not a SAGE Core API operation.
 
-**Precondition:** Two files selected for ingestion.
+**Precondition:** Two files selected for ingestion, each with parsed_metadata
+from scan.
 
 **Input:** `POST /app/ingest` with 2 files.
 
 **Expected:**
 - SAGE ingest endpoint called twice (once per file)
-- Each call uses the detected adapter and file path
+- Each call includes `adapter`, `source` (file path), and `metadata` dict
+- metadata dict contains parsed filename segments:
+  `{ "title": "...", "date": "...", "project": "...", "codes": "PV06,CF-1",
+  "version": "v7", "doc_type": "patent_draft" }`
 - Results from each call contribute to the summary event
 
-**Rationale:** SAGE's ingest endpoint handles one document at a time (projection,
-indexing, abstraction pipeline). The application backend orchestrates the loop,
-keeping SAGE's API surface simple and composable.
+**Rationale:** The metadata dict enables single-call ingestion with filename-
+derived metadata instead of a separate ingest + update_metadata sequence.
+Codes are serialized as a comma-separated string in the metadata dict (SAGE
+metadata values are strings).
 
 ### TEST-APP-BE-026: Cancel stops processing remaining files
 
@@ -713,9 +737,110 @@ disable the button when nothing is selected). Returning 400 catches this early.
 
 ---
 
-## 9. Application Backend: Endpoint Conventions
+## 9. Application Backend: Edge Inference Integration
 
-### TEST-APP-BE-029: Application endpoints use /app/ prefix
+### TEST-APP-BE-031: Ingest endpoint accepts scan_results with parsed metadata
+
+**Artifact:** Project tracker (edge inference design decisions)
+**Category:** app_backend
+
+**Decision:** The ingest endpoint accepts the full scan result array (including
+parsed_metadata per file) rather than just file paths. This enables the two-phase
+edge inference: pre-ingest analysis uses parsed_metadata to build an edge plan
+before any SAGE ingest calls are made.
+
+**Precondition:** Scan completed with parsed metadata.
+
+**Input:**
+```json
+POST /app/ingest
+{
+  "vault_id": "pim_health",
+  "files": [
+    {
+      "file_path": "/Users/clifguy/pim_inbox/2026-03-09_PIM_PV06_Claim-Set_v6.docx",
+      "adapter": "docx",
+      "parsed_metadata": {
+        "title": "Claim-Set", "date": "2026-03-09", "project": "PIM",
+        "codes": ["PV06"], "version": "v6", "doc_type": "patent_draft"
+      }
+    },
+    {
+      "file_path": "/Users/clifguy/pim_inbox/2026-03-09_PIM_PV06_Claim-Set_v7.docx",
+      "adapter": "docx",
+      "parsed_metadata": {
+        "title": "Claim-Set", "date": "2026-03-09", "project": "PIM",
+        "codes": ["PV06"], "version": "v7", "doc_type": "patent_draft"
+      }
+    }
+  ]
+}
+```
+
+**Expected:**
+- Ingest proceeds normally with per-file SAGE calls
+- Edge inference runs after all files are ingested
+- Summary event includes edge creation counts
+
+**Rationale:** Passing parsed_metadata through the ingest request avoids
+re-parsing filenames. The scan result is the single source of parsed metadata.
+
+### TEST-APP-BE-032: Ingest runs two-phase edge inference
+
+**Artifact:** Project tracker (edge inference design decisions)
+**Category:** app_backend
+
+**Decision:** Batch ingestion executes two-phase edge inference: (1) pre-ingest
+analysis builds an edge plan from parsed metadata + existing vault documents;
+(2) post-ingest creation resolves file paths to document IDs and executes edges.
+SSE events report edge creation progress after file ingestion completes.
+
+**Precondition:** Batch with version chain and code match opportunities.
+
+**Input:** Batch with v6, v7 of Claim-Set and a PV06 Checklist.
+
+**Expected:**
+- Pre-ingest: edge plan computed (supersedes + covers edges planned)
+- File ingestion: 3 SAGE ingest calls with per-file SSE progress
+- Post-ingest: edge plan executed
+  - supersedes edges created via SAGE link()
+  - covers edges inserted into staging table
+- SSE events emitted for edge creation phase
+- Summary event includes `edges_created` and `edges_staged` counts
+
+**Rationale:** Two-phase inference ensures the edge plan is computed from the
+full manifest context (all files visible) while edge execution uses real
+document IDs from SAGE.
+
+### TEST-APP-BE-033: Summary event includes edge counts by type
+
+**Artifact:** Project tracker (edge inference design decisions)
+**Category:** app_backend
+
+**Decision:** The summary event's edge fields are broken down by edge type.
+`edges_created` reports Tier 1 edges created in the production graph.
+`edges_staged` reports Tier 2 edges inserted into the staging table.
+`edges_dropped` reports edges that could not be created due to failed
+ingestions.
+
+**Precondition:** Batch with mixed Tier 1 and Tier 2 edge results.
+
+**Input:** Batch producing 2 supersedes edges and 3 covers staging edges.
+
+**Expected:**
+Summary event includes:
+- `edges_created`: `{ "supersedes": 2 }`
+- `edges_staged`: `{ "covers": 3 }`
+- `edges_dropped`: 0
+
+**Rationale:** Type-level breakdown lets the Results Summary view show which
+kinds of edges were inferred, matching the Dashboard's by_edge_type display.
+
+---
+
+## 10. Application Backend: Endpoint Conventions
+
+### TEST-APP-BE-034: Application endpoints use /app/ prefix
 
 **Artifact:** Project tracker (approved architectural decision)
 **Category:** app_backend
@@ -737,7 +862,7 @@ instance.
 orchestration logic and SAGE's protocol-neutral Core API, supporting future
 separation into distinct services.
 
-### TEST-APP-BE-030: Application backend serves compiled React frontend
+### TEST-APP-BE-035: Application backend serves compiled React frontend
 
 **Artifact:** Project tracker (approved architectural decision)
 **Category:** app_backend

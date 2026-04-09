@@ -14,7 +14,7 @@
     },
     "filename_extraction": {
       "type": "object",
-      "description": "Stage 1: parse the source filename and map segments to metadata fields.",
+      "description": "Stage 1: parse the source filename and map segments to metadata fields. The parser is tolerant and content-aware: all segments are nullable except title. It recognizes date (YYYY-MM-DD pattern), version (v-prefix from right), project (known identifier), and codes (from known_code_patterns). Files without date codes use st_mtime as fallback. Codes are extracted as a list (documents may carry multiple codes with different roles).",
       "additionalProperties": false,
       "properties": {
         "pattern": {
@@ -33,9 +33,41 @@
             "type": "string"
           }
         },
+        "known_code_patterns": {
+          "type": "array",
+          "description": "List of regex patterns that identify code segments in filenames. The filename parser uses these to distinguish code segments from other content during tolerant parsing. Code recognition is independent of doc_type mapping: a segment matching any pattern here is classified as a code regardless of whether a code_to_doc_type or keyword_to_doc_type rule maps it. Patterns are matched case-insensitively against individual filename segments.",
+          "items": {
+            "type": "string",
+            "description": "A regular expression pattern matching a code segment value. Example: '^[A-Z]+-\\d+$' matches codes like 'PAT-001'. Example: '^[A-Z]{2,5}$' matches short uppercase codes like 'REF' or 'DISC'."
+          }
+        },
+        "keyword_to_doc_type": {
+          "type": "array",
+          "description": "Ordered list of keyword-based mapping rules from filename content to doc_type values. Evaluated BEFORE code_to_doc_type. Resolves mis-classification of workflow artifacts (checklists, work plans, session contexts, templates) that contain domain-specific codes in their filenames. A keyword match on title or other segments takes priority over code-based classification. Evaluated in order; first match wins.",
+          "items": {
+            "type": "object",
+            "required": ["keyword", "doc_type"],
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "type": "string",
+                "description": "Substring to match against the title segment (case-insensitive). Example: 'checklist' matches filenames containing 'Checklist' or 'CHECKLIST' in the title segment."
+              },
+              "segment": {
+                "type": "string",
+                "default": "title",
+                "description": "Which parsed segment to match the keyword against. Defaults to 'title'. Other values depend on the segment_fields configuration."
+              },
+              "doc_type": {
+                "type": "string",
+                "description": "The doc_type value to assign when this rule matches. Must be a value defined in document_types."
+              }
+            }
+          }
+        },
         "code_to_doc_type": {
           "type": "array",
-          "description": "Ordered list of mapping rules from filename code segments to doc_type values. Compound keys (code + title or code + other segment) take precedence over code-only mappings. Evaluated in order; first match wins.",
+          "description": "Ordered list of mapping rules from filename code segments to doc_type values. Evaluated AFTER keyword_to_doc_type. Compound keys (code + title or code + other segment) take precedence over code-only mappings. Evaluated in order; first match wins.",
           "items": {
             "type": "object",
             "required": ["doc_type"],

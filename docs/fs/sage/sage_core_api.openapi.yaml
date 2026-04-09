@@ -1181,6 +1181,21 @@ components:
             exists with the same source_path and source_content_hash).
             Returns 200 (re-processed) instead of 201 (new). The
             document ID is preserved. Use for pipeline failure recovery.
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+          description: >-
+            Caller-supplied metadata fields to merge into the document
+            record at ingestion time. Typically populated from parsed
+            filename segments (title, date, project, codes, version,
+            doc_type) by the application backend's filename parser.
+            These values participate in the standard metadata precedence
+            chain: manual entry > content extraction > filename
+            extraction > caller-supplied. Fields with null values are
+            ignored. Unknown field names are stored but have no
+            schema-enforced semantics.
 
     LinkRequest:
       type: object
