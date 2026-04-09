@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 class VaultIdentity(BaseModel):
     id: str
     name: str
+    description: str | None = None
     owner: str
     storage_root: str
     brain_root: str

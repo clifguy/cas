@@ -228,9 +228,21 @@ class VaultNotFoundError(SAGEError):
     def __init__(self, vault_id: str) -> None:
         super().__init__(
             "vault_not_found",
-            f"Vault {vault_id} not found",
+            f"Vault '{vault_id}' not found",
             404,
             {"vault_id": vault_id},
+        )
+
+
+class StagingEdgeNotFoundError(SAGEError):
+    """404: staging edge not found (already confirmed/dismissed or never existed)."""
+
+    def __init__(self, edge_id: str) -> None:
+        super().__init__(
+            "staging_edge_not_found",
+            f"Staging edge '{edge_id}' not found",
+            404,
+            {"edge_id": edge_id},
         )
 
 

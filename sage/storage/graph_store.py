@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, UserType
-from sage.models.schemas import Document, Edge, User
+from sage.models.schemas import Document, Edge, StagingEdge, User
 from sage.storage.migrations import ALL_DDL, MIGRATIONS
 
 T = TypeVar("T")
@@ -95,8 +95,9 @@ class GraphStore:
                 source_content_hash, adapter_version, created_by, created_at,
                 last_modified_by, updated_at, projected_at, indexed_at,
                 source_modified_at,
-                semantic_abstract, pipeline_status, pipeline_error, tier3_metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
+                metadata_confirmed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc.id,
                 doc.title,
@@ -121,6 +122,7 @@ class GraphStore:
                 doc.pipeline_status.value,
                 doc.pipeline_error,
                 json.dumps(doc.tier3_metadata) if doc.tier3_metadata else None,
+                1 if doc.metadata_confirmed else 0,
             ),
         )
         conn.commit()
@@ -150,6 +152,8 @@ class GraphStore:
             updates["tags"] = json.dumps(updates["tags"])
         if "tier3_metadata" in updates:
             updates["tier3_metadata"] = json.dumps(updates["tier3_metadata"])
+        if "metadata_confirmed" in updates:
+            updates["metadata_confirmed"] = 1 if updates["metadata_confirmed"] else 0
 
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values())
@@ -266,6 +270,183 @@ class GraphStore:
                 "SELECT * FROM edges WHERE target_id = ?", (target_id,)
             ).fetchall()
         return [self._row_to_edge(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Hash check (BE-007)
+    # ------------------------------------------------------------------
+
+    async def find_documents_by_hashes(
+        self, hashes: list[str]
+    ) -> dict[str, str]:
+        """Return {hash: document_id} for hashes that exist in the store."""
+        return await self._run(self._find_documents_by_hashes_sync, hashes)
+
+    def _find_documents_by_hashes_sync(self, hashes: list[str]) -> dict[str, str]:
+        if not hashes:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in hashes)
+        rows = conn.execute(
+            f"SELECT source_content_hash, id FROM documents "
+            f"WHERE source_content_hash IN ({placeholders})",
+            hashes,
+        ).fetchall()
+        return {row["source_content_hash"]: row["id"] for row in rows}
+
+    # ------------------------------------------------------------------
+    # Staging edge operations (BE-010 through BE-013)
+    # ------------------------------------------------------------------
+
+    async def list_staging_edges(self) -> list[StagingEdge]:
+        return await self._run(self._list_staging_edges_sync)
+
+    def _list_staging_edges_sync(self) -> list[StagingEdge]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT * FROM staging_edges ORDER BY created_at"
+        ).fetchall()
+        return [self._row_to_staging_edge(r) for r in rows]
+
+    async def get_staging_edge(self, edge_id: str) -> StagingEdge | None:
+        return await self._run(self._get_staging_edge_sync, edge_id)
+
+    def _get_staging_edge_sync(self, edge_id: str) -> StagingEdge | None:
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT * FROM staging_edges WHERE id = ?", (edge_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_staging_edge(row)
+
+    async def insert_staging_edge(self, edge: StagingEdge) -> None:
+        await self._run(self._insert_staging_edge_sync, edge)
+
+    def _insert_staging_edge_sync(self, edge: StagingEdge) -> None:
+        conn = self._get_connection()
+        conn.execute(
+            """INSERT INTO staging_edges
+            (id, source_id, target_id, edge_type, inference_evidence,
+             confidence_tier, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                edge.id,
+                edge.source_id,
+                edge.target_id,
+                edge.edge_type.value,
+                edge.inference_evidence,
+                edge.confidence_tier,
+                edge.created_at.isoformat(),
+            ),
+        )
+        conn.commit()
+
+    async def delete_staging_edge(self, edge_id: str) -> bool:
+        """Delete a staging edge. Returns True if it existed."""
+        return await self._run(self._delete_staging_edge_sync, edge_id)
+
+    def _delete_staging_edge_sync(self, edge_id: str) -> bool:
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "DELETE FROM staging_edges WHERE id = ?", (edge_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+    async def count_staging_edges(self) -> int:
+        return await self._run(self._count_staging_edges_sync)
+
+    def _count_staging_edges_sync(self) -> int:
+        conn = self._get_connection()
+        row = conn.execute("SELECT COUNT(*) FROM staging_edges").fetchone()
+        return row[0]
+
+    # ------------------------------------------------------------------
+    # Statistics (BE-003 through BE-005)
+    # ------------------------------------------------------------------
+
+    async def get_document_counts_by_field(
+        self, field: str
+    ) -> dict[str, int]:
+        """Return {value: count} for a given document column."""
+        return await self._run(self._get_document_counts_by_field_sync, field)
+
+    def _get_document_counts_by_field_sync(self, field: str) -> dict[str, int]:
+        # Allowlist of valid fields to prevent SQL injection
+        allowed = {"lifecycle_status", "doc_type", "source_type", "pipeline_status"}
+        if field not in allowed:
+            return {}
+        conn = self._get_connection()
+        rows = conn.execute(
+            f"SELECT {field}, COUNT(*) as cnt FROM documents "
+            f"WHERE {field} IS NOT NULL GROUP BY {field}"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def get_edge_counts_by_type(self) -> dict[str, int]:
+        return await self._run(self._get_edge_counts_by_type_sync)
+
+    def _get_edge_counts_by_type_sync(self) -> dict[str, int]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT edge_type, COUNT(*) as cnt FROM edges GROUP BY edge_type"
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def get_total_document_count(self) -> int:
+        return await self._run(self._get_total_document_count_sync)
+
+    def _get_total_document_count_sync(self) -> int:
+        conn = self._get_connection()
+        return conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+    async def get_total_edge_count(self) -> int:
+        return await self._run(self._get_total_edge_count_sync)
+
+    def _get_total_edge_count_sync(self) -> int:
+        conn = self._get_connection()
+        return conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+
+    async def get_last_ingestion_at(self) -> datetime | None:
+        return await self._run(self._get_last_ingestion_at_sync)
+
+    def _get_last_ingestion_at_sync(self) -> datetime | None:
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT MAX(created_at) FROM documents"
+        ).fetchone()
+        if row[0] is None:
+            return None
+        return datetime.fromisoformat(row[0])
+
+    async def count_documents_by_pipeline_status(
+        self, status: str
+    ) -> int:
+        return await self._run(
+            self._count_documents_by_pipeline_status_sync, status
+        )
+
+    def _count_documents_by_pipeline_status_sync(self, status: str) -> int:
+        conn = self._get_connection()
+        return conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE pipeline_status = ?",
+            (status,),
+        ).fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # Pending metadata (BE-014)
+    # ------------------------------------------------------------------
+
+    async def list_pending_metadata_documents(self) -> list[Document]:
+        """Return documents where metadata_confirmed is false."""
+        return await self._run(self._list_pending_metadata_documents_sync)
+
+    def _list_pending_metadata_documents_sync(self) -> list[Document]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE metadata_confirmed = 0"
+        ).fetchall()
+        return [self._row_to_document(r) for r in rows]
 
     # ------------------------------------------------------------------
     # Graph traversal
@@ -487,6 +668,7 @@ class GraphStore:
                 if row["tier3_metadata"]
                 else None
             ),
+            metadata_confirmed=bool(row["metadata_confirmed"]),
         )
 
     @staticmethod
@@ -499,6 +681,18 @@ class GraphStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             notes=row["notes"],
             rationale=row["rationale"],
+        )
+
+    @staticmethod
+    def _row_to_staging_edge(row: sqlite3.Row) -> StagingEdge:
+        return StagingEdge(
+            id=row["id"],
+            source_id=row["source_id"],
+            target_id=row["target_id"],
+            edge_type=EdgeType(row["edge_type"]),
+            inference_evidence=row["inference_evidence"],
+            confidence_tier=row["confidence_tier"],
+            created_at=datetime.fromisoformat(row["created_at"]),
         )
 
     @staticmethod

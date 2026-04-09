@@ -209,6 +209,9 @@ class RetrievalService:
             if filters.tags:
                 if not set(filters.tags).issubset(set(doc.tags)):
                     return False
+            if filters.pipeline_status:
+                if doc.pipeline_status.value != filters.pipeline_status:
+                    return False
 
         return True
 

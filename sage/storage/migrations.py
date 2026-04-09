@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS documents (
     semantic_abstract TEXT,           -- nullable
     pipeline_status TEXT NOT NULL DEFAULT 'projection_complete',
     pipeline_error TEXT,              -- nullable (BH-022, BH-024)
-    tier3_metadata TEXT               -- JSON, nullable
+    tier3_metadata TEXT,              -- JSON, nullable
+    metadata_confirmed INTEGER NOT NULL DEFAULT 0  -- boolean (BE-014)
 );
 """
 
@@ -57,19 +58,38 @@ CREATE TABLE IF NOT EXISTS users (
 );
 """
 
+STAGING_EDGES_TABLE = """\
+CREATE TABLE IF NOT EXISTS staging_edges (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    edge_type TEXT NOT NULL,
+    inference_evidence TEXT NOT NULL,
+    confidence_tier INTEGER NOT NULL DEFAULT 2,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES documents(id),
+    FOREIGN KEY (target_id) REFERENCES documents(id)
+);
+"""
+
 INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_source_path ON documents(source_path);",
     "CREATE INDEX IF NOT EXISTS idx_documents_source_hash ON documents(source_content_hash);",
     "CREATE INDEX IF NOT EXISTS idx_documents_lifecycle ON documents(lifecycle_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_pipeline ON documents(pipeline_status);",
+    "CREATE INDEX IF NOT EXISTS idx_documents_metadata_confirmed ON documents(metadata_confirmed);",
     "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);",
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);",
+    "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
+    "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
 ]
 
 MIGRATIONS = [
     # v1 -> v2: source file provenance (BH-049)
     "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;",
+    # v2 -> v3: metadata confirmation tracking (BE-014)
+    "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;",
 ]
 
-ALL_DDL = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, *INDEXES]
+ALL_DDL = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE, *INDEXES]

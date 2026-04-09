@@ -1,4 +1,10 @@
-"""FastAPI application factory for the SAGE Core API."""
+"""FastAPI application factory for the SAGE Core API.
+
+Supports multi-vault operation: each vault gets its own SAGEServices
+instance, stored in a registry keyed by vault_id. The vault listing
+endpoint operates across all vaults; all other endpoints resolve the
+correct services via the vault_id path parameter.
+"""
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -6,15 +12,43 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from sage.api.errors import register_exception_handlers
-from sage.api.routers import documents, graph_ops, ingestion, lifecycle, metadata, retrieval, users, utilities
+from sage.api.routers import (
+    documents,
+    graph_ops,
+    ingestion,
+    lifecycle,
+    metadata,
+    pending_metadata,
+    retrieval,
+    staging_edges,
+    users,
+    utilities,
+    vaults,
+)
 from sage.config import VaultConfig, load_vault_config
-from sage.mcp_init import initialize_services
+from sage.mcp_init import SAGEServices, initialize_services
+
+
+async def _initialize_vault(app: FastAPI, config: VaultConfig) -> None:
+    """Initialize services for one vault and add to the registry."""
+    services = await initialize_services(config)
+    app.state.vault_registry[config.vault.id] = services
 
 
 async def _initialize_services(app: FastAPI, config: VaultConfig) -> None:
-    """Initialize all services and store them in app.state."""
-    services = await initialize_services(config)
+    """Initialize a single vault (backward compat for tests).
 
+    Sets up the vault registry and populates it with one vault,
+    then sets legacy single-vault attributes on app.state for
+    existing test compatibility.
+    """
+    if not hasattr(app.state, "vault_registry"):
+        app.state.vault_registry = {}
+
+    services = await initialize_services(config)
+    app.state.vault_registry[config.vault.id] = services
+
+    # Legacy single-vault attributes (used by existing tests)
     app.state.config = services.config
     app.state.graph_store = services.graph_store
     app.state.lock_manager = services.lock_manager
@@ -27,27 +61,47 @@ async def _initialize_services(app: FastAPI, config: VaultConfig) -> None:
     app.state.utilities_service = services.utilities_service
 
 
-def create_app(config_path: Path | None = None, config: VaultConfig | None = None) -> FastAPI:
+def create_app(
+    config_path: Path | None = None,
+    config: VaultConfig | None = None,
+    config_paths: list[Path] | None = None,
+    configs: list[VaultConfig] | None = None,
+) -> FastAPI:
     """Create and configure the SAGE Core API application.
 
     Args:
-        config_path: Path to vault YAML config file.
-        config: Pre-loaded VaultConfig (used in testing).
-            Exactly one of config_path or config must be provided.
+        config_path: Path to a single vault YAML config file.
+        config: Pre-loaded single VaultConfig (used in testing).
+        config_paths: Paths to multiple vault YAML config files.
+        configs: Pre-loaded VaultConfig list (used in testing).
+
+        Exactly one of these must be provided.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        if config_path is not None:
-            vault_config = load_vault_config(config_path)
-        elif config is not None:
-            vault_config = config
-        else:
-            raise ValueError("Either config_path or config must be provided")
+        app.state.vault_registry = {}
 
-        await _initialize_services(app, vault_config)
+        if config_paths is not None:
+            for cp in config_paths:
+                vc = load_vault_config(cp)
+                await _initialize_vault(app, vc)
+        elif configs is not None:
+            for vc in configs:
+                await _initialize_vault(app, vc)
+        elif config_path is not None:
+            vc = load_vault_config(config_path)
+            await _initialize_vault(app, vc)
+        elif config is not None:
+            await _initialize_vault(app, config)
+        else:
+            # No configs = empty vault registry (valid per BE-002)
+            pass
+
         yield
-        await app.state.graph_store.close()
+
+        for services in app.state.vault_registry.values():
+            await services.graph_store.close()
 
     app = FastAPI(
         title="SAGE Core API",
@@ -58,6 +112,10 @@ def create_app(config_path: Path | None = None, config: VaultConfig | None = Non
 
     register_exception_handlers(app)
 
+    # Cross-vault endpoint (no vault_id prefix)
+    app.include_router(vaults.router)
+
+    # Vault-scoped endpoints
     app.include_router(ingestion.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(documents.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(lifecycle.router, prefix="/sage_vaults/{vault_id}")
@@ -66,5 +124,7 @@ def create_app(config_path: Path | None = None, config: VaultConfig | None = Non
     app.include_router(graph_ops.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(retrieval.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(utilities.router, prefix="/sage_vaults/{vault_id}")
+    app.include_router(staging_edges.router, prefix="/sage_vaults/{vault_id}")
+    app.include_router(pending_metadata.router, prefix="/sage_vaults/{vault_id}")
 
     return app

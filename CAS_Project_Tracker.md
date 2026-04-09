@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v26
+**Version:** v27
 **Last updated:** 2026-04-08
 
 ---
@@ -143,7 +143,8 @@
   - `app_batch_ingest` -- per-file SAGE ingest with progress notifications, returns summary
 - Test specifications delivered 2026-04-08 (Test Plan v0.6): 55 frontend UI tests + 30 backend tests. See Test Plan section above for details.
 - MCP tool test specifications delivered 2026-04-08 (Test Plan v0.7): 25 tests for 9 new tools. See Test Plan section above for details.
-- Pending: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata, pipeline status filter). Specified in tests/app/backend_tests.md (TEST-APP-BE-001 through BE-016).
+- SAGE API additions delivered 2026-04-08. All 6 endpoint groups implemented (vault listing, stats, hash-check, staging edges, pending metadata, pipeline status filter on discover). 16 tests passing (TEST-APP-BE-001 through BE-016). See Working Code section for full details.
+- Pending: Application backend endpoints (scan, batch ingest with SSE). Specified in tests/app/backend_tests.md (TEST-APP-BE-017 through BE-030).
 
 ### 10. Working Code (In Progress)
 
@@ -161,6 +162,7 @@
 - Docx source adapter delivered 2026-04-06. Parses Word document structure via python-docx. Heading extraction from paragraph styles with configurable heading_style_map (defaults to "Heading 1" through "Heading 9"). _NumberingEngine computes rendered heading number prefixes from Word numbering definitions (decimal, upperRoman, lowerRoman, upperLetter, lowerLetter) with counter reset on parent level increment. Table extraction as pipe-delimited text rows. Cross-reference field resolution via cached display values (w:t elements, skipping w:instrText). Source provenance via st_mtime. python-docx>=1.1 added to dependencies. 18 adapter tests (AD-035 through AD-052). 168 total tests passing.
 - Source file provenance delivered 2026-04-06. Added Document.source_modified_at (nullable datetime) across all layers: Pydantic model, SQLite schema with ALTER TABLE migration for existing databases, graph store serialization/deserialization, markdown adapter (extracts st_mtime via Path.stat()), and ingestion service (both new-document and force-re-ingestion paths). created_at remains as SAGE ingestion timestamp. 5 new tests passing (BH-049 through BH-052, AD-034). 150 total tests passing.
 - SAGE MCP server registered in Claude Desktop 2026-04-06. Configuration at ~/Library/Application Support/Claude/claude_desktop_config.json. Launches .venv Python with both vaults (test, pim_health) via stdio transport. Vault config paths use absolute paths to ~/sage_vaults/{vault_id}/vault_config.yaml (tilde expansion not reliable in JSON config files). Claude Desktop Cowork mode can now discover and call all 11 SAGE tools.
+- SAGE API additions for CAS Application delivered 2026-04-08. Multi-vault app factory evolution: app.state.vault_registry (dict[str, SAGEServices]) replaces single-vault app.state, same pattern MCP already uses. All dependency injection resolves via vault_id lookup. Backward compatible with existing tests. Six new endpoint groups: (1) GET /sage_vaults -- vault listing across all vaults (no vault_id prefix). (2) GET /sage_vaults/{vault_id}/stats -- ten dashboard statistics plus health indicators (pending_metadata_count, pending_edge_count, deferred_abstract_count, failed_ingestion_count), computed on demand. (3) POST /sage_vaults/{vault_id}/hash-check -- bulk hash existence check for scan preview. (4) GET /sage_vaults/{vault_id}/staging-edges + POST confirm/dismiss -- Tier 2 staging edge review workflow. (5) GET /sage_vaults/{vault_id}/pending-metadata -- documents with unconfirmed metadata. (6) pipeline_status filter added to RetrievalFilters on discover endpoint. New DDL: staging_edges table, metadata_confirmed column on documents. VaultIdentity.description field added to vault config model. 16 tests passing (TEST-APP-BE-001 through BE-016). 189 total tests passing.
 
 ### 11. PIM Health Instance (v0.1)
 
@@ -239,8 +241,8 @@
 22. ~~CAS Application: React wireframe v0.4~~ (completed 2026-04-08, 6 views with mock data)
 23. ~~CAS Application: Test spec for all views + application backend endpoints~~ (completed 2026-04-08, 55 UI tests + 30 backend tests)
 23a. ~~CAS Application: MCP tool test specs for 9 new tools (7 SAGE + 2 app)~~ (completed 2026-04-08, 25 tests)
-24. CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata) ← **next**
-25. CAS Application: MCP tools for new SAGE endpoints + app backend (9 tools in sage/mcp_server.py)
+24. ~~CAS Application: SAGE API additions (hash-check, vault listing, statistics, staging edges, pending metadata)~~ (completed 2026-04-08, 6 endpoint groups, 16 tests)
+25. CAS Application: MCP tools for new SAGE endpoints + app backend (9 tools in sage/mcp_server.py) ← **next**
 26. CAS Application: Application backend (scan, batch ingest with SSE)
 27. CAS Application: Frontend production code with API integration
 28. Working Code: ROOT Harness implementation

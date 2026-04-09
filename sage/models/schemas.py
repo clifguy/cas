@@ -47,6 +47,7 @@ class Document(BaseModel):
     pipeline_status: PipelineStatus = PipelineStatus.PROJECTION_COMPLETE
     pipeline_error: str | None = None
     tier3_metadata: dict | None = None
+    metadata_confirmed: bool = False
 
 
 class DocumentSummary(BaseModel):
@@ -168,6 +169,7 @@ class RetrievalFilters(BaseModel):
     lifecycle_status: str | None = None
     tags: list[str] | None = None
     document_ids: list[str] | None = None
+    pipeline_status: str | None = None
 
 
 class DiscoverRequest(BaseModel):
@@ -229,6 +231,81 @@ class EvalRetrievalResult(BaseModel):
     assertion_count: int
     failure_count: int
     failures: list[AssertionFailure]
+
+
+# ---------------------------------------------------------------------------
+# Vault listing and statistics (BE-001 through BE-006)
+# ---------------------------------------------------------------------------
+
+class VaultSummary(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    storage_root: str
+
+
+class HealthIndicators(BaseModel):
+    pending_metadata_count: int
+    pending_edge_count: int
+    deferred_abstract_count: int
+    failed_ingestion_count: int
+
+
+class VaultStatsResponse(BaseModel):
+    total_documents: int
+    by_lifecycle_state: dict[str, int]
+    by_doc_type: dict[str, int]
+    by_source_adapter: dict[str, int]
+    total_edges: int
+    by_edge_type: dict[str, int]
+    staging_edge_count: int
+    lancedb_size_bytes: int
+    sqlite_size_bytes: int
+    last_ingestion_at: datetime | None
+    health: HealthIndicators
+
+
+# ---------------------------------------------------------------------------
+# Hash check (BE-007 through BE-009)
+# ---------------------------------------------------------------------------
+
+class HashCheckRequest(BaseModel):
+    hashes: list[str]
+
+
+class HashCheckMatch(BaseModel):
+    exists: bool
+    document_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Staging edges (BE-010 through BE-013)
+# ---------------------------------------------------------------------------
+
+class StagingEdge(BaseModel):
+    id: str
+    source_id: str
+    target_id: str
+    edge_type: EdgeType
+    inference_evidence: str
+    confidence_tier: int = 2
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Pending metadata (BE-014 through BE-015)
+# ---------------------------------------------------------------------------
+
+class ExtractedField(BaseModel):
+    value: str | None = None
+    source: str  # "filename", "content", or "default"
+    alt_value: str | None = None
+    alt_source: str | None = None
+
+
+class PendingMetadataItem(BaseModel):
+    document: Document
+    extracted_fields: dict[str, ExtractedField]
 
 
 # ---------------------------------------------------------------------------
