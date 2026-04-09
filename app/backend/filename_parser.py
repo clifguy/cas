@@ -30,8 +30,14 @@ class ParsedMetadata:
     doc_type: str | None = None
 
 
-_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_VERSION_RE = re.compile(r"^v\d+([._]\d+)*$", re.IGNORECASE)
+# Pre-split patterns: operate on the full stem before separator splitting.
+# Leading date: YYYY-MM-DD followed by a space or underscore.
+_LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[_ ](.*)")
+# Trailing version: v-prefix with optional sub-components separated by _ or .
+# Anchored at $ so it captures the entire trailing version span (e.g. v2_3_1).
+_TRAILING_VERSION_RE = re.compile(
+    r"(?:^|[_ ])(v\d+(?:[._]\d+)*)$", re.IGNORECASE
+)
 
 
 def normalize_version(version_str: str) -> tuple[int, int, int]:
@@ -71,45 +77,57 @@ class FilenameParser:
         )
 
     def parse(self, filename_stem: str) -> ParsedMetadata:
-        """Parse a filename stem (no extension) into structured metadata."""
-        segments = filename_stem.split(self._separator)
-        if not segments:
-            return ParsedMetadata(title=filename_stem)
+        """Parse a filename stem (no extension) into structured metadata.
 
+        Extraction proceeds in two phases:
+
+        Phase 1 (pre-split): regex extraction on the full stem for fields
+        whose delimiters may differ from the configured separator. This
+        handles dates followed by spaces and multi-part versions whose
+        sub-components use the same character as the separator (e.g. v2_3
+        when the separator is '_').
+
+        Phase 2 (post-split): segment classification for project, codes,
+        and title, which are reliably delimited by the configured separator.
+        """
+        stem = filename_stem
         date: str | None = None
         version: str | None = None
-        codes: list[str] = []
-        title_parts: list[str] = []
+
+        # -- Phase 1: pre-split extraction on full stem --
+
+        # Leading date: YYYY-MM-DD followed by space or separator
+        date_m = _LEADING_DATE_RE.match(stem)
+        if date_m:
+            date = date_m.group(1)
+            stem = date_m.group(2)
+
+        # Trailing version: v-prefix, may span multiple separator-
+        # delimited segments (e.g. v2_3, v10.4.1, V3_2)
+        ver_m = _TRAILING_VERSION_RE.search(stem)
+        if ver_m:
+            version = ver_m.group(1)
+            stem = stem[: ver_m.start(1)].rstrip("_ ")
+
+        # -- Phase 2: post-split segment classification --
+
+        segments = stem.split(self._separator) if stem else []
+        if not segments:
+            return ParsedMetadata(
+                title=filename_stem, date=date, version=version
+            )
+
+        remaining = list(segments)
         project: str | None = None
+        codes: list[str] = []
 
-        # Pass 1: identify date (first matching segment)
-        remaining: list[str] = []
-        for seg in segments:
-            if date is None and _DATE_RE.match(seg):
-                date = seg
-            else:
-                remaining.append(seg)
-
-        # Pass 2: identify version (rightmost v-prefixed segment)
-        version_idx: int | None = None
-        for i in range(len(remaining) - 1, -1, -1):
-            if _VERSION_RE.match(remaining[i]):
-                version = remaining[i]
-                version_idx = i
-                break
-
-        if version_idx is not None:
-            remaining = remaining[:version_idx] + remaining[version_idx + 1 :]
-
-        # Pass 3: identify project (first short uppercase segment).
-        # Project comes before codes in the naming convention. We
-        # extract it positionally before code detection so that "PIM"
-        # is not consumed as a code.
+        # Project: first short uppercase segment.  Extracted positionally
+        # before code detection so that "PIM" is not consumed as a code.
         if remaining and len(remaining[0]) <= 5 and remaining[0].isupper():
             project = remaining[0]
             remaining = remaining[1:]
 
-        # Pass 4: identify codes via known_code_patterns
+        # Codes: via known_code_patterns
         still_remaining: list[str] = []
         for seg in remaining:
             if self._is_code(seg):
@@ -118,7 +136,11 @@ class FilenameParser:
                 still_remaining.append(seg)
 
         # Whatever remains is the title
-        title = self._separator.join(still_remaining) if still_remaining else filename_stem
+        title = (
+            self._separator.join(still_remaining)
+            if still_remaining
+            else filename_stem
+        )
 
         # Resolve doc_type
         doc_type = self._resolve_doc_type(title, codes)

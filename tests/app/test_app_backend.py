@@ -284,6 +284,145 @@ class TestFilenameParserDocType:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Filename Parser: Pre-split Date/Version Extraction
+# ---------------------------------------------------------------------------
+
+
+class TestFilenameParserPreSplit:
+    """Tests for pre-split extraction of date and version from full stem.
+
+    These cover the two bugs found in bulk ingest:
+      1. Space-separated date/title boundary (date fuses with next segment)
+      2. Underscore-delimited version components (v2_3 split into v2 + orphan 3)
+    """
+
+    def _parser(self):
+        return FilenameParser(_pim_metadata_extraction())
+
+    # -- Bug 1: Mixed-delimiter date boundary --
+
+    def test_space_separated_date(self):
+        """Date followed by space instead of underscore is still extracted."""
+        p = self._parser()
+        # Note: the space is in the stem because Path.stem preserves it
+        result = p.parse("2025-12-20 PIM_Portfolio_Refactoring_Checklist_v2")
+        assert result.date == "2025-12-20"
+        assert result.project == "PIM"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+        assert result.version == "v2"
+
+    def test_underscore_separated_date(self):
+        """Date followed by underscore still works (no regression)."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2")
+        assert result.date == "2025-12-20"
+        assert result.project == "PIM"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+        assert result.version == "v2"
+
+    # -- Bug 2: Multi-part version with underscore sub-separator --
+
+    def test_version_underscore_minor(self):
+        """Version with underscore minor component: v2_3 parsed as single version."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_3")
+        assert result.version == "v2_3"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+        assert result.date == "2025-12-20"
+        assert result.project == "PIM"
+
+    def test_version_underscore_two_parts(self):
+        """Version v2_4 captured intact, not split."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_4")
+        assert result.version == "v2_4"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+
+    def test_version_dot_minor(self):
+        """Version with dot minor component: v2.1 parsed correctly."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2.1")
+        assert result.version == "v2.1"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+        assert result.date == "2025-12-20"
+        assert result.project == "PIM"
+
+    def test_version_three_part_underscore(self):
+        """Three-part version with underscores: v8_4_1."""
+        p = self._parser()
+        result = p.parse("PIM_REF_Doc_v8_4_1")
+        assert result.version == "v8_4_1"
+        assert result.title == "Doc"
+        assert "REF" in result.codes
+
+    # -- Version chain grouping: all five test files produce same title --
+
+    def test_bulk_ingest_version_family(self):
+        """All five test files produce identical (title, project) for grouping."""
+        p = self._parser()
+        stems = [
+            "2025-12-20 PIM_Portfolio_Refactoring_Checklist_v2",
+            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_3",
+            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_4",
+            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_5",
+            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2.1",
+        ]
+        results = [p.parse(s) for s in stems]
+
+        # All titles identical
+        titles = {r.title for r in results}
+        assert titles == {"Portfolio_Refactoring_Checklist"}, f"Got titles: {titles}"
+
+        # All projects identical
+        projects = {r.project for r in results}
+        assert projects == {"PIM"}, f"Got projects: {projects}"
+
+        # All dates identical
+        dates = {r.date for r in results}
+        assert dates == {"2025-12-20"}, f"Got dates: {dates}"
+
+        # Versions are distinct and normalize in correct order
+        versions = [r.version for r in results]
+        assert len(set(versions)) == 5, f"Expected 5 distinct versions, got: {versions}"
+
+        normalized = sorted(
+            [(r.version, normalize_version(r.version)) for r in results],
+            key=lambda t: t[1],
+        )
+        version_order = [v for v, _ in normalized]
+        assert version_order == ["v2", "v2.1", "v2_3", "v2_4", "v2_5"]
+
+    # -- Regression guards --
+
+    def test_standard_filename_unchanged(self):
+        """Standard underscore-only filename still parses correctly."""
+        p = self._parser()
+        result = p.parse("2026-03-09_PIM_PV06_Claim-Set_v6")
+        assert result.date == "2026-03-09"
+        assert result.project == "PIM"
+        assert "PV06" in result.codes
+        assert result.title == "Claim-Set"
+        assert result.version == "v6"
+
+    def test_no_version_no_date(self):
+        """Filename with neither date nor version still parses title."""
+        p = self._parser()
+        result = p.parse("PIM_REF_Glossary")
+        assert result.date is None
+        assert result.version is None
+        assert result.project == "PIM"
+        assert "REF" in result.codes
+        assert result.title == "Glossary"
+
+    def test_version_case_insensitive(self):
+        """Uppercase V prefix is recognized."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Doc_V3_2")
+        assert result.version == "V3_2"
+        assert normalize_version(result.version) == (3, 2, 0)
+
+
+# ---------------------------------------------------------------------------
 # 3. Version Chain Inference (EI-013 through EI-018)
 # ---------------------------------------------------------------------------
 
