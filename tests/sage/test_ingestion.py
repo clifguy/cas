@@ -41,8 +41,10 @@ async def test_bh_018_duplicate_content_409(
         source="patents/doc_a.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     # Allow background tasks to run
     await asyncio.sleep(0.2)
@@ -70,8 +72,10 @@ async def test_bh_019_force_reingestion(
         source="patents/doc_force.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc1, status1 = await ingestion_service.ingest(request, "test_vault")
-    assert status1 == 201
+    result1 = await ingestion_service.ingest(request, "test_vault")
+
+    doc1 = result1.document
+    assert result1.is_new is True
     original_id = doc1.id
 
     await asyncio.sleep(0.2)
@@ -82,9 +86,11 @@ async def test_bh_019_force_reingestion(
         adapter=SourceType.MARKDOWN,
         force=True,
     )
-    doc2, status2 = await ingestion_service.ingest(force_request, "test_vault")
+    result2 = await ingestion_service.ingest(force_request, "test_vault")
 
-    assert status2 == 200
+    doc2 = result2.document
+
+    assert result2.is_new is False
     assert doc2.id == original_id  # Same document record
     assert doc2.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
 
@@ -104,8 +110,10 @@ async def test_bh_020_failed_pipeline_marks_document(
         source="patents/doc_fail.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service_failing_llm.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service_failing_llm.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     # Wait for background pipeline to fail
     await asyncio.sleep(0.5)
@@ -128,7 +136,9 @@ async def test_bh_022_failed_document_visible(
         source="patents/doc_visible.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, _ = await ingestion_service_failing_llm.ingest(request, "test_vault")
+    result = await ingestion_service_failing_llm.ingest(request, "test_vault")
+
+    doc = result.document
     await asyncio.sleep(0.5)
 
     fetched = await graph_store.get_document(doc.id)
@@ -151,8 +161,10 @@ async def test_bh_024_llm_failure_results_in_failed(
         source="patents/doc_llm_fail.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service_failing_llm.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service_failing_llm.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
     assert doc.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
 
     # Wait for background pipeline to reach Stage 3 and fail
@@ -177,8 +189,10 @@ async def test_bh_025_abstraction_disabled(
         source="patents/doc_no_abstract.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service_no_abstraction.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service_no_abstraction.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     # Wait for background pipeline
     await asyncio.sleep(0.5)
@@ -201,10 +215,11 @@ async def test_bh_026_async_pipeline(
         source="patents/doc_async.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+    doc = result.document
 
     # Ingest returns immediately with projection_complete
-    assert status == 201
+    assert result.is_new is True
     assert doc.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
 
     # Wait for background pipeline to complete
@@ -233,8 +248,10 @@ async def test_bh_049_source_modified_at_set_on_ingest(
         source="patents/doc_mtime.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     assert doc.source_modified_at is not None
     assert doc.source_modified_at.tzinfo is not None  # timezone-aware
@@ -258,7 +275,9 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
         source="patents/doc_mtime_force.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc1, _ = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc1 = result.document
     await asyncio.sleep(0.2)
 
     original_source_mtime = doc1.source_modified_at
@@ -272,8 +291,10 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
         adapter=SourceType.MARKDOWN,
         force=True,
     )
-    doc2, status2 = await ingestion_service.ingest(force_request, "test_vault")
-    assert status2 == 200
+    result2 = await ingestion_service.ingest(force_request, "test_vault")
+
+    doc2 = result2.document
+    assert result2.is_new is False
 
     # Retrieve from store to verify persistence
     fetched = await graph_store.get_document(doc2.id)
@@ -297,7 +318,9 @@ async def test_bh_051_source_modified_at_round_trip(
         source="patents/doc_roundtrip.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, _ = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
 
     fetched = await graph_store.get_document(doc.id)
     assert fetched.source_modified_at is not None
@@ -324,7 +347,9 @@ async def test_bh_052_created_at_is_ingestion_time(
         source="patents/doc_old.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, _ = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
 
     # created_at should be close to now, not the old file mtime
     assert abs((doc.created_at - before_ingest).total_seconds()) < 5.0
@@ -357,8 +382,10 @@ async def test_bh_053_external_file_copied_to_imports(
         source=str(external_file),  # absolute path
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     # The file must exist in imports/
     storage_root = tmp_vault_dir / "sources"
@@ -383,8 +410,10 @@ async def test_bh_054_imported_source_path_is_vault_relative(
         source=str(external_file),
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
     assert doc.source_path == "imports/external_doc.md"
 
 
@@ -415,8 +444,10 @@ async def test_bh_055_import_name_collision_appends_hash(
         source=str(external_file),
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     # source_path should be imports/report_<8-char-hash>.md
     assert doc.source_path.startswith("imports/report_")
@@ -450,8 +481,10 @@ async def test_bh_056_internal_file_not_copied(
         source="patents/internal.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
     assert doc.source_path == "patents/internal.md"
 
     # No imports/ directory should have been created
@@ -478,8 +511,10 @@ async def test_bh_057_imports_dir_created_on_demand(
         source=str(external_file),
         adapter=SourceType.MARKDOWN,
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     assert imports_dir.exists()
     assert (imports_dir / "fresh.md").exists()
@@ -606,8 +641,10 @@ async def test_bh_062_filename_date_sets_document_date(
         adapter=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
-    doc, status = await ingestion_service.ingest(request, "test_vault")
-    assert status == 201
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
+    assert result.is_new is True
 
     assert doc.document_date == "2026-04-10"
     # source_modified_at is set independently from file mtime
@@ -632,7 +669,9 @@ async def test_bh_063_fallback_to_source_modified_at_date(
         source="patents/no_date_doc.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, _ = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
 
     assert doc.document_date == "2025-06-15"
     assert doc.source_modified_at is not None
@@ -667,7 +706,9 @@ async def test_bh_064_null_when_no_date_sources(
         source="patents/no_sources.md",
         adapter=SourceType.MARKDOWN,
     )
-    doc, _ = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
 
     # Clear both fields to simulate the no-source scenario
     await graph_store.update_document(doc.id, {
@@ -694,7 +735,9 @@ async def test_bh_065_document_date_round_trip(
         adapter=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
-    doc, _ = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request, "test_vault")
+
+    doc = result.document
 
     fetched = await graph_store.get_document(doc.id)
     assert fetched.document_date == "2026-04-10"

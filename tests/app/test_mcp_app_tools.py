@@ -151,10 +151,12 @@ async def single_vault(tmp_path):
 
 @pytest.fixture
 async def empty_registry():
-    """Empty vault registry."""
+    """Empty vault registry (saves/restores to avoid cross-module interference)."""
+    saved = dict(_vaults)
     _vaults.clear()
     yield
     _vaults.clear()
+    _vaults.update(saved)
 
 
 # ---------------------------------------------------------------------------

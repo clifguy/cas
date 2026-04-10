@@ -30,6 +30,7 @@ from sage.models.schemas import (
     DiscoverHit,
     DiscoverRequest,
     DiscoverResponse,
+    Document,
     DocumentSummary,
 )
 from sage.storage.graph_store import GraphStore
@@ -341,7 +342,7 @@ class RetrievalService:
 
         return boosted + hits
 
-    def _passes_scope(self, doc, request: DiscoverRequest) -> bool:
+    def _passes_scope(self, doc: Document, request: DiscoverRequest) -> bool:
         """Check whether a document passes scope and filter criteria."""
         filters = request.filters
 

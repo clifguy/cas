@@ -56,7 +56,7 @@ async def ingested_doc(
         source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
     )
 
-    doc, status = await ingestion.ingest(
+    result = await ingestion.ingest(
         IngestRequest(source="test/sample.md", adapter=SourceType.MARKDOWN),
         vault_id="test_vault",
     )
@@ -64,7 +64,7 @@ async def ingested_doc(
     # Wait for background pipeline to complete
     await asyncio.sleep(0.5)
 
-    return doc
+    return result.document
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +184,16 @@ async def test_bh041_retrieval_assertions_from_yaml(
         source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
     )
 
-    doc_alpha, _ = await ingestion.ingest(
+    result_alpha = await ingestion.ingest(
         IngestRequest(source="test/alpha.md", adapter=SourceType.MARKDOWN),
         vault_id="test_vault",
     )
-    doc_beta, _ = await ingestion.ingest(
+    doc_alpha = result_alpha.document
+    result_beta = await ingestion.ingest(
         IngestRequest(source="test/beta.md", adapter=SourceType.MARKDOWN),
         vault_id="test_vault",
     )
+    doc_beta = result_beta.document
 
     await asyncio.sleep(0.5)
 

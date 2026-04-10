@@ -9,21 +9,36 @@ Usage:
 
 import json
 import sys
+import uuid as _uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from sage.api.errors import SAGEError
+from app.backend.edge_inference import (
+    EdgeInferenceEngine,
+    InferenceItem,
+    resolve_and_execute,
+)
+from app.backend.filename_parser import ParsedMetadata
+from sage.api.errors import (
+    DocumentNotFoundError,
+    SAGEError,
+    StagingEdgeNotFoundError,
+)
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
+from sage.models.enums import SourceType
 from sage.models.schemas import (
     DiscoverRequest,
+    Edge,
     IngestRequest,
     LinkRequest,
     RetrievalFilters,
     SetLifecycleRequest,
+    StagingEdge,
     TraverseRequest,
     UpdateMetadataRequest,
 )
@@ -123,8 +138,8 @@ async def sage_ingest(
             created_by=created_by,
             force=force,
         )
-        doc, _status = await v.ingestion_service.ingest(request, vault_id)
-        return _serialize(doc)
+        result = await v.ingestion_service.ingest(request, vault_id)
+        return _serialize(result.document)
     except (SAGEError, ValueError) as e:
         return _error_response(e)
 
@@ -142,8 +157,6 @@ async def sage_get_document(vault_id: str, document_id: str) -> str:
         v = _get_vault(vault_id)
         doc = await v.graph_store.get_document(document_id)
         if doc is None:
-            from sage.api.errors import DocumentNotFoundError
-
             raise DocumentNotFoundError(document_id)
         return _serialize(doc)
     except (SAGEError, ValueError) as e:
@@ -524,16 +537,11 @@ async def sage_confirm_staging_edge(vault_id: str, edge_id: str) -> str:
         vault_id: Target vault identifier.
         edge_id: Staging edge identifier.
     """
-    import uuid as _uuid
-    from datetime import datetime, timezone
-    from sage.models.schemas import Edge, StagingEdge
-
     try:
         v = _get_vault(vault_id)
         gs = v.graph_store
         staging = await gs.get_staging_edge(edge_id)
         if staging is None:
-            from sage.api.errors import StagingEdgeNotFoundError
             raise StagingEdgeNotFoundError(edge_id)
 
         production = Edge(
@@ -569,7 +577,6 @@ async def sage_dismiss_staging_edge(vault_id: str, edge_id: str) -> str:
         gs = v.graph_store
         staging = await gs.get_staging_edge(edge_id)
         if staging is None:
-            from sage.api.errors import StagingEdgeNotFoundError
             raise StagingEdgeNotFoundError(edge_id)
         await gs.delete_staging_edge(edge_id)
         return _serialize({"dismissed": True, "staging_edge_id": edge_id})
@@ -646,8 +653,9 @@ async def app_scan_directory(
 async def app_batch_ingest(
     vault_id: str,
     files: list[dict],
+    infer_edges: bool = True,
 ) -> str:
-    """Ingest multiple files with two-phase edge inference. Returns a
+    """Ingest multiple files with optional edge inference. Returns a
     summary when complete.
 
     Args:
@@ -655,15 +663,10 @@ async def app_batch_ingest(
         files: List of file objects. Each has: file_path (str), adapter (str),
             and optional parsed_metadata (dict with title, date, project,
             codes, version, doc_type).
+        infer_edges: When True (default), run two-phase edge inference.
+            When False, ingest documents only with no edge creation or
+            lifecycle transitions.
     """
-    from app.backend.edge_inference import (
-        EdgeInferenceEngine,
-        InferenceItem,
-        resolve_and_execute,
-    )
-    from app.backend.filename_parser import ParsedMetadata
-    from sage.models.enums import SourceType
-
     try:
         v = _get_vault(vault_id)
 
@@ -673,38 +676,40 @@ async def app_batch_ingest(
                 "message": "No files selected for ingestion",
             }, indent=2)
 
-        # Build inference items
-        engine = EdgeInferenceEngine()
-        scan_items: list[InferenceItem] = []
-        for f in files:
-            pm = f.get("parsed_metadata")
-            if pm:
-                parsed = ParsedMetadata(
-                    title=pm.get("title", Path(f["file_path"]).stem),
-                    date=pm.get("date"),
-                    project=pm.get("project"),
-                    codes=pm.get("codes", []),
-                    version=pm.get("version"),
-                    doc_type=pm.get("doc_type"),
-                )
-            else:
-                parsed = ParsedMetadata(title=Path(f["file_path"]).stem)
-            scan_items.append(InferenceItem(ref=f["file_path"], is_existing=False, parsed=parsed))
+        # Phase 1: Pre-ingest edge plan (skip if infer_edges is False)
+        edge_plan = None
+        if infer_edges:
+            engine = EdgeInferenceEngine()
+            scan_items: list[InferenceItem] = []
+            for f in files:
+                pm = f.get("parsed_metadata")
+                if pm:
+                    parsed = ParsedMetadata(
+                        title=pm.get("title", Path(f["file_path"]).stem),
+                        date=pm.get("date"),
+                        project=pm.get("project"),
+                        codes=pm.get("codes", []),
+                        version=pm.get("version"),
+                        doc_type=pm.get("doc_type"),
+                    )
+                else:
+                    parsed = ParsedMetadata(title=Path(f["file_path"]).stem)
+                scan_items.append(InferenceItem(ref=f["file_path"], is_existing=False, parsed=parsed))
 
-        # Existing vault docs for edge plan context
-        existing_items: list[InferenceItem] = []
-        all_docs = await v.graph_store.list_all_documents()
-        for doc in all_docs:
-            existing_items.append(InferenceItem(
-                ref=doc.id, is_existing=True,
-                parsed=ParsedMetadata(
-                    title=doc.title, project=doc.project,
-                    codes=doc.tags, version=doc.version_label,
-                    doc_type=doc.doc_type,
-                ),
-            ))
+            # Existing vault docs for edge plan context
+            existing_items: list[InferenceItem] = []
+            all_docs = await v.graph_store.list_all_documents()
+            for doc in all_docs:
+                existing_items.append(InferenceItem(
+                    ref=doc.id, is_existing=True,
+                    parsed=ParsedMetadata(
+                        title=doc.title, project=doc.project,
+                        codes=doc.tags, version=doc.version_label,
+                        doc_type=doc.doc_type,
+                    ),
+                ))
 
-        edge_plan = engine.build_edge_plan(scan_items, existing_items)
+            edge_plan = engine.build_edge_plan(scan_items, existing_items)
 
         # Per-file ingestion
         path_to_id: dict[str, str] = {}
@@ -736,9 +741,9 @@ async def app_batch_ingest(
                     adapter=SourceType(f["adapter"]),
                     metadata=metadata_dict or None,
                 )
-                doc, status = await v.ingestion_service.ingest(request, vault_id)
-                path_to_id[f["file_path"]] = doc.id
-                if status == 201:
+                ingest_result = await v.ingestion_service.ingest(request, vault_id)
+                path_to_id[f["file_path"]] = ingest_result.document.id
+                if ingest_result.is_new:
                     docs_new += 1
                 else:
                     docs_version += 1
@@ -749,17 +754,24 @@ async def app_batch_ingest(
             except Exception as exc:
                 errors.append({"filename": Path(f["file_path"]).name, "message": str(exc)})
 
-        # Post-ingest edge creation
-        edge_result = await resolve_and_execute(
-            edge_plan, path_to_id, v.graph_store, v.graph_ops_service,
-        )
+        # Post-ingest edge creation (skip if infer_edges is False)
+        edges_created: dict[str, int] = {}
+        edges_staged: dict[str, int] = {}
+        edges_dropped = 0
+        if edge_plan is not None:
+            edge_result = await resolve_and_execute(
+                edge_plan, path_to_id, v.graph_store, v.graph_ops_service,
+            )
+            edges_created = edge_result.edges_created
+            edges_staged = edge_result.edges_staged
+            edges_dropped = edge_result.edges_dropped
 
         summary = {
             "documents_created": {"new": docs_new, "new_version": docs_version},
             "metadata_pending": docs_new + docs_version,
-            "edges_created": edge_result.edges_created,
-            "edges_staged": edge_result.edges_staged,
-            "edges_dropped": edge_result.edges_dropped,
+            "edges_created": edges_created,
+            "edges_staged": edges_staged,
+            "edges_dropped": edges_dropped,
             "abstracts_generated": abstracts_generated,
             "abstracts_deferred": abstracts_deferred,
             "error_count": len(errors),

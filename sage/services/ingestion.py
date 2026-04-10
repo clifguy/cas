@@ -11,10 +11,12 @@ import asyncio
 import hashlib
 import logging
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sage.adapters.interfaces import AbstractionProvider, ContentStore, Chunk, EmbeddingProvider
+from sage.api.errors import AdapterNotFoundError, DuplicateContentError, SourceFileNotFoundError
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
@@ -24,6 +26,13 @@ from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class IngestResult:
+    """Result of an ingestion operation."""
+    document: Document
+    is_new: bool
 
 
 class IngestionService:
@@ -86,18 +95,17 @@ class IngestionService:
 
     async def ingest(
         self, request: IngestRequest, vault_id: str
-    ) -> tuple[Document, int]:
+    ) -> IngestResult:
         """Execute Stage 1 synchronously, schedule Stages 2-3 as background tasks.
 
         Returns:
-            (document, http_status_code): 201 for new, 200 for force re-ingestion.
+            IngestResult with the document and whether it was newly created.
 
         Raises:
-            DuplicateContentError: Same source_path + hash exists, no force flag (BH-018).
+            DuplicateContentError: Same content hash exists anywhere in vault (BH-066),
+                or same source_path + hash exists (BH-018), unless force flag set.
             AdapterNotFoundError: No adapter for requested source type.
         """
-        from sage.api.errors import AdapterNotFoundError, DuplicateContentError
-
         adapter = self._adapters.get(request.adapter)
         if adapter is None:
             raise AdapterNotFoundError(request.adapter)
@@ -112,7 +120,6 @@ class IngestionService:
             source_path = storage_root / request.source
 
         if not source_path.exists():
-            from sage.api.errors import SourceFileNotFoundError
             raise SourceFileNotFoundError(request.source)
 
         # Import external files into the vault (BH-053 through BH-057)
@@ -124,13 +131,20 @@ class IngestionService:
             storage_root / vault_relative, request.config
         )
 
-        # Check for duplicates (BH-018, BH-019)
+        # Check for duplicates (BH-018, BH-019, BH-066, BH-067)
+        if not request.force:
+            # Hash-only check: catch identical content at any path (BH-066)
+            hash_matches = await self._store.find_documents_by_hashes(
+                [projection.content_hash]
+            )
+            if hash_matches:
+                existing_id = next(iter(hash_matches.values()))
+                raise DuplicateContentError(existing_id, projection.content_hash)
+
+        # Path+hash check for force re-ingestion (reuses existing record)
         existing = await self._store.find_by_source_path_and_hash(
             vault_relative, projection.content_hash
         )
-
-        if existing is not None and not request.force:
-            raise DuplicateContentError(existing.id, projection.content_hash)
 
         now = datetime.now(timezone.utc)
 
@@ -155,7 +169,7 @@ class IngestionService:
                 "document_date": None,
             }
             doc = await self._store.update_document(existing.id, updates)
-            http_status = 200
+            is_new = False
 
             # Remove old content store entries for re-indexing
             await self._content_store.remove_document(existing.id)
@@ -182,7 +196,7 @@ class IngestionService:
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
             )
             await self._store.insert_document(doc)
-            http_status = 201
+            is_new = True
 
         # Apply caller-supplied metadata if provided
         if request.metadata:
@@ -201,7 +215,7 @@ class IngestionService:
             self._run_background_pipeline(doc.id, projection)
         )
 
-        return doc, http_status
+        return IngestResult(document=doc, is_new=is_new)
 
     async def _run_background_pipeline(
         self, document_id: str, projection: ProjectionResult

@@ -69,6 +69,7 @@ class IngestRequest_(BaseModel):
     """Ingest request body (underscore to avoid collision with SAGE IngestRequest)."""
     vault_id: str
     files: list[IngestFileItem]
+    infer_edges: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -176,48 +177,50 @@ async def ingest_endpoint(body: IngestRequest_, request: Request):
         docs_new = 0
         docs_version = 0
 
-        # Phase 1: Pre-ingest edge plan
-        engine = EdgeInferenceEngine()
+        # Phase 1: Pre-ingest edge plan (skip if infer_edges is False)
+        edge_plan = None
+        if body.infer_edges:
+            engine = EdgeInferenceEngine()
 
-        # Build inference items from request
-        scan_items: list[InferenceItem] = []
-        for f in body.files:
-            pm = f.parsed_metadata
-            if pm:
-                parsed = ParsedMetadata(
-                    title=pm.title,
-                    date=pm.date,
-                    project=pm.project,
-                    codes=pm.codes,
-                    version=pm.version,
-                    doc_type=pm.doc_type,
-                )
-            else:
-                parsed = ParsedMetadata(title=Path(f.file_path).stem)
-            scan_items.append(InferenceItem(
-                ref=f.file_path,
-                is_existing=False,
-                parsed=parsed,
-            ))
+            # Build inference items from request
+            scan_items: list[InferenceItem] = []
+            for f in body.files:
+                pm = f.parsed_metadata
+                if pm:
+                    parsed = ParsedMetadata(
+                        title=pm.title,
+                        date=pm.date,
+                        project=pm.project,
+                        codes=pm.codes,
+                        version=pm.version,
+                        doc_type=pm.doc_type,
+                    )
+                else:
+                    parsed = ParsedMetadata(title=Path(f.file_path).stem)
+                scan_items.append(InferenceItem(
+                    ref=f.file_path,
+                    is_existing=False,
+                    parsed=parsed,
+                ))
 
-        # Get existing vault documents for edge plan context
-        existing_items: list[InferenceItem] = []
-        all_docs = await services.graph_store.list_all_documents()
-        for doc in all_docs:
-            existing_items.append(InferenceItem(
-                ref=doc.id,
-                is_existing=True,
-                parsed=ParsedMetadata(
-                    title=doc.title,
-                    date=None,
-                    project=doc.project,
-                    codes=doc.tags,  # codes stored in tags if available
-                    version=doc.version_label,
-                    doc_type=doc.doc_type,
-                ),
-            ))
+            # Get existing vault documents for edge plan context
+            existing_items: list[InferenceItem] = []
+            all_docs = await services.graph_store.list_all_documents()
+            for doc in all_docs:
+                existing_items.append(InferenceItem(
+                    ref=doc.id,
+                    is_existing=True,
+                    parsed=ParsedMetadata(
+                        title=doc.title,
+                        date=None,
+                        project=doc.project,
+                        codes=doc.tags,  # codes stored in tags if available
+                        version=doc.version_label,
+                        doc_type=doc.doc_type,
+                    ),
+                ))
 
-        edge_plan = engine.build_edge_plan(scan_items, existing_items)
+            edge_plan = engine.build_edge_plan(scan_items, existing_items)
 
         # Phase 2: Per-file ingestion
         for i, file_item in enumerate(body.files):
@@ -240,12 +243,13 @@ async def ingest_endpoint(body: IngestRequest_, request: Request):
                     adapter=SourceType(file_item.adapter),
                     metadata=metadata_dict,
                 )
-                doc, http_status = await services.ingestion_service.ingest(
+                ingest_result = await services.ingestion_service.ingest(
                     sage_request, body.vault_id
                 )
+                doc = ingest_result.document
                 path_to_id[file_item.file_path] = doc.id
 
-                if http_status == 201:
+                if ingest_result.is_new:
                     docs_new += 1
                 else:
                     docs_version += 1
@@ -278,22 +282,29 @@ async def ingest_endpoint(body: IngestRequest_, request: Request):
                     "error": str(exc),
                 })
 
-        # Phase 3: Post-ingest edge creation
-        edge_result = await resolve_and_execute(
-            edge_plan,
-            path_to_id,
-            services.graph_store,
-            services.graph_ops_service,
-        )
+        # Phase 3: Post-ingest edge creation (skip if infer_edges is False)
+        edges_created: dict[str, int] = {}
+        edges_staged: dict[str, int] = {}
+        edges_dropped = 0
+        if edge_plan is not None:
+            edge_result = await resolve_and_execute(
+                edge_plan,
+                path_to_id,
+                services.graph_store,
+                services.graph_ops_service,
+            )
+            edges_created = edge_result.edges_created
+            edges_staged = edge_result.edges_staged
+            edges_dropped = edge_result.edges_dropped
 
         # Emit summary event
         yield _sse_event({
             "event_type": "summary",
             "documents_created": {"new": docs_new, "new_version": docs_version},
             "metadata_pending": docs_new + docs_version,  # all new docs pending
-            "edges_created": edge_result.edges_created,
-            "edges_staged": edge_result.edges_staged,
-            "edges_dropped": edge_result.edges_dropped,
+            "edges_created": edges_created,
+            "edges_staged": edges_staged,
+            "edges_dropped": edges_dropped,
             "abstracts_generated": abstracts_generated,
             "abstracts_deferred": abstracts_deferred,
             "error_count": error_count,

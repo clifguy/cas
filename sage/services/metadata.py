@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+from sage.api.errors import DocumentNotFoundError, InvalidDocTypeError
 from sage.config import VaultConfig
 from sage.models.schemas import Document, UpdateMetadataRequest
 from sage.storage.graph_store import GraphStore
@@ -33,8 +34,6 @@ class MetadataService:
             DocumentNotFoundError: document_id does not exist.
             InvalidDocTypeError: doc_type not in vault config.
         """
-        from sage.api.errors import DocumentNotFoundError, InvalidDocTypeError
-
         async with self._locks.lock(document_id):
             doc = await self._store.get_document(document_id)
             if doc is None:

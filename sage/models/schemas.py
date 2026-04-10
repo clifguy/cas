@@ -183,9 +183,9 @@ class DiscoverRequest(BaseModel):
     filters: RetrievalFilters | None = None
     document_id: str | None = None
     heading_path: str | None = None
-    authority_document_id: str | None = None
+    authority_document_id: str | None = Field(default=None, deprecated=True)
     limit: int = Field(default=10, ge=1, le=100)
-    cursor: str | None = None
+    cursor: str | None = Field(default=None, deprecated=True)
     use_hybrid: bool = False
 
 
@@ -200,7 +200,7 @@ class DiscoverResponse(BaseModel):
     mode: RetrievalMode
     results: list[DiscoverHit]
     total_available: int
-    cursor: str | None = None
+    cursor: str | None = Field(default=None, deprecated=True)
 
 
 # ---------------------------------------------------------------------------

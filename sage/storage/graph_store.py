@@ -519,27 +519,32 @@ class GraphStore:
         #   outbound: follow source_id -> target_id
         #   inbound:  follow target_id -> source_id
         #   both:     union of outbound and inbound
-        def _edge_select(from_col: str, to_col: str, alias: str = "seed") -> str:
-            """SQL fragment selecting edges in one direction."""
+        def _edge_select(match_col: str, follow_col: str) -> str:
+            """SQL fragment selecting edges in one direction.
+
+            Args:
+                match_col: Column to match against (find edges from this node).
+                follow_col: Column to follow (the next node in traversal).
+            """
             type_filter = " AND e.edge_type = ?" if edge_type else ""
             return (
-                f"SELECT e.id AS edge_id, e.{to_col} AS doc_id, "
+                f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "
                 f"e.edge_type, e.created_at AS edge_created_at, "
                 f"e.notes, e.rationale, e.source_id, e.target_id, "
                 f"1 AS depth "
                 f"FROM edges e "
-                f"WHERE e.{from_col} = ?{type_filter}"
+                f"WHERE e.{match_col} = ?{type_filter}"
             )
 
-        def _recursive_step(from_col: str, to_col: str) -> str:
+        def _recursive_step(match_col: str, follow_col: str) -> str:
             type_filter = " AND e.edge_type = ?" if edge_type else ""
             return (
-                f"SELECT e.id AS edge_id, e.{to_col} AS doc_id, "
+                f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "
                 f"e.edge_type, e.created_at AS edge_created_at, "
                 f"e.notes, e.rationale, e.source_id, e.target_id, "
                 f"t.depth + 1 AS depth "
                 f"FROM edges e "
-                f"INNER JOIN traversal t ON e.{from_col} = t.doc_id "
+                f"INNER JOIN traversal t ON e.{match_col} = t.doc_id "
                 f"WHERE t.depth < ?{type_filter}"
             )
 
