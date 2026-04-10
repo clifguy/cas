@@ -55,6 +55,7 @@ class DocumentSummary(BaseModel):
     title: str
     lifecycle_status: str
     source_type: SourceType
+    source_path: str | None = None
     version_label: str | None = None
     project: str | None = None
     doc_type: str | None = None

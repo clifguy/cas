@@ -574,7 +574,7 @@ class GraphStore:
             f")\n"
             f"SELECT t.*, "
             f"d.id AS d_id, d.title, d.lifecycle_status, d.source_type, "
-            f"d.version_label, d.project, d.doc_type, d.tags "
+            f"d.source_path, d.version_label, d.project, d.doc_type, d.tags "
             f"FROM traversal t "
             f"INNER JOIN documents d ON t.doc_id = d.id"
         )
@@ -595,6 +595,7 @@ class GraphStore:
                 "d_title": row["title"],
                 "d_lifecycle_status": row["lifecycle_status"],
                 "d_source_type": row["source_type"],
+                "d_source_path": row["source_path"],
                 "d_version_label": row["version_label"],
                 "d_project": row["project"],
                 "d_doc_type": row["doc_type"],

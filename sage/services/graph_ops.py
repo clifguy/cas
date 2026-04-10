@@ -148,6 +148,7 @@ class GraphOpsService:
                 title=best["d_title"],
                 lifecycle_status=best["d_lifecycle_status"],
                 source_type=SourceType(best["d_source_type"]),
+                source_path=best.get("d_source_path"),
                 version_label=best["d_version_label"],
                 project=best["d_project"],
                 doc_type=best["d_doc_type"],

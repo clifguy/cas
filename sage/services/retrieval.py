@@ -83,20 +83,62 @@ class RetrievalService:
     # ------------------------------------------------------------------
 
     async def _keyword(self, request: DiscoverRequest) -> DiscoverResponse:
-        """BM25-only search. No embedding required."""
+        """BM25-only search. No embedding required.
+
+        A query of "*" returns all documents (useful for filter-only
+        drill-downs from the dashboard).
+        """
         if not request.query:
             raise MissingFieldError("query", "query is required for keyword mode")
 
-        fetch_limit = self._fetch_limit(request)
-        results = await self._content.search_bm25(request.query, fetch_limit)
-        hits = await self._results_to_hits(results, request)
-        hits = await self._boost_metadata_matches(hits, request)
+        if request.query.strip() == "*":
+            # Filter-only listing: return all documents matching filters
+            hits = await self._list_filtered(request)
+        else:
+            fetch_limit = self._fetch_limit(request)
+            results = await self._content.search_bm25(request.query, fetch_limit)
+            hits = await self._results_to_hits(results, request)
+            hits = await self._boost_metadata_matches(hits, request)
 
         return DiscoverResponse(
             mode=RetrievalMode.KEYWORD,
             results=hits[:request.limit],
             total_available=len(hits),
         )
+
+    async def _list_filtered(self, request: DiscoverRequest) -> list[DiscoverHit]:
+        """Return all documents matching scope and filter criteria.
+
+        Used for dashboard drill-downs where no content search is needed.
+        """
+        all_docs = await self._graph.list_all_documents()
+        hits: list[DiscoverHit] = []
+
+        for doc in all_docs:
+            if doc.pipeline_status == PipelineStatus.FAILED:
+                continue
+            if not self._passes_scope(doc, request):
+                continue
+
+            summary = DocumentSummary(
+                id=doc.id,
+                title=doc.title,
+                lifecycle_status=doc.lifecycle_status,
+                source_type=doc.source_type,
+                source_path=doc.source_path,
+                version_label=doc.version_label,
+                project=doc.project,
+                doc_type=doc.doc_type,
+                tags=doc.tags,
+            )
+            hits.append(DiscoverHit(
+                document=summary,
+                chunk_content=None,
+                heading_path=None,
+                relevance_score=None,
+            ))
+
+        return hits
 
     # ------------------------------------------------------------------
     # Semantic retrieval (BH-020, BH-027, BH-028)
@@ -224,6 +266,7 @@ class RetrievalService:
                 title=doc.title,
                 lifecycle_status=doc.lifecycle_status,
                 source_type=doc.source_type,
+                source_path=doc.source_path,
                 version_label=doc.version_label,
                 project=doc.project,
                 doc_type=doc.doc_type,
@@ -283,6 +326,7 @@ class RetrievalService:
                 title=doc.title,
                 lifecycle_status=doc.lifecycle_status,
                 source_type=doc.source_type,
+                source_path=doc.source_path,
                 version_label=doc.version_label,
                 project=doc.project,
                 doc_type=doc.doc_type,
@@ -369,6 +413,7 @@ class RetrievalService:
             title=doc.title,
             lifecycle_status=doc.lifecycle_status,
             source_type=doc.source_type,
+            source_path=doc.source_path,
             version_label=doc.version_label,
             project=doc.project,
             doc_type=doc.doc_type,

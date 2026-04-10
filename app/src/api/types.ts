@@ -87,6 +87,7 @@ export interface DocumentSummary {
   title: string;
   lifecycle_status: string;
   source_type: string;
+  source_path: string | null;
   version_label: string | null;
   project: string | null;
   doc_type: string | null;

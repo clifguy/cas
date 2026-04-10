@@ -37,8 +37,8 @@ export default function Search() {
     setSearching(true);
     setFilterHeading(def.heading(value));
     discover(vaultId, {
-      mode: 'semantic',
-      query: value,
+      mode: 'keyword',
+      query: '*',
       filters: { [def.filterKey]: value },
       limit: 100,
     })
@@ -103,7 +103,7 @@ export default function Search() {
                 <tr key={hit.document.id}>
                   <td style={tdStyle}>
                     <Link to={`/documents/${hit.document.id}`} style={{ color: '#1565c0', textDecoration: 'none' }}>
-                      {hit.document.title}
+                      {sourceFilename(hit.document.source_path) ?? hit.document.title}
                     </Link>
                   </td>
                   <td style={tdStyle}>{hit.document.doc_type?.replace(/_/g, ' ') ?? '-'}</td>
@@ -213,7 +213,7 @@ export default function Search() {
         <div key={hit.document.id} style={{ borderBottom: '1px solid #eee', padding: '16px 0' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
             <Link to={`/documents/${hit.document.id}`} style={{ fontSize: 15, fontWeight: 600, color: '#1565c0', textDecoration: 'none' }}>
-              {hit.document.title}
+              {sourceFilename(hit.document.source_path) ?? hit.document.title}
             </Link>
             {hit.document.doc_type && (
               <span style={badgeStyle}>{hit.document.doc_type.replace(/_/g, ' ')}</span>
@@ -239,6 +239,14 @@ export default function Search() {
       ))}
     </div>
   );
+}
+
+function sourceFilename(sourcePath: string | null | undefined): string | null {
+  if (!sourcePath) return null;
+  const filename = sourcePath.includes('/') ? sourcePath.split('/').pop()! : sourcePath;
+  // Strip extension
+  const dot = filename.lastIndexOf('.');
+  return dot > 0 ? filename.substring(0, dot) : filename;
 }
 
 const btnStyle: React.CSSProperties = { padding: '8px 20px', border: '1px solid #ccc', borderRadius: 4, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 14 };
