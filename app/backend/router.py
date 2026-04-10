@@ -6,6 +6,7 @@ POST /app/ingest -- batch ingest with edge inference and SSE streaming
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -15,16 +16,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.backend.edge_inference import (
-    EdgeInferenceEngine,
-    InferenceItem,
-    resolve_and_execute,
+from app.backend.ingest_service import (
+    BatchIngestService,
+    FileDescriptor,
+    ParsedMetadataInput,
 )
-from app.backend.filename_parser import ParsedMetadata
 from app.backend.scan import ScanResult, scan_directory
 from sage.api.errors import VaultNotFoundError
-from sage.models.enums import SourceType
-from sage.models.schemas import IngestRequest
 
 logger = logging.getLogger(__name__)
 
@@ -109,24 +107,24 @@ def _sse_event(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
-def _metadata_dict_from_parsed(pm: ParsedMetadataResponse | None) -> dict[str, str] | None:
-    """Convert ParsedMetadataResponse to flat string dict for IngestRequest.metadata."""
-    if pm is None:
-        return None
-    d: dict[str, str] = {}
-    if pm.title:
-        d["title"] = pm.title
-    if pm.date:
-        d["date"] = pm.date
-    if pm.project:
-        d["project"] = pm.project
-    if pm.codes:
-        d["codes"] = ",".join(pm.codes)
-    if pm.version:
-        d["version_label"] = pm.version
-    if pm.doc_type:
-        d["doc_type"] = pm.doc_type
-    return d or None
+def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
+    """Convert router's Pydantic model to service's FileDescriptor."""
+    pm = f.parsed_metadata
+    parsed = None
+    if pm:
+        parsed = ParsedMetadataInput(
+            title=pm.title,
+            date=pm.date,
+            project=pm.project,
+            codes=pm.codes,
+            version=pm.version,
+            doc_type=pm.doc_type,
+        )
+    return FileDescriptor(
+        file_path=f.file_path,
+        adapter=f.adapter,
+        parsed_metadata=parsed,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -169,146 +167,69 @@ async def ingest_endpoint(body: IngestRequest_, request: Request):
     services = _get_services(request, body.vault_id)
 
     async def event_stream() -> AsyncGenerator[str, None]:
-        total = len(body.files)
-        path_to_id: dict[str, str] = {}
-        error_count = 0
-        abstracts_generated = 0
-        abstracts_deferred = 0
-        docs_new = 0
-        docs_version = 0
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
-        # Phase 1: Pre-ingest edge plan (skip if infer_edges is False)
-        edge_plan = None
-        if body.infer_edges:
-            engine = EdgeInferenceEngine()
-
-            # Build inference items from request
-            scan_items: list[InferenceItem] = []
-            for f in body.files:
-                pm = f.parsed_metadata
-                if pm:
-                    parsed = ParsedMetadata(
-                        title=pm.title,
-                        date=pm.date,
-                        project=pm.project,
-                        codes=pm.codes,
-                        version=pm.version,
-                        doc_type=pm.doc_type,
-                    )
-                else:
-                    parsed = ParsedMetadata(title=Path(f.file_path).stem)
-                scan_items.append(InferenceItem(
-                    ref=f.file_path,
-                    is_existing=False,
-                    parsed=parsed,
-                ))
-
-            # Get existing vault documents for edge plan context
-            existing_items: list[InferenceItem] = []
-            all_docs = await services.graph_store.list_all_documents()
-            for doc in all_docs:
-                existing_items.append(InferenceItem(
-                    ref=doc.id,
-                    is_existing=True,
-                    parsed=ParsedMetadata(
-                        title=doc.title,
-                        date=None,
-                        project=doc.project,
-                        codes=doc.tags,  # codes stored in tags if available
-                        version=doc.version_label,
-                        doc_type=doc.doc_type,
-                    ),
-                ))
-
-            edge_plan = engine.build_edge_plan(scan_items, existing_items)
-
-        # Phase 2: Per-file ingestion
-        for i, file_item in enumerate(body.files):
-            filename = Path(file_item.file_path).name
-
-            # Emit started event
-            yield _sse_event({
+        async def on_file_start(index: int, total_files: int, filename: str) -> None:
+            await queue.put({
                 "event_type": "progress",
-                "file_index": i,
-                "total_files": total,
+                "file_index": index,
+                "total_files": total_files,
                 "filename": filename,
                 "stage": "projection",
                 "status": "started",
             })
 
-            try:
-                metadata_dict = _metadata_dict_from_parsed(file_item.parsed_metadata)
-                sage_request = IngestRequest(
-                    source=file_item.file_path,
-                    adapter=SourceType(file_item.adapter),
-                    metadata=metadata_dict,
-                )
-                ingest_result = await services.ingestion_service.ingest(
-                    sage_request, body.vault_id
-                )
-                doc = ingest_result.document
-                path_to_id[file_item.file_path] = doc.id
+        async def on_file_done(
+            index: int, total_files: int, filename: str, document_id: str,
+        ) -> None:
+            await queue.put({
+                "event_type": "progress",
+                "file_index": index,
+                "total_files": total_files,
+                "filename": filename,
+                "stage": "projection",
+                "status": "completed",
+                "document_id": document_id,
+            })
 
-                if ingest_result.is_new:
-                    docs_new += 1
-                else:
-                    docs_version += 1
+        async def on_file_error(
+            index: int, total_files: int, filename: str, error_message: str,
+        ) -> None:
+            logger.error("Failed to ingest %s: %s", filename, error_message)
+            await queue.put({
+                "event_type": "progress",
+                "file_index": index,
+                "total_files": total_files,
+                "filename": filename,
+                "stage": "projection",
+                "status": "failed",
+                "error": error_message,
+            })
 
-                # Check abstraction config
-                if services.config.abstraction.enabled:
-                    abstracts_generated += 1
-                else:
-                    abstracts_deferred += 1
-
-                yield _sse_event({
-                    "event_type": "progress",
-                    "file_index": i,
-                    "total_files": total,
-                    "filename": filename,
-                    "stage": "projection",
-                    "status": "completed",
-                    "document_id": doc.id,
-                })
-            except Exception as exc:
-                error_count += 1
-                logger.exception("Failed to ingest %s", file_item.file_path)
-                yield _sse_event({
-                    "event_type": "progress",
-                    "file_index": i,
-                    "total_files": total,
-                    "filename": filename,
-                    "stage": "projection",
-                    "status": "failed",
-                    "error": str(exc),
-                })
-
-        # Phase 3: Post-ingest edge creation (skip if infer_edges is False)
-        edges_created: dict[str, int] = {}
-        edges_staged: dict[str, int] = {}
-        edges_dropped = 0
-        if edge_plan is not None:
-            edge_result = await resolve_and_execute(
-                edge_plan,
-                path_to_id,
-                services.graph_store,
-                services.graph_ops_service,
+        async def run_service() -> None:
+            descriptors = [_to_file_descriptor(f) for f in body.files]
+            svc = BatchIngestService()
+            result = await svc.run(
+                files=descriptors,
+                vault_services=services,
+                infer_edges=body.infer_edges,
+                on_file_start=on_file_start,
+                on_file_done=on_file_done,
+                on_file_error=on_file_error,
             )
-            edges_created = edge_result.edges_created
-            edges_staged = edge_result.edges_staged
-            edges_dropped = edge_result.edges_dropped
+            # Emit summary event
+            summary = result.to_dict()
+            summary["event_type"] = "summary"
+            await queue.put(summary)
+            await queue.put(None)  # sentinel
 
-        # Emit summary event
-        yield _sse_event({
-            "event_type": "summary",
-            "documents_created": {"new": docs_new, "new_version": docs_version},
-            "metadata_pending": docs_new + docs_version,  # all new docs pending
-            "edges_created": edges_created,
-            "edges_staged": edges_staged,
-            "edges_dropped": edges_dropped,
-            "abstracts_generated": abstracts_generated,
-            "abstracts_deferred": abstracts_deferred,
-            "error_count": error_count,
-        })
+        task = asyncio.create_task(run_service())
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield _sse_event(event)
+        await task
 
     return StreamingResponse(
         event_stream(),

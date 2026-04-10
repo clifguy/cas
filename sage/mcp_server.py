@@ -17,12 +17,11 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app.backend.edge_inference import (
-    EdgeInferenceEngine,
-    InferenceItem,
-    resolve_and_execute,
+from app.backend.ingest_service import (
+    BatchIngestService,
+    FileDescriptor,
+    ParsedMetadataInput,
 )
-from app.backend.filename_parser import ParsedMetadata
 from sage.api.errors import (
     DocumentNotFoundError,
     SAGEError,
@@ -30,7 +29,6 @@ from sage.api.errors import (
 )
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
-from sage.models.enums import SourceType
 from sage.models.schemas import (
     DiscoverRequest,
     Edge,
@@ -676,108 +674,33 @@ async def app_batch_ingest(
                 "message": "No files selected for ingestion",
             }, indent=2)
 
-        # Phase 1: Pre-ingest edge plan (skip if infer_edges is False)
-        edge_plan = None
-        if infer_edges:
-            engine = EdgeInferenceEngine()
-            scan_items: list[InferenceItem] = []
-            for f in files:
-                pm = f.get("parsed_metadata")
-                if pm:
-                    parsed = ParsedMetadata(
-                        title=pm.get("title", Path(f["file_path"]).stem),
-                        date=pm.get("date"),
-                        project=pm.get("project"),
-                        codes=pm.get("codes", []),
-                        version=pm.get("version"),
-                        doc_type=pm.get("doc_type"),
-                    )
-                else:
-                    parsed = ParsedMetadata(title=Path(f["file_path"]).stem)
-                scan_items.append(InferenceItem(ref=f["file_path"], is_existing=False, parsed=parsed))
-
-            # Existing vault docs for edge plan context
-            existing_items: list[InferenceItem] = []
-            all_docs = await v.graph_store.list_all_documents()
-            for doc in all_docs:
-                existing_items.append(InferenceItem(
-                    ref=doc.id, is_existing=True,
-                    parsed=ParsedMetadata(
-                        title=doc.title, project=doc.project,
-                        codes=doc.tags, version=doc.version_label,
-                        doc_type=doc.doc_type,
-                    ),
-                ))
-
-            edge_plan = engine.build_edge_plan(scan_items, existing_items)
-
-        # Per-file ingestion
-        path_to_id: dict[str, str] = {}
-        errors: list[dict] = []
-        docs_new = 0
-        docs_version = 0
-        abstracts_generated = 0
-        abstracts_deferred = 0
-
+        # Convert raw dicts to FileDescriptors
+        descriptors: list[FileDescriptor] = []
         for f in files:
-            try:
-                metadata_dict: dict[str, str] | None = None
-                pm = f.get("parsed_metadata")
-                if pm:
-                    metadata_dict = {}
-                    for k in ("title", "date", "project", "doc_type"):
-                        if pm.get(k):
-                            if k == "date":
-                                metadata_dict["date"] = pm[k]
-                            else:
-                                metadata_dict[k] = pm[k]
-                    if pm.get("codes"):
-                        metadata_dict["codes"] = ",".join(pm["codes"]) if isinstance(pm["codes"], list) else pm["codes"]
-                    if pm.get("version"):
-                        metadata_dict["version_label"] = pm["version"]
-
-                request = IngestRequest(
-                    source=f["file_path"],
-                    adapter=SourceType(f["adapter"]),
-                    metadata=metadata_dict or None,
+            pm = f.get("parsed_metadata")
+            parsed = None
+            if pm:
+                parsed = ParsedMetadataInput(
+                    title=pm.get("title", Path(f["file_path"]).stem),
+                    date=pm.get("date"),
+                    project=pm.get("project"),
+                    codes=pm.get("codes", []),
+                    version=pm.get("version"),
+                    doc_type=pm.get("doc_type"),
                 )
-                ingest_result = await v.ingestion_service.ingest(request, vault_id)
-                path_to_id[f["file_path"]] = ingest_result.document.id
-                if ingest_result.is_new:
-                    docs_new += 1
-                else:
-                    docs_version += 1
-                if v.config.abstraction.enabled:
-                    abstracts_generated += 1
-                else:
-                    abstracts_deferred += 1
-            except Exception as exc:
-                errors.append({"filename": Path(f["file_path"]).name, "message": str(exc)})
+            descriptors.append(FileDescriptor(
+                file_path=f["file_path"],
+                adapter=f["adapter"],
+                parsed_metadata=parsed,
+            ))
 
-        # Post-ingest edge creation (skip if infer_edges is False)
-        edges_created: dict[str, int] = {}
-        edges_staged: dict[str, int] = {}
-        edges_dropped = 0
-        if edge_plan is not None:
-            edge_result = await resolve_and_execute(
-                edge_plan, path_to_id, v.graph_store, v.graph_ops_service,
-            )
-            edges_created = edge_result.edges_created
-            edges_staged = edge_result.edges_staged
-            edges_dropped = edge_result.edges_dropped
-
-        summary = {
-            "documents_created": {"new": docs_new, "new_version": docs_version},
-            "metadata_pending": docs_new + docs_version,
-            "edges_created": edges_created,
-            "edges_staged": edges_staged,
-            "edges_dropped": edges_dropped,
-            "abstracts_generated": abstracts_generated,
-            "abstracts_deferred": abstracts_deferred,
-            "error_count": len(errors),
-            "errors": errors,
-        }
-        return json.dumps(summary, indent=2, default=str)
+        svc = BatchIngestService()
+        result = await svc.run(
+            files=descriptors,
+            vault_services=v,
+            infer_edges=infer_edges,
+        )
+        return json.dumps(result.to_dict(), indent=2, default=str)
     except (SAGEError, ValueError) as e:
         return _error_response(e)
 
