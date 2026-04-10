@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
 import type { VaultContext } from '../App';
-import type { PendingMetadata, StagingEdge } from '../api/types';
+import type { PendingMetadata, StagingEdge, UpdateMetadataRequest } from '../api/types';
 import { listPendingMetadata, listStagingEdges, confirmStagingEdge, dismissStagingEdge } from '../api/review';
 import { updateMetadata } from '../api/documents';
 
@@ -97,8 +97,12 @@ function MetadataReview({ vaultId, items }: { vaultId: string; items: PendingMet
           if (info.value != null) baseline[field] = info.value;
         }
       }
-      const docEdits = { ...baseline, ...edits[docId] };
-      await updateMetadata(vaultId, docId, docEdits);
+      const docEdits: Record<string, unknown> = { ...baseline, ...edits[docId] };
+      // tags is a comma-separated string in extracted_fields but the API expects string[]
+      if (typeof docEdits.tags === 'string') {
+        docEdits.tags = (docEdits.tags as string).split(',').map(t => t.trim()).filter(Boolean);
+      }
+      await updateMetadata(vaultId, docId, docEdits as UpdateMetadataRequest);
       setQueue(q => q.filter(item => item.document.id !== docId));
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Confirmation failed';

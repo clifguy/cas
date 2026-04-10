@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.8.1",
-  "manifest_date": "2026-04-08",
+  "manifest_version": "0.8.2",
+  "manifest_date": "2026-04-10",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -52,7 +52,7 @@
         "docs/fs/sage/lifecycle.schema.json",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 52,
+      "test_count": 56,
       "decision_date": "2026-04-06"
     },
     {
@@ -119,9 +119,9 @@
         "docs/ref/2026-04-08_CAS_REF_App-Spec_v0_4.docx",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 35,
+      "test_count": 36,
       "decision_date": "2026-04-08",
-      "notes": "New SAGE API endpoints (vault listing 2, vault statistics 4, hash-check 3, staging edges 4, pending metadata 2, pipeline status filter 1) and application backend endpoints (scan 5, batch ingest via SSE 7, edge inference integration 3, conventions 2). BE-018 revised for parsed metadata in scan results. BE-025 revised for metadata dict in ingest calls. BE-029/030 renumbered to BE-034/035."
+      "notes": "New SAGE API endpoints (vault listing 2, vault statistics 4, hash-check 3, staging edges 4, pending metadata 2, pipeline status filter 1) and application backend endpoints (scan 5, batch ingest via SSE 7, edge inference integration 3, conventions 2). BE-018 revised for parsed metadata in scan results. BE-025 revised for metadata dict in ingest calls. BE-029/030 renumbered to BE-034/035. BE-036 added for document_date in pending metadata extracted_fields."
     },
     {
       "path": "tests/app/mcp_tests.md",
@@ -195,6 +195,11 @@
       "version": "0.8",
       "date": "2026-04-08",
       "summary": "Edge inference and revised app backend test specifications. New file: tests/app/edge_inference_tests.md with 30 tests (TEST-APP-EI-001 through EI-030) across 5 sections: filename parser segment recognition (8 tests), doc_type resolution (4 tests), version_chain inference (6 tests), filename_code_match inference (6 tests), two-phase orchestration (6 tests). Encodes design decisions for tolerant filename parser (all segments nullable except title, known_code_patterns from vault config, keyword_to_doc_type precedence over code_to_doc_type), linear version chains (immediate predecessor only), directed workflow-to-content code matching, and pre-ingest/post-ingest edge plan separation. Backend tests revised: TEST-APP-BE-018 updated for parsed_metadata in scan results, TEST-APP-BE-025 updated for metadata dict in SAGE ingest calls, 3 new tests (BE-031 through BE-033) for edge inference integration in batch ingest, convention tests renumbered to BE-034/BE-035. Backend test count: 30 -> 35."
+    },
+    {
+      "version": "0.8.2",
+      "date": "2026-04-10",
+      "summary": "Document date metadata test specifications. 4 behavioral tests (BH-062 through BH-065) covering document_date from filename metadata, source_modified_at fallback, null when neither available, and graph store round-trip. 1 backend test (BE-036) for document_date in pending metadata extracted_fields. Schema change: Document.document_date nullable string (YYYY-MM-DD). Behavioral test count: 52 -> 56. Backend test count: 35 -> 36."
     }
   ]
 }

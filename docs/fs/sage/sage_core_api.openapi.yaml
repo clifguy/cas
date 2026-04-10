@@ -894,6 +894,14 @@ components:
             Modification timestamp of the source file at time of ingestion.
             Extracted by source adapters from filesystem metadata (st_mtime).
             Null for non-file sources or when the adapter does not provide it.
+        document_date:
+          type: string
+          nullable: true
+          description: >-
+            Authoritative content date in YYYY-MM-DD format. Derived from
+            the filename date code when present, falling back to the date
+            portion of source_modified_at. Null for non-file sources when
+            neither is available.
         semantic_abstract:
           type: string
           nullable: true

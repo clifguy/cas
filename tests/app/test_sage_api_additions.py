@@ -569,6 +569,52 @@ class TestPendingMetadata:
         assert "title" in fields
         assert fields["title"]["source"] in ("filename", "content", "default")
 
+    async def test_be_036_pending_metadata_includes_document_date(
+        self, multi_vault_app, multi_client
+    ):
+        """Pending metadata extracted_fields includes document_date with
+        correct source annotation (BE-036)."""
+        services = multi_vault_app.state.vault_registry["pim_health"]
+        gs = services.graph_store
+
+        # Document with filename-derived date (source_path has date pattern)
+        doc_filename = _make_document(
+            "doc-date-fn",
+            title="Checklist",
+            metadata_confirmed=False,
+        )
+        doc_filename.source_path = "test/2026-04-10_PIM_PV07_checklist_v1.md"
+        doc_filename.document_date = "2026-04-10"
+        await gs.insert_document(doc_filename)
+
+        # Document with fallback date (no date pattern in source_path)
+        doc_fallback = _make_document(
+            "doc-date-fb",
+            title="Notes",
+            metadata_confirmed=False,
+        )
+        doc_fallback.source_path = "test/PIM_PV07_notes.md"
+        doc_fallback.document_date = "2025-06-15"
+        await gs.insert_document(doc_fallback)
+
+        resp = await multi_client.get("/sage_vaults/pim_health/pending-metadata")
+        assert resp.status_code == 200
+        body = resp.json()
+
+        # Filename-derived date
+        item_fn = next(i for i in body if i["document"]["id"] == "doc-date-fn")
+        assert "document_date" in item_fn["extracted_fields"]
+        dd_fn = item_fn["extracted_fields"]["document_date"]
+        assert dd_fn["value"] == "2026-04-10"
+        assert dd_fn["source"] == "filename"
+
+        # Fallback date (no date in filename)
+        item_fb = next(i for i in body if i["document"]["id"] == "doc-date-fb")
+        assert "document_date" in item_fb["extracted_fields"]
+        dd_fb = item_fb["extracted_fields"]["document_date"]
+        assert dd_fb["value"] == "2025-06-15"
+        assert dd_fb["source"] == "default"
+
     async def test_be_015_pending_metadata_empty_when_all_confirmed(
         self, multi_vault_app, multi_client
     ):

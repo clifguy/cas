@@ -882,3 +882,33 @@ as static files. The frontend is accessible at the root URL (`/`).
 
 **Rationale:** One uvicorn process, one port, everything local. No separate
 frontend server needed at runtime.
+
+
+### TEST-APP-BE-036: Pending metadata includes document_date in extracted_fields
+
+**Artifact:** `sage/api/routers/pending_metadata.py` (_build_extracted_fields)
+**Category:** sage_api
+
+**Decision:** The pending metadata endpoint includes `document_date` in
+the extracted_fields dict so the Metadata Review UI can display and edit it.
+The source annotation reflects how the date was derived: `"filename"` when
+the filename parser provided a date code, `"default"` when the value fell
+back to source_modified_at.
+
+**Precondition:** Vault with a document ingested from a file whose name
+contains a date code (e.g., `2026-04-10_PIM_PV07_checklist_v1.md`).
+Metadata not yet confirmed.
+
+**Input:** `GET /sage_vaults/{vault_id}/pending-metadata`
+
+**Expected:**
+- Response includes the document in the pending list
+- `extracted_fields` contains key `"document_date"`
+- `extracted_fields["document_date"].value == "2026-04-10"`
+- `extracted_fields["document_date"].source == "filename"`
+- For a document without a filename date (fallback case),
+  `source == "default"`
+
+**Rationale:** document_date is a reviewable metadata field like title,
+doc_type, and project. Users should see how the date was derived (filename
+vs. filesystem fallback) and be able to correct it before confirmation.

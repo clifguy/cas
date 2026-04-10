@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS documents (
     projected_at TEXT,                -- ISO 8601, nullable
     indexed_at TEXT,                  -- ISO 8601, nullable (BH-007)
     source_modified_at TEXT,          -- ISO 8601, nullable (BH-049)
+    document_date TEXT,               -- YYYY-MM-DD, nullable (BH-062)
     semantic_abstract TEXT,           -- nullable
     pipeline_status TEXT NOT NULL DEFAULT 'projection_complete',
     pipeline_error TEXT,              -- nullable (BH-022, BH-024)
@@ -90,6 +91,8 @@ MIGRATIONS = [
     "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;",
     # v2 -> v3: metadata confirmation tracking (BE-014)
     "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;",
+    # v3 -> v4: document date metadata (BH-062)
+    "ALTER TABLE documents ADD COLUMN document_date TEXT;",
 ]
 
 TABLES = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE]

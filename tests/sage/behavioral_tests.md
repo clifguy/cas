@@ -1045,6 +1045,7 @@ These design decisions require modifications to the Formal Substrate:
 8. **PipelineStatus enum** -- no change needed; `abstraction_skipped` semantics are clarified
    by test assertions but the enum value is unchanged.
 9. **Document.source_modified_at** -- add nullable date-time field. Source file mtime extracted by adapter at ingestion.
+10. **Document.document_date** -- add nullable string field (YYYY-MM-DD format). Authoritative content date derived from filename or source_modified_at fallback.
 
 
 ---
@@ -1137,3 +1138,110 @@ query term.
 
 **Rationale:** Consistency. Failed-pipeline documents are quarantined from
 all retrieval modes, not just semantic.
+
+
+---
+
+## Document Date Metadata
+
+### TEST-SAGE-BH-062: Ingestion with filename date sets document_date from metadata
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (Document.document_date)
+**Category:** ingestion, provenance
+
+**Decision:** When the caller supplies a `date` key in IngestRequest.metadata
+(populated by the filename parser from a YYYY-MM-DD pattern in the filename),
+the ingestion service stores it as `document_date` on the Document. This is
+the authoritative content date, distinct from `source_modified_at` (filesystem
+timestamp) and `created_at` (SAGE ingestion timestamp).
+
+**Precondition:** SAGE vault initialized. Source file exists.
+
+**Input:** `ingest(source="test.md", adapter="markdown", metadata={"date": "2026-04-10"})`
+
+**Expected:**
+- `doc.document_date == "2026-04-10"`
+- `doc.source_modified_at` is set independently from the file's mtime
+- `doc.document_date != doc.source_modified_at.date().isoformat()` (unless
+  they happen to coincide)
+
+**Rationale:** Filenames often encode the document's authoring or effective
+date (e.g., `2026-04-10_PIM_PV07_checklist_v1.md`). This date is a stronger
+provenance signal than the filesystem mtime, which can change from file
+copies, restores, or cloud sync operations. Storing it as a dedicated field
+preserves both signals without conflation.
+
+
+### TEST-SAGE-BH-063: Ingestion without filename date falls back to source_modified_at date
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (Document.document_date)
+**Category:** ingestion, provenance
+
+**Decision:** When no `date` key is present in IngestRequest.metadata, the
+ingestion service derives `document_date` from the date portion of
+`source_modified_at` (YYYY-MM-DD). This ensures every file-sourced document
+has a document_date.
+
+**Precondition:** SAGE vault initialized. Source file exists with a known
+modification time (set via `os.utime` for determinism, e.g., 2025-06-15).
+
+**Input:** `ingest(source="PIM_PV07_checklist_v1.md", adapter="markdown")`
+(no `date` key in metadata)
+
+**Expected:**
+- `doc.document_date == "2025-06-15"` (date portion of source_modified_at)
+- `doc.source_modified_at` is set to the file's full mtime datetime
+
+**Rationale:** Files without date codes in their filename still have a
+meaningful content date: the last time the source file was modified. Using
+the date portion of source_modified_at as fallback ensures document_date
+is populated for all file-sourced documents, supporting chronological
+sorting and display without requiring filename conventions.
+
+
+### TEST-SAGE-BH-064: Ingestion with no filename date and no source_modified_at leaves document_date null
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (Document.document_date)
+**Category:** ingestion, provenance
+
+**Decision:** When neither a filename date nor source_modified_at is
+available, document_date remains null. This covers non-file sources or
+adapters that do not provide filesystem metadata.
+
+**Precondition:** SAGE vault initialized. Stub adapter that returns no
+`source_modified_at` in ProjectionResult.metadata.
+
+**Input:** `ingest(source="api_content", adapter="markdown")` with no `date`
+in metadata and adapter providing no source_modified_at.
+
+**Expected:**
+- `doc.document_date is None`
+- `doc.source_modified_at is None`
+
+**Rationale:** Null is a valid state. Forcing a synthetic date (e.g.,
+created_at) would conflate SAGE operational timestamps with content
+provenance. Better to leave it null and let the UI indicate "unknown."
+
+
+### TEST-SAGE-BH-065: document_date round-trips through graph store
+
+**Artifact:** `sage/storage/graph_store.py` (insert_document, get_document)
+**Category:** graph_store, serialization
+
+**Decision:** `document_date` is stored as a TEXT column in SQLite containing
+a YYYY-MM-DD string. Unlike datetime fields (source_modified_at, created_at),
+no ISO 8601 datetime parsing is needed -- it is a pure date string.
+
+**Precondition:** SAGE vault initialized.
+
+**Input:** Insert a Document with `document_date="2026-04-10"`. Retrieve it
+via `get_document`.
+
+**Expected:**
+- Retrieved `doc.document_date == "2026-04-10"`
+- The value is a string, not a datetime object
+
+**Rationale:** document_date has no time component. Storing it as a date
+string avoids unnecessary datetime parsing and timezone considerations. The
+round-trip test guards the SQLite TEXT serialization path for this field,
+following the same pattern as BH-051 for source_modified_at.

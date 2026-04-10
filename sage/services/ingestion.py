@@ -152,6 +152,7 @@ class IngestionService:
                 "semantic_abstract": None,
                 "indexed_at": None,
                 "source_modified_at": source_modified_at_str,
+                "document_date": None,
             }
             doc = await self._store.update_document(existing.id, updates)
             http_status = 200
@@ -188,6 +189,12 @@ class IngestionService:
             metadata_updates = self._build_metadata_updates(request.metadata)
             if metadata_updates:
                 doc = await self._store.update_document(doc.id, metadata_updates)
+
+        # Fallback: derive document_date from source_modified_at (BH-063)
+        if not doc.document_date and source_modified_at:
+            doc = await self._store.update_document(doc.id, {
+                "document_date": source_modified_at.date().isoformat(),
+            })
 
         # Schedule background pipeline (Stages 2-3) (BH-026)
         asyncio.create_task(
@@ -298,7 +305,7 @@ class IngestionService:
         """
         KNOWN_FIELDS = {
             "title", "version_label", "project", "doc_type",
-            "authority_scope",
+            "authority_scope", "document_date",
         }
         updates: dict = {}
         for key, value in metadata.items():
@@ -306,6 +313,9 @@ class IngestionService:
                 continue
             if key in KNOWN_FIELDS:
                 updates[key] = value
+            elif key == "date":
+                # Filename-parsed date -> document_date (BH-062)
+                updates["document_date"] = value
             elif key == "codes":
                 # codes stored as comma-separated string -> tags list
                 updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]

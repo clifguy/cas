@@ -74,6 +74,7 @@ export interface Document {
   projected_at: string | null;
   indexed_at: string | null;
   source_modified_at: string | null;
+  document_date: string | null;
   semantic_abstract: string | null;
   pipeline_status: string;
   pipeline_error: string | null;
@@ -245,4 +246,5 @@ export interface UpdateMetadataRequest {
   tags?: string[];
   doc_type?: string;
   authority_scope?: string;
+  document_date?: string;
 }

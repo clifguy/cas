@@ -56,6 +56,8 @@ class MetadataService:
                 if request.doc_type not in valid_types:
                     raise InvalidDocTypeError(request.doc_type, valid_types)
                 updates["doc_type"] = request.doc_type
+            if request.document_date is not None:
+                updates["document_date"] = request.document_date
 
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).

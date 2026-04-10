@@ -43,6 +43,7 @@ class Document(BaseModel):
     projected_at: datetime | None = None
     indexed_at: datetime | None = None
     source_modified_at: datetime | None = None
+    document_date: str | None = None
     semantic_abstract: str | None = None
     pipeline_status: PipelineStatus = PipelineStatus.PROJECTION_COMPLETE
     pipeline_error: str | None = None
@@ -109,6 +110,7 @@ class UpdateMetadataRequest(BaseModel):
     tags: list[str] | None = None
     doc_type: str | None = None
     authority_scope: str | None = None
+    document_date: str | None = None
 
 
 class RegisterUserRequest(BaseModel):

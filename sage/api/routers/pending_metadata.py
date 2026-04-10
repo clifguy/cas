@@ -4,6 +4,8 @@ GET /sage_vaults/{vault_id}/pending-metadata -- documents awaiting metadata
     confirmation (BE-014, BE-015).
 """
 
+import re
+
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_graph_store, get_vault_id
@@ -44,6 +46,12 @@ def _build_extracted_fields(doc) -> dict[str, ExtractedField]:
         fields["tags"] = ExtractedField(
             value=",".join(doc.tags), source="content"
         )
+
+    # document_date: filename if date pattern in source_path, otherwise default (BE-036)
+    if doc.document_date:
+        filename = doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path
+        source = "filename" if re.search(r"\d{4}-\d{2}-\d{2}", filename) else "default"
+        fields["document_date"] = ExtractedField(value=doc.document_date, source=source)
 
     return fields
 

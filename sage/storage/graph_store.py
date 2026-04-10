@@ -98,10 +98,10 @@ class GraphStore:
                 version_label, project, tags, authority_scope, doc_type,
                 source_content_hash, adapter_version, created_by, created_at,
                 last_modified_by, updated_at, projected_at, indexed_at,
-                source_modified_at,
+                source_modified_at, document_date,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
                 metadata_confirmed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 doc.id,
                 doc.title,
@@ -122,6 +122,7 @@ class GraphStore:
                 doc.projected_at.isoformat() if doc.projected_at else None,
                 doc.indexed_at.isoformat() if doc.indexed_at else None,
                 doc.source_modified_at.isoformat() if doc.source_modified_at else None,
+                doc.document_date,
                 doc.semantic_abstract,
                 doc.pipeline_status.value,
                 doc.pipeline_error,
@@ -702,6 +703,7 @@ class GraphStore:
                 if row["source_modified_at"]
                 else None
             ),
+            document_date=row["document_date"],
             semantic_abstract=row["semantic_abstract"],
             pipeline_status=PipelineStatus(row["pipeline_status"]),
             pipeline_error=row["pipeline_error"],
