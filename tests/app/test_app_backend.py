@@ -788,6 +788,94 @@ class TestTwoPhaseOrchestration:
         assert result.edges_dropped == 1
         assert result.edges_created == {"supersedes": 1}
 
+    @pytest.mark.asyncio
+    async def test_ei_031_supersedes_transitions_target_to_superseded(self):
+        """Supersedes edge transitions target document to 'superseded'."""
+        plan = EdgePlan(edges=[
+            PlannedEdge("doc-v2", "doc-v1", EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+        ])
+
+        class MockGraphOps:
+            def __init__(self):
+                self.linked = []
+            async def link(self, request):
+                self.linked.append(request)
+
+        class MockGraphStore:
+            def __init__(self):
+                self.staged = []
+                self.updated = []
+                self._docs = {
+                    "doc-v1": {"lifecycle_status": "active"},
+                }
+            async def insert_staging_edge(self, edge):
+                self.staged.append(edge)
+            async def get_document(self, doc_id):
+                from unittest.mock import MagicMock
+                info = self._docs.get(doc_id)
+                if info is None:
+                    return None
+                mock_doc = MagicMock()
+                mock_doc.lifecycle_status = info["lifecycle_status"]
+                return mock_doc
+            async def update_document(self, doc_id, updates):
+                self.updated.append((doc_id, updates))
+                return None
+
+        mock_ops = MockGraphOps()
+        mock_store = MockGraphStore()
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
+
+        assert result.edges_created == {"supersedes": 1}
+        # Target document must have been transitioned to "superseded"
+        assert len(mock_store.updated) == 1
+        updated_id, updates = mock_store.updated[0]
+        assert updated_id == "doc-v1"
+        assert updates["lifecycle_status"] == "superseded"
+        assert "updated_at" in updates
+
+    @pytest.mark.asyncio
+    async def test_ei_032_supersedes_skips_non_active_target(self):
+        """Supersedes lifecycle transition skipped when target not active."""
+        plan = EdgePlan(edges=[
+            PlannedEdge("doc-v3", "doc-v2", EdgeType.SUPERSEDES, 1, "version_chain", "v3 > v2"),
+        ])
+
+        class MockGraphOps:
+            def __init__(self):
+                self.linked = []
+            async def link(self, request):
+                self.linked.append(request)
+
+        class MockGraphStore:
+            def __init__(self):
+                self.staged = []
+                self.updated = []
+                self._docs = {
+                    "doc-v2": {"lifecycle_status": "superseded"},
+                }
+            async def insert_staging_edge(self, edge):
+                self.staged.append(edge)
+            async def get_document(self, doc_id):
+                from unittest.mock import MagicMock
+                info = self._docs.get(doc_id)
+                if info is None:
+                    return None
+                mock_doc = MagicMock()
+                mock_doc.lifecycle_status = info["lifecycle_status"]
+                return mock_doc
+            async def update_document(self, doc_id, updates):
+                self.updated.append((doc_id, updates))
+                return None
+
+        mock_ops = MockGraphOps()
+        mock_store = MockGraphStore()
+        result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
+
+        assert result.edges_created == {"supersedes": 1}
+        # No lifecycle update -- target was already superseded
+        assert len(mock_store.updated) == 0
+
     def test_ei_029_empty_manifest_empty_plan(self):
         """Empty manifest produces empty edge plan."""
         engine = EdgeInferenceEngine()

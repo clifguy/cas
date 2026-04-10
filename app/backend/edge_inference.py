@@ -249,5 +249,23 @@ async def resolve_and_execute(
                 source_id, target_id, planned.edge_type.value,
             )
             result.edges_dropped += 1
+            continue
+
+        # Lifecycle side effect: transition target to "superseded"
+        if planned.tier == 1 and planned.edge_type == EdgeType.SUPERSEDES:
+            try:
+                target_doc = await graph_store.get_document(target_id)
+                if target_doc and target_doc.lifecycle_status == "active":
+                    now = datetime.now(timezone.utc).isoformat()
+                    await graph_store.update_document(
+                        target_id,
+                        {"lifecycle_status": "superseded", "updated_at": now},
+                    )
+            except Exception:
+                logger.warning(
+                    "Supersedes edge created but failed to transition "
+                    "target %s to superseded",
+                    target_id,
+                )
 
     return result

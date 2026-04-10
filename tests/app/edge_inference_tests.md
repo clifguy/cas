@@ -725,3 +725,59 @@ no other files in batch with code TD or title Neural-Analysis)
 
 **Rationale:** Not every ingestion produces edges. The absence of edges is a
 valid outcome, not an error condition.
+
+---
+
+## 6. Lifecycle Side Effects
+
+### TEST-APP-EI-031: Supersedes edge transitions target document to "superseded"
+
+**Artifact:** Bug fix (2026-04-09)
+**Category:** orchestration, lifecycle
+
+**Decision:** When `resolve_and_execute` creates a Tier 1 supersedes edge via
+`link()`, it must also transition the target document's `lifecycle_status` to
+`"superseded"`. This ensures that bulk ingest supersedes edges produce the same
+lifecycle outcome as the explicit `sage_set_lifecycle(action="supersede")` path.
+
+**Precondition:** Edge plan with a Tier 1 supersedes edge. Both source and
+target document IDs are resolved.
+
+**Input:** Edge plan:
+- `doc-v2` supersedes `doc-v1` (Tier 1, version_chain)
+
+**Expected:**
+- Supersedes edge created via `link()`
+- Target document `doc-v1` lifecycle_status updated to `"superseded"`
+- `updated_at` timestamp refreshed on the target document
+
+**Rationale:** The lifecycle service's `set_lifecycle(action="supersede")` both
+transitions the document and creates the edge. The edge inference path creates
+the edge but was missing the lifecycle transition, leaving superseded documents
+in "active" state. This violates the invariant that a document targeted by a
+supersedes edge should have lifecycle_status "superseded".
+
+### TEST-APP-EI-032: Supersedes lifecycle transition skipped when target not active
+
+**Artifact:** Bug fix (2026-04-09)
+**Category:** orchestration, lifecycle
+
+**Decision:** If the target document's current lifecycle_status is not "active"
+(e.g., already "superseded" from a prior edge, or "archived"), the lifecycle
+update is skipped. This prevents overwriting terminal or already-transitioned
+states.
+
+**Precondition:** Edge plan with a Tier 1 supersedes edge. Target document is
+already in "superseded" state.
+
+**Input:** Edge plan:
+- `doc-v3` supersedes `doc-v2` (Tier 1, version_chain)
+- `doc-v2` already has lifecycle_status "superseded"
+
+**Expected:**
+- Supersedes edge created via `link()`
+- `doc-v2` lifecycle_status remains "superseded" (no update call)
+
+**Rationale:** In a chain v3 -> v2 -> v1, v2 might already be superseded by
+processing order. Redundant updates are harmless but unnecessary; skipping them
+keeps the audit trail clean.
