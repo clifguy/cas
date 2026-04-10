@@ -39,10 +39,12 @@ export async function startIngestion(
   files: IngestFileItem[],
   onEvent: (event: IngestEvent) => void,
   signal?: AbortSignal,
+  inferEdges: boolean = false,
 ): Promise<void> {
   const stream = await apiStream('/app/ingest', {
     vault_id: vaultId,
     files,
+    infer_edges: inferEdges,
   }, signal);
 
   await readSSEStream(stream, (data) => {

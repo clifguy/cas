@@ -17,6 +17,7 @@ export default function Ingest() {
   // Step 2 state
   const [files, setFiles] = useState<(ScanResultItem & { selected: boolean })[]>([]);
   const [scanWarnings, setScanWarnings] = useState<string[]>([]);
+  const [inferEdges, setInferEdges] = useState(false);
 
   // Step 3 state
   const [progress, setProgress] = useState({ current: 0, total: 0, filename: '', stage: '', status: '' });
@@ -97,7 +98,7 @@ export default function Ingest() {
           setSummary(event as IngestSummaryEvent);
           setStep(4);
         }
-      }, controller.signal);
+      }, controller.signal, inferEdges);
 
       // Stream ended normally. If the summary event already advanced us to
       // step 4, this is a no-op. If the stream closed without emitting a
@@ -240,7 +241,17 @@ export default function Ingest() {
               })}
             </tbody>
           </table>
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={inferEdges}
+                onChange={e => setInferEdges(e.target.checked)}
+              />
+              Infer edges during ingest
+            </label>
+          </div>
+          <div style={{ marginTop: 8, display: 'flex', gap: 8 }}>
             <button onClick={() => setStep(1)} style={{ ...btnStyle, background: '#eee', color: '#333' }}>Back</button>
             <button onClick={handleIngest} style={btnStyle} disabled={!files.some(f => f.selected)}>
               Ingest Selected ({files.filter(f => f.selected).length})

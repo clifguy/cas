@@ -1245,3 +1245,43 @@ via `get_document`.
 string avoids unnecessary datetime parsing and timezone considerations. The
 round-trip test guards the SQLite TEXT serialization path for this field,
 following the same pattern as BH-051 for source_modified_at.
+
+### TEST-SAGE-BH-066: Hash-only duplicate detection across different paths
+
+**Artifact:** `sage/services/ingestion.py` (ingest method)
+**Category:** ingestion, duplicate_detection
+**Decision:** Same content hash at a different source_path is also a duplicate.
+
+**Precondition:** Document A ingested from `patents/doc_a.docx` with hash H.
+
+**Input:** Ingest from `patents/subfolder/doc_a_copy.docx` with identical
+content (hash H), no force flag.
+
+**Expected:**
+- DuplicateContentError raised (HTTP 409)
+- `code: "duplicate_content"`
+- `detail.existing_document_id: <doc_A_id>`
+- `detail.source_content_hash: H`
+
+**Rationale:** Content-identical files at different paths are common in messy
+real-world file systems (renamed copies, files moved between folders). Admitting
+a second copy creates unwanted duplicates that complicate edge curation and
+retrieval. The hash-only check catches these before the path+hash check.
+
+### TEST-SAGE-BH-067: Hash-only duplicate detection bypassed with force flag
+
+**Artifact:** `sage/services/ingestion.py` (ingest method, force flag)
+**Category:** ingestion, duplicate_detection
+**Decision:** `force: true` bypasses both hash-only and path+hash duplicate checks.
+
+**Precondition:** Document A ingested from `patents/doc_a.docx` with hash H.
+
+**Input:** Ingest from `patents/subfolder/doc_a_copy.docx` with identical
+content (hash H), `force: true`.
+
+**Expected:**
+- HTTP 201 (new document created at the new path)
+- New document ID distinct from doc_A_id
+
+**Rationale:** The force flag is an explicit override for all duplicate
+detection. Callers who set force accept responsibility for managing duplicates.

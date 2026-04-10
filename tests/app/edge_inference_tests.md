@@ -781,3 +781,29 @@ already in "superseded" state.
 **Rationale:** In a chain v3 -> v2 -> v1, v2 might already be superseded by
 processing order. Redundant updates are harmless but unnecessary; skipping them
 keeps the audit trail clean.
+
+### TEST-APP-EI-033: Batch ingest with infer_edges=False creates no edges
+
+**Artifact:** `sage/mcp_server.py` (app_batch_ingest), `app/backend/router.py`
+**Category:** orchestration, edge_inference
+
+**Decision:** When `infer_edges` is False, batch ingest skips the
+EdgeInferenceEngine entirely. Documents are ingested but no edges are created
+and no lifecycle transitions are triggered.
+
+**Precondition:** SAGE vault with at least one existing document (to confirm
+existing documents are not affected).
+
+**Input:** Batch ingest of two versioned files (e.g., `PIM_PV99_Title_v1.md`
+and `PIM_PV99_Title_v2.md`) with `infer_edges: false`.
+
+**Expected:**
+- Both documents ingested successfully (HTTP 201 each)
+- Zero edges created (edges_created: 0)
+- Zero edges staged (edges_staged: 0)
+- No lifecycle transitions on any documents
+- Summary reports document counts but zero edge activity
+
+**Rationale:** Supports the "ingest first, curate later" workflow where an LLM
+agent builds edges post-ingest with semantic understanding, rather than relying
+on deterministic filename-based inference.

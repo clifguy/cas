@@ -120,16 +120,20 @@ export default function GraphExplorer() {
       nodeMap.set(n.document.id, n.document);
     }
 
-    const visNodes = new DataSet(Array.from(nodeMap.values()).map(doc => ({
-      id: doc.id,
-      label: doc.title.length > 30 ? doc.title.slice(0, 27) + '...' : doc.title,
-      shape: docTypeShapes[doc.doc_type ?? ''] ?? 'dot',
-      opacity: lifecycleOpacity[doc.lifecycle_status] ?? 1.0,
-      color: doc.id === centerNodeId ? '#ff8f00' : '#607d8b',
-      font: { size: 12, color: '#333' },
-      title: `${doc.title}\nType: ${doc.doc_type ?? 'unset'}\nStatus: ${doc.lifecycle_status}`,
-      borderWidth: doc.id === centerNodeId ? 3 : 1,
-    })));
+    const visNodes = new DataSet(Array.from(nodeMap.values()).map(doc => {
+      const versionSuffix = doc.version_label ? ` (${doc.version_label})` : '';
+      const fullLabel = doc.title + versionSuffix;
+      return {
+        id: doc.id,
+        label: fullLabel.length > 30 ? fullLabel.slice(0, 27) + '...' : fullLabel,
+        shape: docTypeShapes[doc.doc_type ?? ''] ?? 'dot',
+        opacity: lifecycleOpacity[doc.lifecycle_status] ?? 1.0,
+        color: doc.id === centerNodeId ? '#ff8f00' : '#607d8b',
+        font: { size: 12, color: '#333' },
+        title: `${doc.title}${versionSuffix}\nType: ${doc.doc_type ?? 'unset'}\nStatus: ${doc.lifecycle_status}`,
+        borderWidth: doc.id === centerNodeId ? 3 : 1,
+      };
+    }));
 
     // Deduplicate edges and filter to edges where both endpoints are in nodeMap
     const seenEdges = new Set<string>();
