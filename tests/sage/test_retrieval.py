@@ -1,7 +1,9 @@
-"""Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030.
+"""Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
+BH-058, BH-059, BH-060, BH-061.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
-retrieval (heading path prefix match), and pipeline/scope gating.
+retrieval (heading path prefix match), keyword-only retrieval,
+pipeline/scope gating, and title indexing in chunks.
 """
 
 import pytest
@@ -447,3 +449,124 @@ async def test_filter_by_project(
     doc_ids = [h.document.id for h in response.results]
     assert "doc_pim" in doc_ids
     assert "doc_other" not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-058: Document title is indexed in chunk content for search
+# ---------------------------------------------------------------------------
+
+async def test_bh_058_document_identity_indexed_in_chunks(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document whose body does not contain "PV07" is still discoverable
+    via keyword (BM25) search because the search preamble (title, source
+    filename, tags) is prepended to the first chunk during indexing.
+    """
+    # Document title is "ClinicalNormalization" (no "PV07"),
+    # but source filename contains "PV07"
+    doc = _make_doc("doc_pv07")
+    doc.title = "ClinicalNormalization"
+    doc.source_path = "imports/PIM_PV07_ClinicalNormalization_v1_0.md"
+    doc.tags = ["PV07"]
+    await graph_store.insert_document(doc)
+
+    # Index a chunk with search preamble from source filename
+    # (simulating what _stage2_indexing now produces)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_pv07",
+        [("Section 1",
+          "Title: ClinicalNormalization\n"
+          "Source: PIM_PV07_ClinicalNormalization_v1_0\n"
+          "Tags: PV07\n\n"
+          "This document discusses patent claims.")],
+    )
+
+    # BM25 search for "PV07" should find it via the source filename in preamble
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="PV07",
+        use_hybrid=True,
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_pv07" in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-059: Keyword-only retrieval mode uses BM25 without embedding
+# ---------------------------------------------------------------------------
+
+async def test_bh_059_keyword_mode_bm25_only(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Keyword mode returns BM25 matches without requiring query embedding."""
+    doc_match = _make_doc("doc_match")
+    doc_nomatch = _make_doc("doc_nomatch")
+    await graph_store.insert_document(doc_match)
+    await graph_store.insert_document(doc_nomatch)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_match",
+        [("Section 1", "Title: PV07_Report\n\nDetailed analysis of PV07 claims.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_nomatch",
+        [("Section 1", "Title: Gardening_Guide\n\nTips for spring planting.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV07",
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.mode == RetrievalMode.KEYWORD
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_match" in doc_ids
+    assert "doc_nomatch" not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-060: Keyword mode requires query field
+# ---------------------------------------------------------------------------
+
+async def test_bh_060_keyword_requires_query(retrieval_service):
+    """Keyword mode without query raises MissingFieldError."""
+    request = DiscoverRequest(mode=RetrievalMode.KEYWORD)
+    with pytest.raises(MissingFieldError):
+        await retrieval_service.discover(request)
+
+
+# ---------------------------------------------------------------------------
+# BH-061: Keyword mode excludes failed-pipeline documents
+# ---------------------------------------------------------------------------
+
+async def test_bh_061_keyword_excludes_failed_pipeline(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Failed-pipeline documents are excluded from keyword mode results."""
+    doc_ok = _make_doc("doc_ok_kw")
+    doc_failed = _make_doc("doc_failed_kw", pipeline_status=PipelineStatus.FAILED)
+    doc_failed.pipeline_error = "LLM unavailable"
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_failed)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_ok_kw",
+        [("Section 1", "Patent claims analysis for PV07.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_failed_kw",
+        [("Section 1", "Patent claims analysis for PV07.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV07",
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_ok_kw" in doc_ids
+    assert "doc_failed_kw" not in doc_ids

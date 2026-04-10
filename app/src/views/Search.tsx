@@ -64,7 +64,7 @@ export default function Search() {
 
       const useHybrid = mode === 'hybrid';
       const resp = await discover(vaultId, {
-        mode: 'semantic',
+        mode: mode === 'keyword' ? 'keyword' : 'semantic',
         query: query.trim(),
         filters: Object.keys(filters).length > 0 ? filters : undefined,
         use_hybrid: useHybrid,

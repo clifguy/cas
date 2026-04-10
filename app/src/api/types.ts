@@ -125,7 +125,7 @@ export interface DiscoverHit {
 }
 
 export interface DiscoverRequest {
-  mode: 'semantic' | 'deterministic';
+  mode: 'semantic' | 'keyword' | 'deterministic';
   query?: string;
   scope?: string;
   filters?: {

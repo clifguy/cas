@@ -235,8 +235,12 @@ class IngestionService:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
+        # Build search preamble from document metadata (BH-058)
+        doc = await self._store.get_document(document_id)
+        preamble = self._build_search_preamble(doc) if doc else ""
+
         # Chunk the projection by heading
-        chunks = self._chunk_projection(document_id, projection)
+        chunks = self._chunk_projection(document_id, projection, preamble)
 
         # Embed all chunks
         if chunks:
@@ -306,9 +310,15 @@ class IngestionService:
         return updates
 
     def _chunk_projection(
-        self, document_id: str, projection: ProjectionResult
+        self, document_id: str, projection: ProjectionResult,
+        search_preamble: str = "",
     ) -> list[Chunk]:
-        """Split projection into chunks by heading."""
+        """Split projection into chunks by heading.
+
+        Prepends a search preamble to the first chunk so that document
+        identity signals (title, source filename, tags) are indexed in
+        both BM25 and vector search (BH-058).
+        """
         chunks: list[Chunk] = []
         for i, heading in enumerate(projection.headings):
             if heading.content.strip():
@@ -332,4 +342,30 @@ class IngestionService:
                 )
             )
 
+        # Prepend search preamble to the first chunk for indexing (BH-058)
+        if chunks and search_preamble:
+            chunks[0].content = search_preamble + chunks[0].content
+
         return chunks
+
+    @staticmethod
+    def _build_search_preamble(doc: Document) -> str:
+        """Build a search preamble from document metadata (BH-058).
+
+        Includes title, source filename, and tags so they are indexed
+        for BM25 keyword search and vector similarity.
+        """
+        parts: list[str] = []
+        if doc.title:
+            parts.append(f"Title: {doc.title}")
+        # Source filename contains codes like PV07, REF, etc.
+        if doc.source_path:
+            filename = doc.source_path.rsplit("/", 1)[-1]
+            # Strip extension for cleaner indexing
+            stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+            parts.append(f"Source: {stem}")
+        if doc.tags:
+            parts.append(f"Tags: {', '.join(doc.tags)}")
+        if not parts:
+            return ""
+        return "\n".join(parts) + "\n\n"

@@ -14,7 +14,7 @@ import pytest
 
 from sage.api.errors import DuplicateContentError
 from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import IngestRequest
+from sage.models.schemas import Document, IngestRequest
 
 
 def _create_test_file(tmp_vault_dir: Path, relative_path: str, content: str = "# Test\n\nTest content.") -> Path:
@@ -481,3 +481,105 @@ async def test_bh_057_imports_dir_created_on_demand(
 
     assert imports_dir.exists()
     assert (imports_dir / "fresh.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# BH-058 (unit): _chunk_projection prepends title to first chunk
+# ---------------------------------------------------------------------------
+
+def test_chunk_projection_prepends_preamble(ingestion_service):
+    """The first chunk produced by _chunk_projection includes the search
+    preamble so document identity signals are indexed for search."""
+    from sage.source_adapters.base import HeadingNode, ProjectionResult
+
+    projection = ProjectionResult(
+        text="Body content only.",
+        headings=[
+            HeadingNode(level=1, text="Introduction", path="Introduction",
+                        content="Body content only."),
+        ],
+        content_hash="sha256:abc",
+        adapter_version="0.1.0",
+        title="ClinicalNormalization",
+    )
+
+    preamble = "Title: ClinicalNormalization\nSource: PIM_PV07_ClinicalNormalization_v1_0\n\n"
+    chunks = ingestion_service._chunk_projection("doc1", projection, preamble)
+
+    assert len(chunks) == 1
+    assert chunks[0].content.startswith("Title: ClinicalNormalization\n")
+    assert "PV07" in chunks[0].content
+    assert "Body content only." in chunks[0].content
+
+
+def test_chunk_projection_prepends_preamble_fallback_chunk(ingestion_service):
+    """When there are no headings, the fallback single chunk also gets
+    the search preamble."""
+    from sage.source_adapters.base import ProjectionResult
+
+    projection = ProjectionResult(
+        text="Flat document with no headings.",
+        headings=[],
+        content_hash="sha256:def",
+        adapter_version="0.1.0",
+        title="Flat_Doc",
+    )
+
+    preamble = "Title: Flat_Doc\nSource: PIM_PV07_Flat_Doc\n\n"
+    chunks = ingestion_service._chunk_projection("doc2", projection, preamble)
+
+    assert len(chunks) == 1
+    assert chunks[0].content.startswith("Title: Flat_Doc\n")
+    assert "Flat document with no headings." in chunks[0].content
+
+
+def test_chunk_projection_preamble_only_on_first_chunk(ingestion_service):
+    """When multiple headings produce multiple chunks, only the first
+    chunk gets the search preamble."""
+    from sage.source_adapters.base import HeadingNode, ProjectionResult
+
+    projection = ProjectionResult(
+        text="All content.",
+        headings=[
+            HeadingNode(level=1, text="Part A", path="Part A",
+                        content="Content for part A."),
+            HeadingNode(level=1, text="Part B", path="Part B",
+                        content="Content for part B."),
+        ],
+        content_hash="sha256:ghi",
+        adapter_version="0.1.0",
+        title="Multi_Section_Doc",
+    )
+
+    preamble = "Title: Multi_Section_Doc\nSource: PIM_Multi_Section_Doc\n\n"
+    chunks = ingestion_service._chunk_projection("doc3", projection, preamble)
+
+    assert len(chunks) == 2
+    assert chunks[0].content.startswith("Title: Multi_Section_Doc\n")
+    assert not chunks[1].content.startswith("Title:")
+
+
+def test_build_search_preamble(ingestion_service):
+    """_build_search_preamble includes title, source filename, and tags."""
+    from sage.services.ingestion import IngestionService
+
+    now = datetime.now(timezone.utc)
+    doc = Document(
+        id="test_doc",
+        title="ClinicalNormalization",
+        source_type=SourceType.MARKDOWN,
+        source_path="imports/PIM_PV07_ClinicalNormalization_v1_0.md",
+        source_content_hash="sha256:test",
+        adapter_version="0.1.0",
+        created_by="test",
+        created_at=now,
+        last_modified_by="test",
+        updated_at=now,
+        tags=["PV07"],
+    )
+
+    preamble = IngestionService._build_search_preamble(doc)
+
+    assert "Title: ClinicalNormalization" in preamble
+    assert "Source: PIM_PV07_ClinicalNormalization_v1_0" in preamble
+    assert "Tags: PV07" in preamble

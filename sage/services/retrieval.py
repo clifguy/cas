@@ -1,11 +1,15 @@
-"""Retrieval service: semantic and deterministic discover modes.
+"""Retrieval service: semantic, keyword, and deterministic discover modes.
 
-Covers behavioral tests BH-020, BH-027 through BH-030.
+Covers behavioral tests BH-020, BH-027 through BH-030, BH-059 through BH-061.
 
 Semantic mode:
   - Pure vector search (default) or hybrid vector+BM25 via RRF (BH-027, BH-028).
   - Filters by lifecycle_status != failed pipeline (BH-020).
   - Scope gating: all, authoritative, specific, filtered.
+
+Keyword mode (BH-059, BH-060, BH-061):
+  - BM25-only search. No query embedding required.
+  - Same pipeline and scope gating as semantic mode.
 
 Deterministic mode:
   - Exact heading path prefix match within a single document (BH-029).
@@ -47,10 +51,24 @@ class RetrievalService:
         self._embedding = embedding_provider
         self._config = config
 
+    @staticmethod
+    def _fetch_limit(request: DiscoverRequest) -> int:
+        """Compute content store fetch limit.
+
+        Always over-fetch because results are deduplicated by document
+        (one hit per document) and filtered by pipeline status and scope.
+        Fetch more when filters are active since those discard additional
+        documents post-search.
+        """
+        multiplier = 10 if request.filters else 5
+        return request.limit * multiplier
+
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
         if request.mode == RetrievalMode.SEMANTIC:
             return await self._semantic(request)
+        elif request.mode == RetrievalMode.KEYWORD:
+            return await self._keyword(request)
         elif request.mode == RetrievalMode.DETERMINISTIC:
             return await self._deterministic(request)
         else:
@@ -61,12 +79,36 @@ class RetrievalService:
             )
 
     # ------------------------------------------------------------------
+    # Keyword retrieval (BH-059, BH-060, BH-061)
+    # ------------------------------------------------------------------
+
+    async def _keyword(self, request: DiscoverRequest) -> DiscoverResponse:
+        """BM25-only search. No embedding required."""
+        if not request.query:
+            raise MissingFieldError("query", "query is required for keyword mode")
+
+        fetch_limit = self._fetch_limit(request)
+        results = await self._content.search_bm25(request.query, fetch_limit)
+        hits = await self._results_to_hits(results, request)
+        hits = await self._boost_metadata_matches(hits, request)
+
+        return DiscoverResponse(
+            mode=RetrievalMode.KEYWORD,
+            results=hits[:request.limit],
+            total_available=len(hits),
+        )
+
+    # ------------------------------------------------------------------
     # Semantic retrieval (BH-020, BH-027, BH-028)
     # ------------------------------------------------------------------
 
     async def _semantic(self, request: DiscoverRequest) -> DiscoverResponse:
         if not request.query:
             raise MissingFieldError("query", "query is required for semantic mode")
+
+        # Over-fetch when filters are active so post-filter results
+        # aren't depleted by non-matching documents.
+        fetch_limit = self._fetch_limit(request)
 
         # Embed the query
         embeddings = await self._embedding.embed([request.query])
@@ -75,20 +117,21 @@ class RetrievalService:
         if request.use_hybrid:
             # Hybrid: RRF fusion of vector + BM25 (BH-027)
             results = await self._hybrid_rrf(
-                query_embedding, request.query, request.limit
+                query_embedding, request.query, fetch_limit
             )
         else:
             # Pure vector (BH-028)
             results = await self._content.search_semantic(
-                query_embedding, request.limit
+                query_embedding, fetch_limit
             )
 
         # Filter results: exclude failed-pipeline documents (BH-020)
         hits = await self._results_to_hits(results, request)
+        hits = await self._boost_metadata_matches(hits, request)
 
         return DiscoverResponse(
             mode=RetrievalMode.SEMANTIC,
-            results=hits,
+            results=hits[:request.limit],
             total_available=len(hits),
         )
 
@@ -145,10 +188,26 @@ class RetrievalService:
         results: list[SearchResult],
         request: DiscoverRequest,
     ) -> list[DiscoverHit]:
-        """Convert SearchResults to DiscoverHits, applying pipeline and scope filters."""
-        hits: list[DiscoverHit] = []
+        """Convert SearchResults to DiscoverHits, applying pipeline and scope filters.
+
+        Deduplicates by document ID, keeping only the highest-scoring chunk
+        per document. This prevents a single document with many matching
+        chunks from crowding out other documents in the results.
+        """
+        seen_docs: dict[str, DiscoverHit] = {}
+        doc_cache: dict[str, object | None] = {}
+
         for result in results:
-            doc = await self._graph.get_document(result.document_id)
+            # Skip if we already have a higher-scoring chunk for this document
+            if result.document_id in seen_docs:
+                continue
+
+            # Cache document lookups
+            if result.document_id not in doc_cache:
+                doc_cache[result.document_id] = await self._graph.get_document(
+                    result.document_id
+                )
+            doc = doc_cache[result.document_id]
             if doc is None:
                 continue
 
@@ -171,14 +230,72 @@ class RetrievalService:
                 tags=doc.tags,
             )
 
-            hits.append(DiscoverHit(
+            hit = DiscoverHit(
                 document=summary,
                 chunk_content=result.content,
                 heading_path=result.heading_path or None,
                 relevance_score=result.score,
+            )
+            seen_docs[result.document_id] = hit
+
+        return list(seen_docs.values())
+
+    async def _boost_metadata_matches(
+        self,
+        hits: list[DiscoverHit],
+        request: DiscoverRequest,
+    ) -> list[DiscoverHit]:
+        """Prepend documents matching the query by metadata identity fields.
+
+        Searches title, source_path, and tags in the graph store. Documents
+        found by metadata that aren't already in hits are inserted at the
+        top with a synthetic score above the highest content-search score.
+        This ensures documents whose identity (filename, codes, tags)
+        matches the query are always surfaced, even when BM25 ranks their
+        long body content low.
+        """
+        if not request.query:
+            return hits
+
+        metadata_docs = await self._graph.search_metadata(
+            request.query, limit=request.limit
+        )
+        if not metadata_docs:
+            return hits
+
+        # Determine boost score: above the highest existing score
+        max_score = max((h.relevance_score or 0.0 for h in hits), default=0.0)
+        boost_base = max_score + 0.1 if max_score > 0 else 1.0
+
+        existing_ids = {h.document.id for h in hits}
+        boosted: list[DiscoverHit] = []
+
+        for i, doc in enumerate(metadata_docs):
+            if doc.id in existing_ids:
+                continue
+            if doc.pipeline_status == PipelineStatus.FAILED:
+                continue
+            if not self._passes_scope(doc, request):
+                continue
+
+            summary = DocumentSummary(
+                id=doc.id,
+                title=doc.title,
+                lifecycle_status=doc.lifecycle_status,
+                source_type=doc.source_type,
+                version_label=doc.version_label,
+                project=doc.project,
+                doc_type=doc.doc_type,
+                tags=doc.tags,
+            )
+            boosted.append(DiscoverHit(
+                document=summary,
+                chunk_content=None,
+                heading_path=None,
+                relevance_score=boost_base - (i * 0.001),
             ))
 
-        return hits
+        return boosted + hits
 
     def _passes_scope(self, doc, request: DiscoverRequest) -> bool:
         """Check whether a document passes scope and filter criteria."""

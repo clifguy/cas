@@ -87,7 +87,17 @@ function MetadataReview({ vaultId, items, onRefresh }: { vaultId: string; items:
   async function confirmOne(docId: string) {
     setErrors(prev => { const next = { ...prev }; delete next[docId]; return next; });
     try {
-      const docEdits = edits[docId] ?? {};
+      // Start with extracted field values as baseline, then overlay user edits.
+      // Without this, clicking "Confirm" without editing sends an empty body
+      // and no metadata values are actually persisted.
+      const item = queue.find(i => i.document.id === docId);
+      const baseline: Record<string, string> = {};
+      if (item) {
+        for (const [field, info] of Object.entries(item.extracted_fields)) {
+          if (info.value != null) baseline[field] = info.value;
+        }
+      }
+      const docEdits = { ...baseline, ...edits[docId] };
       await updateMetadata(vaultId, docId, docEdits);
       setQueue(q => q.filter(item => item.document.id !== docId));
     } catch (err) {
@@ -170,7 +180,7 @@ function MetadataReview({ vaultId, items, onRefresh }: { vaultId: string; items:
 
 // -- Edge Review --
 
-function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string; edges: StagingEdge[]; onRefresh: () => void }) {
+function EdgeReview({ vaultId, edges, onRefresh }: { vaultId: string; edges: StagingEdge[]; onRefresh: () => void }) {
   const [staging, setStaging] = useState(edges);
   const [edgeErrors, setEdgeErrors] = useState<Record<string, string>>({});
 
@@ -208,18 +218,21 @@ function EdgeReview({ vaultId, edges, onRefresh: _onRefresh }: { vaultId: string
     }
   }
 
-  function confirmGroup(edgeType: string) {
+  async function confirmGroup(edgeType: string) {
     const group = staging.filter(e => e.edge_type === edgeType);
-    group.forEach(e => handleConfirm(e.id));
+    await Promise.all(group.map(e => handleConfirm(e.id)));
+    onRefresh();
   }
 
-  function dismissGroup(edgeType: string) {
+  async function dismissGroup(edgeType: string) {
     const group = staging.filter(e => e.edge_type === edgeType);
-    group.forEach(e => handleDismiss(e.id));
+    await Promise.all(group.map(e => handleDismiss(e.id)));
+    onRefresh();
   }
 
-  function confirmAll() {
-    staging.forEach(e => handleConfirm(e.id));
+  async function confirmAll() {
+    await Promise.all(staging.map(e => handleConfirm(e.id)));
+    onRefresh();
   }
 
   return (

@@ -219,6 +219,31 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_document(r) for r in rows]
 
+    async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
+        """Search documents by substring match in title, source_path, and tags.
+
+        Returns documents where the query appears in any identity field,
+        ordered by source_path match first (most specific), then title,
+        then tags. Case-insensitive.
+        """
+        return await self._run(self._search_metadata_sync, query, limit)
+
+    def _search_metadata_sync(self, query: str, limit: int) -> list[Document]:
+        conn = self._get_connection()
+        pattern = f"%{query}%"
+        rows = conn.execute(
+            "SELECT * FROM documents "
+            "WHERE source_path LIKE ? COLLATE NOCASE "
+            "   OR title LIKE ? COLLATE NOCASE "
+            "   OR tags LIKE ? COLLATE NOCASE "
+            "ORDER BY "
+            "  CASE WHEN source_path LIKE ? COLLATE NOCASE THEN 0 ELSE 1 END, "
+            "  CASE WHEN title LIKE ? COLLATE NOCASE THEN 0 ELSE 1 END "
+            "LIMIT ?",
+            (pattern, pattern, pattern, pattern, pattern, limit),
+        ).fetchall()
+        return [self._row_to_document(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Edge operations
     # ------------------------------------------------------------------

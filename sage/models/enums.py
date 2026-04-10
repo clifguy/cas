@@ -40,6 +40,7 @@ class UserType(StrEnum):
 
 class RetrievalMode(StrEnum):
     SEMANTIC = "semantic"
+    KEYWORD = "keyword"
     DETERMINISTIC = "deterministic"
     VERIFICATION = "verification"
 

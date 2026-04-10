@@ -1045,3 +1045,95 @@ These design decisions require modifications to the Formal Substrate:
 8. **PipelineStatus enum** -- no change needed; `abstraction_skipped` semantics are clarified
    by test assertions but the enum value is unchanged.
 9. **Document.source_modified_at** -- add nullable date-time field. Source file mtime extracted by adapter at ingestion.
+
+
+---
+
+## Search and Retrieval: Title Indexing and Keyword Mode
+
+### TEST-SAGE-BH-058: Document identity signals indexed in chunk content for search
+
+**Artifact:** Search bug report (2026-04-09): keyword search for "PV07" found
+workflow documents referencing the term in body text but missed the actual PV07
+patent drafts. The PV07 documents had titles like "ClinicalNormalization"
+(extracted from first heading) while "PV07" appeared only in the source
+filename and tags.
+
+**Category:** ingestion / retrieval
+
+**Decision:** The ingestion pipeline builds a search preamble from the document
+record (title, source filename stem, tags) and prepends it to the first chunk's
+content. This makes document identity signals discoverable via BM25 keyword
+search and vector similarity without requiring a separate metadata search path.
+
+**Precondition:** A document with title "ClinicalNormalization", source_path
+containing "PV07", and tags including "PV07". The body content does not contain
+the string "PV07".
+
+**Input:** `discover(mode="semantic", query="PV07", use_hybrid=True)`
+
+**Expected:**
+- The document appears in search results (BM25 matches "PV07" in the source
+  filename within the first chunk's preamble).
+
+**Rationale:** Document identity lives in multiple places: title (from content),
+source filename (from the filesystem), and tags/codes (from the filename
+parser). All three must be searchable. Relying solely on body content misses
+documents whose identifying codes appear only in the filename.
+
+
+### TEST-SAGE-BH-059: Keyword-only retrieval mode uses BM25 without embedding
+
+**Artifact:** Search bug report (2026-04-09): the frontend offered a "Keyword"
+search mode that was never dispatched to the backend.
+
+**Category:** retrieval
+
+**Decision:** A new `keyword` retrieval mode runs BM25-only search. It does
+not require a query embedding, making it faster and more predictable for exact
+term matches.
+
+**Precondition:** Two indexed documents. One contains the query term; the
+other does not.
+
+**Input:** `discover(mode="keyword", query="PV07")`
+
+**Expected:**
+- Returns only the document whose chunk content contains the query term.
+- No embedding call is made (pure BM25).
+- Response mode is `keyword`.
+
+**Rationale:** Users selecting "Keyword" in the UI expect exact term matching.
+Routing keyword mode through the semantic pipeline adds latency (embedding)
+and noise (vector similarity to unrelated content).
+
+
+### TEST-SAGE-BH-060: Keyword mode requires query field
+
+**Category:** retrieval
+
+**Precondition:** None.
+
+**Input:** `discover(mode="keyword")` (no query)
+
+**Expected:** Raises `MissingFieldError` for the `query` field.
+
+**Rationale:** Keyword search without a query is meaningless.
+
+
+### TEST-SAGE-BH-061: Keyword mode excludes failed-pipeline documents
+
+**Category:** retrieval
+
+**Decision:** Pipeline gating (BH-020) applies uniformly to all retrieval
+modes, including the new keyword mode.
+
+**Precondition:** A failed-pipeline document with chunk content matching the
+query term.
+
+**Input:** `discover(mode="keyword", query="matching term")`
+
+**Expected:** The failed-pipeline document does not appear in results.
+
+**Rationale:** Consistency. Failed-pipeline documents are quarantined from
+all retrieval modes, not just semantic.
