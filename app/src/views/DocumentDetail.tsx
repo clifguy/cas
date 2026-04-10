@@ -16,6 +16,8 @@ export default function DocumentDetail() {
   const [showEdgeDialog, setShowEdgeDialog] = useState(false);
   const [newEdgeType, setNewEdgeType] = useState('covers');
   const [newTargetId, setNewTargetId] = useState('');
+  const [newEdgeNotes, setNewEdgeNotes] = useState('');
+  const [newEdgeRationale, setNewEdgeRationale] = useState('');
   const [edgeError, setEdgeError] = useState('');
   const [neighborTitles, setNeighborTitles] = useState<Record<string, string>>({});
 
@@ -70,10 +72,14 @@ export default function DocumentDetail() {
         source_id: id,
         target_id: newTargetId,
         edge_type: newEdgeType,
+        ...(newEdgeNotes.trim() && { notes: newEdgeNotes.trim() }),
+        ...(newEdgeRationale.trim() && { rationale: newEdgeRationale.trim() }),
       });
       setEdges(prev => [...prev, newEdge]);
       setShowEdgeDialog(false);
       setNewTargetId('');
+      setNewEdgeNotes('');
+      setNewEdgeRationale('');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to create edge';
       setEdgeError(msg);
@@ -220,6 +226,26 @@ export default function DocumentDetail() {
                 value={newTargetId}
                 onChange={e => setNewTargetId(e.target.value)}
                 placeholder="Enter document ID"
+                style={{ padding: '4px 8px' }}
+              />
+            </div>
+            <div>
+              <label style={filterLabelStyle}>Notes (optional)</label>
+              <input
+                type="text"
+                value={newEdgeNotes}
+                onChange={e => setNewEdgeNotes(e.target.value)}
+                placeholder="Brief description"
+                style={{ padding: '4px 8px' }}
+              />
+            </div>
+            <div>
+              <label style={filterLabelStyle}>Rationale (optional)</label>
+              <input
+                type="text"
+                value={newEdgeRationale}
+                onChange={e => setNewEdgeRationale(e.target.value)}
+                placeholder="Why this edge exists"
                 style={{ padding: '4px 8px' }}
               />
             </div>

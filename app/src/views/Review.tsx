@@ -56,9 +56,9 @@ export default function Review() {
       </div>
 
       {activeTab === 'metadata' ? (
-        <MetadataReview vaultId={vaultId} items={pendingMeta} onRefresh={fetchData} />
+        <MetadataReview vaultId={vaultId} items={pendingMeta} />
       ) : (
-        <EdgeReview vaultId={vaultId} edges={stagingEdges} onRefresh={fetchData} />
+        <EdgeReview vaultId={vaultId} edges={stagingEdges} />
       )}
     </div>
   );
@@ -66,7 +66,7 @@ export default function Review() {
 
 // -- Metadata Review --
 
-function MetadataReview({ vaultId, items, onRefresh }: { vaultId: string; items: PendingMetadata[]; onRefresh: () => void }) {
+function MetadataReview({ vaultId, items }: { vaultId: string; items: PendingMetadata[] }) {
   const [queue, setQueue] = useState(items);
   const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -110,7 +110,6 @@ function MetadataReview({ vaultId, items, onRefresh }: { vaultId: string; items:
     for (const item of queue) {
       await confirmOne(item.document.id);
     }
-    onRefresh();
   }
 
   return (
@@ -180,7 +179,7 @@ function MetadataReview({ vaultId, items, onRefresh }: { vaultId: string; items:
 
 // -- Edge Review --
 
-function EdgeReview({ vaultId, edges, onRefresh }: { vaultId: string; edges: StagingEdge[]; onRefresh: () => void }) {
+function EdgeReview({ vaultId, edges }: { vaultId: string; edges: StagingEdge[] }) {
   const [staging, setStaging] = useState(edges);
   const [edgeErrors, setEdgeErrors] = useState<Record<string, string>>({});
 
@@ -221,18 +220,15 @@ function EdgeReview({ vaultId, edges, onRefresh }: { vaultId: string; edges: Sta
   async function confirmGroup(edgeType: string) {
     const group = staging.filter(e => e.edge_type === edgeType);
     await Promise.all(group.map(e => handleConfirm(e.id)));
-    onRefresh();
   }
 
   async function dismissGroup(edgeType: string) {
     const group = staging.filter(e => e.edge_type === edgeType);
     await Promise.all(group.map(e => handleDismiss(e.id)));
-    onRefresh();
   }
 
   async function confirmAll() {
     await Promise.all(staging.map(e => handleConfirm(e.id)));
-    onRefresh();
   }
 
   return (

@@ -13,6 +13,7 @@ from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapt
 
 class MarkdownAdapter(SourceAdapter):
     VERSION = "0.1.0"
+    EXTENSIONS = [".md"]
 
     async def project(
         self, source_path: Path, config: dict | None = None

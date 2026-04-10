@@ -48,7 +48,7 @@ export interface VaultStats {
 export interface HealthIndicators {
   pending_metadata_count: number;
   pending_edge_count: number;
-  deferred_abstract_count: number;
+  deferred_abstract_count: number | null;
   failed_ingestion_count: number;
 }
 

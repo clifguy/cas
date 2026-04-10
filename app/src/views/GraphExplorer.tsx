@@ -52,11 +52,18 @@ export default function GraphExplorer() {
     for (const t of Object.keys(edgeStyles)) filters[t] = true;
     return filters;
   });
-  const [lifecycleFilters, setLifecycleFilters] = useState<Record<string, boolean>>(() => {
-    const filters: Record<string, boolean> = {};
-    for (const s of vault?.lifecycle_states ?? []) filters[s.value] = true;
-    return filters;
-  });
+  const [lifecycleFilters, setLifecycleFilters] = useState<Record<string, boolean>>({});
+
+  // Sync lifecycle filters when vault loads (initializer runs before vault is available)
+  useEffect(() => {
+    if (!vault) return;
+    setLifecycleFilters(prev => {
+      if (Object.keys(prev).length > 0) return prev;
+      const filters: Record<string, boolean> = {};
+      for (const s of vault.lifecycle_states) filters[s.value] = true;
+      return filters;
+    });
+  }, [vault]);
   const [selectedNode, setSelectedNode] = useState<DocumentSummary | null>(null);
   const [centerNodeId, setCenterNodeId] = useState(id);
   const [traversalData, setTraversalData] = useState<TraversalNode[]>([]);
@@ -79,6 +86,7 @@ export default function GraphExplorer() {
           title: doc.title,
           lifecycle_status: doc.lifecycle_status,
           source_type: doc.source_type,
+          source_path: doc.source_path,
           version_label: doc.version_label,
           project: doc.project,
           doc_type: doc.doc_type,

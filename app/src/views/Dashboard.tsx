@@ -78,7 +78,19 @@ export default function Dashboard() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
           <HealthCard label="Pending metadata review" count={stats.health.pending_metadata_count} linkTo="/review?tab=metadata" />
           <HealthCard label="Pending edge review" count={stats.health.pending_edge_count} linkTo="/review?tab=edges" />
-          <HealthCard label="Deferred abstracts" count={stats.health.deferred_abstract_count} linkTo="/search?pipeline_status=abstraction_skipped" />
+          {stats.health.deferred_abstract_count != null ? (
+            <HealthCard label="Deferred abstracts" count={stats.health.deferred_abstract_count} linkTo="/search?pipeline_status=abstraction_skipped" />
+          ) : (
+            <div style={{
+              border: '1px solid #ddd',
+              borderRadius: 4,
+              padding: '12px 16px',
+              background: '#f5f5f5',
+            }}>
+              <div style={{ fontSize: 24, fontWeight: 700, color: '#999' }}>N/A</div>
+              <div style={{ fontSize: 12, color: '#666' }}>Abstracts disabled</div>
+            </div>
+          )}
           <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
         </div>
       </Section>

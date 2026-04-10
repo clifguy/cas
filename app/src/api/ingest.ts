@@ -26,6 +26,10 @@ export interface IngestFileItem {
 
 export type IngestEvent = IngestProgressEvent | IngestSummaryEvent;
 
+function isIngestEvent(data: Record<string, unknown>): boolean {
+  return data.event_type === 'progress' || data.event_type === 'summary';
+}
+
 /**
  * Start a batch ingestion via SSE stream. Calls onEvent for each progress
  * and summary event. Returns a promise that resolves when the stream ends.
@@ -42,6 +46,10 @@ export async function startIngestion(
   }, signal);
 
   await readSSEStream(stream, (data) => {
-    onEvent(data as unknown as IngestEvent);
+    if (isIngestEvent(data)) {
+      onEvent(data as unknown as IngestEvent);
+    } else {
+      console.warn('[ingest] Unexpected SSE event:', data);
+    }
   });
 }

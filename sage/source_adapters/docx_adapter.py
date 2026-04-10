@@ -181,6 +181,7 @@ class DocxAdapter(SourceAdapter):
     """Source adapter for Microsoft Word (.docx) documents."""
 
     VERSION = "0.1.0"
+    EXTENSIONS = [".docx"]
 
     async def project(
         self, source_path: Path, config: dict | None = None

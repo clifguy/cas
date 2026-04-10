@@ -269,7 +269,7 @@ class VaultSummary(BaseModel):
 class HealthIndicators(BaseModel):
     pending_metadata_count: int
     pending_edge_count: int
-    deferred_abstract_count: int
+    deferred_abstract_count: int | None
     failed_ingestion_count: int
 
 

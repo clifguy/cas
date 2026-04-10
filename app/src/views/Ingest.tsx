@@ -99,8 +99,13 @@ export default function Ingest() {
         }
       }, controller.signal);
 
-      // If stream ended without summary (shouldn't happen), advance anyway
-      setStep(prev => prev === 3 ? 4 : prev);
+      // Stream ended normally. If the summary event already advanced us to
+      // step 4, this is a no-op. If the stream closed without emitting a
+      // summary (unexpected), advance so the user isn't stuck on step 3.
+      setSummary(prev => {
+        if (!prev) setStep(4);
+        return prev;
+      });
     } catch (err) {
       if (controller.signal.aborted) {
         // Cancelled by user -- advance to results with whatever summary we have

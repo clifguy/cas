@@ -46,14 +46,14 @@ async def list_vaults(request: Request) -> list[VaultSummary]:
             )
             for s in cfg.lifecycle.states
         ]
-        adapters = []
-        for src_type, adapter_cfg in cfg.source_adapters.items():
-            if isinstance(adapter_cfg, dict):
-                adapters.append(VaultAdapterInfo(
-                    source_type=src_type,
-                    enabled=adapter_cfg.get("enabled", True),
-                    extensions=adapter_cfg.get("extensions", []),
-                ))
+        adapters = [
+            VaultAdapterInfo(
+                source_type=source_type.value,
+                enabled=True,
+                extensions=adapter.EXTENSIONS,
+            )
+            for source_type, adapter in services.ingestion_service.registered_adapters.items()
+        ]
 
         results.append(VaultSummary(
             id=vault.id,
@@ -104,7 +104,7 @@ async def vault_stats(
     sqlite_path = brain_root / "graph.db"
     sqlite_size = sqlite_path.stat().st_size if sqlite_path.exists() else 0
 
-    lancedb_dir = brain_root / "content_store.lance"
+    lancedb_dir = brain_root / "lancedb"
     lancedb_size = 0
     if lancedb_dir.exists():
         for f in lancedb_dir.rglob("*"):
@@ -125,7 +125,7 @@ async def vault_stats(
         health=HealthIndicators(
             pending_metadata_count=pending_metadata_count,
             pending_edge_count=staging_count,
-            deferred_abstract_count=deferred_count,
+            deferred_abstract_count=deferred_count if config.abstraction.enabled else None,
             failed_ingestion_count=failed_count,
         ),
     )

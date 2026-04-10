@@ -45,6 +45,11 @@ class IngestionService:
         self._config = config
         self._adapters = source_adapters or {}
 
+    @property
+    def registered_adapters(self) -> dict[SourceType, SourceAdapter]:
+        """Return the runtime adapter registry."""
+        return dict(self._adapters)
+
     def _ensure_vault_local(
         self, source_path: Path, storage_root: Path
     ) -> str:

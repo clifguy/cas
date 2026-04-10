@@ -35,6 +35,7 @@ class SourceAdapter(ABC):
     """Abstract base for source file adapters."""
 
     VERSION: str = "0.0.0"
+    EXTENSIONS: list[str] = []
 
     @abstractmethod
     async def project(

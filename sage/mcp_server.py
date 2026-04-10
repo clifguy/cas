@@ -468,7 +468,7 @@ async def sage_vault_stats(vault_id: str) -> str:
             "health": {
                 "pending_metadata_count": pending_meta,
                 "pending_edge_count": staging_count,
-                "deferred_abstract_count": deferred,
+                "deferred_abstract_count": deferred if v.config.abstraction.enabled else None,
                 "failed_ingestion_count": failed,
             },
         }

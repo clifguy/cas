@@ -113,8 +113,8 @@ export async function readSSEStream(
         try {
           const parsed = JSON.parse(trimmed.slice(6));
           onEvent(parsed);
-        } catch {
-          // skip malformed lines
+        } catch (err) {
+          console.warn('[SSE] Malformed JSON in data line:', trimmed, err);
         }
       }
     }
@@ -125,8 +125,8 @@ export async function readSSEStream(
     try {
       const parsed = JSON.parse(buffer.trim().slice(6));
       onEvent(parsed);
-    } catch {
-      // skip
+    } catch (err) {
+      console.warn('[SSE] Malformed JSON in trailing buffer:', buffer.trim(), err);
     }
   }
 }
