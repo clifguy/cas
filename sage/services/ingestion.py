@@ -94,7 +94,7 @@ class IngestionService:
         return str(dest.relative_to(storage_root))
 
     async def ingest(
-        self, request: IngestRequest, vault_id: str
+        self, request: IngestRequest,
     ) -> IngestResult:
         """Execute Stage 1 synchronously, schedule Stages 2-3 as background tasks.
 

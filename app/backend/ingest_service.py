@@ -148,7 +148,7 @@ class BatchIngestService:
                     metadata=metadata_dict,
                 )
                 ingest_result = await vault_services.ingestion_service.ingest(
-                    request, vault_services.config.vault.id,
+                    request,
                 )
                 path_to_id[fd.file_path] = ingest_result.document.id
 

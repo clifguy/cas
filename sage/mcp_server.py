@@ -136,7 +136,7 @@ async def sage_ingest(
             created_by=created_by,
             force=force,
         )
-        result = await v.ingestion_service.ingest(request, vault_id)
+        result = await v.ingestion_service.ingest(request)
         return _serialize(result.document)
     except (SAGEError, ValueError) as e:
         return _error_response(e)
@@ -411,7 +411,7 @@ async def sage_refresh_views(vault_id: str) -> str:
     """
     try:
         v = _get_vault(vault_id)
-        response = await v.utilities_service.refresh_views(vault_id)
+        response = await v.utilities_service.refresh_views()
         return _serialize(response)
     except (SAGEError, ValueError) as e:
         return _error_response(e)

@@ -116,7 +116,7 @@ class UtilitiesService:
     # eval_retrieval (BH-041, BH-042)
     # ------------------------------------------------------------------
 
-    async def eval_retrieval(self, vault_id: str) -> EvalRetrievalResult:
+    async def eval_retrieval(self) -> EvalRetrievalResult:
         """Run retrieval health assertions against the vault.
 
         Loads assertions from the YAML file referenced in vault config,
@@ -202,7 +202,7 @@ class UtilitiesService:
                 ))
 
         return EvalRetrievalResult(
-            vault_id=vault_id,
+            vault_id=self._config.vault.id,
             passed=len(failures) == 0,
             assertion_count=len(assertions),
             failure_count=len(failures),
@@ -213,7 +213,7 @@ class UtilitiesService:
     # refresh_views (BH-043 through BH-048)
     # ------------------------------------------------------------------
 
-    async def refresh_views(self, vault_id: str) -> RefreshViewsResponse:
+    async def refresh_views(self) -> RefreshViewsResponse:
         """Regenerate symlink-based browsable folder views.
 
         Creates two view dimensions under {storage_root}/views/:
@@ -267,7 +267,7 @@ class UtilitiesService:
             views_generated += 1
 
         return RefreshViewsResponse(
-            vault_id=vault_id,
+            vault_id=self._config.vault.id,
             views_generated=views_generated,
         )
 

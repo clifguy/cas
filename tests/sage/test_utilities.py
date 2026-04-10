@@ -58,7 +58,6 @@ async def ingested_doc(
 
     result = await ingestion.ingest(
         IngestRequest(source="test/sample.md", adapter=SourceType.MARKDOWN),
-        vault_id="test_vault",
     )
 
     # Wait for background pipeline to complete
@@ -186,12 +185,10 @@ async def test_bh041_retrieval_assertions_from_yaml(
 
     result_alpha = await ingestion.ingest(
         IngestRequest(source="test/alpha.md", adapter=SourceType.MARKDOWN),
-        vault_id="test_vault",
     )
     doc_alpha = result_alpha.document
     result_beta = await ingestion.ingest(
         IngestRequest(source="test/beta.md", adapter=SourceType.MARKDOWN),
-        vault_id="test_vault",
     )
     doc_beta = result_beta.document
 
@@ -223,7 +220,7 @@ async def test_bh041_retrieval_assertions_from_yaml(
         config=config,
     )
 
-    result = await service.eval_retrieval("test_vault")
+    result = await service.eval_retrieval()
 
     assert result.vault_id == "test_vault"
     assert result.assertion_count == 2
@@ -279,7 +276,7 @@ async def test_bh042_missing_assertions_file(
     )
 
     with pytest.raises(AssertionsFileNotFoundError) as exc_info:
-        await service.eval_retrieval("test_vault")
+        await service.eval_retrieval()
 
     assert exc_info.value.code == "assertions_file_not_found"
     assert exc_info.value.status_code == 400
@@ -332,7 +329,7 @@ async def test_bh042_malformed_assertions_file(
     )
 
     with pytest.raises(AssertionsFileInvalidError) as exc_info:
-        await service.eval_retrieval("test_vault")
+        await service.eval_retrieval()
 
     assert exc_info.value.code == "assertions_file_invalid"
     assert exc_info.value.status_code == 400
@@ -352,7 +349,7 @@ async def test_no_assertions_configured(
     )
 
     with pytest.raises(AssertionsNotConfiguredError) as exc_info:
-        await service.eval_retrieval("test_vault")
+        await service.eval_retrieval()
 
     assert exc_info.value.code == "assertions_not_configured"
 

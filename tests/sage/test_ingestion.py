@@ -41,7 +41,7 @@ async def test_bh_018_duplicate_content_409(
         source="patents/doc_a.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -51,7 +51,7 @@ async def test_bh_018_duplicate_content_409(
 
     # Second ingest (same path, same content) returns 409
     with pytest.raises(DuplicateContentError) as exc_info:
-        await ingestion_service.ingest(request, "test_vault")
+        await ingestion_service.ingest(request)
 
     err = exc_info.value
     assert err.status_code == 409
@@ -72,7 +72,7 @@ async def test_bh_019_force_reingestion(
         source="patents/doc_force.md",
         adapter=SourceType.MARKDOWN,
     )
-    result1 = await ingestion_service.ingest(request, "test_vault")
+    result1 = await ingestion_service.ingest(request)
 
     doc1 = result1.document
     assert result1.is_new is True
@@ -86,7 +86,7 @@ async def test_bh_019_force_reingestion(
         adapter=SourceType.MARKDOWN,
         force=True,
     )
-    result2 = await ingestion_service.ingest(force_request, "test_vault")
+    result2 = await ingestion_service.ingest(force_request)
 
     doc2 = result2.document
 
@@ -110,7 +110,7 @@ async def test_bh_020_failed_pipeline_marks_document(
         source="patents/doc_fail.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service_failing_llm.ingest(request, "test_vault")
+    result = await ingestion_service_failing_llm.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -136,7 +136,7 @@ async def test_bh_022_failed_document_visible(
         source="patents/doc_visible.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service_failing_llm.ingest(request, "test_vault")
+    result = await ingestion_service_failing_llm.ingest(request)
 
     doc = result.document
     await asyncio.sleep(0.5)
@@ -161,7 +161,7 @@ async def test_bh_024_llm_failure_results_in_failed(
         source="patents/doc_llm_fail.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service_failing_llm.ingest(request, "test_vault")
+    result = await ingestion_service_failing_llm.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -189,7 +189,7 @@ async def test_bh_025_abstraction_disabled(
         source="patents/doc_no_abstract.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service_no_abstraction.ingest(request, "test_vault")
+    result = await ingestion_service_no_abstraction.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -215,7 +215,7 @@ async def test_bh_026_async_pipeline(
         source="patents/doc_async.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
     doc = result.document
 
     # Ingest returns immediately with projection_complete
@@ -248,7 +248,7 @@ async def test_bh_049_source_modified_at_set_on_ingest(
         source="patents/doc_mtime.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -275,7 +275,7 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
         source="patents/doc_mtime_force.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc1 = result.document
     await asyncio.sleep(0.2)
@@ -291,7 +291,7 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
         adapter=SourceType.MARKDOWN,
         force=True,
     )
-    result2 = await ingestion_service.ingest(force_request, "test_vault")
+    result2 = await ingestion_service.ingest(force_request)
 
     doc2 = result2.document
     assert result2.is_new is False
@@ -318,7 +318,7 @@ async def test_bh_051_source_modified_at_round_trip(
         source="patents/doc_roundtrip.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
 
@@ -347,7 +347,7 @@ async def test_bh_052_created_at_is_ingestion_time(
         source="patents/doc_old.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
 
@@ -382,7 +382,7 @@ async def test_bh_053_external_file_copied_to_imports(
         source=str(external_file),  # absolute path
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -410,7 +410,7 @@ async def test_bh_054_imported_source_path_is_vault_relative(
         source=str(external_file),
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -444,7 +444,7 @@ async def test_bh_055_import_name_collision_appends_hash(
         source=str(external_file),
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -481,7 +481,7 @@ async def test_bh_056_internal_file_not_copied(
         source="patents/internal.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -511,7 +511,7 @@ async def test_bh_057_imports_dir_created_on_demand(
         source=str(external_file),
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -641,7 +641,7 @@ async def test_bh_062_filename_date_sets_document_date(
         adapter=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
@@ -669,7 +669,7 @@ async def test_bh_063_fallback_to_source_modified_at_date(
         source="patents/no_date_doc.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
 
@@ -693,7 +693,7 @@ async def test_bh_064_null_when_no_date_sources(
 
     original_ingest = ingestion_service.ingest
 
-    async def _ingest_no_mtime(request, vault_id):
+    async def _ingest_no_mtime(request):
         # We ingest normally but then verify that when source_modified_at
         # is None, document_date is also None.  To test this properly we
         # need to prevent the adapter from setting source_modified_at.
@@ -706,7 +706,7 @@ async def test_bh_064_null_when_no_date_sources(
         source="patents/no_sources.md",
         adapter=SourceType.MARKDOWN,
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
 
@@ -735,7 +735,7 @@ async def test_bh_065_document_date_round_trip(
         adapter=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
-    result = await ingestion_service.ingest(request, "test_vault")
+    result = await ingestion_service.ingest(request)
 
     doc = result.document
 

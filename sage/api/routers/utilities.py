@@ -32,7 +32,7 @@ async def eval_retrieval(
     vault_id: str = Depends(get_vault_id),
     service: UtilitiesService = Depends(get_utilities_service),
 ) -> EvalRetrievalResult:
-    return await service.eval_retrieval(vault_id)
+    return await service.eval_retrieval()
 
 
 @router.post("/refresh-views", response_model=RefreshViewsResponse)
@@ -40,4 +40,4 @@ async def refresh_views(
     vault_id: str = Depends(get_vault_id),
     service: UtilitiesService = Depends(get_utilities_service),
 ) -> RefreshViewsResponse:
-    return await service.refresh_views(vault_id)
+    return await service.refresh_views()

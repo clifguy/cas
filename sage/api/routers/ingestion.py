@@ -16,7 +16,7 @@ async def ingest(
     vault_id: str = Depends(get_vault_id),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
 ) -> JSONResponse:
-    result = await ingestion_service.ingest(request, vault_id)
+    result = await ingestion_service.ingest(request)
     response = IngestResponse(
         document=result.document,
         pipeline_status=result.document.pipeline_status,
