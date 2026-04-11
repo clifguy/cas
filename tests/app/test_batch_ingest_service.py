@@ -80,7 +80,7 @@ def _make_services(
     # Ingestion service -- default: succeed and return new doc
     call_count = 0
 
-    async def _ingest(request, vault_id):
+    async def _ingest(request):
         nonlocal call_count
         call_count += 1
         doc_id = f"doc-{call_count}"
@@ -330,9 +330,9 @@ class TestPerFileIngestion:
 
         original_ingest = services.ingestion_service.ingest.side_effect
 
-        async def tracking_ingest(request, vault_id):
+        async def tracking_ingest(request):
             paths_ingested.append(request.source)
-            return await original_ingest(request, vault_id)
+            return await original_ingest(request)
 
         services.ingestion_service.ingest = AsyncMock(side_effect=tracking_ingest)
 
@@ -380,7 +380,7 @@ class TestPerFileIngestion:
         services = _make_services()
         call_idx = 0
 
-        async def failing_ingest(request, vault_id):
+        async def failing_ingest(request):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 2:
@@ -465,7 +465,7 @@ class TestEdgeExecution:
         services = _make_services()
         call_idx = 0
 
-        async def partial_ingest(request, vault_id):
+        async def partial_ingest(request):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 1:
@@ -551,7 +551,7 @@ class TestProgressCallbacks:
         services = _make_services()
         call_idx = 0
 
-        async def failing_ingest(request, vault_id):
+        async def failing_ingest(request):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 2:
@@ -593,7 +593,7 @@ class TestProgressCallbacks:
         services = _make_services()
         call_idx = 0
 
-        async def mixed_ingest(request, vault_id):
+        async def mixed_ingest(request):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 2:
@@ -650,7 +650,7 @@ class TestCallerIntegration:
         services = _make_services()
         call_idx = 0
 
-        async def mixed_ingest(request, vault_id):
+        async def mixed_ingest(request):
             nonlocal call_idx
             call_idx += 1
             if call_idx == 3:
