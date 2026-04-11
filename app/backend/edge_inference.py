@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from app.backend.filename_parser import ParsedMetadata, normalize_version
 from sage.models.enums import EdgeType
-from sage.models.schemas import Document, LinkRequest, StagingEdge
+from sage.models.schemas import LinkRequest, StagingEdge
 from sage.services.graph_ops import GraphOpsService
 from sage.storage.graph_store import GraphStore
 

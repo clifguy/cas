@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -136,7 +136,6 @@ async def scan_endpoint(body: ScanRequest, request: Request) -> dict:
     """Scan a directory and return files with status and parsed metadata."""
     directory = Path(body.directory)
     if not directory.is_dir():
-        from fastapi import HTTPException
         raise HTTPException(
             status_code=400,
             detail="Directory not found or not readable",
@@ -161,7 +160,6 @@ async def scan_endpoint(body: ScanRequest, request: Request) -> dict:
 async def ingest_endpoint(body: IngestRequest_, request: Request):
     """Batch ingest with two-phase edge inference, streamed via SSE."""
     if not body.files:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="No files selected for ingestion")
 
     services = _get_services(request, body.vault_id)

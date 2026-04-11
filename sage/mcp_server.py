@@ -17,11 +17,6 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from app.backend.ingest_service import (
-    BatchIngestService,
-    FileDescriptor,
-    ParsedMetadataInput,
-)
 from sage.api.errors import (
     DocumentNotFoundError,
     SAGEError,
@@ -666,6 +661,12 @@ async def app_batch_ingest(
             lifecycle transitions.
     """
     try:
+        from app.backend.ingest_service import (
+            BatchIngestService,
+            FileDescriptor,
+            ParsedMetadataInput,
+        )
+
         v = _get_vault(vault_id)
 
         if not files:
