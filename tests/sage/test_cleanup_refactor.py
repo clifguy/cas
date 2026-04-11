@@ -258,7 +258,7 @@ class TestIngestResult:
         services, config = vault
         from sage.services.ingestion import IngestResult
         request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN)
-        result = await services.ingestion_service.ingest(request, "test_vault")
+        result = await services.ingestion_service.ingest(request)
 
         assert isinstance(result, IngestResult)
         assert result.is_new is True
@@ -271,11 +271,11 @@ class TestIngestResult:
         from sage.services.ingestion import IngestResult
         request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN)
         # First ingest
-        await services.ingestion_service.ingest(request, "test_vault")
+        await services.ingestion_service.ingest(request)
         await asyncio.sleep(0.2)
         # Force re-ingest
         force_request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN, force=True)
-        result = await services.ingestion_service.ingest(force_request, "test_vault")
+        result = await services.ingestion_service.ingest(force_request)
 
         assert isinstance(result, IngestResult)
         assert result.is_new is False
