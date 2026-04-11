@@ -10,6 +10,7 @@ import json
 import uuid as _uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -395,6 +396,21 @@ def register_sage_tools(
             failed = by_pipeline.get("failed", 0)
             last_ingestion = await gs.get_last_ingestion_at()
 
+            # Storage sizes
+            brain_root = Path(v.config.vault.brain_root).expanduser()
+            sqlite_path = brain_root / "graph.db"
+            sqlite_size = sum(
+                p.stat().st_size
+                for suffix in ("", "-wal", "-shm")
+                if (p := sqlite_path.with_name(sqlite_path.name + suffix)).exists()
+            )
+            lancedb_dir = brain_root / "lancedb"
+            lancedb_size = (
+                sum(f.stat().st_size for f in lancedb_dir.rglob("*") if f.is_file())
+                if lancedb_dir.exists()
+                else 0
+            )
+
             result = {
                 "total_documents": total_docs,
                 "by_lifecycle_state": by_lifecycle,
@@ -403,8 +419,8 @@ def register_sage_tools(
                 "total_edges": total_edges,
                 "by_edge_type": by_edge_type,
                 "staging_edge_count": staging_count,
-                "lancedb_size_bytes": 0,
-                "sqlite_size_bytes": 0,
+                "lancedb_size_bytes": lancedb_size,
+                "sqlite_size_bytes": sqlite_size,
                 "last_ingestion_at": last_ingestion,
                 "health": {
                     "pending_metadata_count": pending_meta,

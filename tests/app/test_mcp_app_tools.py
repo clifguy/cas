@@ -224,6 +224,32 @@ class TestSageVaultStats:
         result = _parse(await sage_vault_stats("nonexistent"))
         assert result["error"] == "unknown_vault"
 
+    async def test_sqlite_size_bytes_nonzero_after_ingest(self, single_vault):
+        """sqlite_size_bytes reflects actual graph.db file size."""
+        services, config = single_vault
+        await sage_ingest("test_vault", "sample.md", "markdown")
+        await asyncio.sleep(0.3)
+
+        result = _parse(await sage_vault_stats("test_vault"))
+        assert result["sqlite_size_bytes"] > 0
+
+    async def test_lancedb_size_bytes_nonzero_after_indexing(self, single_vault):
+        """lancedb_size_bytes reflects actual LanceDB directory size."""
+        services, config = single_vault
+        await sage_ingest("test_vault", "sample.md", "markdown")
+        await asyncio.sleep(0.5)  # allow indexing to complete
+
+        result = _parse(await sage_vault_stats("test_vault"))
+        assert result["lancedb_size_bytes"] > 0
+
+    async def test_storage_sizes_zero_for_empty_vault(self, single_vault):
+        """Empty vault has sqlite overhead but zero LanceDB (no table yet)."""
+        result = _parse(await sage_vault_stats("test_vault"))
+        # SQLite file exists with schema, so it has some size
+        assert result["sqlite_size_bytes"] > 0
+        # LanceDB directory may not exist or be empty before first ingest
+        assert result["lancedb_size_bytes"] >= 0
+
 
 # ---------------------------------------------------------------------------
 # 3. sage_hash_check (MCP-006, MCP-007)
