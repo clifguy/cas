@@ -27,9 +27,11 @@ from sage.mcp_server import (
     sage_link,
     sage_refresh_views,
     sage_register_user,
+    sage_reload_vault,
     sage_set_lifecycle,
     sage_traverse,
     sage_update_metadata,
+    sage_vault_stats,
 )
 
 
@@ -368,3 +370,100 @@ async def test_refresh_views(vault_services):
     assert result["vault_id"] == "test_vault"
     assert isinstance(result["views_generated"], int)
     assert result["views_generated"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Vault reload
+# ---------------------------------------------------------------------------
+
+
+async def test_reload_vault_reinitializes_services(vault_services):
+    """Reload replaces services with a fresh instance and returns stats."""
+    # Ingest a document so we can verify data survives reload
+    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await asyncio.sleep(0.3)
+
+    old_services = _vaults["test_vault"]
+    result = _parse(await sage_reload_vault("test_vault"))
+
+    assert result["vault_id"] == "test_vault"
+    assert result["reloaded"] is True
+    assert result["document_count"] >= 1
+    # Services instance should be replaced
+    assert _vaults["test_vault"] is not old_services
+
+
+async def test_reload_vault_closes_old_graph_store(vault_services):
+    """Old GraphStore connections are closed after reload."""
+    old_graph_store = vault_services.graph_store
+    assert old_graph_store._executor is not None
+
+    await sage_reload_vault("test_vault")
+
+    # Old store should be shut down
+    assert old_graph_store._executor is None
+    assert old_graph_store._all_connections == []
+
+
+async def test_reload_vault_unknown_vault_returns_error(vault_services):
+    """Reload on a nonexistent vault returns structured error."""
+    result = _parse(await sage_reload_vault("nonexistent_vault"))
+    assert result["error"] == "unknown_vault"
+    assert "nonexistent_vault" in result["message"]
+
+
+async def test_reload_vault_sees_external_changes(vault_services):
+    """After external DB changes and reload, fresh services see current state.
+
+    Simulates the core use case: data modified outside the MCP process,
+    then reload picks up the new state.
+    """
+    # Ingest through the current services
+    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await asyncio.sleep(0.3)
+
+    # Verify document is visible
+    stats_before = _parse(await sage_vault_stats("test_vault"))
+    assert stats_before["total_documents"] == 1
+
+    # Simulate external modification: insert a document directly into the
+    # database file, bypassing the in-process services. This mimics what
+    # happens when the FastAPI server or another process writes to the DB.
+    import sqlite3
+    import uuid
+    from datetime import datetime, timezone
+
+    db_path = vault_services.graph_store._db_path
+    conn = sqlite3.connect(str(db_path))
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO documents
+           (id, title, source_path, source_type, source_content_hash,
+            adapter_version, created_by, last_modified_by,
+            lifecycle_status, pipeline_status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            str(uuid.uuid4()),
+            "Externally Added",
+            "external/doc.md",
+            "markdown",
+            "sha256:external_test_hash",
+            "1.0",
+            "test",
+            "test",
+            "active",
+            "abstraction_complete",
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    # Reload vault to pick up external changes
+    await sage_reload_vault("test_vault")
+    await asyncio.sleep(0.1)
+
+    # Fresh services should see both documents
+    stats_after = _parse(await sage_vault_stats("test_vault"))
+    assert stats_after["total_documents"] == 2

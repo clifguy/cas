@@ -87,6 +87,51 @@ mcp = FastMCP("SAGE", lifespan=_lifespan)
 # Register tools from submodules
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Server-level tools (not SAGE protocol or app tools)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def sage_reload_vault(vault_id: str) -> str:
+    """Reload a vault by closing its current services and reinitializing from
+    the same configuration. Use this when vault databases have been modified
+    externally (e.g. by the FastAPI server, another MCP client, or direct
+    database operations) and the current MCP session is seeing stale data.
+
+    Args:
+        vault_id: Target vault identifier.
+    """
+    if vault_id not in _vaults:
+        return _error_response(
+            ValueError(
+                f"Unknown vault_id: {vault_id}. "
+                f"Available vaults: {', '.join(sorted(_vaults.keys())) or '(none)'}"
+            )
+        )
+
+    old_services = _vaults[vault_id]
+    config = old_services.config
+
+    # Tear down old services
+    await old_services.graph_store.close()
+
+    # Reinitialize from the same config
+    new_services = await initialize_services(config)
+    _vaults[vault_id] = new_services
+
+    # Return confirmation with basic stats
+    total_docs = len(await new_services.graph_store.list_all_documents())
+    return json.dumps(
+        {
+            "vault_id": vault_id,
+            "reloaded": True,
+            "document_count": total_docs,
+        },
+        indent=2,
+    )
+
+
 _sage_tools = register_sage_tools(mcp, _get_vault, _serialize, _error_response, _vaults)
 _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 
