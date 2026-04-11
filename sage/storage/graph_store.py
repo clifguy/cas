@@ -415,7 +415,7 @@ class GraphStore:
 
     def _get_document_counts_by_field_sync(self, field: str) -> dict[str, int]:
         # Allowlist of valid fields to prevent SQL injection
-        allowed = {"lifecycle_status", "doc_type", "source_type", "pipeline_status"}
+        allowed = {"lifecycle_status", "doc_type", "source_type", "pipeline_status", "project"}
         if field not in allowed:
             return {}
         conn = self._get_connection()

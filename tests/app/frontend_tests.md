@@ -776,6 +776,32 @@ rankings than post-filtering (which wastes result slots on excluded documents).
 **Rationale:** Common use case: "show me everything that's current" (draft +
 active) excluding historical versions.
 
+### TEST-APP-UI-056: Long snippet content is truncated to first and last 100 words
+
+**Artifact:** App Spec v0.4, Section 9.4 (Results Display)
+**Category:** search
+
+**Decision:** When chunk_content exceeds 200 words, the search result snippet
+displays the first 100 words and the last 100 words separated by an ellipsis.
+Content of 200 words or fewer displays in full.
+
+**Precondition:** Vault with indexed documents, at least one containing chunk
+content longer than 200 words.
+
+**Input:** Execute a search that returns a result with chunk_content exceeding
+200 words.
+
+**Expected:**
+- Snippet shows exactly the first 100 words of the original content
+- Followed by a Unicode ellipsis character (U+2026)
+- Followed by exactly the last 100 words of the original content
+- Content of 200 words or fewer is displayed unchanged
+
+**Rationale:** Full document content overwhelms the results list and makes
+scanning impractical. Head and tail excerpts preserve the document opening
+(typically title/abstract context) and the most recent content, giving the user
+enough signal to decide whether to drill in.
+
 ---
 
 ## 7. Document Detail

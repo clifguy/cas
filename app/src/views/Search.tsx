@@ -52,8 +52,8 @@ export default function Search() {
       });
   }
 
-  async function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSearch(e?: React.FormEvent) {
+    if (e) e.preventDefault();
     if (!query.trim()) return;
     setSearching(true);
     try {
@@ -157,13 +157,13 @@ export default function Search() {
 
         {showFilters && (
           <div style={{ marginTop: 8, padding: 12, background: '#f9f9f9', border: '1px solid #eee', borderRadius: 4 }}>
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div>
                 <label style={filterLabelStyle}>Document type</label>
                 <select
                   value={docTypeFilter}
                   onChange={e => setDocTypeFilter(e.target.value)}
-                  style={{ padding: '4px 8px' }}
+                  style={{ padding: '4px 8px', fontSize: 12 }}
                 >
                   <option value="">All</option>
                   {vault.doc_types.map(dt => (
@@ -177,7 +177,7 @@ export default function Search() {
                 <select
                   value={lifecycleFilter}
                   onChange={e => setLifecycleFilter(e.target.value)}
-                  style={{ padding: '4px 8px' }}
+                  style={{ padding: '4px 8px', fontSize: 12 }}
                 >
                   <option value="">All</option>
                   {vault.lifecycle_states.map(ls => (
@@ -188,14 +188,27 @@ export default function Search() {
 
               <div>
                 <label style={filterLabelStyle}>Project</label>
-                <input
-                  type="text"
+                <select
                   value={projectFilter}
                   onChange={e => setProjectFilter(e.target.value)}
-                  placeholder="e.g. pim_health"
-                  style={{ padding: '4px 8px' }}
-                />
+                  style={{ padding: '4px 8px', fontSize: 12 }}
+                >
+                  <option value="">All</option>
+                  {vault.projects.map(p => (
+                    <option key={p} value={p}>{p.replace(/_/g, ' ')}</option>
+                  ))}
+                </select>
               </div>
+
+              {hasSearched && (
+                <button
+                  type="button"
+                  onClick={() => handleSearch()}
+                  style={{ ...btnStyle, padding: '4px 14px', fontSize: 12 }}
+                >
+                  Update
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -232,13 +245,21 @@ export default function Search() {
 
           {hit.chunk_content && (
             <div style={{ fontSize: 13, color: '#444', marginBottom: 4, lineHeight: 1.5 }}>
-              {hit.chunk_content}
+              {truncateContent(hit.chunk_content)}
             </div>
           )}
         </div>
       ))}
     </div>
   );
+}
+
+function truncateContent(text: string): string {
+  const words = text.split(/\s+/);
+  if (words.length <= 200) return text;
+  const head = words.slice(0, 100).join(' ');
+  const tail = words.slice(-100).join(' ');
+  return `${head} \u2026 ${tail}`;
 }
 
 function sourceFilename(sourcePath: string | null | undefined): string | null {

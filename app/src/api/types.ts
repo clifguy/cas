@@ -10,6 +10,7 @@ export interface VaultSummary {
   doc_types: DocTypeEntry[];
   lifecycle_states: LifecycleState[];
   adapters: AdapterInfo[];
+  projects: string[];
 }
 
 export interface DocTypeEntry {

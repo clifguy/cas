@@ -276,6 +276,7 @@ class VaultSummary(BaseModel):
     doc_types: list[VaultDocTypeEntry] = Field(default_factory=list)
     lifecycle_states: list[VaultLifecycleState] = Field(default_factory=list)
     adapters: list[VaultAdapterInfo] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
 
 
 class HealthIndicators(BaseModel):

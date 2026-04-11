@@ -55,6 +55,9 @@ async def list_vaults(request: Request) -> list[VaultSummary]:
             for source_type, adapter in services.ingestion_service.registered_adapters.items()
         ]
 
+        project_counts = await services.graph_store.get_document_counts_by_field("project")
+        projects = sorted(project_counts.keys())
+
         results.append(VaultSummary(
             id=vault.id,
             name=vault.name,
@@ -63,6 +66,7 @@ async def list_vaults(request: Request) -> list[VaultSummary]:
             doc_types=doc_types,
             lifecycle_states=lifecycle_states,
             adapters=adapters,
+            projects=projects,
         ))
     return results
 
