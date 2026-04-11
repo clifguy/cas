@@ -1,11 +1,11 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-034).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-037).
 
 Production adapter tests for nomic-embed-text EmbeddingProvider, LanceDB
-ContentStore, Qwen3 AbstractionProvider, and Markdown source adapter
-provenance. Embedding and content store tests require nomic-embed-text
-(~270MB download on first run). Abstraction tests require mlx-lm and
-Qwen3 model weights (~16GB download on first run). Markdown adapter tests
-have no external dependencies.
+ContentStore, Qwen3 AbstractionProvider (with lazy loading), and Markdown
+source adapter provenance. Embedding and content store tests require
+nomic-embed-text (~270MB download on first run). Abstraction tests require
+mlx-lm and Qwen3 model weights (~16GB download on first run). Markdown
+adapter tests have no external dependencies.
 
 Tests are organized in implementation dependency order: embedding provider
 first, then content store, then abstraction provider, then markdown adapter.
@@ -578,7 +578,9 @@ SAMPLE_TEXT = (
 
 @pytest.fixture(scope="module")
 def qwen3_provider():
-    """Module-scoped abstraction provider (model loads once for all tests)."""
+    """Module-scoped abstraction provider. With lazy loading, construction
+    is cheap (no model allocated). The first generate_abstract() call in
+    the test suite triggers the actual model load."""
     if not _HAS_QWEN3:
         pytest.skip("mlx-lm or Qwen3 model not available")
     return Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
@@ -588,15 +590,23 @@ def qwen3_provider():
 class TestQwen3AbstractionProvider:
     """Tests AD-026 through AD-033."""
 
-    def test_ad_026_init_succeeds(self, qwen3_provider):
-        """AD-026: Provider init loads model eagerly."""
-        assert qwen3_provider._model is not None
-        assert qwen3_provider._tokenizer is not None
+    def test_ad_026_init_defers_loading(self):
+        """AD-026: Provider constructor succeeds without loading model."""
+        provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+        assert provider._model is None
+        assert provider._tokenizer is None
 
-    def test_ad_026_init_fails_on_bad_model(self):
-        """AD-026: Provider init fails fast if model unavailable."""
+    def test_ad_026_bad_model_succeeds_at_init(self):
+        """AD-026: Bad model ID succeeds at construction (lazy loading)."""
+        provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
+        # Construction succeeds; failure deferred to first use
+        assert provider._model is None
+
+    async def test_ad_026_bad_model_fails_on_first_call(self):
+        """AD-026: Bad model ID raises RuntimeError on first generate_abstract()."""
+        provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
-            Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
+            await provider.generate_abstract("Test text.", 200)
 
     async def test_ad_027_non_empty_output(self, qwen3_provider):
         """AD-027: Generated abstract is a non-empty string."""
@@ -672,6 +682,42 @@ class TestQwen3AbstractionProvider:
 
         with pytest.raises(RuntimeError, match="Simulated MLX inference failure"):
             await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+
+
+@requires_qwen3
+class TestQwen3LazyLoading:
+    """Tests AD-035 through AD-037: lazy model loading behavior."""
+
+    async def test_ad_035_defers_load_to_first_call(self):
+        """AD-035: Constructor does not load model; first call triggers load."""
+        provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+        assert provider._model is None
+
+        result = await provider.generate_abstract(SAMPLE_TEXT, 200)
+        assert provider._model is not None
+        assert isinstance(result, str)
+        assert len(result.strip()) > 0
+
+    async def test_ad_036_second_call_reuses_model(self):
+        """AD-036: Second generate_abstract() reuses the loaded model."""
+        provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
+
+        await provider.generate_abstract(SAMPLE_TEXT, 200)
+        model_after_first = provider._model
+        assert model_after_first is not None
+
+        await provider.generate_abstract("Different input text.", 200)
+        assert provider._model is model_after_first  # Same object identity
+
+    async def test_ad_037_load_failure_raises_and_stays_unloaded(self):
+        """AD-037: Model load failure raises RuntimeError; provider
+        remains in unloaded state for potential retry."""
+        provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
+
+        with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
+            await provider.generate_abstract(SAMPLE_TEXT, 200)
+
+        assert provider._model is None  # No partial state
 
 
 # ── Markdown Adapter: Source Provenance ────────────────────────────

@@ -6,7 +6,8 @@ extensions like 'filed' that aren't in the base enum.
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+from typing import Annotated
 
 from sage.models.enums import (
     EdgeType,
@@ -103,11 +104,20 @@ class SetLifecycleResponse(BaseModel):
     warnings: list[str] | None = None
 
 
+def _coerce_tags(v: str | list[str] | None) -> list[str] | None:
+    """Accept tags as a comma-separated string or a list of strings."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return [t.strip() for t in v.split(",") if t.strip()]
+    return v
+
+
 class UpdateMetadataRequest(BaseModel):
     title: str | None = None
     version_label: str | None = None
     project: str | None = None
-    tags: list[str] | None = None
+    tags: Annotated[list[str] | None, BeforeValidator(_coerce_tags)] = None
     doc_type: str | None = None
     authority_scope: str | None = None
     document_date: str | None = None

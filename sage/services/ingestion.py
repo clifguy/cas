@@ -1,13 +1,14 @@
-"""Three-stage ingestion pipeline (BH-018 through BH-026).
+"""Three-stage ingestion pipeline (BH-018 through BH-026, BH-068).
 
-Stage 1 (projection): Synchronous. Reads source file, produces structured text.
-Stage 2 (indexing): Async background task. Chunks, embeds, stores in content store.
-Stage 3 (abstraction): Async background task. Generates semantic abstract via LLM.
+Stage 1 (projection): Reads source file, produces structured text.
+Stage 2 (indexing): Chunks, embeds, stores in content store.
+Stage 3 (abstraction): Generates semantic abstract via LLM.
 
-The ingest endpoint returns immediately after Stage 1 (BH-026).
+All three stages run sequentially within ingest(). The method returns
+after the full pipeline completes, keeping peak memory bounded to one
+document at a time (BH-026, BH-068).
 """
 
-import asyncio
 import hashlib
 import logging
 import shutil
@@ -210,10 +211,13 @@ class IngestionService:
                 "document_date": source_modified_at.date().isoformat(),
             })
 
-        # Schedule background pipeline (Stages 2-3) (BH-026)
-        asyncio.create_task(
-            self._run_background_pipeline(doc.id, projection)
-        )
+        # Run pipeline sequentially (Stages 2-3) (BH-026)
+        # Sequential execution caps peak memory: only one document's
+        # embeddings and abstraction context reside in memory at a time.
+        await self._run_background_pipeline(doc.id, projection)
+
+        # Re-fetch document to reflect terminal pipeline status
+        doc = await self._store.get_document(doc.id) or doc
 
         return IngestResult(document=doc, is_new=is_new)
 

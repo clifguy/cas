@@ -31,9 +31,19 @@ class NomicEmbeddingProvider(EmbeddingProvider):
                 "Install with: pip install sentence-transformers"
             ) from exc
 
-        logger.info("Loading embedding model: %s", model_name)
+        logger.info("Loading embedding model: %s (device=cpu)", model_name)
         try:
-            self._model = SentenceTransformer(model_name, trust_remote_code=True)
+            # Force CPU to avoid MPS memory contention on Apple Silicon
+            # unified memory. MPS attention tensors scale quadratically
+            # with sequence length and can exhaust the shared memory pool.
+            self._model = SentenceTransformer(
+                model_name, trust_remote_code=True, device="cpu"
+            )
+            # Cap sequence length to 2048 (nomic's primary training context).
+            # The default 8192 produces attention matrices 16x larger.
+            # Texts beyond 2048 tokens are truncated; the leading content
+            # (title, headings, opening paragraphs) is preserved.
+            self._model.max_seq_length = 2048
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to load embedding model '{model_name}': {exc}"
@@ -69,8 +79,10 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             return []
 
         # sentence-transformers encode is synchronous; call directly
-        # since it releases the GIL during model inference
+        # since it releases the GIL during model inference.
+        # batch_size=8 bounds per-batch memory for long sequences
+        # (attention scales quadratically with sequence length).
         embeddings = self._model.encode(
-            texts, normalize_embeddings=True
+            texts, normalize_embeddings=True, batch_size=8
         )
         return [vec.tolist() for vec in embeddings]

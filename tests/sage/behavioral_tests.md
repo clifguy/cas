@@ -480,25 +480,28 @@ runtime fallback. LLM failure is a genuine failure requiring re-ingestion.
 **Rationale:** Distinguishes between "we chose not to generate abstracts" and
 "we tried and failed."
 
-### TEST-SAGE-BH-026: Pipeline stages run as asyncio background tasks
+### TEST-SAGE-BH-026: Pipeline stages run sequentially within ingest
 
-**Artifact:** SAGE ingestion pipeline, async execution model
+**Artifact:** SAGE ingestion pipeline, sequential execution model
 **Category:** ingestion, execution
-**Decision:** Stages 2-3 run as asyncio background tasks in the FastAPI process.
+**Decision:** Stages 1-3 run sequentially within the `ingest()` call. The method
+returns only after all stages complete (or fail). This replaces the previous
+`asyncio.create_task` background model to cap peak memory during bulk ingest.
 
 **Precondition:** SAGE vault initialized.
 
-**Input:** Ingest a document and immediately verify the HTTP response.
+**Input:** Ingest a document and verify the returned result immediately.
 
 **Expected:**
-- Ingest returns 201 with `pipeline_status: "projection_complete"`
-- The response is returned before indexing begins
-- Subsequent `get_document` calls show pipeline_status progressing through
-  `indexing_in_progress` -> `indexing_complete` -> `abstraction_in_progress` ->
-  `abstraction_complete`
+- Ingest returns with `pipeline_status: "abstraction_complete"`
+- `indexed_at` is set (Stage 2 completed)
+- `semantic_abstract` is set (Stage 3 completed)
+- No background tasks are pending after the call returns
 
-**Rationale:** Async pipeline keeps ingest latency low. Callers poll or subscribe
-for completion.
+**Rationale:** Sequential execution ensures only one document's projection,
+embeddings, and abstraction context reside in memory at a time, preventing
+unbounded memory growth during bulk ingest. Throughput impact is acceptable
+because Stage 3 (MLX inference) is the bottleneck and is inherently serial.
 
 
 ---
@@ -1285,3 +1288,26 @@ content (hash H), `force: true`.
 
 **Rationale:** The force flag is an explicit override for all duplicate
 detection. Callers who set force accept responsibility for managing duplicates.
+
+### TEST-SAGE-BH-068: Sequential pipeline sets final status before returning
+
+**Artifact:** SAGE ingestion pipeline, sequential execution model
+**Category:** ingestion, execution, memory
+**Decision:** `ingest()` awaits the full pipeline (projection, indexing,
+abstraction) and re-fetches the document before returning, so the caller
+receives the terminal pipeline status without polling.
+
+**Precondition:** SAGE vault initialized with abstraction enabled.
+
+**Input:** Ingest a document. Inspect the returned `IngestResult.document`
+immediately (no sleep, no polling).
+
+**Expected:**
+- `pipeline_status` is `"abstraction_complete"`
+- `indexed_at` is not null
+- `semantic_abstract` is not null
+- The graph store document matches the returned document
+
+**Rationale:** Verifies the sequential pipeline contract end-to-end: callers
+can trust the returned document reflects completed processing. Eliminates the
+race conditions inherent in the background-task model.

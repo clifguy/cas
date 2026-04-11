@@ -539,32 +539,35 @@ conservative assertions (non-empty, bounded length, semantic relevance smoke
 test) rather than exact string matching, since LLM output is inherently
 variable across model versions.
 
-### TEST-SAGE-AD-026: Provider init loads model eagerly and fails fast
+### TEST-SAGE-AD-026: Provider init succeeds without loading model (lazy loading)
 
 **Artifact:** `sage/adapters/interfaces.py` (AbstractionProvider)
 **Category:** initialization
-**Decision:** The provider loads the MLX model during `__init__` and validates
-that inference is functional. If the model cannot be loaded, init raises
-immediately.
+**Decision:** The provider defers MLX model loading to first use. Construction
+stores configuration only; no weights are loaded. The model loads on the first
+`generate_abstract()` call, with a probe validation at that point. This caps
+baseline memory when abstraction has not yet been needed.
 
 **Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
 
-**Input:** Construct a Qwen3AbstractionProvider with valid model path.
+**Input:** Construct a Qwen3AbstractionProvider with valid model ID.
 
 **Expected:**
 - Construction completes without error
-- Model is loaded into memory (not deferred to first `generate_abstract` call)
+- No MLX model is loaded into memory at construction time
+- First `generate_abstract()` call triggers model load and succeeds
 
-**Negative input:** Construct with `model_path="/nonexistent/model/path"`.
+**Negative input:** Construct with `model_id="nonexistent-model-xyz"`.
 
 **Negative expected:**
-- Raises an exception during `__init__`
-- Error message includes the model path
+- Construction completes without error (no load yet)
+- First `generate_abstract()` call raises RuntimeError
+- Error message includes the model ID
 
-**Rationale:** Same fail-fast pattern as the embedding provider (AD-008).
-Deferred loading would allow the vault to initialize successfully but fail on
-the first ingestion, which is harder to diagnose. Eager loading surfaces
-configuration errors at startup.
+**Rationale:** Lazy loading reduces baseline memory by ~16-20 GB when abstraction
+is enabled but has not yet been invoked. Fail-fast still occurs, just on first
+use rather than at startup. For bulk ingest, the first document triggers the
+load; subsequent documents reuse the loaded model.
 
 ### TEST-SAGE-AD-027: Generated abstract is a non-empty string
 
@@ -758,3 +761,71 @@ metadata. Centralizing this in the ingestion service would couple it to
 filesystem assumptions that don't apply to all adapter types (e.g., future
 API-based adapters). The ISO 8601 string format keeps `ProjectionResult.metadata`
 serializable without importing datetime into the base adapter module.
+
+---
+
+## 5. Qwen3 AbstractionProvider -- Lazy Loading
+
+### TEST-SAGE-AD-035: Lazy loading defers model allocation to first call
+
+**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
+**Category:** initialization, memory
+**Decision:** Constructor stores configuration only. The `_ensure_loaded()` guard
+in `generate_abstract()` triggers model load on first invocation.
+
+**Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
+
+**Input:**
+1. Construct provider with valid model ID.
+2. Verify `_model` is None (not loaded).
+3. Call `generate_abstract()` with sample text.
+4. Verify `_model` is not None (loaded).
+
+**Expected:**
+- After construction: `provider._model is None`
+- After first call: `provider._model is not None`
+- The call returns a valid non-empty abstract
+
+**Rationale:** Confirms the lazy loading contract: construction is cheap, load
+happens on demand. Tests the internal state transition from unloaded to loaded.
+
+### TEST-SAGE-AD-036: Second call reuses already-loaded model
+
+**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
+**Category:** initialization, performance
+**Decision:** `_ensure_loaded()` is idempotent. After the first load, subsequent
+calls skip the load path entirely.
+
+**Precondition:** Provider constructed, first `generate_abstract()` already called.
+
+**Input:** Call `generate_abstract()` a second time with different text.
+
+**Expected:**
+- Second call succeeds and returns a valid abstract
+- The model object identity is the same as after the first call (no reload)
+
+**Rationale:** Prevents accidental double-loading, which would waste ~16-20 GB
+and add significant latency. The idempotency check is a simple `if self._model
+is not None: return` guard.
+
+### TEST-SAGE-AD-037: Model load failure on first call raises RuntimeError
+
+**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
+**Category:** initialization, error
+**Decision:** If the model fails to load on first `generate_abstract()`, the
+provider raises RuntimeError with a diagnostic message. The provider remains
+in the unloaded state so that a retry (after fixing the environment) can
+attempt loading again.
+
+**Precondition:** Provider constructed with an invalid model ID.
+
+**Input:** Call `generate_abstract()` with sample text.
+
+**Expected:**
+- Raises RuntimeError
+- Error message includes the model ID
+- `provider._model` remains None (load failure does not leave partial state)
+
+**Rationale:** Preserves the fail-fast diagnostic contract from the previous
+eager-loading design (AD-026 original). The error surfaces on first use
+rather than at startup, but is equally clear.

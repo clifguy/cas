@@ -1,13 +1,12 @@
 """Ingestion Pipeline tests: BH-018 through BH-026, BH-049 through BH-052,
-BH-062 through BH-065.
+BH-062 through BH-068.
 
 Covers duplicate detection, force re-ingestion, pipeline failure quarantine,
-LLM failure handling, abstraction_skipped, async pipeline execution,
+LLM failure handling, abstraction_skipped, sequential pipeline execution,
 source file provenance (source_modified_at), and document date metadata
 (document_date).
 """
 
-import asyncio
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,9 +45,6 @@ async def test_bh_018_duplicate_content_409(
     doc = result.document
     assert result.is_new is True
 
-    # Allow background tasks to run
-    await asyncio.sleep(0.2)
-
     # Second ingest (same path, same content) returns 409
     with pytest.raises(DuplicateContentError) as exc_info:
         await ingestion_service.ingest(request)
@@ -78,8 +74,6 @@ async def test_bh_019_force_reingestion(
     assert result1.is_new is True
     original_id = doc1.id
 
-    await asyncio.sleep(0.2)
-
     # Force re-ingest
     force_request = IngestRequest(
         source="patents/doc_force.md",
@@ -92,7 +86,7 @@ async def test_bh_019_force_reingestion(
 
     assert result2.is_new is False
     assert doc2.id == original_id  # Same document record
-    assert doc2.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
+    assert doc2.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -115,9 +109,7 @@ async def test_bh_020_failed_pipeline_marks_document(
     doc = result.document
     assert result.is_new is True
 
-    # Wait for background pipeline to fail
-    await asyncio.sleep(0.5)
-
+    # Sequential pipeline: failure is reflected in the returned document
     fetched = await graph_store.get_document(doc.id)
     assert fetched.pipeline_status == PipelineStatus.FAILED
     assert fetched.pipeline_error is not None
@@ -139,7 +131,6 @@ async def test_bh_022_failed_document_visible(
     result = await ingestion_service_failing_llm.ingest(request)
 
     doc = result.document
-    await asyncio.sleep(0.5)
 
     fetched = await graph_store.get_document(doc.id)
     assert fetched is not None
@@ -165,11 +156,8 @@ async def test_bh_024_llm_failure_results_in_failed(
 
     doc = result.document
     assert result.is_new is True
-    assert doc.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
 
-    # Wait for background pipeline to reach Stage 3 and fail
-    await asyncio.sleep(0.5)
-
+    # Sequential pipeline: failure status is set before ingest returns
     fetched = await graph_store.get_document(doc.id)
     assert fetched.pipeline_status == PipelineStatus.FAILED
     assert fetched.pipeline_error is not None
@@ -194,41 +182,37 @@ async def test_bh_025_abstraction_disabled(
     doc = result.document
     assert result.is_new is True
 
-    # Wait for background pipeline
-    await asyncio.sleep(0.5)
-
+    # Sequential pipeline: final status is set before ingest returns
     fetched = await graph_store.get_document(doc.id)
     assert fetched.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED
     assert fetched.semantic_abstract is None
 
 
 # ---------------------------------------------------------------------------
-# BH-026: Pipeline stages run as asyncio background tasks
+# BH-026: Pipeline stages run sequentially within ingest
 # ---------------------------------------------------------------------------
 
-async def test_bh_026_async_pipeline(
+async def test_bh_026_sequential_pipeline(
     tmp_vault_dir, graph_store, ingestion_service
 ):
-    _create_test_file(tmp_vault_dir, "patents/doc_async.md", "# Async Test\n\nContent here.")
+    _create_test_file(tmp_vault_dir, "patents/doc_seq.md", "# Sequential Test\n\nContent here.")
 
     request = IngestRequest(
-        source="patents/doc_async.md",
+        source="patents/doc_seq.md",
         adapter=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
     doc = result.document
 
-    # Ingest returns immediately with projection_complete
+    # Ingest returns with all stages complete (no background tasks)
     assert result.is_new is True
-    assert doc.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert doc.indexed_at is not None
+    assert doc.semantic_abstract is not None
 
-    # Wait for background pipeline to complete
-    await asyncio.sleep(0.5)
-
+    # Graph store matches returned document
     fetched = await graph_store.get_document(doc.id)
     assert fetched.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
-    assert fetched.indexed_at is not None
-    assert fetched.semantic_abstract is not None
 
 
 # ---------------------------------------------------------------------------
@@ -278,8 +262,6 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
     result = await ingestion_service.ingest(request)
 
     doc1 = result.document
-    await asyncio.sleep(0.2)
-
     original_source_mtime = doc1.source_modified_at
 
     # Touch the file to update mtime
@@ -742,3 +724,37 @@ async def test_bh_065_document_date_round_trip(
     fetched = await graph_store.get_document(doc.id)
     assert fetched.document_date == "2026-04-10"
     assert isinstance(fetched.document_date, str)
+
+
+# ---------------------------------------------------------------------------
+# BH-068: Sequential pipeline sets final status before returning
+# ---------------------------------------------------------------------------
+
+async def test_bh_068_sequential_pipeline_final_status(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Sequential pipeline completes all stages before ingest() returns.
+    The returned IngestResult.document reflects the terminal pipeline
+    status, and the graph store is consistent with it."""
+    _create_test_file(
+        tmp_vault_dir, "patents/doc_final.md",
+        "# Final Status\n\nVerify sequential pipeline completion."
+    )
+
+    request = IngestRequest(
+        source="patents/doc_final.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    result = await ingestion_service.ingest(request)
+    doc = result.document
+
+    # Returned document has terminal status
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert doc.indexed_at is not None
+    assert doc.semantic_abstract is not None
+
+    # Graph store matches
+    fetched = await graph_store.get_document(doc.id)
+    assert fetched.pipeline_status == doc.pipeline_status
+    assert fetched.indexed_at == doc.indexed_at
+    assert fetched.semantic_abstract == doc.semantic_abstract

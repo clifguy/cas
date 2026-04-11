@@ -24,10 +24,14 @@ DEFAULT_CONTEXT_WINDOW = 32768
 class Qwen3AbstractionProvider(AbstractionProvider):
     """Production abstraction provider using Qwen3 via MLX.
 
-    Loads the model eagerly at init and validates with a probe generation.
-    Raises on model load failure (AD-026). Uses greedy decoding via
-    make_sampler(temp=0) for deterministic output (AD-029). Truncates long input to fit the
-    context window, preserving leading content (AD-031).
+    Defers model loading to first use (AD-026 revised). Construction stores
+    configuration only; the MLX model loads on the first generate_abstract()
+    call, validated by a probe generation. This reduces baseline memory by
+    ~16-20 GB when abstraction has not yet been invoked.
+
+    Uses greedy decoding via make_sampler(temp=0) for deterministic output
+    (AD-029). Truncates long input to fit the context window, preserving
+    leading content (AD-031).
     """
 
     def __init__(
@@ -35,6 +39,25 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         model_id: str,
         context_window: int = DEFAULT_CONTEXT_WINDOW,
     ) -> None:
+        self._model_id = model_id
+        self._context_window = context_window
+
+        # Deferred state: populated by _ensure_loaded() on first use
+        self._model = None
+        self._tokenizer = None
+        self._generate_fn = None
+        self._greedy_sampler = None
+
+    def _ensure_loaded(self) -> None:
+        """Load the MLX model on first use. Idempotent: skips if already loaded.
+
+        Raises:
+            ImportError: If mlx-lm is not installed.
+            RuntimeError: If the model cannot be loaded or probe fails.
+        """
+        if self._model is not None:
+            return
+
         try:
             from mlx_lm import load, generate
             from mlx_lm.sample_utils import make_sampler
@@ -46,24 +69,33 @@ class Qwen3AbstractionProvider(AbstractionProvider):
 
         self._generate_fn = generate
         self._greedy_sampler = make_sampler(temp=0.0)
-        self._model_id = model_id
-        self._context_window = context_window
 
-        # Eager model load (AD-026)
-        logger.info("Loading abstraction model: %s", model_id)
+        logger.info("Loading abstraction model: %s", self._model_id)
         try:
-            self._model, self._tokenizer = load(model_id)
+            model, tokenizer = load(self._model_id)
         except Exception as exc:
+            # Reset deferred state so a retry can attempt loading again
+            self._generate_fn = None
+            self._greedy_sampler = None
             raise RuntimeError(
-                f"Failed to load abstraction model '{model_id}': {exc}"
+                f"Failed to load abstraction model '{self._model_id}': {exc}"
             ) from exc
 
         # Validation probe (AD-026)
         try:
-            probe_prompt = self._build_prompt("Test document content.")
-            probe_result = self._generate_fn(
-                self._model,
-                self._tokenizer,
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "Test document content."},
+            ]
+            probe_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+            probe_result = generate(
+                model,
+                tokenizer,
                 prompt=probe_prompt,
                 max_tokens=20,
                 verbose=False,
@@ -72,13 +104,20 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             if not probe_result or not probe_result.strip():
                 raise RuntimeError("Probe generation returned empty output")
         except RuntimeError:
+            self._generate_fn = None
+            self._greedy_sampler = None
             raise
         except Exception as exc:
+            self._generate_fn = None
+            self._greedy_sampler = None
             raise RuntimeError(
-                f"Abstraction model probe failed for '{model_id}': {exc}"
+                f"Abstraction model probe failed for '{self._model_id}': {exc}"
             ) from exc
 
-        logger.info("Abstraction model loaded: %s", model_id)
+        # Commit loaded state only after probe succeeds
+        self._model = model
+        self._tokenizer = tokenizer
+        logger.info("Abstraction model loaded: %s", self._model_id)
 
     def _build_prompt(self, text: str) -> str:
         """Build a chat-template prompt for abstract generation."""
@@ -124,6 +163,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
     async def generate_abstract(self, text: str, max_tokens: int) -> str:
         """Generate a semantic abstract from document text.
 
+        On first call, loads the MLX model and validates with a probe
+        generation. Subsequent calls reuse the loaded model.
+
         Args:
             text: Full document text from the projection stage.
             max_tokens: Upper bound on abstract length in tokens.
@@ -132,13 +174,17 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             Non-empty abstract string (AD-027).
 
         Raises:
-            RuntimeError: If text is empty or model produces empty output.
+            RuntimeError: If text is empty, model fails to load, or
+                model produces empty output.
         """
         # Edge guard (AD-027, AD-030)
         if not text or not text.strip():
             raise RuntimeError(
                 "Cannot generate abstract from empty document text"
             )
+
+        # Lazy model load (AD-026 revised, AD-035)
+        self._ensure_loaded()
 
         # Truncate if needed (AD-031)
         truncated_text = self._truncate_for_context(text, max_tokens)
