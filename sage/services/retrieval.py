@@ -1,6 +1,7 @@
 """Retrieval service: semantic, keyword, and deterministic discover modes.
 
-Covers behavioral tests BH-020, BH-027 through BH-030, BH-059 through BH-061.
+Covers behavioral tests BH-020, BH-027 through BH-030, BH-059 through BH-061,
+BH-069, BH-070.
 
 Semantic mode:
   - Pure vector search (default) or hybrid vector+BM25 via RRF (BH-027, BH-028).
@@ -16,6 +17,9 @@ Deterministic mode:
   - Rejects documents with failed pipeline (BH-021, via pipeline gate).
   - Returns 404 for non-existent heading paths (BH-030).
 """
+
+import math
+from datetime import datetime, timezone
 
 from sage.adapters.interfaces import ContentStore, EmbeddingProvider, SearchResult
 from sage.api.errors import (
@@ -100,6 +104,7 @@ class RetrievalService:
             results = await self._content.search_bm25(request.query, fetch_limit)
             hits = await self._results_to_hits(results, request)
             hits = await self._boost_metadata_matches(hits, request)
+            hits = await self._rerank_salience(hits)
 
         return DiscoverResponse(
             mode=RetrievalMode.KEYWORD,
@@ -131,6 +136,7 @@ class RetrievalService:
                 project=doc.project,
                 doc_type=doc.doc_type,
                 tags=doc.tags,
+                document_date=doc.document_date,
             )
             hits.append(DiscoverHit(
                 document=summary,
@@ -171,6 +177,7 @@ class RetrievalService:
         # Filter results: exclude failed-pipeline documents (BH-020)
         hits = await self._results_to_hits(results, request)
         hits = await self._boost_metadata_matches(hits, request)
+        hits = await self._rerank_salience(hits)
 
         return DiscoverResponse(
             mode=RetrievalMode.SEMANTIC,
@@ -272,6 +279,7 @@ class RetrievalService:
                 project=doc.project,
                 doc_type=doc.doc_type,
                 tags=doc.tags,
+                document_date=doc.document_date,
             )
 
             hit = DiscoverHit(
@@ -332,6 +340,7 @@ class RetrievalService:
                 project=doc.project,
                 doc_type=doc.doc_type,
                 tags=doc.tags,
+                document_date=doc.document_date,
             )
             boosted.append(DiscoverHit(
                 document=summary,
@@ -341,6 +350,82 @@ class RetrievalService:
             ))
 
         return boosted + hits
+
+    # ------------------------------------------------------------------
+    # Salience reranking (BH-069, BH-070)
+    # ------------------------------------------------------------------
+
+    # Lifecycle boost: multiplicative factor for active documents.
+    _LIFECYCLE_ACTIVE_BOOST = 1.15
+
+    # Recency boost: maximum multiplicative boost for very recent documents.
+    # Decays exponentially with a half-life of 365 days.
+    _RECENCY_MAX_BOOST = 0.10
+    _RECENCY_HALF_LIFE_DAYS = 365.0
+
+    async def _rerank_salience(
+        self,
+        hits: list[DiscoverHit],
+    ) -> list[DiscoverHit]:
+        """Apply salience boosts for lifecycle status and document recency.
+
+        Active-lifecycle documents receive a multiplicative score boost (BH-069).
+        Documents with recent dates receive an additional decaying boost (BH-070).
+
+        The method fetches full Document records from the graph store to access
+        document_date and source_modified_at fields not carried in DiscoverHit.
+        """
+        if not hits:
+            return hits
+
+        now = datetime.now(timezone.utc)
+
+        for hit in hits:
+            if hit.relevance_score is None:
+                continue
+
+            score = hit.relevance_score
+
+            # BH-069: Lifecycle boost
+            if hit.document.lifecycle_status == "active":
+                score *= self._LIFECYCLE_ACTIVE_BOOST
+
+            # BH-070: Recency boost -- need full Document for date fields
+            doc = await self._graph.get_document(hit.document.id)
+            if doc is not None:
+                ref_date = self._resolve_document_date(doc, now)
+                if ref_date is not None:
+                    age_days = max((now - ref_date).total_seconds() / 86400.0, 0.0)
+                    decay = math.exp(
+                        -age_days * math.log(2) / self._RECENCY_HALF_LIFE_DAYS
+                    )
+                    score *= 1.0 + self._RECENCY_MAX_BOOST * decay
+
+            hit.relevance_score = score
+
+        # Re-sort by adjusted score descending
+        hits.sort(key=lambda h: h.relevance_score or 0.0, reverse=True)
+        return hits
+
+    @staticmethod
+    def _resolve_document_date(doc: Document, now: datetime) -> datetime | None:
+        """Pick the best available date for recency scoring.
+
+        Priority: document_date (YYYY-MM-DD string) > source_modified_at > updated_at.
+        Returns None only if all three are unavailable.
+        """
+        if doc.document_date:
+            try:
+                # document_date is stored as YYYY-MM-DD string
+                parsed = datetime.strptime(doc.document_date, "%Y-%m-%d")
+                return parsed.replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass  # Malformed date string; fall through
+
+        if doc.source_modified_at:
+            return doc.source_modified_at
+
+        return None
 
     def _passes_scope(self, doc: Document, request: DiscoverRequest) -> bool:
         """Check whether a document passes scope and filter criteria."""
@@ -419,6 +504,7 @@ class RetrievalService:
             project=doc.project,
             doc_type=doc.doc_type,
             tags=doc.tags,
+            document_date=doc.document_date,
         )
 
         hits = [

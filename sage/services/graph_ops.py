@@ -153,6 +153,7 @@ class GraphOpsService:
                 project=best["d_project"],
                 doc_type=best["d_doc_type"],
                 tags=json.loads(best["d_tags"]) if best["d_tags"] else [],
+                document_date=best.get("d_document_date"),
             )
 
             edge = Edge(

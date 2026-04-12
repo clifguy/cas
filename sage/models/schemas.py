@@ -62,6 +62,7 @@ class DocumentSummary(BaseModel):
     project: str | None = None
     doc_type: str | None = None
     tags: list[str] = Field(default_factory=list)
+    document_date: str | None = None
 
 
 class Edge(BaseModel):
