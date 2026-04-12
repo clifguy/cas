@@ -103,7 +103,7 @@ async def test_bh043_both_view_dimensions_generated(
         lifecycle_status="active", doc_type="glossary",
     )
 
-    result = await utilities_service.refresh_views("test_vault")
+    result = await utilities_service.refresh_views()
 
     assert result.vault_id == "test_vault"
     # by_doc_type: patent, glossary = 2
@@ -151,7 +151,7 @@ async def test_bh044_symlinks_point_to_source_files(
         doc_type="patent",
     )
 
-    await utilities_service.refresh_views("test_vault")
+    await utilities_service.refresh_views()
 
     patent_dir = storage_root / "views" / "by_doc_type" / "patent"
     links = list(patent_dir.iterdir())
@@ -186,7 +186,7 @@ async def test_bh045_full_regeneration(
     )
 
     # First refresh: doc_a is active
-    await utilities_service.refresh_views("test_vault")
+    await utilities_service.refresh_views()
     active_dir = storage_root / "views" / "by_lifecycle" / "active"
     assert active_dir.exists()
     assert len(list(active_dir.iterdir())) == 1
@@ -195,7 +195,7 @@ async def test_bh045_full_regeneration(
     await graph_store.update_document("doc_a", {"lifecycle_status": "archived"})
 
     # Second refresh: doc_a is now archived
-    await utilities_service.refresh_views("test_vault")
+    await utilities_service.refresh_views()
 
     # active/ should not exist (no documents in active state)
     active_dir = storage_root / "views" / "by_lifecycle" / "active"
@@ -224,7 +224,7 @@ async def test_bh046_failed_pipeline_documents_in_views(
         pipeline_status=PipelineStatus.FAILED,
     )
 
-    result = await utilities_service.refresh_views("test_vault")
+    result = await utilities_service.refresh_views()
 
     # Document appears in both views despite failed pipeline
     active_dir = storage_root / "views" / "by_lifecycle" / "active"
@@ -252,7 +252,7 @@ async def test_bh047_empty_categories_no_directory(
         lifecycle_status="active", doc_type="patent",
     )
 
-    result = await utilities_service.refresh_views("test_vault")
+    result = await utilities_service.refresh_views()
 
     # Exactly 2 directories: by_doc_type/patent and by_lifecycle/active
     assert result.views_generated == 2
@@ -282,7 +282,7 @@ async def test_bh048_null_doc_type_excluded(
         lifecycle_status="active", doc_type=None,
     )
 
-    result = await utilities_service.refresh_views("test_vault")
+    result = await utilities_service.refresh_views()
 
     views_root = storage_root / "views"
 
@@ -307,7 +307,7 @@ async def test_empty_vault_produces_no_views(
     """Empty vault produces views_generated: 0 and no directories."""
     storage_root = Path(minimal_config.vault.storage_root)
 
-    result = await utilities_service.refresh_views("test_vault")
+    result = await utilities_service.refresh_views()
 
     assert result.views_generated == 0
     views_root = storage_root / "views"
@@ -342,7 +342,7 @@ async def test_filename_collision_handled(
         lifecycle_status="active", doc_type="patent",
     )
 
-    await utilities_service.refresh_views("test_vault")
+    await utilities_service.refresh_views()
 
     patent_dir = storage_root / "views" / "by_doc_type" / "patent"
     links = sorted(patent_dir.iterdir())
