@@ -43,6 +43,17 @@ from sage.storage.graph_store import GraphStore
 _RRF_K = 60
 
 
+def _parse_document_date(date_str: str | None) -> datetime | None:
+    """Parse a YYYY-MM-DD date string into a UTC datetime, or None."""
+    if not date_str:
+        return None
+    try:
+        parsed = datetime.strptime(date_str, "%Y-%m-%d")
+        return parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 class RetrievalService:
     def __init__(
         self,
@@ -136,7 +147,8 @@ class RetrievalService:
                 project=doc.project,
                 doc_type=doc.doc_type,
                 tags=doc.tags,
-                document_date=doc.document_date,
+                document_date=_parse_document_date(doc.document_date),
+                source_modified_at=doc.source_modified_at,
             )
             hits.append(DiscoverHit(
                 document=summary,
@@ -279,7 +291,8 @@ class RetrievalService:
                 project=doc.project,
                 doc_type=doc.doc_type,
                 tags=doc.tags,
-                document_date=doc.document_date,
+                document_date=_parse_document_date(doc.document_date),
+                source_modified_at=doc.source_modified_at,
             )
 
             hit = DiscoverHit(
@@ -340,7 +353,8 @@ class RetrievalService:
                 project=doc.project,
                 doc_type=doc.doc_type,
                 tags=doc.tags,
-                document_date=doc.document_date,
+                document_date=_parse_document_date(doc.document_date),
+                source_modified_at=doc.source_modified_at,
             )
             boosted.append(DiscoverHit(
                 document=summary,
@@ -372,8 +386,8 @@ class RetrievalService:
         Active-lifecycle documents receive a multiplicative score boost (BH-069).
         Documents with recent dates receive an additional decaying boost (BH-070).
 
-        The method fetches full Document records from the graph store to access
-        document_date and source_modified_at fields not carried in DiscoverHit.
+        Uses fields already present on DocumentSummary (document_date,
+        source_modified_at, lifecycle_status) -- no extra graph queries.
         """
         if not hits:
             return hits
@@ -390,16 +404,14 @@ class RetrievalService:
             if hit.document.lifecycle_status == "active":
                 score *= self._LIFECYCLE_ACTIVE_BOOST
 
-            # BH-070: Recency boost -- need full Document for date fields
-            doc = await self._graph.get_document(hit.document.id)
-            if doc is not None:
-                ref_date = self._resolve_document_date(doc, now)
-                if ref_date is not None:
-                    age_days = max((now - ref_date).total_seconds() / 86400.0, 0.0)
-                    decay = math.exp(
-                        -age_days * math.log(2) / self._RECENCY_HALF_LIFE_DAYS
-                    )
-                    score *= 1.0 + self._RECENCY_MAX_BOOST * decay
+            # BH-070: Recency boost from summary fields
+            ref_date = self._resolve_document_date(hit.document, now)
+            if ref_date is not None:
+                age_days = max((now - ref_date).total_seconds() / 86400.0, 0.0)
+                decay = math.exp(
+                    -age_days * math.log(2) / self._RECENCY_HALF_LIFE_DAYS
+                )
+                score *= 1.0 + self._RECENCY_MAX_BOOST * decay
 
             hit.relevance_score = score
 
@@ -408,22 +420,19 @@ class RetrievalService:
         return hits
 
     @staticmethod
-    def _resolve_document_date(doc: Document, now: datetime) -> datetime | None:
+    def _resolve_document_date(
+        summary: DocumentSummary, now: datetime,
+    ) -> datetime | None:
         """Pick the best available date for recency scoring.
 
-        Priority: document_date (YYYY-MM-DD string) > source_modified_at > updated_at.
-        Returns None only if all three are unavailable.
+        Priority: document_date > source_modified_at.
+        Returns None if neither is available.
         """
-        if doc.document_date:
-            try:
-                # document_date is stored as YYYY-MM-DD string
-                parsed = datetime.strptime(doc.document_date, "%Y-%m-%d")
-                return parsed.replace(tzinfo=timezone.utc)
-            except ValueError:
-                pass  # Malformed date string; fall through
+        if summary.document_date:
+            return summary.document_date
 
-        if doc.source_modified_at:
-            return doc.source_modified_at
+        if summary.source_modified_at:
+            return summary.source_modified_at
 
         return None
 

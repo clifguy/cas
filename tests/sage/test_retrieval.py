@@ -834,7 +834,7 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
 async def test_bh_070_document_date_in_summary(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """DiscoverHit.document summary includes document_date field."""
+    """DiscoverHit.document summary includes document_date as datetime."""
     doc = _make_doc("doc_date_summary", document_date="2026-03-15")
     await graph_store.insert_document(doc)
 
@@ -850,4 +850,98 @@ async def test_bh_070_document_date_in_summary(
     response = await retrieval_service.discover(request)
 
     hit = next(h for h in response.results if h.document.id == "doc_date_summary")
-    assert hit.document.document_date == "2026-03-15"
+    # document_date is now datetime, not str
+    assert isinstance(hit.document.document_date, datetime)
+    assert hit.document.document_date == datetime(2026, 3, 15, tzinfo=timezone.utc)
+
+
+async def test_source_modified_at_in_summary(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """DiscoverHit.document summary includes source_modified_at field."""
+    now = datetime.now(timezone.utc)
+    mod_time = now - timedelta(days=10)
+    doc = _make_doc("doc_sma_summary", source_modified_at=mod_time)
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_sma_summary",
+        [("Section 1", "Patent filing process documentation.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent filing",
+    )
+    response = await retrieval_service.discover(request)
+
+    hit = next(h for h in response.results if h.document.id == "doc_sma_summary")
+    assert hit.document.source_modified_at is not None
+    # Stored as ISO string in SQLite, so compare to second precision
+    assert abs((hit.document.source_modified_at - mod_time).total_seconds()) < 1.0
+
+
+async def test_rerank_salience_no_extra_queries(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Salience reranking uses summary fields, not extra get_document calls.
+
+    Verifies that source_modified_at fallback works correctly via the
+    DocumentSummary (not via a separate Document fetch).
+    """
+    now = datetime.now(timezone.utc)
+    # Two docs: same content, same lifecycle, but different source_modified_at.
+    # No document_date -- forces the fallback to source_modified_at on the summary.
+    doc_recent = _make_doc(
+        "doc_nq_recent",
+        document_date=None,
+        source_modified_at=now - timedelta(days=5),
+    )
+    doc_old = _make_doc(
+        "doc_nq_old",
+        document_date=None,
+        source_modified_at=now - timedelta(days=900),
+    )
+    await graph_store.insert_document(doc_recent)
+    await graph_store.insert_document(doc_old)
+
+    identical_content = "Patent filing process for clinical normalization."
+    for doc_id in ["doc_nq_recent", "doc_nq_old"]:
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", identical_content)],
+        )
+
+    # Patch get_document to track calls -- it should NOT be called by reranking
+    call_count = 0
+    original_get_document = graph_store.get_document
+
+    async def counting_get_document(doc_id):
+        nonlocal call_count
+        call_count += 1
+        return await original_get_document(doc_id)
+
+    graph_store.get_document = counting_get_document
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent filing clinical normalization",
+    )
+    response = await retrieval_service.discover(request)
+
+    # Restore original method
+    graph_store.get_document = original_get_document
+
+    doc_ids = [h.document.id for h in response.results]
+    # Recency still works via summary field
+    assert doc_ids.index("doc_nq_recent") < doc_ids.index("doc_nq_old"), (
+        "Recent doc should rank higher via source_modified_at on summary"
+    )
+
+    # get_document was called during _results_to_hits (doc cache), but NOT
+    # during _rerank_salience. With 2 docs, cache calls = 2, rerank calls = 0.
+    # If reranking still called get_document, we'd see 4 calls.
+    assert call_count == 2, (
+        f"Expected 2 get_document calls (cache only), got {call_count}. "
+        "Reranking should use summary fields, not fetch full Documents."
+    )
