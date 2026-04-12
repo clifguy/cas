@@ -198,7 +198,7 @@ class DiscoverRequest(BaseModel):
     authority_document_id: str | None = Field(default=None, deprecated=True)
     limit: int = Field(default=10, ge=1, le=100)
     cursor: str | None = Field(default=None, deprecated=True)
-    use_hybrid: bool = False
+    use_hybrid: bool = True
 
 
 class DiscoverHit(BaseModel):

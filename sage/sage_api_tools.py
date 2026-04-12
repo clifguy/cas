@@ -280,7 +280,7 @@ def register_sage_tools(
         document_id: str | None = None,
         heading_path: str | None = None,
         limit: int = 10,
-        use_hybrid: bool = False,
+        use_hybrid: bool = True,
     ) -> str:
         """Search for documents using semantic or deterministic retrieval.
 
@@ -294,7 +294,7 @@ def register_sage_tools(
             document_id: Target document (required for deterministic mode).
             heading_path: Heading path prefix (required for deterministic mode).
             limit: Maximum results (1-100). Default: 10.
-            use_hybrid: Use hybrid RRF fusion of vector + BM25. Default: false.
+            use_hybrid: Use hybrid RRF fusion of vector + BM25. Default: true.
         """
         try:
             v = get_vault(vault_id)

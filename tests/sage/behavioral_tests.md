@@ -532,7 +532,8 @@ heterogeneous retrieval systems.
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (discover, semantic mode)
 **Category:** retrieval
-**Decision:** use_hybrid: false (default) returns pure vector similarity scores.
+**Decision:** use_hybrid: false returns pure vector similarity scores (override of
+the default hybrid behavior).
 
 **Precondition:** Vault with indexed documents.
 
@@ -542,7 +543,8 @@ heterogeneous retrieval systems.
 - `relevance_score` reflects vector distance/similarity
 - No BM25 influence on ranking
 
-**Rationale:** Default behavior is pure semantic search; hybrid is opt-in.
+**Rationale:** Default behavior is hybrid RRF; pure vector search is opt-in for
+cases where only semantic similarity is desired.
 
 ### TEST-SAGE-BH-029: Deterministic retrieval uses prefix match on heading_path
 

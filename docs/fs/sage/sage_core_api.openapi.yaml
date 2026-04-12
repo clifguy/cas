@@ -1080,11 +1080,12 @@ components:
             Pass to retrieve the next page of results.
         use_hybrid:
           type: boolean
-          default: false
+          default: true
           description: >-
             Enable hybrid retrieval (vector + BM25 fusion) in semantic
             mode. Valuable when queries contain both natural language
-            and specific identifiers.
+            and specific identifiers. Set to false for pure vector
+            similarity search.
 
     RetrievalFilters:
       type: object
