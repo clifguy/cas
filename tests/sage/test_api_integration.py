@@ -71,7 +71,7 @@ async def test_ingest_201(client):
     assert resp.status_code == 201
     body = resp.json()
     assert "document" in body
-    assert body["pipeline_status"] == "projection_complete"
+    assert body["pipeline_status"] == "abstraction_complete"
     assert body["document"]["source_path"] == "test/sample.md"
 
 
