@@ -17,6 +17,7 @@ from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -71,6 +72,7 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
     source_adapters = {
         SourceType.MARKDOWN: MarkdownAdapter(),
         SourceType.DOCX: DocxAdapter(),
+        SourceType.XLSX: XlsxAdapter(),
     }
 
     # Services

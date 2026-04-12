@@ -10,6 +10,7 @@ class SourceType(StrEnum):
     EMAIL = "email"
     ONENOTE = "onenote"
     TEAMS_CHAT = "teams_chat"
+    XLSX = "xlsx"
 
 
 class EdgeType(StrEnum):

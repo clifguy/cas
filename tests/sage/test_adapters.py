@@ -1317,3 +1317,314 @@ class TestDocxAdapter:
         assert result.headings[3].text == "I.1.b Detail B"
         assert result.headings[4].text == "II Beta"
         assert result.headings[5].text == "II.1 Sub Beta"
+
+
+# ── XLSX Adapter ──────────────────────────────────────────────────
+
+try:
+    import openpyxl
+
+    _HAS_OPENPYXL = True
+except ImportError:
+    _HAS_OPENPYXL = False
+
+requires_openpyxl = pytest.mark.skipif(
+    not _HAS_OPENPYXL, reason="openpyxl not available"
+)
+
+
+def _make_xlsx(tmp_path: Path, filename: str = "test.xlsx") -> Path:
+    """Create a minimal single-sheet workbook and return its path."""
+    wb = openpyxl.Workbook()
+    path = tmp_path / filename
+    wb.save(str(path))
+    wb.close()
+    return path
+
+
+def _make_multisheet_xlsx(
+    tmp_path: Path,
+    sheets_data: dict[str, list[list]],
+    filename: str = "multi.xlsx",
+) -> Path:
+    """Create a workbook with named sheets and cell data.
+
+    sheets_data: {"SheetName": [[row1_values], [row2_values], ...]}
+    """
+    wb = openpyxl.Workbook()
+    # Remove default sheet
+    wb.remove(wb.active)
+    for sheet_name, rows in sheets_data.items():
+        ws = wb.create_sheet(title=sheet_name)
+        for row in rows:
+            ws.append(row)
+    path = tmp_path / filename
+    wb.save(str(path))
+    wb.close()
+    return path
+
+
+@requires_openpyxl
+class TestXlsxAdapter:
+    """AD-053 through AD-067: XLSX source adapter tests."""
+
+    async def test_ad_053_basic_projection(self, tmp_path):
+        """AD-053: Basic projection returns valid ProjectionResult."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {"Sales": [["Product", "Revenue"], ["Widget", 100], ["Gadget", 200]]},
+            filename="basic.xlsx",
+        )
+
+        result = await adapter.project(path)
+
+        assert isinstance(result.text, str)
+        assert len(result.text) > 0
+        assert len(result.headings) == 1
+        assert result.headings[0].text == "Sales"
+        assert result.headings[0].level == 1
+        assert isinstance(result.content_hash, str)
+        assert len(result.content_hash) == 64  # SHA-256 hex
+        assert result.adapter_version == XlsxAdapter.VERSION
+
+    async def test_ad_054_multisheet_headings(self, tmp_path):
+        """AD-054: Multiple sheets produce one level-1 HeadingNode each."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {
+                "Revenue": [["Q1", "Q2"], [100, 200]],
+                "Expenses": [["Q1", "Q2"], [50, 80]],
+                "Summary": [["Net"], [170]],
+            },
+        )
+
+        result = await adapter.project(path)
+
+        assert len(result.headings) == 3
+        assert [h.text for h in result.headings] == ["Revenue", "Expenses", "Summary"]
+        assert all(h.level == 1 for h in result.headings)
+
+    async def test_ad_055_heading_paths_flat(self, tmp_path):
+        """AD-055: Heading paths are sheet names only (no hierarchy)."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {
+                "Alpha": [["A"], [1]],
+                "Beta": [["B"], [2]],
+            },
+        )
+
+        result = await adapter.project(path)
+
+        assert result.headings[0].path == "Alpha"
+        assert result.headings[1].path == "Beta"
+        assert " > " not in result.headings[0].path
+        assert " > " not in result.headings[1].path
+
+    async def test_ad_056_column_headers_in_content(self, tmp_path):
+        """AD-056: First row rendered as pipe-delimited header row."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {"Data": [["Name", "Age", "City"], ["Alice", 30, "NYC"]]},
+            filename="headers.xlsx",
+        )
+
+        result = await adapter.project(path)
+
+        assert "| Name | Age | City |" in result.headings[0].content
+
+    async def test_ad_057_preview_rows_default(self, tmp_path):
+        """AD-057: Default config includes first 5 data rows, omits row 6+."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        rows = [["ID", "Value"]] + [[i, f"val_{i}"] for i in range(1, 9)]
+        path = _make_multisheet_xlsx(
+            tmp_path, {"Data": rows}, filename="preview.xlsx"
+        )
+
+        result = await adapter.project(path)
+        content = result.headings[0].content
+
+        # Rows 1-5 present
+        for i in range(1, 6):
+            assert f"val_{i}" in content
+        # Rows 6-8 omitted
+        for i in range(6, 9):
+            assert f"val_{i}" not in content
+
+    async def test_ad_058_preview_rows_config(self, tmp_path):
+        """AD-058: preview_rows config limits data rows per sheet."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        rows = [["ID", "Value"]] + [[i, f"val_{i}"] for i in range(1, 9)]
+        path = _make_multisheet_xlsx(
+            tmp_path, {"Data": rows}, filename="limited.xlsx"
+        )
+
+        result = await adapter.project(path, config={"preview_rows": 2})
+        content = result.headings[0].content
+
+        assert "val_1" in content
+        assert "val_2" in content
+        assert "val_3" not in content
+
+    async def test_ad_059_dimensions_in_content(self, tmp_path):
+        """AD-059: Content includes dimensions line for each sheet."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        rows = [["A", "B", "C"]] + [[1, 2, 3]] * 20
+        path = _make_multisheet_xlsx(
+            tmp_path, {"Big": rows}, filename="dims.xlsx"
+        )
+
+        result = await adapter.project(path)
+        content = result.headings[0].content
+
+        assert "21 rows" in content
+        assert "3 columns" in content
+
+    async def test_ad_060_title_from_first_sheet(self, tmp_path):
+        """AD-060: Title extracted from first sheet name."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {"Quarterly Report": [["Q1"], [100]], "Details": [["X"], [1]]},
+            filename="report.xlsx",
+        )
+
+        result = await adapter.project(path)
+        assert result.title == "Quarterly Report"
+
+    async def test_ad_061_title_fallback_to_filename(self, tmp_path):
+        """AD-061: Default sheet name falls back to filename stem."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        # openpyxl default sheet name is "Sheet"
+        path = _make_xlsx(tmp_path, filename="my_data.xlsx")
+
+        result = await adapter.project(path)
+        assert result.title == "my_data"
+
+    async def test_ad_062_content_hash_raw_bytes(self, tmp_path):
+        """AD-062: content_hash is SHA-256 of raw .xlsx file bytes."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {"Data": [["X"], [1]]},
+            filename="hash_test.xlsx",
+        )
+
+        expected_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        result = await adapter.project(path)
+        assert result.content_hash == expected_hash
+
+    async def test_ad_063_source_modified_at(self, tmp_path):
+        """AD-063: source_modified_at extracted from file mtime, timezone-aware."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {"Data": [["X"], [1]]},
+            filename="provenance.xlsx",
+        )
+
+        known_mtime = datetime(2023, 9, 1, 14, 0, 0, tzinfo=timezone.utc)
+        os.utime(path, (path.stat().st_atime, known_mtime.timestamp()))
+
+        result = await adapter.project(path)
+
+        assert "source_modified_at" in result.metadata
+        parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
+        assert parsed.tzinfo is not None
+        assert abs((parsed - known_mtime).total_seconds()) < 1.0
+
+    async def test_ad_064_empty_workbook(self, tmp_path):
+        """AD-064: Empty workbook produces valid result with filename-stem title."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_xlsx(tmp_path, filename="empty_book.xlsx")
+
+        result = await adapter.project(path)
+
+        assert result.title == "empty_book"
+        assert isinstance(result.text, str)
+        assert isinstance(result.content_hash, str)
+        assert len(result.content_hash) == 64
+
+    async def test_ad_065_max_sheets_config(self, tmp_path):
+        """AD-065: max_sheets config limits number of sheets projected."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        sheets = {f"Sheet_{i}": [["Col"], [i]] for i in range(1, 6)}
+        path = _make_multisheet_xlsx(tmp_path, sheets, filename="many.xlsx")
+
+        result = await adapter.project(path, config={"max_sheets": 2})
+
+        assert len(result.headings) == 2
+        assert result.headings[0].text == "Sheet_1"
+        assert result.headings[1].text == "Sheet_2"
+
+    async def test_ad_066_sheet_metadata(self, tmp_path):
+        """AD-066: metadata includes sheet_names, total_sheets, dimensions."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {
+                "Alpha": [["A", "B"], [1, 2], [3, 4]],
+                "Beta": [["X"], [10]],
+            },
+        )
+
+        result = await adapter.project(path)
+
+        assert result.metadata["sheet_names"] == ["Alpha", "Beta"]
+        assert result.metadata["total_sheets"] == 2
+        assert "Alpha" in result.metadata["dimensions"]
+        assert "Beta" in result.metadata["dimensions"]
+
+    async def test_ad_067_full_text_concatenation(self, tmp_path):
+        """AD-067: result.text concatenates all sheet projections with markdown headings."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        adapter = XlsxAdapter()
+        path = _make_multisheet_xlsx(
+            tmp_path,
+            {
+                "Revenue": [["Q1", "Q2"], [100, 200]],
+                "Costs": [["Q1", "Q2"], [50, 80]],
+            },
+        )
+
+        result = await adapter.project(path)
+
+        # Sheet names appear as markdown headings in full text
+        assert "# Revenue" in result.text
+        assert "# Costs" in result.text
+        # Content from both sheets present
+        assert "100" in result.text
+        assert "50" in result.text
