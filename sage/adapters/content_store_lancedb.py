@@ -70,9 +70,10 @@ class LanceDBContentStore(ContentStore):
     def _migrate_schema_if_needed(self) -> None:
         """Add missing metadata columns to an existing chunks table.
 
-        Reads all rows, drops the table, recreates with the current schema,
-        and reinserts with null values for new columns. Existing chunks will
-        have doc_type=None until re-indexed.
+        Materializes all rows to a DataFrame, writes a parquet backup,
+        then drops and recreates with the current schema. The backup is
+        deleted only after successful recreation. If the process crashes
+        mid-migration, the parquet file survives for manual recovery.
         """
         table = self._get_table()
         if table is None:
@@ -86,22 +87,36 @@ class LanceDBContentStore(ContentStore):
             "Migrating chunks table schema: adding %s",
             needed - existing_names,
         )
-        rows = table.to_pandas().to_dict("records")
-        self._db.drop_table(CHUNKS_TABLE)
-        self._table_exists = False
-
-        if not rows:
+        # Materialize all rows before any destructive operation
+        df = table.to_pandas()
+        if df.empty:
+            self._db.drop_table(CHUNKS_TABLE)
+            self._table_exists = False
             return
 
-        # Backfill missing columns with None
+        rows = df.to_dict("records")
         for row in rows:
             for col in needed - existing_names:
                 row.setdefault(col, None)
 
-        new_table = self._db.create_table(CHUNKS_TABLE, data=rows, schema=CHUNKS_SCHEMA)
-        self._table_exists = True
-        self._rebuild_fts(new_table)
-        logger.info("Schema migration complete: %d rows migrated", len(rows))
+        recovery_path = self._brain_root / "chunks_migration_backup.parquet"
+        try:
+            df.to_parquet(recovery_path)
+            self._db.drop_table(CHUNKS_TABLE)
+            self._table_exists = False
+            new_table = self._db.create_table(
+                CHUNKS_TABLE, data=rows, schema=CHUNKS_SCHEMA,
+            )
+            self._table_exists = True
+            self._rebuild_fts(new_table)
+            recovery_path.unlink(missing_ok=True)
+            logger.info("Schema migration complete: %d rows migrated", len(rows))
+        except Exception:
+            logger.exception(
+                "Schema migration failed. Recovery backup at %s",
+                recovery_path,
+            )
+            raise
 
     @staticmethod
     def _build_where(filters: dict[str, str]) -> str | None:

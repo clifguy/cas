@@ -51,7 +51,10 @@ def minimal_vault_config_dict(tmp_vault_dir):
             "visibility": "personal",
         },
         "document_types": {
-            "doc_types": [{"value": "note", "label": "Note"}],
+            "doc_types": [
+                {"value": "note", "label": "Note"},
+                {"value": "memo", "label": "Memo"},
+            ],
         },
         "lifecycle": {
             "base_states_required": True,

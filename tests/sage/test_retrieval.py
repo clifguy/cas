@@ -27,6 +27,7 @@ from sage.models.schemas import (
     DiscoverRequest,
     Document,
     RetrievalFilters,
+    UpdateMetadataRequest,
 )
 from sage.services.retrieval import RetrievalService
 
@@ -1053,6 +1054,50 @@ async def test_prefilter_doc_type_null_chunks_excluded(
     # The post-filter cannot recover it because it never appeared in search results.
     # This is acceptable: pre-migration data requires re-indexing.
     assert "doc_untyped" not in doc_ids
+
+
+async def test_metadata_doc_type_change_syncs_to_content_store(
+    graph_store, stub_content_store, seeded_embedding_provider,
+    retrieval_service, metadata_service,
+):
+    """Changing doc_type via MetadataService updates content store chunks,
+    so subsequent filtered searches reflect the new type.
+    """
+    doc = _make_doc("doc_retyped", doc_type="note")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_retyped",
+        [("Section 1", "Clinical pathway integration process.")],
+        doc_type="note",
+    )
+
+    # Verify it appears under "note" filter
+    request_note = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="clinical pathway",
+        filters=RetrievalFilters(doc_type="note"),
+    )
+    response = await retrieval_service.discover(request_note)
+    assert "doc_retyped" in [h.document.id for h in response.results]
+
+    # Change doc_type to memo via MetadataService
+    await metadata_service.update_metadata(
+        "doc_retyped",
+        UpdateMetadataRequest(doc_type="memo"),
+        modified_by="test_user",
+    )
+
+    # Now it should appear under memo, not note
+    request_memo = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="clinical pathway",
+        filters=RetrievalFilters(doc_type="memo"),
+    )
+    response = await retrieval_service.discover(request_memo)
+    assert "doc_retyped" in [h.document.id for h in response.results]
+
+    response = await retrieval_service.discover(request_note)
+    assert "doc_retyped" not in [h.document.id for h in response.results]
 
 
 async def test_bh_070_document_date_in_summary(
