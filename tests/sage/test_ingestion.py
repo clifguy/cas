@@ -1,5 +1,5 @@
 """Ingestion Pipeline tests: BH-018 through BH-026, BH-049 through BH-052,
-BH-062 through BH-068.
+BH-062 through BH-068, BH-071.
 
 Covers duplicate detection, force re-ingestion, pipeline failure quarantine,
 LLM failure handling, abstraction_skipped, sequential pipeline execution,
@@ -758,3 +758,47 @@ async def test_bh_068_sequential_pipeline_final_status(
     assert fetched.pipeline_status == doc.pipeline_status
     assert fetched.indexed_at == doc.indexed_at
     assert fetched.semantic_abstract == doc.semantic_abstract
+
+
+# ---------------------------------------------------------------------------
+# BH-071: Same-name same-content re-import reuses existing file
+# ---------------------------------------------------------------------------
+
+async def test_bh_071_same_content_reuses_existing_import(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """When imports/ already contains a file with the same name AND
+    identical content, _ensure_vault_local returns the existing path
+    without creating a hash-suffixed duplicate."""
+    storage_root = tmp_vault_dir / "sources"
+    imports_dir = storage_root / "imports"
+    imports_dir.mkdir()
+
+    content = "# Report\n\nIdentical content.\n"
+
+    # Pre-populate imports/ with a file
+    existing = imports_dir / "report.md"
+    existing.write_text(content)
+
+    # Create an external file with the same name and same content
+    external_file = tmp_path / "report.md"
+    external_file.write_text(content)
+
+    request = IngestRequest(
+        source=str(external_file),
+        adapter=SourceType.MARKDOWN,
+        force=True,  # bypass DuplicateContentError to test file handling
+    )
+    result = await ingestion_service.ingest(request)
+
+    doc = result.document
+    # source_path should be the original, without hash suffix
+    assert doc.source_path == "imports/report.md"
+
+    # Only one file should exist in imports/
+    import_files = list(imports_dir.iterdir())
+    assert len(import_files) == 1
+    assert import_files[0].name == "report.md"
+
+    # Content unchanged
+    assert existing.read_text() == content

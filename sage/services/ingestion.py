@@ -85,8 +85,12 @@ class IngestionService:
 
         dest = imports_dir / source_path.name
         if dest.exists():
-            # Collision: disambiguate with 8-char content hash
             content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()[:8]
+            existing_hash = hashlib.sha256(dest.read_bytes()).hexdigest()[:8]
+            if content_hash == existing_hash:
+                # Identical content already imported -- reuse existing path
+                return str(dest.relative_to(storage_root))
+            # Different content: disambiguate with 8-char content hash
             stem = source_path.stem
             suffix = source_path.suffix
             dest = imports_dir / f"{stem}_{content_hash}{suffix}"
