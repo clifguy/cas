@@ -272,6 +272,11 @@ class IngestionService:
         # Chunk the projection by heading
         chunks = self._chunk_projection(document_id, projection, preamble)
 
+        # Stamp doc_type on chunks for content-store pre-filtering
+        if doc and doc.doc_type and chunks:
+            for chunk in chunks:
+                chunk.doc_type = doc.doc_type
+
         # Embed all chunks
         if chunks:
             texts = [c.content for c in chunks]

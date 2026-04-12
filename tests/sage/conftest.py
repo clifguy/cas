@@ -164,8 +164,8 @@ def pim_lifecycle_service(graph_store, lock_manager, pim_health_config_obj):
 
 
 @pytest.fixture
-def metadata_service(graph_store, lock_manager, minimal_config):
-    return MetadataService(graph_store, lock_manager, minimal_config)
+def metadata_service(graph_store, lock_manager, minimal_config, stub_content_store):
+    return MetadataService(graph_store, lock_manager, minimal_config, stub_content_store)
 
 
 @pytest.fixture

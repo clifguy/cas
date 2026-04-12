@@ -26,7 +26,11 @@ CHUNKS_SCHEMA = pa.schema([
     pa.field("content", pa.utf8()),
     pa.field("chunk_index", pa.int32()),
     pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
+    pa.field("doc_type", pa.utf8(), nullable=True),
 ])
+
+# Columns that can be pre-filtered at query time.
+_FILTERABLE_COLUMNS = {"doc_type"}
 
 
 class LanceDBContentStore(ContentStore):
@@ -42,6 +46,7 @@ class LanceDBContentStore(ContentStore):
         self._brain_root.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._brain_root / "lancedb"))
         self._table_exists = CHUNKS_TABLE in self._db.list_tables().tables
+        self._migrate_schema_if_needed()
 
     def _get_table(self) -> lancedb.table.Table | None:
         """Return the chunks table, or None if it hasn't been created yet."""
@@ -61,6 +66,55 @@ class LanceDBContentStore(ContentStore):
         self._table_exists = True
         logger.info("Created chunks table at %s", self._brain_root)
         return table
+
+    def _migrate_schema_if_needed(self) -> None:
+        """Add missing metadata columns to an existing chunks table.
+
+        Reads all rows, drops the table, recreates with the current schema,
+        and reinserts with null values for new columns. Existing chunks will
+        have doc_type=None until re-indexed.
+        """
+        table = self._get_table()
+        if table is None:
+            return
+        existing_names = set(table.schema.names)
+        needed = set(CHUNKS_SCHEMA.names)
+        if needed.issubset(existing_names):
+            return
+
+        logger.info(
+            "Migrating chunks table schema: adding %s",
+            needed - existing_names,
+        )
+        rows = table.to_pandas().to_dict("records")
+        self._db.drop_table(CHUNKS_TABLE)
+        self._table_exists = False
+
+        if not rows:
+            return
+
+        # Backfill missing columns with None
+        for row in rows:
+            for col in needed - existing_names:
+                row.setdefault(col, None)
+
+        new_table = self._db.create_table(CHUNKS_TABLE, data=rows, schema=CHUNKS_SCHEMA)
+        self._table_exists = True
+        self._rebuild_fts(new_table)
+        logger.info("Schema migration complete: %d rows migrated", len(rows))
+
+    @staticmethod
+    def _build_where(filters: dict[str, str]) -> str | None:
+        """Build a SQL WHERE clause from a filters dict.
+
+        Only columns in _FILTERABLE_COLUMNS are accepted to prevent
+        injection via arbitrary column names.
+        """
+        clauses = []
+        for key, value in filters.items():
+            if key in _FILTERABLE_COLUMNS:
+                clauses.append(f"{key} = '{_escape_sql(value)}'")
+        return " AND ".join(clauses) if clauses else None
 
     def _rebuild_fts(self, table: lancedb.table.Table) -> None:
         """Rebuild the FTS index on the content column (AD-019).
@@ -100,6 +154,7 @@ class LanceDBContentStore(ContentStore):
                 "content": chunk.content,
                 "chunk_index": chunk.chunk_index,
                 "vector": embedding,
+                "doc_type": chunk.doc_type,
             })
 
         table.add(rows)
@@ -121,24 +176,51 @@ class LanceDBContentStore(ContentStore):
 
         self._rebuild_fts(table)
 
+    async def update_chunk_metadata(
+        self, document_id: str, metadata: dict[str, str | None],
+    ) -> None:
+        """Update metadata columns on all chunks for a document."""
+        table = self._get_table()
+        if table is None:
+            return
+
+        updates = {k: v for k, v in metadata.items() if k in _FILTERABLE_COLUMNS}
+        if not updates:
+            return
+
+        try:
+            table.update(
+                where=f"document_id = '{_escape_sql(document_id)}'",
+                values=updates,
+            )
+        except Exception as exc:
+            logger.warning("update_chunk_metadata failed for %s: %s", document_id, exc)
+
     async def search_semantic(
-        self, query_embedding: list[float], limit: int = 10
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        filters: dict[str, str] | None = None,
     ) -> list[SearchResult]:
         """Vector similarity search using cosine distance (AD-016, AD-017).
 
         Returns results ranked by descending cosine similarity.
+        When filters are provided, only matching chunks are searched.
         """
         table = self._get_table()
         if table is None:
             return []
 
         try:
-            results = (
+            query = (
                 table.search(query_embedding, vector_column_name="vector")
                 .metric("cosine")
-                .limit(limit)
-                .to_list()
             )
+            if filters:
+                where = self._build_where(filters)
+                if where:
+                    query = query.where(where)
+            results = query.limit(limit).to_list()
         except Exception as exc:
             logger.warning("Semantic search failed: %s", exc)
             return []
@@ -155,21 +237,28 @@ class LanceDBContentStore(ContentStore):
             for row in results
         ]
 
-    async def search_bm25(self, query: str, limit: int = 10) -> list[SearchResult]:
+    async def search_bm25(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: dict[str, str] | None = None,
+    ) -> list[SearchResult]:
         """BM25 keyword search using LanceDB native FTS (AD-018, AD-019).
 
         Returns results ranked by relevance score, descending.
+        When filters are provided, only matching chunks are searched.
         """
         table = self._get_table()
         if table is None:
             return []
 
         try:
-            results = (
-                table.search(query, query_type="fts")
-                .limit(limit)
-                .to_list()
-            )
+            search_query = table.search(query, query_type="fts")
+            if filters:
+                where = self._build_where(filters)
+                if where:
+                    search_query = search_query.where(where)
+            results = search_query.limit(limit).to_list()
         except Exception as exc:
             logger.warning("BM25 search failed: %s", exc)
             return []

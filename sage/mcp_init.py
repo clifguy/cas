@@ -76,7 +76,7 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
     # Services
     user_service = UserService(graph_store, config)
     lifecycle_service = LifecycleService(graph_store, lock_manager, config)
-    metadata_service = MetadataService(graph_store, lock_manager, config)
+    metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
     ingestion_service = IngestionService(
         graph_store=graph_store,
         lock_manager=lock_manager,

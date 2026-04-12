@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 
+from sage.adapters.interfaces import ContentStore
 from sage.api.errors import DocumentNotFoundError, InvalidDocTypeError
 from sage.config import VaultConfig
 from sage.models.schemas import Document, UpdateMetadataRequest
@@ -15,10 +16,12 @@ class MetadataService:
         graph_store: GraphStore,
         lock_manager: DocumentLockManager,
         config: VaultConfig,
+        content_store: ContentStore | None = None,
     ) -> None:
         self._store = graph_store
         self._locks = lock_manager
         self._config = config
+        self._content = content_store
 
     async def update_metadata(
         self,
@@ -64,5 +67,11 @@ class MetadataService:
             updates["last_modified_by"] = modified_by
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             doc = await self._store.update_document(document_id, updates)
+
+            # Sync doc_type to content store for pre-filter consistency
+            if "doc_type" in updates and self._content:
+                await self._content.update_chunk_metadata(
+                    document_id, {"doc_type": updates["doc_type"]}
+                )
 
             return doc

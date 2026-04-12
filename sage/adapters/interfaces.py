@@ -18,6 +18,7 @@ class Chunk:
     content: str
     embedding: list[float] | None = None
     chunk_index: int = 0
+    doc_type: str | None = None
 
 
 @dataclass
@@ -43,13 +44,39 @@ class ContentStore(ABC):
 
     @abstractmethod
     async def search_semantic(
-        self, query_embedding: list[float], limit: int = 10
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        filters: dict[str, str] | None = None,
     ) -> list[SearchResult]:
-        """Vector similarity search."""
+        """Vector similarity search.
+
+        filters: optional pre-filter predicates (e.g. {"doc_type": "patent_draft"}).
+        When provided, only chunks matching all predicates are searched.
+        """
 
     @abstractmethod
-    async def search_bm25(self, query: str, limit: int = 10) -> list[SearchResult]:
-        """BM25 keyword search."""
+    async def search_bm25(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: dict[str, str] | None = None,
+    ) -> list[SearchResult]:
+        """BM25 keyword search.
+
+        filters: optional pre-filter predicates (e.g. {"doc_type": "patent_draft"}).
+        When provided, only chunks matching all predicates are searched.
+        """
+
+    @abstractmethod
+    async def update_chunk_metadata(
+        self, document_id: str, metadata: dict[str, str | None],
+    ) -> None:
+        """Update metadata columns on all chunks for a document.
+
+        Used to sync content-store metadata when document metadata changes
+        (e.g. doc_type reassignment via update_metadata).
+        """
 
     @abstractmethod
     async def get_chunks_by_heading_prefix(

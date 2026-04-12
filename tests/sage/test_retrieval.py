@@ -86,10 +86,12 @@ async def _index_doc_chunks(
     embedding_provider,
     document_id: str,
     chunks_data: list[tuple[str, str]],
+    doc_type: str | None = None,
 ) -> None:
     """Helper: index chunks for a document in the content store.
 
     chunks_data: list of (heading_path, content) tuples.
+    doc_type: optional doc_type to stamp on chunks for pre-filter testing.
     """
     chunks = []
     for i, (heading_path, content) in enumerate(chunks_data):
@@ -98,6 +100,7 @@ async def _index_doc_chunks(
             heading_path=heading_path,
             content=content,
             chunk_index=i,
+            doc_type=doc_type,
         ))
 
     # Embed chunks
@@ -829,6 +832,227 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
     # Active + recent should be first
     assert ar_idx < ao_idx, "Active+recent should rank above active+old"
     assert ar_idx < sr_idx, "Active+recent should rank above superseded+recent"
+
+
+# ---------------------------------------------------------------------------
+# Pre-filter: doc_type filtering at content store level
+# ---------------------------------------------------------------------------
+
+async def test_prefilter_doc_type_semantic(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Semantic search with doc_type filter only returns matching documents,
+    even when non-matching documents have higher relevance scores.
+
+    This tests the pre-filter path: the content store itself excludes
+    chunks from non-matching doc_types before scoring, rather than
+    relying on post-filter depletion.
+    """
+    doc_patent = _make_doc("doc_patent", doc_type="patent_draft")
+    doc_report = _make_doc("doc_report", doc_type="report")
+    doc_ref = _make_doc("doc_ref", doc_type="reference_document")
+    await graph_store.insert_document(doc_patent)
+    await graph_store.insert_document(doc_report)
+    await graph_store.insert_document(doc_ref)
+
+    # All documents get identical content so only the filter differentiates
+    identical_content = "Clinical pathway integration and normalization process."
+    for doc_id, doc_type in [
+        ("doc_patent", "patent_draft"),
+        ("doc_report", "report"),
+        ("doc_ref", "reference_document"),
+    ]:
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", identical_content)],
+            doc_type=doc_type,
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="clinical pathway",
+        scope=RetrievalScope.FILTERED,
+        filters=RetrievalFilters(doc_type="patent_draft"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_patent" in doc_ids
+    assert "doc_report" not in doc_ids
+    assert "doc_ref" not in doc_ids
+
+
+async def test_prefilter_doc_type_keyword(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Keyword search with doc_type filter only returns matching documents."""
+    doc_patent = _make_doc("doc_patent_kw", doc_type="patent_draft")
+    doc_report = _make_doc("doc_report_kw", doc_type="report")
+    await graph_store.insert_document(doc_patent)
+    await graph_store.insert_document(doc_report)
+
+    identical_content = "Detailed analysis of PV07 claims and prior art."
+    for doc_id, doc_type in [
+        ("doc_patent_kw", "patent_draft"),
+        ("doc_report_kw", "report"),
+    ]:
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", identical_content)],
+            doc_type=doc_type,
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV07 claims",
+        filters=RetrievalFilters(doc_type="patent_draft"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_patent_kw" in doc_ids
+    assert "doc_report_kw" not in doc_ids
+
+
+async def test_prefilter_doc_type_hybrid(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Hybrid RRF search with doc_type filter only returns matching documents."""
+    doc_patent = _make_doc("doc_patent_hyb", doc_type="patent_draft")
+    doc_report = _make_doc("doc_report_hyb", doc_type="report")
+    await graph_store.insert_document(doc_patent)
+    await graph_store.insert_document(doc_report)
+
+    identical_content = "Patent filing process for clinical normalization."
+    for doc_id, doc_type in [
+        ("doc_patent_hyb", "patent_draft"),
+        ("doc_report_hyb", "report"),
+    ]:
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", identical_content)],
+            doc_type=doc_type,
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent filing",
+        use_hybrid=True,
+        filters=RetrievalFilters(doc_type="patent_draft"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_patent_hyb" in doc_ids
+    assert "doc_report_hyb" not in doc_ids
+
+
+async def test_prefilter_no_filter_returns_all_doc_types(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Without a doc_type filter, all document types appear in results."""
+    doc_patent = _make_doc("doc_patent_all", doc_type="patent_draft")
+    doc_report = _make_doc("doc_report_all", doc_type="report")
+    await graph_store.insert_document(doc_patent)
+    await graph_store.insert_document(doc_report)
+
+    identical_content = "Patent filing process for clinical normalization."
+    for doc_id, doc_type in [
+        ("doc_patent_all", "patent_draft"),
+        ("doc_report_all", "report"),
+    ]:
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", identical_content)],
+            doc_type=doc_type,
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent filing",
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_patent_all" in doc_ids
+    assert "doc_report_all" in doc_ids
+
+
+async def test_postfilter_project_still_applies_with_prefilter(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Post-filter fields (project) still work alongside doc_type pre-filter."""
+    doc_match = _make_doc("doc_match_both", doc_type="patent_draft", project="pim_health")
+    doc_wrong_project = _make_doc("doc_wrong_proj", doc_type="patent_draft", project="other")
+    doc_wrong_type = _make_doc("doc_wrong_type", doc_type="report", project="pim_health")
+    await graph_store.insert_document(doc_match)
+    await graph_store.insert_document(doc_wrong_project)
+    await graph_store.insert_document(doc_wrong_type)
+
+    identical_content = "Patent filing process for clinical normalization."
+    for doc_id, doc_type in [
+        ("doc_match_both", "patent_draft"),
+        ("doc_wrong_proj", "patent_draft"),
+        ("doc_wrong_type", "report"),
+    ]:
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", identical_content)],
+            doc_type=doc_type,
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent filing",
+        filters=RetrievalFilters(doc_type="patent_draft", project="pim_health"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_match_both" in doc_ids
+    assert "doc_wrong_proj" not in doc_ids
+    assert "doc_wrong_type" not in doc_ids
+
+
+async def test_prefilter_doc_type_null_chunks_excluded(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Chunks without doc_type metadata (pre-migration data) are excluded
+    when a doc_type filter is active.
+    """
+    doc_typed = _make_doc("doc_typed", doc_type="patent_draft")
+    doc_untyped = _make_doc("doc_untyped", doc_type="patent_draft")
+    await graph_store.insert_document(doc_typed)
+    await graph_store.insert_document(doc_untyped)
+
+    identical_content = "Patent filing process for clinical normalization."
+    # doc_typed has doc_type on its chunks
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_typed",
+        [("Section 1", identical_content)],
+        doc_type="patent_draft",
+    )
+    # doc_untyped has no doc_type on chunks (simulates pre-migration data)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_untyped",
+        [("Section 1", identical_content)],
+        doc_type=None,
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent filing",
+        filters=RetrievalFilters(doc_type="patent_draft"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "doc_typed" in doc_ids
+    # doc_untyped passes the post-filter (graph store has correct doc_type)
+    # but content store pre-filter excluded its chunks because chunk.doc_type is None.
+    # The post-filter cannot recover it because it never appeared in search results.
+    # This is acceptable: pre-migration data requires re-indexing.
+    assert "doc_untyped" not in doc_ids
 
 
 async def test_bh_070_document_date_in_summary(

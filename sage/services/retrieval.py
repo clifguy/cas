@@ -79,6 +79,18 @@ class RetrievalService:
         multiplier = 10 if request.filters else 5
         return request.limit * multiplier
 
+    @staticmethod
+    def _content_filters(request: DiscoverRequest) -> dict[str, str] | None:
+        """Extract filters applicable at the content-store level (pre-filter).
+
+        Currently only doc_type is stored in the content store. Other
+        filter fields (project, lifecycle_status, tags) remain post-filter
+        via _passes_scope.
+        """
+        if not request.filters or not request.filters.doc_type:
+            return None
+        return {"doc_type": request.filters.doc_type}
+
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
         if request.mode == RetrievalMode.SEMANTIC:
@@ -112,7 +124,10 @@ class RetrievalService:
             hits = await self._list_filtered(request)
         else:
             fetch_limit = self._fetch_limit(request)
-            results = await self._content.search_bm25(request.query, fetch_limit)
+            content_filters = self._content_filters(request)
+            results = await self._content.search_bm25(
+                request.query, fetch_limit, filters=content_filters,
+            )
             hits = await self._results_to_hits(results, request)
             hits = await self._boost_metadata_matches(hits, request)
             hits = await self._rerank_salience(hits)
@@ -175,15 +190,18 @@ class RetrievalService:
         embeddings = await self._embedding.embed([request.query])
         query_embedding = embeddings[0]
 
+        content_filters = self._content_filters(request)
+
         if request.use_hybrid:
             # Hybrid: RRF fusion of vector + BM25 (BH-027)
             results = await self._hybrid_rrf(
-                query_embedding, request.query, fetch_limit
+                query_embedding, request.query, fetch_limit,
+                filters=content_filters,
             )
         else:
             # Pure vector (BH-028)
             results = await self._content.search_semantic(
-                query_embedding, fetch_limit
+                query_embedding, fetch_limit, filters=content_filters,
             )
 
         # Filter results: exclude failed-pipeline documents (BH-020)
@@ -202,6 +220,7 @@ class RetrievalService:
         query_embedding: list[float],
         query_text: str,
         limit: int,
+        filters: dict[str, str] | None = None,
     ) -> list[SearchResult]:
         """Reciprocal Rank Fusion of vector and BM25 results (BH-027).
 
@@ -211,9 +230,11 @@ class RetrievalService:
         fetch_limit = limit * 3
 
         vector_results = await self._content.search_semantic(
-            query_embedding, fetch_limit
+            query_embedding, fetch_limit, filters=filters,
         )
-        bm25_results = await self._content.search_bm25(query_text, fetch_limit)
+        bm25_results = await self._content.search_bm25(
+            query_text, fetch_limit, filters=filters,
+        )
 
         # Build RRF scores keyed by (document_id, heading_path)
         rrf_scores: dict[tuple[str, str], float] = {}

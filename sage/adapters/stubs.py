@@ -32,12 +32,17 @@ class StubContentStore(ContentStore):
         self._store.pop(document_id, None)
 
     async def search_semantic(
-        self, query_embedding: list[float], limit: int = 10
+        self,
+        query_embedding: list[float],
+        limit: int = 10,
+        filters: dict[str, str] | None = None,
     ) -> list[SearchResult]:
         """Cosine similarity search across all indexed chunks."""
         scored: list[tuple[float, Chunk]] = []
         for chunks in self._store.values():
             for chunk in chunks:
+                if not _chunk_matches_filters(chunk, filters):
+                    continue
                 if chunk.embedding is not None:
                     sim = _cosine_similarity(query_embedding, chunk.embedding)
                     scored.append((sim, chunk))
@@ -53,7 +58,12 @@ class StubContentStore(ContentStore):
             for score, chunk in scored[:limit]
         ]
 
-    async def search_bm25(self, query: str, limit: int = 10) -> list[SearchResult]:
+    async def search_bm25(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: dict[str, str] | None = None,
+    ) -> list[SearchResult]:
         """Simple term-frequency keyword search for testing."""
         terms = query.lower().split()
         if not terms:
@@ -62,6 +72,8 @@ class StubContentStore(ContentStore):
         scored: list[tuple[float, Chunk]] = []
         for chunks in self._store.values():
             for chunk in chunks:
+                if not _chunk_matches_filters(chunk, filters):
+                    continue
                 content_lower = chunk.content.lower()
                 # Score = fraction of query terms found in content
                 matches = sum(1 for t in terms if t in content_lower)
@@ -80,6 +92,15 @@ class StubContentStore(ContentStore):
             for score, chunk in scored[:limit]
         ]
 
+    async def update_chunk_metadata(
+        self, document_id: str, metadata: dict[str, str | None],
+    ) -> None:
+        """Update metadata on stored chunks for a document."""
+        chunks = self._store.get(document_id, [])
+        for chunk in chunks:
+            if "doc_type" in metadata:
+                chunk.doc_type = metadata["doc_type"]
+
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str
     ) -> list[Chunk]:
@@ -97,6 +118,16 @@ class StubContentStore(ContentStore):
         """Return all chunks for a document in document order."""
         chunks = self._store.get(document_id, [])
         return sorted(chunks, key=lambda c: c.chunk_index)
+
+
+def _chunk_matches_filters(chunk: Chunk, filters: dict[str, str] | None) -> bool:
+    """Check whether a chunk matches all filter predicates."""
+    if not filters:
+        return True
+    for key, value in filters.items():
+        if getattr(chunk, key, None) != value:
+            return False
+    return True
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
