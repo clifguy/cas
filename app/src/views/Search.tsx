@@ -26,7 +26,6 @@ export default function Search() {
     pipeline_status: { filterKey: 'pipeline_status', heading: v => ({ abstraction_skipped: 'Deferred Abstracts', failed: 'Failed Ingestions' }[v] ?? v) },
     lifecycle_status: { filterKey: 'lifecycle_status', heading: v => `Lifecycle: ${v}` },
     doc_type: { filterKey: 'doc_type', heading: v => `Doc Type: ${v.replace(/_/g, ' ')}` },
-    source_type: { filterKey: 'doc_type', heading: v => `Source Adapter: ${v}` }, // approximate via discover
   };
 
   // On first render with filter params, execute filtered discover

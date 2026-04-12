@@ -134,7 +134,7 @@ def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
 @router.post("/scan", response_model=dict)
 async def scan_endpoint(body: ScanRequest, request: Request) -> dict:
     """Scan a directory and return files with status and parsed metadata."""
-    directory = Path(body.directory)
+    directory = Path(body.directory.strip("'\""))
     if not directory.is_dir():
         raise HTTPException(
             status_code=400,

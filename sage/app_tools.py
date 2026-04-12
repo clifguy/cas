@@ -49,7 +49,7 @@ def register_app_tools(
 
         try:
             v = get_vault(vault_id)
-            d = Path(directory)
+            d = Path(directory.strip("'\""))
             if not d.is_dir():
                 return json.dumps({
                     "error": "invalid_directory",

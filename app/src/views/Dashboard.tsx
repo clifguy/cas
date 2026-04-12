@@ -50,7 +50,7 @@ export default function Dashboard() {
           <CountCard value={stats.total_documents} label="Total" />
           <BreakdownCard label="By Lifecycle" data={stats.by_lifecycle_state} linkParam="lifecycle_status" />
           <BreakdownCard label="By Doc Type" data={stats.by_doc_type} formatKey={k => k.replace(/_/g, ' ')} linkParam="doc_type" />
-          <BreakdownCard label="By Source Adapter" data={stats.by_source_adapter} linkParam="source_type" />
+          <BreakdownCard label="By Source Adapter" data={stats.by_source_adapter} />
         </div>
 
         {/* Edges */}

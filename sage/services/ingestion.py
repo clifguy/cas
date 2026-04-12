@@ -205,6 +205,12 @@ class IngestionService:
             if metadata_updates:
                 doc = await self._store.update_document(doc.id, metadata_updates)
 
+        # Ensure every document has a doc_type for content-store pre-filtering.
+        # Defaults to "misc" when neither caller metadata nor existing record
+        # provides one (preserves existing doc_type on re-ingestion).
+        if not doc.doc_type:
+            doc = await self._store.update_document(doc.id, {"doc_type": "misc"})
+
         # Fallback: derive document_date from source_modified_at (BH-063)
         if not doc.document_date and source_modified_at:
             doc = await self._store.update_document(doc.id, {
@@ -342,9 +348,6 @@ class IngestionService:
             elif key == "codes":
                 # codes stored as comma-separated string -> tags list
                 updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
-        # Default to "misc" when no doc_type was resolved by the caller
-        if "doc_type" not in updates:
-            updates["doc_type"] = "misc"
         return updates
 
     def _chunk_projection(

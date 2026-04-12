@@ -9,6 +9,7 @@ from pathlib import Path
 
 import lancedb
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from sage.adapters.interfaces import Chunk, ContentStore, SearchResult
 
@@ -88,20 +89,20 @@ class LanceDBContentStore(ContentStore):
             needed - existing_names,
         )
         # Materialize all rows before any destructive operation
-        df = table.to_pandas()
-        if df.empty:
+        arrow_table = table.to_arrow()
+        if arrow_table.num_rows == 0:
             self._db.drop_table(CHUNKS_TABLE)
             self._table_exists = False
             return
 
-        rows = df.to_dict("records")
+        rows = arrow_table.to_pylist()
         for row in rows:
             for col in needed - existing_names:
                 row.setdefault(col, None)
 
         recovery_path = self._brain_root / "chunks_migration_backup.parquet"
         try:
-            df.to_parquet(recovery_path)
+            pq.write_table(arrow_table, recovery_path)
             self._db.drop_table(CHUNKS_TABLE)
             self._table_exists = False
             new_table = self._db.create_table(
