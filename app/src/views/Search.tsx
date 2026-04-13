@@ -6,7 +6,7 @@ import { discover } from '../api/discover';
 
 const PAGE_SIZE = 50;
 
-type SortColumn = 'title' | 'document_date' | 'lifecycle_status';
+type SortColumn = 'title' | 'doc_type' | 'document_date' | 'lifecycle_status';
 type SortDir = 'asc' | 'desc';
 
 interface SortState {
@@ -438,7 +438,7 @@ function CatalogTable({
       <thead>
         <tr>
           <SortableHeader label="Title" column="title" sort={sort} onSort={onSort} />
-          <th style={thStyle}>Type</th>
+          <SortableHeader label="Type" column="doc_type" sort={sort} onSort={onSort} />
           <SortableHeader label="Date" column="document_date" sort={sort} onSort={onSort} />
           <SortableHeader label="Status" column="lifecycle_status" sort={sort} onSort={onSort} />
         </tr>

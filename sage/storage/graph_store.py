@@ -181,7 +181,7 @@ class GraphStore:
 
     # Columns safe to use in ORDER BY (prevent SQL injection).
     _SORTABLE_COLUMNS: frozenset[str] = frozenset({
-        "title", "document_date", "lifecycle_status",
+        "title", "doc_type", "document_date", "lifecycle_status",
     })
 
     async def query_documents(

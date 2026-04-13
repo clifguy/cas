@@ -143,7 +143,7 @@ export interface DiscoverRequest {
   limit?: number;
   offset?: number;
   use_hybrid?: boolean;
-  sort_by?: 'title' | 'document_date' | 'lifecycle_status';
+  sort_by?: 'title' | 'doc_type' | 'document_date' | 'lifecycle_status';
   sort_order?: 'asc' | 'desc';
 }
 

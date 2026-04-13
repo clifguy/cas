@@ -56,6 +56,7 @@ class RetrievalScope(StrEnum):
 
 class CatalogSortBy(StrEnum):
     TITLE = "title"
+    DOC_TYPE = "doc_type"
     DOCUMENT_DATE = "document_date"
     LIFECYCLE_STATUS = "lifecycle_status"
 
