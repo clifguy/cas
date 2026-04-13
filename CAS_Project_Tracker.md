@@ -219,6 +219,7 @@
 - First and most complex domain instantiation.
 - v0.1 delivered 2026-03-30. Five YAML configuration files validated against FS v0.1 schemas: sage_vault_config.yaml (checklist items #1-#6), pipeline.yaml (#7, #10), agents.yaml (#8), policies.yaml (#9), workflows.yaml (#11, #12). ROOT Harness configs at ~/repos/cas/domains/pim_health/. [Vault config moved to ~/sage_vaults/pim_health/vault_config.yaml 2026-04-06.]
 - YAML files updated 2026-03-30: removed organize from permitted_operations in three policies (CAS-ADR-014), added set_lifecycle to reference_steward_read_heavy, corrected target paths from root_harness/ subdirectory to flat domain directory.
+- training_document doc type added 2026-04-12. New document type for training materials and instructional documents. Filename code TRN (with optional numeric suffix, e.g. TRN01). Three vault config changes: doc_type entry (source_types: [docx]), known_code_patterns regex (^TRN\d*$), code_to_doc_type mapping (TRN -> training_document).
 - No further pending corrections or revisions identified.
 
 ### 12. Resurrection Instance (Planned)
