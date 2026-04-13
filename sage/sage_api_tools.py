@@ -21,6 +21,7 @@ from sage.api.errors import (
 )
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
+    ChainRequest,
     DiscoverRequest,
     Edge,
     IngestRequest,
@@ -266,6 +267,35 @@ def register_sage_tools(
                 depth=depth,
             )
             response = await v.graph_ops_service.traverse(request)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_chain(
+        vault_id: str,
+        document_id: str,
+        edge_type: str,
+    ) -> str:
+        """Walk an edge chain to both ends from a starting document.
+
+        Returns an ordered list of all documents in the chain with
+        positional metadata (head, tail, query position, linearity).
+        Designed for version history retrieval on supersedes chains
+        but works with any edge type.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: Document ID to start the chain walk from.
+            edge_type: Edge type to follow (e.g. "supersedes", "references").
+        """
+        try:
+            v = get_vault(vault_id)
+            request = ChainRequest(
+                document_id=document_id,
+                edge_type=edge_type,
+            )
+            response = await v.graph_ops_service.chain(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -568,6 +598,7 @@ def register_sage_tools(
         "sage_link": sage_link,
         "sage_check_preconditions": sage_check_preconditions,
         "sage_traverse": sage_traverse,
+        "sage_chain": sage_chain,
         "sage_discover": sage_discover,
         "sage_export_projection": sage_export_projection,
         "sage_refresh_views": sage_refresh_views,

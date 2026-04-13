@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.5",
+  "manifest_version": "0.9.6",
   "manifest_date": "2026-04-13",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -52,7 +52,7 @@
         "docs/fs/sage/lifecycle.schema.json",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 83,
+      "test_count": 95,
       "decision_date": "2026-04-06"
     },
     {
@@ -132,9 +132,9 @@
         "sage/mcp_server.py",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 27,
+      "test_count": 29,
       "decision_date": "2026-04-08",
-      "notes": "9 new MCP tools: sage_list_vaults (2), sage_vault_stats (3), sage_hash_check (2), sage_list_staging_edges (2), sage_confirm/dismiss_staging_edge (3), sage_pending_metadata (2), app_scan_directory (4), app_batch_ingest (4), cross-cutting conventions (3). sage_discover catalog mode (2). Single-server topology, sync-with-progress for batch ingest."
+      "notes": "9 new MCP tools: sage_list_vaults (2), sage_vault_stats (3), sage_hash_check (2), sage_list_staging_edges (2), sage_confirm/dismiss_staging_edge (3), sage_pending_metadata (2), app_scan_directory (4), app_batch_ingest (4), cross-cutting conventions (3). sage_discover catalog mode (2). sage_chain (2). Single-server topology, sync-with-progress for batch ingest."
     },
     {
       "path": "tests/app/edge_inference_tests.md",
@@ -210,6 +210,11 @@
       "version": "0.9.5",
       "date": "2026-04-13",
       "summary": "Document-level response mode test specifications. 5 new behavioral tests (BH-084 through BH-088) covering response_level parameter on sage_discover: semantic search with documents mode omits chunk content, keyword search with documents mode omits chunk content, documents mode preserves relevance scores and ordering, chunks default preserves current behavior, response_level ignored by catalog mode. Behavioral test count: 78 -> 83."
+    },
+    {
+      "version": "0.9.6",
+      "date": "2026-04-13",
+      "summary": "Chain walk and edge-type breakdown test specifications. 8 new behavioral tests (BH-089 through BH-096) for sage_chain: linear chain ordered result, entry-point invariance (head/tail/middle), single-node chain, fork detection (is_linear flag), edge-type isolation, 404 on missing document, non-supersedes edge types. 4 new behavioral tests (BH-097 through BH-100) for TraversalNode.edge_counts: mixed-type counts map, single-key map, filtered traversal restricts counts, multi-depth per-node independence. BH-037 revised: edge_count replaced by edge_counts map (breaking change). 2 new MCP tests (MCP-028, MCP-029) for sage_chain tool. Behavioral test count: 83 -> 95. MCP tool test count: 27 -> 29."
     }
   ]
 }

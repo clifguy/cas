@@ -645,3 +645,53 @@ page through large result sets.
 **Rationale:** Pagination is essential for MCP agents operating on vaults with
 hundreds of documents. Without offset support, agents would need to retrieve
 all documents in a single call, which could exceed response size limits.
+
+
+---
+
+## 11. sage_chain
+
+### TEST-APP-MCP-028: sage_chain returns ordered version history
+
+**Artifact:** `sage/sage_api_tools.py` (sage_chain)
+**Category:** mcp_tool, graph, chain
+
+**Decision:** The `sage_chain` MCP tool walks an edge chain to both ends from
+any starting document and returns an ordered list with positional metadata.
+Same semantics as the Core API chain endpoint (BH-089).
+
+**Precondition:** Vault with 5 documents forming a linear supersedes chain:
+v1 <- v2 <- v3 <- v4 <- v5.
+
+**Input:** `sage_chain(vault_id="test_vault", document_id=v3.id, edge_type="supersedes")`
+
+**Expected:**
+- JSON response with `chain` array of 5 entries ordered tail-to-head.
+- `head_id` = v5.id, `tail_id` = v1.id.
+- `query_position` = 2.
+- `length` = 5.
+- `is_linear` = true.
+- Each chain entry has `id`, `title`, `version_label`, `lifecycle_status`, `document_date`.
+
+**Rationale:** MCP agents working with versioned PIM documents (50+ versions common)
+need an efficient single-call operation to retrieve the full version history.
+The ordered list with positional metadata enables agents to reason about version
+lineage without manual graph traversal and post-processing.
+
+
+### TEST-APP-MCP-029: sage_chain with non-existent document returns error
+
+**Artifact:** `sage/sage_api_tools.py` (sage_chain)
+**Category:** mcp_tool, graph, chain, error
+
+**Decision:** Standard MCP error response for invalid starting document,
+consistent with other sage_* tools.
+
+**Input:** `sage_chain(vault_id="test_vault", document_id="nonexistent", edge_type="supersedes")`
+
+**Expected:**
+- JSON response with `error` key.
+- Error message contains "document_not_found" or equivalent.
+
+**Rationale:** Consistent error handling across all SAGE MCP tools. Callers
+should not need to handle different error shapes per tool.

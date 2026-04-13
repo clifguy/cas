@@ -13,7 +13,7 @@ from sage.api.errors import (
     SelfReferentialEdgeError,
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
-from sage.models.schemas import Document, Edge, LinkRequest, TraverseRequest
+from sage.models.schemas import ChainRequest, Document, Edge, LinkRequest, TraverseRequest
 
 
 def _make_doc(
@@ -235,10 +235,10 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, pim_graph_ops_service)
 
 
 # ---------------------------------------------------------------------------
-# BH-037: Traversal deduplicates by document with edge_count
+# BH-037: Traversal deduplicates by document with edge_counts map
 # ---------------------------------------------------------------------------
 
-async def test_bh_037_traversal_deduplicates_with_edge_count(
+async def test_bh_037_traversal_deduplicates_with_edge_counts(
     graph_store, graph_ops_service
 ):
     doc_a = _make_doc("doc_a")
@@ -267,7 +267,7 @@ async def test_bh_037_traversal_deduplicates_with_edge_count(
     assert len(result.nodes) == 1
     node = result.nodes[0]
     assert node.document.id == "doc_b"
-    assert node.edge_count == 3
+    assert node.edge_counts == {"references": 3}
     # Most recent edge (edge_ref_2) should be shown
     assert node.edge.id == "edge_ref_2"
     assert node.edge.rationale == "Rationale 2"
@@ -324,3 +324,380 @@ async def test_check_preconditions_nonexistent_function_raises_404(
 ):
     with pytest.raises(DocumentNotFoundError):
         await graph_ops_service.check_preconditions("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# BH-089: Linear supersedes chain returns ordered version history
+# ---------------------------------------------------------------------------
+
+async def _create_linear_chain(graph_store, count: int = 5):
+    """Create a linear supersedes chain of `count` documents.
+
+    Returns list of doc IDs in order [v1, v2, ..., vN] where each
+    supersedes its predecessor (source=newer, target=older).
+    """
+    doc_ids = []
+    for i in range(1, count + 1):
+        doc = _make_doc(f"v{i}")
+        doc.version_label = f"v{i}"
+        doc.document_date = f"2026-01-{i:02d}"
+        await graph_store.insert_document(doc)
+        doc_ids.append(f"v{i}")
+
+    # Each version supersedes its predecessor: v2->v1, v3->v2, etc.
+    for i in range(1, count):
+        edge = Edge(
+            id=f"edge_sup_{i}",
+            source_id=f"v{i+1}",
+            target_id=f"v{i}",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=datetime.now(timezone.utc),
+        )
+        await graph_store.insert_edge(edge)
+    return doc_ids
+
+
+async def test_bh_089_linear_chain_ordered(graph_store, graph_ops_service):
+    doc_ids = await _create_linear_chain(graph_store, 5)
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="v3",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 5
+    assert result.is_linear is True
+    assert result.head_id == "v5"
+    assert result.tail_id == "v1"
+    assert result.query_position == 2
+    # Verify ordering: positions 0..4 map to v1..v5
+    for i, entry in enumerate(result.chain):
+        assert entry.position == i
+        assert entry.id == f"v{i+1}"
+        assert entry.version_label == f"v{i+1}"
+
+
+# ---------------------------------------------------------------------------
+# BH-090: Chain walk from head document
+# ---------------------------------------------------------------------------
+
+async def test_bh_090_chain_from_head(graph_store, graph_ops_service):
+    await _create_linear_chain(graph_store, 5)
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="v5",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 5
+    assert result.query_position == 4
+    assert result.head_id == "v5"
+    assert result.tail_id == "v1"
+
+
+# ---------------------------------------------------------------------------
+# BH-091: Chain walk from tail document
+# ---------------------------------------------------------------------------
+
+async def test_bh_091_chain_from_tail(graph_store, graph_ops_service):
+    await _create_linear_chain(graph_store, 5)
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="v1",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 5
+    assert result.query_position == 0
+    assert result.head_id == "v5"
+    assert result.tail_id == "v1"
+
+
+# ---------------------------------------------------------------------------
+# BH-092: Single-node chain (no edges of requested type)
+# ---------------------------------------------------------------------------
+
+async def test_bh_092_single_node_chain(graph_store, graph_ops_service):
+    doc = _make_doc("doc_solo")
+    await graph_store.insert_document(doc)
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_solo",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 1
+    assert result.is_linear is True
+    assert result.head_id == "doc_solo"
+    assert result.tail_id == "doc_solo"
+    assert result.query_position == 0
+    assert result.chain[0].id == "doc_solo"
+
+
+# ---------------------------------------------------------------------------
+# BH-093: Fork detection sets is_linear false
+# ---------------------------------------------------------------------------
+
+async def test_bh_093_fork_detection(graph_store, graph_ops_service):
+    # doc_a is the common predecessor; doc_b and doc_c both supersede doc_a
+    for name in ["doc_a", "doc_b", "doc_c"]:
+        await graph_store.insert_document(_make_doc(name))
+
+    for i, src in enumerate(["doc_b", "doc_c"]):
+        edge = Edge(
+            id=f"edge_fork_{i}",
+            source_id=src,
+            target_id="doc_a",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=datetime.now(timezone.utc),
+        )
+        await graph_store.insert_edge(edge)
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_a",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.is_linear is False
+    assert result.length == 3
+    chain_ids = {e.id for e in result.chain}
+    assert chain_ids == {"doc_a", "doc_b", "doc_c"}
+
+
+# ---------------------------------------------------------------------------
+# BH-094: Chain ignores other edge types
+# ---------------------------------------------------------------------------
+
+async def test_bh_094_chain_ignores_other_edge_types(
+    graph_store, graph_ops_service
+):
+    for name in ["doc_a", "doc_b", "doc_c"]:
+        await graph_store.insert_document(_make_doc(name))
+
+    # doc_a supersedes doc_b
+    await graph_store.insert_edge(Edge(
+        id="edge_sup",
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.SUPERSEDES,
+        created_at=datetime.now(timezone.utc),
+    ))
+    # doc_a covers doc_c (different edge type)
+    await graph_store.insert_edge(Edge(
+        id="edge_cov",
+        source_id="doc_a",
+        target_id="doc_c",
+        edge_type=EdgeType.COVERS,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_a",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 2
+    chain_ids = {e.id for e in result.chain}
+    assert chain_ids == {"doc_a", "doc_b"}
+    assert "doc_c" not in chain_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-095: Chain with non-existent document returns 404
+# ---------------------------------------------------------------------------
+
+async def test_bh_095_chain_nonexistent_document(graph_store, graph_ops_service):
+    with pytest.raises(DocumentNotFoundError):
+        await graph_ops_service.chain(ChainRequest(
+            document_id="nonexistent",
+            edge_type=EdgeType.SUPERSEDES,
+        ))
+
+
+# ---------------------------------------------------------------------------
+# BH-096: Chain works with non-supersedes edge types
+# ---------------------------------------------------------------------------
+
+async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
+    for name in ["doc_a", "doc_b", "doc_c"]:
+        await graph_store.insert_document(_make_doc(name))
+
+    # doc_a -> doc_b -> doc_c via references
+    await graph_store.insert_edge(Edge(
+        id="edge_ref_1",
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    ))
+    await graph_store.insert_edge(Edge(
+        id="edge_ref_2",
+        source_id="doc_b",
+        target_id="doc_c",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_b",
+        edge_type=EdgeType.REFERENCES,
+    ))
+
+    assert result.length == 3
+    assert result.is_linear is True
+    assert result.query_position == 1
+
+
+# ---------------------------------------------------------------------------
+# BH-097: edge_counts map with mixed edge types
+# ---------------------------------------------------------------------------
+
+async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
+    doc_a = _make_doc("doc_a")
+    doc_b = _make_doc("doc_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    now = datetime.now(timezone.utc)
+    # 2 supersedes + 3 covers edges from doc_a to doc_b
+    for i in range(2):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_sup_{i}",
+            source_id="doc_a",
+            target_id="doc_b",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=now + timedelta(seconds=i),
+        ))
+    for i in range(3):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_cov_{i}",
+            source_id="doc_a",
+            target_id="doc_b",
+            edge_type=EdgeType.COVERS,
+            created_at=now + timedelta(seconds=i),
+        ))
+
+    result = await graph_ops_service.traverse(TraverseRequest(
+        start_id="doc_a",
+        direction="outbound",
+        depth=1,
+    ))
+
+    assert len(result.nodes) == 1
+    node = result.nodes[0]
+    assert node.edge_counts == {"supersedes": 2, "covers": 3}
+
+
+# ---------------------------------------------------------------------------
+# BH-098: Single edge type produces single-key map
+# ---------------------------------------------------------------------------
+
+async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
+    doc_a = _make_doc("doc_a")
+    doc_b = _make_doc("doc_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    await graph_store.insert_edge(Edge(
+        id="edge_ref",
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    result = await graph_ops_service.traverse(TraverseRequest(
+        start_id="doc_a",
+        direction="outbound",
+        depth=1,
+    ))
+
+    assert len(result.nodes) == 1
+    assert result.nodes[0].edge_counts == {"references": 1}
+
+
+# ---------------------------------------------------------------------------
+# BH-099: Filtered traversal shows only filtered type in counts
+# ---------------------------------------------------------------------------
+
+async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
+    doc_a = _make_doc("doc_a")
+    doc_b = _make_doc("doc_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    now = datetime.now(timezone.utc)
+    for i in range(2):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_sup_{i}",
+            source_id="doc_a",
+            target_id="doc_b",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=now + timedelta(seconds=i),
+        ))
+    for i in range(3):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_cov_{i}",
+            source_id="doc_a",
+            target_id="doc_b",
+            edge_type=EdgeType.COVERS,
+            created_at=now + timedelta(seconds=i),
+        ))
+
+    result = await graph_ops_service.traverse(TraverseRequest(
+        start_id="doc_a",
+        edge_type=EdgeType.SUPERSEDES,
+        direction="outbound",
+        depth=1,
+    ))
+
+    assert len(result.nodes) == 1
+    assert result.nodes[0].edge_counts == {"supersedes": 2}
+    assert "covers" not in result.nodes[0].edge_counts
+
+
+# ---------------------------------------------------------------------------
+# BH-100: Multi-depth traversal with per-node edge_counts
+# ---------------------------------------------------------------------------
+
+async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
+    for name in ["doc_a", "doc_b", "doc_c"]:
+        await graph_store.insert_document(_make_doc(name))
+
+    now = datetime.now(timezone.utc)
+    # doc_a -> doc_b: 1 supersedes + 2 covers
+    await graph_store.insert_edge(Edge(
+        id="edge_sup_ab",
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.SUPERSEDES,
+        created_at=now,
+    ))
+    for i in range(2):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_cov_ab_{i}",
+            source_id="doc_a",
+            target_id="doc_b",
+            edge_type=EdgeType.COVERS,
+            created_at=now + timedelta(seconds=i),
+        ))
+
+    # doc_b -> doc_c: 3 references
+    for i in range(3):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_ref_bc_{i}",
+            source_id="doc_b",
+            target_id="doc_c",
+            edge_type=EdgeType.REFERENCES,
+            created_at=now + timedelta(seconds=i),
+        ))
+
+    result = await graph_ops_service.traverse(TraverseRequest(
+        start_id="doc_a",
+        direction="outbound",
+        depth=2,
+    ))
+
+    nodes_by_id = {n.document.id: n for n in result.nodes}
+    assert nodes_by_id["doc_b"].edge_counts == {"supersedes": 1, "covers": 2}
+    assert nodes_by_id["doc_c"].edge_counts == {"references": 3}

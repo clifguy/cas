@@ -15,6 +15,9 @@ from sage.api.errors import (
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import (
+    ChainEntry,
+    ChainRequest,
+    ChainResponse,
     DocumentSummary,
     Edge,
     LinkRequest,
@@ -177,14 +180,122 @@ class GraphOpsService:
                 rationale=best["rationale"],
             )
 
+            # Per-type edge counts (deduplicated by edge ID to avoid
+            # inflation from multi-path traversal at different depths)
+            seen_edges: dict[str, set[str]] = {}
+            for r in rows:
+                et = r["edge_type"]
+                seen_edges.setdefault(et, set()).add(r["edge_id"])
+            counts = {et: len(ids) for et, ids in seen_edges.items()}
+
             nodes.append(TraversalNode(
                 document=doc_summary,
                 edge=edge,
                 depth=min_depth,
-                edge_count=len(rows),
+                edge_counts=counts,
             ))
 
         return TraverseResponse(start_id=request.start_id, nodes=nodes)
+
+    # ------------------------------------------------------------------
+    # Chain walk (BH-089 through BH-096)
+    # ------------------------------------------------------------------
+
+    async def chain(self, request: ChainRequest) -> ChainResponse:
+        """Walk an edge chain to both ends from any starting document."""
+        start_doc = await self._store.get_document(request.document_id)
+        if start_doc is None:
+            raise DocumentNotFoundError(request.document_id)
+
+        raw = await self._store.chain_walk(
+            start_id=request.document_id,
+            edge_type=request.edge_type.value,
+        )
+
+        documents = raw["documents"]
+        edges = raw["edges"]
+        doc_map = {d["doc_id"]: d for d in documents}
+
+        # Build adjacency: source_id -> set of target_ids
+        # For supersedes: source supersedes target, so source is newer.
+        successors: dict[str, set[str]] = {d["doc_id"]: set() for d in documents}
+        predecessors: dict[str, set[str]] = {d["doc_id"]: set() for d in documents}
+        for e in edges:
+            successors.setdefault(e["source_id"], set()).add(e["target_id"])
+            predecessors.setdefault(e["target_id"], set()).add(e["source_id"])
+
+        # Detect linearity: every node has at most 1 predecessor and 1 successor
+        is_linear = all(
+            len(successors[d]) <= 1 and len(predecessors[d]) <= 1
+            for d in doc_map
+        )
+
+        # Topological sort: find roots (no inbound edges = no predecessors)
+        # and walk forward through successors, then reverse so position 0
+        # is the end of the chain (oldest/original) and position N is the
+        # root (newest/head).
+        #
+        # For supersedes: source supersedes target, so edge direction is
+        # newer->older.  Roots (no predecessors) are the newest documents.
+        # Walking successors goes backward in time.  Reversing gives
+        # oldest-first ordering.
+        roots = [d for d in doc_map if not predecessors.get(d)]
+
+        if is_linear and len(roots) == 1:
+            # Simple linear chain: walk from root to end, then reverse
+            walk: list[str] = []
+            current = roots[0]
+            visited: set[str] = set()
+            while current and current not in visited:
+                visited.add(current)
+                walk.append(current)
+                nexts = successors.get(current, set())
+                current = next(iter(nexts), None) if nexts else None
+            ordered = list(reversed(walk))
+        else:
+            # Non-linear (fork) or multiple roots: BFS from all roots,
+            # then reverse
+            walk = []
+            visited = set()
+            queue = list(roots) if roots else [request.document_id]
+            for node in queue:
+                if node in visited:
+                    continue
+                visited.add(node)
+                walk.append(node)
+                for succ in sorted(successors.get(node, set())):
+                    if succ not in visited:
+                        queue.append(succ)
+            ordered = list(reversed(walk))
+
+        # Build chain entries with positions
+        chain_entries: list[ChainEntry] = []
+        query_position = 0
+        for i, doc_id in enumerate(ordered):
+            d = doc_map[doc_id]
+            if doc_id == request.document_id:
+                query_position = i
+            chain_entries.append(ChainEntry(
+                id=doc_id,
+                title=d["title"],
+                version_label=d["version_label"],
+                lifecycle_status=d["lifecycle_status"],
+                document_date=d["document_date"],
+                position=i,
+            ))
+
+        # tail = position 0 (oldest), head = position N (newest)
+        tail_id = ordered[0] if ordered else request.document_id
+        head_id = ordered[-1] if ordered else request.document_id
+
+        return ChainResponse(
+            chain=chain_entries,
+            head_id=head_id,
+            tail_id=tail_id,
+            query_position=query_position,
+            length=len(chain_entries),
+            is_linear=is_linear,
+        )
 
     # ------------------------------------------------------------------
     # Minimal discover stub for BH-021

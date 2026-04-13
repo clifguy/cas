@@ -696,12 +696,12 @@ is `filed`.
 An orchestrator can read the `actual` field, see "filed", and decide in its own
 logic that this is acceptable.
 
-### TEST-SAGE-BH-037: Traversal deduplicates by document with edge_count
+### TEST-SAGE-BH-037: Traversal deduplicates by document with edge_counts map
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (traverse endpoint)
 **Category:** graph, traversal
-**Decision:** Deduplication by target document; most recent edge shown; edge_count
-reports total edge count.
+**Decision:** Deduplication by target document; most recent edge shown; `edge_counts`
+map (keyed by edge type) reports per-type totals. Replaces scalar `edge_count`.
 
 **Precondition:** doc_a has 3 `references` edges to doc_b (created at t1, t2, t3).
 
@@ -710,10 +710,11 @@ reports total edge count.
 **Expected:**
 - doc_b appears once in results
 - The edge shown is the one created at t3 (most recent)
-- `edge_count: 3`
+- `edge_counts: {"references": 3}`
 
-**Rationale:** Compact results with the signal that duplicates exist. Prevents
-result explosion in dense graphs.
+**Rationale:** Compact results with the signal that duplicates exist. Per-type
+breakdown gives callers actionable information about relationship density without
+a second query. Prevents result explosion in dense graphs.
 
 
 ---
@@ -1706,3 +1707,272 @@ accepted but has no effect.
 **Rationale:** Catalog mode operates on the SQLite documents table and never
 touches the content store. Applying `response_level` would be a no-op;
 accepting the parameter silently avoids forcing callers to branch on mode.
+
+
+---
+
+## Chain Walk
+
+### TEST-SAGE-BH-089: Linear supersedes chain returns ordered version history
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+**Decision:** `sage_chain` walks to both ends of a linear edge chain from any
+starting node via recursive CTE, returning an ordered list with positional
+metadata.
+
+**Precondition:** 5 documents forming a linear supersedes chain:
+v1 <- v2 <- v3 <- v4 <- v5 (each supersedes its immediate predecessor).
+
+**Input:** `chain(document_id: v3.id, edge_type: "supersedes")`
+
+**Expected:**
+- `chain` list has 5 entries ordered by position (0=v1 tail, 4=v5 head).
+- `head_id` = v5.id.
+- `tail_id` = v1.id.
+- `query_position` = 2.
+- `length` = 5.
+- `is_linear` = true.
+- Each entry has `id`, `title`, `version_label`, `lifecycle_status`, `document_date`.
+
+**Rationale:** The primary use case for supersedes chains is "show me the version
+history." An ordered list with head/tail/position is the natural response shape.
+One recursive CTE round-trip regardless of chain length.
+
+
+### TEST-SAGE-BH-090: Chain walk from head document
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+
+**Decision:** Chain walk produces the same ordered result regardless of which
+node the caller starts from.
+
+**Precondition:** Same 5-document supersedes chain as BH-089.
+
+**Input:** `chain(document_id: v5.id, edge_type: "supersedes")`
+
+**Expected:**
+- Same 5-entry chain as BH-089 (identical ordering and content).
+- `query_position` = 4 (head position).
+- `head_id` = v5.id, `tail_id` = v1.id.
+
+**Rationale:** Callers should not need to know whether they hold a head, tail,
+or middle document to get the full chain. Any node is a valid entry point.
+
+
+### TEST-SAGE-BH-091: Chain walk from tail document
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+
+**Decision:** Same invariant as BH-090: entry point does not affect result.
+
+**Precondition:** Same 5-document supersedes chain as BH-089.
+
+**Input:** `chain(document_id: v1.id, edge_type: "supersedes")`
+
+**Expected:**
+- Same 5-entry chain as BH-089.
+- `query_position` = 0 (tail position).
+
+**Rationale:** Confirms both-direction walking from the tail end.
+
+
+### TEST-SAGE-BH-092: Single-node chain (no edges of requested type)
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+**Decision:** A document with no edges of the requested type returns a
+single-entry chain (the document itself). This is a valid result, not an error.
+
+**Precondition:** doc_a exists with no supersedes edges (may have other edge types).
+
+**Input:** `chain(document_id: doc_a.id, edge_type: "supersedes")`
+
+**Expected:**
+- `chain` has 1 entry: doc_a.
+- `head_id` = `tail_id` = doc_a.id.
+- `query_position` = 0.
+- `length` = 1.
+- `is_linear` = true.
+
+**Rationale:** Every document is trivially a chain of length 1. Returning an
+error for "no chain found" would force callers to handle two code paths
+(chain vs standalone). A single-entry chain is the degenerate case.
+
+
+### TEST-SAGE-BH-093: Fork detection sets is_linear false
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+**Decision:** When the edge graph has a fork (multiple documents supersede the
+same predecessor, or a document has multiple predecessors), `is_linear` is false.
+All reachable documents are still returned. This is a data quality signal, not
+an error.
+
+**Precondition:** doc_a <- doc_b (supersedes), doc_a <- doc_c (supersedes).
+Two documents claim to supersede the same predecessor.
+
+**Input:** `chain(document_id: doc_a.id, edge_type: "supersedes")`
+
+**Expected:**
+- `is_linear` = false.
+- All 3 reachable documents included in `chain`.
+- `length` = 3.
+
+**Rationale:** Forked chains indicate a data quality issue (accidental duplicate
+import, conflicting version claims). Reporting the fork via `is_linear` lets
+callers surface the problem rather than silently returning a partial chain.
+The chain integrity summary (step 34) will add richer fork diagnostics.
+
+
+### TEST-SAGE-BH-094: Chain ignores other edge types
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+**Decision:** Chain walk follows only the specified edge type. Other edge types
+connecting to chain members are invisible to the walk.
+
+**Precondition:** doc_a supersedes doc_b. doc_a also has a `covers` edge to doc_c.
+
+**Input:** `chain(document_id: doc_a.id, edge_type: "supersedes")`
+
+**Expected:**
+- `chain` contains exactly doc_b and doc_a (length 2).
+- doc_c is not present.
+
+**Rationale:** Edge-type isolation is fundamental to chain semantics. A version
+history must not include documents connected by unrelated relationship types.
+
+
+### TEST-SAGE-BH-095: Chain with non-existent document returns 404
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain, error
+**Decision:** Standard document-not-found error for invalid starting document.
+
+**Input:** `chain(document_id: "nonexistent", edge_type: "supersedes")`
+
+**Expected:**
+- HTTP 404.
+- `code: "document_not_found"`.
+
+**Rationale:** Consistent with traverse endpoint error handling (BH-037 precondition
+validation pattern).
+
+
+### TEST-SAGE-BH-096: Chain works with non-supersedes edge types
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+**Decision:** `sage_chain` is edge-type-generic. Any edge type that forms a
+linear chain can be walked. The `edge_type` parameter is required (no default).
+
+**Precondition:** doc_a -> doc_b -> doc_c via `references` edges (outbound direction).
+
+**Input:** `chain(document_id: doc_b.id, edge_type: "references")`
+
+**Expected:**
+- Ordered chain of 3 documents.
+- `is_linear` = true.
+- `head_id` = doc_c.id, `tail_id` = doc_a.id.
+- `query_position` = 1.
+
+**Rationale:** While the primary motivator is supersedes chains, the operation
+is structurally generic. Restricting it to supersedes would be an artificial
+limitation that prevents callers from walking other linear structures
+(e.g., depends_on chains).
+
+
+---
+
+## Edge-Type Breakdown on Traverse
+
+### TEST-SAGE-BH-097: edge_counts map with mixed edge types
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (TraversalNode.edge_counts)
+**Category:** graph, traversal
+**Decision:** `TraversalNode.edge_counts` is a `dict[str, int]` keyed by edge type,
+replacing the scalar `edge_count` field. Each value is the count of edges of
+that type connecting to the document from the traversal path. Breaking change
+from `edge_count: int`.
+
+**Precondition:** doc_a has 2 `supersedes` edges and 3 `covers` edges to doc_b
+(all outbound from doc_a).
+
+**Input:** `traverse(start_id: doc_a.id, direction: "outbound")`
+
+**Expected:**
+- doc_b appears once in results (deduplication preserved).
+- `edge_counts: {"supersedes": 2, "covers": 3}`.
+- No `edge_count` field present.
+
+**Rationale:** The scalar `edge_count` gave a total but forced a second query
+to understand the relationship composition. A per-type map answers "what kinds
+of relationships exist and how many of each?" in one response. This is the
+information the Graph Explorer needs for edge-type breakdown display.
+
+
+### TEST-SAGE-BH-098: Single edge type produces single-key map
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (TraversalNode.edge_counts)
+**Category:** graph, traversal
+
+**Decision:** When only one edge type connects to a document, `edge_counts`
+has a single key. The map shape is consistent regardless of edge diversity.
+
+**Precondition:** doc_a has 1 `references` edge to doc_b.
+
+**Input:** `traverse(start_id: doc_a.id, direction: "outbound")`
+
+**Expected:**
+- `edge_counts: {"references": 1}`.
+
+**Rationale:** No special-casing for single-type connections. Callers always
+receive a map and can iterate it uniformly.
+
+
+### TEST-SAGE-BH-099: Traversal with edge_type filter shows only filtered type in counts
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (TraversalNode.edge_counts)
+**Category:** graph, traversal
+
+**Decision:** When `traverse()` is called with an `edge_type` filter,
+`edge_counts` contains only the filtered type(s). Edges of other types are
+not traversed, so they do not appear in counts.
+
+**Precondition:** doc_a has 2 `supersedes` and 3 `covers` edges to doc_b.
+
+**Input:** `traverse(start_id: doc_a.id, edge_type: "supersedes", direction: "outbound")`
+
+**Expected:**
+- doc_b node has `edge_counts: {"supersedes": 2}`.
+- No `covers` key present in `edge_counts`.
+
+**Rationale:** The CTE only follows edges matching the type filter. Counts
+reflect what the traversal actually walked, not the full edge inventory of
+the target document.
+
+
+### TEST-SAGE-BH-100: Multi-depth traversal accumulates per-node edge_counts independently
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (TraversalNode.edge_counts)
+**Category:** graph, traversal
+
+**Decision:** Each `TraversalNode` carries its own `edge_counts` reflecting the
+edges that reached that specific document during traversal. Counts are scoped
+to the node, not aggregated across the graph.
+
+**Precondition:** doc_a -> doc_b (1 `supersedes`, 2 `covers` edges),
+doc_b -> doc_c (3 `references` edges).
+
+**Input:** `traverse(start_id: doc_a.id, direction: "outbound", depth: 2)`
+
+**Expected:**
+- doc_b has `edge_counts: {"supersedes": 1, "covers": 2}`.
+- doc_c has `edge_counts: {"references": 3}`.
+
+**Rationale:** Per-node scoping ensures `edge_counts` describes the local
+relationship structure at each document. Callers can inspect any node's
+connectivity without cross-referencing other nodes.

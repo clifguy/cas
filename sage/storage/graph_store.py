@@ -729,6 +729,100 @@ class GraphStore:
         return results
 
     # ------------------------------------------------------------------
+    # Chain walk
+    # ------------------------------------------------------------------
+
+    async def chain_walk(
+        self,
+        start_id: str,
+        edge_type: str,
+    ) -> list[dict]:
+        """Walk an edge chain to both ends from start_id.
+
+        Uses a recursive CTE following edges in both directions (outbound
+        via source_id->target_id, inbound via target_id->source_id).
+        Returns raw dicts with document metadata for all reachable nodes,
+        including the start node itself.
+        """
+        return await self._run(self._chain_walk_sync, start_id, edge_type)
+
+    def _chain_walk_sync(
+        self,
+        start_id: str,
+        edge_type: str,
+    ) -> dict:
+        """Return chain documents and edges between them.
+
+        Returns:
+            dict with "documents" (list of doc dicts) and "edges"
+            (list of {source_id, target_id} dicts).
+        """
+        conn = self._get_connection()
+
+        # Recursive CTE: walk both directions from start_id, following
+        # only edges of the specified type.  UNION (not UNION ALL)
+        # prevents infinite loops on cycles.
+        sql = """
+            WITH RECURSIVE chain AS (
+                SELECT ? AS doc_id
+
+                UNION
+
+                SELECT e.target_id AS doc_id
+                FROM edges e
+                INNER JOIN chain c ON e.source_id = c.doc_id
+                WHERE e.edge_type = ?
+
+                UNION
+
+                SELECT e.source_id AS doc_id
+                FROM edges e
+                INNER JOIN chain c ON e.target_id = c.doc_id
+                WHERE e.edge_type = ?
+            )
+            SELECT c.doc_id,
+                d.title, d.lifecycle_status, d.version_label,
+                d.document_date
+            FROM chain c
+            INNER JOIN documents d ON c.doc_id = d.id
+        """
+        params = [start_id, edge_type, edge_type]
+        doc_rows = conn.execute(sql, params).fetchall()
+
+        documents = [
+            {
+                "doc_id": row["doc_id"],
+                "title": row["title"],
+                "lifecycle_status": row["lifecycle_status"],
+                "version_label": row["version_label"],
+                "document_date": row["document_date"],
+            }
+            for row in doc_rows
+        ]
+
+        # Fetch all edges of this type between chain members
+        doc_ids = [d["doc_id"] for d in documents]
+        if len(doc_ids) <= 1:
+            return {"documents": documents, "edges": []}
+
+        placeholders = ",".join("?" * len(doc_ids))
+        edge_sql = (
+            f"SELECT source_id, target_id FROM edges "
+            f"WHERE edge_type = ? "
+            f"AND source_id IN ({placeholders}) "
+            f"AND target_id IN ({placeholders})"
+        )
+        edge_params: list = [edge_type] + doc_ids + doc_ids
+        edge_rows = conn.execute(edge_sql, edge_params).fetchall()
+
+        edges = [
+            {"source_id": row["source_id"], "target_id": row["target_id"]}
+            for row in edge_rows
+        ]
+
+        return {"documents": documents, "edges": edges}
+
+    # ------------------------------------------------------------------
     # User operations
     # ------------------------------------------------------------------
 

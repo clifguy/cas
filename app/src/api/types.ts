@@ -160,7 +160,25 @@ export interface TraversalNode {
   document: DocumentSummary;
   edge: Edge;
   depth: number;
-  edge_count: number;
+  edge_counts: Record<string, number>;
+}
+
+export interface ChainEntry {
+  id: string;
+  title: string;
+  version_label: string | null;
+  lifecycle_status: string;
+  document_date: string | null;
+  position: number;
+}
+
+export interface ChainResponse {
+  chain: ChainEntry[];
+  head_id: string;
+  tail_id: string;
+  query_position: number;
+  length: number;
+  is_linear: boolean;
 }
 
 export interface TraverseRequest {

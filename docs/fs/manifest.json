@@ -156,7 +156,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.4",
+  "substrate_version": "1.5",
   "revision_history": [
     {
       "version": "0.1",
@@ -187,6 +187,11 @@
       "version": "1.4",
       "date": "2026-04-13",
       "summary": "Document-level response mode and catalog sort parameters. Six additions to sage_core_api.openapi.yaml: (1) ResponseLevel enum (chunks, documents) controlling result detail level. (2) DiscoverRequest.response_level property (default 'chunks'); when set to 'documents', suppresses chunk_content but preserves heading_path (best chunk's location) and relevance scores. Applicable to semantic and keyword modes; ignored by catalog and deterministic. (3) DiscoverHit.matched_chunk_count (nullable integer): number of chunks from the document that matched the query, useful as a reranking signal. (4) CatalogSortBy enum (title, doc_type, document_date, lifecycle_status) for catalog mode sorting. (5) SortOrder enum (asc, desc). (6) DiscoverRequest.sort_by and sort_order properties for catalog mode. Sort_by and sort_order were in code since v1.3 but missing from the OpenAPI spec."
+    },
+    {
+      "version": "1.5",
+      "date": "2026-04-13",
+      "summary": "Chain walk endpoint and edge-type breakdown. Three changes to sage_core_api.openapi.yaml: (1) New POST /sage_vaults/{vault_id}/chain endpoint with ChainRequest, ChainResponse, and ChainEntry schemas. Walks an edge chain to both ends from any starting document via recursive CTE, returning an ordered list with head_id, tail_id, query_position, length, and is_linear (fork detection). Designed for version history retrieval on long supersedes chains but works with any edge type. (2) TraversalNode.edge_count (integer) replaced by edge_counts (object, additionalProperties: integer). Per-type edge count map keyed by edge type string. Breaking change from scalar to map. (3) TraversalNode.required updated from [document, edge, depth, edge_count] to [document, edge, depth, edge_counts]."
     }
   ]
 }

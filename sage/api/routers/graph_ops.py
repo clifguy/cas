@@ -1,9 +1,11 @@
-"""Graph operations: link, check_preconditions, traverse."""
+"""Graph operations: link, check_preconditions, traverse, chain."""
 
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_graph_ops_service, get_vault_id
 from sage.models.schemas import (
+    ChainRequest,
+    ChainResponse,
     Edge,
     LinkRequest,
     PreconditionResult,
@@ -40,3 +42,12 @@ async def traverse(
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> TraverseResponse:
     return await service.traverse(request)
+
+
+@router.post("/chain", response_model=ChainResponse)
+async def chain(
+    request: ChainRequest,
+    vault_id: str = Depends(get_vault_id),
+    service: GraphOpsService = Depends(get_graph_ops_service),
+) -> ChainResponse:
+    return await service.chain(request)

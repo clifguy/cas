@@ -157,12 +157,35 @@ class TraversalNode(BaseModel):
     document: DocumentSummary
     edge: Edge
     depth: int
-    edge_count: int = 1
+    edge_counts: dict[str, int] = Field(default_factory=lambda: {})
 
 
 class TraverseResponse(BaseModel):
     start_id: str
     nodes: list[TraversalNode]
+
+
+class ChainRequest(BaseModel):
+    document_id: str
+    edge_type: EdgeType
+
+
+class ChainEntry(BaseModel):
+    id: str
+    title: str
+    version_label: str | None = None
+    lifecycle_status: str
+    document_date: str | None = None
+    position: int
+
+
+class ChainResponse(BaseModel):
+    chain: list[ChainEntry]
+    head_id: str
+    tail_id: str
+    query_position: int
+    length: int
+    is_linear: bool
 
 
 class PreconditionCheck(BaseModel):

@@ -428,6 +428,48 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/chain:
+    post:
+      operationId: chain
+      summary: Walk an edge chain to both ends from any starting document.
+      description: >-
+        Follows edges of a single type in both directions from the starting
+        document, collecting all reachable nodes into an ordered list. Returns
+        positional metadata (head, tail, query position) and a linearity flag.
+
+
+        Designed for version history retrieval (supersedes chains) but works
+        with any edge type that forms a linear or near-linear chain. Uses a
+        single recursive CTE round-trip regardless of chain length.
+      tags: [Graph]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChainRequest"
+      responses:
+        "200":
+          description: Chain walk results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChainResponse"
+        "400":
+          description: Invalid edge type.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault or starting document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/preconditions/{function_id}:
     get:
       operationId: check_preconditions
@@ -1324,6 +1366,21 @@ components:
           default: 3
           description: Maximum traversal depth.
 
+    ChainRequest:
+      type: object
+      required: [document_id, edge_type]
+      properties:
+        document_id:
+          type: string
+          description: >-
+            Document ID to start the chain walk from. The walk proceeds
+            in both directions from this document.
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+          description: >-
+            Edge type to follow. Required (no default). The chain walk
+            follows only this edge type in both directions.
+
     RegisterUserRequest:
       type: object
       required: [display_name, type]
@@ -1492,10 +1549,10 @@ components:
       description: >-
         A node encountered during graph traversal, with the edge that
         led to it and the depth at which it was found. When multiple
-        edges of the same type connect to the same target, the target
-        appears once with the most recent edge shown and edge_count
-        indicating the total.
-      required: [document, edge, depth, edge_count]
+        edges connect to the same target, the target appears once with
+        the most recent edge shown and edge_counts providing per-type
+        totals.
+      required: [document, edge, depth, edge_counts]
       properties:
         document:
           $ref: "#/components/schemas/DocumentSummary"
@@ -1506,13 +1563,74 @@ components:
         depth:
           type: integer
           description: Traversal depth (1 = direct neighbor of start node).
-        edge_count:
+        edge_counts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 1
+          description: >-
+            Edge count by type. Keys are edge type strings, values are
+            the number of edges of that type connecting to this document
+            from the traversal path. When the traversal is filtered by
+            edge_type, only the filtered type(s) appear as keys.
+
+    ChainResponse:
+      type: object
+      required: [chain, head_id, tail_id, query_position, length, is_linear]
+      properties:
+        chain:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChainEntry"
+          description: >-
+            Ordered list of documents in the chain, from tail (position 0)
+            to head (position length-1).
+        head_id:
+          type: string
+          description: Document ID of the chain head (latest version / terminal node).
+        tail_id:
+          type: string
+          description: Document ID of the chain tail (original / root node).
+        query_position:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based position of the queried document within the chain.
+        length:
           type: integer
           minimum: 1
-          default: 1
+          description: Total number of documents in the chain.
+        is_linear:
+          type: boolean
           description: >-
-            Total number of edges of the traversed type(s) connecting
-            to this document. Greater than 1 when duplicate edges exist.
+            True if the chain is strictly linear (no forks or merges).
+            False indicates a data quality issue where multiple documents
+            share a predecessor or successor of the specified edge type.
+
+    ChainEntry:
+      type: object
+      required: [id, title, lifecycle_status, position]
+      properties:
+        id:
+          type: string
+          description: Document ID.
+        title:
+          type: string
+        version_label:
+          type: string
+          nullable: true
+        lifecycle_status:
+          type: string
+        document_date:
+          type: string
+          format: date
+          nullable: true
+          description: Authoritative content date (YYYY-MM-DD) if available.
+        position:
+          type: integer
+          minimum: 0
+          description: >-
+            Zero-based ordinal position in the chain (0 = tail, length-1 = head).
 
     PreconditionResult:
       type: object
