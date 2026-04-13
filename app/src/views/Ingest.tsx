@@ -35,7 +35,7 @@ export default function Ingest() {
     setScanning(true);
 
     try {
-      const depth = maxDepth ? parseInt(maxDepth, 10) : undefined;
+      const depth = maxDepth ? parseInt(maxDepth, 10) - 1 : undefined;
       const result = await scanDirectory(vaultId, directory.trim(), depth);
       const enriched = result.files.map(f => ({
         ...f,
