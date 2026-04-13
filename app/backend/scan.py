@@ -16,16 +16,21 @@ from pathlib import Path
 from app.backend.filename_parser import FilenameParser, ParsedMetadata
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
+from sage.source_adapters.base import SourceAdapter
 from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 
-# File extension to SourceType adapter mapping
-EXTENSION_TO_ADAPTER: dict[str, str] = {
-    ".md": SourceType.MARKDOWN.value,
-    ".markdown": SourceType.MARKDOWN.value,
-    ".docx": SourceType.DOCX.value,
-}
+
+def build_extension_map(
+    adapters: dict[SourceType, SourceAdapter],
+) -> dict[str, str]:
+    """Derive file-extension-to-source-type mapping from the adapter registry."""
+    ext_map: dict[str, str] = {}
+    for source_type, adapter in adapters.items():
+        for ext in adapter.EXTENSIONS:
+            ext_map[ext] = source_type.value
+    return ext_map
 
 
 @dataclass
@@ -35,7 +40,7 @@ class ScanResult:
     source_modified_at: str
     adapter: str | None
     parsed_metadata: ParsedMetadata
-    sage_status: str  # "new", "modified", "unchanged", "no_adapter"
+    sage_status: str  # "new", "modified", "unchanged", "no_adapter", "adapter_disabled"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -58,9 +63,9 @@ def _get_mtime_iso(path: Path) -> str:
     return dt.isoformat()
 
 
-def _detect_adapter(path: Path) -> str | None:
+def _detect_adapter(path: Path, extension_map: dict[str, str]) -> str | None:
     """Detect adapter from file extension."""
-    return EXTENSION_TO_ADAPTER.get(path.suffix.lower())
+    return extension_map.get(path.suffix.lower())
 
 
 def _walk_directory(
@@ -98,6 +103,7 @@ async def scan_directory(
     directory: Path,
     vault_config: VaultConfig,
     graph_store: GraphStore,
+    extension_map: dict[str, str],
     max_depth: int | None = None,
 ) -> tuple[list[ScanResult], list[str]]:
     """Scan a directory and return file metadata with SAGE status.
@@ -106,6 +112,7 @@ async def scan_directory(
         directory: Absolute path to scan.
         vault_config: Vault configuration (for metadata_extraction config).
         graph_store: For hash-check against existing documents.
+        extension_map: File extension to source type mapping (from build_extension_map).
         max_depth: Max recursion depth (None = unlimited, 0 = no recursion).
 
     Returns:
@@ -118,19 +125,26 @@ async def scan_directory(
     ] or None
     parser = FilenameParser(vault_config.metadata_extraction, doc_types=doc_types_raw)
 
+    # Build set of enabled source types from vault config
+    enabled_source_types: set[str] = set()
+    for adapter_entry in vault_config.source_adapters.get("adapters", []):
+        if adapter_entry.get("enabled", True):
+            enabled_source_types.add(adapter_entry["source_type"])
+
     # Walk directory
     file_paths, warnings = _walk_directory(directory, max_depth)
 
     # Compute hashes and detect adapters
-    file_infos: list[tuple[Path, str, str | None, str]] = []
+    file_infos: list[tuple[Path, str, str | None, bool, str]] = []
     hashes_to_check: list[str] = []
 
     for path in file_paths:
-        adapter = _detect_adapter(path)
+        adapter = _detect_adapter(path, extension_map)
+        enabled = adapter is not None and adapter in enabled_source_types
         file_hash = _compute_file_hash(path)
         mtime = _get_mtime_iso(path)
-        file_infos.append((path, file_hash, adapter, mtime))
-        if adapter is not None:
+        file_infos.append((path, file_hash, adapter, enabled, mtime))
+        if enabled:
             hashes_to_check.append(file_hash)
 
     # Bulk hash check against vault
@@ -139,7 +153,7 @@ async def scan_directory(
     # Also check by source path for "modified" detection
     # A file is "modified" if its path matches an existing doc but hash differs
     all_source_paths = [
-        str(p) for p, _h, a, _m in file_infos if a is not None
+        str(p) for p, _h, a, en, _m in file_infos if en
     ]
     path_to_existing: dict[str, str] = {}
     for sp in all_source_paths:
@@ -149,11 +163,13 @@ async def scan_directory(
 
     # Build results
     results: list[ScanResult] = []
-    for path, file_hash, adapter, mtime in file_infos:
+    for path, file_hash, adapter, enabled, mtime in file_infos:
         parsed = parser.parse(path.stem, adapter=adapter)
 
         if adapter is None:
             status = "no_adapter"
+        elif not enabled:
+            status = "adapter_disabled"
         elif file_hash in hash_matches:
             status = "unchanged"
         elif str(path) in path_to_existing:

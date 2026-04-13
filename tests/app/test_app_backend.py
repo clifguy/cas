@@ -26,7 +26,6 @@ from app.backend.edge_inference import (
     PlannedEdge,
     resolve_and_execute,
 )
-from app.backend.scan import ScanResult, scan_directory, EXTENSION_TO_ADAPTER
 from sage.app import create_app, _initialize_services
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType

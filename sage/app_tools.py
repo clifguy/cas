@@ -45,7 +45,7 @@ def register_app_tools(
             directory: Absolute path to the directory to scan.
             max_depth: Max recursion depth (null = unlimited, 0 = no recursion).
         """
-        from app.backend.scan import scan_directory
+        from app.backend.scan import build_extension_map, scan_directory
 
         try:
             v = get_vault(vault_id)
@@ -56,10 +56,12 @@ def register_app_tools(
                     "message": "Directory not found or not readable",
                 }, indent=2)
 
+            ext_map = build_extension_map(v.ingestion_service.registered_adapters)
             results, warnings = await scan_directory(
                 directory=d,
                 vault_config=v.config,
                 graph_store=v.graph_store,
+                extension_map=ext_map,
                 max_depth=max_depth,
             )
             files = []

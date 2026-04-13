@@ -21,7 +21,7 @@ from app.backend.ingest_service import (
     FileDescriptor,
     ParsedMetadataInput,
 )
-from app.backend.scan import ScanResult, scan_directory
+from app.backend.scan import ScanResult, build_extension_map, scan_directory
 from sage.api.errors import VaultNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -143,10 +143,12 @@ async def scan_endpoint(body: ScanRequest, request: Request) -> dict:
 
     services = _get_services(request, body.vault_id)
 
+    ext_map = build_extension_map(services.ingestion_service.registered_adapters)
     results, warnings = await scan_directory(
         directory=directory,
         vault_config=services.config,
         graph_store=services.graph_store,
+        extension_map=ext_map,
         max_depth=body.max_depth,
     )
 
