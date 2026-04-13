@@ -1313,3 +1313,266 @@ immediately (no sleep, no polling).
 **Rationale:** Verifies the sequential pipeline contract end-to-end: callers
 can trust the returned document reflects completed processing. Eliminates the
 race conditions inherent in the background-task model.
+
+
+---
+
+## Salience Reranking
+
+### TEST-SAGE-BH-069: Active lifecycle boost in semantic retrieval
+
+**Artifact:** `sage/services/retrieval.py` (_rerank_salience)
+**Category:** retrieval, salience
+
+**Decision:** Documents with `lifecycle_status="active"` receive a 1.15x score
+multiplier in semantic and keyword retrieval modes. Superseded and archived
+documents remain discoverable but rank lower when competing with active content.
+
+**Precondition:** Two documents indexed with identical content relevance to a query.
+Doc A: `lifecycle_status="active"`. Doc B: `lifecycle_status="superseded"`.
+
+**Input:** `discover(mode="semantic", query="matching query")`
+
+**Expected:**
+- Both documents appear in results.
+- Doc A scores higher than Doc B (1.15x multiplier applied).
+
+**Rationale:** Active documents are the most current version of their content.
+A mild boost ensures they surface above superseded predecessors when content
+relevance is comparable, without hard-excluding older versions.
+
+
+### TEST-SAGE-BH-070: Recency boost in semantic retrieval
+
+**Artifact:** `sage/services/retrieval.py` (_rerank_salience)
+**Category:** retrieval, salience
+
+**Decision:** Documents with recent dates receive up to a 1.10x score multiplier
+via exponential decay with a 365-day half-life. Date resolution priority:
+`document_date` > `source_modified_at`. Documents with no date receive no
+recency boost.
+
+**Precondition:** Two documents indexed with identical content relevance.
+Doc A: `document_date="2026-04-01"` (recent). Doc B: `document_date="2020-01-01"` (old).
+
+**Input:** `discover(mode="semantic", query="matching query")`
+
+**Expected:**
+- Both documents appear in results.
+- Doc A scores higher than Doc B (recency boost applied).
+
+**Rationale:** Recency is a weak relevance signal in personal knowledge bases
+where newer documents tend to be more actionable. The half-life is long (365 days)
+to avoid penalizing reference material.
+
+
+### TEST-SAGE-BH-071: Same-name same-content re-import returns existing path
+
+**Artifact:** `sage/services/ingestion.py` (_ensure_vault_local)
+**Category:** ingestion, deduplication
+
+**Decision:** When an external file is imported and a file with the same name
+and identical content hash already exists in the vault, return the existing
+path without copying. No hash-suffixed duplicate file is created.
+
+**Precondition:** Document previously ingested from an external path; the imported
+copy exists in the vault's sources directory.
+
+**Input:** Re-import the same external file (same name, same content).
+
+**Expected:**
+- Returns the path to the existing file in the vault.
+- No new file is created on disk.
+
+**Rationale:** Prevents orphaned hash-suffixed duplicates that accumulate during
+repeated imports of unchanged files.
+
+
+---
+
+## Catalog Mode and Hard Tag Filtering
+
+### TEST-SAGE-BH-072: Catalog mode returns all documents matching filters
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Catalog mode queries the SQLite documents table directly with
+filter predicates, bypassing vector/BM25 search entirely. Returns document-level
+metadata only. No query string required.
+
+**Precondition:** Vault with 5 documents:
+- doc_a: `doc_type="patent_draft"`, `lifecycle_status="active"`, `tags=["PV07"]`
+- doc_b: `doc_type="patent_draft"`, `lifecycle_status="active"`, `tags=["PV08"]`
+- doc_c: `doc_type="glossary"`, `lifecycle_status="active"`, `tags=["PV07"]`
+- doc_d: `doc_type="patent_draft"`, `lifecycle_status="superseded"`, `tags=["PV07"]`
+- doc_e: `doc_type="checklist"`, `lifecycle_status="active"`, `tags=["PV07"]`
+
+**Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "patent_draft"})`
+
+**Expected:**
+- Results contain exactly doc_a, doc_b, doc_d (all patent_draft documents).
+- `total_available == 3`
+- Response mode is `catalog`.
+
+**Rationale:** Catalog mode provides a deterministic, filter-only retrieval path
+that eliminates the need for semantic search workarounds when enumerating
+documents by metadata.
+
+
+### TEST-SAGE-BH-073: Catalog mode pagination (limit + offset)
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Catalog mode supports pagination via `limit` and `offset` parameters.
+`total_available` reflects the full unpaged count, enabling callers to compute
+page counts and detect whether more results exist.
+
+**Precondition:** Vault with 5 non-failed documents (doc_a through doc_e as above).
+
+**Input:** `discover(mode="catalog", limit=2, offset=0)` then
+`discover(mode="catalog", limit=2, offset=2)`
+
+**Expected:**
+- First request: 2 results, `total_available == 5`.
+- Second request: 2 results, `total_available == 5`.
+- No overlap between the two result sets.
+- Union of both result sets plus a third request at offset=4 covers all 5 documents.
+
+**Rationale:** Pagination prevents unbounded result sets for large vaults and
+enables the Cowork agent pattern of iterating through all documents in fixed-size
+pages.
+
+
+### TEST-SAGE-BH-074: Catalog mode tag filtering is deterministic
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Tags filter in catalog mode is a hard SQL constraint, not a relevance
+signal. Every returned document has ALL specified tags. Documents missing any
+specified tag are excluded, regardless of other matching criteria.
+
+**Precondition:** Vault with 5 documents (as in BH-072). Tags are JSON arrays
+stored in SQLite.
+
+**Input:** `discover(mode="catalog", scope="filtered", filters={"tags": ["PV07"]})`
+
+**Expected:**
+- Results contain exactly doc_a, doc_c, doc_d, doc_e (all PV07-tagged documents).
+- `total_available == 4`
+- doc_b (tagged PV08, not PV07) is excluded.
+
+**Rationale:** The primary motivation for catalog mode. Semantic search cannot
+reliably enumerate by tag because tags live in the graph store, not the vector
+index. SQL-based tag filtering guarantees completeness.
+
+
+### TEST-SAGE-BH-075: Catalog mode returns no chunk content or relevance scores
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Catalog mode returns document-level metadata only. DiscoverHit
+fields `chunk_content`, `heading_path`, and `relevance_score` are all null.
+
+**Precondition:** Vault with at least 1 indexed document.
+
+**Input:** `discover(mode="catalog")`
+
+**Expected:**
+- Every hit has `chunk_content is None`, `heading_path is None`, `relevance_score is None`.
+- Every hit has a populated `document` field with id, title, lifecycle_status,
+  source_type, version_label, project, doc_type, tags.
+
+**Rationale:** Catalog mode serves enumeration, not content retrieval. Returning
+chunk content would be wasteful and misleading (no search was performed to select
+relevant chunks).
+
+
+### TEST-SAGE-BH-076: Catalog mode excludes failed pipeline documents
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Pipeline gating (BH-020) applies uniformly to all retrieval modes,
+including catalog. Failed-pipeline documents are excluded from catalog results.
+
+**Precondition:** Vault with 2 documents:
+- doc_a: `pipeline_status="abstraction_complete"` (healthy)
+- doc_b: `pipeline_status="failed"` (quarantined)
+
+**Input:** `discover(mode="catalog")`
+
+**Expected:**
+- Results contain doc_a only.
+- `total_available == 1`
+- doc_b is excluded.
+
+**Rationale:** Consistency with BH-020 and BH-061. Callers can use
+`filters={"pipeline_status": "failed"}` if they explicitly want to find
+quarantined documents.
+
+
+### TEST-SAGE-BH-077: Catalog mode with no filters returns all non-failed documents
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Catalog mode with no filters and default scope ("all") returns
+every non-failed document in the vault. This is the "list everything" use case.
+
+**Precondition:** Vault with 5 non-failed documents and 1 failed document.
+
+**Input:** `discover(mode="catalog")`
+
+**Expected:**
+- Results contain exactly 5 documents (all non-failed).
+- `total_available == 5`
+
+**Rationale:** A filter-free catalog call is the simplest way to get a complete
+vault inventory. Combined with pagination, it replaces the `keyword` mode
+`query="*"` workaround.
+
+
+### TEST-SAGE-BH-078: Catalog mode total_available reflects full count, not page size
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** `total_available` is the exact count of all matching documents
+(after filter and pipeline exclusion), independent of `limit` and `offset`.
+
+**Precondition:** Vault with 10 non-failed documents.
+
+**Input:** `discover(mode="catalog", limit=3, offset=0)`
+
+**Expected:**
+- `len(results) == 3`
+- `total_available == 10`
+
+**Rationale:** Callers need the total count to compute page numbers and determine
+whether more pages exist. Unlike semantic mode where total_available is an
+approximation, catalog mode provides an exact count from SQL COUNT(*).
+
+
+### TEST-SAGE-BH-079: Catalog mode combined filters (doc_type + tags + lifecycle_status)
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, catalog mode)
+**Category:** retrieval
+
+**Decision:** Multiple filter fields are combined with AND semantics. A document
+must match ALL specified filters to appear in results.
+
+**Precondition:** Vault with 5 documents (as in BH-072).
+
+**Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "patent_draft", "tags": ["PV07"], "lifecycle_status": "active"})`
+
+**Expected:**
+- Results contain exactly doc_a (the only active patent_draft tagged PV07).
+- `total_available == 1`
+
+**Rationale:** AND semantics are the natural interpretation for metadata filters.
+OR semantics would require explicit combinators and are not needed for the
+primary use cases (drill-down from dashboard, tag-based enumeration).

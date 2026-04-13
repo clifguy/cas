@@ -197,6 +197,7 @@ class DiscoverRequest(BaseModel):
     heading_path: str | None = None
     authority_document_id: str | None = Field(default=None, deprecated=True)
     limit: int = Field(default=10, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
     cursor: str | None = Field(default=None, deprecated=True)
     use_hybrid: bool = True
 

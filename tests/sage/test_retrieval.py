@@ -1,9 +1,10 @@
 """Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
-BH-058, BH-059, BH-060, BH-061, BH-069, BH-070.
+BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-079.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
 retrieval (heading path prefix match), keyword-only retrieval,
-pipeline/scope gating, and title indexing in chunks.
+catalog mode (filter-only enumeration), pipeline/scope gating,
+and title indexing in chunks.
 """
 
 import pytest
@@ -1214,3 +1215,192 @@ async def test_rerank_salience_no_extra_queries(
         f"Expected 2 get_document calls (cache only), got {call_count}. "
         "Reranking should use summary fields, not fetch full Documents."
     )
+
+
+# ---------------------------------------------------------------------------
+# BH-072 through BH-079: Catalog mode
+# ---------------------------------------------------------------------------
+
+
+async def _seed_catalog_docs(graph_store):
+    """Seed 5 documents for catalog mode tests.
+
+    Returns dict mapping doc_id to Document for verification.
+    """
+    docs = {
+        "doc_a": _make_doc("doc_a", doc_type="patent_draft", tags=["PV07"]),
+        "doc_b": _make_doc("doc_b", doc_type="patent_draft", tags=["PV08"]),
+        "doc_c": _make_doc("doc_c", doc_type="glossary", tags=["PV07"]),
+        "doc_d": _make_doc(
+            "doc_d", doc_type="patent_draft", tags=["PV07"],
+            lifecycle_status="superseded",
+        ),
+        "doc_e": _make_doc("doc_e", doc_type="checklist", tags=["PV07"]),
+    }
+    for doc in docs.values():
+        await graph_store.insert_document(doc)
+    return docs
+
+
+async def test_bh_072_catalog_returns_filtered_documents(
+    graph_store, retrieval_service,
+):
+    """Catalog mode returns all documents matching doc_type filter."""
+    await _seed_catalog_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        scope=RetrievalScope.FILTERED,
+        filters=RetrievalFilters(doc_type="patent_draft"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.mode == RetrievalMode.CATALOG
+    result_ids = {h.document.id for h in response.results}
+    assert result_ids == {"doc_a", "doc_b", "doc_d"}
+    assert response.total_available == 3
+
+
+async def test_bh_073_catalog_pagination(
+    graph_store, retrieval_service,
+):
+    """Catalog mode supports limit + offset pagination."""
+    await _seed_catalog_docs(graph_store)
+
+    # Page 1
+    req1 = DiscoverRequest(mode=RetrievalMode.CATALOG, limit=2, offset=0)
+    resp1 = await retrieval_service.discover(req1)
+    assert len(resp1.results) == 2
+    assert resp1.total_available == 5
+
+    # Page 2
+    req2 = DiscoverRequest(mode=RetrievalMode.CATALOG, limit=2, offset=2)
+    resp2 = await retrieval_service.discover(req2)
+    assert len(resp2.results) == 2
+    assert resp2.total_available == 5
+
+    # Page 3 (partial)
+    req3 = DiscoverRequest(mode=RetrievalMode.CATALOG, limit=2, offset=4)
+    resp3 = await retrieval_service.discover(req3)
+    assert len(resp3.results) == 1
+    assert resp3.total_available == 5
+
+    # No overlap
+    all_ids = (
+        {h.document.id for h in resp1.results}
+        | {h.document.id for h in resp2.results}
+        | {h.document.id for h in resp3.results}
+    )
+    assert len(all_ids) == 5
+
+
+async def test_bh_074_catalog_tag_filtering_deterministic(
+    graph_store, retrieval_service,
+):
+    """Catalog mode tag filtering returns exactly matching documents."""
+    await _seed_catalog_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        scope=RetrievalScope.FILTERED,
+        filters=RetrievalFilters(tags=["PV07"]),
+    )
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert result_ids == {"doc_a", "doc_c", "doc_d", "doc_e"}
+    assert response.total_available == 4
+
+
+async def test_bh_075_catalog_no_chunk_content_or_scores(
+    graph_store, retrieval_service,
+):
+    """Catalog mode returns no chunk content or relevance scores."""
+    await _seed_catalog_docs(graph_store)
+
+    request = DiscoverRequest(mode=RetrievalMode.CATALOG, limit=5)
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) > 0
+    for hit in response.results:
+        assert hit.chunk_content is None
+        assert hit.heading_path is None
+        assert hit.relevance_score is None
+        # Document metadata is populated
+        assert hit.document.id is not None
+        assert hit.document.title is not None
+        assert hit.document.lifecycle_status is not None
+
+
+async def test_bh_076_catalog_excludes_failed_pipeline(
+    graph_store, retrieval_service,
+):
+    """Catalog mode excludes failed pipeline documents."""
+    doc_ok = _make_doc("doc_ok")
+    doc_fail = _make_doc(
+        "doc_fail", pipeline_status=PipelineStatus.FAILED,
+    )
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_fail)
+
+    request = DiscoverRequest(mode=RetrievalMode.CATALOG)
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert "doc_ok" in result_ids
+    assert "doc_fail" not in result_ids
+    assert response.total_available == 1
+
+
+async def test_bh_077_catalog_no_filters_returns_all(
+    graph_store, retrieval_service,
+):
+    """Catalog mode with no filters returns all non-failed documents."""
+    await _seed_catalog_docs(graph_store)
+    # Add one failed doc
+    doc_fail = _make_doc("doc_fail", pipeline_status=PipelineStatus.FAILED)
+    await graph_store.insert_document(doc_fail)
+
+    request = DiscoverRequest(mode=RetrievalMode.CATALOG)
+    response = await retrieval_service.discover(request)
+
+    assert response.total_available == 5  # 5 healthy, 1 failed excluded
+    assert len(response.results) == 5
+
+
+async def test_bh_078_catalog_total_available_independent_of_page(
+    graph_store, retrieval_service,
+):
+    """Catalog mode total_available is full count, not page size."""
+    # Insert 10 documents
+    for i in range(10):
+        doc = _make_doc(f"doc_{i:02d}")
+        await graph_store.insert_document(doc)
+
+    request = DiscoverRequest(mode=RetrievalMode.CATALOG, limit=3, offset=0)
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) == 3
+    assert response.total_available == 10
+
+
+async def test_bh_079_catalog_combined_filters(
+    graph_store, retrieval_service,
+):
+    """Catalog mode with multiple filters uses AND semantics."""
+    await _seed_catalog_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        scope=RetrievalScope.FILTERED,
+        filters=RetrievalFilters(
+            doc_type="patent_draft",
+            tags=["PV07"],
+            lifecycle_status="active",
+        ),
+    )
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert result_ids == {"doc_a"}
+    assert response.total_available == 1

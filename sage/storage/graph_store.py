@@ -179,6 +179,75 @@ class GraphStore:
         rows = conn.execute("SELECT * FROM documents").fetchall()
         return [self._row_to_document(r) for r in rows]
 
+    async def query_documents(
+        self,
+        filters: dict[str, object] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[Document], int]:
+        """Query documents with SQL predicates. Returns (docs, total_count).
+
+        Supported filter keys: doc_type, project, lifecycle_status,
+        pipeline_status, tags (list[str], AND semantics), document_ids (list[str]).
+        Failed-pipeline documents are excluded by default unless
+        pipeline_status is explicitly set.
+        """
+        return await self._run(self._query_documents_sync, filters, limit, offset)
+
+    def _query_documents_sync(
+        self,
+        filters: dict[str, object] | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[Document], int]:
+        conn = self._get_connection()
+        where_clauses: list[str] = []
+        params: list[object] = []
+
+        # Default: exclude failed pipeline unless explicitly filtering for it
+        if not filters or "pipeline_status" not in filters:
+            where_clauses.append("pipeline_status != ?")
+            params.append("failed")
+
+        if filters:
+            if "doc_type" in filters and filters["doc_type"]:
+                where_clauses.append("doc_type = ?")
+                params.append(filters["doc_type"])
+            if "project" in filters and filters["project"]:
+                where_clauses.append("project = ?")
+                params.append(filters["project"])
+            if "lifecycle_status" in filters and filters["lifecycle_status"]:
+                where_clauses.append("lifecycle_status = ?")
+                params.append(filters["lifecycle_status"])
+            if "pipeline_status" in filters and filters["pipeline_status"]:
+                where_clauses.append("pipeline_status = ?")
+                params.append(filters["pipeline_status"])
+            if "document_ids" in filters and filters["document_ids"]:
+                placeholders = ",".join("?" for _ in filters["document_ids"])
+                where_clauses.append(f"id IN ({placeholders})")
+                params.extend(filters["document_ids"])
+            if "tags" in filters and filters["tags"]:
+                for tag in filters["tags"]:
+                    where_clauses.append(
+                        "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)"
+                    )
+                    params.append(tag)
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        # Get total count
+        count_row = conn.execute(
+            f"SELECT COUNT(*) FROM documents WHERE {where_sql}", params
+        ).fetchone()
+        total_count = count_row[0]
+
+        # Get paged results
+        rows = conn.execute(
+            f"SELECT * FROM documents WHERE {where_sql} ORDER BY title LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        return [self._row_to_document(r) for r in rows], total_count
+
     async def find_by_source_path_and_hash(
         self, source_path: str, content_hash: str
     ) -> Document | None:

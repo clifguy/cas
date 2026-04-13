@@ -99,12 +99,75 @@ class RetrievalService:
             return await self._keyword(request)
         elif request.mode == RetrievalMode.DETERMINISTIC:
             return await self._deterministic(request)
+        elif request.mode == RetrievalMode.CATALOG:
+            return await self._catalog(request)
         else:
             # Verification mode deferred to slice 4
             raise MissingFieldError(
                 "mode",
                 f"Retrieval mode '{request.mode}' is not yet implemented",
             )
+
+    # ------------------------------------------------------------------
+    # Catalog mode (BH-072 through BH-079)
+    # ------------------------------------------------------------------
+
+    async def _catalog(self, request: DiscoverRequest) -> DiscoverResponse:
+        """Filter-only document enumeration via SQL. No vector search.
+
+        Queries the graph store directly with filter predicates. Returns
+        document-level metadata only (no chunk content or relevance scores).
+        Supports pagination via limit + offset.
+        """
+        # Build filter dict from request
+        sql_filters: dict[str, object] = {}
+        if request.filters:
+            if request.filters.doc_type:
+                sql_filters["doc_type"] = request.filters.doc_type
+            if request.filters.project:
+                sql_filters["project"] = request.filters.project
+            if request.filters.lifecycle_status:
+                sql_filters["lifecycle_status"] = request.filters.lifecycle_status
+            if request.filters.pipeline_status:
+                sql_filters["pipeline_status"] = request.filters.pipeline_status
+            if request.filters.tags:
+                sql_filters["tags"] = request.filters.tags
+            if request.filters.document_ids:
+                sql_filters["document_ids"] = request.filters.document_ids
+
+        docs, total_count = await self._graph.query_documents(
+            filters=sql_filters or None,
+            limit=request.limit,
+            offset=request.offset,
+        )
+
+        hits = [
+            DiscoverHit(
+                document=DocumentSummary(
+                    id=doc.id,
+                    title=doc.title,
+                    lifecycle_status=doc.lifecycle_status,
+                    source_type=doc.source_type,
+                    source_path=doc.source_path,
+                    version_label=doc.version_label,
+                    project=doc.project,
+                    doc_type=doc.doc_type,
+                    tags=doc.tags,
+                    document_date=_parse_document_date(doc.document_date),
+                    source_modified_at=doc.source_modified_at,
+                ),
+                chunk_content=None,
+                heading_path=None,
+                relevance_score=None,
+            )
+            for doc in docs
+        ]
+
+        return DiscoverResponse(
+            mode=RetrievalMode.CATALOG,
+            results=hits,
+            total_available=total_count,
+        )
 
     # ------------------------------------------------------------------
     # Keyword retrieval (BH-059, BH-060, BH-061)

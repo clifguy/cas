@@ -588,3 +588,60 @@ use `app_` prefix. Both are registered on the same FastMCP instance.
 **Rationale:** The naming prefix maintains the logical boundary between SAGE
 Core API operations and application-layer orchestration, even though they share
 a process and vault registry.
+
+
+---
+
+## 10. sage_discover Catalog Mode
+
+### TEST-APP-MCP-026: sage_discover catalog mode returns filtered documents
+
+**Artifact:** `sage/sage_api_tools.py` (sage_discover)
+**Category:** mcp_tool, retrieval
+
+**Decision:** The sage_discover MCP tool supports catalog mode. When called with
+`mode="catalog"` and filters, it returns a JSON response containing all matching
+documents with document-level metadata only (no chunk content or relevance scores).
+
+**Precondition:** Vault with 3 documents:
+- doc_a: `doc_type="patent_draft"`, `tags=["PV07"]`
+- doc_b: `doc_type="glossary"`, `tags=["PV07"]`
+- doc_c: `doc_type="patent_draft"`, `tags=["PV08"]`
+
+**Input:** `sage_discover(vault_id="test_vault", mode="catalog", scope="filtered", filters={"tags": ["PV07"]})`
+
+**Expected:**
+- Parsed response contains `mode: "catalog"`.
+- `results` contains 2 entries (doc_a and doc_b).
+- `total_available == 2`.
+- Each result has `document` with id, title, doc_type, tags fields populated.
+- Each result has `chunk_content: null`, `relevance_score: null`.
+
+**Rationale:** MCP agents need deterministic document enumeration by metadata.
+Catalog mode via MCP eliminates the need for multiple overlapping semantic
+searches plus Python deduplication.
+
+
+### TEST-APP-MCP-027: sage_discover catalog mode pagination with offset
+
+**Artifact:** `sage/sage_api_tools.py` (sage_discover)
+**Category:** mcp_tool, retrieval
+
+**Decision:** The sage_discover MCP tool accepts an `offset` parameter for
+catalog mode pagination. Combined with `limit`, this enables MCP agents to
+page through large result sets.
+
+**Precondition:** Vault with 5 documents (all non-failed).
+
+**Input:**
+- `sage_discover(vault_id="test_vault", mode="catalog", limit=2, offset=0)`
+- `sage_discover(vault_id="test_vault", mode="catalog", limit=2, offset=2)`
+
+**Expected:**
+- First call: 2 results, `total_available == 5`.
+- Second call: 2 results, `total_available == 5`.
+- No overlap between result document IDs.
+
+**Rationale:** Pagination is essential for MCP agents operating on vaults with
+hundreds of documents. Without offset support, agents would need to retrieve
+all documents in a single call, which could exceed response size limits.

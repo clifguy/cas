@@ -44,6 +44,7 @@ class RetrievalMode(StrEnum):
     KEYWORD = "keyword"
     DETERMINISTIC = "deterministic"
     VERIFICATION = "verification"
+    CATALOG = "catalog"
 
 
 class RetrievalScope(StrEnum):

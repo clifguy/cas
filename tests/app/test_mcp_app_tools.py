@@ -1,4 +1,4 @@
-"""Tests for new MCP tools (TEST-APP-MCP-001 through MCP-025).
+"""Tests for new MCP tools (TEST-APP-MCP-001 through MCP-027).
 
 Covers 9 new tools: 7 SAGE API tools + 2 app backend tools.
 Direct function calls bypassing MCP transport, matching the existing
@@ -23,6 +23,7 @@ from sage.mcp_server import (
     sage_confirm_staging_edge,
     sage_dismiss_staging_edge,
     sage_pending_metadata,
+    sage_discover,
     app_scan_directory,
     app_batch_ingest,
     sage_ingest,
@@ -557,3 +558,83 @@ class TestMCPConventions:
             assert name.startswith("sage_")
         for name in app_tools:
             assert name.startswith("app_")
+
+
+# ---------------------------------------------------------------------------
+# 10. sage_discover catalog mode (MCP-026, MCP-027)
+# ---------------------------------------------------------------------------
+
+
+class TestSageDiscoverCatalog:
+
+    async def _seed_docs(self, services):
+        """Insert 5 documents for catalog mode tests."""
+        from sage.models.schemas import Document
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+
+        def _doc(doc_id, doc_type="patent_draft", tags=None, lifecycle="active"):
+            return Document(
+                id=doc_id,
+                title=f"Test {doc_id}",
+                source_type=SourceType.MARKDOWN,
+                source_path=f"test/{doc_id}.md",
+                lifecycle_status=lifecycle,
+                source_content_hash=f"hash_{doc_id}",
+                adapter_version="0.1.0",
+                created_by="testuser",
+                created_at=now,
+                last_modified_by="testuser",
+                updated_at=now,
+                projected_at=now,
+                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                doc_type=doc_type,
+                tags=tags or [],
+            )
+
+        await gs.insert_document(_doc("doc_a", "patent_draft", ["PV07"]))
+        await gs.insert_document(_doc("doc_b", "glossary", ["PV07"]))
+        await gs.insert_document(_doc("doc_c", "patent_draft", ["PV08"]))
+
+    async def test_mcp_026_catalog_returns_filtered(self, single_vault):
+        """sage_discover catalog mode returns filtered documents."""
+        services, config = single_vault
+        await self._seed_docs(services)
+
+        result = _parse(await sage_discover(
+            vault_id="test_vault",
+            mode="catalog",
+            scope="filtered",
+            filters={"tags": ["PV07"]},
+        ))
+
+        assert result["mode"] == "catalog"
+        assert result["total_available"] == 2
+        assert len(result["results"]) == 2
+        result_ids = {r["document"]["id"] for r in result["results"]}
+        assert result_ids == {"doc_a", "doc_b"}
+        # No chunk content or relevance scores
+        for r in result["results"]:
+            assert r.get("chunk_content") is None
+            assert r.get("relevance_score") is None
+
+    async def test_mcp_027_catalog_pagination_offset(self, single_vault):
+        """sage_discover catalog mode pagination with offset."""
+        services, config = single_vault
+        await self._seed_docs(services)
+
+        resp1 = _parse(await sage_discover(
+            vault_id="test_vault", mode="catalog", limit=2, offset=0,
+        ))
+        resp2 = _parse(await sage_discover(
+            vault_id="test_vault", mode="catalog", limit=2, offset=2,
+        ))
+
+        assert resp1["total_available"] == 3
+        assert len(resp1["results"]) == 2
+        assert resp2["total_available"] == 3
+        assert len(resp2["results"]) == 1
+
+        ids1 = {r["document"]["id"] for r in resp1["results"]}
+        ids2 = {r["document"]["id"] for r in resp2["results"]}
+        assert len(ids1 & ids2) == 0  # No overlap

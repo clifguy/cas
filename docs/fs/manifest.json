@@ -177,6 +177,11 @@
       "version": "1.2",
       "date": "2026-04-08",
       "summary": "Edge inference schema support. Three changes for the CAS Application's filename-aware scan and bulk ingest workflow: (1) metadata_extraction.schema.json: added known_code_patterns (regex list for code segment recognition during tolerant filename parsing, independent of doc_type mapping) and keyword_to_doc_type (keyword-based doc_type mapping evaluated before code_to_doc_type, resolves mis-classification of workflow artifacts containing domain-specific codes). Updated filename_extraction description to document tolerant parser behavior. Updated code_to_doc_type description to clarify evaluation order relative to keyword_to_doc_type. (2) sage_core_api.openapi.yaml: added metadata property to IngestRequest (optional string-valued object for caller-supplied metadata fields from parsed filename segments, participates in standard precedence chain). Enables single-call ingestion with metadata instead of separate ingest + update_metadata."
+    },
+    {
+      "version": "1.3",
+      "date": "2026-04-13",
+      "summary": "Catalog mode and discovery improvements. Three changes to sage_core_api.openapi.yaml: (1) RetrievalMode enum: added 'catalog' (filter-only SQL enumeration, no vector search, returns document metadata only) and 'keyword' (BM25-only search, was in code but missing from spec). (2) DiscoverRequest: added 'offset' integer property (pagination for catalog mode, default 0). Updated description to document all five modes. (3) RetrievalFilters: added 'pipeline_status' string property (was in code but missing from spec; overrides default failed-pipeline exclusion)."
     }
   ]
 }

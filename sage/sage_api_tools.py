@@ -280,21 +280,31 @@ def register_sage_tools(
         document_id: str | None = None,
         heading_path: str | None = None,
         limit: int = 10,
+        offset: int = 0,
         use_hybrid: bool = True,
     ) -> str:
-        """Search for documents using semantic or deterministic retrieval.
+        """Search for documents using semantic, keyword, catalog, or deterministic retrieval.
+
+        Modes:
+            semantic: Vector + optional BM25 fusion. Requires query.
+            keyword: BM25-only search. Requires query. Use query="*" for filter-only listing.
+            catalog: Filter-only SQL enumeration. No query needed. Returns document
+                metadata only (no chunks or scores). Supports pagination via limit + offset.
+                Best for deterministic enumeration by tags, doc_type, or other metadata.
+            deterministic: Exact heading path extraction. Requires document_id + heading_path.
 
         Args:
             vault_id: Target vault identifier.
-            mode: Retrieval mode (semantic, deterministic).
-            query: Search query text (required for semantic mode).
+            mode: Retrieval mode (semantic, keyword, catalog, deterministic).
+            query: Search query text (required for semantic/keyword modes).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters with optional keys: doc_type, project,
-                lifecycle_status, tags, document_ids.
+                lifecycle_status, tags, document_ids, pipeline_status.
             document_id: Target document (required for deterministic mode).
             heading_path: Heading path prefix (required for deterministic mode).
             limit: Maximum results (1-100). Default: 10.
-            use_hybrid: Use hybrid RRF fusion of vector + BM25. Default: true.
+            offset: Skip this many results before returning (catalog mode pagination). Default: 0.
+            use_hybrid: Use hybrid RRF fusion of vector + BM25 in semantic mode. Default: true.
         """
         try:
             v = get_vault(vault_id)
@@ -307,6 +317,7 @@ def register_sage_tools(
                 document_id=document_id,
                 heading_path=heading_path,
                 limit=limit,
+                offset=offset,
                 use_hybrid=use_hybrid,
             )
             response = await v.retrieval_service.discover(request)

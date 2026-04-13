@@ -750,10 +750,13 @@ components:
 
     RetrievalMode:
       type: string
-      enum: [semantic, deterministic, verification]
+      enum: [semantic, keyword, catalog, deterministic, verification]
       description: >-
-        Retrieval guarantee level. Semantic returns ranked approximate
-        results. Deterministic returns exact content by address.
+        Retrieval mode. Semantic returns ranked approximate results via
+        vector + optional BM25 fusion. Keyword returns BM25-only results.
+        Catalog returns all documents matching filter predicates via direct
+        SQL query (no vector search, no chunk content, supports pagination
+        via offset). Deterministic returns exact content by address.
         Verification compares content against an authoritative source.
 
     RetrievalScope:
@@ -1033,6 +1036,12 @@ components:
 
         - semantic: query is required.
 
+        - keyword: query is required. Use query="*" for filter-only listing.
+
+        - catalog: no query required. Returns document-level metadata only
+          (no chunks or scores). Queries SQLite directly with filter predicates.
+          Supports pagination via limit + offset.
+
         - deterministic: document_id and heading_path are required.
 
         - verification: document_id and authority_document_id are required.
@@ -1041,8 +1050,8 @@ components:
         query:
           type: string
           description: >-
-            Search query text. Required for semantic mode. Optional for
-            filtered scope (used as additional relevance signal).
+            Search query text. Required for semantic and keyword modes.
+            Ignored in catalog mode.
         mode:
           $ref: "#/components/schemas/RetrievalMode"
         scope:
@@ -1072,6 +1081,13 @@ components:
           maximum: 100
           default: 10
           description: Maximum number of results to return.
+        offset:
+          type: integer
+          minimum: 0
+          default: 0
+          description: >-
+            Number of results to skip before returning. Used with limit
+            for pagination in catalog mode. Ignored by other modes.
         cursor:
           type: string
           nullable: true
@@ -1115,6 +1131,12 @@ components:
           description: >-
             Restrict to a specific set of documents. Used with
             scope "specific".
+        pipeline_status:
+          type: string
+          description: >-
+            Filter by pipeline status (e.g., "failed",
+            "abstraction_complete"). Overrides the default exclusion
+            of failed-pipeline documents.
 
     SetLifecycleRequest:
       type: object
