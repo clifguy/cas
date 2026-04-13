@@ -1,5 +1,5 @@
 """Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
-BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-083.
+BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-088.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
 retrieval (heading path prefix match), keyword-only retrieval,
@@ -21,6 +21,7 @@ from sage.api.errors import (
 from sage.models.enums import (
     CatalogSortBy,
     PipelineStatus,
+    ResponseLevel,
     RetrievalMode,
     RetrievalScope,
     SortOrder,
@@ -1518,3 +1519,249 @@ async def test_bh_083_catalog_sort_ignored_by_other_modes(
     # Should not raise
     response = await retrieval_service.discover(request)
     assert response.mode == RetrievalMode.KEYWORD
+
+
+# ---------------------------------------------------------------------------
+# BH-084 through BH-088: Document-level response mode
+# ---------------------------------------------------------------------------
+
+
+async def _seed_response_level_docs(graph_store, content_store, embedding_provider):
+    """Seed 3 documents with indexed chunks for response_level tests."""
+    for doc_id in ("rl_a", "rl_b", "rl_c"):
+        doc = _make_doc(doc_id, doc_type="patent_draft")
+        await graph_store.insert_document(doc)
+        await _index_doc_chunks(
+            content_store, embedding_provider, doc_id,
+            [("Section 1", f"Integration testing for {doc_id} document.")],
+            doc_type="patent_draft",
+        )
+
+
+async def test_bh_084_semantic_response_level_documents(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Semantic search with response_level=documents omits chunk content but
+    preserves heading_path and matched_chunk_count."""
+    await _seed_response_level_docs(
+        graph_store, stub_content_store, seeded_embedding_provider,
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_level=ResponseLevel.DOCUMENTS,
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) > 0
+    for hit in response.results:
+        assert hit.chunk_content is None
+        # heading_path preserved as "why this matched" context
+        assert hit.heading_path is not None
+        assert hit.relevance_score is not None
+        assert hit.relevance_score > 0
+        assert hit.matched_chunk_count is not None
+        assert hit.matched_chunk_count >= 1
+        assert hit.document.id is not None
+        assert hit.document.title is not None
+
+
+async def test_bh_085_keyword_response_level_documents(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Keyword search with response_level=documents omits chunk content but
+    preserves heading_path and matched_chunk_count."""
+    await _seed_response_level_docs(
+        graph_store, stub_content_store, seeded_embedding_provider,
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="integration",
+        response_level=ResponseLevel.DOCUMENTS,
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) > 0
+    for hit in response.results:
+        assert hit.chunk_content is None
+        assert hit.heading_path is not None
+        assert hit.relevance_score is not None
+        assert hit.relevance_score > 0
+        assert hit.matched_chunk_count is not None
+        assert hit.matched_chunk_count >= 1
+        assert hit.document.id is not None
+
+
+async def test_bh_086_response_level_documents_preserves_scores_and_order(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """response_level=documents produces the same scores, order, heading paths,
+    and matched_chunk_counts as chunks mode."""
+    await _seed_response_level_docs(
+        graph_store, stub_content_store, seeded_embedding_provider,
+    )
+
+    chunks_request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_level=ResponseLevel.CHUNKS,
+        limit=10,
+    )
+    docs_request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_level=ResponseLevel.DOCUMENTS,
+        limit=10,
+    )
+
+    chunks_response = await retrieval_service.discover(chunks_request)
+    docs_response = await retrieval_service.discover(docs_request)
+
+    # Same documents in same order
+    chunks_ids = [h.document.id for h in chunks_response.results]
+    docs_ids = [h.document.id for h in docs_response.results]
+    assert chunks_ids == docs_ids
+
+    # Same scores
+    chunks_scores = [h.relevance_score for h in chunks_response.results]
+    docs_scores = [h.relevance_score for h in docs_response.results]
+    assert chunks_scores == docs_scores
+
+    # Same heading paths
+    chunks_headings = [h.heading_path for h in chunks_response.results]
+    docs_headings = [h.heading_path for h in docs_response.results]
+    assert chunks_headings == docs_headings
+
+    # Same matched_chunk_counts
+    chunks_counts = [h.matched_chunk_count for h in chunks_response.results]
+    docs_counts = [h.matched_chunk_count for h in docs_response.results]
+    assert chunks_counts == docs_counts
+
+    # Chunks response has content; documents response does not
+    assert any(h.chunk_content is not None for h in chunks_response.results)
+    assert all(h.chunk_content is None for h in docs_response.results)
+
+
+async def test_bh_084_multi_chunk_matched_chunk_count(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """matched_chunk_count reflects multiple matching chunks per document."""
+    doc = _make_doc("multi_chunk", doc_type="patent_draft")
+    await graph_store.insert_document(doc)
+    # Index 3 chunks for the same document
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "multi_chunk",
+        [
+            ("Section 1", "Integration testing for claims."),
+            ("Section 2", "Integration of prior art references."),
+            ("Section 3", "Integration with existing patent family."),
+        ],
+        doc_type="patent_draft",
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_level=ResponseLevel.DOCUMENTS,
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    # Should have exactly one hit for the document
+    hits_for_doc = [h for h in response.results if h.document.id == "multi_chunk"]
+    assert len(hits_for_doc) == 1
+    # All 3 chunks should be counted
+    assert hits_for_doc[0].matched_chunk_count == 3
+
+
+async def test_matched_chunk_count_content_only_not_metadata(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """matched_chunk_count reflects content matches only, not metadata matches.
+
+    When a document is found by both content search and metadata search
+    (title contains the query), matched_chunk_count should count only the
+    content-store chunks, not be bumped by the metadata match.
+    """
+    # Title contains "integration" so metadata search will find it too
+    doc = _make_doc("dual_match", doc_type="patent_draft")
+    doc.title = "Integration Testing Guide"
+    await graph_store.insert_document(doc)
+    # Index exactly 2 chunks
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "dual_match",
+        [
+            ("Section 1", "Integration testing for claims."),
+            ("Section 2", "Integration of prior art references."),
+        ],
+        doc_type="patent_draft",
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_level=ResponseLevel.DOCUMENTS,
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_for_doc = [h for h in response.results if h.document.id == "dual_match"]
+    assert len(hits_for_doc) == 1
+    # Count should be 2 (content chunks only), not 3
+    assert hits_for_doc[0].matched_chunk_count == 2
+
+
+async def test_bh_087_response_level_chunks_default(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Default response_level (omitted) preserves current chunk behavior."""
+    await _seed_response_level_docs(
+        graph_store, stub_content_store, seeded_embedding_provider,
+    )
+
+    # No response_level specified -- should default to chunks
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) > 0
+    # At least one hit should have chunk content (non-boosted hits)
+    content_hits = [h for h in response.results if h.chunk_content is not None]
+    assert len(content_hits) > 0
+    # Verify heading paths and matched_chunk_count present on content hits
+    for hit in content_hits:
+        assert hit.heading_path is not None
+        assert hit.matched_chunk_count is not None
+        assert hit.matched_chunk_count >= 1
+
+
+async def test_bh_088_response_level_ignored_by_catalog(
+    graph_store, retrieval_service,
+):
+    """Catalog mode ignores response_level; always returns document-level."""
+    for doc_id in ("cat_a", "cat_b"):
+        doc = _make_doc(doc_id, doc_type="patent_draft")
+        await graph_store.insert_document(doc)
+
+    # Explicitly request chunks -- catalog should still return no chunk content
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        response_level=ResponseLevel.CHUNKS,
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) >= 2
+    for hit in response.results:
+        assert hit.chunk_content is None
+        assert hit.heading_path is None
+        assert hit.relevance_score is None
+        # Catalog mode doesn't go through _results_to_hits, no chunk counting
+        assert hit.matched_chunk_count is None

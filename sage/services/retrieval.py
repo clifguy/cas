@@ -1,7 +1,7 @@
 """Retrieval service: semantic, keyword, and deterministic discover modes.
 
 Covers behavioral tests BH-020, BH-027 through BH-030, BH-059 through BH-061,
-BH-069, BH-070.
+BH-069, BH-070, BH-084 through BH-088.
 
 Semantic mode:
   - Pure vector search (default) or hybrid vector+BM25 via RRF (BH-027, BH-028).
@@ -29,7 +29,7 @@ from sage.api.errors import (
     PipelineIncompleteError,
 )
 from sage.config import VaultConfig
-from sage.models.enums import PipelineStatus, RetrievalMode, RetrievalScope
+from sage.models.enums import PipelineStatus, ResponseLevel, RetrievalMode, RetrievalScope
 from sage.models.schemas import (
     DiscoverHit,
     DiscoverRequest,
@@ -339,15 +339,18 @@ class RetrievalService:
         """Convert SearchResults to DiscoverHits, applying pipeline and scope filters.
 
         Deduplicates by document ID, keeping only the highest-scoring chunk
-        per document. This prevents a single document with many matching
-        chunks from crowding out other documents in the results.
+        per document. Counts additional matching chunks per document for
+        matched_chunk_count (useful reranking signal). This prevents a single
+        document with many matching chunks from crowding out other documents.
         """
         seen_docs: dict[str, DiscoverHit] = {}
+        chunk_counts: dict[str, int] = {}
         doc_cache: dict[str, object | None] = {}
 
         for result in results:
-            # Skip if we already have a higher-scoring chunk for this document
+            # Count additional chunks for already-seen documents
             if result.document_id in seen_docs:
+                chunk_counts[result.document_id] += 1
                 continue
 
             # Cache document lookups
@@ -381,13 +384,21 @@ class RetrievalService:
                 source_modified_at=doc.source_modified_at,
             )
 
+            # BH-084/085: suppress chunk_content when response_level=documents;
+            # heading_path preserved as cheap "why this matched" context.
+            include_content = request.response_level != ResponseLevel.DOCUMENTS
             hit = DiscoverHit(
                 document=summary,
-                chunk_content=result.content,
+                chunk_content=result.content if include_content else None,
                 heading_path=result.heading_path or None,
                 relevance_score=result.score,
             )
             seen_docs[result.document_id] = hit
+            chunk_counts[result.document_id] = 1
+
+        # Stamp matched_chunk_count on each hit
+        for doc_id, hit in seen_docs.items():
+            hit.matched_chunk_count = chunk_counts[doc_id]
 
         return list(seen_docs.values())
 

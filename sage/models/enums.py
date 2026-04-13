@@ -54,6 +54,11 @@ class RetrievalScope(StrEnum):
     FILTERED = "filtered"
 
 
+class ResponseLevel(StrEnum):
+    CHUNKS = "chunks"
+    DOCUMENTS = "documents"
+
+
 class CatalogSortBy(StrEnum):
     TITLE = "title"
     DOC_TYPE = "doc_type"

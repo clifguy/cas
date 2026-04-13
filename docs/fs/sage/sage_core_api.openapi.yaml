@@ -766,6 +766,33 @@ components:
         Controls which documents are eligible for retrieval, independent
         of mode.
 
+    ResponseLevel:
+      type: string
+      enum: [chunks, documents]
+      default: chunks
+      description: >-
+        Controls the detail level of discover results. "chunks" (default)
+        includes chunk_content, heading_path, and matched_chunk_count on
+        each hit. "documents" suppresses chunk_content but preserves
+        heading_path (best-scoring chunk's location, cheap "why this
+        matched" context), relevance_score, and matched_chunk_count.
+        Applicable to semantic and keyword modes. Catalog mode always
+        returns document-level results regardless of this value.
+        Deterministic mode always returns chunk content regardless of
+        this value.
+
+    CatalogSortBy:
+      type: string
+      enum: [title, doc_type, document_date, lifecycle_status]
+      description: >-
+        Sort key for catalog mode results. Ignored by other retrieval modes.
+
+    SortOrder:
+      type: string
+      enum: [asc, desc]
+      description: >-
+        Sort direction for catalog mode results. Ignored by other modes.
+
     UserType:
       type: string
       enum: [human, agent]
@@ -1102,6 +1129,28 @@ components:
             mode. Valuable when queries contain both natural language
             and specific identifiers. Set to false for pure vector
             similarity search.
+        response_level:
+          $ref: "#/components/schemas/ResponseLevel"
+          default: chunks
+          description: >-
+            Controls result detail level. "chunks" (default) includes
+            chunk_content, heading_path, and matched_chunk_count.
+            "documents" suppresses chunk_content but preserves
+            heading_path (best chunk's location) and matched_chunk_count
+            as lightweight context. Applicable to semantic and keyword
+            modes. Ignored by catalog (always document-level) and
+            deterministic (always chunk-level).
+        sort_by:
+          $ref: "#/components/schemas/CatalogSortBy"
+          description: >-
+            Sort key for catalog mode results. Optional. Default when
+            omitted: active lifecycle first, then document_date descending.
+            Ignored by other retrieval modes.
+        sort_order:
+          $ref: "#/components/schemas/SortOrder"
+          description: >-
+            Sort direction for catalog mode results. Optional. Defaults
+            to ascending when sort_by is specified. Ignored by other modes.
 
     RetrievalFilters:
       type: object
@@ -1360,6 +1409,15 @@ components:
           description: >-
             Relevance score (semantic mode only). Higher is more
             relevant. Scale depends on the retrieval implementation.
+        matched_chunk_count:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: >-
+            Number of chunks from this document that matched the query.
+            Present in semantic and keyword modes. A document with many
+            matching chunks is a stronger hit than one with a single match
+            at a similar peak score. Useful as a reranking signal.
         match_result:
           $ref: "#/components/schemas/VerificationMatch"
 

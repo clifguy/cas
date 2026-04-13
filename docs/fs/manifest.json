@@ -156,7 +156,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.2",
+  "substrate_version": "1.4",
   "revision_history": [
     {
       "version": "0.1",
@@ -182,6 +182,11 @@
       "version": "1.3",
       "date": "2026-04-13",
       "summary": "Catalog mode and discovery improvements. Three changes to sage_core_api.openapi.yaml: (1) RetrievalMode enum: added 'catalog' (filter-only SQL enumeration, no vector search, returns document metadata only) and 'keyword' (BM25-only search, was in code but missing from spec). (2) DiscoverRequest: added 'offset' integer property (pagination for catalog mode, default 0). Updated description to document all five modes. (3) RetrievalFilters: added 'pipeline_status' string property (was in code but missing from spec; overrides default failed-pipeline exclusion)."
+    },
+    {
+      "version": "1.4",
+      "date": "2026-04-13",
+      "summary": "Document-level response mode and catalog sort parameters. Six additions to sage_core_api.openapi.yaml: (1) ResponseLevel enum (chunks, documents) controlling result detail level. (2) DiscoverRequest.response_level property (default 'chunks'); when set to 'documents', suppresses chunk_content but preserves heading_path (best chunk's location) and relevance scores. Applicable to semantic and keyword modes; ignored by catalog and deterministic. (3) DiscoverHit.matched_chunk_count (nullable integer): number of chunks from the document that matched the query, useful as a reranking signal. (4) CatalogSortBy enum (title, doc_type, document_date, lifecycle_status) for catalog mode sorting. (5) SortOrder enum (asc, desc). (6) DiscoverRequest.sort_by and sort_order properties for catalog mode. Sort_by and sort_order were in code since v1.3 but missing from the OpenAPI spec."
     }
   ]
 }

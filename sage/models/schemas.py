@@ -13,6 +13,7 @@ from sage.models.enums import (
     CatalogSortBy,
     EdgeType,
     PipelineStatus,
+    ResponseLevel,
     RetrievalMode,
     RetrievalScope,
     SortOrder,
@@ -202,6 +203,7 @@ class DiscoverRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     cursor: str | None = Field(default=None, deprecated=True)
     use_hybrid: bool = True
+    response_level: ResponseLevel = ResponseLevel.CHUNKS
     sort_by: CatalogSortBy | None = None
     sort_order: SortOrder | None = None
 
@@ -211,6 +213,7 @@ class DiscoverHit(BaseModel):
     chunk_content: str | None = None
     heading_path: str | None = None
     relevance_score: float | None = None
+    matched_chunk_count: int | None = None
 
 
 class DiscoverResponse(BaseModel):

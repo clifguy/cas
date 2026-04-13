@@ -1576,3 +1576,133 @@ must match ALL specified filters to appear in results.
 **Rationale:** AND semantics are the natural interpretation for metadata filters.
 OR semantics would require explicit combinators and are not needed for the
 primary use cases (drill-down from dashboard, tag-based enumeration).
+
+
+## Document-Level Response Mode
+
+### TEST-SAGE-BH-084: Semantic search with response_level=documents omits chunk content
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Category:** retrieval
+
+**Decision:** When `response_level="documents"`, semantic search returns one
+`DiscoverHit` per matched document with `chunk_content=None`. The `heading_path`
+of the best-scoring chunk is preserved as cheap "why this matched" context.
+The `document` summary, `relevance_score`, and `matched_chunk_count` are preserved.
+This reduces payload size for callers that need ranked document lists without
+chunk text.
+
+**Precondition:** Vault with 3 indexed documents (doc_a, doc_b, doc_c),
+each with at least one chunk containing the word "integration".
+
+**Input:** `discover(mode="semantic", query="integration", response_level="documents")`
+
+**Expected:**
+- All returned hits have `chunk_content is None`.
+- All returned hits have `heading_path` (not None -- best chunk's heading preserved).
+- All returned hits have `relevance_score` > 0.
+- All returned hits have `matched_chunk_count >= 1`.
+- Each hit's `document` field contains a valid `DocumentSummary` with `id`, `title`, etc.
+- Result count matches the number of distinct documents matching the query.
+
+**Rationale:** MCP callers and dashboard drill-downs often need ranked document
+lists for navigation. Transmitting chunk text wastes bandwidth and context window
+when the caller will fetch document details separately. The heading path provides
+a one-line "why this matched" without the text payload.
+
+
+### TEST-SAGE-BH-085: Keyword search with response_level=documents omits chunk content
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Category:** retrieval
+
+**Decision:** `response_level="documents"` applies to keyword mode identically
+to semantic mode. BM25 results are deduplicated by document (existing behavior)
+and `chunk_content` is suppressed. `heading_path` and `matched_chunk_count`
+are preserved.
+
+**Precondition:** Vault with 3 indexed documents, each containing the word "protocol".
+
+**Input:** `discover(mode="keyword", query="protocol", response_level="documents")`
+
+**Expected:**
+- All returned hits have `chunk_content is None`.
+- All returned hits have `heading_path` (not None).
+- All returned hits have `relevance_score` > 0.
+- All returned hits have `matched_chunk_count >= 1`.
+- Each hit's `document` field is a valid `DocumentSummary`.
+
+**Rationale:** Keyword mode shares the same `_results_to_hits()` pipeline as
+semantic mode; `response_level` should apply uniformly to both search modes.
+
+
+### TEST-SAGE-BH-086: response_level=documents preserves relevance scores and ordering
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Category:** retrieval
+
+**Decision:** Document-level responses preserve the same relevance scores,
+result ordering, heading paths, and matched chunk counts as chunk-level
+responses. The only difference is the suppression of `chunk_content`.
+
+**Precondition:** Vault with 3 indexed documents with varying relevance to
+the query "claim construction methodology".
+
+**Input:**
+1. `discover(mode="semantic", query="claim construction methodology", response_level="chunks")`
+2. `discover(mode="semantic", query="claim construction methodology", response_level="documents")`
+
+**Expected:**
+- Both responses return the same documents in the same order.
+- Both responses have the same `relevance_score` for each document.
+- Response 1 has non-null `chunk_content` on each hit.
+- Response 2 has null `chunk_content` on each hit.
+
+**Rationale:** `response_level` is a presentation concern, not a retrieval
+concern. Changing the response shape must not alter scoring or ranking behavior.
+
+
+### TEST-SAGE-BH-087: response_level=chunks (default) preserves current behavior
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Category:** retrieval
+
+**Decision:** `response_level` defaults to `"chunks"`, preserving backward
+compatibility. Omitting the parameter produces the same response shape as
+before the feature was added.
+
+**Precondition:** Vault with at least 1 indexed document containing searchable content.
+
+**Input:** `discover(mode="semantic", query="integration")` (no response_level specified)
+
+**Expected:**
+- At least one hit has non-null `chunk_content`.
+- At least one hit has non-null `heading_path`.
+- Behavior is identical to an explicit `response_level="chunks"`.
+
+**Rationale:** Backward compatibility. Existing callers (frontend Search view,
+MCP tool) must not be affected by the addition of this parameter.
+
+
+### TEST-SAGE-BH-088: response_level ignored by catalog mode
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Category:** retrieval
+
+**Decision:** Catalog mode always returns document-level metadata without
+chunk content, regardless of the `response_level` value. The parameter is
+accepted but has no effect.
+
+**Precondition:** Vault with 3 non-failed documents.
+
+**Input:** `discover(mode="catalog", response_level="chunks")`
+
+**Expected:**
+- All returned hits have `chunk_content is None`.
+- All returned hits have `heading_path is None`.
+- All returned hits have `relevance_score is None`.
+- Response is identical to `discover(mode="catalog")` without `response_level`.
+
+**Rationale:** Catalog mode operates on the SQLite documents table and never
+touches the content store. Applying `response_level` would be a no-op;
+accepting the parameter silently avoids forcing callers to branch on mode.

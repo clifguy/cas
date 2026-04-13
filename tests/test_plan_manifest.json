@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.3",
+  "manifest_version": "0.9.5",
   "manifest_date": "2026-04-13",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -52,7 +52,7 @@
         "docs/fs/sage/lifecycle.schema.json",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 74,
+      "test_count": 83,
       "decision_date": "2026-04-06"
     },
     {
@@ -205,6 +205,11 @@
       "version": "0.9.0",
       "date": "2026-04-11",
       "summary": "Sequential pipeline and lazy MLX loading. BH-026 revised from async background pipeline to sequential in-process pipeline (Stages 1-3 complete before ingest returns). AD-026 revised from eager model loading to lazy loading on first generate_abstract() call. 1 new behavioral test (BH-068: sequential pipeline sets final status before returning). 3 new adapter tests (AD-035: lazy load defers to first call, AD-036: second call reuses model, AD-037: load failure raises RuntimeError). Behavioral test count: 56 -> 57. Adapter test count: 34 -> 37."
+    },
+    {
+      "version": "0.9.5",
+      "date": "2026-04-13",
+      "summary": "Document-level response mode test specifications. 5 new behavioral tests (BH-084 through BH-088) covering response_level parameter on sage_discover: semantic search with documents mode omits chunk content, keyword search with documents mode omits chunk content, documents mode preserves relevance scores and ordering, chunks default preserves current behavior, response_level ignored by catalog mode. Behavioral test count: 78 -> 83."
     }
   ]
 }
