@@ -54,6 +54,17 @@ class RetrievalScope(StrEnum):
     FILTERED = "filtered"
 
 
+class CatalogSortBy(StrEnum):
+    TITLE = "title"
+    DOCUMENT_DATE = "document_date"
+    LIFECYCLE_STATUS = "lifecycle_status"
+
+
+class SortOrder(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
 class TraversalDirection(StrEnum):
     OUTBOUND = "outbound"
     INBOUND = "inbound"

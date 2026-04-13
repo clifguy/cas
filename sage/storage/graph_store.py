@@ -179,11 +179,18 @@ class GraphStore:
         rows = conn.execute("SELECT * FROM documents").fetchall()
         return [self._row_to_document(r) for r in rows]
 
+    # Columns safe to use in ORDER BY (prevent SQL injection).
+    _SORTABLE_COLUMNS: frozenset[str] = frozenset({
+        "title", "document_date", "lifecycle_status",
+    })
+
     async def query_documents(
         self,
         filters: dict[str, object] | None = None,
         limit: int = 100,
         offset: int = 0,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[Document], int]:
         """Query documents with SQL predicates. Returns (docs, total_count).
 
@@ -191,14 +198,24 @@ class GraphStore:
         pipeline_status, tags (list[str], AND semantics), document_ids (list[str]).
         Failed-pipeline documents are excluded by default unless
         pipeline_status is explicitly set.
+
+        sort_by: column to sort on (title, document_date, lifecycle_status).
+        sort_order: 'asc' or 'desc'. Default varies by sort_by.
+        If sort_by is None, uses default sort: active lifecycle first,
+        then document_date descending.
         """
-        return await self._run(self._query_documents_sync, filters, limit, offset)
+        return await self._run(
+            self._query_documents_sync, filters, limit, offset,
+            sort_by, sort_order,
+        )
 
     def _query_documents_sync(
         self,
         filters: dict[str, object] | None,
         limit: int,
         offset: int,
+        sort_by: str | None,
+        sort_order: str | None,
     ) -> tuple[list[Document], int]:
         conn = self._get_connection()
         where_clauses: list[str] = []
@@ -241,12 +258,41 @@ class GraphStore:
         ).fetchone()
         total_count = count_row[0]
 
+        # Build ORDER BY clause
+        order_sql = self._build_order_clause(sort_by, sort_order)
+
         # Get paged results
         rows = conn.execute(
-            f"SELECT * FROM documents WHERE {where_sql} ORDER BY title LIMIT ? OFFSET ?",
+            f"SELECT * FROM documents WHERE {where_sql} {order_sql} LIMIT ? OFFSET ?",
             [*params, limit, offset],
         ).fetchall()
         return [self._row_to_document(r) for r in rows], total_count
+
+    @classmethod
+    def _build_order_clause(cls, sort_by: str | None, sort_order: str | None) -> str:
+        """Build a safe ORDER BY clause.
+
+        Default (no sort_by): active lifecycle first, then document_date desc.
+        Explicit sort_by: validated against allowlist, nulls sort last.
+        """
+        if sort_by is None:
+            # Default: active first, then by document_date desc (nulls last)
+            return (
+                "ORDER BY "
+                "CASE WHEN lifecycle_status = 'active' THEN 0 ELSE 1 END, "
+                "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
+                "document_date DESC"
+            )
+
+        if sort_by not in cls._SORTABLE_COLUMNS:
+            return "ORDER BY title"
+
+        direction = "DESC" if sort_order == "desc" else "ASC"
+        nulls_last = (
+            "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
+            if sort_by == "document_date" else ""
+        )
+        return f"ORDER BY {nulls_last}{sort_by} {direction}"
 
     async def find_by_source_path_and_hash(
         self, source_path: str, content_hash: str

@@ -94,6 +94,8 @@ export interface DocumentSummary {
   project: string | null;
   doc_type: string | null;
   tags: string[];
+  document_date: string | null;
+  source_modified_at: string | null;
 }
 
 // --- Edge ---
@@ -128,7 +130,7 @@ export interface DiscoverHit {
 }
 
 export interface DiscoverRequest {
-  mode: 'semantic' | 'keyword' | 'deterministic';
+  mode: 'semantic' | 'keyword' | 'deterministic' | 'catalog';
   query?: string;
   scope?: string;
   filters?: {
@@ -139,7 +141,10 @@ export interface DiscoverRequest {
     project?: string;
   };
   limit?: number;
+  offset?: number;
   use_hybrid?: boolean;
+  sort_by?: 'title' | 'document_date' | 'lifecycle_status';
+  sort_order?: 'asc' | 'desc';
 }
 
 export interface DiscoverResponse {

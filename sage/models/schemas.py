@@ -10,10 +10,12 @@ from pydantic import BaseModel, BeforeValidator, Field
 from typing import Annotated
 
 from sage.models.enums import (
+    CatalogSortBy,
     EdgeType,
     PipelineStatus,
     RetrievalMode,
     RetrievalScope,
+    SortOrder,
     SourceType,
     TraversalDirection,
     UserType,
@@ -200,6 +202,8 @@ class DiscoverRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     cursor: str | None = Field(default=None, deprecated=True)
     use_hybrid: bool = True
+    sort_by: CatalogSortBy | None = None
+    sort_order: SortOrder | None = None
 
 
 class DiscoverHit(BaseModel):

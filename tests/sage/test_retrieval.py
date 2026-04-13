@@ -1,9 +1,9 @@
 """Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
-BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-079.
+BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-083.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
 retrieval (heading path prefix match), keyword-only retrieval,
-catalog mode (filter-only enumeration), pipeline/scope gating,
+catalog mode (filter-only enumeration with sort), pipeline/scope gating,
 and title indexing in chunks.
 """
 
@@ -19,9 +19,11 @@ from sage.api.errors import (
     PipelineIncompleteError,
 )
 from sage.models.enums import (
+    CatalogSortBy,
     PipelineStatus,
     RetrievalMode,
     RetrievalScope,
+    SortOrder,
     SourceType,
 )
 from sage.models.schemas import (
@@ -1404,3 +1406,115 @@ async def test_bh_079_catalog_combined_filters(
     result_ids = {h.document.id for h in response.results}
     assert result_ids == {"doc_a"}
     assert response.total_available == 1
+
+
+# ---------------------------------------------------------------------------
+# BH-080 through BH-083: Catalog sort
+# ---------------------------------------------------------------------------
+
+
+async def _seed_catalog_sort_docs(graph_store):
+    """Seed documents with varying lifecycle and dates for sort tests."""
+    docs = {
+        "sort_a": _make_doc(
+            "sort_a", lifecycle_status="active",
+            document_date="2026-03-15", doc_type="patent_draft",
+        ),
+        "sort_b": _make_doc(
+            "sort_b", lifecycle_status="superseded",
+            document_date="2026-04-01", doc_type="patent_draft",
+        ),
+        "sort_c": _make_doc(
+            "sort_c", lifecycle_status="active",
+            document_date="2026-02-10", doc_type="patent_draft",
+        ),
+        "sort_d": _make_doc(
+            "sort_d", lifecycle_status="archived",
+            document_date="2026-04-10", doc_type="patent_draft",
+        ),
+        "sort_e": _make_doc(
+            "sort_e", lifecycle_status="active",
+            document_date=None, doc_type="patent_draft",
+        ),
+    }
+    for doc in docs.values():
+        await graph_store.insert_document(doc)
+    return docs
+
+
+async def test_bh_080_catalog_default_sort_lifecycle_then_date(
+    graph_store, retrieval_service,
+):
+    """Default catalog sort: active lifecycle first, then document_date desc."""
+    await _seed_catalog_sort_docs(graph_store)
+
+    request = DiscoverRequest(mode=RetrievalMode.CATALOG, limit=10)
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    # Active docs first (sort_a, sort_c, sort_e) sorted by date desc,
+    # then non-active (sort_b, sort_d) sorted by date desc.
+    # sort_e has no date, sorts last among active.
+    assert ids[0:3] == ["sort_a", "sort_c", "sort_e"]
+    assert ids[3:5] == ["sort_d", "sort_b"]
+
+
+async def test_bh_081_catalog_sort_by_title(
+    graph_store, retrieval_service,
+):
+    """Catalog sort by title ascending."""
+    await _seed_catalog_sort_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        sort_by="title",
+        sort_order="asc",
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    titles = [h.document.title for h in response.results]
+    assert titles == sorted(titles)
+
+
+async def test_bh_082_catalog_sort_by_document_date_desc(
+    graph_store, retrieval_service,
+):
+    """Catalog sort by document_date descending. Nulls sort last."""
+    await _seed_catalog_sort_docs(graph_store)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        sort_by="document_date",
+        sort_order="desc",
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    # 2026-04-10, 2026-04-01, 2026-03-15, 2026-02-10, None
+    assert ids == ["sort_d", "sort_b", "sort_a", "sort_c", "sort_e"]
+
+
+async def test_bh_083_catalog_sort_ignored_by_other_modes(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """sort_by and sort_order are silently ignored for non-catalog modes."""
+    await _seed_catalog_sort_docs(graph_store)
+
+    # Index at least one doc so keyword mode has content to search
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "sort_a",
+        [("Intro", "Test text about patents")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="patents",
+        sort_by="document_date",
+        sort_order="desc",
+        limit=10,
+    )
+    # Should not raise
+    response = await retrieval_service.discover(request)
+    assert response.mode == RetrievalMode.KEYWORD

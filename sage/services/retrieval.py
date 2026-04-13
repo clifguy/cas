@@ -139,6 +139,8 @@ class RetrievalService:
             filters=sql_filters or None,
             limit=request.limit,
             offset=request.offset,
+            sort_by=request.sort_by,
+            sort_order=request.sort_order,
         )
 
         hits = [
