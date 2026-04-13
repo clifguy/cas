@@ -22,10 +22,10 @@ export default function Ingest() {
   // Step 3 state
   const [progress, setProgress] = useState({ current: 0, total: 0, filename: '', stage: '', status: '' });
   const [log, setLog] = useState<{ filename: string; status: string; error?: string }[]>([]);
-  const abortRef = useRef<AbortController | null>(null);
-
-  // Step 4 state
+  const [runningCounts, setRunningCounts] = useState({ completed: 0, failed: 0 });
   const [summary, setSummary] = useState<IngestSummaryEvent | null>(null);
+  const [ingestionDone, setIngestionDone] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   if (!vault) return <div>Vault not found.</div>;
 
@@ -55,7 +55,9 @@ export default function Ingest() {
     const selected = files.filter(f => f.selected);
     setProgress({ current: 0, total: selected.length, filename: '', stage: '', status: '' });
     setLog([]);
+    setRunningCounts({ completed: 0, failed: 0 });
     setSummary(null);
+    setIngestionDone(false);
     setStep(3);
 
     const controller = new AbortController();
@@ -86,6 +88,10 @@ export default function Ingest() {
               status: pe.status,
               error: pe.error,
             }]);
+            setRunningCounts(prev => ({
+              completed: prev.completed + (pe.status === 'completed' ? 1 : 0),
+              failed: prev.failed + (pe.status === 'failed' ? 1 : 0),
+            }));
           } else if (pe.status === 'started') {
             setProgress(prev => ({
               ...prev,
@@ -96,24 +102,21 @@ export default function Ingest() {
           }
         } else if (event.event_type === 'summary') {
           setSummary(event as IngestSummaryEvent);
-          setStep(4);
+          setIngestionDone(true);
         }
       }, controller.signal, inferEdges);
 
-      // Stream ended normally. If the summary event already advanced us to
-      // step 4, this is a no-op. If the stream closed without emitting a
-      // summary (unexpected), advance so the user isn't stuck on step 3.
-      setSummary(prev => {
-        if (!prev) setStep(4);
-        return prev;
-      });
+      // Stream ended normally. If the summary event already set ingestionDone,
+      // this is a no-op. If the stream closed without emitting a summary
+      // (unexpected), mark done so the user isn't stuck without action buttons.
+      setIngestionDone(true);
     } catch (err) {
       if (controller.signal.aborted) {
-        // Cancelled by user -- advance to results with whatever summary we have
-        setStep(4);
+        // Cancelled by user -- mark done with whatever summary we have
+        setIngestionDone(true);
       } else {
         setLog(prev => [...prev, { filename: 'ERROR', status: 'failed', error: String(err) }]);
-        setStep(4);
+        setIngestionDone(true);
       }
     }
   }
@@ -136,7 +139,9 @@ export default function Ingest() {
     setFiles([]);
     setScanWarnings([]);
     setLog([]);
+    setRunningCounts({ completed: 0, failed: 0 });
     setSummary(null);
+    setIngestionDone(false);
   }
 
   return (
@@ -145,7 +150,7 @@ export default function Ingest() {
 
       {/* Step indicator */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
-        {['Directory Input', 'Scan Preview', 'Ingestion Progress', 'Results Summary'].map((label, i) => (
+        {['Directory Input', 'Scan Preview', 'Ingestion'].map((label, i) => (
           <div key={i} style={{
             padding: '4px 12px',
             borderRadius: 4,
@@ -260,19 +265,19 @@ export default function Ingest() {
         </div>
       )}
 
-      {/* Step 3: Ingestion Progress */}
+      {/* Step 3: Ingestion Progress + Running Summary */}
       {step === 3 && (
         <div>
           <div style={{ marginBottom: 12 }}>
-            <strong>{progress.filename || 'Starting...'}</strong>
-            {progress.stage && <> - {progress.stage}</>}
+            <strong>{ingestionDone ? 'Ingestion complete' : (progress.filename || 'Starting...')}</strong>
+            {!ingestionDone && progress.stage && <> - {progress.stage}</>}
           </div>
           <div style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>
             {progress.current} of {progress.total} files
           </div>
           <div style={{ background: '#eee', borderRadius: 4, height: 8, marginBottom: 16 }}>
             <div style={{
-              background: '#333',
+              background: ingestionDone ? '#2e7d32' : '#333',
               borderRadius: 4,
               height: 8,
               width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%`,
@@ -296,68 +301,84 @@ export default function Ingest() {
               </div>
             ))}
           </div>
-          <button onClick={handleCancel} style={{ ...btnStyle, marginTop: 12, background: '#c62828', color: '#fff' }}>
-            Cancel
-          </button>
-        </div>
-      )}
-
-      {/* Step 4: Results Summary */}
-      {step === 4 && (
-        <div>
-          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Ingestion Complete</h2>
-          {summary ? (
-            <table style={{ borderCollapse: 'collapse' }}>
-              <tbody>
-                <tr>
-                  <td style={tdStyle}>Documents created</td>
-                  <td style={tdStyle}>{summary.documents_created.new + summary.documents_created.new_version} ({summary.documents_created.new} new, {summary.documents_created.new_version} new version)</td>
-                </tr>
-                <tr>
-                  <td style={tdStyle}>Metadata pending</td>
-                  <td style={tdStyle}>{summary.metadata_pending} documents</td>
-                </tr>
-                <tr>
-                  <td style={tdStyle}>Edges (Tier 1 auto-created)</td>
-                  <td style={tdStyle}>
-                    {Object.keys(summary.edges_created).length > 0
-                      ? Object.entries(summary.edges_created).map(([type, count]) => `${count} ${type}`).join(', ')
-                      : 'None'}
-                  </td>
-                </tr>
-                <tr>
-                  <td style={tdStyle}>Edges (Tier 2 staged)</td>
-                  <td style={tdStyle}>
-                    {Object.keys(summary.edges_staged).length > 0
-                      ? Object.entries(summary.edges_staged).map(([type, count]) => `${count} ${type}`).join(', ')
-                      : 'None'}
-                    {summary.edges_dropped > 0 && <span style={{ color: '#f57f17' }}> ({summary.edges_dropped} dropped)</span>}
-                  </td>
-                </tr>
-                <tr>
-                  <td style={tdStyle}>Abstracts</td>
-                  <td style={tdStyle}>{summary.abstracts_generated} generated, {summary.abstracts_deferred} deferred</td>
-                </tr>
-                <tr>
-                  <td style={tdStyle}>Errors</td>
-                  <td style={tdStyle}>{summary.error_count}</td>
-                </tr>
-              </tbody>
-            </table>
-          ) : (
-            <p style={{ color: '#666' }}>Ingestion was cancelled or ended without a summary.</p>
-          )}
-          <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-            <Link to="/review?tab=metadata" style={{ ...btnStyle, textDecoration: 'none', textAlign: 'center' }}>
-              Review Metadata
-            </Link>
-            <Link to="/review?tab=edges" style={{ ...btnStyle, textDecoration: 'none', textAlign: 'center' }}>
-              Review Edges
-            </Link>
-            <button onClick={handleReset} style={{ ...btnStyle, background: '#eee', color: '#333' }}>
-              Ingest More
+          {!ingestionDone && (
+            <button onClick={handleCancel} style={{ ...btnStyle, marginTop: 12, background: '#c62828', color: '#fff' }}>
+              Cancel
             </button>
-          </div>
+          )}
+
+          {/* Running / Final Summary */}
+          {(progress.current > 0 || summary) && (
+            <div style={{ marginTop: 20 }}>
+              <h3 style={{ fontSize: 14, marginBottom: 8, color: ingestionDone ? '#333' : '#666' }}>
+                {ingestionDone ? 'Results Summary' : 'Running Summary'}
+              </h3>
+              <table style={{ borderCollapse: 'collapse' }}>
+                <tbody>
+                  <tr>
+                    <td style={tdStyle}>Documents created</td>
+                    <td style={tdStyle}>
+                      {summary
+                        ? <>{summary.documents_created.new + summary.documents_created.new_version} ({summary.documents_created.new} new, {summary.documents_created.new_version} new version)</>
+                        : <>{runningCounts.completed}</>}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={tdStyle}>Metadata pending</td>
+                    <td style={tdStyle}>{summary ? `${summary.metadata_pending} documents` : '-'}</td>
+                  </tr>
+                  <tr>
+                    <td style={tdStyle}>Edges (Tier 1 auto-created)</td>
+                    <td style={tdStyle}>
+                      {summary
+                        ? (Object.keys(summary.edges_created).length > 0
+                            ? Object.entries(summary.edges_created).map(([type, count]) => `${count} ${type}`).join(', ')
+                            : 'None')
+                        : '-'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={tdStyle}>Edges (Tier 2 staged)</td>
+                    <td style={tdStyle}>
+                      {summary
+                        ? (<>
+                            {Object.keys(summary.edges_staged).length > 0
+                              ? Object.entries(summary.edges_staged).map(([type, count]) => `${count} ${type}`).join(', ')
+                              : 'None'}
+                            {summary.edges_dropped > 0 && <span style={{ color: '#f57f17' }}> ({summary.edges_dropped} dropped)</span>}
+                          </>)
+                        : '-'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={tdStyle}>Abstracts</td>
+                    <td style={tdStyle}>
+                      {summary ? `${summary.abstracts_generated} generated, ${summary.abstracts_deferred} deferred` : '-'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={tdStyle}>Errors</td>
+                    <td style={tdStyle}>{summary ? summary.error_count : runningCounts.failed}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Action buttons after completion */}
+          {ingestionDone && (
+            <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+              <Link to="/review?tab=metadata" style={{ ...btnStyle, textDecoration: 'none', textAlign: 'center' }}>
+                Review Metadata
+              </Link>
+              <Link to="/review?tab=edges" style={{ ...btnStyle, textDecoration: 'none', textAlign: 'center' }}>
+                Review Edges
+              </Link>
+              <button onClick={handleReset} style={{ ...btnStyle, background: '#eee', color: '#333' }}>
+                Ingest More
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
