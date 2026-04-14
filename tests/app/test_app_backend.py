@@ -55,10 +55,12 @@ def _pim_metadata_extraction():
             "known_code_patterns": [
                 "^[A-Z][A-Z0-9]{1,7}$",
                 "^[A-Z]+-\\d+$",
+                "^PVMaster$",
+                "^TDMaster$",
             ],
             "keyword_to_doc_type": [
                 {"keyword": "Checklist", "doc_type": "checklist"},
-                {"keyword": "Work-Plan", "doc_type": "work_plan"},
+                {"keyword": "Plan", "doc_type": "work_plan"},
                 {"keyword": "Session-Context", "doc_type": "session_context"},
                 {"keyword": "Template", "doc_type": "template"},
             ],
@@ -69,6 +71,7 @@ def _pim_metadata_extraction():
                 {"code": "REF", "doc_type": "reference_document"},
                 {"code": "PVMaster", "doc_type": "patent_draft"},
                 {"code": "PV", "doc_type": "patent_draft"},
+                {"code": "TDMaster", "doc_type": "technical_disclosure"},
                 {"code": "TD", "doc_type": "technical_disclosure"},
             ],
         },
@@ -279,6 +282,28 @@ class TestFilenameParserDocType:
         # UNKNOWN matches a code pattern but has no code_to_doc_type mapping
         assert "UNKNOWN" in result.codes
         assert result.doc_type is None
+
+    def test_keyword_word_boundary_no_substring(self):
+        """Keyword 'Plan' must not substring-match inside 'PlanPortability'."""
+        p = self._parser()
+        result = p.parse("2026-01-12_PIM_TD11_PlanPortability_v1_4")
+        assert result.doc_type == "technical_disclosure"  # code TD, not keyword Plan
+        assert "TD11" in result.codes
+        assert result.title == "PlanPortability"
+
+    def test_keyword_word_boundary_standalone_matches(self):
+        """Keyword 'Plan' matches when it appears as a standalone word."""
+        p = self._parser()
+        result = p.parse("2026-01-12_PIM_Work-Plan_v2")
+        assert result.doc_type == "work_plan"
+
+    def test_tdmaster_code_recognized(self):
+        """TDMaster is recognized as a code and resolves to technical_disclosure."""
+        p = self._parser()
+        result = p.parse("2026-01-07_PIM_TDMaster_PIM-Integration_v1_1")
+        assert "TDMaster" in result.codes
+        assert result.title == "PIM-Integration"
+        assert result.doc_type == "technical_disclosure"
 
 
 # ---------------------------------------------------------------------------

@@ -214,6 +214,18 @@ class FilenameParser:
             return False
         return adapter in allowed
 
+    @staticmethod
+    def _keyword_matches(keyword: str, title: str) -> bool:
+        """Word-boundary keyword match against a title.
+
+        Matches the keyword as a whole word, using underscores, hyphens,
+        and string boundaries as delimiters.  This prevents substring
+        matches inside compound words (e.g. "Plan" must not match
+        "PlanPortability").
+        """
+        pattern = r"(?:^|[_\-])" + re.escape(keyword) + r"(?:$|[_\-])"
+        return re.search(pattern, title, re.IGNORECASE) is not None
+
     def _resolve_doc_type(
         self, title: str, codes: list[str], adapter: str | None = None
     ) -> str | None:
@@ -223,7 +235,7 @@ class FilenameParser:
             keyword = rule.get("keyword", "")
             segment_name = rule.get("segment", "title")
             if segment_name == "title" and keyword:
-                if keyword.lower() in title.lower():
+                if self._keyword_matches(keyword, title):
                     candidate = rule["doc_type"]
                     if self._is_allowed_doc_type(candidate, adapter):
                         return candidate
