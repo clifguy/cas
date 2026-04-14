@@ -150,7 +150,7 @@ class TraverseRequest(BaseModel):
     start_id: str
     edge_type: EdgeType | None = None
     direction: TraversalDirection = TraversalDirection.OUTBOUND
-    depth: int = Field(default=3, ge=1, le=50)
+    depth: int = Field(default=3, ge=1, le=1000)
 
 
 class TraversalNode(BaseModel):

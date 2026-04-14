@@ -272,7 +272,7 @@ def register_sage_tools(
             start_id: Starting document identifier.
             edge_type: Filter by edge type (optional).
             direction: Traversal direction (outbound, inbound, both). Default: outbound.
-            depth: Maximum traversal depth (1-50). Default: 3.
+            depth: Maximum traversal depth (1-1000). Default: 3.
         """
         try:
             v = get_vault(vault_id)
