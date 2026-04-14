@@ -126,10 +126,14 @@ class EdgeInferenceEngine:
                 else (0, 0, 0),
             )
 
-            # Linear chain: each version supersedes its immediate predecessor
+            # Linear chain: each version supersedes its immediate predecessor.
+            # Only plan edges where at least one side is new -- existing-to-
+            # existing edges are already in the graph.
             for i in range(1, len(sorted_group)):
                 newer = sorted_group[i]
                 older = sorted_group[i - 1]
+                if newer.is_existing and older.is_existing:
+                    continue
                 newer_label = newer.parsed.version or "(original)"
                 older_label = older.parsed.version or "(original)"
                 edges.append(PlannedEdge(
@@ -167,11 +171,14 @@ class EdgeInferenceEngine:
             for code in item.parsed.codes:
                 code_to_content.setdefault(code.upper(), []).append(item)
 
-        # For each workflow item, find content items sharing a code
+        # For each workflow item, find content items sharing a code.
+        # Only plan edges where at least one side is new.
         seen: set[tuple[str, str]] = set()
         for wf_item in workflow_items:
             for code in wf_item.parsed.codes:
                 for ct_item in code_to_content.get(code.upper(), []):
+                    if wf_item.is_existing and ct_item.is_existing:
+                        continue
                     pair = (wf_item.ref, ct_item.ref)
                     if pair in seen:
                         continue

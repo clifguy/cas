@@ -175,12 +175,16 @@ class FilenameParser:
             else:
                 still_remaining.append(seg)
 
-        # Whatever remains is the title
-        title = (
-            self._separator.join(still_remaining)
-            if still_remaining
-            else filename_stem
-        )
+        # Whatever remains is the title.  When no title segments remain
+        # but codes were extracted, use the first code as the title (e.g.
+        # "2026-01-02_PIM_TD04_v1_1" -> title "TD04").  Fall back to the
+        # raw filename stem only when nothing was extracted at all.
+        if still_remaining:
+            title = self._separator.join(still_remaining)
+        elif codes:
+            title = codes[0]
+        else:
+            title = filename_stem
 
         # Resolve doc_type
         doc_type = self._resolve_doc_type(title, codes, adapter)

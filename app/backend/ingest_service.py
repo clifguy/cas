@@ -217,10 +217,14 @@ class BatchIngestService:
                 parsed=parsed,
             ))
 
-        # Fetch existing vault documents
+        # Fetch existing vault documents (active only -- archived/completed
+        # documents already have their place in the graph and should not
+        # participate in automatic edge inference).
         existing_items: list[InferenceItem] = []
         all_docs = await vault_services.graph_store.list_all_documents()
         for doc in all_docs:
+            if doc.lifecycle_status != "active":
+                continue
             existing_items.append(InferenceItem(
                 ref=doc.id,
                 is_existing=True,
