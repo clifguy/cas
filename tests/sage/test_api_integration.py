@@ -10,6 +10,11 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sage.adapters.stubs import (
+    StubAbstractionProvider,
+    StubContentStore,
+    StubEmbeddingProvider,
+)
 from sage.app import create_app, _initialize_services
 from sage.config import VaultConfig
 
@@ -21,7 +26,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     app = create_app(config=config)
 
     # Manually initialize services (lifespan not triggered by ASGITransport)
-    await _initialize_services(app, config)
+    await _initialize_services(
+        app, config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
 
     # Create a test source file
     sources = tmp_vault_dir / "sources"

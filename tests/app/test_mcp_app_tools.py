@@ -12,6 +12,11 @@ from pathlib import Path
 
 import pytest
 
+from sage.adapters.stubs import (
+    StubAbstractionProvider,
+    StubContentStore,
+    StubEmbeddingProvider,
+)
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
@@ -113,8 +118,18 @@ async def two_vaults(tmp_path):
     c2 = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "second_vault", "Second Vault")
     )
-    s1 = await initialize_services(c1)
-    s2 = await initialize_services(c2)
+    s1 = await initialize_services(
+        c1,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
+    s2 = await initialize_services(
+        c2,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
     _vaults["test_vault"] = s1
     _vaults["second_vault"] = s2
 
@@ -133,7 +148,11 @@ async def single_vault(tmp_path):
     config = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "test_vault", "Test Vault")
     )
-    services = await initialize_services(config)
+    services = await initialize_services(
+        config,
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
     _vaults["test_vault"] = services
 
     # Create test source files

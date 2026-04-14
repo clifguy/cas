@@ -18,6 +18,11 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sage.adapters.stubs import (
+    StubAbstractionProvider,
+    StubContentStore,
+    StubEmbeddingProvider,
+)
 from sage.app import create_app, _initialize_services
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
@@ -154,7 +159,12 @@ async def multi_vault_app(tmp_path):
     from sage.mcp_init import initialize_services
 
     for cfg in [config1, config2]:
-        services = await initialize_services(cfg)
+        services = await initialize_services(
+            cfg,
+            content_store=StubContentStore(),
+            embedding_provider=StubEmbeddingProvider(),
+            abstraction_provider=StubAbstractionProvider(),
+        )
         app.state.vault_registry[cfg.vault.id] = services
 
     yield app
@@ -178,7 +188,12 @@ async def single_vault_app(tmp_path):
         _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
     )
     app = create_app(config=config)
-    await _initialize_services(app, config)
+    await _initialize_services(
+        app, config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
 
     # Create a source file for ingestion tests
     sources = Path(config.vault.storage_root)

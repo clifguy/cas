@@ -15,6 +15,11 @@ from pathlib import Path
 
 import pytest
 
+from sage.adapters.stubs import (
+    StubAbstractionProvider,
+    StubContentStore,
+    StubEmbeddingProvider,
+)
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
@@ -40,7 +45,12 @@ from sage.mcp_server import (
 async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
     """Initialize SAGE services and register them in the MCP vault registry."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
-    services = await initialize_services(config)
+    services = await initialize_services(
+        config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
     _vaults["test_vault"] = services
 
     # Create a test source file

@@ -30,23 +30,26 @@ from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
 
 
-async def _initialize_vault(app: FastAPI, config: VaultConfig) -> None:
+async def _initialize_vault(app: FastAPI, config: VaultConfig, **overrides) -> None:
     """Initialize services for one vault and add to the registry."""
-    services = await initialize_services(config)
+    services = await initialize_services(config, **overrides)
     app.state.vault_registry[config.vault.id] = services
 
 
-async def _initialize_services(app: FastAPI, config: VaultConfig) -> None:
+async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -> None:
     """Initialize a single vault (backward compat for tests).
 
     Sets up the vault registry and populates it with one vault,
     then sets legacy single-vault attributes on app.state for
     existing test compatibility.
+
+    Keyword arguments are forwarded to initialize_services() to allow
+    provider overrides (content_store, embedding_provider, abstraction_provider).
     """
     if not hasattr(app.state, "vault_registry"):
         app.state.vault_registry = {}
 
-    services = await initialize_services(config)
+    services = await initialize_services(config, **overrides)
     app.state.vault_registry[config.vault.id] = services
 
     # Legacy single-vault attributes (used by existing tests)

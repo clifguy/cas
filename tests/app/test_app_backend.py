@@ -26,6 +26,11 @@ from app.backend.edge_inference import (
     PlannedEdge,
     resolve_and_execute,
 )
+from sage.adapters.stubs import (
+    StubAbstractionProvider,
+    StubContentStore,
+    StubEmbeddingProvider,
+)
 from sage.app import create_app, _initialize_services
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
@@ -930,7 +935,12 @@ async def scan_app(tmp_path):
         _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
     )
     app = create_app(config=config)
-    await _initialize_services(app, config)
+    await _initialize_services(
+        app, config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
 
     yield app, config
 
@@ -1063,7 +1073,12 @@ async def ingest_app(tmp_path):
         _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
     )
     app = create_app(config=config)
-    await _initialize_services(app, config)
+    await _initialize_services(
+        app, config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
 
     yield app, config
 

@@ -1,10 +1,17 @@
 """Shared SAGE service initialization for FastAPI and MCP entry points."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.embedding_nomic import NomicEmbeddingProvider
+from sage.adapters.interfaces import (
+    AbstractionProvider,
+    ContentStore,
+    EmbeddingProvider,
+)
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import VaultConfig, load_vault_config
 from sage.models.enums import SourceType
@@ -38,11 +45,20 @@ class SAGEServices:
     utilities_service: UtilitiesService
 
 
-async def initialize_services(config: VaultConfig) -> SAGEServices:
+async def initialize_services(
+    config: VaultConfig,
+    *,
+    content_store: ContentStore | None = None,
+    embedding_provider: EmbeddingProvider | None = None,
+    abstraction_provider: AbstractionProvider | None = None,
+) -> SAGEServices:
     """Initialize all SAGE services for a vault configuration.
 
     Args:
         config: Loaded and validated vault configuration.
+        content_store: Optional override (default: LanceDBContentStore).
+        embedding_provider: Optional override (default: NomicEmbeddingProvider).
+        abstraction_provider: Optional override (default: from config).
 
     Returns:
         SAGEServices dataclass with all services ready to use.
@@ -55,18 +71,23 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
 
     lock_manager = DocumentLockManager()
 
-    # Production adapters for content store and embeddings
-    content_store = LanceDBContentStore(brain_root)
-    embedding_provider = NomicEmbeddingProvider()
+    # Content store: injected or production LanceDB
+    if content_store is None:
+        content_store = LanceDBContentStore(brain_root)
 
-    # Abstraction: Qwen3 via MLX when enabled, stub otherwise
-    if config.abstraction.enabled and config.abstraction.model:
-        from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
-        abstraction_provider = Qwen3AbstractionProvider(
-            model_id=config.abstraction.model,
-        )
-    else:
-        abstraction_provider = StubAbstractionProvider()
+    # Embedding provider: injected or production Nomic
+    if embedding_provider is None:
+        embedding_provider = NomicEmbeddingProvider()
+
+    # Abstraction provider: injected, or Qwen3/stub from config
+    if abstraction_provider is None:
+        if config.abstraction.enabled and config.abstraction.model:
+            from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+            abstraction_provider = Qwen3AbstractionProvider(
+                model_id=config.abstraction.model,
+            )
+        else:
+            abstraction_provider = StubAbstractionProvider()
 
     # Source adapters
     source_adapters = {
