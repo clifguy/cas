@@ -499,6 +499,10 @@ class TestVersionChain:
         assert normalize_version("v8_4_1") == (8, 4, 1)
         assert normalize_version("v1.3") == (1, 3, 0)
         assert normalize_version("v12") == (12, 0, 0)
+        # Alpha suffixes stripped from version parts
+        assert normalize_version("v6a") == (6, 0, 0)
+        assert normalize_version("v3_1b") == (3, 1, 0)
+        assert normalize_version("v2a.4") == (2, 4, 0)
 
     def test_ei_014_linear_chain(self):
         """Linear chain: each version supersedes immediate predecessor."""

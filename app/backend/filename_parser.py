@@ -46,11 +46,15 @@ _SEGMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 def normalize_version(version_str: str) -> tuple[int, int, int]:
     """Normalize a version string to a (major, minor, patch) tuple.
 
-    Accepts v7, v10_2, v8_4_1, v1.3 etc.  Missing components default to 0.
+    Accepts v7, v10_2, v8_4_1, v1.3, v6a etc.  Missing components default
+    to 0.  Trailing alpha suffixes on parts are stripped (e.g. '6a' -> 6).
     """
     stripped = version_str.lstrip("vV")
     parts = re.split(r"[._]", stripped)
-    ints = [int(p) for p in parts[:3]]
+    ints: list[int] = []
+    for p in parts[:3]:
+        m = re.match(r"(\d+)", p)
+        ints.append(int(m.group(1)) if m else 0)
     while len(ints) < 3:
         ints.append(0)
     return (ints[0], ints[1], ints[2])
