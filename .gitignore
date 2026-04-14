@@ -20,3 +20,6 @@ htmlcov/
 # Environment
 .env
 CLAUDE.local.md
+
+# Generated data files
+repo_file_inventory.xlsx
