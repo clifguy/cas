@@ -12,7 +12,9 @@ import pytest
 
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-from sage.mcp_server import _vaults, app_batch_ingest, sage_ingest
+import sage.mcp_server as _mcp
+
+from sage.mcp_server import app_batch_ingest, sage_ingest
 from sage.models.schemas import DiscoverRequest, DiscoverResponse, IngestRequest
 from sage.models.enums import SourceType
 
@@ -90,7 +92,7 @@ async def vault(tmp_path):
     """Register a single vault in the MCP vault registry."""
     config = VaultConfig.model_validate(_make_vault_config(tmp_path))
     services = await initialize_services(config)
-    _vaults["test_vault"] = services
+    _mcp._vaults["test_vault"] = services
 
     # Create test files
     sources = Path(config.vault.storage_root)
@@ -102,7 +104,7 @@ async def vault(tmp_path):
 
     await asyncio.sleep(0.3)
     await services.graph_store.close()
-    _vaults.pop("test_vault", None)
+    _mcp._vaults.pop("test_vault", None)
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +171,13 @@ class TestModuleLevelImports:
     def test_cln_003_import_succeeds(self):
         """sage.mcp_server imports without circular import errors."""
         import importlib
-        import sage.mcp_server
-        importlib.reload(sage.mcp_server)
+        import sage.mcp_server as mod
+        original_vaults = mod._vaults
+        importlib.reload(mod)
+        # Restore the original _vaults dict so that other test modules
+        # which imported it via `from sage.mcp_server import _vaults`
+        # still share the same object as _get_vault() reads.
+        mod._vaults = original_vaults
         # If we get here, no ImportError occurred
 
     def test_cln_003_error_classes_at_module_level(self):

@@ -22,8 +22,9 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
+import sage.mcp_server as _mcp
+
 from sage.mcp_server import (
-    _vaults,
     sage_check_preconditions,
     sage_discover,
     sage_export_projection,
@@ -51,7 +52,7 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
     )
-    _vaults["test_vault"] = services
+    _mcp._vaults["test_vault"] = services
 
     # Create a test source file
     sources = tmp_vault_dir / "sources"
@@ -64,7 +65,7 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
 
     await asyncio.sleep(0.5)
     await services.graph_store.close()
-    _vaults.pop("test_vault", None)
+    _mcp._vaults.pop("test_vault", None)
 
 
 def _parse(result: str) -> dict:
@@ -394,14 +395,14 @@ async def test_reload_vault_reinitializes_services(vault_services):
     await sage_ingest("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.3)
 
-    old_services = _vaults["test_vault"]
+    old_services = _mcp._vaults["test_vault"]
     result = _parse(await sage_reload_vault("test_vault"))
 
     assert result["vault_id"] == "test_vault"
     assert result["reloaded"] is True
     assert result["document_count"] >= 1
     # Services instance should be replaced
-    assert _vaults["test_vault"] is not old_services
+    assert _mcp._vaults["test_vault"] is not old_services
 
 
 async def test_reload_vault_closes_old_graph_store(vault_services):

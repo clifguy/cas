@@ -19,8 +19,9 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
+import sage.mcp_server as _mcp
+
 from sage.mcp_server import (
-    _vaults,
     sage_list_vaults,
     sage_vault_stats,
     sage_hash_check,
@@ -130,16 +131,16 @@ async def two_vaults(tmp_path):
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
     )
-    _vaults["test_vault"] = s1
-    _vaults["second_vault"] = s2
+    _mcp._vaults["test_vault"] = s1
+    _mcp._vaults["second_vault"] = s2
 
     yield s1, s2
 
     await asyncio.sleep(0.1)
     await s1.graph_store.close()
     await s2.graph_store.close()
-    _vaults.pop("test_vault", None)
-    _vaults.pop("second_vault", None)
+    _mcp._vaults.pop("test_vault", None)
+    _mcp._vaults.pop("second_vault", None)
 
 
 @pytest.fixture
@@ -153,7 +154,7 @@ async def single_vault(tmp_path):
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
     )
-    _vaults["test_vault"] = services
+    _mcp._vaults["test_vault"] = services
 
     # Create test source files
     sources = Path(config.vault.storage_root)
@@ -164,17 +165,17 @@ async def single_vault(tmp_path):
 
     await asyncio.sleep(0.3)
     await services.graph_store.close()
-    _vaults.pop("test_vault", None)
+    _mcp._vaults.pop("test_vault", None)
 
 
 @pytest.fixture
 async def empty_registry():
     """Empty vault registry (saves/restores to avoid cross-module interference)."""
-    saved = dict(_vaults)
-    _vaults.clear()
+    saved = dict(_mcp._vaults)
+    _mcp._vaults.clear()
     yield
-    _vaults.clear()
-    _vaults.update(saved)
+    _mcp._vaults.clear()
+    _mcp._vaults.update(saved)
 
 
 # ---------------------------------------------------------------------------
