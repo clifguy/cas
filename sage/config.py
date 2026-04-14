@@ -45,7 +45,9 @@ class LifecycleConfig(BaseModel):
 class AbstractionConfig(BaseModel):
     enabled: bool = True
     model: str | None = None
-    max_abstract_tokens: int = 500
+    max_abstract_tokens: int = 1500
+    base_abstract_tokens: int = 150
+    tokens_per_word: float = 0.02
 
 
 class RetrievalHealthConfig(BaseModel):

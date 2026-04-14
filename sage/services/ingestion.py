@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.adapters.interfaces import AbstractionProvider, ContentStore, Chunk, EmbeddingProvider
 from sage.api.errors import AdapterNotFoundError, DuplicateContentError, SourceFileNotFoundError
 from sage.config import VaultConfig
@@ -316,10 +317,12 @@ class IngestionService:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
-        max_tokens = self._config.abstraction.max_abstract_tokens
-        abstract = await self._abstraction.generate_abstract(
+        word_count = len(projection.text.split())
+        max_tokens = compute_max_tokens(word_count, self._config.abstraction)
+        raw_abstract = await self._abstraction.generate_abstract(
             projection.text, max_tokens
         )
+        abstract = trim_to_sentence_boundary(raw_abstract)
 
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
