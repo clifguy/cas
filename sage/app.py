@@ -84,7 +84,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.vault_registry = {}
+        # Use the MCP server's _vaults dict as the canonical registry so
+        # both the REST API and MCP SSE transport share the same services.
+        from sage.mcp_server import _vaults
+
+        app.state.vault_registry = _vaults
 
         if config_paths is not None:
             for cp in config_paths:
@@ -106,6 +110,7 @@ def create_app(
 
         for services in app.state.vault_registry.values():
             await services.graph_store.close()
+        app.state.vault_registry.clear()
 
     app = FastAPI(
         title="SAGE Core API",
@@ -133,5 +138,9 @@ def create_app(
 
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)
+
+    # Mount MCP server (SSE transport) for external clients (e.g. Cowork)
+    from sage.mcp_server import mount_on_app
+    mount_on_app(app)
 
     return app

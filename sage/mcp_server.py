@@ -69,16 +69,23 @@ _config_paths: list[Path] = []
 
 @asynccontextmanager
 async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
-    for config_path in _config_paths:
-        config = load_vault_config(config_path)
-        services = await initialize_services(config)
-        _vaults[config.vault.id] = services
+    # When mounted on FastAPI, _config_paths is empty and _vaults is
+    # pre-populated by the parent app's lifespan.  Skip init/teardown
+    # so the FastAPI lifespan owns the vault lifecycle.
+    standalone = bool(_config_paths)
+
+    if standalone:
+        for config_path in _config_paths:
+            config = load_vault_config(config_path)
+            services = await initialize_services(config)
+            _vaults[config.vault.id] = services
 
     yield
 
-    for services in _vaults.values():
-        await services.graph_store.close()
-    _vaults.clear()
+    if standalone:
+        for services in _vaults.values():
+            await services.graph_store.close()
+        _vaults.clear()
 
 
 mcp = FastMCP("SAGE", lifespan=_lifespan)
@@ -162,6 +169,24 @@ sage_pending_metadata = _sage_tools["sage_pending_metadata"]
 
 app_scan_directory = _app_tools["app_scan_directory"]
 app_batch_ingest = _app_tools["app_batch_ingest"]
+
+# ---------------------------------------------------------------------------
+# Mounting on FastAPI (shared-process mode)
+# ---------------------------------------------------------------------------
+
+
+def mount_on_app(
+    app: "FastAPI",  # noqa: F821 -- imported only at call site
+    path: str = "/mcp",
+) -> None:
+    """Mount the MCP server on an existing FastAPI application.
+
+    The caller's lifespan should populate the module-level ``_vaults``
+    dict directly (via ``sage.mcp_server._vaults``) so the MCP tools
+    and the FastAPI routes share the same SAGEServices instances.
+    """
+    app.mount(path, mcp.sse_app())
+
 
 # ---------------------------------------------------------------------------
 # Entry point
