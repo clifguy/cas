@@ -251,7 +251,7 @@ async def resolve_and_execute(
             result.edges_dropped += 1
             continue
 
-        # Lifecycle side effect: transition target to "superseded"
+        # Lifecycle side effect: transition target to "archived"
         if planned.tier == 1 and planned.edge_type == EdgeType.SUPERSEDES:
             try:
                 target_doc = await graph_store.get_document(target_id)
@@ -259,12 +259,12 @@ async def resolve_and_execute(
                     now = datetime.now(timezone.utc).isoformat()
                     await graph_store.update_document(
                         target_id,
-                        {"lifecycle_status": "superseded", "updated_at": now},
+                        {"lifecycle_status": "archived", "updated_at": now},
                     )
             except Exception:
                 logger.warning(
                     "Supersedes edge created but failed to transition "
-                    "target %s to superseded",
+                    "target %s to archived",
                     target_id,
                 )
 

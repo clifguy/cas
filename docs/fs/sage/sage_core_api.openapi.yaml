@@ -115,8 +115,6 @@ paths:
 
         - active → supersede, complete, archive
 
-        - superseded → archive
-
         - completed → archive
 
         - archived → reactivate
@@ -478,7 +476,7 @@ paths:
         Checks all depends_on edges originating from the specified function
         document. For each dependency, verifies that the target document
         exists and is in a valid lifecycle state (active or completed, not
-        superseded or archived).
+        archived).
 
 
         Returns an overall pass/fail and individual dependency results.
@@ -777,7 +775,7 @@ components:
 
     LifecycleStatus:
       type: string
-      enum: [active, superseded, completed, archived]
+      enum: [active, completed, archived]
       description: >-
         Base lifecycle states. Vaults may define additional domain-specific
         states (e.g., "filed" in PIM Health). The base set is always

@@ -188,17 +188,17 @@ async def test_bh_034_completed_satisfies_dependency(graph_store, graph_ops_serv
 
 
 # ---------------------------------------------------------------------------
-# BH-035: check_preconditions -- superseded does not satisfy
+# BH-035: check_preconditions -- archived does not satisfy
 # ---------------------------------------------------------------------------
 
-async def test_bh_035_superseded_does_not_satisfy(graph_store, graph_ops_service):
+async def test_bh_035_archived_does_not_satisfy(graph_store, graph_ops_service):
     doc_function = _make_doc("doc_function")
-    doc_dep = _make_doc("doc_dep", lifecycle_status="superseded")
+    doc_dep = _make_doc("doc_dep", lifecycle_status="archived")
     await graph_store.insert_document(doc_function)
     await graph_store.insert_document(doc_dep)
 
     edge = Edge(
-        id="edge_dep_superseded",
+        id="edge_dep_archived",
         source_id="doc_function",
         target_id="doc_dep",
         edge_type=EdgeType.DEPENDS_ON,
@@ -208,7 +208,7 @@ async def test_bh_035_superseded_does_not_satisfy(graph_store, graph_ops_service
 
     result = await graph_ops_service.check_preconditions("doc_function")
     assert result.satisfied is False
-    assert result.checks[0].actual == "superseded"
+    assert result.checks[0].actual == "archived"
 
 
 # ---------------------------------------------------------------------------

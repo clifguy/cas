@@ -339,8 +339,6 @@ doc_types:
 states:
   - value: active
     label: "Active"
-  - value: superseded
-    label: "Superseded"
   - value: completed
     label: "Completed"
   - value: archived
@@ -356,7 +354,7 @@ transitions:
     to_state: active
   - from_state: active
     action: supersede
-    to_state: superseded
+    to_state: archived
     creates_edge: supersedes
   - from_state: active
     action: complete
@@ -983,7 +981,7 @@ entries:
 **Input:** Scan all paths for `delete` method.
 
 **Expected:** Zero DELETE methods found.
-**Rationale:** SAGE enforces a no-delete invariant; documents are superseded or archived, never destroyed.
+**Rationale:** SAGE enforces a no-delete invariant; documents are archived, never destroyed.
 
 ### TEST-SAGE-API-004: All paths are vault-scoped
 

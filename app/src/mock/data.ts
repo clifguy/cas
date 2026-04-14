@@ -188,7 +188,7 @@ const pimDocuments: Document[] = [
     title: 'PIM Architecture Overview',
     source_type: 'docx',
     source_path: '/Users/clifguy/pim_vault/PIM_Architecture_Overview_v1.docx',
-    lifecycle_status: 'superseded',
+    lifecycle_status: 'archived',
     version_label: 'v1',
     project: 'pim_health',
     tags: ['architecture', 'overview'],
@@ -587,7 +587,7 @@ export const vaults: Record<string, VaultData> = {
     lifecycle_states: [
       { value: 'draft', label: 'Draft', is_terminal: false },
       { value: 'active', label: 'Active', is_terminal: false },
-      { value: 'superseded', label: 'Superseded', is_terminal: true },
+      { value: 'completed', label: 'Completed', is_terminal: false },
       { value: 'archived', label: 'Archived', is_terminal: true },
     ],
     adapters: [

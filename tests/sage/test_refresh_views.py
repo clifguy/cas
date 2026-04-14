@@ -96,7 +96,7 @@ async def test_bh043_both_view_dimensions_generated(
     )
     await _insert_test_document(
         graph_store, "doc_b", "Doc B", "patents/doc_b.md",
-        lifecycle_status="superseded", doc_type="patent",
+        lifecycle_status="archived", doc_type="patent",
     )
     await _insert_test_document(
         graph_store, "doc_c", "Doc C", "glossaries/doc_c.md",
@@ -107,7 +107,7 @@ async def test_bh043_both_view_dimensions_generated(
 
     assert result.vault_id == "test_vault"
     # by_doc_type: patent, glossary = 2
-    # by_lifecycle: active, superseded = 2
+    # by_lifecycle: active, archived = 2
     assert result.views_generated >= 3
 
     views_root = storage_root / "views"
@@ -129,10 +129,10 @@ async def test_bh043_both_view_dimensions_generated(
     active_links = list(active_dir.iterdir())
     assert len(active_links) == 2  # doc_a and doc_c
 
-    superseded_dir = views_root / "by_lifecycle" / "superseded"
-    assert superseded_dir.exists()
-    superseded_links = list(superseded_dir.iterdir())
-    assert len(superseded_links) == 1  # doc_b
+    archived_dir = views_root / "by_lifecycle" / "archived"
+    assert archived_dir.exists()
+    archived_links = list(archived_dir.iterdir())
+    assert len(archived_links) == 1  # doc_b
 
 
 # ---------------------------------------------------------------------------

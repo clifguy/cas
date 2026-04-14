@@ -109,7 +109,7 @@ ingestion timestamp.
 
 **Expected:**
 - Total document count shown
-- Lifecycle breakdown shown (e.g., draft: 1, active: 5, superseded: 1)
+- Lifecycle breakdown shown (e.g., draft: 1, active: 5, archived: 1)
 - Doc type breakdown shown
 - Source adapter breakdown shown
 - Total edge count shown
@@ -765,13 +765,13 @@ rankings than post-filtering (which wastes result slots on excluded documents).
 
 **Decision:** Multiple lifecycle states can be selected simultaneously.
 
-**Precondition:** Vault with documents in draft, active, and superseded states.
+**Precondition:** Vault with documents in draft, active, and archived states.
 
 **Input:** Select "active" and "draft" lifecycle states, then search.
 
 **Expected:**
 - Results include documents in active and draft states
-- Results exclude documents in superseded and archived states
+- Results exclude documents in archived states
 
 **Rationale:** Common use case: "show me everything that's current" (draft +
 active) excluding historical versions.
@@ -997,16 +997,15 @@ contexts. Color reinforces but is not required for readability.
 **Artifact:** App Spec v0.4, Section 11.1 (Visualization)
 **Category:** graph_explorer
 
-**Decision:** Active documents at full opacity. Superseded and archived
-documents are dimmed.
+**Decision:** Active documents at full opacity. Archived documents are dimmed.
 
-**Precondition:** Graph with active and superseded documents.
+**Precondition:** Graph with active and archived documents.
 
 **Input:** View Graph Explorer.
 
 **Expected:**
 - Active documents rendered at full opacity
-- Superseded documents rendered with reduced opacity (dimmed)
+- Archived documents rendered with reduced opacity (dimmed)
 - Archived documents rendered with reduced opacity (dimmed)
 
 **Rationale:** Opacity creates a natural foreground/background distinction,
@@ -1123,12 +1122,12 @@ Hiding orphaned nodes prevents visual clutter from disconnected nodes.
 
 **Decision:** Unchecking a lifecycle state hides documents in that state.
 
-**Precondition:** Graph with active and superseded documents.
+**Precondition:** Graph with active and archived documents.
 
-**Input:** Uncheck "superseded" in the lifecycle state filter.
+**Input:** Uncheck "archived" in the lifecycle state filter.
 
 **Expected:**
-- Superseded documents disappear from graph
+- Archived documents disappear from graph
 - Edges to/from hidden documents also hidden
 - Active documents and their mutual edges remain
 

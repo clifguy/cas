@@ -145,7 +145,6 @@ def _get_default_config(vault_id: str, name: str, owner: str) -> dict:
             "base_states_required": True,
             "states": [
                 {"value": "active", "label": "Active"},
-                {"value": "superseded", "label": "Superseded"},
                 {"value": "completed", "label": "Completed"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
             ],
@@ -154,12 +153,11 @@ def _get_default_config(vault_id: str, name: str, owner: str) -> dict:
                 {
                     "from_state": "active",
                     "action": "supersede",
-                    "to_state": "superseded",
+                    "to_state": "archived",
                     "creates_edge": "supersedes",
                 },
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
-                {"from_state": "superseded", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],

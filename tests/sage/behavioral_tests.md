@@ -268,7 +268,7 @@ warnings when pipeline is non-terminal.
 
 **Expected:**
 - HTTP 200
-- Document `lifecycle_status` is `superseded`
+- Document `lifecycle_status` is `archived`
 - Document `pipeline_status` unchanged (`indexing_in_progress`)
 - Response includes `warnings` array containing a message about the in-progress pipeline
 
@@ -321,7 +321,7 @@ edges in the graph.
 **Input:** `set_lifecycle` on doc_old with `action: "supersede", new_version_id: doc_new.id`
 
 **Expected:**
-- doc_old transitions to `superseded`
+- doc_old transitions to `archived`
 - A `supersedes` edge exists with `source_id: doc_new.id`, `target_id: doc_old.id`
 - The edge has an auto-generated `id` field
 
@@ -659,22 +659,22 @@ future edge-level operations (update, annotate).
 
 **Rationale:** Completed documents are finished work, fully available.
 
-### TEST-SAGE-BH-035: check_preconditions -- superseded does not satisfy
+### TEST-SAGE-BH-035: check_preconditions -- archived does not satisfy
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (check_preconditions)
 **Category:** graph, lifecycle_interaction
-**Decision:** Superseded documents are stale; they don't satisfy dependencies.
+**Decision:** Archived documents are not in active use; they don't satisfy dependencies.
 
-**Precondition:** doc_function depends_on doc_dep. doc_dep is `superseded`.
+**Precondition:** doc_function depends_on doc_dep. doc_dep is `archived`.
 
 **Input:** `check_preconditions(function_id: doc_function.id)`
 
 **Expected:**
 - `satisfied: false`
-- Check `actual` field reports `superseded`
+- Check `actual` field reports `archived`
 
-**Rationale:** A superseded document has been replaced. Callers should depend on
-the replacement.
+**Rationale:** An archived document is no longer in active use (it may have been
+superseded or simply retired). Callers should depend on the active replacement.
 
 ### TEST-SAGE-BH-036: check_preconditions -- filed does not satisfy (domain-specific)
 
@@ -818,7 +818,7 @@ generated. Output location is `{storage_root}/views/by_doc_type/` and
 
 **Precondition:** Vault with three documents:
 - doc_a: `doc_type: "patent"`, `lifecycle_status: "active"`
-- doc_b: `doc_type: "patent"`, `lifecycle_status: "superseded"`
+- doc_b: `doc_type: "patent"`, `lifecycle_status: "archived"`
 - doc_c: `doc_type: "glossary"`, `lifecycle_status: "active"`
 
 **Input:** `refresh_views()`
@@ -833,7 +833,7 @@ generated. Output location is `{storage_root}/views/by_doc_type/` and
   doc_c source file
 - Directory `{storage_root}/views/by_lifecycle/active/` exists with symlinks to
   doc_a and doc_c source files
-- Directory `{storage_root}/views/by_lifecycle/superseded/` exists with symlink to
+- Directory `{storage_root}/views/by_lifecycle/archived/` exists with symlink to
   doc_b source file
 
 **Rationale:** Both dimensions are cheap to generate and useful for different
@@ -1326,11 +1326,11 @@ race conditions inherent in the background-task model.
 **Category:** retrieval, salience
 
 **Decision:** Documents with `lifecycle_status="active"` receive a 1.15x score
-multiplier in semantic and keyword retrieval modes. Superseded and archived
+multiplier in semantic and keyword retrieval modes. Archived and completed
 documents remain discoverable but rank lower when competing with active content.
 
 **Precondition:** Two documents indexed with identical content relevance to a query.
-Doc A: `lifecycle_status="active"`. Doc B: `lifecycle_status="superseded"`.
+Doc A: `lifecycle_status="active"`. Doc B: `lifecycle_status="archived"`.
 
 **Input:** `discover(mode="semantic", query="matching query")`
 
@@ -1339,7 +1339,7 @@ Doc A: `lifecycle_status="active"`. Doc B: `lifecycle_status="superseded"`.
 - Doc A scores higher than Doc B (1.15x multiplier applied).
 
 **Rationale:** Active documents are the most current version of their content.
-A mild boost ensures they surface above superseded predecessors when content
+A mild boost ensures they surface above archived predecessors when content
 relevance is comparable, without hard-excluding older versions.
 
 
@@ -1406,7 +1406,7 @@ metadata only. No query string required.
 - doc_a: `doc_type="patent_draft"`, `lifecycle_status="active"`, `tags=["PV07"]`
 - doc_b: `doc_type="patent_draft"`, `lifecycle_status="active"`, `tags=["PV08"]`
 - doc_c: `doc_type="glossary"`, `lifecycle_status="active"`, `tags=["PV07"]`
-- doc_d: `doc_type="patent_draft"`, `lifecycle_status="superseded"`, `tags=["PV07"]`
+- doc_d: `doc_type="patent_draft"`, `lifecycle_status="archived"`, `tags=["PV07"]`
 - doc_e: `doc_type="checklist"`, `lifecycle_status="active"`, `tags=["PV07"]`
 
 **Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "patent_draft"})`

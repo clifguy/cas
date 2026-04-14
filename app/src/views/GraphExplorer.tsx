@@ -34,7 +34,6 @@ const edgeStyles: Record<string, { dashes: boolean | number[]; color: string }> 
 const lifecycleOpacity: Record<string, number> = {
   active: 1.0,
   draft: 0.8,
-  superseded: 0.4,
   archived: 0.3,
 };
 

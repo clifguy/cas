@@ -68,16 +68,14 @@ export default function Sidebar({ activeVault, onVaultChange, onVaultCreated, va
           base_states_required: true,
           states: [
             { value: 'active', label: 'Active' },
-            { value: 'superseded', label: 'Superseded' },
             { value: 'completed', label: 'Completed' },
             { value: 'archived', label: 'Archived', is_terminal: true },
           ],
           transitions: [
             { from_state: '(new)', action: 'ingest', to_state: 'active' },
-            { from_state: 'active', action: 'supersede', to_state: 'superseded', creates_edge: 'supersedes' },
+            { from_state: 'active', action: 'supersede', to_state: 'archived', creates_edge: 'supersedes' },
             { from_state: 'active', action: 'complete', to_state: 'completed' },
             { from_state: 'active', action: 'archive', to_state: 'archived' },
-            { from_state: 'superseded', action: 'archive', to_state: 'archived' },
             { from_state: 'completed', action: 'archive', to_state: 'archived' },
             { from_state: 'archived', action: 'reactivate', to_state: 'active' },
           ],

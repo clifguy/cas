@@ -120,7 +120,7 @@ advancement does not affect lifecycle_status.
 - Response includes warning about failed pipeline
 
 **Rationale:** A failed document might reasonably be archived (cleanup) or
-superseded (replace with a working version). Blocking lifecycle would strand
+superseded (replaced with a working version). Blocking lifecycle would strand
 failed documents.
 
 

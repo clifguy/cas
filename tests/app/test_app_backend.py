@@ -108,16 +108,14 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
             "base_states_required": True,
             "states": [
                 {"value": "active", "label": "Active"},
-                {"value": "superseded", "label": "Superseded"},
                 {"value": "completed", "label": "Completed"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {"from_state": "active", "action": "supersede", "to_state": "superseded", "creates_edge": "supersedes"},
+                {"from_state": "active", "action": "supersede", "to_state": "archived", "creates_edge": "supersedes"},
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
-                {"from_state": "superseded", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
             ],
@@ -792,8 +790,8 @@ class TestTwoPhaseOrchestration:
         assert result.edges_created == {"supersedes": 1}
 
     @pytest.mark.asyncio
-    async def test_ei_031_supersedes_transitions_target_to_superseded(self):
-        """Supersedes edge transitions target document to 'superseded'."""
+    async def test_ei_031_supersedes_transitions_target_to_archived(self):
+        """Supersedes edge transitions target document to 'archived'."""
         plan = EdgePlan(edges=[
             PlannedEdge("doc-v2", "doc-v1", EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
         ])
@@ -830,11 +828,11 @@ class TestTwoPhaseOrchestration:
         result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
 
         assert result.edges_created == {"supersedes": 1}
-        # Target document must have been transitioned to "superseded"
+        # Target document must have been transitioned to "archived"
         assert len(mock_store.updated) == 1
         updated_id, updates = mock_store.updated[0]
         assert updated_id == "doc-v1"
-        assert updates["lifecycle_status"] == "superseded"
+        assert updates["lifecycle_status"] == "archived"
         assert "updated_at" in updates
 
     @pytest.mark.asyncio
@@ -855,7 +853,7 @@ class TestTwoPhaseOrchestration:
                 self.staged = []
                 self.updated = []
                 self._docs = {
-                    "doc-v2": {"lifecycle_status": "superseded"},
+                    "doc-v2": {"lifecycle_status": "archived"},
                 }
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
@@ -876,7 +874,7 @@ class TestTwoPhaseOrchestration:
         result = await resolve_and_execute(plan, {}, mock_store, mock_ops)
 
         assert result.edges_created == {"supersedes": 1}
-        # No lifecycle update -- target was already superseded
+        # No lifecycle update -- target was already archived
         assert len(mock_store.updated) == 0
 
     def test_ei_029_empty_manifest_empty_plan(self):

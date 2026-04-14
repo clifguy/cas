@@ -591,19 +591,19 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
 async def test_bh_069_active_lifecycle_ranks_higher(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """Documents with lifecycle_status='active' rank above superseded/archived
+    """Documents with lifecycle_status='active' rank above archived/completed
     documents when content relevance is otherwise equal.
     """
     doc_active = _make_doc("doc_active", lifecycle_status="active")
-    doc_superseded = _make_doc("doc_superseded", lifecycle_status="superseded")
+    doc_completed = _make_doc("doc_completed", lifecycle_status="completed")
     doc_archived = _make_doc("doc_archived", lifecycle_status="archived")
     await graph_store.insert_document(doc_active)
-    await graph_store.insert_document(doc_superseded)
+    await graph_store.insert_document(doc_completed)
     await graph_store.insert_document(doc_archived)
 
     # All three get identical content so raw relevance scores are equal
     identical_content = "Patent filing process for clinical normalization."
-    for doc_id in ["doc_active", "doc_superseded", "doc_archived"]:
+    for doc_id in ["doc_active", "doc_completed", "doc_archived"]:
         await _index_doc_chunks(
             stub_content_store, seeded_embedding_provider, doc_id,
             [("Section 1", identical_content)],
@@ -617,15 +617,15 @@ async def test_bh_069_active_lifecycle_ranks_higher(
 
     doc_ids = [h.document.id for h in response.results]
     assert "doc_active" in doc_ids
-    assert "doc_superseded" in doc_ids
+    assert "doc_completed" in doc_ids
     assert "doc_archived" in doc_ids
 
     # Active document must appear before both non-active documents
     active_idx = doc_ids.index("doc_active")
-    superseded_idx = doc_ids.index("doc_superseded")
+    completed_idx = doc_ids.index("doc_completed")
     archived_idx = doc_ids.index("doc_archived")
-    assert active_idx < superseded_idx, (
-        f"Active ({active_idx}) should rank above superseded ({superseded_idx})"
+    assert active_idx < completed_idx, (
+        f"Active ({active_idx}) should rank above completed ({completed_idx})"
     )
     assert active_idx < archived_idx, (
         f"Active ({active_idx}) should rank above archived ({archived_idx})"
@@ -637,12 +637,12 @@ async def test_bh_069_active_boost_applies_to_keyword_mode(
 ):
     """Lifecycle boost also applies in keyword mode."""
     doc_active = _make_doc("doc_kw_active", lifecycle_status="active")
-    doc_superseded = _make_doc("doc_kw_superseded", lifecycle_status="superseded")
+    doc_archived = _make_doc("doc_kw_archived", lifecycle_status="archived")
     await graph_store.insert_document(doc_active)
-    await graph_store.insert_document(doc_superseded)
+    await graph_store.insert_document(doc_archived)
 
     identical_content = "Detailed analysis of PV07 claims and prior art."
-    for doc_id in ["doc_kw_active", "doc_kw_superseded"]:
+    for doc_id in ["doc_kw_active", "doc_kw_archived"]:
         await _index_doc_chunks(
             stub_content_store, seeded_embedding_provider, doc_id,
             [("Section 1", identical_content)],
@@ -656,15 +656,15 @@ async def test_bh_069_active_boost_applies_to_keyword_mode(
 
     doc_ids = [h.document.id for h in response.results]
     assert "doc_kw_active" in doc_ids
-    assert "doc_kw_superseded" in doc_ids
-    assert doc_ids.index("doc_kw_active") < doc_ids.index("doc_kw_superseded")
+    assert "doc_kw_archived" in doc_ids
+    assert doc_ids.index("doc_kw_active") < doc_ids.index("doc_kw_archived")
 
 
 async def test_bh_069_deterministic_mode_unaffected(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Deterministic mode does not apply salience reranking (no relevance scores)."""
-    doc = _make_doc("doc_det", lifecycle_status="superseded")
+    doc = _make_doc("doc_det", lifecycle_status="archived")
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
@@ -799,7 +799,7 @@ async def test_bh_070_no_date_documents_not_penalized(
 async def test_bh_069_070_combined_active_recent_ranks_highest(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """Active + recent beats active + old, which beats superseded + recent.
+    """Active + recent beats active + old, which beats archived + recent.
     Both boosts work together additively.
     """
     now = datetime.now(timezone.utc)
@@ -809,12 +809,12 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
     doc_active_old = _make_doc(
         "doc_ao", lifecycle_status="active", document_date="2023-01-01",
     )
-    doc_superseded_recent = _make_doc(
-        "doc_sr", lifecycle_status="superseded", document_date="2026-04-01",
+    doc_archived_recent = _make_doc(
+        "doc_sr", lifecycle_status="archived", document_date="2026-04-01",
     )
     await graph_store.insert_document(doc_active_recent)
     await graph_store.insert_document(doc_active_old)
-    await graph_store.insert_document(doc_superseded_recent)
+    await graph_store.insert_document(doc_archived_recent)
 
     identical_content = "Patent filing process for clinical normalization."
     for doc_id in ["doc_ar", "doc_ao", "doc_sr"]:
@@ -836,7 +836,7 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
 
     # Active + recent should be first
     assert ar_idx < ao_idx, "Active+recent should rank above active+old"
-    assert ar_idx < sr_idx, "Active+recent should rank above superseded+recent"
+    assert ar_idx < sr_idx, "Active+recent should rank above archived+recent"
 
 
 # ---------------------------------------------------------------------------
@@ -1236,7 +1236,7 @@ async def _seed_catalog_docs(graph_store):
         "doc_c": _make_doc("doc_c", doc_type="glossary", tags=["PV07"]),
         "doc_d": _make_doc(
             "doc_d", doc_type="patent_draft", tags=["PV07"],
-            lifecycle_status="superseded",
+            lifecycle_status="archived",
         ),
         "doc_e": _make_doc("doc_e", doc_type="checklist", tags=["PV07"]),
     }
@@ -1422,7 +1422,7 @@ async def _seed_catalog_sort_docs(graph_store):
             document_date="2026-03-15", doc_type="patent_draft",
         ),
         "sort_b": _make_doc(
-            "sort_b", lifecycle_status="superseded",
+            "sort_b", lifecycle_status="archived",
             document_date="2026-04-01", doc_type="patent_draft",
         ),
         "sort_c": _make_doc(

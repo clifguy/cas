@@ -173,8 +173,8 @@ async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
         SetLifecycleRequest(action="supersede", new_version_id="doc_replacement"),
     )
 
-    # doc_old transitions to superseded
-    assert response.document.lifecycle_status == "superseded"
+    # doc_old transitions to archived
+    assert response.document.lifecycle_status == "archived"
 
     # Supersedes edge exists: new -> old
     edges = await graph_store.get_edges_by_source("doc_replacement", "supersedes")
