@@ -16,6 +16,7 @@ from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
     DocumentNotFoundError,
+    EdgeNotFoundError,
     SAGEError,
     StagingEdgeNotFoundError,
 )
@@ -222,6 +223,21 @@ def register_sage_tools(
             )
             edge = await v.graph_ops_service.link(request)
             return serialize(edge)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_unlink(vault_id: str, edge_id: str) -> str:
+        """Delete a production edge from the graph.
+
+        Args:
+            vault_id: Target vault identifier.
+            edge_id: Production edge identifier.
+        """
+        try:
+            v = get_vault(vault_id)
+            result = await v.graph_ops_service.unlink(edge_id)
+            return serialize(result)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

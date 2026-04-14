@@ -258,6 +258,18 @@ class VaultAlreadyExistsError(SAGEError):
         )
 
 
+class EdgeNotFoundError(SAGEError):
+    """404: production edge not found."""
+
+    def __init__(self, edge_id: str) -> None:
+        super().__init__(
+            "edge_not_found",
+            f"Edge '{edge_id}' not found",
+            404,
+            {"edge_id": edge_id},
+        )
+
+
 class StagingEdgeNotFoundError(SAGEError):
     """404: staging edge not found (already confirmed/dismissed or never existed)."""
 

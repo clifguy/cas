@@ -428,6 +428,29 @@ class GraphStore:
             ).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
+    async def get_edge(self, edge_id: str) -> Edge | None:
+        """Get a production edge by ID. Returns None if not found."""
+        return await self._run(self._get_edge_sync, edge_id)
+
+    def _get_edge_sync(self, edge_id: str) -> Edge | None:
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT * FROM edges WHERE id = ?", (edge_id,)
+        ).fetchone()
+        return self._row_to_edge(row) if row else None
+
+    async def delete_edge(self, edge_id: str) -> bool:
+        """Delete a production edge. Returns True if it existed."""
+        return await self._run(self._delete_edge_sync, edge_id)
+
+    def _delete_edge_sync(self, edge_id: str) -> bool:
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "DELETE FROM edges WHERE id = ?", (edge_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
     # ------------------------------------------------------------------
     # Hash check (BE-007)
     # ------------------------------------------------------------------

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from sage.api.errors import (
     DocumentNotFoundError,
+    EdgeNotFoundError,
     PipelineIncompleteError,
     SelfReferentialEdgeError,
 )
@@ -701,3 +702,94 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
     nodes_by_id = {n.document.id: n for n in result.nodes}
     assert nodes_by_id["doc_b"].edge_counts == {"supersedes": 1, "covers": 2}
     assert nodes_by_id["doc_c"].edge_counts == {"references": 3}
+
+
+# ---------------------------------------------------------------------------
+# Unlink (production edge deletion)
+# ---------------------------------------------------------------------------
+
+async def test_unlink_deletes_existing_edge(graph_store, graph_ops_service):
+    """unlink removes a production edge and returns confirmation."""
+    doc_a = _make_doc("doc_a")
+    doc_b = _make_doc("doc_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    edge = await graph_ops_service.link(LinkRequest(
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.REFERENCES,
+    ))
+
+    result = await graph_ops_service.unlink(edge.id)
+    assert result == {"deleted": True, "edge_id": edge.id}
+
+    # Edge no longer exists in the store
+    edges = await graph_store.get_edges_by_source("doc_a")
+    assert len(edges) == 0
+
+
+async def test_unlink_nonexistent_edge_raises_404(graph_store, graph_ops_service):
+    """unlink raises EdgeNotFoundError for a nonexistent edge_id."""
+    with pytest.raises(EdgeNotFoundError) as exc_info:
+        await graph_ops_service.unlink("nonexistent_edge")
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.code == "edge_not_found"
+
+
+# ---------------------------------------------------------------------------
+# GraphStore get_edge / delete_edge
+# ---------------------------------------------------------------------------
+
+async def test_get_edge_returns_edge(graph_store):
+    """get_edge returns the Edge when it exists."""
+    doc_a = _make_doc("doc_a")
+    doc_b = _make_doc("doc_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    edge = Edge(
+        id="edge_get_test",
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    )
+    await graph_store.insert_edge(edge)
+
+    result = await graph_store.get_edge("edge_get_test")
+    assert result is not None
+    assert result.id == "edge_get_test"
+    assert result.source_id == "doc_a"
+    assert result.target_id == "doc_b"
+
+
+async def test_get_edge_returns_none_for_missing(graph_store):
+    """get_edge returns None for a nonexistent edge_id."""
+    result = await graph_store.get_edge("nonexistent")
+    assert result is None
+
+
+async def test_delete_edge_returns_true(graph_store):
+    """delete_edge returns True and removes the row."""
+    doc_a = _make_doc("doc_a")
+    doc_b = _make_doc("doc_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    edge = Edge(
+        id="edge_del_test",
+        source_id="doc_a",
+        target_id="doc_b",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    )
+    await graph_store.insert_edge(edge)
+
+    assert await graph_store.delete_edge("edge_del_test") is True
+    assert await graph_store.get_edge("edge_del_test") is None
+
+
+async def test_delete_edge_returns_false_for_missing(graph_store):
+    """delete_edge returns False for a nonexistent edge_id."""
+    assert await graph_store.delete_edge("nonexistent") is False

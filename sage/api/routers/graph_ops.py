@@ -26,6 +26,15 @@ async def link(
     return await service.link(request)
 
 
+@router.delete("/edges/{edge_id}")
+async def unlink(
+    edge_id: str,
+    vault_id: str = Depends(get_vault_id),
+    service: GraphOpsService = Depends(get_graph_ops_service),
+) -> dict:
+    return await service.unlink(edge_id)
+
+
 @router.get("/preconditions/{function_id}", response_model=PreconditionResult)
 async def check_preconditions(
     function_id: str,
