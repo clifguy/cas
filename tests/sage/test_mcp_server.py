@@ -25,6 +25,7 @@ from sage.mcp_server import (
     sage_get_document,
     sage_ingest,
     sage_link,
+    sage_reabstract,
     sage_refresh_views,
     sage_register_user,
     sage_reload_vault,
@@ -467,3 +468,34 @@ async def test_reload_vault_sees_external_changes(vault_services):
     # Fresh services should see both documents
     stats_after = _parse(await sage_vault_stats("test_vault"))
     assert stats_after["total_documents"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Reabstract
+# ---------------------------------------------------------------------------
+
+
+async def test_reabstract_returns_updated_document(vault_services):
+    """sage_reabstract should regenerate the abstract and return the
+    updated document with a semantic_abstract field."""
+    ingest_result = _parse(
+        await sage_ingest("test_vault", "test/sample.md", "markdown")
+    )
+    doc_id = ingest_result["id"]
+
+    result = _parse(await sage_reabstract("test_vault", doc_id))
+    assert "error" not in result
+    assert result["id"] == doc_id
+    assert result["semantic_abstract"] is not None
+
+
+async def test_reabstract_unknown_vault(vault_services):
+    """sage_reabstract should return an error for unknown vault_id."""
+    result = _parse(await sage_reabstract("nonexistent_vault", "doc1"))
+    assert result["error"] == "unknown_vault"
+
+
+async def test_reabstract_document_not_found(vault_services):
+    """sage_reabstract should return document_not_found for unknown doc."""
+    result = _parse(await sage_reabstract("test_vault", "nonexistent_doc"))
+    assert result["error"] == "document_not_found"

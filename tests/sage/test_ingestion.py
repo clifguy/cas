@@ -802,3 +802,155 @@ async def test_bh_071_same_content_reuses_existing_import(
 
     # Content unchanged
     assert existing.read_text() == content
+
+
+# ---------------------------------------------------------------------------
+# _generate_abstract_text: shared core for abstraction generation
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_abstract_text_uses_density_proportional_budget(
+    ingestion_service,
+):
+    """_generate_abstract_text should pass a density-proportional max_tokens
+    value to the abstraction provider, not a fixed constant."""
+    # Capture the max_tokens passed to the stub
+    captured = {}
+    original = ingestion_service._abstraction.generate_abstract
+
+    async def spy(text: str, max_tokens: int) -> str:
+        captured["max_tokens"] = max_tokens
+        return await original(text, max_tokens)
+
+    ingestion_service._abstraction.generate_abstract = spy
+
+    text = "word " * 10000  # 10000 words
+    result = await ingestion_service._generate_abstract_text(text)
+
+    assert "max_tokens" in captured
+    # 150 + 10000 * 0.02 = 350, not the old fixed 500
+    assert captured["max_tokens"] == 350
+    assert result  # non-empty
+
+
+async def test_generate_abstract_text_trims_sentence_boundary(
+    ingestion_service,
+):
+    """_generate_abstract_text should trim output to the last complete
+    sentence boundary."""
+    # Replace stub to return text truncated mid-sentence
+    async def truncated_output(text: str, max_tokens: int) -> str:
+        return "First sentence. Second sentence. Third incompl"
+
+    ingestion_service._abstraction.generate_abstract = truncated_output
+
+    result = await ingestion_service._generate_abstract_text("any input")
+    assert result == "First sentence. Second sentence."
+
+
+async def test_generate_abstract_text_returns_complete_sentences_unchanged(
+    ingestion_service,
+):
+    """When abstraction output ends at a sentence boundary, it should be
+    returned unchanged."""
+    async def clean_output(text: str, max_tokens: int) -> str:
+        return "Complete sentence one. Complete sentence two."
+
+    ingestion_service._abstraction.generate_abstract = clean_output
+
+    result = await ingestion_service._generate_abstract_text("any input")
+    assert result == "Complete sentence one. Complete sentence two."
+
+
+# ---------------------------------------------------------------------------
+# reabstract: re-run abstraction on an existing document
+# ---------------------------------------------------------------------------
+
+
+async def test_reabstract_updates_semantic_abstract(
+    tmp_vault_dir, ingestion_service, graph_store,
+):
+    """reabstract should regenerate the abstract from stored chunks and
+    update the document's semantic_abstract field."""
+    _create_test_file(tmp_vault_dir, "patents/reabs.md", "# Reabstract Test\n\nOriginal content.")
+
+    request = IngestRequest(source="patents/reabs.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+    original_abstract = result.document.semantic_abstract
+
+    # Swap abstraction provider to produce different output
+    async def new_abstract(text: str, max_tokens: int) -> str:
+        return "Regenerated abstract from new model."
+
+    ingestion_service._abstraction.generate_abstract = new_abstract
+
+    updated_doc = await ingestion_service.reabstract(doc_id)
+
+    assert updated_doc.semantic_abstract == "Regenerated abstract from new model."
+    assert updated_doc.semantic_abstract != original_abstract
+
+
+async def test_reabstract_preserves_other_document_fields(
+    tmp_vault_dir, ingestion_service, graph_store,
+):
+    """reabstract should only modify semantic_abstract and updated_at,
+    leaving other fields intact."""
+    _create_test_file(tmp_vault_dir, "patents/preserve.md", "# Preserve Test\n\nContent here.")
+
+    request = IngestRequest(source="patents/preserve.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+    original_title = result.document.title
+    original_source_path = result.document.source_path
+    original_lifecycle = result.document.lifecycle_status
+
+    updated_doc = await ingestion_service.reabstract(doc_id)
+
+    assert updated_doc.title == original_title
+    assert updated_doc.source_path == original_source_path
+    assert updated_doc.lifecycle_status == original_lifecycle
+
+
+async def test_reabstract_document_not_found(ingestion_service):
+    """reabstract should raise DocumentNotFoundError for unknown document_id."""
+    from sage.api.errors import DocumentNotFoundError
+
+    with pytest.raises(DocumentNotFoundError):
+        await ingestion_service.reabstract("nonexistent_doc_id")
+
+
+async def test_reabstract_no_projection_raises_error(
+    tmp_vault_dir, ingestion_service, graph_store, stub_content_store,
+):
+    """reabstract should raise NoProjectionError when the document exists
+    but has no stored chunks."""
+    from sage.api.errors import NoProjectionError
+
+    _create_test_file(tmp_vault_dir, "patents/nochunks.md", "# No Chunks\n\nContent.")
+
+    request = IngestRequest(source="patents/nochunks.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+
+    # Remove all chunks from the content store
+    await stub_content_store.remove_document(doc_id)
+
+    with pytest.raises(NoProjectionError):
+        await ingestion_service.reabstract(doc_id)
+
+
+async def test_reabstract_updates_timestamp(
+    tmp_vault_dir, ingestion_service, graph_store,
+):
+    """reabstract should update the updated_at timestamp."""
+    _create_test_file(tmp_vault_dir, "patents/timestamp.md", "# Timestamp\n\nContent.")
+
+    request = IngestRequest(source="patents/timestamp.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+    original_updated_at = result.document.updated_at
+
+    updated_doc = await ingestion_service.reabstract(doc_id)
+
+    assert updated_doc.updated_at >= original_updated_at

@@ -609,8 +609,30 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    @mcp.tool()
+    async def sage_reabstract(
+        vault_id: str,
+        document_id: str,
+    ) -> str:
+        """Re-run abstraction on an existing document. Reconstructs
+        projection text from stored chunks, generates a new
+        density-proportional semantic abstract, and writes it back
+        to the document node.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: Document to re-abstract.
+        """
+        try:
+            v = get_vault(vault_id)
+            result = await v.ingestion_service.reabstract(document_id)
+            return serialize(result)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     return {
         "sage_ingest": sage_ingest,
+        "sage_reabstract": sage_reabstract,
         "sage_get_document": sage_get_document,
         "sage_update_metadata": sage_update_metadata,
         "sage_set_lifecycle": sage_set_lifecycle,

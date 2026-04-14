@@ -18,7 +18,13 @@ from pathlib import Path
 
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.adapters.interfaces import AbstractionProvider, ContentStore, Chunk, EmbeddingProvider
-from sage.api.errors import AdapterNotFoundError, DuplicateContentError, SourceFileNotFoundError
+from sage.api.errors import (
+    AdapterNotFoundError,
+    DocumentNotFoundError,
+    DuplicateContentError,
+    NoProjectionError,
+    SourceFileNotFoundError,
+)
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
@@ -307,6 +313,27 @@ class IngestionService:
                 "updated_at": now.isoformat(),
             })
 
+    async def _generate_abstract_text(self, text: str) -> str:
+        """Generate a semantic abstract from document text.
+
+        Shared core for both initial ingestion (stage 3) and reabstract.
+        Computes a density-proportional token budget, invokes the
+        abstraction provider, and trims the result to the last complete
+        sentence boundary.
+
+        Args:
+            text: Full projection text of the document.
+
+        Returns:
+            Trimmed abstract string.
+        """
+        word_count = len(text.split())
+        max_tokens = compute_max_tokens(word_count, self._config.abstraction)
+        raw_abstract = await self._abstraction.generate_abstract(
+            text, max_tokens
+        )
+        return trim_to_sentence_boundary(raw_abstract)
+
     async def _stage3_abstraction(
         self, document_id: str, projection: ProjectionResult
     ) -> None:
@@ -317,12 +344,7 @@ class IngestionService:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
-        word_count = len(projection.text.split())
-        max_tokens = compute_max_tokens(word_count, self._config.abstraction)
-        raw_abstract = await self._abstraction.generate_abstract(
-            projection.text, max_tokens
-        )
-        abstract = trim_to_sentence_boundary(raw_abstract)
+        abstract = await self._generate_abstract_text(projection.text)
 
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
@@ -331,6 +353,42 @@ class IngestionService:
                 "semantic_abstract": abstract,
                 "updated_at": now.isoformat(),
             })
+
+    async def reabstract(self, document_id: str) -> Document:
+        """Re-run abstraction on an existing document.
+
+        Reconstructs projection text from stored chunks, generates a
+        new abstract via _generate_abstract_text, and writes it back
+        to the document node.
+
+        Args:
+            document_id: ID of the document to re-abstract.
+
+        Returns:
+            Updated Document with new semantic_abstract.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+            NoProjectionError: Document has no stored projection chunks.
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(document_id)
+
+        chunks = await self._content_store.get_all_chunks(document_id)
+        if not chunks:
+            raise NoProjectionError(document_id)
+
+        projection_text = "\n\n".join(chunk.content for chunk in chunks)
+        abstract = await self._generate_abstract_text(projection_text)
+
+        now = datetime.now(timezone.utc)
+        async with self._locks.lock(document_id):
+            updated = await self._store.update_document(document_id, {
+                "semantic_abstract": abstract,
+                "updated_at": now.isoformat(),
+            })
+        return updated
 
     @staticmethod
     def _build_metadata_updates(metadata: dict[str, str]) -> dict:
