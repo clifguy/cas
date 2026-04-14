@@ -1027,6 +1027,16 @@ components:
           type: array
           items:
             type: string
+        semantic_abstract:
+          type: string
+          nullable: true
+          description: >-
+            LLM-generated semantic abstract of the document content.
+            Present when the ingestion pipeline completed abstraction;
+            null when abstraction was skipped or the document predates
+            abstract generation. Enables steward agents and vault-steward
+            discovery to access document orientation without a separate
+            get_document call (CAS-ADR-011).
 
     Edge:
       type: object
@@ -1169,6 +1179,16 @@ components:
             mode. Valuable when queries contain both natural language
             and specific identifiers. Set to false for pure vector
             similarity search.
+        use_abstract_prefilter:
+          type: boolean
+          default: true
+          description: >-
+            Enable two-pass abstract-boosted retrieval (CAS-ADR-011).
+            When true, documents whose semantic abstract matches the
+            query receive a score boost above documents whose abstract
+            does not match. Applies to semantic and keyword modes.
+            Documents without abstracts are not excluded. Set to false
+            for pure content-only relevance ranking.
         response_level:
           $ref: "#/components/schemas/ResponseLevel"
           default: chunks

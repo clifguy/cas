@@ -1976,3 +1976,258 @@ doc_b -> doc_c (3 `references` edges).
 **Rationale:** Per-node scoping ensures `edge_counts` describes the local
 relationship structure at each document. Callers can inspect any node's
 connectivity without cross-referencing other nodes.
+
+
+## Semantic Abstract Consumers (CAS-ADR-011)
+
+These tests verify that semantic abstracts generated during ingestion Stage 3
+are surfaced to retrieval consumers: steward agents, vault-steward discovery,
+and (in Phase 2) two-pass abstract-boosted retrieval.
+
+
+### TEST-SAGE-BH-101: Semantic discover returns semantic_abstract on DocumentSummary
+
+**Artifact:** `sage/models/schemas.py` (DocumentSummary), `sage/services/retrieval.py`
+**Category:** retrieval, abstraction
+
+**Decision:** When a document has a `semantic_abstract`, the `DocumentSummary`
+returned in every `DiscoverHit` must include it. This enables steward agents
+and vault-steward discovery to access the abstract without a second
+`sage_get_document` call.
+
+**Precondition:** A document with `semantic_abstract` set to a non-empty string
+is indexed with at least one chunk.
+
+**Input:** `discover(mode: semantic, query: <matching query>)`
+
+**Expected:**
+- The matching `DiscoverHit.document.semantic_abstract` equals the stored abstract.
+
+**Rationale:** CAS-ADR-011 identifies steward orientation and vault-steward
+discovery as primary abstract consumers. Both read `DocumentSummary` from
+discover results.
+
+
+### TEST-SAGE-BH-102: Discover returns None abstract for abstraction-skipped documents
+
+**Artifact:** `sage/models/schemas.py` (DocumentSummary), `sage/services/retrieval.py`
+**Category:** retrieval, abstraction
+
+**Decision:** Documents with `pipeline_status = abstraction_skipped` (no
+abstract generated) must return `semantic_abstract = None` on their
+`DocumentSummary`. The field is always present but nullable.
+
+**Precondition:** A document with `pipeline_status = abstraction_skipped` and no
+`semantic_abstract` is indexed with at least one chunk.
+
+**Input:** `discover(mode: semantic, query: <matching query>)`
+
+**Expected:**
+- The matching `DiscoverHit.document.semantic_abstract` is `None`.
+
+**Rationale:** Consumers must handle the absence of an abstract gracefully.
+The nullable field avoids forcing consumers to check pipeline status before
+accessing the abstract.
+
+
+### TEST-SAGE-BH-103: Catalog mode returns semantic_abstract on DocumentSummary
+
+**Artifact:** `sage/models/schemas.py` (DocumentSummary), `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, catalog
+
+**Decision:** Catalog mode (filter-only document enumeration) includes
+`semantic_abstract` on each `DocumentSummary`, consistent with all other
+retrieval modes.
+
+**Precondition:** Two documents exist: one with a `semantic_abstract`, one without.
+
+**Input:** `discover(mode: catalog, limit: 10)`
+
+**Expected:**
+- The document with an abstract has `semantic_abstract` equal to its stored value.
+- The document without an abstract has `semantic_abstract = None`.
+
+**Rationale:** Catalog mode is the primary discovery surface for the CAS
+dashboard. Agents browsing the catalog should see abstracts inline.
+
+
+### TEST-SAGE-BH-104: Document-level response mode preserves semantic_abstract
+
+**Artifact:** `sage/models/schemas.py` (DocumentSummary), `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, response_level
+
+**Decision:** When `response_level = documents` (chunk content suppressed),
+`semantic_abstract` is still present on the `DocumentSummary`. The abstract is
+document-level metadata, not chunk content, so it is never suppressed.
+
+**Precondition:** A document with `semantic_abstract` is indexed with chunks.
+
+**Input:** `discover(mode: semantic, query: <matching query>, response_level: documents)`
+
+**Expected:**
+- `DiscoverHit.chunk_content` is `None` (suppressed by response_level).
+- `DiscoverHit.document.semantic_abstract` equals the stored abstract (preserved).
+
+**Rationale:** The `response_level=documents` mode exists for bandwidth
+optimization when callers need only document identity and metadata. The
+abstract is metadata, not content, so suppressing it would defeat its purpose
+as an orientation aid.
+
+
+### TEST-SAGE-BH-105: Abstract prefilter boosts documents whose abstract matches query
+
+**Artifact:** `sage/services/retrieval.py`, `sage/storage/graph_store.py`
+**Category:** retrieval, abstraction, two-pass
+
+**Decision:** When `use_abstract_prefilter` is true (default), documents whose
+`semantic_abstract` contains query terms receive a score boost above documents
+whose abstract does not match. This implements the two-pass retrieval pattern
+from CAS-ADR-011.
+
+**Precondition:** Two documents with identical chunk content. Document A has a
+`semantic_abstract` containing the query terms. Document B has a
+`semantic_abstract` that does not contain the query terms.
+
+**Input:** `discover(mode: semantic, query: <terms matching A's abstract>)`
+
+**Expected:**
+- Both documents appear in results.
+- Document A ranks above Document B.
+
+**Rationale:** CAS-ADR-011 identifies two-pass retrieval as the primary
+architectural consumer: abstract search filters for relevant documents before
+chunk search locates specific content. The boost (not hard filter) ensures
+documents with poor abstracts but strong chunk matches are not suppressed.
+
+
+### TEST-SAGE-BH-106: Abstract prefilter does not exclude documents without abstracts
+
+**Artifact:** `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, two-pass
+
+**Decision:** Documents with `semantic_abstract = None` (abstraction skipped or
+failed) are never excluded by the abstract prefilter. They remain eligible
+from chunk search at their natural relevance score.
+
+**Precondition:** Two documents: one with a matching abstract and indexed chunks,
+one with `pipeline_status = abstraction_skipped` (no abstract) and indexed
+chunks containing query terms.
+
+**Input:** `discover(mode: semantic, query: <terms present in both documents' chunks>)`
+
+**Expected:**
+- Both documents appear in results.
+- The abstractless document is present (not excluded).
+
+**Rationale:** Graceful degradation. Abstracts are an enrichment, not a gate.
+Documents ingested before abstraction was enabled, or where generation failed,
+must remain discoverable.
+
+
+### TEST-SAGE-BH-107: Abstract prefilter respects scope gating
+
+**Artifact:** `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, scope
+
+**Decision:** Documents matched by abstract search are still subject to scope
+gating. A document whose abstract matches the query but fails the scope
+filter does not receive a boost.
+
+**Precondition:** Two documents with abstracts matching the query. Document A
+has `authority_scope` set. Document B does not.
+
+**Input:** `discover(mode: semantic, query: <matching>, scope: authoritative)`
+
+**Expected:**
+- Document A appears in results (passes authoritative scope).
+- Document B does not appear (fails authoritative scope, regardless of abstract match).
+
+**Rationale:** Scope gating is a security and governance boundary. Abstract
+relevance must not override access control or scope restrictions.
+
+
+### TEST-SAGE-BH-108: use_abstract_prefilter=False disables abstract boost
+
+**Artifact:** `sage/services/retrieval.py`, `sage/models/schemas.py`
+**Category:** retrieval, abstraction, configuration
+
+**Decision:** Setting `use_abstract_prefilter = False` on `DiscoverRequest`
+disables the abstract boost entirely. Documents are ranked by chunk relevance
+alone (plus existing salience and metadata boosts).
+
+**Precondition:** Two documents. Document A has a strongly matching abstract.
+Document B has identical chunk content but no matching abstract.
+
+**Input:** `discover(mode: semantic, query: <matching A's abstract>, use_abstract_prefilter: false)`
+
+**Expected:**
+- Both documents appear with similar scores (no abstract-derived ordering advantage for A).
+
+**Rationale:** Opt-out is essential for callers who want pure content relevance
+or for diagnostic comparison between boosted and unboosted rankings.
+
+
+### TEST-SAGE-BH-109: Keyword mode benefits from abstract prefilter
+
+**Artifact:** `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, keyword
+
+**Decision:** The abstract prefilter applies to keyword (BM25) mode as well as
+semantic mode. The boost mechanism is identical.
+
+**Precondition:** Two documents with indexed chunks. Document A has a
+`semantic_abstract` containing the query terms. Document B does not.
+
+**Input:** `discover(mode: keyword, query: <terms matching A's abstract>)`
+
+**Expected:**
+- Document A ranks above Document B.
+
+**Rationale:** Keyword search is the fallback for queries where embedding
+similarity is unreliable. Abstract orientation is equally valuable in both modes.
+
+
+### TEST-SAGE-BH-110: Abstract prefilter integrates with hybrid RRF
+
+**Artifact:** `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, hybrid
+
+**Decision:** When hybrid RRF is active (`use_hybrid=True`), the abstract boost
+is applied after RRF fusion, before salience reranking. The abstract boost
+and RRF scores compose multiplicatively.
+
+**Precondition:** Two documents with indexed chunks. Document A has a matching
+abstract. Document B does not.
+
+**Input:** `discover(mode: semantic, query: <matching>, use_hybrid: true)`
+
+**Expected:**
+- Document A ranks above Document B (abstract boost applied after RRF fusion).
+
+**Rationale:** RRF fusion produces a unified ranking from vector and BM25
+signals. The abstract boost is an independent signal that should compose with
+(not replace) the fused ranking.
+
+
+### TEST-SAGE-BH-111: Abstract boost stacks with salience reranking
+
+**Artifact:** `sage/services/retrieval.py`
+**Category:** retrieval, abstraction, salience
+
+**Decision:** The abstract boost is applied before salience reranking. Lifecycle
+and recency boosts from `_rerank_salience` stack on top of abstract-boosted
+scores.
+
+**Precondition:** Two documents with matching abstracts. Document A has
+`lifecycle_status = active`. Document B has `lifecycle_status = draft`.
+Both have identical chunk content and abstract text.
+
+**Input:** `discover(mode: semantic, query: <matching both abstracts>)`
+
+**Expected:**
+- Both documents receive the abstract boost.
+- Document A ranks above Document B due to the additional lifecycle boost (BH-069).
+
+**Rationale:** Salience reranking captures signals (recency, lifecycle) that are
+orthogonal to abstract relevance. Stacking ensures all signals contribute to
+the final ranking.

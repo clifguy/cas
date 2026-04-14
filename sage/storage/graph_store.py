@@ -360,6 +360,26 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_document(r) for r in rows]
 
+    async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+        """Search documents by substring match in semantic_abstract.
+
+        Returns documents whose semantic_abstract contains query terms
+        (case-insensitive). Only returns documents that have a non-null
+        abstract. Used by the abstract prefilter in the retrieval pipeline.
+        """
+        return await self._run(self._search_abstracts_sync, query, limit)
+
+    def _search_abstracts_sync(self, query: str, limit: int) -> list[Document]:
+        conn = self._get_connection()
+        pattern = f"%{query}%"
+        rows = conn.execute(
+            "SELECT * FROM documents "
+            "WHERE semantic_abstract LIKE ? COLLATE NOCASE "
+            "LIMIT ?",
+            (pattern, limit),
+        ).fetchall()
+        return [self._row_to_document(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Edge operations
     # ------------------------------------------------------------------

@@ -67,6 +67,7 @@ class DocumentSummary(BaseModel):
     tags: list[str] = Field(default_factory=list)
     document_date: datetime | None = None
     source_modified_at: datetime | None = None
+    semantic_abstract: str | None = None
 
 
 class Edge(BaseModel):
@@ -226,6 +227,7 @@ class DiscoverRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     cursor: str | None = Field(default=None, deprecated=True)
     use_hybrid: bool = True
+    use_abstract_prefilter: bool = True
     response_level: ResponseLevel = ResponseLevel.CHUNKS
     sort_by: CatalogSortBy | None = None
     sort_order: SortOrder | None = None

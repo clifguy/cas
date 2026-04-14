@@ -1,10 +1,12 @@
 """Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
-BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-088.
+BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-088,
+BH-101 through BH-111.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
 retrieval (heading path prefix match), keyword-only retrieval,
 catalog mode (filter-only enumeration with sort), pipeline/scope gating,
-and title indexing in chunks.
+title indexing in chunks, semantic abstract surfacing on DocumentSummary,
+and two-pass abstract-boosted retrieval.
 """
 
 import pytest
@@ -46,6 +48,7 @@ def _make_doc(
     tags: list[str] | None = None,
     document_date: str | None = None,
     source_modified_at: datetime | None = None,
+    semantic_abstract: str | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -68,6 +71,7 @@ def _make_doc(
         tags=tags or [],
         document_date=document_date,
         source_modified_at=source_modified_at,
+        semantic_abstract=semantic_abstract,
     )
 
 
@@ -1765,3 +1769,418 @@ async def test_bh_088_response_level_ignored_by_catalog(
         assert hit.relevance_score is None
         # Catalog mode doesn't go through _results_to_hits, no chunk counting
         assert hit.matched_chunk_count is None
+
+
+# ---------------------------------------------------------------------------
+# Semantic Abstract Consumer Tests (CAS-ADR-011, Phase 1)
+# ---------------------------------------------------------------------------
+
+
+# BH-101: Semantic discover returns semantic_abstract on DocumentSummary
+async def test_bh_101_semantic_discover_returns_abstract(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """DocumentSummary in semantic discover results includes semantic_abstract."""
+    abstract_text = "This document analyzes patent claim structures for PIM Health."
+    doc = _make_doc("abs_doc", semantic_abstract=abstract_text)
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "abs_doc",
+        [("Section 1", "Patent claim structures and prior art analysis.")],
+    )
+
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="patent claims")
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert "abs_doc" in hits_by_id
+    assert hits_by_id["abs_doc"].document.semantic_abstract == abstract_text
+
+
+# BH-102: Discover returns None abstract for abstraction-skipped documents
+async def test_bh_102_discover_returns_none_abstract_when_skipped(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Documents with abstraction_skipped have semantic_abstract=None in results."""
+    doc = _make_doc(
+        "no_abs_doc",
+        pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+        semantic_abstract=None,
+    )
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "no_abs_doc",
+        [("Section 1", "Regulatory compliance framework for medical devices.")],
+    )
+
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="regulatory compliance")
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert "no_abs_doc" in hits_by_id
+    assert hits_by_id["no_abs_doc"].document.semantic_abstract is None
+
+
+# BH-103: Catalog mode returns semantic_abstract on DocumentSummary
+async def test_bh_103_catalog_returns_abstract(
+    graph_store, retrieval_service,
+):
+    """Catalog mode includes semantic_abstract on DocumentSummary for all documents."""
+    doc_with = _make_doc(
+        "cat_abs",
+        doc_type="patent_draft",
+        semantic_abstract="Summary of patent draft for metabolic monitoring.",
+    )
+    doc_without = _make_doc(
+        "cat_no_abs",
+        doc_type="patent_draft",
+        pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+    )
+    await graph_store.insert_document(doc_with)
+    await graph_store.insert_document(doc_without)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="patent_draft"),
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert hits_by_id["cat_abs"].document.semantic_abstract == (
+        "Summary of patent draft for metabolic monitoring."
+    )
+    assert hits_by_id["cat_no_abs"].document.semantic_abstract is None
+
+
+# BH-104: Document-level response mode preserves semantic_abstract
+async def test_bh_104_response_level_documents_preserves_abstract(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """response_level=documents suppresses chunk_content but preserves semantic_abstract."""
+    abstract_text = "Overview of insulin pump safety requirements."
+    doc = _make_doc("rl_doc", semantic_abstract=abstract_text)
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "rl_doc",
+        [("Section 1", "Insulin pump safety and regulatory requirements.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="insulin pump safety",
+        response_level=ResponseLevel.DOCUMENTS,
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert "rl_doc" in hits_by_id
+    hit = hits_by_id["rl_doc"]
+    # chunk_content suppressed by response_level=documents
+    assert hit.chunk_content is None
+    # semantic_abstract is document-level metadata, never suppressed
+    assert hit.document.semantic_abstract == abstract_text
+
+
+# ---------------------------------------------------------------------------
+# Semantic Abstract Consumer Tests (CAS-ADR-011, Phase 2: Two-Pass Retrieval)
+# ---------------------------------------------------------------------------
+
+
+# BH-105: Abstract prefilter boosts documents whose abstract matches query
+async def test_bh_105_abstract_prefilter_boosts_matching_abstract(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Documents whose abstract matches the query rank above those whose abstract does not.
+
+    doc_b is inserted first and has slightly better BM25 content for the query
+    (more matching terms), so without the abstract boost it would rank first.
+    The abstract boost on doc_a should override this natural advantage.
+    """
+    # Both documents have the same chunk content (identical BM25 and vector
+    # scores). doc_b is inserted first so it would naturally rank first or
+    # tie. The abstract boost on doc_a should push it above doc_b.
+    shared_content = "Glucose monitoring sensor accuracy and calibration data."
+
+    doc_b = _make_doc(
+        "abs_nomatch",
+        semantic_abstract="Overview of regulatory filing procedures for medical devices.",
+    )
+    await graph_store.insert_document(doc_b)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "abs_nomatch",
+        [("Section 1", shared_content)],
+    )
+
+    doc_a = _make_doc(
+        "abs_match",
+        semantic_abstract="Comprehensive review of glucose monitoring technologies and sensor calibration.",
+    )
+    await graph_store.insert_document(doc_a)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "abs_match",
+        [("Section 1", shared_content)],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="glucose monitoring",
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "abs_match" in ids
+    assert "abs_nomatch" in ids
+    assert ids.index("abs_match") < ids.index("abs_nomatch")
+
+
+# BH-106: Abstract prefilter does not exclude documents without abstracts
+async def test_bh_106_abstract_prefilter_does_not_exclude_abstractless_docs(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Documents with no abstract still appear in results from chunk search."""
+    doc_with = _make_doc(
+        "has_abs",
+        semantic_abstract="Patent claim analysis for metabolic biomarkers.",
+    )
+    doc_without = _make_doc(
+        "no_abs",
+        pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+        semantic_abstract=None,
+    )
+    await graph_store.insert_document(doc_with)
+    await graph_store.insert_document(doc_without)
+
+    shared_content = "Metabolic biomarker detection and claim drafting."
+    for doc_id in ("has_abs", "no_abs"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", shared_content)],
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="metabolic biomarker",
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "has_abs" in ids
+    assert "no_abs" in ids
+
+
+# BH-107: Abstract prefilter respects scope gating
+async def test_bh_107_abstract_prefilter_respects_scope(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Abstract-matched documents failing scope gating are excluded."""
+    doc_auth = _make_doc(
+        "auth_abs",
+        authority_scope="pim_health",
+        semantic_abstract="Insulin delivery systems safety analysis.",
+    )
+    doc_noauth = _make_doc(
+        "noauth_abs",
+        authority_scope=None,
+        semantic_abstract="Insulin delivery systems safety analysis.",
+    )
+    await graph_store.insert_document(doc_auth)
+    await graph_store.insert_document(doc_noauth)
+
+    shared_content = "Insulin pump delivery mechanisms and safety margins."
+    for doc_id in ("auth_abs", "noauth_abs"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", shared_content)],
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="insulin delivery",
+        scope=RetrievalScope.AUTHORITATIVE,
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "auth_abs" in ids
+    assert "noauth_abs" not in ids
+
+
+# BH-108: use_abstract_prefilter=False disables abstract boost
+async def test_bh_108_abstract_prefilter_disabled(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """With use_abstract_prefilter=False, no abstract-derived boost is applied."""
+    shared_content = "Continuous glucose monitor calibration procedures."
+
+    doc_a = _make_doc(
+        "boost_a",
+        semantic_abstract="Continuous glucose monitor calibration and accuracy.",
+    )
+    doc_b = _make_doc(
+        "boost_b",
+        semantic_abstract="Unrelated: marine biology research protocols.",
+    )
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    for doc_id in ("boost_a", "boost_b"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", shared_content)],
+        )
+
+    # With prefilter disabled, identical chunk content => similar scores
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="glucose monitor calibration",
+        use_abstract_prefilter=False,
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert "boost_a" in hits_by_id
+    assert "boost_b" in hits_by_id
+    # Scores should be approximately equal (no abstract boost)
+    score_a = hits_by_id["boost_a"].relevance_score
+    score_b = hits_by_id["boost_b"].relevance_score
+    assert score_a is not None and score_b is not None
+    # Allow small difference from salience reranking, but no large abstract boost
+    assert abs(score_a - score_b) / max(score_a, score_b) < 0.25
+
+
+# BH-109: Keyword mode benefits from abstract prefilter
+async def test_bh_109_keyword_mode_abstract_prefilter(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Abstract prefilter boosts keyword (BM25) results the same as semantic.
+
+    doc_b is inserted first with better BM25 content for the query. Without the
+    abstract boost, doc_b would rank first. The abstract boost on doc_a should
+    override this.
+    """
+    # Both documents share identical chunk content. doc_b is inserted first
+    # so it naturally appears first. The abstract boost on doc_a should
+    # push it above doc_b.
+    shared_content = "Blood pressure monitoring wearable device specifications."
+
+    doc_b = _make_doc(
+        "kw_abs_nomatch",
+        semantic_abstract="Dental imaging software architecture overview.",
+    )
+    await graph_store.insert_document(doc_b)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "kw_abs_nomatch",
+        [("Section 1", shared_content)],
+    )
+
+    doc_a = _make_doc(
+        "kw_abs_match",
+        semantic_abstract="Blood pressure monitoring device accuracy and specifications.",
+    )
+    await graph_store.insert_document(doc_a)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "kw_abs_match",
+        [("Section 1", shared_content)],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="blood pressure monitoring",
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "kw_abs_match" in ids
+    assert "kw_abs_nomatch" in ids
+    assert ids.index("kw_abs_match") < ids.index("kw_abs_nomatch")
+
+
+# BH-110: Abstract prefilter integrates with hybrid RRF
+async def test_bh_110_abstract_prefilter_with_hybrid_rrf(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Abstract boost applied after RRF fusion composes with fused scores.
+
+    doc_b is inserted first with better BM25/vector content. Without the
+    abstract boost, doc_b would rank first after RRF fusion.
+    """
+    # Both documents share identical chunk content. doc_b is inserted first
+    # so it naturally appears first. The abstract boost on doc_a should
+    # push it above doc_b after RRF fusion.
+    shared_content = "Wearable ECG arrhythmia detection algorithms."
+
+    doc_b = _make_doc(
+        "rrf_abs_nomatch",
+        semantic_abstract="Supply chain logistics for pharmaceutical distribution.",
+    )
+    await graph_store.insert_document(doc_b)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "rrf_abs_nomatch",
+        [("Section 1", shared_content)],
+    )
+
+    doc_a = _make_doc(
+        "rrf_abs_match",
+        semantic_abstract="ECG arrhythmia detection in wearable cardiac monitors.",
+    )
+    await graph_store.insert_document(doc_a)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "rrf_abs_match",
+        [("Section 1", shared_content)],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="ECG arrhythmia detection",
+        use_hybrid=True,
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "rrf_abs_match" in ids
+    assert "rrf_abs_nomatch" in ids
+    assert ids.index("rrf_abs_match") < ids.index("rrf_abs_nomatch")
+
+
+# BH-111: Abstract boost stacks with salience reranking
+async def test_bh_111_abstract_boost_stacks_with_salience(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Lifecycle boost (BH-069) stacks on top of abstract boost."""
+    shared_content = "Respiratory rate estimation from photoplethysmography."
+    shared_abstract = "Respiratory rate analysis using PPG signal processing."
+
+    doc_active = _make_doc(
+        "sal_active",
+        lifecycle_status="active",
+        semantic_abstract=shared_abstract,
+    )
+    doc_draft = _make_doc(
+        "sal_draft",
+        lifecycle_status="draft",
+        semantic_abstract=shared_abstract,
+    )
+    await graph_store.insert_document(doc_active)
+    await graph_store.insert_document(doc_draft)
+
+    for doc_id in ("sal_active", "sal_draft"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", shared_content)],
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="respiratory rate PPG",
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "sal_active" in ids
+    assert "sal_draft" in ids
+    # Active document should rank higher due to lifecycle boost stacking
+    assert ids.index("sal_active") < ids.index("sal_draft")

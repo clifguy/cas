@@ -157,6 +157,7 @@ class RetrievalService:
                     tags=doc.tags,
                     document_date=_parse_document_date(doc.document_date),
                     source_modified_at=doc.source_modified_at,
+                    semantic_abstract=doc.semantic_abstract,
                 ),
                 chunk_content=None,
                 heading_path=None,
@@ -195,6 +196,7 @@ class RetrievalService:
             )
             hits = await self._results_to_hits(results, request)
             hits = await self._boost_metadata_matches(hits, request)
+            hits = await self._boost_abstract_matches(hits, request)
             hits = await self._rerank_salience(hits)
 
         return DiscoverResponse(
@@ -229,6 +231,7 @@ class RetrievalService:
                 tags=doc.tags,
                 document_date=_parse_document_date(doc.document_date),
                 source_modified_at=doc.source_modified_at,
+                semantic_abstract=doc.semantic_abstract,
             )
             hits.append(DiscoverHit(
                 document=summary,
@@ -272,6 +275,7 @@ class RetrievalService:
         # Filter results: exclude failed-pipeline documents (BH-020)
         hits = await self._results_to_hits(results, request)
         hits = await self._boost_metadata_matches(hits, request)
+        hits = await self._boost_abstract_matches(hits, request)
         hits = await self._rerank_salience(hits)
 
         return DiscoverResponse(
@@ -382,6 +386,7 @@ class RetrievalService:
                 tags=doc.tags,
                 document_date=_parse_document_date(doc.document_date),
                 source_modified_at=doc.source_modified_at,
+                semantic_abstract=doc.semantic_abstract,
             )
 
             # BH-084/085: suppress chunk_content when response_level=documents;
@@ -452,6 +457,7 @@ class RetrievalService:
                 tags=doc.tags,
                 document_date=_parse_document_date(doc.document_date),
                 source_modified_at=doc.source_modified_at,
+                semantic_abstract=doc.semantic_abstract,
             )
             boosted.append(DiscoverHit(
                 document=summary,
@@ -461,6 +467,52 @@ class RetrievalService:
             ))
 
         return boosted + hits
+
+    # ------------------------------------------------------------------
+    # Abstract prefilter boost (BH-105 through BH-111, CAS-ADR-011)
+    # ------------------------------------------------------------------
+
+    # Multiplicative boost for documents whose abstract matches the query.
+    _ABSTRACT_MATCH_BOOST = 1.30
+
+    async def _boost_abstract_matches(
+        self,
+        hits: list[DiscoverHit],
+        request: DiscoverRequest,
+    ) -> list[DiscoverHit]:
+        """Boost documents whose semantic_abstract matches the query.
+
+        Implements the two-pass retrieval pattern from CAS-ADR-011:
+        abstract search identifies relevant documents, then their chunk-level
+        scores receive a multiplicative boost. Documents without abstracts
+        or whose abstracts don't match are unaffected (not excluded).
+
+        Disabled when use_abstract_prefilter=False on the request.
+        """
+        if not request.use_abstract_prefilter:
+            return hits
+        if not request.query:
+            return hits
+        if not hits:
+            return hits
+
+        # Query the graph store for documents whose abstract matches
+        abstract_docs = await self._graph.search_abstracts(
+            request.query, limit=100,
+        )
+        abstract_doc_ids = {doc.id for doc in abstract_docs}
+
+        if not abstract_doc_ids:
+            return hits
+
+        # Apply multiplicative boost to matching documents
+        for hit in hits:
+            if hit.document.id in abstract_doc_ids and hit.relevance_score is not None:
+                hit.relevance_score *= self._ABSTRACT_MATCH_BOOST
+
+        # Re-sort by boosted score descending
+        hits.sort(key=lambda h: h.relevance_score or 0.0, reverse=True)
+        return hits
 
     # ------------------------------------------------------------------
     # Salience reranking (BH-069, BH-070)
@@ -611,6 +663,7 @@ class RetrievalService:
             doc_type=doc.doc_type,
             tags=doc.tags,
             document_date=doc.document_date,
+            semantic_abstract=doc.semantic_abstract,
         )
 
         hits = [

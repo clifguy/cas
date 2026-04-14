@@ -328,6 +328,7 @@ def register_sage_tools(
         limit: int = 10,
         offset: int = 0,
         use_hybrid: bool = True,
+        use_abstract_prefilter: bool = True,
         response_level: str = "chunks",
     ) -> str:
         """Search for documents using semantic, keyword, catalog, or deterministic retrieval.
@@ -352,6 +353,8 @@ def register_sage_tools(
             limit: Maximum results (1-100). Default: 10.
             offset: Skip this many results before returning (catalog mode pagination). Default: 0.
             use_hybrid: Use hybrid RRF fusion of vector + BM25 in semantic mode. Default: true.
+            use_abstract_prefilter: Boost documents whose semantic abstract matches the
+                query (two-pass retrieval). Applies to semantic and keyword modes. Default: true.
             response_level: Result detail level ("chunks" or "documents"). "documents"
                 suppresses chunk_content and heading_path, returning document metadata
                 and relevance scores only. Default: "chunks".
@@ -369,6 +372,7 @@ def register_sage_tools(
                 limit=limit,
                 offset=offset,
                 use_hybrid=use_hybrid,
+                use_abstract_prefilter=use_abstract_prefilter,
                 response_level=response_level,
             )
             response = await v.retrieval_service.discover(request)

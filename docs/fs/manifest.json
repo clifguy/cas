@@ -192,6 +192,11 @@
       "version": "1.5",
       "date": "2026-04-13",
       "summary": "Chain walk endpoint and edge-type breakdown. Three changes to sage_core_api.openapi.yaml: (1) New POST /sage_vaults/{vault_id}/chain endpoint with ChainRequest, ChainResponse, and ChainEntry schemas. Walks an edge chain to both ends from any starting document via recursive CTE, returning an ordered list with head_id, tail_id, query_position, length, and is_linear (fork detection). Designed for version history retrieval on long supersedes chains but works with any edge type. (2) TraversalNode.edge_count (integer) replaced by edge_counts (object, additionalProperties: integer). Per-type edge count map keyed by edge type string. Breaking change from scalar to map. (3) TraversalNode.required updated from [document, edge, depth, edge_count] to [document, edge, depth, edge_counts]."
+    },
+    {
+      "version": "1.6",
+      "date": "2026-04-14",
+      "summary": "Semantic abstract consumers (CAS-ADR-011). Two changes to sage_core_api.openapi.yaml: (1) DocumentSummary: added semantic_abstract (nullable string) so discover results carry the LLM-generated abstract without a separate get_document call. Enables steward agent orientation and vault-steward discovery as primary consumers. (2) DiscoverRequest: added use_abstract_prefilter (boolean, default true) enabling two-pass abstract-boosted retrieval in semantic and keyword modes. Documents whose abstract matches the query receive a multiplicative score boost; documents without abstracts remain discoverable at natural chunk-relevance scores."
     }
   ]
 }
