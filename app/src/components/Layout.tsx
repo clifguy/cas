@@ -6,11 +6,12 @@ import type { VaultContext } from '../App';
 interface LayoutProps {
   activeVault: string;
   onVaultChange: (vaultId: string) => void;
+  onVaultCreated: (vaultId: string) => void;
   vaultList: VaultSummary[];
   currentVault: VaultSummary | null;
 }
 
-export default function Layout({ activeVault, onVaultChange, vaultList, currentVault }: LayoutProps) {
+export default function Layout({ activeVault, onVaultChange, onVaultCreated, vaultList, currentVault }: LayoutProps) {
   const ctx: VaultContext = {
     vaultId: activeVault,
     vault: currentVault,
@@ -19,7 +20,7 @@ export default function Layout({ activeVault, onVaultChange, vaultList, currentV
 
   return (
     <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif', fontSize: 14 }}>
-      <Sidebar activeVault={activeVault} onVaultChange={onVaultChange} vaultList={vaultList} />
+      <Sidebar activeVault={activeVault} onVaultChange={onVaultChange} onVaultCreated={onVaultCreated} vaultList={vaultList} />
       <main style={{ flex: 1, overflow: 'auto', padding: 24 }}>
         <Outlet context={ctx} />
       </main>

@@ -261,6 +261,71 @@ export interface IngestSummaryEvent {
   error_count: number;
 }
 
+// --- Vault Config ---
+
+export interface VaultIdentityConfig {
+  id: string;
+  name: string;
+  description: string | null;
+  owner: string;
+  storage_root: string;
+  brain_root: string;
+  visibility: string;
+  members: Record<string, unknown>[] | null;
+}
+
+export interface DocTypeConfig {
+  value: string;
+  label: string;
+  description?: string | null;
+  source_types?: string[] | null;
+}
+
+export interface LifecycleStateConfig {
+  value: string;
+  label: string;
+  description?: string | null;
+  is_terminal?: boolean;
+}
+
+export interface LifecycleTransitionConfig {
+  from_state: string;
+  action: string;
+  to_state: string;
+  semantics?: string | null;
+  creates_edge?: string | null;
+}
+
+export interface LifecycleConfig {
+  base_states_required: boolean;
+  states: LifecycleStateConfig[];
+  transitions: LifecycleTransitionConfig[];
+}
+
+export interface AbstractionConfig {
+  enabled: boolean;
+  model: string | null;
+  max_abstract_tokens: number;
+}
+
+export interface VaultConfig {
+  vault: VaultIdentityConfig;
+  document_types: { doc_types: DocTypeConfig[] };
+  lifecycle: LifecycleConfig;
+  source_adapters: Record<string, unknown>;
+  metadata_extraction: Record<string, unknown>;
+  edge_inference: Record<string, unknown>;
+  abstraction: AbstractionConfig;
+  access_control_defaults?: Record<string, unknown> | null;
+  retrieval_health?: Record<string, unknown> | null;
+}
+
+export interface UpdateConfigResponse {
+  status: string;
+  vault_id: string;
+  warnings: string[];
+}
+
 // --- Metadata update ---
 
 export interface UpdateMetadataRequest {

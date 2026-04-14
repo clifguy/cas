@@ -117,3 +117,21 @@ async def initialize_services(config: VaultConfig) -> SAGEServices:
         retrieval_service=retrieval_service,
         utilities_service=utilities_service,
     )
+
+
+async def reload_vault_in_registry(
+    registry: dict[str, SAGEServices],
+    vault_id: str,
+    config: VaultConfig,
+) -> SAGEServices:
+    """Close old services for a vault and reinitialize from a new config.
+
+    Used by the PUT config endpoint after writing updated YAML.
+    Parallels the MCP server's sage_reload_vault tool.
+    """
+    old = registry.get(vault_id)
+    if old:
+        await old.graph_store.close()
+    new_services = await initialize_services(config)
+    registry[vault_id] = new_services
+    return new_services

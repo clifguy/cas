@@ -234,6 +234,30 @@ class VaultNotFoundError(SAGEError):
         )
 
 
+class VaultConfigValidationError(SAGEError):
+    """400: vault config failed Pydantic validation."""
+
+    def __init__(self, errors: list[str]) -> None:
+        super().__init__(
+            "vault_config_validation_error",
+            "Vault configuration is invalid",
+            400,
+            {"errors": errors},
+        )
+
+
+class VaultAlreadyExistsError(SAGEError):
+    """409: vault_id already registered."""
+
+    def __init__(self, vault_id: str) -> None:
+        super().__init__(
+            "vault_already_exists",
+            f"Vault '{vault_id}' already exists",
+            409,
+            {"vault_id": vault_id},
+        )
+
+
 class StagingEdgeNotFoundError(SAGEError):
     """404: staging edge not found (already confirmed/dismissed or never existed)."""
 

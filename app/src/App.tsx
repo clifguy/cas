@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './views/Dashboard';
 import Ingest from './views/Ingest';
 import Review from './views/Review';
 import Search from './views/Search';
+import Settings from './views/Settings';
 import DocumentDetail from './views/DocumentDetail';
 import GraphExplorer from './views/GraphExplorer';
 import { listVaults } from './api/vaults';
@@ -22,11 +23,13 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
+  const refreshVaults = useCallback((selectVaultId?: string) => {
     listVaults()
       .then(vaults => {
         setVaultList(vaults);
-        if (vaults.length > 0 && !activeVault) {
+        if (selectVaultId) {
+          setActiveVault(selectVaultId);
+        } else if (vaults.length > 0 && !activeVault) {
           setActiveVault(vaults[0].id);
         }
         setLoading(false);
@@ -35,6 +38,10 @@ export default function App() {
         setError(err.message ?? 'Failed to load vaults');
         setLoading(false);
       });
+  }, [activeVault]);
+
+  useEffect(() => {
+    refreshVaults();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
@@ -56,6 +63,7 @@ export default function App() {
           <Layout
             activeVault={activeVault}
             onVaultChange={setActiveVault}
+            onVaultCreated={(id: string) => refreshVaults(id)}
             vaultList={vaultList}
             currentVault={currentVault}
           />
@@ -65,6 +73,7 @@ export default function App() {
           <Route path="ingest" element={<Ingest />} />
           <Route path="review" element={<Review />} />
           <Route path="search" element={<Search />} />
+          <Route path="settings" element={<Settings />} />
           <Route path="documents/:id" element={<DocumentDetail />} />
           <Route path="documents/:id/graph" element={<GraphExplorer />} />
         </Route>
