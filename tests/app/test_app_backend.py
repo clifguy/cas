@@ -162,7 +162,7 @@ class TestFilenameParserSegments:
         assert result.project == "PIM"
         assert "PV06" in result.codes
         assert result.title == "Claim-Set"
-        assert result.version == "v6"
+        assert result.version == "v6.0"
 
     def test_ei_002_missing_date(self):
         """Parse filename missing date."""
@@ -172,7 +172,7 @@ class TestFilenameParserSegments:
         assert result.project == "PIM"
         assert "REF" in result.codes
         assert result.title == "Glossary"
-        assert result.version == "v10"
+        assert result.version == "v10.0"
 
     def test_ei_003_missing_version(self):
         """Parse filename missing version."""
@@ -220,7 +220,7 @@ class TestFilenameParserSegments:
         """Version identified by v-prefix scanning from right."""
         p = self._parser()
         result = p.parse("2026-03-09_PIM_PV06_Validation-Report_v3")
-        assert result.version == "v3"
+        assert result.version == "v3.0"
         assert "Validation-Report" in result.title
         assert "PV06" in result.codes
 
@@ -370,7 +370,7 @@ class TestFilenameParserPreSplit:
         assert result.date == "2025-12-20"
         assert result.project == "PIM"
         assert result.title == "Portfolio_Refactoring_Checklist"
-        assert result.version == "v2"
+        assert result.version == "v2.0"
 
     def test_underscore_separated_date(self):
         """Date followed by underscore still works (no regression)."""
@@ -379,7 +379,7 @@ class TestFilenameParserPreSplit:
         assert result.date == "2025-12-20"
         assert result.project == "PIM"
         assert result.title == "Portfolio_Refactoring_Checklist"
-        assert result.version == "v2"
+        assert result.version == "v2.0"
 
     # -- Bug 2: Multi-part version with underscore sub-separator --
 
@@ -387,7 +387,7 @@ class TestFilenameParserPreSplit:
         """Version with underscore minor component: v2_3 parsed as single version."""
         p = self._parser()
         result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_3")
-        assert result.version == "v2_3"
+        assert result.version == "v2.3"
         assert result.title == "Portfolio_Refactoring_Checklist"
         assert result.date == "2025-12-20"
         assert result.project == "PIM"
@@ -396,7 +396,7 @@ class TestFilenameParserPreSplit:
         """Version v2_4 captured intact, not split."""
         p = self._parser()
         result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_4")
-        assert result.version == "v2_4"
+        assert result.version == "v2.4"
         assert result.title == "Portfolio_Refactoring_Checklist"
 
     def test_version_dot_minor(self):
@@ -412,7 +412,7 @@ class TestFilenameParserPreSplit:
         """Three-part version with underscores: v8_4_1."""
         p = self._parser()
         result = p.parse("PIM_REF_Doc_v8_4_1")
-        assert result.version == "v8_4_1"
+        assert result.version == "v8.4.1"
         assert result.title == "Doc"
         assert "REF" in result.codes
 
@@ -451,7 +451,7 @@ class TestFilenameParserPreSplit:
             key=lambda t: t[1],
         )
         version_order = [v for v, _ in normalized]
-        assert version_order == ["v2", "v2.1", "v2_3", "v2_4", "v2_5"]
+        assert version_order == ["v2.0", "v2.1", "v2.3", "v2.4", "v2.5"]
 
     # -- Regression guards --
 
@@ -463,7 +463,7 @@ class TestFilenameParserPreSplit:
         assert result.project == "PIM"
         assert "PV06" in result.codes
         assert result.title == "Claim-Set"
-        assert result.version == "v6"
+        assert result.version == "v6.0"
 
     def test_no_version_no_date(self):
         """Filename with neither date nor version still parses title."""
@@ -476,10 +476,10 @@ class TestFilenameParserPreSplit:
         assert result.title == "Glossary"
 
     def test_version_case_insensitive(self):
-        """Uppercase V prefix is recognized."""
+        """Uppercase V prefix is recognized and normalized to lowercase."""
         p = self._parser()
         result = p.parse("2025-12-20_PIM_Doc_V3_2")
-        assert result.version == "V3_2"
+        assert result.version == "v3.2"
         assert normalize_version(result.version) == (3, 2, 0)
 
 
@@ -961,7 +961,7 @@ class TestScanEndpoint:
         assert md["parsed_metadata"]["title"] == "Claim-Set"
         assert md["parsed_metadata"]["date"] == "2026-03-09"
         assert "PV06" in md["parsed_metadata"]["codes"]
-        assert md["parsed_metadata"]["version"] == "v7"
+        assert md["parsed_metadata"]["version"] == "v7.0"
 
         # .txt file has no adapter
         txt_files = [f for f in files if f["file_path"].endswith(".txt")]

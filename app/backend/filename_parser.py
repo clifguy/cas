@@ -60,6 +60,18 @@ def normalize_version(version_str: str) -> tuple[int, int, int]:
     return (ints[0], ints[1], ints[2])
 
 
+def format_version(version_str: str) -> str:
+    """Canonical version string: 'v{major}.{minor}' or 'v{major}.{minor}.{patch}'.
+
+    Converts any parsed version token to a consistent decimal format:
+      v1_0 -> v1.0, V3_2 -> v3.2, v8_4_1 -> v8.4.1, v7 -> v7.0, v6a -> v6.0.
+    """
+    major, minor, patch = normalize_version(version_str)
+    if patch:
+        return f"v{major}.{minor}.{patch}"
+    return f"v{major}.{minor}"
+
+
 class FilenameParser:
     """Parse filenames using vault metadata_extraction config."""
 
@@ -123,7 +135,7 @@ class FilenameParser:
         # delimited segments (e.g. v2_3, v10.4.1, V3_2)
         ver_m = _TRAILING_VERSION_RE.search(stem)
         if ver_m:
-            version = ver_m.group(1)
+            version = format_version(ver_m.group(1))
             stem = stem[: ver_m.start(1)].rstrip("_ ")
 
         # -- Phase 2: post-split segment classification --
