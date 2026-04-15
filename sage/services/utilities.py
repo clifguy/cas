@@ -39,8 +39,10 @@ from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus
 from sage.models.schemas import (
     AssertionFailure,
+    Document,
     EvalRetrievalResult,
     ExportProjectionResponse,
+    ReadProjectionResponse,
     RefreshViewsResponse,
 )
 from sage.storage.graph_store import GraphStore
@@ -60,6 +62,31 @@ class UtilitiesService:
         self._content = content_store
         self._embedding = embedding_provider
         self._config = config
+
+    # ------------------------------------------------------------------
+    # Shared projection retrieval
+    # ------------------------------------------------------------------
+
+    async def _get_projection_text(self, document_id: str) -> tuple[Document, str]:
+        """Validate document exists and reconstruct projection text from chunks.
+
+        Returns:
+            (document, projection_text) tuple.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+            NoProjectionError: Document has no stored projection chunks.
+        """
+        doc = await self._graph.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(document_id)
+
+        chunks = await self._content.get_all_chunks(document_id)
+        if not chunks:
+            raise NoProjectionError(document_id)
+
+        projection_text = "\n\n".join(chunk.content for chunk in chunks)
+        return doc, projection_text
 
     # ------------------------------------------------------------------
     # export_projection (BH-038, BH-039, BH-040)
@@ -82,10 +109,7 @@ class UtilitiesService:
             NoProjectionError: Document has no stored projection chunks.
             PathTraversalDeniedError: output_path resolves outside storage_root.
         """
-        # Validate document exists
-        doc = await self._graph.get_document(document_id)
-        if doc is None:
-            raise DocumentNotFoundError(document_id)
+        doc, projection_text = await self._get_projection_text(document_id)
 
         # Resolve and validate output path (BH-038, BH-039, BH-040)
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
@@ -95,14 +119,6 @@ class UtilitiesService:
         if not str(target).startswith(str(storage_root) + "/") and target != storage_root:
             raise PathTraversalDeniedError(output_path)
 
-        # Retrieve projection chunks from content store
-        chunks = await self._content.get_all_chunks(document_id)
-        if not chunks:
-            raise NoProjectionError(document_id)
-
-        # Reconstruct projection text from chunks
-        projection_text = "\n\n".join(chunk.content for chunk in chunks)
-
         # Write the file
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(projection_text, encoding="utf-8")
@@ -110,6 +126,38 @@ class UtilitiesService:
         return ExportProjectionResponse(
             document_id=document_id,
             output_path=str(target),
+        )
+
+    # ------------------------------------------------------------------
+    # read_projection
+    # ------------------------------------------------------------------
+
+    async def read_projection(self, document_id: str) -> ReadProjectionResponse:
+        """Read a document's full projection text with metadata.
+
+        Returns the complete projection (reconstructed from stored chunks)
+        directly, equivalent to uploading the source document.
+
+        Args:
+            document_id: Document to read.
+
+        Returns:
+            ReadProjectionResponse with metadata and full projection text.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+            NoProjectionError: Document has no stored projection chunks.
+        """
+        doc, projection_text = await self._get_projection_text(document_id)
+
+        return ReadProjectionResponse(
+            document_id=document_id,
+            title=doc.title,
+            version_label=doc.version_label,
+            lifecycle_status=doc.lifecycle_status,
+            doc_type=doc.doc_type,
+            source_path=doc.source_path,
+            projection_text=projection_text,
         )
 
     # ------------------------------------------------------------------

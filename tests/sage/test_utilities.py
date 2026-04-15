@@ -120,6 +120,60 @@ async def test_bh040_absolute_path_outside_vault(utilities_service, ingested_doc
 
 
 # ---------------------------------------------------------------------------
+# read_projection: returns full document text with metadata
+# ---------------------------------------------------------------------------
+
+
+async def test_read_projection_returns_text(utilities_service, ingested_doc):
+    """read_projection returns projection text and metadata fields."""
+    result = await utilities_service.read_projection(ingested_doc.id)
+
+    assert result.document_id == ingested_doc.id
+    assert result.title == ingested_doc.title
+    assert result.lifecycle_status == ingested_doc.lifecycle_status
+    assert result.source_path == ingested_doc.source_path
+    assert len(result.projection_text) > 0
+    assert "Sample" in result.projection_text
+
+
+async def test_read_projection_document_not_found(utilities_service):
+    """read_projection raises DocumentNotFoundError for nonexistent id."""
+    from sage.api.errors import DocumentNotFoundError
+
+    with pytest.raises(DocumentNotFoundError) as exc_info:
+        await utilities_service.read_projection("nonexistent_doc_id")
+
+    assert exc_info.value.code == "document_not_found"
+
+
+async def test_read_projection_no_projection(utilities_service, graph_store):
+    """read_projection raises NoProjectionError when no chunks exist."""
+    from sage.api.errors import NoProjectionError
+    from sage.models.schemas import Document
+    from datetime import datetime, timezone
+
+    # Insert a document directly into the graph store without indexing chunks
+    doc = Document(
+        id="doc_no_chunks",
+        title="No Chunks",
+        source_type="markdown",
+        source_path="test/no_chunks.md",
+        source_content_hash="sha256:fake",
+        adapter_version="1.0",
+        created_by="test",
+        created_at=datetime.now(timezone.utc),
+        last_modified_by="test",
+        updated_at=datetime.now(timezone.utc),
+    )
+    await graph_store.insert_document(doc)
+
+    with pytest.raises(NoProjectionError) as exc_info:
+        await utilities_service.read_projection("doc_no_chunks")
+
+    assert exc_info.value.code == "no_projection"
+
+
+# ---------------------------------------------------------------------------
 # BH-041: Retrieval assertions loaded from separate YAML file
 # ---------------------------------------------------------------------------
 

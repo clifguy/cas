@@ -387,6 +387,37 @@ async def test_export_projection_path_traversal_400(client):
     assert resp2.json()["code"] == "path_traversal_denied"
 
 
+async def test_read_projection_200(app, client):
+    """GET /documents/{id}/projection returns full text and metadata."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    assert resp1.status_code == 201
+    doc_id = resp1.json()["document"]["id"]
+
+    await asyncio.sleep(0.5)
+
+    resp2 = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc_id}/projection",
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["document_id"] == doc_id
+    assert "projection_text" in body
+    assert len(body["projection_text"]) > 0
+    assert "title" in body
+
+
+async def test_read_projection_404(client):
+    """GET /documents/{id}/projection with nonexistent id returns 404."""
+    resp = await client.get(
+        "/sage_vaults/test_vault/documents/nonexistent/projection",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "document_not_found"
+
+
 async def test_eval_retrieval_not_configured_400(client):
     """POST /eval-retrieval without assertions config returns 400."""
     resp = await client.post("/sage_vaults/test_vault/eval-retrieval")

@@ -31,6 +31,7 @@ from sage.mcp_server import (
     sage_get_document,
     sage_ingest,
     sage_link,
+    sage_read_projection,
     sage_reabstract,
     sage_refresh_views,
     sage_register_user,
@@ -368,6 +369,27 @@ async def test_export_projection_path_traversal(vault_services):
         await sage_export_projection("test_vault", doc["id"], "../../etc/passwd")
     )
     assert result["error"] == "path_traversal_denied"
+
+
+# ---------------------------------------------------------------------------
+# Utilities: read_projection
+# ---------------------------------------------------------------------------
+
+
+async def test_read_projection(vault_services):
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+
+    result = _parse(await sage_read_projection("test_vault", doc["id"]))
+    assert result["document_id"] == doc["id"]
+    assert "projection_text" in result
+    assert len(result["projection_text"]) > 0
+    assert "title" in result
+
+
+async def test_read_projection_not_found(vault_services):
+    result = _parse(await sage_read_projection("test_vault", "nonexistent"))
+    assert result["error"] == "document_not_found"
 
 
 # ---------------------------------------------------------------------------

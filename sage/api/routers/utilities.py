@@ -7,6 +7,7 @@ from sage.models.schemas import (
     EvalRetrievalResult,
     ExportProjectionRequest,
     ExportProjectionResponse,
+    ReadProjectionResponse,
     RefreshViewsResponse,
 )
 from sage.services.utilities import UtilitiesService
@@ -25,6 +26,18 @@ async def export_projection(
     service: UtilitiesService = Depends(get_utilities_service),
 ) -> ExportProjectionResponse:
     return await service.export_projection(document_id, request.output_path)
+
+
+@router.get(
+    "/documents/{document_id}/projection",
+    response_model=ReadProjectionResponse,
+)
+async def read_projection(
+    document_id: str = Path(..., description="Document identifier"),
+    vault_id: str = Depends(get_vault_id),
+    service: UtilitiesService = Depends(get_utilities_service),
+) -> ReadProjectionResponse:
+    return await service.read_projection(document_id)
 
 
 @router.post("/eval-retrieval", response_model=EvalRetrievalResult)

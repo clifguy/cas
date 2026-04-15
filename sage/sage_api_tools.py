@@ -402,6 +402,25 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
+    async def sage_read_projection(vault_id: str, document_id: str) -> str:
+        """Read a document's full text into context with metadata header.
+
+        Returns the complete projection (reconstructed from stored chunks)
+        as readable text, equivalent to uploading the document. Use this
+        instead of sage_discover when you need to read an entire document.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: The document's unique identifier.
+        """
+        try:
+            v = get_vault(vault_id)
+            response = await v.utilities_service.read_projection(document_id)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
     async def sage_refresh_views(vault_id: str) -> str:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
@@ -643,6 +662,7 @@ def register_sage_tools(
         "sage_chain": sage_chain,
         "sage_discover": sage_discover,
         "sage_export_projection": sage_export_projection,
+        "sage_read_projection": sage_read_projection,
         "sage_refresh_views": sage_refresh_views,
         "sage_list_vaults": sage_list_vaults,
         "sage_vault_stats": sage_vault_stats,

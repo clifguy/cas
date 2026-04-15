@@ -261,6 +261,16 @@ class ExportProjectionResponse(BaseModel):
     output_path: str
 
 
+class ReadProjectionResponse(BaseModel):
+    document_id: str
+    title: str
+    version_label: str | None = None
+    lifecycle_status: str
+    doc_type: str | None = None
+    source_path: str
+    projection_text: str
+
+
 class AssertionFailure(BaseModel):
     query: str
     expected_document_id: str
