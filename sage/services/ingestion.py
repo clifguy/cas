@@ -381,11 +381,8 @@ class IngestionService:
         if doc is None:
             raise DocumentNotFoundError(document_id)
 
-        chunks = await self._content_store.get_all_chunks(document_id)
-        if not chunks:
+        if not await self._content_store.has_chunks(document_id):
             raise NoProjectionError(document_id)
-
-        projection_text = "\n\n".join(chunk.content for chunk in chunks)
 
         # Mark in-progress before dispatching background work
         async with self._locks.lock(document_id):
@@ -395,17 +392,20 @@ class IngestionService:
             })
 
         asyncio.create_task(
-            self._reabstract_background(document_id, projection_text)
+            self._reabstract_background(document_id)
         )
 
         return {"status": "reabstract_started", "document_id": document_id}
 
-    async def _reabstract_background(
-        self, document_id: str, projection_text: str
-    ) -> None:
-        """Background worker for reabstract. Updates the document on
-        success or sets pipeline_status to FAILED on error."""
+    async def _reabstract_background(self, document_id: str) -> None:
+        """Background worker for reabstract. Loads chunks, generates
+        abstract, and updates the document. Sets pipeline_status to
+        FAILED on error."""
         try:
+            chunks = await self._content_store.get_all_chunks(document_id)
+            projection_text = "\n\n".join(
+                chunk.content for chunk in chunks
+            )
             abstract = await self._generate_abstract_text(projection_text)
             now = datetime.now(timezone.utc)
             async with self._locks.lock(document_id):

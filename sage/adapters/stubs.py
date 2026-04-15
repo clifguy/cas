@@ -114,6 +114,10 @@ class StubContentStore(ContentStore):
         matched.sort(key=lambda c: c.chunk_index)
         return matched
 
+    async def has_chunks(self, document_id: str) -> bool:
+        """Return True if at least one chunk exists for the document."""
+        return len(self._store.get(document_id, [])) > 0
+
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
         """Return all chunks for a document in document order."""
         chunks = self._store.get(document_id, [])

@@ -330,6 +330,21 @@ class TestLanceDBContentStore:
         await content_store.remove_document("nonexistent_doc")
         # No exception raised
 
+    async def test_ad_068_has_chunks_true(
+        self, content_store, embedding_provider
+    ):
+        """AD-068: has_chunks returns True for a document with indexed chunks."""
+        texts = ["chunk a", "chunk b"]
+        embeddings = await embedding_provider.embed(texts)
+        await content_store.index_chunks("doc_hc", [
+            Chunk("doc_hc", "H", texts[i], embeddings[i], i) for i in range(2)
+        ])
+        assert await content_store.has_chunks("doc_hc") is True
+
+    async def test_ad_069_has_chunks_false(self, content_store):
+        """AD-069: has_chunks returns False for a non-existent document."""
+        assert await content_store.has_chunks("nonexistent_doc_999") is False
+
     async def test_ad_016_semantic_search_ranking(
         self, populated_store, embedding_provider
     ):

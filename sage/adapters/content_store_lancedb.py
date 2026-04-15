@@ -338,6 +338,26 @@ class LanceDBContentStore(ContentStore):
         chunks.sort(key=lambda c: c.chunk_index)
         return chunks
 
+    async def has_chunks(self, document_id: str) -> bool:
+        """Return True if at least one chunk exists for the document (AD-068)."""
+        table = self._get_table()
+        if table is None:
+            return False
+
+        escaped_doc = _escape_sql(document_id)
+        try:
+            rows = (
+                table.search()
+                .where(f"document_id = '{escaped_doc}'")
+                .select(["document_id"])
+                .limit(1)
+                .to_list()
+            )
+            return len(rows) > 0
+        except Exception as exc:
+            logger.warning("has_chunks failed: %s", exc)
+            return False
+
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
         """Return all chunks for a document in document order (AD-011, AD-013)."""
         table = self._get_table()

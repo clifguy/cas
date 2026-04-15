@@ -93,6 +93,15 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
+    async def has_chunks(self, document_id: str) -> bool:
+        """Return True if at least one chunk exists for the document.
+
+        Lightweight existence check without loading chunk content.
+        Used by reabstract for synchronous validation before
+        dispatching background work.
+        """
+
+    @abstractmethod
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
         """Return all chunks for a document in document order.
 
