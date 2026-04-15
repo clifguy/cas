@@ -54,24 +54,26 @@ paths:
   /sage_vaults/{vault_id}/discover:
     post:
       operationId: discover
-      summary: Retrieve documents by semantic search, deterministic extraction, or verification comparison.
+      summary: Retrieve documents by semantic search, keyword search, catalog enumeration, or deterministic extraction.
       description: >-
-        The primary retrieval operation. Supports three modes:
+        The primary retrieval operation. Supports four modes:
 
 
         - **semantic**: Vector similarity search, optionally fused with BM25
           keyword matching. Returns ranked chunks with relevance scores.
 
+        - **keyword**: BM25-only search. No embedding required.
+
+        - **catalog**: Filter-only document enumeration via SQL. No vector
+          search, no chunk content. Supports pagination via limit + offset.
+
         - **deterministic**: Exact content extraction by document ID and heading
           path. Bypasses vector search entirely. Used for governed content
           transfer between documents or agents.
 
-        - **verification**: Compares content from a target document against an
-          authoritative source deterministically. Returns match/mismatch results.
-
 
         Results can be scoped (all, authoritative, specific, filtered) and
-        filtered by metadata criteria. Pagination is cursor-based.
+        filtered by metadata criteria.
       tags: [Retrieval]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -790,14 +792,13 @@ components:
 
     RetrievalMode:
       type: string
-      enum: [semantic, keyword, catalog, deterministic, verification]
+      enum: [semantic, keyword, catalog, deterministic]
       description: >-
         Retrieval mode. Semantic returns ranked approximate results via
         vector + optional BM25 fusion. Keyword returns BM25-only results.
         Catalog returns all documents matching filter predicates via direct
         SQL query (no vector search, no chunk content, supports pagination
         via offset). Deterministic returns exact content by address.
-        Verification compares content against an authoritative source.
 
     RetrievalScope:
       type: string
@@ -1120,8 +1121,6 @@ components:
           Supports pagination via limit + offset.
 
         - deterministic: document_id and heading_path are required.
-
-        - verification: document_id and authority_document_id are required.
       required: [mode]
       properties:
         query:
@@ -1139,19 +1138,14 @@ components:
         document_id:
           type: string
           description: >-
-            Target document for deterministic extraction or verification.
-            Required for deterministic and verification modes.
+            Target document for deterministic extraction.
+            Required for deterministic mode.
         heading_path:
           type: string
           description: >-
             Heading hierarchy path for deterministic extraction
             (e.g., "Section 3 > Definitions > Normalization").
             Required for deterministic mode.
-        authority_document_id:
-          type: string
-          description: >-
-            Authoritative source document for verification mode.
-            The content at document_id is compared against this source.
         limit:
           type: integer
           minimum: 1
@@ -1165,12 +1159,6 @@ components:
           description: >-
             Number of results to skip before returning. Used with limit
             for pagination in catalog mode. Ignored by other modes.
-        cursor:
-          type: string
-          nullable: true
-          description: >-
-            Opaque pagination cursor from a previous response.
-            Pass to retrieve the next page of results.
         use_hybrid:
           type: boolean
           default: true
@@ -1450,12 +1438,6 @@ components:
           description: >-
             Total number of results available (before pagination).
             May be approximate for semantic mode.
-        cursor:
-          type: string
-          nullable: true
-          description: >-
-            Pagination cursor for the next page. Null if no more
-            results are available.
 
     DiscoverHit:
       type: object
@@ -1493,30 +1475,6 @@ components:
             Present in semantic and keyword modes. A document with many
             matching chunks is a stronger hit than one with a single match
             at a similar peak score. Useful as a reranking signal.
-        match_result:
-          $ref: "#/components/schemas/VerificationMatch"
-
-    VerificationMatch:
-      type: object
-      nullable: true
-      description: >-
-        Verification mode result. Compares content from the target
-        document against the authoritative source.
-      properties:
-        matches:
-          type: boolean
-          description: True if the content matches the authoritative source.
-        authority_content:
-          type: string
-          description: Content from the authoritative source document.
-        target_content:
-          type: string
-          description: Content from the target document being verified.
-        differences:
-          type: string
-          nullable: true
-          description: >-
-            Human-readable description of differences, if any.
 
     SetLifecycleResponse:
       type: object
@@ -1769,7 +1727,7 @@ components:
 
 tags:
   - name: Retrieval
-    description: Semantic search, deterministic extraction, and verification comparison.
+    description: Semantic search, keyword search, catalog enumeration, and deterministic extraction.
   - name: Document Lifecycle
     description: Lifecycle state transitions (CAS-ADR-014).
   - name: Document Metadata

@@ -186,9 +186,15 @@ def create_app(
     app.include_router(app_backend_router)
 
     # Mount MCP server (SSE transport) for external clients (e.g. Cowork).
-    # Wrap with _GracefulSSEMiddleware to suppress double-response errors
-    # that occur when uvicorn cancels active SSE connections at shutdown.
+    # The SSE app is mounted as a native Starlette sub-application so
+    # FastAPI correctly propagates lifespan and request scope.
+    # _GracefulSSEMiddleware is added to the Starlette app's own middleware
+    # stack rather than wrapping it externally, which would obscure the
+    # app type and interfere with MCP session initialization.
+    from starlette.middleware import Middleware
     from sage.mcp_server import mcp
-    app.mount("/mcp", _GracefulSSEMiddleware(mcp.sse_app()))
+    sse_app = mcp.sse_app()
+    sse_app.add_middleware(_GracefulSSEMiddleware)
+    app.mount("/mcp", sse_app)
 
     return app

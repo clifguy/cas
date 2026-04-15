@@ -222,10 +222,8 @@ class DiscoverRequest(BaseModel):
     filters: RetrievalFilters | None = None
     document_id: str | None = None
     heading_path: str | None = None
-    authority_document_id: str | None = Field(default=None, deprecated=True)
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
-    cursor: str | None = Field(default=None, deprecated=True)
     use_hybrid: bool = True
     use_abstract_prefilter: bool = True
     response_level: ResponseLevel = ResponseLevel.CHUNKS
@@ -245,7 +243,6 @@ class DiscoverResponse(BaseModel):
     mode: RetrievalMode
     results: list[DiscoverHit]
     total_available: int
-    cursor: str | None = Field(default=None, deprecated=True)
 
 
 # ---------------------------------------------------------------------------

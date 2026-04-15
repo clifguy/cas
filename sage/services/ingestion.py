@@ -115,8 +115,8 @@ class IngestionService:
             IngestResult with the document and whether it was newly created.
 
         Raises:
-            DuplicateContentError: Same content hash exists anywhere in vault (BH-066),
-                or same source_path + hash exists (BH-018), unless force flag set.
+            DuplicateContentError: Same content hash exists anywhere in vault
+                (BH-018, BH-066), unless force flag set.
             AdapterNotFoundError: No adapter for requested source type.
         """
         adapter = self._adapters.get(request.adapter)
@@ -144,19 +144,9 @@ class IngestionService:
             storage_root / vault_relative, request.config
         )
 
-        # Check for duplicates (BH-018, BH-019, BH-066, BH-067)
-        if not request.force:
-            # Hash-only check: catch identical content at any path (BH-066)
-            hash_matches = await self._store.find_documents_by_hashes(
-                [projection.content_hash]
-            )
-            if hash_matches:
-                existing_id = next(iter(hash_matches.values()))
-                raise DuplicateContentError(existing_id, projection.content_hash)
-
-        # Path+hash check for force re-ingestion (reuses existing record)
-        existing = await self._store.find_by_source_path_and_hash(
-            vault_relative, projection.content_hash
+        # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
+        hash_matches = await self._store.find_documents_by_hashes(
+            [projection.content_hash]
         )
 
         now = datetime.now(timezone.utc)
@@ -168,9 +158,14 @@ class IngestionService:
             else None
         )
 
-        if existing is not None and request.force:
-            # Force re-ingestion: reuse existing record (BH-019)
-            updates = {
+        if hash_matches and not request.force:
+            # Hash-only check: identical content already in vault (BH-066)
+            existing_id = next(iter(hash_matches.values()))
+            raise DuplicateContentError(existing_id, projection.content_hash)
+        elif hash_matches and request.force:
+            # Force re-ingestion: reuse existing record (BH-019, BH-067)
+            existing_id = next(iter(hash_matches.values()))
+            updates: dict[str, object] = {
                 "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
                 "pipeline_error": None,
                 "projected_at": now.isoformat(),
@@ -181,11 +176,14 @@ class IngestionService:
                 "source_modified_at": source_modified_at_str,
                 "document_date": None,
             }
-            doc = await self._store.update_document(existing.id, updates)
+            # Update source_path if the file moved (BH-067)
+            if vault_relative != (await self._store.get_document(existing_id)).source_path:
+                updates["source_path"] = vault_relative
+            doc = await self._store.update_document(existing_id, updates)
             is_new = False
 
             # Remove old content store entries for re-indexing
-            await self._content_store.remove_document(existing.id)
+            await self._content_store.remove_document(existing_id)
         else:
             # New document
             created_by = request.created_by or self._config.vault.owner

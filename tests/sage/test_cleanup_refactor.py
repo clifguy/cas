@@ -15,7 +15,7 @@ from sage.mcp_init import initialize_services
 import sage.mcp_server as _mcp
 
 from sage.mcp_server import app_batch_ingest, sage_ingest
-from sage.models.schemas import DiscoverRequest, DiscoverResponse, IngestRequest
+from sage.models.schemas import IngestRequest
 from sage.models.enums import SourceType
 
 
@@ -188,28 +188,6 @@ class TestModuleLevelImports:
         import inspect
         source = inspect.getsource(m.sage_get_document)
         assert "from sage.api.errors import" not in source
-
-
-# ---------------------------------------------------------------------------
-# TEST-CLN-006: Schema fields marked deprecated
-# ---------------------------------------------------------------------------
-
-
-class TestSchemaDeprecation:
-    """Unused schema fields are annotated deprecated."""
-
-    def test_cln_006_discover_request_deprecated_fields(self):
-        """DiscoverRequest marks authority_document_id and cursor as deprecated."""
-        schema = DiscoverRequest.model_json_schema()
-        props = schema["properties"]
-        assert props["authority_document_id"].get("deprecated") is True
-        assert props["cursor"].get("deprecated") is True
-
-    def test_cln_006_discover_response_deprecated_cursor(self):
-        """DiscoverResponse marks cursor as deprecated."""
-        schema = DiscoverResponse.model_json_schema()
-        props = schema["properties"]
-        assert props["cursor"].get("deprecated") is True
 
 
 # ---------------------------------------------------------------------------

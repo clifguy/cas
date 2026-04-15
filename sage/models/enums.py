@@ -43,7 +43,6 @@ class RetrievalMode(StrEnum):
     SEMANTIC = "semantic"
     KEYWORD = "keyword"
     DETERMINISTIC = "deterministic"
-    VERIFICATION = "verification"
     CATALOG = "catalog"
 
 

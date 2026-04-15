@@ -294,25 +294,6 @@ class GraphStore:
         )
         return f"ORDER BY {nulls_last}{sort_by} {direction}"
 
-    async def find_by_source_path_and_hash(
-        self, source_path: str, content_hash: str
-    ) -> Document | None:
-        return await self._run(
-            self._find_by_source_path_and_hash_sync, source_path, content_hash
-        )
-
-    def _find_by_source_path_and_hash_sync(
-        self, source_path: str, content_hash: str
-    ) -> Document | None:
-        conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM documents WHERE source_path = ? AND source_content_hash = ?",
-            (source_path, content_hash),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_document(row)
-
     async def find_by_source_path(self, source_path: str) -> list[Document]:
         return await self._run(self._find_by_source_path_sync, source_path)
 

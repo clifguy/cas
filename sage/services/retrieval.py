@@ -108,12 +108,6 @@ class RetrievalService:
             return await self._deterministic(request)
         elif request.mode == RetrievalMode.CATALOG:
             return await self._catalog(request)
-        else:
-            # Verification mode deferred to slice 4
-            raise MissingFieldError(
-                "mode",
-                f"Retrieval mode '{request.mode}' is not yet implemented",
-            )
 
     # ------------------------------------------------------------------
     # Catalog mode (BH-072 through BH-079)

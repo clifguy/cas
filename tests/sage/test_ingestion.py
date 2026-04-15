@@ -727,6 +727,41 @@ async def test_bh_065_document_date_round_trip(
 
 
 # ---------------------------------------------------------------------------
+# BH-067: Force re-ingestion reuses existing document at different path
+# ---------------------------------------------------------------------------
+
+async def test_bh_067_force_reingestion_different_path_reuses_document(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Force re-ingestion of identical content at a different path reuses
+    the existing document record rather than creating a duplicate.
+    The source_path is updated to the new location."""
+    content = "# Identical\n\nSame content at two paths."
+    _create_test_file(tmp_vault_dir, "patents/doc_a.md", content)
+    _create_test_file(tmp_vault_dir, "patents/subfolder/doc_a_copy.md", content)
+
+    # First ingest
+    result1 = await ingestion_service.ingest(IngestRequest(
+        source="patents/doc_a.md",
+        adapter=SourceType.MARKDOWN,
+    ))
+    assert result1.is_new is True
+    original_id = result1.document.id
+
+    # Force re-ingest from different path with identical content
+    result2 = await ingestion_service.ingest(IngestRequest(
+        source="patents/subfolder/doc_a_copy.md",
+        adapter=SourceType.MARKDOWN,
+        force=True,
+    ))
+
+    assert result2.is_new is False
+    assert result2.document.id == original_id
+    assert result2.document.source_path == "patents/subfolder/doc_a_copy.md"
+    assert result2.document.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+# ---------------------------------------------------------------------------
 # BH-068: Sequential pipeline sets final status before returning
 # ---------------------------------------------------------------------------
 

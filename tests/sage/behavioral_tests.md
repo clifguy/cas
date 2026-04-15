@@ -1274,11 +1274,13 @@ real-world file systems (renamed copies, files moved between folders). Admitting
 a second copy creates unwanted duplicates that complicate edge curation and
 retrieval. The hash-only check catches these before the path+hash check.
 
-### TEST-SAGE-BH-067: Hash-only duplicate detection bypassed with force flag
+### TEST-SAGE-BH-067: Force re-ingestion reuses existing document at different path
 
 **Artifact:** `sage/services/ingestion.py` (ingest method, force flag)
 **Category:** ingestion, duplicate_detection
-**Decision:** `force: true` bypasses both hash-only and path+hash duplicate checks.
+**Decision:** `force: true` with identical content hash reuses the existing
+document record regardless of source path. The content hash is the identity
+signal; the path is mutable metadata.
 
 **Precondition:** Document A ingested from `patents/doc_a.docx` with hash H.
 
@@ -1286,11 +1288,15 @@ retrieval. The hash-only check catches these before the path+hash check.
 content (hash H), `force: true`.
 
 **Expected:**
-- HTTP 201 (new document created at the new path)
-- New document ID distinct from doc_A_id
+- Existing document record reused (same document ID as doc_A_id)
+- `source_path` updated to `patents/subfolder/doc_a_copy.docx`
+- `is_new` is False
+- Pipeline re-runs (semantic_abstract cleared, content store re-indexed)
 
-**Rationale:** The force flag is an explicit override for all duplicate
-detection. Callers who set force accept responsibility for managing duplicates.
+**Rationale:** The content hash uniquely identifies document content. When a
+file moves to a new path, force re-ingestion should update the path on the
+existing record rather than creating a duplicate. This keeps edges, metadata,
+and document identity stable across file reorganizations.
 
 ### TEST-SAGE-BH-068: Sequential pipeline sets final status before returning
 
