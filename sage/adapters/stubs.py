@@ -114,6 +114,17 @@ class StubContentStore(ContentStore):
         matched.sort(key=lambda c: c.chunk_index)
         return matched
 
+    async def get_heading_paths(self, document_id: str) -> list[str]:
+        """Return distinct heading paths in document order."""
+        chunks = self._store.get(document_id, [])
+        seen: set[str] = set()
+        paths: list[str] = []
+        for chunk in sorted(chunks, key=lambda c: c.chunk_index):
+            if chunk.heading_path not in seen:
+                seen.add(chunk.heading_path)
+                paths.append(chunk.heading_path)
+        return paths
+
     async def has_chunks(self, document_id: str) -> bool:
         """Return True if at least one chunk exists for the document."""
         return len(self._store.get(document_id, [])) > 0

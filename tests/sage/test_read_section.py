@@ -202,6 +202,27 @@ async def test_read_section_heading_not_found(multi_section_service, multi_secti
     assert exc_info.value.code == "heading_not_found"
 
 
+async def test_read_section_heading_not_found_lists_available(
+    multi_section_service, multi_section_doc
+):
+    """HeadingNotFoundError detail includes available_headings for the document."""
+    utilities, _ = multi_section_service
+
+    with pytest.raises(HeadingNotFoundError) as exc_info:
+        await utilities.read_section(
+            multi_section_doc.id, "CLAIMS"
+        )
+
+    detail = exc_info.value.detail
+    assert "available_headings" in detail
+    headings = detail["available_headings"]
+    # The multi-section doc has these headings (Technical Description has
+    # no standalone chunk -- its content lives in child headings)
+    assert "Overview" in headings
+    assert "Conclusion" in headings
+    assert any("Technical Description" in h for h in headings)
+
+
 # ---------------------------------------------------------------------------
 # Error: document exists but has no chunks
 # ---------------------------------------------------------------------------

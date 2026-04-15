@@ -358,6 +358,75 @@ async def test_bh_030_deterministic_heading_not_found(
     assert exc_info.value.code == "heading_not_found"
 
 
+async def test_deterministic_heading_not_found_lists_available(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """HeadingNotFoundError detail includes available_headings for the document."""
+    doc = _make_doc("doc_avail")
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_avail",
+        [
+            ("ABSTRACT", "Abstract text."),
+            ("CLAIMS -- Remove Before Filing", "Claim 1 content."),
+            ("DETAILED DESCRIPTION", "Description text."),
+            ("DETAILED DESCRIPTION > Subsection A", "Sub A content."),
+        ],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.DETERMINISTIC,
+        document_id="doc_avail",
+        heading_path="CLAIMS",
+    )
+    with pytest.raises(HeadingNotFoundError) as exc_info:
+        await retrieval_service.discover(request)
+
+    detail = exc_info.value.detail
+    assert "available_headings" in detail
+    headings = detail["available_headings"]
+    assert "ABSTRACT" in headings
+    assert "CLAIMS -- Remove Before Filing" in headings
+    assert "DETAILED DESCRIPTION" in headings
+    # Child heading should also appear in the list
+    assert "DETAILED DESCRIPTION > Subsection A" in headings
+
+
+# ---------------------------------------------------------------------------
+# Content store: get_heading_paths
+# ---------------------------------------------------------------------------
+
+async def test_get_heading_paths_returns_distinct_ordered(
+    stub_content_store, seeded_embedding_provider
+):
+    """get_heading_paths returns distinct heading paths in document order."""
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_hp",
+        [
+            ("Overview", "Intro."),
+            ("Overview", "More intro."),  # duplicate heading, two chunks
+            ("Technical Description", "Tech stuff."),
+            ("Technical Description > Details", "Details."),
+            ("Conclusion", "End."),
+        ],
+    )
+
+    paths = await stub_content_store.get_heading_paths("doc_hp")
+    assert paths == [
+        "Overview",
+        "Technical Description",
+        "Technical Description > Details",
+        "Conclusion",
+    ]
+
+
+async def test_get_heading_paths_empty_document(stub_content_store):
+    """get_heading_paths returns empty list for unknown document."""
+    paths = await stub_content_store.get_heading_paths("nonexistent")
+    assert paths == []
+
+
 # ---------------------------------------------------------------------------
 # Additional: semantic mode requires query
 # ---------------------------------------------------------------------------

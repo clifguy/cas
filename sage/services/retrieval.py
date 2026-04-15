@@ -665,9 +665,12 @@ class RetrievalService:
             request.document_id, request.heading_path
         )
 
-        # BH-030: no matching headings = 404
+        # BH-030: no matching headings = 404, with available headings for guidance
         if not chunks:
-            raise HeadingNotFoundError(request.heading_path, request.document_id)
+            available = await self._content.get_heading_paths(request.document_id)
+            raise HeadingNotFoundError(
+                request.heading_path, request.document_id, available
+            )
 
         summary = DocumentSummary(
             id=doc.id,

@@ -119,12 +119,20 @@ class PipelineIncompleteError(SAGEError):
 class HeadingNotFoundError(SAGEError):
     """404: heading path not found in document (BH-030)."""
 
-    def __init__(self, heading_path: str, document_id: str) -> None:
+    def __init__(
+        self,
+        heading_path: str,
+        document_id: str,
+        available_headings: list[str] | None = None,
+    ) -> None:
+        detail: dict = {"heading_path": heading_path, "document_id": document_id}
+        if available_headings is not None:
+            detail["available_headings"] = available_headings
         super().__init__(
             "heading_not_found",
             f"Heading '{heading_path}' not found in document {document_id}",
             404,
-            {"heading_path": heading_path, "document_id": document_id},
+            detail,
         )
 
 

@@ -338,6 +338,34 @@ class LanceDBContentStore(ContentStore):
         chunks.sort(key=lambda c: c.chunk_index)
         return chunks
 
+    async def get_heading_paths(self, document_id: str) -> list[str]:
+        """Return distinct heading paths for a document in document order."""
+        table = self._get_table()
+        if table is None:
+            return []
+
+        escaped_doc = _escape_sql(document_id)
+        try:
+            rows = (
+                table.search()
+                .where(f"document_id = '{escaped_doc}'")
+                .select(["heading_path", "chunk_index"])
+                .to_list()
+            )
+        except Exception as exc:
+            logger.warning("get_heading_paths failed: %s", exc)
+            return []
+
+        rows.sort(key=lambda r: r["chunk_index"])
+        seen: set[str] = set()
+        paths: list[str] = []
+        for row in rows:
+            hp = row["heading_path"]
+            if hp not in seen:
+                seen.add(hp)
+                paths.append(hp)
+        return paths
+
     async def has_chunks(self, document_id: str) -> bool:
         """Return True if at least one chunk exists for the document (AD-068)."""
         table = self._get_table()

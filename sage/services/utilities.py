@@ -194,7 +194,8 @@ class UtilitiesService:
             document_id, heading_path
         )
         if not chunks:
-            raise HeadingNotFoundError(heading_path, document_id)
+            available = await self._content.get_heading_paths(document_id)
+            raise HeadingNotFoundError(heading_path, document_id, available)
 
         section_text = "\n\n".join(chunk.content for chunk in chunks)
 

@@ -93,6 +93,14 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
+    async def get_heading_paths(self, document_id: str) -> list[str]:
+        """Return distinct heading paths for a document in document order.
+
+        Used to populate available_headings in HeadingNotFoundError
+        so callers can see what headings actually exist.
+        """
+
+    @abstractmethod
     async def has_chunks(self, document_id: str) -> bool:
         """Return True if at least one chunk exists for the document.
 
