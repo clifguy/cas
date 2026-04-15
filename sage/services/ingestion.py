@@ -400,7 +400,15 @@ class IngestionService:
     async def _reabstract_background(self, document_id: str) -> None:
         """Background worker for reabstract. Loads chunks, generates
         abstract, and updates the document. Sets pipeline_status to
-        FAILED on error."""
+        FAILED on error.
+
+        The initial sleep yields control so the MCP tool response can
+        flush through the SSE transport before heavy work begins.
+        Without it, the synchronous MLX model load and inference
+        block the event loop and prevent the "reabstract_started"
+        response from reaching the client.
+        """
+        await asyncio.sleep(0.1)
         try:
             chunks = await self._content_store.get_all_chunks(document_id)
             projection_text = "\n\n".join(

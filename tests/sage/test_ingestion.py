@@ -926,8 +926,8 @@ async def test_reabstract_background_updates_abstract_on_success(
     response = await ingestion_service.reabstract(doc_id)
     assert response["status"] == "reabstract_started"
 
-    # Allow the background task to complete
-    await asyncio.sleep(0.1)
+    # Allow the background task to complete (0.1s yield + work)
+    await asyncio.sleep(0.5)
 
     doc = await graph_store.get_document(doc_id)
     assert doc.semantic_abstract == "Regenerated abstract from new model."
@@ -961,8 +961,8 @@ async def test_reabstract_background_sets_failed_on_error(
     response = await ingestion_service_failing_llm.reabstract(doc_id)
     assert response["status"] == "reabstract_started"
 
-    # Allow the background task to complete (and fail)
-    await asyncio.sleep(0.1)
+    # Allow the background task to complete and fail (0.1s yield + work)
+    await asyncio.sleep(0.5)
 
     doc = await graph_store.get_document(doc_id)
     assert doc.pipeline_status == PipelineStatus.FAILED
