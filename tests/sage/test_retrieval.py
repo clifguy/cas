@@ -1,6 +1,6 @@
 """Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
 BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-088,
-BH-101 through BH-111.
+BH-101 through BH-115.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
 retrieval (heading path prefix match), keyword-only retrieval,
@@ -2249,3 +2249,159 @@ async def test_bh_111_abstract_boost_composes_with_lifecycle_tier(
     assert "sal_draft" in ids
     # Active document ranks first via lifecycle tier sort
     assert ids.index("sal_active") < ids.index("sal_draft")
+
+
+# ---------------------------------------------------------------------------
+# BH-112: document_ids filter constrains keyword search to specified documents
+# ---------------------------------------------------------------------------
+
+async def test_bh_112_document_ids_filter_keyword_prefilter(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """document_ids filter constrains keyword BM25 to specified documents.
+
+    Document A has the target term once among many chunks (low BM25 score).
+    Documents B and C repeat the term heavily (high BM25 score).
+    Without pre-filtering, A would be ranked off the candidate list.
+    """
+    doc_a = _make_doc("kw_filter_a")
+    doc_b = _make_doc("kw_filter_b")
+    doc_c = _make_doc("kw_filter_c")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+    await graph_store.insert_document(doc_c)
+
+    # Doc A: target term buried among many unrelated chunks
+    chunks_a = [("Section 1", "Introduction to clinical normalization.")]
+    for i in range(20):
+        chunks_a.append((f"Section {i+2}", f"Unrelated content block {i}."))
+    chunks_a.append(("Section 22", "The MLPAO orchestrator handles adjudication."))
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "kw_filter_a", chunks_a,
+    )
+
+    # Docs B and C: term appears in every chunk (high term frequency)
+    for doc_id in ("kw_filter_b", "kw_filter_c"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [(f"S{i}", f"MLPAO MLPAO MLPAO analysis {i}") for i in range(5)],
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="MLPAO",
+        filters=RetrievalFilters(document_ids=["kw_filter_a"]),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "kw_filter_a" in doc_ids
+    assert "kw_filter_b" not in doc_ids
+    assert "kw_filter_c" not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-113: document_ids filter constrains semantic search to specified documents
+# ---------------------------------------------------------------------------
+
+async def test_bh_113_document_ids_filter_semantic_prefilter(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """document_ids filter constrains semantic search to specified documents."""
+    doc_a = _make_doc("sem_filter_a")
+    doc_b = _make_doc("sem_filter_b")
+    doc_c = _make_doc("sem_filter_c")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+    await graph_store.insert_document(doc_c)
+
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "sem_filter_a",
+        [("Section 1", "Clinical normalization with MLPAO orchestrator.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "sem_filter_b",
+        [("Section 1", "Clinical normalization with MLPAO orchestrator.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "sem_filter_c",
+        [("Section 1", "Gardening tips for spring planting.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="MLPAO orchestrator",
+        filters=RetrievalFilters(document_ids=["sem_filter_a"]),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "sem_filter_a" in doc_ids
+    assert "sem_filter_b" not in doc_ids
+    assert "sem_filter_c" not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-114: document_ids filter works with scope ALL (post-filter)
+# ---------------------------------------------------------------------------
+
+async def test_bh_114_document_ids_filter_scope_all(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """document_ids filter applies with default scope ALL, not just SPECIFIC."""
+    doc_a = _make_doc("scope_all_a")
+    doc_b = _make_doc("scope_all_b")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    for doc_id in ("scope_all_a", "scope_all_b"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", "Patent claims analysis for PV07.")],
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV07",
+        scope=RetrievalScope.ALL,
+        filters=RetrievalFilters(document_ids=["scope_all_a"]),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "scope_all_a" in doc_ids
+    assert "scope_all_b" not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# BH-115: document_ids filter with multiple IDs returns all matching documents
+# ---------------------------------------------------------------------------
+
+async def test_bh_115_document_ids_filter_multiple_ids(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """document_ids with multiple IDs returns all matching, excludes others."""
+    doc_a = _make_doc("multi_a")
+    doc_b = _make_doc("multi_b")
+    doc_c = _make_doc("multi_c")
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+    await graph_store.insert_document(doc_c)
+
+    for doc_id in ("multi_a", "multi_b", "multi_c"):
+        await _index_doc_chunks(
+            stub_content_store, seeded_embedding_provider, doc_id,
+            [("Section 1", "Patent claims analysis for PV07.")],
+        )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV07",
+        filters=RetrievalFilters(document_ids=["multi_a", "multi_b"]),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "multi_a" in doc_ids
+    assert "multi_b" in doc_ids
+    assert "multi_c" not in doc_ids

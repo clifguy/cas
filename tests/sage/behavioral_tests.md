@@ -2237,3 +2237,82 @@ Both have identical chunk content and abstract text.
 orthogonal to abstract relevance. The tier sort guarantees active documents
 surface first; within each tier, abstract-boosted scores and recency still
 differentiate.
+
+### TEST-SAGE-BH-112: document_ids filter constrains keyword search to specified documents
+
+**Decision:** When `filters.document_ids` is provided in keyword mode, only
+chunks belonging to those documents are searched. This applies as both a
+pre-filter (at the content store level, restricting the BM25 candidate set)
+and a post-filter (in `_passes_scope`, as a safety net). Without pre-filtering,
+rare terms in large documents are ranked off the candidate list by BM25 scores
+from smaller, term-dense documents.
+
+**Precondition:** Vault with three active documents. Document A contains the
+target term once across many chunks. Documents B and C contain the target term
+many times (higher BM25 scores). All three have completed pipelines.
+
+**Input:** `discover(mode: keyword, query: <target_term>, filters: {document_ids: [A]})`
+
+**Expected:**
+- Results contain only Document A.
+- Documents B and C are excluded despite having higher BM25 scores.
+
+**Rationale:** The `document_ids` filter is an explicit user constraint. It must
+restrict the search space, not merely post-filter an already-truncated result
+set. Pre-filtering at the content store ensures the target document's chunks
+compete only against each other for ranking.
+
+### TEST-SAGE-BH-113: document_ids filter constrains semantic search to specified documents
+
+**Decision:** Same constraint as BH-112, applied to semantic mode (both pure
+vector and hybrid RRF). The `document_ids` filter is passed as a content-store
+pre-filter and also enforced in `_passes_scope`.
+
+**Precondition:** Same vault as BH-112.
+
+**Input:** `discover(mode: semantic, query: <target_term>, filters: {document_ids: [A]})`
+
+**Expected:**
+- Results contain only Document A.
+- Documents B and C are excluded.
+
+**Rationale:** Semantic search has the same ranking dilution problem as keyword
+search. Pre-filtering ensures the target document's chunks are not displaced
+by closer matches from unrelated documents.
+
+### TEST-SAGE-BH-114: document_ids filter works with scope ALL (post-filter)
+
+**Decision:** The `document_ids` filter in `_passes_scope` applies to all scopes,
+not just SPECIFIC. Previously, `document_ids` was only checked when
+`scope == SPECIFIC`, causing the filter to be silently ignored for the default
+`scope == ALL`.
+
+**Precondition:** Two active documents with completed pipelines and shared
+content terms.
+
+**Input:** `discover(mode: keyword, query: <shared_term>, scope: all, filters: {document_ids: [A]})`
+
+**Expected:**
+- Only Document A appears in results.
+- Document B is excluded by the post-filter even though it matches the query.
+
+**Rationale:** Users pass `document_ids` to constrain results regardless of scope.
+The scope controls lifecycle/authority gating; `document_ids` is an orthogonal
+content constraint that must apply independently.
+
+### TEST-SAGE-BH-115: document_ids filter with multiple IDs returns all matching documents
+
+**Decision:** When `document_ids` contains multiple IDs, all matching documents
+are returned. The content-store pre-filter uses an `IN` clause; the post-filter
+checks set membership.
+
+**Precondition:** Three active documents. All contain the query term.
+
+**Input:** `discover(mode: keyword, query: <shared_term>, filters: {document_ids: [A, B]})`
+
+**Expected:**
+- Results contain Documents A and B.
+- Document C is excluded.
+
+**Rationale:** Multi-document filtering is the common case for cross-document
+comparison queries (e.g., "search for MLPAO in PV07 and PV13").
