@@ -421,6 +421,34 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
+    async def sage_read_section(
+        vault_id: str, document_id: str, heading_path: str
+    ) -> str:
+        """Read a section of a document by heading path.
+
+        Returns clean readable text for a heading subtree without loading
+        the full document. Uses structural prefix matching: requesting
+        "Technical Description" returns that heading plus all children
+        (e.g. "Technical Description > Composite Claim Binding").
+
+        Use this instead of sage_discover deterministic mode when you need
+        readable text rather than search-formatted chunks.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: The document's unique identifier.
+            heading_path: Heading path prefix (e.g. "Technical Description > Composite Claim Binding").
+        """
+        try:
+            v = get_vault(vault_id)
+            response = await v.utilities_service.read_section(
+                document_id, heading_path
+            )
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
     async def sage_refresh_views(vault_id: str) -> str:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.

@@ -43,6 +43,7 @@ from sage.models.schemas import (
     EvalRetrievalResult,
     ExportProjectionResponse,
     ReadProjectionResponse,
+    ReadSectionResponse,
     RefreshViewsResponse,
 )
 from sage.storage.graph_store import GraphStore
@@ -158,6 +159,51 @@ class UtilitiesService:
             doc_type=doc.doc_type,
             source_path=doc.source_path,
             projection_text=projection_text,
+        )
+
+    # ------------------------------------------------------------------
+    # read_section
+    # ------------------------------------------------------------------
+
+    async def read_section(
+        self, document_id: str, heading_path: str
+    ) -> ReadSectionResponse:
+        """Read a section's text by heading path with minimal metadata.
+
+        Returns the joined text of all chunks matching the heading prefix,
+        providing clean readable output for a document subsection without
+        loading the full projection.
+
+        Args:
+            document_id: Document to read from.
+            heading_path: Heading path prefix (e.g. "Technical Description > Composite Claim Binding").
+
+        Returns:
+            ReadSectionResponse with section text and metadata.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+            NoProjectionError: Document has no stored projection chunks.
+            HeadingNotFoundError: No chunks match the heading path.
+        """
+        from sage.api.errors import HeadingNotFoundError
+
+        doc, _ = await self._get_projection_text(document_id)
+
+        chunks = await self._content.get_chunks_by_heading_prefix(
+            document_id, heading_path
+        )
+        if not chunks:
+            raise HeadingNotFoundError(heading_path, document_id)
+
+        section_text = "\n\n".join(chunk.content for chunk in chunks)
+
+        return ReadSectionResponse(
+            document_id=document_id,
+            title=doc.title,
+            heading_path=heading_path,
+            chunk_count=len(chunks),
+            section_text=section_text,
         )
 
     # ------------------------------------------------------------------

@@ -271,6 +271,14 @@ class ReadProjectionResponse(BaseModel):
     projection_text: str
 
 
+class ReadSectionResponse(BaseModel):
+    document_id: str
+    title: str
+    heading_path: str
+    chunk_count: int
+    section_text: str
+
+
 class AssertionFailure(BaseModel):
     query: str
     expected_document_id: str
