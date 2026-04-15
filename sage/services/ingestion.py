@@ -395,7 +395,15 @@ class IngestionService:
             self._reabstract_background(document_id)
         )
 
-        return {"status": "reabstract_started", "document_id": document_id}
+        now = datetime.now(timezone.utc)
+        logger.info(
+            "reabstract dispatched for %s at %s", document_id, now.isoformat()
+        )
+        return {
+            "status": "reabstract_started",
+            "document_id": document_id,
+            "dispatched_at": now.isoformat(),
+        }
 
     async def _reabstract_background(self, document_id: str) -> None:
         """Background worker for reabstract. Loads chunks, generates
