@@ -9,6 +9,7 @@ after the full pipeline completes, keeping peak memory bounded to one
 document at a time (BH-026, BH-068).
 """
 
+import asyncio
 import hashlib
 import logging
 import shutil
@@ -354,18 +355,23 @@ class IngestionService:
                 "updated_at": now.isoformat(),
             })
 
-    async def reabstract(self, document_id: str) -> Document:
-        """Re-run abstraction on an existing document.
+    async def reabstract(self, document_id: str) -> dict:
+        """Re-run abstraction on an existing document (fire-and-forget).
 
-        Reconstructs projection text from stored chunks, generates a
-        new abstract via _generate_abstract_text, and writes it back
-        to the document node.
+        Validates that the document and its projection chunks exist,
+        sets pipeline_status to ABSTRACTION_IN_PROGRESS, then spawns
+        the actual abstraction work in a background asyncio.Task.
+        Returns immediately with a status dict.
+
+        The caller can poll sage_get_document to observe when
+        pipeline_status transitions to ABSTRACTION_COMPLETE (success)
+        or FAILED (error).
 
         Args:
             document_id: ID of the document to re-abstract.
 
         Returns:
-            Updated Document with new semantic_abstract.
+            Dict with status='reabstract_started' and document_id.
 
         Raises:
             DocumentNotFoundError: Document does not exist.
@@ -380,15 +386,43 @@ class IngestionService:
             raise NoProjectionError(document_id)
 
         projection_text = "\n\n".join(chunk.content for chunk in chunks)
-        abstract = await self._generate_abstract_text(projection_text)
 
-        now = datetime.now(timezone.utc)
+        # Mark in-progress before dispatching background work
         async with self._locks.lock(document_id):
-            updated = await self._store.update_document(document_id, {
-                "semantic_abstract": abstract,
-                "updated_at": now.isoformat(),
+            await self._store.update_document(document_id, {
+                "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             })
-        return updated
+
+        asyncio.create_task(
+            self._reabstract_background(document_id, projection_text)
+        )
+
+        return {"status": "reabstract_started", "document_id": document_id}
+
+    async def _reabstract_background(
+        self, document_id: str, projection_text: str
+    ) -> None:
+        """Background worker for reabstract. Updates the document on
+        success or sets pipeline_status to FAILED on error."""
+        try:
+            abstract = await self._generate_abstract_text(projection_text)
+            now = datetime.now(timezone.utc)
+            async with self._locks.lock(document_id):
+                await self._store.update_document(document_id, {
+                    "semantic_abstract": abstract,
+                    "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
+                    "updated_at": now.isoformat(),
+                })
+        except Exception:
+            logger.exception(
+                "Background reabstract failed for document %s", document_id
+            )
+            async with self._locks.lock(document_id):
+                await self._store.update_document(document_id, {
+                    "pipeline_status": PipelineStatus.FAILED.value,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
 
     @staticmethod
     def _build_metadata_updates(metadata: dict[str, str]) -> dict:

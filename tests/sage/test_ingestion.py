@@ -863,18 +863,56 @@ async def test_generate_abstract_text_returns_complete_sentences_unchanged(
 
 
 # ---------------------------------------------------------------------------
-# reabstract: re-run abstraction on an existing document
+# reabstract (async / fire-and-forget): BH-116 through BH-121
 # ---------------------------------------------------------------------------
 
 
-async def test_reabstract_updates_semantic_abstract(
+async def test_reabstract_returns_immediately_with_started_status(
     tmp_vault_dir, ingestion_service, graph_store,
 ):
-    """reabstract should regenerate the abstract from stored chunks and
-    update the document's semantic_abstract field."""
+    """BH-116: reabstract should return immediately with a dict containing
+    status='reabstract_started' and the document_id, without waiting for
+    the background abstraction to complete."""
     _create_test_file(tmp_vault_dir, "patents/reabs.md", "# Reabstract Test\n\nOriginal content.")
 
     request = IngestRequest(source="patents/reabs.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+
+    response = await ingestion_service.reabstract(doc_id)
+
+    assert isinstance(response, dict)
+    assert response["status"] == "reabstract_started"
+    assert response["document_id"] == doc_id
+
+
+async def test_reabstract_sets_pipeline_status_in_progress(
+    tmp_vault_dir, ingestion_service, graph_store,
+):
+    """BH-117: reabstract should set pipeline_status to
+    abstraction_in_progress before returning."""
+    _create_test_file(tmp_vault_dir, "patents/status.md", "# Status Test\n\nContent.")
+
+    request = IngestRequest(source="patents/status.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+
+    await ingestion_service.reabstract(doc_id)
+
+    doc = await graph_store.get_document(doc_id)
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS
+
+
+async def test_reabstract_background_updates_abstract_on_success(
+    tmp_vault_dir, ingestion_service, graph_store,
+):
+    """BH-118: The background task should update semantic_abstract and set
+    pipeline_status to abstraction_complete when abstraction succeeds."""
+    import asyncio
+
+    _create_test_file(tmp_vault_dir, "patents/bgok.md", "# BG OK\n\nOriginal content.")
+
+    request = IngestRequest(source="patents/bgok.md", adapter=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
     original_abstract = result.document.semantic_abstract
@@ -885,35 +923,54 @@ async def test_reabstract_updates_semantic_abstract(
 
     ingestion_service._abstraction.generate_abstract = new_abstract
 
-    updated_doc = await ingestion_service.reabstract(doc_id)
+    response = await ingestion_service.reabstract(doc_id)
+    assert response["status"] == "reabstract_started"
 
-    assert updated_doc.semantic_abstract == "Regenerated abstract from new model."
-    assert updated_doc.semantic_abstract != original_abstract
+    # Allow the background task to complete
+    await asyncio.sleep(0.1)
+
+    doc = await graph_store.get_document(doc_id)
+    assert doc.semantic_abstract == "Regenerated abstract from new model."
+    assert doc.semantic_abstract != original_abstract
+    assert doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 
-async def test_reabstract_preserves_other_document_fields(
-    tmp_vault_dir, ingestion_service, graph_store,
+async def test_reabstract_background_sets_failed_on_error(
+    tmp_vault_dir, ingestion_service_failing_llm, graph_store,
 ):
-    """reabstract should only modify semantic_abstract and updated_at,
-    leaving other fields intact."""
-    _create_test_file(tmp_vault_dir, "patents/preserve.md", "# Preserve Test\n\nContent here.")
+    """BH-119: The background task should set pipeline_status to 'failed'
+    when the abstraction provider raises an exception."""
+    import asyncio
 
-    request = IngestRequest(source="patents/preserve.md", adapter=SourceType.MARKDOWN)
-    result = await ingestion_service.ingest(request)
+    _create_test_file(tmp_vault_dir, "patents/bgfail.md", "# BG Fail\n\nContent.")
+
+    # Ingest with the normal stub first so initial ingestion succeeds,
+    # then swap to the failing provider for reabstract
+    from sage.adapters.stubs import StubAbstractionProvider, FailingAbstractionProvider
+    original_provider = ingestion_service_failing_llm._abstraction
+
+    # Use stub for initial ingest
+    ingestion_service_failing_llm._abstraction = StubAbstractionProvider()
+    request = IngestRequest(source="patents/bgfail.md", adapter=SourceType.MARKDOWN)
+    result = await ingestion_service_failing_llm.ingest(request)
     doc_id = result.document.id
-    original_title = result.document.title
-    original_source_path = result.document.source_path
-    original_lifecycle = result.document.lifecycle_status
 
-    updated_doc = await ingestion_service.reabstract(doc_id)
+    # Switch to failing provider for reabstract
+    ingestion_service_failing_llm._abstraction = original_provider
 
-    assert updated_doc.title == original_title
-    assert updated_doc.source_path == original_source_path
-    assert updated_doc.lifecycle_status == original_lifecycle
+    response = await ingestion_service_failing_llm.reabstract(doc_id)
+    assert response["status"] == "reabstract_started"
+
+    # Allow the background task to complete (and fail)
+    await asyncio.sleep(0.1)
+
+    doc = await graph_store.get_document(doc_id)
+    assert doc.pipeline_status == PipelineStatus.FAILED
 
 
 async def test_reabstract_document_not_found(ingestion_service):
-    """reabstract should raise DocumentNotFoundError for unknown document_id."""
+    """BH-120: reabstract should raise DocumentNotFoundError synchronously
+    for unknown document_id (validation happens before background dispatch)."""
     from sage.api.errors import DocumentNotFoundError
 
     with pytest.raises(DocumentNotFoundError):
@@ -923,8 +980,8 @@ async def test_reabstract_document_not_found(ingestion_service):
 async def test_reabstract_no_projection_raises_error(
     tmp_vault_dir, ingestion_service, graph_store, stub_content_store,
 ):
-    """reabstract should raise NoProjectionError when the document exists
-    but has no stored chunks."""
+    """BH-121: reabstract should raise NoProjectionError synchronously when
+    the document exists but has no stored chunks."""
     from sage.api.errors import NoProjectionError
 
     _create_test_file(tmp_vault_dir, "patents/nochunks.md", "# No Chunks\n\nContent.")
@@ -938,19 +995,3 @@ async def test_reabstract_no_projection_raises_error(
 
     with pytest.raises(NoProjectionError):
         await ingestion_service.reabstract(doc_id)
-
-
-async def test_reabstract_updates_timestamp(
-    tmp_vault_dir, ingestion_service, graph_store,
-):
-    """reabstract should update the updated_at timestamp."""
-    _create_test_file(tmp_vault_dir, "patents/timestamp.md", "# Timestamp\n\nContent.")
-
-    request = IngestRequest(source="patents/timestamp.md", adapter=SourceType.MARKDOWN)
-    result = await ingestion_service.ingest(request)
-    doc_id = result.document.id
-    original_updated_at = result.document.updated_at
-
-    updated_doc = await ingestion_service.reabstract(doc_id)
-
-    assert updated_doc.updated_at >= original_updated_at

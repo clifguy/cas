@@ -508,9 +508,10 @@ async def test_reload_vault_sees_external_changes(vault_services):
 # ---------------------------------------------------------------------------
 
 
-async def test_reabstract_returns_updated_document(vault_services):
-    """sage_reabstract should regenerate the abstract and return the
-    updated document with a semantic_abstract field."""
+async def test_reabstract_returns_started_status(vault_services):
+    """BH-122: sage_reabstract should return a JSON response with
+    status='reabstract_started' and the document_id, not the full
+    document (fire-and-forget pattern)."""
     ingest_result = _parse(
         await sage_ingest("test_vault", "test/sample.md", "markdown")
     )
@@ -518,8 +519,8 @@ async def test_reabstract_returns_updated_document(vault_services):
 
     result = _parse(await sage_reabstract("test_vault", doc_id))
     assert "error" not in result
-    assert result["id"] == doc_id
-    assert result["semantic_abstract"] is not None
+    assert result["status"] == "reabstract_started"
+    assert result["document_id"] == doc_id
 
 
 async def test_reabstract_unknown_vault(vault_services):
