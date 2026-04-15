@@ -426,7 +426,7 @@ class RetrievalService:
             return hits
 
         metadata_docs = await self._graph.search_metadata(
-            request.query, limit=request.limit
+            request.query, limit=100,
         )
         if not metadata_docs:
             return hits
