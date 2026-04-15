@@ -47,12 +47,14 @@ class ContentStore(ABC):
         self,
         query_embedding: list[float],
         limit: int = 10,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """Vector similarity search.
 
         filters: optional pre-filter predicates (e.g. {"doc_type": "patent_draft"}).
-        When provided, only chunks matching all predicates are searched.
+        Values may be a single string (equality) or a list of strings
+        (IN clause).  When provided, only chunks matching all predicates
+        are searched.
         """
 
     @abstractmethod
@@ -60,12 +62,14 @@ class ContentStore(ABC):
         self,
         query: str,
         limit: int = 10,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """BM25 keyword search.
 
         filters: optional pre-filter predicates (e.g. {"doc_type": "patent_draft"}).
-        When provided, only chunks matching all predicates are searched.
+        Values may be a single string (equality) or a list of strings
+        (IN clause).  When provided, only chunks matching all predicates
+        are searched.
         """
 
     @abstractmethod

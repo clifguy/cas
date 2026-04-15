@@ -31,7 +31,7 @@ CHUNKS_SCHEMA = pa.schema([
 ])
 
 # Columns that can be pre-filtered at query time.
-_FILTERABLE_COLUMNS = {"doc_type"}
+_FILTERABLE_COLUMNS = {"doc_type", "document_id"}
 
 
 class LanceDBContentStore(ContentStore):
@@ -120,15 +120,21 @@ class LanceDBContentStore(ContentStore):
             raise
 
     @staticmethod
-    def _build_where(filters: dict[str, str]) -> str | None:
+    def _build_where(filters: dict[str, str | list[str]]) -> str | None:
         """Build a SQL WHERE clause from a filters dict.
 
         Only columns in _FILTERABLE_COLUMNS are accepted to prevent
-        injection via arbitrary column names.
+        injection via arbitrary column names.  Values may be a single
+        string (equality) or a list of strings (IN clause).
         """
         clauses = []
         for key, value in filters.items():
-            if key in _FILTERABLE_COLUMNS:
+            if key not in _FILTERABLE_COLUMNS:
+                continue
+            if isinstance(value, list):
+                escaped = ", ".join(f"'{_escape_sql(v)}'" for v in value)
+                clauses.append(f"{key} IN ({escaped})")
+            else:
                 clauses.append(f"{key} = '{_escape_sql(value)}'")
         return " AND ".join(clauses) if clauses else None
 
@@ -138,7 +144,7 @@ class LanceDBContentStore(ContentStore):
         Called after every mutation to keep search results consistent.
         """
         try:
-            table.create_fts_index("content", replace=True)
+            table.create_fts_index("content", replace=True, with_position=True)
         except Exception:
             # FTS index creation can fail on empty tables; that's fine
             logger.debug("FTS index rebuild skipped (likely empty table)")
@@ -216,7 +222,7 @@ class LanceDBContentStore(ContentStore):
         self,
         query_embedding: list[float],
         limit: int = 10,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """Vector similarity search using cosine distance (AD-016, AD-017).
 
@@ -257,7 +263,7 @@ class LanceDBContentStore(ContentStore):
         self,
         query: str,
         limit: int = 10,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """BM25 keyword search using LanceDB native FTS (AD-018, AD-019).
 
@@ -276,7 +282,7 @@ class LanceDBContentStore(ContentStore):
                     search_query = search_query.where(where)
             results = search_query.limit(limit).to_list()
         except Exception as exc:
-            logger.warning("BM25 search failed: %s", exc)
+            logger.error("BM25 search failed: %s", exc)
             return []
 
         return [

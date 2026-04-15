@@ -80,16 +80,23 @@ class RetrievalService:
         return request.limit * multiplier
 
     @staticmethod
-    def _content_filters(request: DiscoverRequest) -> dict[str, str] | None:
+    def _content_filters(
+        request: DiscoverRequest,
+    ) -> dict[str, str | list[str]] | None:
         """Extract filters applicable at the content-store level (pre-filter).
 
-        Currently only doc_type is stored in the content store. Other
-        filter fields (project, lifecycle_status, tags) remain post-filter
-        via _passes_scope.
+        doc_type and document_id are stored in the content store and can
+        be pre-filtered at query time.  Other filter fields (project,
+        lifecycle_status, tags) remain post-filter via _passes_scope.
         """
-        if not request.filters or not request.filters.doc_type:
+        if not request.filters:
             return None
-        return {"doc_type": request.filters.doc_type}
+        result: dict[str, str | list[str]] = {}
+        if request.filters.doc_type:
+            result["doc_type"] = request.filters.doc_type
+        if request.filters.document_ids:
+            result["document_id"] = request.filters.document_ids
+        return result or None
 
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
@@ -289,7 +296,7 @@ class RetrievalService:
         query_embedding: list[float],
         query_text: str,
         limit: int,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """Reciprocal Rank Fusion of vector and BM25 results (BH-027).
 
@@ -629,6 +636,9 @@ class RetrievalService:
                     return False
             if filters.pipeline_status:
                 if doc.pipeline_status.value != filters.pipeline_status:
+                    return False
+            if filters.document_ids:
+                if doc.id not in filters.document_ids:
                     return False
 
         return True

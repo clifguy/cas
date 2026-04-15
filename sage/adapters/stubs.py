@@ -35,7 +35,7 @@ class StubContentStore(ContentStore):
         self,
         query_embedding: list[float],
         limit: int = 10,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """Cosine similarity search across all indexed chunks."""
         scored: list[tuple[float, Chunk]] = []
@@ -62,7 +62,7 @@ class StubContentStore(ContentStore):
         self,
         query: str,
         limit: int = 10,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """Simple term-frequency keyword search for testing."""
         terms = query.lower().split()
@@ -120,12 +120,18 @@ class StubContentStore(ContentStore):
         return sorted(chunks, key=lambda c: c.chunk_index)
 
 
-def _chunk_matches_filters(chunk: Chunk, filters: dict[str, str] | None) -> bool:
+def _chunk_matches_filters(
+    chunk: Chunk, filters: dict[str, str | list[str]] | None,
+) -> bool:
     """Check whether a chunk matches all filter predicates."""
     if not filters:
         return True
     for key, value in filters.items():
-        if getattr(chunk, key, None) != value:
+        actual = getattr(chunk, key, None)
+        if isinstance(value, list):
+            if actual not in value:
+                return False
+        elif actual != value:
             return False
     return True
 
