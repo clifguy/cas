@@ -149,6 +149,32 @@ def _to_letter(n: int) -> str:
     return result
 
 
+# Common English stop words for title key-term extraction.
+_STOP_WORDS = frozenset(
+    "a an the and or but in on of to for with by from at is are was were "
+    "be been being have has had do does did will would shall should may might "
+    "can could this that these those it its he she they we you i my our his "
+    "her their your not no nor so if as than too very also about above after "
+    "before between into through during each all any both few more most other "
+    "some such only same then there here when where how what which who whom "
+    "why".split()
+)
+
+_MAX_KEY_TERMS = 6
+
+
+def _extract_key_terms(text: str) -> str:
+    """Extract key terms from text by filtering stop words.
+
+    Returns up to _MAX_KEY_TERMS content words joined by spaces.
+    Used as a last-resort title when no Title style or filename is available.
+    """
+    import re
+    words = re.findall(r"[A-Za-z0-9]+(?:'[a-z]+)?", text)
+    terms = [w for w in words if w.lower() not in _STOP_WORDS and len(w) > 1]
+    return " ".join(terms[:_MAX_KEY_TERMS]) if terms else "Untitled"
+
+
 def _extract_paragraph_text(p_elem) -> str:
     """Extract visible text from a paragraph element.
 
@@ -206,6 +232,8 @@ class DocxAdapter(SourceAdapter):
         stack: list[tuple[int, str]] = []
         current_content_lines: list[str] = []
         current_heading_idx = -1
+        title_style_text: str | None = None
+        first_body_para: str | None = None
 
         # Walk document body children in order (paragraphs and tables)
         for element in doc.element.body:
@@ -217,6 +245,10 @@ class DocxAdapter(SourceAdapter):
                 # Determine style name
                 style_name = self._get_style_name(element, style_id_to_name)
                 level = style_map.get(style_name) if style_name else None
+
+                # Capture first paragraph with Title style
+                if title_style_text is None and style_name == "Title" and para_text.strip():
+                    title_style_text = para_text.strip()
 
                 if level is not None:
                     # Flush content to previous heading
@@ -251,6 +283,9 @@ class DocxAdapter(SourceAdapter):
                     if para_text.strip():
                         current_content_lines.append(para_text)
                         text_parts.append(para_text)
+                        # Capture first non-heading, non-title body paragraph
+                        if first_body_para is None and style_name != "Title":
+                            first_body_para = para_text.strip()
 
             elif tag == "tbl":
                 table_text = self._render_table(element)
@@ -264,7 +299,9 @@ class DocxAdapter(SourceAdapter):
                 current_content_lines
             ).strip()
 
-        title = self._extract_title(headings, source_path)
+        title = self._extract_title(
+            title_style_text, first_body_para, source_path,
+        )
 
         source_mtime = datetime.fromtimestamp(
             source_path.stat().st_mtime, tz=timezone.utc
@@ -340,10 +377,23 @@ class DocxAdapter(SourceAdapter):
         return "\n".join(rows)
 
     def _extract_title(
-        self, headings: list[HeadingNode], source_path: Path
+        self,
+        title_style_text: str | None,
+        first_body_para: str | None,
+        source_path: Path,
     ) -> str:
-        """Extract title from first level-1 heading, fallback to filename."""
-        for h in headings:
-            if h.level == 1:
-                return h.text
-        return source_path.stem
+        """Extract document title with priority chain.
+
+        1. First paragraph with Word "Title" style.
+        2. Filename stem (often contains a short title or document code).
+        3. Key terms from the first body paragraph (stop-word filtered).
+        """
+        if title_style_text:
+            return title_style_text
+        stem = source_path.stem
+        # Reject stems that are empty or just a dotfile extension
+        if stem and not stem.startswith("."):
+            return stem
+        if first_body_para:
+            return _extract_key_terms(first_body_para)
+        return "Untitled"

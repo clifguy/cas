@@ -950,7 +950,7 @@ class TestDocxAdapter:
         assert result.headings[0].text == "Introduction"
         assert isinstance(result.content_hash, str)
         assert len(result.content_hash) == 64  # SHA-256 hex
-        assert result.title == "Introduction"
+        assert result.title == "basic"  # filename stem (no Title-styled paragraph)
         assert result.adapter_version == DocxAdapter.VERSION
 
     async def test_ad_036_heading_style_map_config(self, tmp_path):
@@ -1008,27 +1008,44 @@ class TestDocxAdapter:
         assert result.headings[1].path == "Chapter > Section"
         assert result.headings[2].path == "Chapter > Section > Subsection"
 
-    async def test_ad_039_title_extraction_fallback(self, tmp_path):
-        """AD-039: Title from first level-1 heading, fallback to filename."""
+    async def test_ad_039_title_extraction_priority_chain(self, tmp_path):
+        """AD-039: Title priority: Title style > filename > key terms."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
 
-        # With H1 heading
+        # Priority 1: Title paragraph style takes precedence over H1
         doc1 = docx.Document()
-        doc1.add_paragraph("My Document Title", style="Heading 1")
-        path1 = tmp_path / "with_title.docx"
+        doc1.add_paragraph("Formal Document Title", style="Title")
+        doc1.add_paragraph("System Architecture", style="Heading 1")
+        path1 = tmp_path / "AuthoritativeAccumulator.docx"
         doc1.save(str(path1))
         result1 = await adapter.project(path1)
-        assert result1.title == "My Document Title"
+        assert result1.title == "Formal Document Title"
 
-        # Without H1 heading (only H2)
+        # Priority 2: Filename stem when no Title style present
         doc2 = docx.Document()
-        doc2.add_paragraph("A Subsection", style="Heading 2")
-        path2 = tmp_path / "no_h1_title.docx"
+        doc2.add_paragraph("Introduction", style="Heading 1")
+        doc2.add_paragraph("Some body text about clinical normalization.")
+        path2 = tmp_path / "AuthoritativeAccumulator.docx"
         doc2.save(str(path2))
         result2 = await adapter.project(path2)
-        assert result2.title == "no_h1_title"
+        assert result2.title == "AuthoritativeAccumulator"
+
+        # Priority 3: Key terms from first body paragraph when no Title
+        # style and filename is degenerate
+        doc3 = docx.Document()
+        doc3.add_paragraph("Abstract", style="Heading 1")
+        doc3.add_paragraph(
+            "The authoritative accumulator validates clinical "
+            "normalization through respiratory signal processing."
+        )
+        path3 = tmp_path / ".docx"
+        doc3.save(str(path3))
+        result3 = await adapter.project(path3)
+        # Should contain content words, not stop words
+        assert "authoritative" in result3.title.lower()
+        assert "the" not in result3.title.lower().split()
 
     async def test_ad_040_content_hash_is_raw_bytes(self, tmp_path):
         """AD-040: content_hash is SHA-256 of raw .docx bytes."""

@@ -589,14 +589,14 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# BH-069: Active lifecycle documents rank above non-active in semantic search
+# BH-069: Active lifecycle tier sort -- active always ranks above non-active
 # ---------------------------------------------------------------------------
 
 async def test_bh_069_active_lifecycle_ranks_higher(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """Documents with lifecycle_status='active' rank above archived/completed
-    documents when content relevance is otherwise equal.
+    """Active documents always rank above non-active via lifecycle tier sort,
+    even when the non-active document has a higher content relevance score.
     """
     doc_active = _make_doc("doc_active", lifecycle_status="active")
     doc_completed = _make_doc("doc_completed", lifecycle_status="completed")
@@ -605,13 +605,23 @@ async def test_bh_069_active_lifecycle_ranks_higher(
     await graph_store.insert_document(doc_completed)
     await graph_store.insert_document(doc_archived)
 
-    # All three get identical content so raw relevance scores are equal
-    identical_content = "Patent filing process for clinical normalization."
-    for doc_id in ["doc_active", "doc_completed", "doc_archived"]:
-        await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
-            [("Section 1", identical_content)],
-        )
+    # Give the archived doc MORE matching terms so it scores higher in BM25.
+    # The tier sort must still place the active doc first.
+    active_content = "Patent filing process."
+    archived_content = "Patent filing process for clinical normalization review."
+    completed_content = "Patent filing process for clinical normalization."
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_active",
+        [("Section 1", active_content)],
+    )
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_archived",
+        [("Section 1", archived_content)],
+    )
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_completed",
+        [("Section 1", completed_content)],
+    )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
@@ -2146,11 +2156,12 @@ async def test_bh_110_abstract_prefilter_with_hybrid_rrf(
     assert ids.index("rrf_abs_match") < ids.index("rrf_abs_nomatch")
 
 
-# BH-111: Abstract boost stacks with salience reranking
-async def test_bh_111_abstract_boost_stacks_with_salience(
+# BH-111: Abstract boost composes with lifecycle tier sort
+async def test_bh_111_abstract_boost_composes_with_lifecycle_tier(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
 ):
-    """Lifecycle boost (BH-069) stacks on top of abstract boost."""
+    """Lifecycle tier sort (BH-069) places active above draft even when both
+    receive the abstract boost."""
     shared_content = "Respiratory rate estimation from photoplethysmography."
     shared_abstract = "Respiratory rate analysis using PPG signal processing."
 
@@ -2182,5 +2193,5 @@ async def test_bh_111_abstract_boost_stacks_with_salience(
     ids = [h.document.id for h in response.results]
     assert "sal_active" in ids
     assert "sal_draft" in ids
-    # Active document should rank higher due to lifecycle boost stacking
+    # Active document ranks first via lifecycle tier sort
     assert ids.index("sal_active") < ids.index("sal_draft")

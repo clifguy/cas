@@ -1320,27 +1320,32 @@ race conditions inherent in the background-task model.
 
 ## Salience Reranking
 
-### TEST-SAGE-BH-069: Active lifecycle boost in semantic retrieval
+### TEST-SAGE-BH-069: Active lifecycle tier sort in semantic retrieval
 
 **Artifact:** `sage/services/retrieval.py` (_rerank_salience)
 **Category:** retrieval, salience
 
-**Decision:** Documents with `lifecycle_status="active"` receive a 1.15x score
-multiplier in semantic and keyword retrieval modes. Archived and completed
-documents remain discoverable but rank lower when competing with active content.
+**Decision:** Documents with `lifecycle_status="active"` always rank above
+non-active documents in semantic and keyword retrieval modes, regardless of
+content relevance score. Salience reranking sorts by (lifecycle_tier, score)
+where active = tier 0 and all other statuses = tier 1. Agents that need
+superseded or archived versions traverse the supersedes chain from the active
+head rather than relying on search ranking.
 
-**Precondition:** Two documents indexed with identical content relevance to a query.
-Doc A: `lifecycle_status="active"`. Doc B: `lifecycle_status="archived"`.
+**Precondition:** Two documents indexed. Doc A: `lifecycle_status="active"`,
+lower content score. Doc B: `lifecycle_status="archived"`, higher content score.
 
 **Input:** `discover(mode="semantic", query="matching query")`
 
 **Expected:**
 - Both documents appear in results.
-- Doc A scores higher than Doc B (1.15x multiplier applied).
+- Doc A ranks above Doc B despite Doc B having a higher content score.
 
-**Rationale:** Active documents are the most current version of their content.
-A mild boost ensures they surface above archived predecessors when content
-relevance is comparable, without hard-excluding older versions.
+**Rationale:** For code-based lookups (the dominant retrieval pattern), every
+version of a document matches equally on content, metadata, and abstract. A
+multiplicative boost was insufficient to guarantee the active version ranked
+first. Agents retrieve historical versions via supersedes chain traversal,
+so search ranking does not need to preserve that capability.
 
 
 ### TEST-SAGE-BH-070: Recency boost in semantic retrieval
@@ -2209,14 +2214,14 @@ signals. The abstract boost is an independent signal that should compose with
 (not replace) the fused ranking.
 
 
-### TEST-SAGE-BH-111: Abstract boost stacks with salience reranking
+### TEST-SAGE-BH-111: Abstract boost composes with lifecycle tier sort
 
 **Artifact:** `sage/services/retrieval.py`
 **Category:** retrieval, abstraction, salience
 
-**Decision:** The abstract boost is applied before salience reranking. Lifecycle
-and recency boosts from `_rerank_salience` stack on top of abstract-boosted
-scores.
+**Decision:** The abstract boost is applied before salience reranking. The
+lifecycle tier sort (BH-069) then ensures active documents rank above non-active
+documents regardless of abstract-boosted score magnitude.
 
 **Precondition:** Two documents with matching abstracts. Document A has
 `lifecycle_status = active`. Document B has `lifecycle_status = draft`.
@@ -2226,8 +2231,9 @@ Both have identical chunk content and abstract text.
 
 **Expected:**
 - Both documents receive the abstract boost.
-- Document A ranks above Document B due to the additional lifecycle boost (BH-069).
+- Document A ranks above Document B due to lifecycle tier sort (BH-069).
 
 **Rationale:** Salience reranking captures signals (recency, lifecycle) that are
-orthogonal to abstract relevance. Stacking ensures all signals contribute to
-the final ranking.
+orthogonal to abstract relevance. The tier sort guarantees active documents
+surface first; within each tier, abstract-boosted scores and recency still
+differentiate.

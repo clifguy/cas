@@ -518,9 +518,6 @@ class RetrievalService:
     # Salience reranking (BH-069, BH-070)
     # ------------------------------------------------------------------
 
-    # Lifecycle boost: multiplicative factor for active documents.
-    _LIFECYCLE_ACTIVE_BOOST = 1.15
-
     # Recency boost: maximum multiplicative boost for very recent documents.
     # Decays exponentially with a half-life of 365 days.
     _RECENCY_MAX_BOOST = 0.10
@@ -530,10 +527,15 @@ class RetrievalService:
         self,
         hits: list[DiscoverHit],
     ) -> list[DiscoverHit]:
-        """Apply salience boosts for lifecycle status and document recency.
+        """Apply lifecycle tier sort and recency boost.
 
-        Active-lifecycle documents receive a multiplicative score boost (BH-069).
-        Documents with recent dates receive an additional decaying boost (BH-070).
+        BH-069: Active documents always rank above non-active documents.
+        Sorting is by (lifecycle_tier, score) where active = 0, other = 1.
+        This guarantees the active head of a supersedes chain is always the
+        top result for code-based lookups.
+
+        BH-070: Within each tier, documents with recent dates receive an
+        additional decaying multiplicative boost.
 
         Uses fields already present on DocumentSummary (document_date,
         source_modified_at, lifecycle_status) -- no extra graph queries.
@@ -549,10 +551,6 @@ class RetrievalService:
 
             score = hit.relevance_score
 
-            # BH-069: Lifecycle boost
-            if hit.document.lifecycle_status == "active":
-                score *= self._LIFECYCLE_ACTIVE_BOOST
-
             # BH-070: Recency boost from summary fields
             ref_date = self._resolve_document_date(hit.document, now)
             if ref_date is not None:
@@ -564,8 +562,14 @@ class RetrievalService:
 
             hit.relevance_score = score
 
-        # Re-sort by adjusted score descending
-        hits.sort(key=lambda h: h.relevance_score or 0.0, reverse=True)
+        # BH-069: Sort by (lifecycle_tier, score desc).
+        # Active documents (tier 0) always rank above non-active (tier 1).
+        hits.sort(
+            key=lambda h: (
+                0 if h.document.lifecycle_status == "active" else 1,
+                -(h.relevance_score or 0.0),
+            ),
+        )
         return hits
 
     @staticmethod
