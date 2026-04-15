@@ -1729,6 +1729,60 @@ async def test_matched_chunk_count_content_only_not_metadata(
     assert hits_for_doc[0].matched_chunk_count == 2
 
 
+async def test_metadata_boost_promotes_existing_low_score_hit(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+):
+    """Metadata match promotes a document already in content results.
+
+    When a document code (e.g., "PV13") appears in the source_path and the
+    document is also found by content search at a low relevance score, the
+    metadata boost should promote its score above the highest content score.
+    Previously, metadata boost skipped documents already in content results,
+    leaving code-based lookups at near-zero relevance.
+    """
+    # Target doc: code "PV13" is in the source_path, content barely matches
+    target = _make_doc("target_pv13", doc_type="patent_draft")
+    target.source_path = "patents/PV13_AuthoritativeAccumulator.docx"
+    await graph_store.insert_document(target)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "target_pv13",
+        [("Section 1", "Clinical normalization of respiratory signals.")],
+        doc_type="patent_draft",
+    )
+
+    # Distractor doc: strong content match for "PV13" but no metadata match
+    distractor = _make_doc("distractor", doc_type="patent_draft")
+    distractor.source_path = "patents/PV99_Unrelated.docx"
+    await graph_store.insert_document(distractor)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "distractor",
+        [("Section 1", "PV13 is referenced in the prior art analysis.")],
+        doc_type="patent_draft",
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV13",
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    ids = [h.document.id for h in response.results]
+    assert "target_pv13" in ids, "Metadata-matched doc must appear in results"
+    assert "distractor" in ids, "Content-matched doc must appear in results"
+
+    # Target must rank first: metadata identity match outranks content match
+    assert ids.index("target_pv13") < ids.index("distractor"), (
+        "Document with code in source_path should rank above "
+        "document that merely mentions the code in body text"
+    )
+
+    # Target's score should be above the distractor's content score
+    target_hit = next(h for h in response.results if h.document.id == "target_pv13")
+    distractor_hit = next(h for h in response.results if h.document.id == "distractor")
+    assert target_hit.relevance_score > distractor_hit.relevance_score
+
+
 async def test_bh_087_response_level_chunks_default(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
 ):

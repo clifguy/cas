@@ -412,14 +412,15 @@ class RetrievalService:
         hits: list[DiscoverHit],
         request: DiscoverRequest,
     ) -> list[DiscoverHit]:
-        """Prepend documents matching the query by metadata identity fields.
+        """Boost documents matching the query by metadata identity fields.
 
         Searches title, source_path, and tags in the graph store. Documents
-        found by metadata that aren't already in hits are inserted at the
-        top with a synthetic score above the highest content-search score.
+        found by metadata receive a synthetic score above the highest
+        content-search score. Documents already in hits have their score
+        promoted; documents not yet in hits are prepended as new entries.
         This ensures documents whose identity (filename, codes, tags)
-        matches the query are always surfaced, even when BM25 ranks their
-        long body content low.
+        matches the query always surface at the top, regardless of their
+        content-level relevance score.
         """
         if not request.query:
             return hits
@@ -434,38 +435,46 @@ class RetrievalService:
         max_score = max((h.relevance_score or 0.0 for h in hits), default=0.0)
         boost_base = max_score + 0.1 if max_score > 0 else 1.0
 
-        existing_ids = {h.document.id for h in hits}
+        existing_hits = {h.document.id: h for h in hits}
+        metadata_ids = set()
         boosted: list[DiscoverHit] = []
 
         for i, doc in enumerate(metadata_docs):
-            if doc.id in existing_ids:
-                continue
             if doc.pipeline_status == PipelineStatus.FAILED:
                 continue
             if not self._passes_scope(doc, request):
                 continue
 
-            summary = DocumentSummary(
-                id=doc.id,
-                title=doc.title,
-                lifecycle_status=doc.lifecycle_status,
-                source_type=doc.source_type,
-                source_path=doc.source_path,
-                version_label=doc.version_label,
-                project=doc.project,
-                doc_type=doc.doc_type,
-                tags=doc.tags,
-                document_date=_parse_document_date(doc.document_date),
-                source_modified_at=doc.source_modified_at,
-                semantic_abstract=doc.semantic_abstract,
-            )
-            boosted.append(DiscoverHit(
-                document=summary,
-                chunk_content=None,
-                heading_path=None,
-                relevance_score=boost_base - (i * 0.001),
-            ))
+            boost_score = boost_base - (i * 0.001)
+            metadata_ids.add(doc.id)
 
+            if doc.id in existing_hits:
+                # Promote existing hit's score to boost level
+                existing_hits[doc.id].relevance_score = boost_score
+            else:
+                summary = DocumentSummary(
+                    id=doc.id,
+                    title=doc.title,
+                    lifecycle_status=doc.lifecycle_status,
+                    source_type=doc.source_type,
+                    source_path=doc.source_path,
+                    version_label=doc.version_label,
+                    project=doc.project,
+                    doc_type=doc.doc_type,
+                    tags=doc.tags,
+                    document_date=_parse_document_date(doc.document_date),
+                    source_modified_at=doc.source_modified_at,
+                    semantic_abstract=doc.semantic_abstract,
+                )
+                boosted.append(DiscoverHit(
+                    document=summary,
+                    chunk_content=None,
+                    heading_path=None,
+                    relevance_score=boost_score,
+                ))
+
+        # Re-sort existing hits so promoted ones float to the top
+        hits.sort(key=lambda h: h.relevance_score or 0.0, reverse=True)
         return boosted + hits
 
     # ------------------------------------------------------------------
