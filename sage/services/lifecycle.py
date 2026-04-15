@@ -65,7 +65,12 @@ class LifecycleService:
             if result is None:
                 valid = self._table.get_valid_actions(doc.lifecycle_status)
                 raise InvalidLifecycleTransitionError(
-                    doc.lifecycle_status, request.action, valid
+                    doc.lifecycle_status,
+                    request.action,
+                    valid,
+                    pipeline_status=doc.pipeline_status.value
+                    if doc.pipeline_status
+                    else None,
                 )
 
             to_state, creates_edge = result

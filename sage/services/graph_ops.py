@@ -301,6 +301,15 @@ class GraphOpsService:
         tail_id = ordered[0] if ordered else request.document_id
         head_id = ordered[-1] if ordered else request.document_id
 
+        # When chain has only the query document (no matching edges),
+        # report what edge types DO exist so the caller can adjust.
+        available_edge_types: list[str] | None = None
+        if len(chain_entries) == 1:
+            outbound = await self._store.get_edges_by_source(request.document_id)
+            inbound = await self._store.get_edges_by_target(request.document_id)
+            all_types = sorted({e.edge_type.value for e in outbound + inbound})
+            available_edge_types = all_types
+
         return ChainResponse(
             chain=chain_entries,
             head_id=head_id,
@@ -308,6 +317,7 @@ class GraphOpsService:
             query_position=query_position,
             length=len(chain_entries),
             is_linear=is_linear,
+            available_edge_types=available_edge_types,
         )
 
     # ------------------------------------------------------------------

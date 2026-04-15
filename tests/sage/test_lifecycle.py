@@ -199,3 +199,32 @@ async def test_unknown_action_returns_400(graph_store, lifecycle_service):
         )
 
     assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# InvalidLifecycleTransitionError includes pipeline_status
+# ---------------------------------------------------------------------------
+
+async def test_invalid_transition_includes_pipeline_status(
+    graph_store, lifecycle_service
+):
+    """InvalidLifecycleTransitionError detail includes pipeline_status."""
+    doc = _make_doc(
+        "doc_pipe_check",
+        lifecycle_status="archived",
+        pipeline_status=PipelineStatus.INDEXING_COMPLETE,
+    )
+    await graph_store.insert_document(doc)
+    await graph_store.update_document(
+        "doc_pipe_check", {"lifecycle_status": "archived"}
+    )
+
+    with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
+        await lifecycle_service.set_lifecycle(
+            "doc_pipe_check",
+            SetLifecycleRequest(action="complete"),
+        )
+
+    detail = exc_info.value.detail
+    assert "pipeline_status" in detail
+    assert detail["pipeline_status"] == "indexing_complete"

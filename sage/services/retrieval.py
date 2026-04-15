@@ -98,6 +98,35 @@ class RetrievalService:
             result["document_id"] = request.filters.document_ids
         return result or None
 
+    @staticmethod
+    def _build_hints(
+        raw_count: int,
+        request: DiscoverRequest,
+    ) -> dict[str, object] | None:
+        """Build hints dict when results are empty but raw results existed."""
+        if raw_count == 0:
+            return None
+        hints: dict[str, object] = {"total_before_filtering": raw_count}
+        if request.filters:
+            active: dict[str, object] = {}
+            if request.filters.doc_type:
+                active["doc_type"] = request.filters.doc_type
+            if request.filters.project:
+                active["project"] = request.filters.project
+            if request.filters.lifecycle_status:
+                active["lifecycle_status"] = request.filters.lifecycle_status
+            if request.filters.tags:
+                active["tags"] = request.filters.tags
+            if request.filters.document_ids:
+                active["document_ids"] = request.filters.document_ids
+            if request.filters.pipeline_status:
+                active["pipeline_status"] = request.filters.pipeline_status
+            if active:
+                hints["active_filters"] = active
+        if request.scope and request.scope != RetrievalScope.ALL:
+            hints["scope"] = request.scope.value
+        return hints
+
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
         if request.mode == RetrievalMode.SEMANTIC:
@@ -186,6 +215,7 @@ class RetrievalService:
         if not request.query:
             raise MissingFieldError("query", "query is required for keyword mode")
 
+        raw_count = 0
         if request.query.strip() == "*":
             # Filter-only listing: return all documents matching filters
             hits = await self._list_filtered(request)
@@ -195,15 +225,18 @@ class RetrievalService:
             results = await self._content.search_bm25(
                 request.query, fetch_limit, filters=content_filters,
             )
+            raw_count = len(results)
             hits = await self._results_to_hits(results, request)
             hits = await self._boost_metadata_matches(hits, request)
             hits = await self._boost_abstract_matches(hits, request)
             hits = await self._rerank_salience(hits)
 
+        final = hits[:request.limit]
         return DiscoverResponse(
             mode=RetrievalMode.KEYWORD,
-            results=hits[:request.limit],
+            results=final,
             total_available=len(hits),
+            hints=self._build_hints(raw_count, request) if not final else None,
         )
 
     async def _list_filtered(self, request: DiscoverRequest) -> list[DiscoverHit]:
@@ -274,15 +307,18 @@ class RetrievalService:
             )
 
         # Filter results: exclude failed-pipeline documents (BH-020)
+        raw_count = len(results)
         hits = await self._results_to_hits(results, request)
         hits = await self._boost_metadata_matches(hits, request)
         hits = await self._boost_abstract_matches(hits, request)
         hits = await self._rerank_salience(hits)
 
+        final = hits[:request.limit]
         return DiscoverResponse(
             mode=RetrievalMode.SEMANTIC,
-            results=hits[:request.limit],
+            results=final,
             total_available=len(hits),
+            hints=self._build_hints(raw_count, request) if not final else None,
         )
 
     async def _hybrid_rrf(

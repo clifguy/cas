@@ -793,3 +793,73 @@ async def test_delete_edge_returns_true(graph_store):
 async def test_delete_edge_returns_false_for_missing(graph_store):
     """delete_edge returns False for a nonexistent edge_id."""
     assert await graph_store.delete_edge("nonexistent") is False
+
+
+# ---------------------------------------------------------------------------
+# Chain with no matching edges includes available_edge_types hint
+# ---------------------------------------------------------------------------
+
+async def test_chain_single_node_shows_available_edge_types(
+    graph_store, graph_ops_service
+):
+    """Chain of length 1 includes available_edge_types when other edges exist."""
+    for name in ["doc_x", "doc_y"]:
+        await graph_store.insert_document(_make_doc(name))
+
+    # doc_x has a references edge but no supersedes edges
+    await graph_store.insert_edge(Edge(
+        id="edge_ref_only",
+        source_id="doc_x",
+        target_id="doc_y",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_x",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 1
+    assert result.available_edge_types is not None
+    assert "references" in result.available_edge_types
+
+
+async def test_chain_single_node_no_edges_at_all(
+    graph_store, graph_ops_service
+):
+    """Chain of length 1 with no edges of any type has empty available_edge_types."""
+    await graph_store.insert_document(_make_doc("doc_isolated"))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_isolated",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 1
+    assert result.available_edge_types is not None
+    assert result.available_edge_types == []
+
+
+async def test_chain_with_matching_edges_no_hint(
+    graph_store, graph_ops_service
+):
+    """Chain with actual matching edges has available_edge_types as None."""
+    for name in ["doc_p", "doc_q"]:
+        await graph_store.insert_document(_make_doc(name))
+
+    await graph_store.insert_edge(Edge(
+        id="edge_sup_pq",
+        source_id="doc_p",
+        target_id="doc_q",
+        edge_type=EdgeType.SUPERSEDES,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="doc_p",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 2
+    assert result.available_edge_types is None

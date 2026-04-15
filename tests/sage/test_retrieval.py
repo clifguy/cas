@@ -2474,3 +2474,94 @@ async def test_bh_115_document_ids_filter_multiple_ids(
     assert "multi_a" in doc_ids
     assert "multi_b" in doc_ids
     assert "multi_c" not in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# Empty-result hints: semantic mode
+# ---------------------------------------------------------------------------
+
+async def test_semantic_empty_results_no_hints_when_no_raw_matches(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """When content store returns zero raw results, hints is None."""
+    doc = _make_doc("doc_empty_sem")
+    await graph_store.insert_document(doc)
+    # No chunks indexed -- content store will return zero raw results.
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="something completely unrelated",
+    )
+    response = await retrieval_service.discover(request)
+    assert response.results == []
+    assert response.hints is None
+
+
+async def test_semantic_empty_results_with_hints_when_filtered_out(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """When raw results exist but filters exclude all, hints shows the gap."""
+    doc = _make_doc("doc_filtered_sem", project="alpha")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_filtered_sem",
+        [("Section 1", "Interesting patent content about claims.")],
+    )
+
+    # Search matches content but filter by a non-matching project
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent claims",
+        filters=RetrievalFilters(project="nonexistent_project"),
+    )
+    response = await retrieval_service.discover(request)
+    assert response.results == []
+    assert response.hints is not None
+    assert response.hints["total_before_filtering"] > 0
+    assert "active_filters" in response.hints
+
+
+# ---------------------------------------------------------------------------
+# Empty-result hints: keyword mode
+# ---------------------------------------------------------------------------
+
+async def test_keyword_empty_results_with_hints_when_filtered_out(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Keyword mode: raw BM25 results exist but scope filter excludes all."""
+    doc = _make_doc("doc_filtered_kw", project="beta")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_filtered_kw",
+        [("Section 1", "Specific keyword content for testing.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="keyword content",
+        filters=RetrievalFilters(project="wrong_project"),
+    )
+    response = await retrieval_service.discover(request)
+    assert response.results == []
+    assert response.hints is not None
+    assert response.hints["total_before_filtering"] > 0
+
+
+async def test_keyword_nonempty_results_no_hints(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """When results are returned, hints is None (not needed)."""
+    doc = _make_doc("doc_has_results")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_has_results",
+        [("Section 1", "Matching content for keyword search.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="matching content",
+    )
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
+    assert response.hints is None

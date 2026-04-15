@@ -187,6 +187,7 @@ class ChainResponse(BaseModel):
     query_position: int
     length: int
     is_linear: bool
+    available_edge_types: list[str] | None = None
 
 
 class PreconditionCheck(BaseModel):
@@ -243,6 +244,7 @@ class DiscoverResponse(BaseModel):
     mode: RetrievalMode
     results: list[DiscoverHit]
     total_available: int
+    hints: dict[str, object] | None = None
 
 
 # ---------------------------------------------------------------------------

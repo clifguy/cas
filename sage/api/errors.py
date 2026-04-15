@@ -41,17 +41,24 @@ class InvalidLifecycleTransitionError(SAGEError):
     """409: action is known but invalid from current state (BH-012)."""
 
     def __init__(
-        self, current_state: str, attempted_action: str, valid_actions: list[str]
+        self,
+        current_state: str,
+        attempted_action: str,
+        valid_actions: list[str],
+        pipeline_status: str | None = None,
     ) -> None:
+        detail: dict = {
+            "current_state": current_state,
+            "attempted_action": attempted_action,
+            "valid_actions": valid_actions,
+        }
+        if pipeline_status is not None:
+            detail["pipeline_status"] = pipeline_status
         super().__init__(
             "invalid_lifecycle_transition",
             f"Cannot {attempted_action} from {current_state}",
             409,
-            {
-                "current_state": current_state,
-                "attempted_action": attempted_action,
-                "valid_actions": valid_actions,
-            },
+            detail,
         )
 
 
