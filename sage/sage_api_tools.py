@@ -492,7 +492,10 @@ def register_sage_tools(
                 "description": getattr(svc.config.vault, "description", None),
                 "storage_root": svc.config.vault.storage_root,
             })
-        return json.dumps(summaries, indent=2)
+        return json.dumps({
+            "vaults": summaries,
+            "count": len(summaries),
+        }, indent=2)
 
     @mcp.tool()
     async def sage_vault_stats(vault_id: str) -> str:
@@ -589,9 +592,13 @@ def register_sage_tools(
         try:
             v = get_vault(vault_id)
             edges = await v.graph_store.list_staging_edges()
-            return json.dumps(
-                [e.model_dump(mode="json") for e in edges], indent=2, default=str
-            )
+            items = [e.model_dump(mode="json") for e in edges]
+            return json.dumps({
+                "items": items,
+                "count": len(items),
+                "vault_id": vault_id,
+                "status": "awaiting_review" if items else "no_staging_edges",
+            }, indent=2, default=str)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -664,7 +671,12 @@ def register_sage_tools(
                     "document": json.loads(serialize(doc)),
                     "extracted_fields": {},
                 })
-            return json.dumps(items, indent=2, default=str)
+            return json.dumps({
+                "items": items,
+                "count": len(items),
+                "vault_id": vault_id,
+                "status": "pending_review" if items else "no_pending_metadata",
+            }, indent=2, default=str)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

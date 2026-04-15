@@ -186,21 +186,22 @@ async def empty_registry():
 class TestSageListVaults:
 
     async def test_mcp_001_returns_all_vaults(self, two_vaults):
-        """sage_list_vaults returns all registered vaults."""
+        """sage_list_vaults returns all registered vaults in envelope."""
         result = _parse(await sage_list_vaults())
-        assert isinstance(result, list)
-        assert len(result) == 2
-        ids = {v["id"] for v in result}
+        assert result["count"] == 2
+        assert isinstance(result["vaults"], list)
+        ids = {v["id"] for v in result["vaults"]}
         assert ids == {"test_vault", "second_vault"}
-        for v in result:
+        for v in result["vaults"]:
             assert "id" in v
             assert "name" in v
             assert "storage_root" in v
 
-    async def test_mcp_002_empty_returns_empty_array(self, empty_registry):
-        """sage_list_vaults with no vaults returns empty array."""
+    async def test_mcp_002_empty_returns_envelope(self, empty_registry):
+        """sage_list_vaults with no vaults returns envelope with empty list."""
         result = _parse(await sage_list_vaults())
-        assert result == []
+        assert result["vaults"] == []
+        assert result["count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +305,7 @@ class TestSageHashCheck:
 class TestSageListStagingEdges:
 
     async def test_mcp_008_returns_staging_edges(self, single_vault):
-        """sage_list_staging_edges returns Tier 2 edges."""
+        """sage_list_staging_edges returns Tier 2 edges in envelope."""
         services, config = single_vault
         # Ingest two docs and create a staging edge
         r1 = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
@@ -323,15 +324,18 @@ class TestSageListStagingEdges:
         await services.graph_store.insert_staging_edge(staging)
 
         result = _parse(await sage_list_staging_edges("test_vault"))
-        assert isinstance(result, list)
-        assert len(result) == 1
-        assert result[0]["id"] == "staging-001"
-        assert result[0]["edge_type"] == "covers"
+        assert result["count"] == 1
+        assert result["vault_id"] == "test_vault"
+        assert result["items"][0]["id"] == "staging-001"
+        assert result["items"][0]["edge_type"] == "covers"
 
     async def test_mcp_009_empty_when_none(self, single_vault):
-        """sage_list_staging_edges returns empty array when none exist."""
+        """sage_list_staging_edges returns envelope when none exist."""
         result = _parse(await sage_list_staging_edges("test_vault"))
-        assert result == []
+        assert result["items"] == []
+        assert result["count"] == 0
+        assert result["vault_id"] == "test_vault"
+        assert result["status"] == "no_staging_edges"
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +373,7 @@ class TestStagingEdgeActions:
 
         # Staging edge gone
         listing = _parse(await sage_list_staging_edges("test_vault"))
-        assert len(listing) == 0
+        assert listing["count"] == 0
 
     async def test_mcp_011_dismiss_deletes(self, single_vault):
         """sage_dismiss_staging_edge deletes from staging."""
@@ -380,7 +384,7 @@ class TestStagingEdgeActions:
         assert result["dismissed"] is True
 
         listing = _parse(await sage_list_staging_edges("test_vault"))
-        assert len(listing) == 0
+        assert listing["count"] == 0
 
     async def test_mcp_012_nonexistent_returns_error(self, single_vault):
         """Confirm/dismiss non-existent staging edge returns error."""
@@ -396,21 +400,24 @@ class TestStagingEdgeActions:
 class TestSagePendingMetadata:
 
     async def test_mcp_013_returns_pending(self, single_vault):
-        """sage_pending_metadata returns documents awaiting confirmation."""
+        """sage_pending_metadata returns documents awaiting confirmation in envelope."""
         services, config = single_vault
         await sage_ingest("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.1)
 
         result = _parse(await sage_pending_metadata("test_vault"))
-        assert isinstance(result, list)
-        # Newly ingested docs have metadata_confirmed=False
-        assert len(result) >= 1
-        assert "document" in result[0]
+        assert result["vault_id"] == "test_vault"
+        assert result["count"] >= 1
+        assert result["status"] == "pending_review"
+        assert "document" in result["items"][0]
 
     async def test_mcp_014_empty_when_none(self, single_vault):
-        """sage_pending_metadata returns empty array when none pending."""
+        """sage_pending_metadata returns envelope when none pending."""
         result = _parse(await sage_pending_metadata("test_vault"))
-        assert result == []
+        assert result["items"] == []
+        assert result["count"] == 0
+        assert result["vault_id"] == "test_vault"
+        assert result["status"] == "no_pending_metadata"
 
 
 # ---------------------------------------------------------------------------
