@@ -6,10 +6,12 @@ endpoint operates across all vaults; all other endpoints resolve the
 correct services via the vault_id path parameter.
 """
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import (
@@ -28,6 +30,50 @@ from sage.api.routers import (
 from app.backend.router import router as app_backend_router
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# ASGI middleware: suppress double-response errors during shutdown
+# ---------------------------------------------------------------------------
+
+class _GracefulSSEMiddleware:
+    """Catch the double ``http.response.start`` that occurs when uvicorn
+    cancels an active SSE connection during shutdown.
+
+    The SSE transport has already sent response headers; the Starlette
+    exception-handling middleware then tries to send an error response,
+    producing a second ``http.response.start`` that uvicorn rejects
+    with a ``RuntimeError``.  This wrapper silently drops the redundant
+    start message so the shutdown traceback is avoided.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def _safe_send(message: dict) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                if response_started:
+                    logger.debug("Suppressed duplicate http.response.start during shutdown")
+                    return
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _safe_send)
+        except RuntimeError as exc:
+            if "http.response.start" not in str(exc):
+                raise
+            logger.debug("Suppressed SSE shutdown RuntimeError: %s", exc)
 
 
 async def _initialize_vault(app: FastAPI, config: VaultConfig, **overrides) -> None:
@@ -139,8 +185,10 @@ def create_app(
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)
 
-    # Mount MCP server (SSE transport) for external clients (e.g. Cowork)
-    from sage.mcp_server import mount_on_app
-    mount_on_app(app)
+    # Mount MCP server (SSE transport) for external clients (e.g. Cowork).
+    # Wrap with _GracefulSSEMiddleware to suppress double-response errors
+    # that occur when uvicorn cancels active SSE connections at shutdown.
+    from sage.mcp_server import mcp
+    app.mount("/mcp", _GracefulSSEMiddleware(mcp.sse_app()))
 
     return app
