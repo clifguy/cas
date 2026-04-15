@@ -863,3 +863,85 @@ async def test_chain_with_matching_edges_no_hint(
 
     assert result.length == 2
     assert result.available_edge_types is None
+
+
+# ---------------------------------------------------------------------------
+# Chain slice parameters: limit and offset
+# ---------------------------------------------------------------------------
+
+async def test_chain_slice_limit(graph_store, graph_ops_service):
+    """Chain with limit returns only the requested number of entries."""
+    # Create a 4-version chain: v1 <- v2 <- v3 <- v4 (newest)
+    for i in range(1, 5):
+        await graph_store.insert_document(_make_doc(f"sv{i}"))
+    for i in range(1, 4):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_sv_{i}",
+            source_id=f"sv{i+1}",
+            target_id=f"sv{i}",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=datetime.now(timezone.utc),
+        ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="sv1",
+        edge_type=EdgeType.SUPERSEDES,
+        limit=2,
+    ))
+
+    # Full chain is 4, but we requested 2
+    assert len(result.chain) == 2
+    assert result.total_length == 4
+    # Default offset=0 means oldest first: sv1, sv2
+    assert result.chain[0].id == "sv1"
+    assert result.chain[1].id == "sv2"
+
+
+async def test_chain_slice_offset_and_limit(graph_store, graph_ops_service):
+    """Chain with offset+limit returns the correct slice."""
+    for i in range(1, 5):
+        await graph_store.insert_document(_make_doc(f"so{i}"))
+    for i in range(1, 4):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_so_{i}",
+            source_id=f"so{i+1}",
+            target_id=f"so{i}",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=datetime.now(timezone.utc),
+        ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="so1",
+        edge_type=EdgeType.SUPERSEDES,
+        limit=2,
+        offset=1,
+    ))
+
+    assert len(result.chain) == 2
+    assert result.total_length == 4
+    # offset=1: skip sv1, get sv2, sv3
+    assert result.chain[0].id == "so2"
+    assert result.chain[1].id == "so3"
+
+
+async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
+    """Chain without limit/offset returns all entries and total_length == length."""
+    for i in range(1, 4):
+        await graph_store.insert_document(_make_doc(f"sf{i}"))
+    for i in range(1, 3):
+        await graph_store.insert_edge(Edge(
+            id=f"edge_sf_{i}",
+            source_id=f"sf{i+1}",
+            target_id=f"sf{i}",
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=datetime.now(timezone.utc),
+        ))
+
+    result = await graph_ops_service.chain(ChainRequest(
+        document_id="sf1",
+        edge_type=EdgeType.SUPERSEDES,
+    ))
+
+    assert result.length == 3
+    assert result.total_length == 3
+    assert len(result.chain) == 3

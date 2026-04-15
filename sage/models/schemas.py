@@ -169,6 +169,8 @@ class TraverseResponse(BaseModel):
 class ChainRequest(BaseModel):
     document_id: str
     edge_type: EdgeType
+    limit: int | None = None
+    offset: int = 0
 
 
 class ChainEntry(BaseModel):
@@ -186,6 +188,7 @@ class ChainResponse(BaseModel):
     tail_id: str
     query_position: int
     length: int
+    total_length: int
     is_linear: bool
     available_edge_types: list[str] | None = None
 
@@ -217,7 +220,7 @@ class RetrievalFilters(BaseModel):
 
 
 class DiscoverRequest(BaseModel):
-    mode: RetrievalMode
+    mode: RetrievalMode = RetrievalMode.SEMANTIC
     query: str | None = None
     scope: RetrievalScope = RetrievalScope.ALL
     filters: RetrievalFilters | None = None
@@ -227,6 +230,7 @@ class DiscoverRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
     use_hybrid: bool = True
     use_abstract_prefilter: bool = True
+    include_abstracts: bool = False
     response_level: ResponseLevel = ResponseLevel.CHUNKS
     sort_by: CatalogSortBy | None = None
     sort_order: SortOrder | None = None

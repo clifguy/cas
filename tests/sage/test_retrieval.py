@@ -1923,7 +1923,9 @@ async def test_bh_101_semantic_discover_returns_abstract(
         [("Section 1", "Patent claim structures and prior art analysis.")],
     )
 
-    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="patent claims")
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC, query="patent claims", include_abstracts=True,
+    )
     response = await retrieval_service.discover(request)
 
     hits_by_id = {h.document.id: h for h in response.results}
@@ -1978,6 +1980,7 @@ async def test_bh_103_catalog_returns_abstract(
         mode=RetrievalMode.CATALOG,
         filters=RetrievalFilters(doc_type="patent_draft"),
         limit=10,
+        include_abstracts=True,
     )
     response = await retrieval_service.discover(request)
 
@@ -2006,6 +2009,7 @@ async def test_bh_104_response_level_documents_preserves_abstract(
         mode=RetrievalMode.SEMANTIC,
         query="insulin pump safety",
         response_level=ResponseLevel.DOCUMENTS,
+        include_abstracts=True,
     )
     response = await retrieval_service.discover(request)
 
@@ -2014,7 +2018,7 @@ async def test_bh_104_response_level_documents_preserves_abstract(
     hit = hits_by_id["rl_doc"]
     # chunk_content suppressed by response_level=documents
     assert hit.chunk_content is None
-    # semantic_abstract is document-level metadata, never suppressed
+    # semantic_abstract preserved because include_abstracts=True
     assert hit.document.semantic_abstract == abstract_text
 
 
@@ -2565,3 +2569,133 @@ async def test_keyword_nonempty_results_no_hints(
     response = await retrieval_service.discover(request)
     assert len(response.results) > 0
     assert response.hints is None
+
+
+# ---------------------------------------------------------------------------
+# Default mode: semantic
+# ---------------------------------------------------------------------------
+
+async def test_discover_defaults_to_semantic_mode(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """DiscoverRequest without explicit mode defaults to semantic."""
+    doc = _make_doc("doc_default_mode")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_default_mode",
+        [("Section 1", "Content for default mode testing.")],
+    )
+
+    request = DiscoverRequest(query="default mode testing")
+    response = await retrieval_service.discover(request)
+    assert response.mode == RetrievalMode.SEMANTIC
+    assert len(response.results) > 0
+
+
+# ---------------------------------------------------------------------------
+# include_abstracts: default False suppresses abstracts in search results
+# ---------------------------------------------------------------------------
+
+async def test_include_abstracts_false_suppresses_in_semantic(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Default include_abstracts=False nulls out semantic_abstract in results."""
+    doc = _make_doc(
+        "doc_no_abs",
+        semantic_abstract="This abstract should be suppressed.",
+    )
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_no_abs",
+        [("Section 1", "Content for abstract suppression test.")],
+    )
+
+    request = DiscoverRequest(query="abstract suppression")
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
+    assert response.results[0].document.semantic_abstract is None
+
+
+async def test_include_abstracts_true_preserves_in_semantic(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Explicit include_abstracts=True returns semantic_abstract."""
+    abstract_text = "This abstract should be preserved."
+    doc = _make_doc("doc_yes_abs", semantic_abstract=abstract_text)
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_yes_abs",
+        [("Section 1", "Content for abstract preservation test.")],
+    )
+
+    request = DiscoverRequest(query="abstract preservation", include_abstracts=True)
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
+    assert response.results[0].document.semantic_abstract == abstract_text
+
+
+async def test_include_abstracts_false_suppresses_in_catalog(
+    graph_store, retrieval_service
+):
+    """Catalog mode with default include_abstracts=False suppresses abstracts."""
+    doc = _make_doc(
+        "doc_cat_no_abs",
+        doc_type="note",
+        semantic_abstract="Catalog abstract should be suppressed.",
+    )
+    await graph_store.insert_document(doc)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="note"),
+    )
+    response = await retrieval_service.discover(request)
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert "doc_cat_no_abs" in hits_by_id
+    assert hits_by_id["doc_cat_no_abs"].document.semantic_abstract is None
+
+
+async def test_include_abstracts_true_preserves_in_catalog(
+    graph_store, retrieval_service
+):
+    """Catalog mode with include_abstracts=True preserves abstracts."""
+    abstract_text = "Catalog abstract should be preserved."
+    doc = _make_doc(
+        "doc_cat_yes_abs",
+        doc_type="note",
+        semantic_abstract=abstract_text,
+    )
+    await graph_store.insert_document(doc)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="note"),
+        include_abstracts=True,
+    )
+    response = await retrieval_service.discover(request)
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert "doc_cat_yes_abs" in hits_by_id
+    assert hits_by_id["doc_cat_yes_abs"].document.semantic_abstract == abstract_text
+
+
+async def test_include_abstracts_false_suppresses_in_keyword(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Keyword mode with default include_abstracts=False suppresses abstracts."""
+    doc = _make_doc(
+        "doc_kw_no_abs",
+        semantic_abstract="Keyword abstract should be suppressed.",
+    )
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_kw_no_abs",
+        [("Section 1", "Keyword mode abstract suppression content.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="keyword mode abstract",
+    )
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
+    assert response.results[0].document.semantic_abstract is None

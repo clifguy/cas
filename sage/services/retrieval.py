@@ -130,13 +130,19 @@ class RetrievalService:
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
         if request.mode == RetrievalMode.SEMANTIC:
-            return await self._semantic(request)
+            response = await self._semantic(request)
         elif request.mode == RetrievalMode.KEYWORD:
-            return await self._keyword(request)
+            response = await self._keyword(request)
         elif request.mode == RetrievalMode.DETERMINISTIC:
-            return await self._deterministic(request)
+            response = await self._deterministic(request)
         elif request.mode == RetrievalMode.CATALOG:
-            return await self._catalog(request)
+            response = await self._catalog(request)
+
+        if not request.include_abstracts:
+            for hit in response.results:
+                hit.document.semantic_abstract = None
+
+        return response
 
     # ------------------------------------------------------------------
     # Catalog mode (BH-072 through BH-079)

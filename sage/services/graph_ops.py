@@ -310,12 +310,20 @@ class GraphOpsService:
             all_types = sorted({e.edge_type.value for e in outbound + inbound})
             available_edge_types = all_types
 
+        # Apply slice if limit is specified
+        total_length = len(chain_entries)
+        if request.limit is not None:
+            chain_entries = chain_entries[request.offset:request.offset + request.limit]
+        elif request.offset > 0:
+            chain_entries = chain_entries[request.offset:]
+
         return ChainResponse(
             chain=chain_entries,
             head_id=head_id,
             tail_id=tail_id,
             query_position=query_position,
             length=len(chain_entries),
+            total_length=total_length,
             is_linear=is_linear,
             available_edge_types=available_edge_types,
         )

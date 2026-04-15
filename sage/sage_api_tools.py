@@ -292,6 +292,8 @@ def register_sage_tools(
         vault_id: str,
         document_id: str,
         edge_type: str,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> str:
         """Walk an edge chain to both ends from a starting document.
 
@@ -304,12 +306,17 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             document_id: Document ID to start the chain walk from.
             edge_type: Edge type to follow (e.g. "supersedes", "references").
+            limit: Maximum chain entries to return. Default: all.
+                Use with offset to page through long version chains.
+            offset: Skip this many entries from the start (oldest). Default: 0.
         """
         try:
             v = get_vault(vault_id)
             request = ChainRequest(
                 document_id=document_id,
                 edge_type=edge_type,
+                limit=limit,
+                offset=offset,
             )
             response = await v.graph_ops_service.chain(request)
             return serialize(response)
@@ -319,7 +326,7 @@ def register_sage_tools(
     @mcp.tool()
     async def sage_discover(
         vault_id: str,
-        mode: str,
+        mode: str = "semantic",
         query: str | None = None,
         scope: str = "all",
         filters: dict | None = None,
@@ -329,6 +336,7 @@ def register_sage_tools(
         offset: int = 0,
         use_hybrid: bool = True,
         use_abstract_prefilter: bool = True,
+        include_abstracts: bool = False,
         response_level: str = "chunks",
     ) -> str:
         """Search for documents using semantic, keyword, catalog, or deterministic retrieval.
@@ -343,7 +351,7 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            mode: Retrieval mode (semantic, keyword, catalog, deterministic).
+            mode: Retrieval mode (semantic, keyword, catalog, deterministic). Default: semantic.
             query: Search query text (required for semantic/keyword modes).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters with optional keys: doc_type, project,
@@ -355,6 +363,9 @@ def register_sage_tools(
             use_hybrid: Use hybrid RRF fusion of vector + BM25 in semantic mode. Default: true.
             use_abstract_prefilter: Boost documents whose semantic abstract matches the
                 query (two-pass retrieval). Applies to semantic and keyword modes. Default: true.
+            include_abstracts: Include semantic_abstract in results. Default: false.
+                Abstracts are large and rarely needed in search result lists. Set true
+                when you need document summaries for disambiguation or orientation.
             response_level: Result detail level ("chunks" or "documents"). "documents"
                 suppresses chunk_content and heading_path, returning document metadata
                 and relevance scores only. Default: "chunks".
@@ -373,6 +384,7 @@ def register_sage_tools(
                 offset=offset,
                 use_hybrid=use_hybrid,
                 use_abstract_prefilter=use_abstract_prefilter,
+                include_abstracts=include_abstracts,
                 response_level=response_level,
             )
             response = await v.retrieval_service.discover(request)
