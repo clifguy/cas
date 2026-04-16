@@ -81,13 +81,6 @@
                 "type": "string",
                 "description": "Optional compound key: title segment must contain this substring for the mapping to apply. Enables disambiguation when a single code prefix resolves to different doc_types based on document identity."
               },
-              "segment_match": {
-                "type": "object",
-                "description": "Optional compound key: additional segment values that must match. Keys are segment names; values are required values or substring matches.",
-                "additionalProperties": {
-                  "type": "string"
-                }
-              },
               "doc_type": {
                 "type": "string",
                 "description": "The doc_type value to assign when this rule matches. Must be a value defined in document_types."

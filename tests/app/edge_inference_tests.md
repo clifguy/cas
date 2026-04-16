@@ -241,8 +241,8 @@ indicates the patent the checklist governs, not the document's own type.
 **Artifact:** `metadata_extraction.schema.json` (code_to_doc_type)
 **Category:** filename_parser
 
-**Decision:** Within code_to_doc_type, compound keys (code + title_contains or
-code + segment_match) take precedence over code-only rules. Rules are evaluated
+**Decision:** Within code_to_doc_type, compound keys (code + title_contains)
+take precedence over code-only rules. Rules are evaluated
 in order; first match wins. (Unchanged from v0.1 schema, confirmed here.)
 
 **Precondition:** Vault config with PIM Health code_to_doc_type rules (REF +

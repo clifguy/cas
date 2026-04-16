@@ -67,12 +67,13 @@ class IngestSummary:
     edges_created: dict[str, int] = field(default_factory=dict)
     edges_staged: dict[str, int] = field(default_factory=dict)
     edges_dropped: int = 0
+    edge_warnings: list[dict[str, str]] = field(default_factory=list)
     error_count: int = 0
     errors: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Produce the summary dict both callers need."""
-        return {
+        result: dict = {
             "documents_created": {
                 "new": self.docs_new,
                 "new_version": self.docs_version,
@@ -86,6 +87,9 @@ class IngestSummary:
             "error_count": self.error_count,
             "errors": self.errors,
         }
+        if self.edge_warnings:
+            result["edge_warnings"] = self.edge_warnings
+        return result
 
 
 # Callback type aliases
@@ -185,6 +189,7 @@ class BatchIngestService:
             summary.edges_created = edge_result.edges_created
             summary.edges_staged = edge_result.edges_staged
             summary.edges_dropped = edge_result.edges_dropped
+            summary.edge_warnings = edge_result.warnings
 
         return summary
 

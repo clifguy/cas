@@ -245,10 +245,10 @@ class FilenameParser:
                         return candidate
 
         # Phase 2: code_to_doc_type (EI-010)
-        # Compound keys first (rules with title_contains or segment_match),
-        # then code-only rules. Since rules are ordered and first-match wins,
-        # we evaluate in order and compound keys naturally take precedence
-        # if the config lists them first.
+        # Compound keys first (rules with title_contains), then code-only
+        # rules. Since rules are ordered and first-match wins, we evaluate
+        # in order and compound keys naturally take precedence if the config
+        # lists them first.
         for rule in self._code_rules:
             rule_code = rule.get("code")
             if rule_code is None:
@@ -268,13 +268,6 @@ class FilenameParser:
             # Check compound conditions
             title_contains = rule.get("title_contains")
             if title_contains and title_contains.lower() not in title.lower():
-                continue
-
-            segment_match = rule.get("segment_match")
-            if segment_match:
-                # For now, segment_match is not evaluated against parsed
-                # segments (would require passing all segments). Skip if
-                # segment_match is present but we can't evaluate it.
                 continue
 
             candidate = rule["doc_type"]

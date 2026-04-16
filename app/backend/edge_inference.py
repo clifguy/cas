@@ -60,6 +60,7 @@ class EdgeResult:
     edges_created: dict[str, int] = field(default_factory=dict)
     edges_staged: dict[str, int] = field(default_factory=dict)
     edges_dropped: int = 0
+    warnings: list[dict[str, str]] = field(default_factory=list)
 
 
 def _is_workflow(doc_type: str | None) -> bool:
@@ -222,9 +223,23 @@ async def resolve_and_execute(
         # If either ref is still a file path (not resolved), it failed ingestion
         if source_id == planned.source_ref and "/" in planned.source_ref:
             result.edges_dropped += 1
+            result.warnings.append({
+                "source": planned.source_ref,
+                "target": planned.target_ref,
+                "edge_type": planned.edge_type.value,
+                "reason": "ingestion_failed",
+                "detail": f"Source file failed ingestion: {planned.source_ref}",
+            })
             continue
         if target_id == planned.target_ref and "/" in planned.target_ref:
             result.edges_dropped += 1
+            result.warnings.append({
+                "source": planned.source_ref,
+                "target": planned.target_ref,
+                "edge_type": planned.edge_type.value,
+                "reason": "ingestion_failed",
+                "detail": f"Target file failed ingestion: {planned.target_ref}",
+            })
             continue
 
         try:
@@ -250,12 +265,19 @@ async def resolve_and_execute(
                 await graph_store.insert_staging_edge(staging)
                 key = planned.edge_type.value
                 result.edges_staged[key] = result.edges_staged.get(key, 0) + 1
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Failed to create edge %s -> %s (%s)",
                 source_id, target_id, planned.edge_type.value,
             )
             result.edges_dropped += 1
+            result.warnings.append({
+                "source": source_id,
+                "target": target_id,
+                "edge_type": planned.edge_type.value,
+                "reason": "edge_creation_failed",
+                "detail": str(exc),
+            })
             continue
 
         # Lifecycle side effect: transition target to "archived"
@@ -268,11 +290,18 @@ async def resolve_and_execute(
                         target_id,
                         {"lifecycle_status": "archived", "updated_at": now},
                     )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "Supersedes edge created but failed to transition "
                     "target %s to archived",
                     target_id,
                 )
+                result.warnings.append({
+                    "source": source_id,
+                    "target": target_id,
+                    "edge_type": planned.edge_type.value,
+                    "reason": "lifecycle_transition_failed",
+                    "detail": str(exc),
+                })
 
     return result

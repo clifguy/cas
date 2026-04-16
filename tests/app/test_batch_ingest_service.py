@@ -487,6 +487,8 @@ class TestEdgeExecution:
         assert result.error_count == 1
         # The supersedes edge referencing v2 should be dropped
         assert result.edges_dropped >= 1
+        assert len(result.edge_warnings) >= 1
+        assert result.edge_warnings[0]["reason"] == "ingestion_failed"
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +641,7 @@ class TestCallerIntegration:
         assert d["edges_created"] == {}
         assert d["edges_staged"] == {}
         assert d["edges_dropped"] == 0
+        assert "edge_warnings" not in d  # omitted when empty
         assert d["abstracts_deferred"] == 1
         assert d["abstracts_generated"] == 0
         assert d["error_count"] == 0
