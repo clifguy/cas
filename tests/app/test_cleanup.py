@@ -11,7 +11,7 @@ import inspect
 
 import pytest
 
-from app.backend.filename_parser import ParsedMetadata
+from sage.services.filename_parser import ParsedMetadata
 from app.backend.ingest_service import FileDescriptor, ParsedMetadataInput
 from app.backend.router import (
     IngestFileItem,

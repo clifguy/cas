@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.7",
-  "manifest_date": "2026-04-14",
+  "manifest_version": "0.9.8",
+  "manifest_date": "2026-04-16",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -149,6 +149,20 @@
       "test_count": 30,
       "decision_date": "2026-04-08",
       "notes": "Filename parser (12 tests: segment recognition, date/version/code detection, doc_type resolution via keyword_to_doc_type and code_to_doc_type), version_chain inference (6 tests: normalization, linear chain, grouping by title, existing vault documents, null version exclusion), filename_code_match inference (6 tests: workflow-to-content direction, workflow-to-workflow exclusion, cross-batch matching, multi-code edges), two-phase orchestration (6 tests: pre-ingest edge plan, post-ingest resolution, tier-based creation, failed ingestion handling)."
+    },
+    {
+      "path": "tests/sage/metadata_extraction_tests.md",
+      "tier": 2,
+      "title": "SAGE Ingestion Metadata Extraction Tests",
+      "status": "specified",
+      "covers": [
+        "docs/fs/sage/metadata_extraction.schema.json",
+        "sage/services/ingestion.py",
+        "sage/services/filename_parser.py"
+      ],
+      "test_count": 9,
+      "decision_date": "2026-04-16",
+      "notes": "CAS-ADR-015: metadata extraction is a SAGE-level capability. ME-001 through ME-009 cover filename parse population on direct ingest, caller-metadata precedence, filename-over-adapter title precedence (the Cowork case), adapter-title fallback when no filename pattern is configured, doc_type non-misc resolution, misc default preservation, markdown/docx uniformity, review_required controlling metadata_confirmed, and app-backend import-relocation regression."
     }
   ],
   "fixture_directories": {
@@ -220,6 +234,11 @@
       "version": "0.9.7",
       "date": "2026-04-14",
       "summary": "Semantic abstract consumer test specifications (CAS-ADR-011). Phase 1: 4 new behavioral tests (BH-101 through BH-104) verifying semantic_abstract surfacing on DocumentSummary across semantic, catalog, and document-level response modes. Phase 2: 7 new behavioral tests (BH-105 through BH-111) for two-pass abstract-boosted retrieval: abstract match boost, graceful degradation for abstractless documents, scope gating, opt-out via use_abstract_prefilter, keyword mode integration, hybrid RRF composition, and salience reranking stacking. Behavioral test count: 95 -> 106."
+    },
+    {
+      "version": "0.9.8",
+      "date": "2026-04-16",
+      "summary": "SAGE ingestion metadata extraction test specifications (CAS-ADR-015). New file tests/sage/metadata_extraction_tests.md with 9 tests (ME-001 through ME-009) validating that IngestionService invokes FilenameParser on every ingest using the vault's metadata_extraction config. Covers filename parse population on direct ingest, caller-metadata precedence over filename parse, filename-over-adapter title precedence (the Cowork case), adapter-title fallback when no filename pattern is configured, doc_type resolution without misc-clobbering, misc default preservation when parse yields nothing, markdown/docx adapter uniformity, review_required flag controlling metadata_confirmed at ingest, and app-backend import-relocation regression (FilenameParser moved from app/backend/ to sage/services/). One test update: tests/app/test_mcp_app_tools.py::test_mcp_013_returns_pending now uses a review_required=true vault to legitimately produce pending-metadata items."
     }
   ]
 }

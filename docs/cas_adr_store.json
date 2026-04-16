@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.10",
+  "schema_version": "1.11",
   "description": "Architecture Decision Record store for Clif's Agentic System (CAS), comprising SAGE, ROOT Harness, and related artifacts",
   "canonical_document_names": [
     "CAS Overview",
@@ -998,6 +998,82 @@
         "The SAGE Core API OpenAPI specification (deferred to formal substrate v0.2) will define set_lifecycle and update_metadata as separate endpoints.",
         "Archive is a lifecycle transition (action='archive' on set_lifecycle), not a standalone operation.",
         "PIM Health policy YAML files are updated to remove organize from permitted_operations lists."
+      ]
+    },
+    {
+      "id": "ADR-015",
+      "title": "Metadata extraction is a SAGE-level capability, not a caller responsibility",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-04-16",
+      "created_by": "Clif + Claude session",
+      "scope": "sage",
+      "tags": [
+        "ingestion",
+        "metadata-extraction",
+        "filename-parser",
+        "vault-config",
+        "boundary-rule"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "Formal Substrate"
+      ],
+      "context": "The vault_config schema (metadata_extraction.schema.json) declares a two-stage metadata extraction pipeline with explicit precedence: manual entry overrides content extraction overrides filename extraction. In practice this contract was partially unenforced. FilenameParser lived in app/backend/ and only the CAS Application's scan/ingest flow invoked it. The sage_ingest MCP tool called IngestionService.ingest without parsed metadata, so filename-derived fields (document_date, project, tags, version_label, doc_type) were left null and the source adapter's ProjectionResult.title (e.g., Word Title style or Markdown first H1) became the unconditional winner. The ingestion service then defaulted doc_type to 'misc' because no caller metadata supplied one. The symptom surfaced during Cowork session ingestion of a scaffolding-series docx: the Word Title style was extracted as the document title rather than the filename-derived catalog title, doc_type defaulted to 'misc', and project/tags/version_label were blank, requiring manual correction via sage_update_metadata. The root cause is architectural: the vault's declared metadata_extraction policy was enforced only when callers happened to parse filenames on their side. Different ingestion entry points (direct service call, MCP tool, app backend) produced different metadata from the same file.",
+      "options_considered": [
+        {
+          "option": "Require every caller to parse filenames before invoking sage_ingest",
+          "summary": "Keep FilenameParser in app/backend/. Update the sage_ingest MCP tool, CLI entrypoints, and any other caller to parse filenames and pass results as IngestRequest.metadata.",
+          "pros": [
+            "Minimal code change inside SAGE itself",
+            "Preserves the current separation between catalog metadata (caller-supplied) and content metadata (adapter-extracted)"
+          ],
+          "cons": [
+            "Every ingestion entry point must re-implement the parse or import app.backend, inverting the SAGE-below-app layering",
+            "New entry points (agentic workflows, background ingest jobs) will forget to parse and reproduce the Cowork bug",
+            "The vault config declares a metadata extraction policy that is enforced inconsistently depending on caller discipline",
+            "Violates single-source-of-truth: the same parse logic must be invoked from multiple locations"
+          ]
+        },
+        {
+          "option": "Move filename parsing into SAGE and invoke it uniformly during ingest",
+          "summary": "Relocate FilenameParser to sage/services/. IngestionService.ingest builds a parser from the vault's metadata_extraction config and invokes it on the source filename for every ingest. Parsed fields populate the document record per declared precedence: caller metadata > filename parse > adapter projection.",
+          "pros": [
+            "Uniform behavior across all ingestion entry points (MCP tool, app backend, CLI, future agentic paths)",
+            "The vault's metadata_extraction policy is enforced wherever ingest runs",
+            "Eliminates the 'which caller parsed the filename' ambiguity",
+            "Aligns with the existing schema declaration that precedence is manual > content > filename",
+            "The review_required flag finally has end-to-end effect: SAGE marks metadata_confirmed at ingest based on the vault's trust declaration"
+          ],
+          "cons": [
+            "Modest refactor of IngestionService.ingest",
+            "App backend must update import paths (mechanical change)",
+            "Adapter's ProjectionResult.title becomes a content-extraction candidate rather than authoritative, a semantic shift (though not a contract break)"
+          ]
+        },
+        {
+          "option": "Restructure adapters to return multiple title/metadata candidates",
+          "summary": "Redesign ProjectionResult to carry title_candidates and metadata_candidates dicts. IngestionService chooses winners per vault precedence.",
+          "pros": [
+            "Most principled separation between extraction and reconciliation",
+            "Future adapters with multiple candidate sources (PDF with both XMP properties and a 'Title:' heading) compose cleanly"
+          ],
+          "cons": [
+            "Larger diff: every adapter touched",
+            "Not necessary to fix the Cowork bug; can be revisited later if genuine multi-candidate cases emerge",
+            "Overshoots the forcing function"
+          ]
+        }
+      ],
+      "decision": "Relocate FilenameParser from app/backend/filename_parser.py to sage/services/filename_parser.py. IngestionService constructs a FilenameParser in __init__ when the vault declares a metadata_extraction.filename_extraction.pattern, and invokes it on every ingest. Parsed metadata populates the document record with precedence: caller-supplied IngestRequest.metadata > filename parse > adapter ProjectionResult.title. The default-to-'misc' doc_type fallback runs only when none of these sources yields a doc_type. IngestionService sets metadata_confirmed at ingest based on metadata_extraction.review_required.",
+      "rationale": "Metadata extraction is a vault-level policy, not a per-caller concern. The vault config declares filename patterns, code-to-doc_type rules, and keyword rules; that declaration must be enforced wherever ingestion runs. Leaving extraction logic at the caller layer inverts the architecture: SAGE is the state substrate and owns the vault config, so SAGE is the natural home for extraction that consumes that config. The forcing function is uniform behavior across ingestion entry points. Adopting option 2 keeps the adapter contract minimal (ProjectionResult.title remains a single value; it simply loses precedence to a filename parse when the vault declares one) while moving the policy enforcement to the correct layer. The option-3 multi-candidate refactor addresses a larger generality that is not required to fix the observed failure and can be layered on later if a concrete adapter needs it.",
+      "consequences": [
+        "FilenameParser moves from app/backend/ to sage/services/. The app backend imports it from its new location; behavior is unchanged.",
+        "IngestionService.ingest invokes FilenameParser on source_path.stem on every ingest when the vault has a filename_extraction pattern configured.",
+        "ProjectionResult.title is a content-extraction candidate: it loses to filename-parsed title when a vault pattern is configured, and wins when no pattern is configured (preserving behavior for vaults with ad-hoc naming).",
+        "The default-to-'misc' doc_type fallback fires only when filename parse, caller metadata, and existing record all fail to yield a doc_type.",
+        "metadata_extraction.review_required now controls metadata_confirmed at ingest: false (trusted conventions) marks documents confirmed automatically, true (review required) leaves documents unconfirmed for interactive confirmation via update_metadata.",
+        "SAGE Architecture Reference Section 3.4.6 (Metadata Extraction) updated to state that filename extraction is a SAGE-invoked stage, not a caller responsibility."
       ]
     }
   ]

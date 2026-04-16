@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.backend.filename_parser import FilenameParser, ParsedMetadata
+from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.source_adapters.base import SourceAdapter

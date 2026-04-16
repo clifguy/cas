@@ -23,7 +23,7 @@ from app.backend.edge_inference import (
     InferenceItem,
     resolve_and_execute,
 )
-from app.backend.filename_parser import ParsedMetadata
+from sage.services.filename_parser import ParsedMetadata
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 

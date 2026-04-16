@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.backend.edge_inference import EdgePlan, InferenceItem, PlannedEdge
-from app.backend.filename_parser import ParsedMetadata
+from sage.services.filename_parser import ParsedMetadata
 from app.backend.ingest_service import (
     BatchIngestService,
     FileDescriptor,

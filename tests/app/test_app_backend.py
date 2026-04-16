@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.backend.filename_parser import FilenameParser, ParsedMetadata, normalize_version
+from sage.services.filename_parser import FilenameParser, ParsedMetadata, normalize_version
 from app.backend.edge_inference import (
     EdgeInferenceEngine,
     EdgePlan,

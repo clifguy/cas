@@ -1,7 +1,7 @@
 # CAS Project Tracker
 
-**Version:** v67
-**Last updated:** 2026-04-15
+**Version:** v68
+**Last updated:** 2026-04-16
 
 ---
 
@@ -13,7 +13,7 @@
 | 2 | SAGE Architecture Reference | v1.4 | Development | — |
 | 3 | ROOT Harness Architecture Reference | v1.0 | Development | — |
 | 4 | Deployment Model | v1.0 | Development | — |
-| 5 | ADR Store | v1.10 (schema), 14 ADRs | Development | — |
+| 5 | ADR Store | v1.11 (schema), 15 ADRs | Development | — |
 | 6 | Formatting Standards | v1.0 | Development | — |
 | 7 | Formal Substrate | v1.6 | Development | — |
 | 8 | Test Plan | v0.9.9 (tier 1 + SAGE tier 2 behavioral + adapter + provenance + app + MCP + edge inference + batch ingest service + catalog mode + catalog sort + frontend Search + response level + abstract consumers + lifecycle tier sort + title extraction + async reabstract) | Development | — |
@@ -62,13 +62,14 @@
 - v1.0 delivered 2026-03-31. Claude Code transition and directory structure update. (1) Revised Section 9 (Directory Structure) to reflect the established repository layout: added docs/fs/ (Formal Substrate), docs/ref/ (architecture reference documents), and domains/ (domain instantiation configurations) as named rows. Updated the ~/repos/cas/ row to document the CLAUDE.md project memory file and project tracker at the repository root. Updated the docs/ row description to include the CAS ADR store, CPML specification, and subdirectory structure. (2) Updated the post-table guidance paragraph to describe the expanded docs/ and new domains/ directories. (3) Added CLAUDE.md setup instructions to Section 10.6 (Development Tools). (4) Added CLAUDE.local.md to the .gitignore exclusion list in Section 10.1. (5) Reframed Section 11.4 (Troubleshooting) from placeholder to living-document format. Promoted to v1.0: all sections have complete coverage with no known gaps.
 - No further pending corrections or revisions identified.
 
-### 5. ADR Store (v1.10)
+### 5. ADR Store (v1.11)
 
 - Cleaned up on 2026-03-25: all consequences rewritten to state architectural impacts only, removing document-section prescriptions. Schema version bumped from 1.5 to 1.6.
 - CAS-ADR-012 added 2026-03-30: Decision logs as SAGE-managed steward and orchestrator companion artifacts.
 - CAS-ADR-013 added 2026-03-30: Typed event stream for agent execution observability.
 - CAS-ADR-014 added 2026-03-30: Named Core API operations replacing organize(). Decomposes organize() into set_lifecycle() and update_metadata() for direct policy enforcement by operation name.
 - Schema version bumped from 1.9 to 1.10 on 2026-03-31.
+- CAS-ADR-015 added 2026-04-16: Metadata extraction is a SAGE-level capability, not a caller responsibility. FilenameParser relocated from app/backend/ to sage/services/. IngestionService invokes the parser on every ingest using the vault's metadata_extraction config; parsed fields populate the document record per declared precedence (caller > filename parse > adapter projection). Eliminates the Cowork-case bug where sage_ingest bypassed filename parsing and left project/tags/version_label blank with doc_type defaulting to "misc". Schema version bumped from 1.10 to 1.11.
 - No further pending work identified.
 
 ### 6. Formatting Standards (v1.0)

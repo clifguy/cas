@@ -29,6 +29,7 @@ from sage.api.errors import (
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
+from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identity import generate_document_id
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.graph_store import GraphStore
@@ -62,6 +63,31 @@ class IngestionService:
         self._abstraction = abstraction_provider
         self._config = config
         self._adapters = source_adapters or {}
+
+        # Build the vault's FilenameParser once per service instance (CAS-ADR-015).
+        # Only active when the vault's metadata_extraction block declares a
+        # filename_extraction.pattern; otherwise filename parsing is skipped
+        # and the adapter's ProjectionResult.title is preserved (ME-004).
+        self._filename_parser: FilenameParser | None = None
+        me = getattr(config, "metadata_extraction", None) or {}
+        fe = (me or {}).get("filename_extraction") or {}
+        if fe.get("pattern"):
+            doc_types_raw = [
+                {
+                    "value": dt.value,
+                    "label": dt.label,
+                    "source_types": dt.source_types,
+                }
+                for dt in config.document_types.doc_types
+            ]
+            self._filename_parser = FilenameParser(me, doc_types=doc_types_raw)
+
+        # review_required controls metadata_confirmed at ingest (ME-008).
+        # When the vault's naming conventions are declared trustworthy
+        # (review_required=false), ingested documents are marked confirmed.
+        # When review is required, documents await interactive confirmation
+        # via update_metadata.
+        self._review_required: bool = bool(me.get("review_required", False))
 
     @property
     def registered_adapters(self) -> dict[SourceType, SourceAdapter]:
@@ -144,6 +170,24 @@ class IngestionService:
             storage_root / vault_relative, request.config
         )
 
+        # Parse filename per vault config (CAS-ADR-015). Active only when the
+        # vault declares a filename_extraction.pattern; None otherwise.
+        parsed = self._parse_source_filename(source_path, request.adapter)
+
+        # Resolve title with precedence: caller > filename parse > adapter.
+        # The adapter's ProjectionResult.title is a content-extraction
+        # candidate and loses to filename-parsed title when the vault has
+        # declared a filename convention (ME-003). When no filename pattern
+        # is configured, the adapter title is preserved (ME-004).
+        caller_title = (
+            (request.metadata or {}).get("title") if request.metadata else None
+        )
+        resolved_title = (
+            caller_title
+            or (parsed.title if parsed and parsed.title else None)
+            or projection.title
+        )
+
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
         hash_matches = await self._store.find_documents_by_hashes(
             [projection.content_hash]
@@ -188,11 +232,11 @@ class IngestionService:
             # New document
             created_by = request.created_by or self._config.vault.owner
             doc_id = generate_document_id(
-                vault_relative, now.isoformat(), projection.title
+                vault_relative, now.isoformat(), resolved_title
             )
             doc = Document(
                 id=doc_id,
-                title=projection.title,
+                title=resolved_title,
                 source_type=request.adapter,
                 source_path=vault_relative,
                 lifecycle_status="active",
@@ -209,15 +253,37 @@ class IngestionService:
             await self._store.insert_document(doc)
             is_new = True
 
-        # Apply caller-supplied metadata if provided
+        # Apply filename-parsed metadata (CAS-ADR-015). Precedence layer:
+        # filename parse < caller metadata. Title was already resolved above.
+        if parsed is not None:
+            parsed_updates = self._build_metadata_updates_from_parsed(parsed)
+            # Force branch: reaffirm the resolved title in case the filename
+            # changed between ingestions.
+            if not is_new and resolved_title:
+                parsed_updates["title"] = resolved_title
+            if parsed_updates:
+                doc = await self._store.update_document(doc.id, parsed_updates)
+
+        # Apply caller-supplied metadata (highest precedence before manual
+        # confirmation).
         if request.metadata:
             metadata_updates = self._build_metadata_updates(request.metadata)
             if metadata_updates:
                 doc = await self._store.update_document(doc.id, metadata_updates)
 
+        # Set metadata_confirmed per vault's review_required flag (ME-008).
+        # A vault that trusts its naming conventions (review_required=false)
+        # confirms metadata at ingest; a vault that requires review leaves
+        # metadata unconfirmed until update_metadata is called.
+        confirm = not self._review_required
+        if doc.metadata_confirmed != confirm:
+            doc = await self._store.update_document(
+                doc.id, {"metadata_confirmed": confirm}
+            )
+
         # Ensure every document has a doc_type for content-store pre-filtering.
-        # Defaults to "misc" when neither caller metadata nor existing record
-        # provides one (preserves existing doc_type on re-ingestion).
+        # Defaults to "misc" only when neither filename parse, caller metadata,
+        # nor existing record provides one (ME-005, ME-006).
         if not doc.doc_type:
             doc = await self._store.update_document(doc.id, {"doc_type": "misc"})
 
@@ -461,6 +527,47 @@ class IngestionService:
             elif key == "codes":
                 # codes stored as comma-separated string -> tags list
                 updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
+        return updates
+
+    def _parse_source_filename(
+        self, source_path: Path, adapter: SourceType
+    ) -> ParsedMetadata | None:
+        """Parse the source file's stem using the vault's FilenameParser.
+
+        Returns None when the vault has no filename_extraction pattern
+        configured, in which case filename parsing is skipped entirely
+        and the adapter's ProjectionResult.title is authoritative (ME-004).
+
+        CAS-ADR-015: metadata extraction is a SAGE-level capability. Any
+        ingestion entry point gets uniform behavior without re-implementing
+        the parse on the caller side.
+        """
+        if self._filename_parser is None:
+            return None
+        adapter_value = (
+            adapter.value if isinstance(adapter, SourceType) else str(adapter)
+        )
+        return self._filename_parser.parse(source_path.stem, adapter=adapter_value)
+
+    @staticmethod
+    def _build_metadata_updates_from_parsed(parsed: ParsedMetadata) -> dict:
+        """Translate a ParsedMetadata instance into document field updates.
+
+        Title is handled separately by the caller (resolved_title composes
+        caller metadata, parse result, and adapter title in priority order).
+        This method maps only the non-title fields.
+        """
+        updates: dict = {}
+        if parsed.date is not None:
+            updates["document_date"] = parsed.date
+        if parsed.project is not None:
+            updates["project"] = parsed.project
+        if parsed.version is not None:
+            updates["version_label"] = parsed.version
+        if parsed.codes:
+            updates["tags"] = list(parsed.codes)
+        if parsed.doc_type is not None:
+            updates["doc_type"] = parsed.doc_type
         return updates
 
     def _chunk_projection(

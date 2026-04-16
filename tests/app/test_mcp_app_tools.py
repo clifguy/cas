@@ -401,17 +401,42 @@ class TestStagingEdgeActions:
 
 class TestSagePendingMetadata:
 
-    async def test_mcp_013_returns_pending(self, single_vault):
-        """sage_pending_metadata returns documents awaiting confirmation in envelope."""
-        services, config = single_vault
-        await sage_ingest("test_vault", "sample.md", "markdown")
-        await asyncio.sleep(0.1)
+    async def test_mcp_013_returns_pending(self, tmp_path):
+        """sage_pending_metadata returns documents awaiting confirmation in envelope.
 
-        result = _parse(await sage_pending_metadata("test_vault"))
-        assert result["vault_id"] == "test_vault"
-        assert result["count"] >= 1
-        assert result["status"] == "pending_review"
-        assert "document" in result["items"][0]
+        Per CAS-ADR-015 (ME-008), ingest sets metadata_confirmed based on the
+        vault's metadata_extraction.review_required flag. This test uses a
+        vault configured with review_required=True so that ingested documents
+        legitimately land in pending state.
+        """
+        cfg_dict = _make_vault_config_dict(
+            tmp_path, "review_vault", "Review Required Vault"
+        )
+        cfg_dict["metadata_extraction"]["review_required"] = True
+        config = VaultConfig.model_validate(cfg_dict)
+        services = await initialize_services(
+            config,
+            content_store=StubContentStore(),
+            embedding_provider=StubEmbeddingProvider(),
+            abstraction_provider=StubAbstractionProvider(),
+        )
+        _mcp._vaults["review_vault"] = services
+        try:
+            sources = Path(config.vault.storage_root)
+            (sources / "sample.md").write_text("# Sample\n\nContent.")
+
+            await sage_ingest("review_vault", "sample.md", "markdown")
+            await asyncio.sleep(0.1)
+
+            result = _parse(await sage_pending_metadata("review_vault"))
+            assert result["vault_id"] == "review_vault"
+            assert result["count"] >= 1
+            assert result["status"] == "pending_review"
+            assert "document" in result["items"][0]
+        finally:
+            await asyncio.sleep(0.3)
+            await services.graph_store.close()
+            _mcp._vaults.pop("review_vault", None)
 
     async def test_mcp_014_empty_when_none(self, single_vault):
         """sage_pending_metadata returns envelope when none pending."""
