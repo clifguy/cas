@@ -106,7 +106,9 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
     }
 
 
-def _parse(result: str) -> object:
+def _parse(result: str | dict) -> object:
+    if isinstance(result, dict):
+        return result
     return json.loads(result)
 
 
@@ -540,8 +542,8 @@ class TestAppBatchIngest:
 
 class TestMCPConventions:
 
-    async def test_mcp_023_all_return_valid_json(self, single_vault, tmp_path):
-        """All new tools return valid JSON strings."""
+    async def test_mcp_023_all_return_serializable_dicts(self, single_vault, tmp_path):
+        """All tools return dicts that are JSON-serializable."""
         services, config = single_vault
         sources = Path(config.vault.storage_root)
         scan_dir = tmp_path / "json_test"
@@ -560,8 +562,8 @@ class TestMCPConventions:
             ]),
         ]
         for r in results:
-            assert isinstance(r, str)
-            json.loads(r)  # Should not raise
+            assert isinstance(r, dict)
+            json.dumps(r, default=str)  # Should not raise
 
     async def test_mcp_024_unknown_vault_error(self, single_vault):
         """App tools with unknown vault_id return structured error."""

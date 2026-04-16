@@ -6,7 +6,6 @@ discover, export, refresh) and API query tools (vault stats, hash check,
 staging edges, pending metadata).
 """
 
-import json
 import uuid as _uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -37,8 +36,8 @@ from sage.models.schemas import (
 def register_sage_tools(
     mcp: FastMCP,
     get_vault: Callable[[str], SAGEServices],
-    serialize: Callable[[object], str],
-    error_response: Callable[[SAGEError | ValueError], str],
+    serialize: Callable[[object], dict],
+    error_response: Callable[[SAGEError | ValueError], dict],
     vaults: dict[str, SAGEServices],
 ) -> dict[str, Callable]:
     """Register all SAGE protocol and API tools on the MCP server.
@@ -59,7 +58,7 @@ def register_sage_tools(
         config: dict | None = None,
         created_by: str | None = None,
         force: bool = False,
-    ) -> str:
+    ) -> dict:
         """Ingest a source file into SAGE. Runs the three-stage pipeline:
         projection, indexing, and abstraction.
 
@@ -88,7 +87,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_get_document(vault_id: str, document_id: str) -> str:
+    async def sage_get_document(vault_id: str, document_id: str) -> dict:
         """Retrieve a document record with all metadata, lifecycle state, and
         pipeline status.
 
@@ -115,7 +114,7 @@ def register_sage_tools(
         tags: list[str] | None = None,
         doc_type: str | None = None,
         authority_scope: str | None = None,
-    ) -> str:
+    ) -> dict:
         """Update mutable metadata fields on a document. Only include fields
         you want to change.
 
@@ -152,7 +151,7 @@ def register_sage_tools(
         document_id: str,
         action: str,
         new_version_id: str | None = None,
-    ) -> str:
+    ) -> dict:
         """Execute a lifecycle state transition on a document.
 
         Args:
@@ -174,7 +173,7 @@ def register_sage_tools(
         vault_id: str,
         display_name: str,
         type: str,
-    ) -> str:
+    ) -> dict:
         """Register a new human or agent user in the vault.
 
         Args:
@@ -200,7 +199,7 @@ def register_sage_tools(
         edge_type: str,
         notes: str | None = None,
         rationale: str | None = None,
-    ) -> str:
+    ) -> dict:
         """Create a typed edge between two documents in the graph.
 
         Args:
@@ -227,7 +226,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_unlink(vault_id: str, edge_id: str) -> str:
+    async def sage_unlink(vault_id: str, edge_id: str) -> dict:
         """Delete a production edge from the graph.
 
         Args:
@@ -242,7 +241,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_check_preconditions(vault_id: str, function_id: str) -> str:
+    async def sage_check_preconditions(vault_id: str, function_id: str) -> dict:
         """Check whether all depends_on targets for a function document are
         satisfied (active or completed lifecycle, pipeline complete).
 
@@ -264,7 +263,7 @@ def register_sage_tools(
         edge_type: str | None = None,
         direction: str = "outbound",
         depth: int = 3,
-    ) -> str:
+    ) -> dict:
         """Walk the document graph from a starting document.
 
         Args:
@@ -294,7 +293,7 @@ def register_sage_tools(
         edge_type: str,
         limit: int | None = None,
         offset: int = 0,
-    ) -> str:
+    ) -> dict:
         """Walk an edge chain to both ends from a starting document.
 
         Returns an ordered list of all documents in the chain with
@@ -338,7 +337,7 @@ def register_sage_tools(
         use_abstract_prefilter: bool = True,
         include_abstracts: bool = False,
         response_level: str = "chunks",
-    ) -> str:
+    ) -> dict:
         """Search for documents using semantic, keyword, catalog, or deterministic retrieval.
 
         Modes:
@@ -397,7 +396,7 @@ def register_sage_tools(
         vault_id: str,
         document_id: str,
         output_path: str,
-    ) -> str:
+    ) -> dict:
         """Export a document's projection text to a Markdown file.
 
         Args:
@@ -414,7 +413,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_read_projection(vault_id: str, document_id: str) -> str:
+    async def sage_read_projection(vault_id: str, document_id: str) -> dict:
         """Read a document's full text into context with metadata header.
 
         Returns the complete projection (reconstructed from stored chunks)
@@ -435,7 +434,7 @@ def register_sage_tools(
     @mcp.tool()
     async def sage_read_section(
         vault_id: str, document_id: str, heading_path: str
-    ) -> str:
+    ) -> dict:
         """Read a section of a document by heading path.
 
         Returns clean readable text for a heading subtree without loading
@@ -461,7 +460,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_refresh_views(vault_id: str) -> str:
+    async def sage_refresh_views(vault_id: str) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
 
@@ -480,7 +479,7 @@ def register_sage_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool()
-    async def sage_list_vaults() -> str:
+    async def sage_list_vaults() -> dict:
         """Enumerate all configured vaults. No vault_id parameter -- operates
         across all registered vaults.
         """
@@ -492,13 +491,13 @@ def register_sage_tools(
                 "description": getattr(svc.config.vault, "description", None),
                 "storage_root": svc.config.vault.storage_root,
             })
-        return json.dumps({
+        return {
             "vaults": summaries,
             "count": len(summaries),
-        }, indent=2)
+        }
 
     @mcp.tool()
-    async def sage_vault_stats(vault_id: str) -> str:
+    async def sage_vault_stats(vault_id: str) -> dict:
         """Vault statistics and health indicators.
 
         Args:
@@ -557,12 +556,12 @@ def register_sage_tools(
                     "failed_ingestion_count": failed,
                 },
             }
-            return json.dumps(result, indent=2, default=str)
+            return result
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
     @mcp.tool()
-    async def sage_hash_check(vault_id: str, hashes: list[str]) -> str:
+    async def sage_hash_check(vault_id: str, hashes: list[str]) -> dict:
         """Bulk hash existence check against the graph store.
 
         Args:
@@ -578,12 +577,12 @@ def register_sage_tools(
                     result[h] = {"exists": True, "document_id": matches[h]}
                 else:
                     result[h] = {"exists": False}
-            return json.dumps(result, indent=2)
+            return result
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
     @mcp.tool()
-    async def sage_list_staging_edges(vault_id: str) -> str:
+    async def sage_list_staging_edges(vault_id: str) -> dict:
         """List Tier 2 suggested edges awaiting review.
 
         Args:
@@ -593,17 +592,17 @@ def register_sage_tools(
             v = get_vault(vault_id)
             edges = await v.graph_store.list_staging_edges()
             items = [e.model_dump(mode="json") for e in edges]
-            return json.dumps({
+            return {
                 "items": items,
                 "count": len(items),
                 "vault_id": vault_id,
                 "status": "awaiting_review" if items else "no_staging_edges",
-            }, indent=2, default=str)
+            }
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
     @mcp.tool()
-    async def sage_confirm_staging_edge(vault_id: str, edge_id: str) -> str:
+    async def sage_confirm_staging_edge(vault_id: str, edge_id: str) -> dict:
         """Confirm a staging edge: move it to the production edge table.
 
         Args:
@@ -637,7 +636,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_dismiss_staging_edge(vault_id: str, edge_id: str) -> str:
+    async def sage_dismiss_staging_edge(vault_id: str, edge_id: str) -> dict:
         """Dismiss a staging edge: delete it without creating a production edge.
 
         Args:
@@ -656,7 +655,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_pending_metadata(vault_id: str) -> str:
+    async def sage_pending_metadata(vault_id: str) -> dict:
         """List documents with unconfirmed metadata.
 
         Args:
@@ -668,15 +667,15 @@ def register_sage_tools(
             items = []
             for doc in docs:
                 items.append({
-                    "document": json.loads(serialize(doc)),
+                    "document": serialize(doc),
                     "extracted_fields": {},
                 })
-            return json.dumps({
+            return {
                 "items": items,
                 "count": len(items),
                 "vault_id": vault_id,
                 "status": "pending_review" if items else "no_pending_metadata",
-            }, indent=2, default=str)
+            }
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -684,7 +683,7 @@ def register_sage_tools(
     async def sage_reabstract(
         vault_id: str,
         document_id: str,
-    ) -> str:
+    ) -> dict:
         """Re-run abstraction on an existing document. Reconstructs
         projection text from stored chunks, generates a new
         density-proportional semantic abstract, and writes it back

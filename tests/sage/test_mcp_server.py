@@ -69,8 +69,10 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
     _mcp._vaults.pop("test_vault", None)
 
 
-def _parse(result: str) -> dict:
-    """Parse a tool's JSON string result."""
+def _parse(result: str | dict) -> dict:
+    """Parse a tool's result (dict or JSON string)."""
+    if isinstance(result, dict):
+        return result
     return json.loads(result)
 
 

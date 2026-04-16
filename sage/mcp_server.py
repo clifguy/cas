@@ -42,22 +42,28 @@ def _get_vault(vault_id: str) -> SAGEServices:
     return _vaults[vault_id]
 
 
-def _serialize(obj: object) -> str:
-    """Serialize a Pydantic model or dict to JSON string for MCP response."""
+def _serialize(obj: object) -> dict:
+    """Convert a Pydantic model or dict to a plain dict for MCP response.
+
+    Returns a dict so FastMCP serializes it once for the wire, avoiding
+    double JSON encoding.
+    """
     if hasattr(obj, "model_dump"):
-        return json.dumps(obj.model_dump(mode="json", exclude_none=True), indent=2)
-    return json.dumps(obj, indent=2, default=str)
+        return obj.model_dump(mode="json", exclude_none=True)
+    if isinstance(obj, dict):
+        return obj
+    return {"value": str(obj)}
 
 
-def _error_response(exc: SAGEError | ValueError) -> str:
-    """Format a SAGE or vault-routing error as a JSON string for MCP response."""
+def _error_response(exc: SAGEError | ValueError) -> dict:
+    """Format a SAGE or vault-routing error as a dict for MCP response."""
     if isinstance(exc, SAGEError):
         payload: dict = {"error": exc.code, "message": exc.message}
         if exc.detail:
             payload["detail"] = exc.detail
     else:
         payload = {"error": "unknown_vault", "message": str(exc)}
-    return json.dumps(payload, indent=2)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -129,14 +135,11 @@ async def sage_reload_vault(vault_id: str) -> str:
 
     # Return confirmation with basic stats
     total_docs = len(await new_services.graph_store.list_all_documents())
-    return json.dumps(
-        {
-            "vault_id": vault_id,
-            "reloaded": True,
-            "document_count": total_docs,
-        },
-        indent=2,
-    )
+    return {
+        "vault_id": vault_id,
+        "reloaded": True,
+        "document_count": total_docs,
+    }
 
 
 _sage_tools = register_sage_tools(mcp, _get_vault, _serialize, _error_response, _vaults)

@@ -5,7 +5,6 @@ rather than SAGE core services directly: directory scanning and batch
 ingestion.
 """
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,8 +17,8 @@ from sage.mcp_init import SAGEServices
 def register_app_tools(
     mcp: FastMCP,
     get_vault: Callable[[str], SAGEServices],
-    serialize: Callable[[object], str],
-    error_response: Callable[[SAGEError | ValueError], str],
+    serialize: Callable[[object], dict],
+    error_response: Callable[[SAGEError | ValueError], dict],
 ) -> dict[str, Callable]:
     """Register application backend tools on the MCP server.
 
@@ -36,7 +35,7 @@ def register_app_tools(
         vault_id: str,
         directory: str,
         max_depth: int | None = None,
-    ) -> str:
+    ) -> dict:
         """Walk a directory, match files against vault adapters, hash files,
         parse filenames, and check hashes against the SAGE vault.
 
@@ -51,10 +50,10 @@ def register_app_tools(
             v = get_vault(vault_id)
             d = Path(directory.strip("'\""))
             if not d.is_dir():
-                return json.dumps({
+                return {
                     "error": "invalid_directory",
                     "message": "Directory not found or not readable",
-                }, indent=2)
+                }
 
             ext_map = build_extension_map(v.ingestion_service.registered_adapters)
             results, warnings = await scan_directory(
@@ -67,7 +66,7 @@ def register_app_tools(
             files = []
             for r in results:
                 files.append(r.to_dict())
-            return json.dumps({"files": files, "warnings": warnings}, indent=2, default=str)
+            return {"files": files, "warnings": warnings}
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -76,7 +75,7 @@ def register_app_tools(
         vault_id: str,
         files: list[dict],
         infer_edges: bool = True,
-    ) -> str:
+    ) -> dict:
         """Ingest multiple files with optional edge inference. Returns a
         summary when complete.
 
@@ -99,10 +98,10 @@ def register_app_tools(
             v = get_vault(vault_id)
 
             if not files:
-                return json.dumps({
+                return {
                     "error": "empty_file_list",
                     "message": "No files selected for ingestion",
-                }, indent=2)
+                }
 
             # Convert raw dicts to FileDescriptors
             descriptors: list[FileDescriptor] = []
@@ -130,7 +129,7 @@ def register_app_tools(
                 vault_services=v,
                 infer_edges=infer_edges,
             )
-            return json.dumps(result.to_dict(), indent=2, default=str)
+            return result.to_dict()
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

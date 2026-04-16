@@ -83,7 +83,9 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
     }
 
 
-def _parse(result: str) -> dict:
+def _parse(result: str | dict) -> dict:
+    if isinstance(result, dict):
+        return result
     return json.loads(result)
 
 
