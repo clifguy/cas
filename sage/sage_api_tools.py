@@ -6,6 +6,8 @@ discover, export, refresh) and API query tools (vault stats, hash check,
 staging edges, pending metadata).
 """
 
+import base64
+import os
 import uuid as _uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -14,6 +16,8 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
+    ContentFileMissingError,
+    ContentTooLargeError,
     DocumentNotFoundError,
     EdgeNotFoundError,
     SAGEError,
@@ -23,6 +27,7 @@ from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
     ChainRequest,
     DiscoverRequest,
+    DocumentWithContent,
     Edge,
     IngestRequest,
     LinkRequest,
@@ -58,6 +63,7 @@ def register_sage_tools(
         config: dict | None = None,
         created_by: str | None = None,
         force: bool = False,
+        supersedes_document_id: str | None = None,
     ) -> dict:
         """Ingest a source file into SAGE. Runs the three-stage pipeline:
         projection, indexing, and abstraction.
@@ -66,11 +72,20 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             source: Source file path relative to the vault's storage_root,
                 or an absolute path to an external file. External files are
-                copied verbatim into the vault's imports/ directory.
+                copied verbatim into the vault's imports/ directory. The
+                vault's internal copy at storage_root/source_path is the
+                authoritative file after ingestion; the path passed here
+                is temporary and can be deleted by the caller.
             adapter: Source format adapter (markdown, docx, pdf, email, onenote, teams_chat).
             config: Adapter-specific configuration (optional).
             created_by: Creator name. Defaults to vault owner.
             force: Allow re-ingestion of duplicate content.
+            supersedes_document_id: When provided, the ingested document
+                supersedes this predecessor. SAGE applies the `supersede`
+                lifecycle transition after ingestion: creates a
+                `supersedes` edge (new -> old) and archives the
+                predecessor. The predecessor must be active and its
+                content hash must differ from the new file.
         """
         try:
             v = get_vault(vault_id)
@@ -80,6 +95,7 @@ def register_sage_tools(
                 config=config,
                 created_by=created_by,
                 force=force,
+                supersedes_document_id=supersedes_document_id,
             )
             result = await v.ingestion_service.ingest(request)
             return serialize(result.document)
@@ -87,20 +103,57 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_get_document(vault_id: str, document_id: str) -> dict:
+    async def sage_get_document(
+        vault_id: str,
+        document_id: str,
+        include_content: bool = False,
+    ) -> dict:
         """Retrieve a document record with all metadata, lifecycle state, and
-        pipeline status.
+        pipeline status. Optionally includes the vault-local source file
+        bytes (base64) for the agentic read-modify-reingest round-trip.
 
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier.
+            include_content: When true, add `content` (base64-encoded
+                bytes of the vault-local source file) and `content_size`
+                (byte count) to the response. Default: false. Fails with
+                413 if the file exceeds the inline content ceiling
+                (default 100 MB; override via SAGE_MAX_INLINE_CONTENT_BYTES),
+                or 404 if the file is missing from the vault.
         """
         try:
             v = get_vault(vault_id)
             doc = await v.graph_store.get_document(document_id)
             if doc is None:
                 raise DocumentNotFoundError(document_id)
-            return serialize(doc)
+
+            response = DocumentWithContent(**doc.model_dump())
+
+            if include_content:
+                storage_root = (
+                    Path(v.config.vault.storage_root).expanduser().resolve()
+                )
+                file_path = storage_root / doc.source_path
+                if not file_path.exists():
+                    raise ContentFileMissingError(document_id, doc.source_path)
+
+                ceiling = int(
+                    os.environ.get(
+                        "SAGE_MAX_INLINE_CONTENT_BYTES",
+                        100 * 1024 * 1024,
+                    )
+                )
+                size = file_path.stat().st_size
+                if size > ceiling:
+                    raise ContentTooLargeError(document_id, size, ceiling)
+
+                response.content = base64.b64encode(
+                    file_path.read_bytes()
+                ).decode("ascii")
+                response.content_size = size
+
+            return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

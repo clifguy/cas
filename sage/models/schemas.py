@@ -98,6 +98,19 @@ class IngestRequest(BaseModel):
     created_by: str | None = None
     force: bool = False
     metadata: dict[str, str] | None = None
+    supersedes_document_id: str | None = None
+
+
+class DocumentWithContent(Document):
+    """Document record optionally accompanied by the vault-local file bytes.
+
+    `content` and `content_size` are populated only when the caller of
+    `get_document` requested `include_content=true` (BH-117). Standard
+    responses omit both fields.
+    """
+
+    content: str | None = None
+    content_size: int | None = None
 
 
 class SetLifecycleRequest(BaseModel):

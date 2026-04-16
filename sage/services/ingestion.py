@@ -23,12 +23,14 @@ from sage.api.errors import (
     AdapterNotFoundError,
     DocumentNotFoundError,
     DuplicateContentError,
+    IdenticalContentSupersedeError,
     NoProjectionError,
     SourceFileNotFoundError,
+    SupersedeTargetNotActiveError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import Document, IngestRequest
+from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identity import generate_document_id
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
@@ -55,6 +57,7 @@ class IngestionService:
         abstraction_provider: AbstractionProvider,
         config: VaultConfig,
         source_adapters: dict[SourceType, SourceAdapter] | None = None,
+        lifecycle_service: object | None = None,
     ) -> None:
         self._store = graph_store
         self._locks = lock_manager
@@ -63,6 +66,7 @@ class IngestionService:
         self._abstraction = abstraction_provider
         self._config = config
         self._adapters = source_adapters or {}
+        self._lifecycle_service = lifecycle_service
 
         # Build the vault's FilenameParser once per service instance (CAS-ADR-015).
         # Only active when the vault's metadata_extraction block declares a
@@ -149,6 +153,23 @@ class IngestionService:
         if adapter is None:
             raise AdapterNotFoundError(request.adapter)
 
+        # Pre-validate the supersede predecessor BEFORE running projection
+        # (BH-121, BH-122, BH-124). Fail-fast keeps pipeline work behind
+        # cheap validity checks. The identical-content check happens
+        # post-projection, once the new file's hash is known.
+        predecessor: Document | None = None
+        if request.supersedes_document_id:
+            predecessor = await self._store.get_document(
+                request.supersedes_document_id
+            )
+            if predecessor is None:
+                raise DocumentNotFoundError(request.supersedes_document_id)
+            if predecessor.lifecycle_status != "active":
+                raise SupersedeTargetNotActiveError(
+                    request.supersedes_document_id,
+                    predecessor.lifecycle_status,
+                )
+
         # Resolve source path: relative to storage_root, or absolute external
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         source_input = Path(request.source)
@@ -187,6 +208,18 @@ class IngestionService:
             or (parsed.title if parsed and parsed.title else None)
             or projection.title
         )
+
+        # Supersede identical-content check (BH-123). Fires before the
+        # generic duplicate-detection path so the caller gets a distinct
+        # error code signalling "no-op edit" rather than "already ingested
+        # somewhere in the vault". Only applies when a supersede target
+        # was provided and its hash matches the new file's hash.
+        if predecessor is not None and (
+            predecessor.source_content_hash == projection.content_hash
+        ):
+            raise IdenticalContentSupersedeError(
+                predecessor.id, projection.content_hash
+            )
 
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
         hash_matches = await self._store.find_documents_by_hashes(
@@ -300,6 +333,18 @@ class IngestionService:
 
         # Re-fetch document to reflect terminal pipeline status
         doc = await self._store.get_document(doc.id) or doc
+
+        # Apply the supersede lifecycle transition on the predecessor
+        # (BH-120). Creates the supersedes edge (new -> old) and sets
+        # the predecessor's lifecycle_status to "archived". Runs after
+        # the pipeline so the new document is fully indexed before the
+        # version chain changes. Uses the standard state machine via
+        # LifecycleService to honor vault-declared transitions.
+        if predecessor is not None and self._lifecycle_service is not None:
+            await self._lifecycle_service.set_lifecycle(
+                predecessor.id,
+                SetLifecycleRequest(action="supersede", new_version_id=doc.id),
+            )
 
         return IngestResult(document=doc, is_new=is_new)
 

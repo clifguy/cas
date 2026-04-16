@@ -2322,3 +2322,232 @@ checks set membership.
 
 **Rationale:** Multi-document filtering is the common case for cross-document
 comparison queries (e.g., "search for MLPAO in PV07 and PV13").
+
+---
+
+## Agentic Round-Trip: Fetch and Supersede
+
+These tests cover the agentic read-modify-reingest pattern. An agent retrieves
+the original source file bytes from the vault (`get_document` with
+`include_content=true`), edits the file locally, then ingests the modified file
+as a new version that supersedes its predecessor (`ingest` with
+`supersedes_document_id`). The vault's internal copy at
+`storage_root/source_path` is the authoritative file; the agent's temporary
+path is irrelevant after ingestion.
+
+### TEST-SAGE-BH-116: get_document without include_content omits file content
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** File content is opt-in. Default response shape is unchanged.
+
+**Precondition:** Document A ingested from a small markdown file.
+
+**Input:** `get_document(document_id: A)` with no `include_content` parameter
+(or `include_content=false`).
+
+**Expected:**
+- Response contains the full Document record (id, title, metadata, lifecycle).
+- Response does not contain `content` or `content_size` fields.
+
+**Rationale:** Callers that only need metadata (lifecycle polling, tracker
+dashboards) must not pay the transport cost of shipping file bytes. Backward
+compatibility with existing callers is preserved.
+
+### TEST-SAGE-BH-117: get_document with include_content returns base64 bytes and size
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** `include_content=true` adds `content` (base64-encoded bytes) and
+`content_size` (byte count) to the response. Bytes are read from the vault's
+internal copy at `storage_root/source_path`.
+
+**Precondition:** Document A ingested from a file with known bytes.
+
+**Input:** `get_document(document_id: A, include_content: true)`
+
+**Expected:**
+- Response contains `content` field (base64 string) that decodes to the exact
+  bytes of the file at `storage_root/source_path`.
+- Response contains `content_size` field equal to the decoded byte length.
+- Response still contains the full Document record.
+
+**Rationale:** Agents need authoritative file bytes to edit, not a projection
+reconstructed from chunks. The vault's internal copy is canonical; the original
+ingest path is not retained and not needed.
+
+### TEST-SAGE-BH-118: get_document with include_content rejects files above size ceiling
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** Returning very large files as base64 in a JSON response bloats
+transport and memory. A configurable size ceiling (default 100 MB) bounds
+response size. Requests for files above the ceiling return 413 (Payload Too
+Large) with the actual size in the error detail.
+
+**Precondition:** Document A ingested; its file size exceeds the configured
+`max_inline_content_bytes` ceiling.
+
+**Input:** `get_document(document_id: A, include_content: true)`
+
+**Expected:**
+- Response is an error with status 413.
+- Error detail names the actual size and the configured ceiling.
+- The document metadata-only response (without `include_content`) still
+  succeeds for the same document.
+
+**Rationale:** Agents working with very large files should use a
+filesystem-based flow outside this endpoint; the MCP/JSON path is optimized
+for the common case of small-to-moderate documents.
+
+### TEST-SAGE-BH-119: get_document with include_content returns 404 when vault file missing
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** When a document record exists but the file at
+`storage_root/source_path` is absent (manual deletion, disk corruption),
+`include_content=true` must fail loudly rather than silently returning empty
+bytes.
+
+**Precondition:** Document A ingested, then the file at
+`storage_root/source_path` is removed out-of-band.
+
+**Input:** `get_document(document_id: A, include_content: true)`
+
+**Expected:**
+- Response is an error with status 404.
+- Error detail names the missing file path.
+- `get_document(document_id: A)` without `include_content` still returns the
+  record (the graph record is intact).
+
+**Rationale:** Silent empty bytes would let agents believe they are editing a
+valid file. A loud failure surfaces the underlying vault inconsistency.
+
+### TEST-SAGE-BH-120: ingest with supersedes_document_id links new version and archives predecessor
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
+**Category:** ingestion
+**Decision:** When `supersedes_document_id` is provided and ingestion succeeds,
+SAGE atomically applies the `supersede` lifecycle transition on the
+predecessor: creates a `supersedes` edge from new to old, sets the
+predecessor's `lifecycle_status` to `archived`.
+
+**Precondition:** Document A active, pipeline terminal.
+
+**Input:** Ingest modified file as Document B with
+`supersedes_document_id: A`.
+
+**Expected:**
+- Response is 201 with Document B, `lifecycle_status=active`.
+- `get_document(A)` shows `lifecycle_status=archived`.
+- A `supersedes` edge exists with `source_id=B`, `target_id=A`.
+- `chain(document_id: A, edge_type: supersedes)` returns [A, B] in version
+  order.
+
+**Rationale:** The agentic round-trip produces a linked version history with
+one call rather than requiring separate `ingest` + `set_lifecycle` calls. The
+supersedes chain is the audit trail.
+
+### TEST-SAGE-BH-121: ingest with supersedes_document_id rejects nonexistent predecessor
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
+**Category:** ingestion
+**Decision:** Validation of `supersedes_document_id` happens before projection.
+A bogus predecessor ID must not result in a new document with no supersedes
+link (which would be worse than no-op).
+
+**Precondition:** Vault initialized. No document with id `nonexistent_id`.
+
+**Input:** Ingest a new file with
+`supersedes_document_id: "nonexistent_id"`.
+
+**Expected:**
+- Response is an error with status 404.
+- No new document is created.
+- No edge is created.
+
+**Rationale:** Fail-fast on invalid supersede targets. Leaving an orphan new
+version without the supersedes link would corrupt the version chain
+invariants.
+
+### TEST-SAGE-BH-122: ingest with supersedes_document_id rejects non-active predecessor
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
+**Category:** ingestion
+**Decision:** The `supersede` lifecycle transition is only valid from the
+`active` state. If the predecessor is already `archived` or `completed`,
+ingesting a new supersessor produces an inconsistent state and is rejected.
+
+**Precondition:** Document A with `lifecycle_status=archived` (already
+superseded, or archived via other path).
+
+**Input:** Ingest a new file with `supersedes_document_id: A`.
+
+**Expected:**
+- Response is an error with status 409.
+- Error detail names A's current lifecycle state and the required state
+  (`active`).
+- No new document is created.
+- No edge is created.
+
+**Rationale:** Consistent with `set_lifecycle` semantics: the `supersede`
+transition is invalid outside the `active` state. The agent must either
+reactivate the predecessor or target the current head of the chain.
+
+### TEST-SAGE-BH-123: ingest with supersedes_document_id rejects identical content
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
+**Category:** ingestion
+**Decision:** A "supersession" whose content hash equals the predecessor's is
+a no-op edit and must be rejected. Creating a superseding record with
+identical content would pollute the version chain with duplicates.
+
+**Precondition:** Document A active. Caller attempts to ingest a file with
+bytes identical to A's file.
+
+**Input:** Ingest the identical-content file with
+`supersedes_document_id: A`.
+
+**Expected:**
+- Response is an error with status 409.
+- Error detail identifies the content-hash match against the predecessor.
+- No new document is created.
+- No edge is created.
+- A's lifecycle and content remain unchanged.
+
+**Rationale:** Distinct from the generic `DuplicateContentError` (any vault
+document): this error targets the specific case of supersede-with-no-changes.
+The agent should detect no change before ingesting, but SAGE must catch the
+mistake.
+
+### TEST-SAGE-BH-124: ingest validates predecessor before projection
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
+**Category:** ingestion
+**Decision:** Predecessor validation (exists + active) happens before the
+adapter runs Stage 1 (projection). A bogus or non-active predecessor must
+not cause wasted projection work, wasted content-store writes, or partial
+graph state. The common failure modes (404 predecessor, 409 non-active) are
+detected before any new document record is created.
+
+**Precondition:** No document exists with id `bogus_predecessor`. Document B
+exists with `lifecycle_status=archived`.
+
+**Input (two cases):**
+- Ingest a file with `supersedes_document_id: "bogus_predecessor"`.
+- Ingest a file with `supersedes_document_id: B`.
+
+**Expected (both cases):**
+- Response is an error (404 for case 1, 409 for case 2).
+- No new document record is created.
+- No projection, embeddings, or abstract are generated.
+- No edge is created.
+
+**Rationale:** Fail-fast keeps costly pipeline work behind validation. Strict
+ingest+supersede atomicity against concurrent predecessor state changes is
+deferred: the SAGE architecture has no document-deletion primitive (documents
+are never deleted per ADR), so rolling back a successfully-ingested document
+after a supersede failure is not possible. Pre-validation plus a narrow race
+window between validation and supersede is the accepted posture. Agents that
+observe a post-ingest supersede failure can reconcile by calling
+`set_lifecycle(supersede)` explicitly on the new document.

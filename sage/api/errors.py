@@ -297,6 +297,79 @@ class StagingEdgeNotFoundError(SAGEError):
         )
 
 
+class ContentTooLargeError(SAGEError):
+    """413: document file exceeds the inline content size ceiling (BH-118)."""
+
+    def __init__(self, document_id: str, size_bytes: int, max_bytes: int) -> None:
+        super().__init__(
+            "content_too_large",
+            (
+                f"Document {document_id} file size {size_bytes} bytes exceeds "
+                f"the inline content ceiling of {max_bytes} bytes"
+            ),
+            413,
+            {
+                "document_id": document_id,
+                "size_bytes": size_bytes,
+                "max_bytes": max_bytes,
+            },
+        )
+
+
+class ContentFileMissingError(SAGEError):
+    """404: document record exists but the vault-local file is absent (BH-119)."""
+
+    def __init__(self, document_id: str, source_path: str) -> None:
+        super().__init__(
+            "content_file_missing",
+            (
+                f"Document {document_id} file is missing at vault-relative "
+                f"path {source_path}"
+            ),
+            404,
+            {"document_id": document_id, "source_path": source_path},
+        )
+
+
+class SupersedeTargetNotActiveError(SAGEError):
+    """409: supersede target is not in the `active` state (BH-122)."""
+
+    def __init__(
+        self, predecessor_id: str, current_state: str, required_state: str = "active"
+    ) -> None:
+        super().__init__(
+            "supersede_target_not_active",
+            (
+                f"Cannot supersede document {predecessor_id}: current state "
+                f"'{current_state}', required '{required_state}'"
+            ),
+            409,
+            {
+                "predecessor_id": predecessor_id,
+                "current_state": current_state,
+                "required_state": required_state,
+            },
+        )
+
+
+class IdenticalContentSupersedeError(SAGEError):
+    """409: attempted supersede whose content matches the predecessor (BH-123)."""
+
+    def __init__(self, predecessor_id: str, source_content_hash: str) -> None:
+        super().__init__(
+            "identical_content_supersede",
+            (
+                f"Cannot supersede document {predecessor_id}: new content is "
+                "identical to the predecessor (no-op edit)"
+            ),
+            409,
+            {
+                "predecessor_id": predecessor_id,
+                "source_content_hash": source_content_hash,
+            },
+        )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register SAGE exception handlers on the FastAPI app."""
 

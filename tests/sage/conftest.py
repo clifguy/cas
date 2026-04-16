@@ -187,6 +187,7 @@ def ingestion_service(
     stub_embedding_provider,
     stub_abstraction_provider,
     minimal_config,
+    lifecycle_service,
 ):
     return IngestionService(
         graph_store=graph_store,
@@ -196,6 +197,7 @@ def ingestion_service(
         abstraction_provider=stub_abstraction_provider,
         config=minimal_config,
         source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle_service,
     )
 
 

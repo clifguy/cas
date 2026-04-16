@@ -288,10 +288,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
-            Duplicate content. A document already exists with the same
-            source_path and source_content_hash. Detail includes
-            existing_document_id and source_content_hash. Use force: true
-            to bypass duplicate detection and re-run the pipeline.
+            Duplicate content, or supersede target not active, or
+            supersede attempted with identical content. Detail includes
+            the relevant predecessor/existing document ID and the reason
+            code. For plain duplicate content, use `force: true` to
+            bypass detection and re-run the pipeline.
           content:
             application/json:
               schema:
@@ -311,23 +312,56 @@ paths:
       summary: Retrieve a document record by ID.
       description: >-
         Returns the full document record including all metadata tiers,
-        lifecycle status, and pipeline status. Does not include projection
-        content; use discover (deterministic mode) for targeted content
-        extraction or export_projection for file-based inspection.
-        Useful for polling ingestion progress after an async ingest call.
+        lifecycle status, and pipeline status. By default does not include
+        projection content or file bytes; use discover (deterministic
+        mode) for targeted content extraction or export_projection for
+        file-based inspection. Useful for polling ingestion progress
+        after an async ingest call.
+
+
+        When `include_content=true`, the response additionally contains
+        the original source file bytes (base64-encoded) and the byte
+        count. The bytes are read from the vault's internal authoritative
+        copy at `storage_root/source_path`. Supports the agentic
+        read-modify-reingest round-trip: an agent fetches the file,
+        edits it locally, and re-ingests with
+        `supersedes_document_id` (see POST /documents).
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
         - $ref: "#/components/parameters/DocumentId"
+        - name: include_content
+          in: query
+          required: false
+          description: >-
+            When true, include the vault-local file bytes (base64) and
+            byte count in the response. Default: false. Rejected with 413
+            when the file exceeds the configured inline content ceiling.
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
-          description: Document record.
+          description: Document record, optionally with inline file content.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Document"
+                $ref: "#/components/schemas/DocumentWithContent"
         "404":
-          description: Vault or document not found.
+          description: >-
+            Vault or document not found. Also returned when
+            `include_content=true` and the file at
+            `storage_root/source_path` is absent from the vault.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: >-
+            `include_content=true` requested, but the file exceeds the
+            configured inline content ceiling (default 100 MB; override
+            via `SAGE_MAX_INLINE_CONTENT_BYTES`). Use a filesystem-based
+            workflow for files above the ceiling.
           content:
             application/json:
               schema:
@@ -1324,6 +1358,19 @@ components:
             extraction > caller-supplied. Fields with null values are
             ignored. Unknown field names are stored but have no
             schema-enforced semantics.
+        supersedes_document_id:
+          type: string
+          nullable: true
+          description: >-
+            When provided, the ingested document is treated as a new
+            version that supersedes the named predecessor. After
+            successful ingestion, SAGE applies the `supersede` lifecycle
+            transition on the predecessor: creates a `supersedes` edge
+            from the new document to the predecessor and sets the
+            predecessor's lifecycle_status to `archived`. Predecessor
+            validation (exists + active + different content hash) runs
+            before projection; failures return 404/409 before any
+            pipeline work begins.
 
     LinkRequest:
       type: object
@@ -1507,6 +1554,34 @@ components:
           $ref: "#/components/schemas/Document"
         pipeline_status:
           $ref: "#/components/schemas/PipelineStatus"
+
+    DocumentWithContent:
+      description: >-
+        Document record optionally accompanied by the vault-local file
+        bytes. Returned by GET /documents/{document_id}. The `content`
+        and `content_size` fields are populated only when the request
+        specified `include_content=true`. Default responses carry the
+        base Document shape with both fields absent.
+      allOf:
+        - $ref: "#/components/schemas/Document"
+        - type: object
+          properties:
+            content:
+              type: string
+              nullable: true
+              description: >-
+                Base64-encoded bytes of the vault-local source file at
+                `storage_root/source_path`. Present only when the request
+                specified `include_content=true`. Decodes to the exact
+                bytes of the authoritative file.
+            content_size:
+              type: integer
+              nullable: true
+              minimum: 0
+              description: >-
+                Byte count of the vault-local source file. Present only
+                when the request specified `include_content=true`.
+                Equal to the length of the decoded `content` bytes.
 
     TraverseResponse:
       type: object

@@ -108,6 +108,7 @@ async def initialize_services(
         abstraction_provider=abstraction_provider,
         config=config,
         source_adapters=source_adapters,
+        lifecycle_service=lifecycle_service,
     )
     graph_ops_service = GraphOpsService(graph_store, config)
     retrieval_service = RetrievalService(
