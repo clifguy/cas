@@ -336,6 +336,7 @@ def register_sage_tools(
         use_hybrid: bool = True,
         use_abstract_prefilter: bool = True,
         include_abstracts: bool = False,
+        min_relevance: float | None = None,
         response_level: str = "chunks",
     ) -> dict:
         """Search for documents using semantic, keyword, catalog, or deterministic retrieval.
@@ -365,6 +366,10 @@ def register_sage_tools(
             include_abstracts: Include semantic_abstract in results. Default: false.
                 Abstracts are large and rarely needed in search result lists. Set true
                 when you need document summaries for disambiguation or orientation.
+            min_relevance: Minimum relevance score to include in results. Default: None
+                (no filtering). For semantic mode (cosine similarity), scores range 0-1;
+                reasonable thresholds are 0.3-0.5. Does not apply to catalog or
+                deterministic modes which have no relevance scores.
             response_level: Result detail level ("chunks" or "documents"). "documents"
                 suppresses chunk_content and heading_path, returning document metadata
                 and relevance scores only. Default: "chunks".
@@ -384,6 +389,7 @@ def register_sage_tools(
                 use_hybrid=use_hybrid,
                 use_abstract_prefilter=use_abstract_prefilter,
                 include_abstracts=include_abstracts,
+                min_relevance=min_relevance,
                 response_level=response_level,
             )
             response = await v.retrieval_service.discover(request)

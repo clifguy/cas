@@ -138,6 +138,16 @@ class RetrievalService:
         elif request.mode == RetrievalMode.CATALOG:
             response = await self._catalog(request)
 
+        # Relevance threshold: drop scored results below min_relevance.
+        # Unscored results (catalog, deterministic) are always kept.
+        if request.min_relevance is not None:
+            response.results = [
+                h for h in response.results
+                if h.relevance_score is None
+                or h.relevance_score >= request.min_relevance
+            ]
+            response.total_available = len(response.results)
+
         if not request.include_abstracts:
             for hit in response.results:
                 hit.document.semantic_abstract = None

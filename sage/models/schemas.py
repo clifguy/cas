@@ -231,6 +231,7 @@ class DiscoverRequest(BaseModel):
     use_hybrid: bool = True
     use_abstract_prefilter: bool = True
     include_abstracts: bool = False
+    min_relevance: float | None = None
     response_level: ResponseLevel = ResponseLevel.CHUNKS
     sort_by: CatalogSortBy | None = None
     sort_order: SortOrder | None = None

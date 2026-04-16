@@ -2699,3 +2699,87 @@ async def test_include_abstracts_false_suppresses_in_keyword(
     response = await retrieval_service.discover(request)
     assert len(response.results) > 0
     assert response.results[0].document.semantic_abstract is None
+
+
+# ---------------------------------------------------------------------------
+# min_relevance: relevance threshold filtering
+# ---------------------------------------------------------------------------
+
+async def test_min_relevance_filters_low_scoring_results(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Results below min_relevance are excluded from response."""
+    doc = _make_doc("doc_threshold")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_threshold",
+        [("Section 1", "Glucose monitoring calibration data.")],
+    )
+
+    # First get unfiltered results to learn the score
+    baseline = DiscoverRequest(query="glucose monitoring")
+    baseline_response = await retrieval_service.discover(baseline)
+    assert len(baseline_response.results) > 0
+    actual_score = baseline_response.results[0].relevance_score
+    assert actual_score is not None
+
+    # Set threshold above the actual score -- should filter it out
+    request = DiscoverRequest(
+        query="glucose monitoring",
+        min_relevance=actual_score + 0.1,
+    )
+    response = await retrieval_service.discover(request)
+    assert len(response.results) == 0
+
+
+async def test_min_relevance_keeps_high_scoring_results(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Results at or above min_relevance are preserved."""
+    doc = _make_doc("doc_above")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_above",
+        [("Section 1", "Patent claim analysis for biosensor calibration.")],
+    )
+
+    # Set a very low threshold -- result should survive
+    request = DiscoverRequest(
+        query="biosensor calibration",
+        min_relevance=0.01,
+    )
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
+    assert response.results[0].relevance_score >= 0.01
+
+
+async def test_min_relevance_none_disables_filtering(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Default min_relevance=None returns all results regardless of score."""
+    doc = _make_doc("doc_no_thresh")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store, seeded_embedding_provider, "doc_no_thresh",
+        [("Section 1", "Content for threshold default test.")],
+    )
+
+    request = DiscoverRequest(query="threshold default test")
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
+
+
+async def test_min_relevance_does_not_apply_to_catalog(
+    graph_store, retrieval_service
+):
+    """Catalog mode has no relevance scores, so min_relevance has no effect."""
+    doc = _make_doc("doc_cat_thresh", doc_type="note")
+    await graph_store.insert_document(doc)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="note"),
+        min_relevance=0.5,
+    )
+    response = await retrieval_service.discover(request)
+    assert len(response.results) > 0
