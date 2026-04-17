@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.11",
+  "schema_version": "1.12",
   "description": "Architecture Decision Record store for Clif's Agentic System (CAS), comprising SAGE, ROOT Harness, and related artifacts",
   "canonical_document_names": [
     "CAS Overview",
@@ -1074,6 +1074,77 @@
         "The default-to-'misc' doc_type fallback fires only when filename parse, caller metadata, and existing record all fail to yield a doc_type.",
         "metadata_extraction.review_required now controls metadata_confirmed at ingest: false (trusted conventions) marks documents confirmed automatically, true (review required) leaves documents unconfirmed for interactive confirmation via update_metadata.",
         "SAGE Architecture Reference Section 3.4.6 (Metadata Extraction) updated to state that filename extraction is a SAGE-invoked stage, not a caller responsibility."
+      ]
+    },
+    {
+      "id": "ADR-016",
+      "title": "SAGE normalizes UI-layer file metadata on ingest",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-04-16",
+      "created_by": "Clif + Claude session",
+      "scope": "sage",
+      "tags": [
+        "ingestion",
+        "ui-metadata",
+        "macos",
+        "boundary-rule",
+        "canonical-artifacts"
+      ],
+      "affects": [
+        "SAGE Architecture Reference"
+      ],
+      "context": "Agents routinely flag their working temp files invisible for their own hygiene. On macOS, this is done via the BSD UF_HIDDEN chflag and occasionally via the com.apple.FinderInfo extended attribute's invisible bit (0x40 in byte 8). When SAGE imports such a file into a vault, Python's shutil.copy2 propagates the UF_HIDDEN chflag to the destination (via os.chflags inside copystat). The destination is the canonical vault artifact, which then hides from Finder. An agent that subsequently deletes its temp file (correct hygiene: the vault now holds the canonical copy) leaves the user unable to see the canonical artifact in Finder at all. Observed in a Cowork session ingesting two Word documents: filenames did not begin with '.' and were not Word lock files, yet both the source temps and the vault copies were hidden. The vault is the state substrate; its files must remain user-auditable by definition. Propagating an agent's source-artifact UI intent to the canonical artifact is a category error.",
+      "options_considered": [
+        {
+          "option": "Do nothing; treat invisibility as a per-case remediation (chflags nohidden, xattr -d)",
+          "summary": "Accept that agents will occasionally leave canonical artifacts hidden; remediate when observed.",
+          "pros": [
+            "Zero code change",
+            "Avoids silent metadata mutation on ingest"
+          ],
+          "cons": [
+            "Predictable failure mode, not a one-off: any agent that uses invisible temps will produce hidden canonical artifacts",
+            "The user is the one who finds out when auditing the vault and sees nothing",
+            "Forces the user to learn macOS xattr/chflags internals to recover visibility of their own state substrate"
+          ]
+        },
+        {
+          "option": "Normalize UI-invisibility markers in SAGE on ingest",
+          "summary": "In IngestionService._ensure_vault_local, after shutil.copy2, clear the destination's UF_HIDDEN chflag and clear bit 0x40 in byte 8 of com.apple.FinderInfo (preserving other bytes). macOS-only; no-op elsewhere. Errors swallowed.",
+          "pros": [
+            "Vault artifacts remain user-auditable by construction, independent of agent hygiene",
+            "Narrow and surgical: clears only the invisibility bits, not other Finder metadata (color labels, type codes, tags)",
+            "Platform-guarded: no effect on Linux or Windows ingestion",
+            "Zero dependency: uses stdlib os.chflags and ctypes for macOS xattr (no third-party package)"
+          ],
+          "cons": [
+            "Silent mutation of file metadata on copy -- surprising for anyone inspecting imports/ with xattr-aware tools",
+            "Adds a small macOS-specific code path to the ingestion pipeline"
+          ]
+        },
+        {
+          "option": "Require callers to sanitize before invoking sage_ingest",
+          "summary": "Keep SAGE's copy path pure; expect callers (agents, app backend, CLI) to clear invisibility markers on their source files before ingest.",
+          "pros": [
+            "Preserves strict copy semantics in SAGE"
+          ],
+          "cons": [
+            "Same caller-discipline antipattern that ADR-015 rejected: new entry points will forget and reproduce the bug",
+            "The vault's visibility contract would be enforced inconsistently depending on caller behavior",
+            "Agents would need macOS-specific sanitization logic in every caller"
+          ]
+        }
+      ],
+      "decision": "IngestionService._ensure_vault_local invokes a sanitization helper _strip_ui_invisibility on every destination file copied from outside storage_root. The helper clears the BSD UF_HIDDEN chflag and clears bit 0x40 in byte 8 of com.apple.FinderInfo if present, preserving all other bytes of the xattr. The helper is a no-op on non-macOS platforms and when neither marker is present. Errors are swallowed: UI-layer sanitization is best-effort and must not fail an ingest.",
+      "rationale": "The vault is the canonical state substrate; its artifacts are user-auditable by contract. UI-layer invisibility markers encode source-artifact semantics (an agent asserting 'this is my scratch, hide it from the user') and do not transfer to the canonical-artifact meaning ('the user will audit this'). Propagating them is a category error, not a preservation of user intent. The forcing function is the same boundary principle that motivates ADR-015: properties that SAGE's contract guarantees (visibility, extractable metadata, canonical identity) must be enforced at the SAGE layer, not delegated to caller discipline. The chosen sanitization is surgical -- it touches only the invisibility bits and leaves all other Finder metadata (color labels, type/creator codes, stationery flag) intact. This matters because color labels and tags are legitimate user-visible properties that should survive ingestion.",
+      "consequences": [
+        "sage/services/ingestion.py gains a _strip_ui_invisibility helper that clears UF_HIDDEN and the com.apple.FinderInfo invisible bit on files copied into the vault's imports/ directory.",
+        "The helper uses ctypes to call libc's getxattr / setxattr / removexattr because Python stdlib has no xattr API on macOS. No new third-party dependency is added.",
+        "macOS Finder color labels, type codes, creator codes, and other FinderInfo fields are preserved through ingestion.",
+        "On Linux and Windows, the sanitization step is a no-op.",
+        "Generalizes: future UI-layer metadata mechanisms (quarantine flags, Spotlight tags, cloud-sync flags) are evaluated under the same principle. When a marker encodes source-artifact UI intent rather than canonical-artifact semantics, SAGE strips it on ingest.",
+        "SAGE Architecture Reference Section 3.4 (Ingestion) updated to document the UI-normalization step as part of the external-file import path."
       ]
     }
   ]

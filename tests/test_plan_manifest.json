@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.8",
+  "manifest_version": "0.9.9",
   "manifest_date": "2026-04-16",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -163,6 +163,18 @@
       "test_count": 9,
       "decision_date": "2026-04-16",
       "notes": "CAS-ADR-015: metadata extraction is a SAGE-level capability. ME-001 through ME-009 cover filename parse population on direct ingest, caller-metadata precedence, filename-over-adapter title precedence (the Cowork case), adapter-title fallback when no filename pattern is configured, doc_type non-misc resolution, misc default preservation, markdown/docx uniformity, review_required controlling metadata_confirmed, and app-backend import-relocation regression."
+    },
+    {
+      "path": "tests/sage/ingestion_ui_normalization_tests.md",
+      "tier": 2,
+      "title": "SAGE Ingestion UI-Layer Metadata Normalization Tests",
+      "status": "specified",
+      "covers": [
+        "sage/services/ingestion.py"
+      ],
+      "test_count": 4,
+      "decision_date": "2026-04-16",
+      "notes": "CAS-ADR-016: SAGE normalizes UI-layer file metadata on ingest. UIN-001 (integration): BSD UF_HIDDEN chflag cleared on ingest -- the empirically observed Cowork vector. UIN-002 (unit): com.apple.FinderInfo invisible bit cleared by the sanitization helper (defensive path). UIN-003 (unit): non-invisibility FinderInfo bytes (type/creator codes, color labels) preserved. UIN-004 (resilience, cross-platform): plain file with no UI markers ingests without error. macOS-specific tests gated by pytest.mark.skipif(sys.platform != 'darwin')."
     }
   ],
   "fixture_directories": {
@@ -239,6 +251,11 @@
       "version": "0.9.8",
       "date": "2026-04-16",
       "summary": "SAGE ingestion metadata extraction test specifications (CAS-ADR-015). New file tests/sage/metadata_extraction_tests.md with 9 tests (ME-001 through ME-009) validating that IngestionService invokes FilenameParser on every ingest using the vault's metadata_extraction config. Covers filename parse population on direct ingest, caller-metadata precedence over filename parse, filename-over-adapter title precedence (the Cowork case), adapter-title fallback when no filename pattern is configured, doc_type resolution without misc-clobbering, misc default preservation when parse yields nothing, markdown/docx adapter uniformity, review_required flag controlling metadata_confirmed at ingest, and app-backend import-relocation regression (FilenameParser moved from app/backend/ to sage/services/). One test update: tests/app/test_mcp_app_tools.py::test_mcp_013_returns_pending now uses a review_required=true vault to legitimately produce pending-metadata items."
+    },
+    {
+      "version": "0.9.9",
+      "date": "2026-04-16",
+      "summary": "SAGE ingestion UI-layer metadata normalization test specifications (CAS-ADR-016). New file tests/sage/ingestion_ui_normalization_tests.md with 4 tests (UIN-001 through UIN-004). UIN-001 (integration, macOS-only) ingests a file with BSD UF_HIDDEN set and verifies the vault copy does not inherit it -- the real-world Cowork vector observed when an agent flags its working temp file invisible. UIN-002 and UIN-003 (unit tests, macOS-only) exercise the sanitization helper on com.apple.FinderInfo: invisible bit cleared, all other bytes (type/creator codes, color labels) preserved. UIN-004 (cross-platform resilience) verifies that plain files with no UI markers ingest without disturbance. Implementation uses ctypes to call libc getxattr/setxattr/removexattr on macOS (Python stdlib's xattr API is Linux-only). No new third-party dependency."
     }
   ]
 }
