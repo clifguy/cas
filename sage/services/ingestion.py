@@ -502,6 +502,26 @@ class IngestionService:
             if metadata_updates:
                 doc = await self._store.update_document(doc.id, metadata_updates)
 
+        # Merge adapter-emitted tags into document.tags (BH-131, BH-132).
+        # The adapter declares owned namespace prefixes so force re-ingest
+        # can strip stale adapter-owned tags before applying the fresh set,
+        # without disturbing caller- or filename-contributed tags in other
+        # namespaces.
+        adapter_tags = list(projection.metadata.get("adapter_tags") or [])
+        adapter_tag_prefixes = list(
+            projection.metadata.get("adapter_tag_prefixes") or []
+        )
+        if adapter_tags or adapter_tag_prefixes:
+            current_tags = list(doc.tags or [])
+            if adapter_tag_prefixes:
+                current_tags = [
+                    t for t in current_tags
+                    if not any(t.startswith(p) for p in adapter_tag_prefixes)
+                ]
+            merged = list(dict.fromkeys([*adapter_tags, *current_tags]))
+            if merged != (doc.tags or []):
+                doc = await self._store.update_document(doc.id, {"tags": merged})
+
         # Set metadata_confirmed per vault's review_required flag (ME-008).
         # A vault that trusts its naming conventions (review_required=false)
         # confirms metadata at ingest; a vault that requires review leaves
@@ -569,6 +589,19 @@ class IngestionService:
             # Check abstraction config
             if not self._config.abstraction.enabled:
                 # BH-025: abstraction_skipped
+                async with self._locks.lock(document_id):
+                    await self._store.update_document(document_id, {
+                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                return
+
+            # BH-134: empty projection text (e.g., Word template with no body)
+            # transitions to abstraction_skipped rather than crashing the
+            # abstraction provider's strict-quality edge guard. Other
+            # projection surfaces -- style inventory, tags, metadata --
+            # are already persisted by Stage 2.
+            if not projection.text.strip():
                 async with self._locks.lock(document_id):
                     await self._store.update_document(document_id, {
                         "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,

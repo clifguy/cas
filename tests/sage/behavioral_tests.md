@@ -2746,3 +2746,141 @@ the ingestion service.
 sage_ingest from the 60s MCP client ceiling. The test pins both
 directions (fast path fast; sync path still waits) so regressions in
 either are caught.
+
+### TEST-SAGE-BH-131: Adapter-emitted tags merge into document.tags on new ingest
+
+**Artifact:** `sage/services/ingestion.py` (new-document record creation)
+**Category:** ingestion
+**Decision:** When a source adapter returns
+`projection.metadata["adapter_tags"]` as a list of strings, the
+ingestion service merges those tags into the new document's `tags`
+field (union with any caller-supplied or filename-parsed tags,
+deduplicated, order preserved as adapter-first then caller/parsed).
+The `adapter_tags` channel is how an adapter contributes to the
+document's discoverable tag surface without being coupled to the
+caller or to filename conventions.
+
+**Precondition:** A source adapter (e.g., `DocxAdapter` on a `.dotx`
+file) whose projection emits `adapter_tags = ["template:style:A",
+"template:style:B"]`.
+
+**Input:** Ingest the file with `tags=["caller-tag"]` supplied by the
+caller.
+
+**Expected:**
+- The resulting document's `tags` contains all three:
+  `"template:style:A"`, `"template:style:B"`, `"caller-tag"`.
+- No duplicates; ordering is deterministic (adapter tags first, caller
+  tags second).
+
+**Negative input:** Ingest a file whose adapter projection has no
+`adapter_tags` key (e.g., a `.docx`) with caller-supplied
+`tags=["caller-tag"]`.
+
+**Negative expected:**
+- The resulting document's `tags` is exactly `["caller-tag"]`.
+- No error raised; absence of the key is the common case.
+
+**Rationale:** The adapter knows things about a source file (a
+template's style inventory, in the first use case) that the caller
+may not. Exposing a named channel for the adapter to contribute tags
+lets the adapter surface those facts without the caller having to
+know the adapter's internal details. Deduplication prevents a
+self-describing caller from double-tagging when the adapter also
+produces the same tag.
+
+### TEST-SAGE-BH-132: Adapter-emitted tags re-apply on force re-ingest
+
+**Artifact:** `sage/services/ingestion.py` (force re-ingest path)
+**Category:** ingestion
+**Decision:** On force re-ingest of an existing document, the
+ingestion service replaces the `tags` field with the freshly computed
+merged set (adapter_tags ∪ caller tags ∪ filename-parsed tags). Stale
+tags from a prior adapter version that emitted different tags must
+not persist.
+
+**Precondition:** Document A has been ingested from a `.dotx` whose
+adapter previously emitted `adapter_tags = ["template:style:Old"]`.
+The adapter has been updated (or the `.dotx` edited) so the next
+projection emits `adapter_tags = ["template:style:New"]`. Byte-level
+content has changed (new `content_hash`), so force is not required --
+but this test covers the force path for the case where content is
+unchanged.
+
+**Input:** Force-reingest the same file path; the updated adapter
+emits `adapter_tags = ["template:style:New"]`.
+
+**Expected:**
+- Document A's `tags` contains `"template:style:New"`.
+- Document A's `tags` does NOT contain `"template:style:Old"`.
+
+**Rationale:** Tags are derived from current projection state, not
+history. A stale tag surviving re-ingest would misroute
+template-selection queries to a template whose actual style surface
+has changed.
+
+### TEST-SAGE-BH-133: Byte-identical .dotx re-ingest still triggers DuplicateContentError
+
+**Artifact:** `sage/services/ingestion.py` (duplicate content gate)
+**Category:** ingestion, idempotency
+**Decision:** The adapter_tags channel does not bypass the
+content-hash duplicate gate. A byte-identical re-ingest of a `.dotx`
+file (same `content_hash` as an existing document, `force=False`)
+raises `DuplicateContentError` as it would for any other source
+type.
+
+**Precondition:** A `.dotx` file has been successfully ingested as
+Document A.
+
+**Input:** Ingest the same file again with `force=False`.
+
+**Expected:**
+- Raises `DuplicateContentError` referencing Document A's id and
+  `content_hash`.
+- No second document is created.
+- Document A's `tags`, `adapter_version`, and timestamps are
+  unchanged.
+
+**Rationale:** Cowork flagged a specific failure mode: a template
+lightly re-ingested, inventory recomputed to the same value,
+secondary audit dates drift without cause. The existing SHA-256 gate
+already blocks this, but the `adapter_tags` feature must not
+accidentally route around it. Confirming the gate still fires on
+the new path prevents a silent regression.
+
+### TEST-SAGE-BH-134: Empty projection text transitions to abstraction_skipped
+
+**Artifact:** `sage/services/ingestion.py` (_run_background_pipeline)
+**Category:** ingestion, defensive
+**Decision:** When `projection.text.strip()` is empty, the ingestion
+pipeline skips the abstraction stage and sets `pipeline_status` to
+`abstraction_skipped` (the same terminal state used when
+`abstraction.enabled=False`). The abstraction provider is not invoked;
+its strict-quality edge guard that raises on empty input is therefore
+not reached.
+
+**Precondition:** An adapter whose projection returns an empty
+`text` field (simulating a template with no body, a stub file, or a
+corrupt source). A real abstraction provider is wired in so the test
+would fail if the guard were absent.
+
+**Input:** Ingest such a source with `wait_for_pipeline=True`.
+
+**Expected:**
+- `ingest()` returns without raising.
+- The resulting document's `pipeline_status` is
+  `abstraction_skipped`.
+- The document's `semantic_abstract` is `None`.
+- The document's `pipeline_error` is `None` (this is a clean skip,
+  not a failure).
+- Indexing (stage 2) still completed, so tags, chunks (possibly zero),
+  and metadata are persisted normally.
+
+**Rationale:** An empty projection is a legitimate outcome for some
+source types -- most notably Word templates, whose value is their
+style surface rather than body content. Treating empty-text as a hard
+failure would mean every template ingest lands in a quarantined
+state, even though the document's tags, style inventory, and metadata
+are correctly indexed. The defensive skip keeps the pipeline moving
+to a clean terminal state while preserving the abstraction
+provider's strict-quality contract for non-empty inputs.

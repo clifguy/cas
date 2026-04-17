@@ -4,10 +4,23 @@ Extracts heading hierarchy from paragraph styles, computes heading number
 prefixes from Word numbering definitions, renders tables as pipe-delimited
 text, and resolves cross-reference fields via cached display values.
 
-Computes SHA-256 of raw .docx bytes for content_hash.
+Handles both Word documents (.docx) and Word templates (.dotx). The two
+formats share WordprocessingML body structure; they differ only in the
+main part's OPC content type. python-docx rejects .dotx at load time, so
+the adapter rewrites the content-type entry in a temp copy before loading.
+
+For .dotx files the adapter additionally surfaces a structured style
+inventory in metadata["template_style_inventory"] and emits namespaced
+tags via metadata["adapter_tags"] so agentic queries can discover
+templates by defined style and by auto-numbering.
+
+Computes SHA-256 of raw file bytes for content_hash.
 """
 
 import hashlib
+import shutil
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,6 +29,19 @@ from docx.oxml.ns import qn
 from lxml import etree
 
 from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
+
+# OPC content types for the main document part.
+_DOCX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+)
+_DOTX_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"
+)
+
+# Tag namespace prefixes owned by this adapter (for force-reingest stripping
+# in the ingestion service). All begin with "template:" so non-template
+# .docx files never produce tags in these namespaces.
+_ADAPTER_TAG_PREFIXES = ["template:"]
 
 # Word namespace
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -106,6 +132,20 @@ class _NumberingEngine:
                 result = result.replace(placeholder, _format_number(counter_val, ref_fmt))
 
         return result
+
+
+def _format_style_name_with_numbering(entry: dict) -> str:
+    """Render a style inventory entry for the synthesized template text.
+
+    Appends " (auto-numbered)" when the entry carries active numbering
+    so the projected text preserves this discriminating fact for both
+    retrieval (BM25/vector will match on "auto-numbered") and human
+    review of the text blob.
+    """
+    name = entry["name"]
+    if entry.get("has_numbering"):
+        return f"{name} (auto-numbered)"
+    return name
 
 
 def _format_number(value: int, num_fmt: str) -> str:
@@ -204,10 +244,10 @@ def _extract_paragraph_text(p_elem) -> str:
 
 
 class DocxAdapter(SourceAdapter):
-    """Source adapter for Microsoft Word (.docx) documents."""
+    """Source adapter for Microsoft Word (.docx) documents and (.dotx) templates."""
 
-    VERSION = "0.1.0"
-    EXTENSIONS = [".docx"]
+    VERSION = "0.2.0"
+    EXTENSIONS = [".docx", ".dotx"]
 
     async def project(
         self, source_path: Path, config: dict | None = None
@@ -215,7 +255,8 @@ class DocxAdapter(SourceAdapter):
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
-        doc = Document(source_path)
+        is_template = source_path.suffix.lower() == ".dotx"
+        doc = self._open_document(source_path, is_template)
         style_map = self._build_style_map(config)
         style_id_to_name = self._build_style_id_to_name(doc)
 
@@ -307,14 +348,382 @@ class DocxAdapter(SourceAdapter):
             source_path.stat().st_mtime, tz=timezone.utc
         )
 
+        metadata: dict = {"source_modified_at": source_mtime.isoformat()}
+
+        projected_text = "\n".join(text_parts)
+
+        # Template-only enrichment: style inventory, namespaced tags, and
+        # a synthesized prose projection derived from the style surface.
+        # Gated on extension, not on content heuristics, so document
+        # metadata and text stay lean for .docx files.
+        if is_template:
+            inventory = self._build_template_style_inventory(doc)
+            metadata["template_style_inventory"] = inventory
+            metadata["adapter_tags"] = self._build_template_tags(inventory)
+            metadata["adapter_tag_prefixes"] = list(_ADAPTER_TAG_PREFIXES)
+
+            # Prepend a synthesized prose description of the template's
+            # style surface. Templates are style-rich and content-thin; a
+            # raw body parse usually produces near-zero text, which
+            # blocks retrieval indexing. Prepending (rather than
+            # appending) puts the template-identity signal at the head
+            # of the text so the embedding captures "Word template with
+            # these styles" as the dominant topic, and so BM25 matches
+            # on custom style names surface with strong weights.
+            style_surface_text = self._synthesize_template_text(title, inventory)
+            if projected_text.strip():
+                projected_text = style_surface_text + "\n\n" + projected_text
+            else:
+                projected_text = style_surface_text
+
         return ProjectionResult(
-            text="\n".join(text_parts),
+            text=projected_text,
             headings=headings,
             content_hash=content_hash,
             adapter_version=self.VERSION,
             title=title,
-            metadata={"source_modified_at": source_mtime.isoformat()},
+            metadata=metadata,
         )
+
+    @staticmethod
+    def _synthesize_template_text(title: str, inventory: list[dict]) -> str:
+        """Build a prose description of a template's style surface.
+
+        Designed for retrieval indexing: lists every custom style by its
+        human name, notes which built-in styles the template wires to
+        active auto-numbering, and identifies the artifact as a Word
+        template. Built-in styles whose behavior is unchanged are
+        omitted to prevent every template's text from collapsing into
+        an identical list of stock Word styles.
+        """
+        custom = [e for e in inventory if e.get("is_custom")]
+        builtin_with_numbering = [
+            e for e in inventory
+            if not e.get("is_custom") and e.get("has_numbering")
+        ]
+
+        lines: list[str] = [
+            f"Microsoft Word template: {title}.",
+        ]
+
+        if custom:
+            by_type: dict[str, list[dict]] = {}
+            for e in custom:
+                by_type.setdefault(e["type"], []).append(e)
+
+            # Stable type ordering for deterministic projection output
+            type_order = ["paragraph", "character", "table", "numbering"]
+            custom_count = len(custom)
+            lines.append("")
+            lines.append(
+                f"This template defines {custom_count} user-authored "
+                f"style{'s' if custom_count != 1 else ''}:"
+            )
+            for t in type_order:
+                entries = by_type.get(t) or []
+                if not entries:
+                    continue
+                names = ", ".join(_format_style_name_with_numbering(e) for e in entries)
+                plural = "styles" if len(entries) != 1 else "style"
+                lines.append(f"  {t.capitalize()} {plural}: {names}.")
+
+        if builtin_with_numbering:
+            names = ", ".join(e["name"] for e in builtin_with_numbering)
+            lines.append("")
+            lines.append(
+                "Built-in styles carrying template-local auto-numbering: "
+                f"{names}."
+            )
+
+        return "\n".join(lines)
+
+    def _open_document(self, source_path: Path, is_template: bool) -> Document:
+        """Load a .docx or .dotx into a python-docx Document.
+
+        python-docx rejects .dotx at load time because the main part's OPC
+        content type is the template flavor, not the document flavor. We
+        work around this by copying the ZIP into a temp file and rewriting
+        the [Content_Types].xml entry. The body XML and all other parts are
+        unchanged, so the rest of the adapter is unaffected.
+        """
+        if not is_template:
+            return Document(str(source_path))
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="sage_dotx_"))
+        try:
+            shadow = tmp_dir / "shadow.docx"
+            with zipfile.ZipFile(source_path, "r") as z_in:
+                with zipfile.ZipFile(shadow, "w", zipfile.ZIP_DEFLATED) as z_out:
+                    for item in z_in.namelist():
+                        data = z_in.read(item)
+                        if item == "[Content_Types].xml":
+                            data = data.replace(
+                                _DOTX_CONTENT_TYPE.encode("utf-8"),
+                                _DOCX_CONTENT_TYPE.encode("utf-8"),
+                            )
+                        z_out.writestr(item, data)
+            return Document(str(shadow))
+        finally:
+            # python-docx has loaded the file into memory by the time
+            # Document() returns, so the temp dir is safe to remove.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def _build_template_style_inventory(self, doc: Document) -> list[dict]:
+        """Build a structured inventory of the template's style surface.
+
+        Returns a list of entries, each with keys:
+        - id: XML style ID (e.g., "Heading1")
+        - name: human-readable style name (e.g., "Heading 1")
+        - type: one of "paragraph", "character", "table", "numbering"
+        - based_on: XML style ID this style inherits from, or None
+        - has_numbering: True iff a paragraph style carries a numPr whose
+          numId resolves to an active abstract numbering definition
+        - is_custom: True iff the style element carries w:customStyle="1"
+        - numbering_detail: resolved numbering definition (dict) when
+          has_numbering is True, otherwise None. See _resolve_numbering.
+        """
+        # Resolve numbering references to know which numIds are "active"
+        # and to have the full numbering map available for numbering_detail.
+        num_map, abstract_defs, num_overrides = self._build_numbering_maps(doc)
+        active_num_ids = set(num_map.keys())
+
+        type_map = {
+            "PARAGRAPH": "paragraph",
+            "CHARACTER": "character",
+            "TABLE": "table",
+            "LIST": "numbering",
+        }
+
+        inventory: list[dict] = []
+        for style in doc.styles:
+            if not style.style_id or not style.name:
+                continue
+            type_name = getattr(style.type, "name", "") or ""
+            style_type = type_map.get(type_name, "paragraph")
+
+            # basedOn (inheritance parent) -- read from XML directly; python-docx
+            # exposes this inconsistently across style types.
+            based_on: str | None = None
+            based_on_elem = style.element.find(qn("w:basedOn"))
+            if based_on_elem is not None:
+                based_on = based_on_elem.get(qn("w:val"))
+
+            has_numbering = False
+            numbering_detail: dict | None = None
+            style_num_ref = self._extract_style_numbering_reference(style)
+            if style_type == "paragraph" and style_num_ref is not None:
+                num_id_val, ilvl_val = style_num_ref
+                if num_id_val != 0 and num_id_val in active_num_ids:
+                    has_numbering = True
+                    numbering_detail = self._resolve_numbering(
+                        num_id_val, ilvl_val, num_map, abstract_defs,
+                        num_overrides,
+                    )
+
+            is_custom = style.element.get(qn("w:customStyle")) == "1"
+
+            inventory.append({
+                "id": style.style_id,
+                "name": style.name,
+                "type": style_type,
+                "based_on": based_on,
+                "has_numbering": has_numbering,
+                "is_custom": is_custom,
+                "numbering_detail": numbering_detail,
+            })
+
+        return inventory
+
+    @staticmethod
+    def _build_numbering_maps(
+        doc: Document,
+    ) -> tuple[dict[int, int], dict[int, dict[int, dict]], dict[int, dict[int, dict]]]:
+        """Parse the document's numbering part into three lookup maps.
+
+        Returns:
+        - num_map: numId -> abstractNumId
+        - abstract_defs: abstractNumId -> {ilvl -> {num_fmt, lvl_text}}
+        - num_overrides: numId -> {ilvl -> {num_fmt, lvl_text}} (from
+          <w:lvlOverride><w:lvl>...</w:lvl></w:lvlOverride> entries).
+          Overrides may be partial -- only the fields set in the XML
+          are present.
+        """
+        num_map: dict[int, int] = {}
+        abstract_defs: dict[int, dict[int, dict]] = {}
+        num_overrides: dict[int, dict[int, dict]] = {}
+
+        try:
+            numbering_part = doc.part.numbering_part
+        except Exception:
+            numbering_part = None
+        if numbering_part is None:
+            return num_map, abstract_defs, num_overrides
+
+        numbering_elm = numbering_part.numbering_definitions._numbering
+
+        for abstract in numbering_elm.findall(qn("w:abstractNum")):
+            abs_id_attr = abstract.get(qn("w:abstractNumId"))
+            if abs_id_attr is None:
+                continue
+            try:
+                abs_id = int(abs_id_attr)
+            except ValueError:
+                continue
+            levels: dict[int, dict] = {}
+            for lvl in abstract.findall(qn("w:lvl")):
+                ilvl_attr = lvl.get(qn("w:ilvl"))
+                if ilvl_attr is None:
+                    continue
+                try:
+                    ilvl = int(ilvl_attr)
+                except ValueError:
+                    continue
+                fmt_elem = lvl.find(qn("w:numFmt"))
+                text_elem = lvl.find(qn("w:lvlText"))
+                levels[ilvl] = {
+                    "num_fmt": (
+                        fmt_elem.get(qn("w:val"))
+                        if fmt_elem is not None else "decimal"
+                    ),
+                    "lvl_text": (
+                        text_elem.get(qn("w:val"))
+                        if text_elem is not None else ""
+                    ),
+                }
+            abstract_defs[abs_id] = levels
+
+        for num in numbering_elm.findall(qn("w:num")):
+            num_id_attr = num.get(qn("w:numId"))
+            if num_id_attr is None:
+                continue
+            try:
+                num_id = int(num_id_attr)
+            except ValueError:
+                continue
+            abs_ref = num.find(qn("w:abstractNumId"))
+            if abs_ref is not None:
+                try:
+                    num_map[num_id] = int(abs_ref.get(qn("w:val")))
+                except (TypeError, ValueError):
+                    continue
+
+            # Capture lvlOverride entries. A lvlOverride may contain a
+            # <w:lvl> that replaces the abstract's level definition for
+            # this num only (e.g., to force numFmt=none for suppression).
+            overrides: dict[int, dict] = {}
+            for ovr in num.findall(qn("w:lvlOverride")):
+                ovr_ilvl_attr = ovr.get(qn("w:ilvl"))
+                if ovr_ilvl_attr is None:
+                    continue
+                try:
+                    ovr_ilvl = int(ovr_ilvl_attr)
+                except ValueError:
+                    continue
+                lvl = ovr.find(qn("w:lvl"))
+                if lvl is None:
+                    continue
+                level_patch: dict = {}
+                fmt_elem = lvl.find(qn("w:numFmt"))
+                if fmt_elem is not None:
+                    level_patch["num_fmt"] = fmt_elem.get(qn("w:val"))
+                text_elem = lvl.find(qn("w:lvlText"))
+                if text_elem is not None:
+                    level_patch["lvl_text"] = text_elem.get(qn("w:val"))
+                if level_patch:
+                    overrides[ovr_ilvl] = level_patch
+            if overrides:
+                num_overrides[num_id] = overrides
+
+        return num_map, abstract_defs, num_overrides
+
+    @staticmethod
+    def _extract_style_numbering_reference(style) -> tuple[int, int] | None:
+        """Read a paragraph style's numPr (numId, ilvl).
+
+        Returns None if the style has no numPr. Absent ilvl defaults
+        to 0 per OOXML convention. A numId of 0 is returned as (0, 0)
+        and the caller is expected to treat it as "numbering suppressed
+        on this style".
+        """
+        pPr = style.element.find(qn("w:pPr"))
+        if pPr is None:
+            return None
+        numPr = pPr.find(qn("w:numPr"))
+        if numPr is None:
+            return None
+        num_id_elem = numPr.find(qn("w:numId"))
+        if num_id_elem is None:
+            return None
+        try:
+            num_id_val = int(num_id_elem.get(qn("w:val")))
+        except (TypeError, ValueError):
+            return None
+        ilvl_elem = numPr.find(qn("w:ilvl"))
+        ilvl_val = 0
+        if ilvl_elem is not None:
+            try:
+                ilvl_val = int(ilvl_elem.get(qn("w:val")))
+            except (TypeError, ValueError):
+                ilvl_val = 0
+        return num_id_val, ilvl_val
+
+    @staticmethod
+    def _resolve_numbering(
+        num_id: int,
+        ilvl: int,
+        num_map: dict[int, int],
+        abstract_defs: dict[int, dict[int, dict]],
+        num_overrides: dict[int, dict[int, dict]],
+    ) -> dict:
+        """Resolve a (num_id, ilvl) reference into a concrete definition.
+
+        Looks up the abstract's level definition, applies any
+        lvlOverride patches from the num, and returns the flattened
+        numbering_detail dict. `suppressed` is True iff the resolved
+        num_fmt is "none".
+        """
+        abstract_num_id = num_map.get(num_id)
+        base_def: dict = {}
+        if abstract_num_id is not None:
+            levels = abstract_defs.get(abstract_num_id) or {}
+            base_def = dict(levels.get(ilvl) or {})
+
+        # Apply any override at this ilvl
+        override = (num_overrides.get(num_id) or {}).get(ilvl)
+        if override:
+            base_def.update(override)
+
+        num_fmt = base_def.get("num_fmt") or "decimal"
+        lvl_text = base_def.get("lvl_text") or ""
+        return {
+            "num_id": num_id,
+            "abstract_num_id": abstract_num_id if abstract_num_id is not None else -1,
+            "ilvl": ilvl,
+            "num_fmt": num_fmt,
+            "lvl_text": lvl_text,
+            "suppressed": num_fmt == "none",
+        }
+
+    @staticmethod
+    def _build_template_tags(inventory: list[dict]) -> list[str]:
+        """Build the namespaced tag list for a template's style inventory.
+
+        `template:style:*` is restricted to custom (user-authored) styles
+        so stock Word styles do not flood every template's tag set.
+        `template:has_numbering:*` applies to any style carrying active
+        numbering, including built-in heading styles that the template
+        has wired up with its own numbering definition -- that wiring is
+        a meaningful discriminator and would be lost if limited to
+        custom-only.
+        """
+        tags: list[str] = []
+        for entry in inventory:
+            if entry.get("is_custom"):
+                tags.append(f"template:style:{entry['name']}")
+        for entry in inventory:
+            if entry.get("has_numbering"):
+                tags.append(f"template:has_numbering:{entry['name']}")
+        return tags
 
     def _build_style_map(self, config: dict | None) -> dict[str, int]:
         """Build heading style map from config, merging with defaults."""

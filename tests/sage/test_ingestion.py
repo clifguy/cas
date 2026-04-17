@@ -16,6 +16,7 @@ import pytest
 from sage.api.errors import DuplicateContentError
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
+from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
 
 def _create_test_file(tmp_vault_dir: Path, relative_path: str, content: str = "# Test\n\nTest content.") -> Path:
@@ -1030,3 +1031,409 @@ async def test_reabstract_no_projection_raises_error(
 
     with pytest.raises(NoProjectionError):
         await ingestion_service.reabstract(doc_id)
+
+
+# ---------------------------------------------------------------------------
+# BH-131, BH-132, BH-133: Adapter-emitted tags merge into document.tags
+# ---------------------------------------------------------------------------
+#
+# These tests exercise the adapter_tags / adapter_tag_prefixes convention
+# between the source adapter layer and the ingestion service. The
+# DocxAdapter is the first adapter to use this channel (for .dotx template
+# style inventory), but the contract is generic so any adapter can
+# contribute to document.tags from projection metadata.
+
+
+class _TagEmittingStubAdapter:
+    """Stub adapter that emits configurable adapter_tags in projection metadata.
+
+    Used to exercise the ingestion-level tag-merge plumbing (BH-131..133)
+    without the real .dotx machinery. Each instance can be reconfigured
+    between calls to simulate an updated adapter version, supporting
+    the BH-132 stale-tag-stripping scenario.
+    """
+
+    VERSION = "0.0.1-stub"
+    EXTENSIONS = [".md"]
+
+    def __init__(self, adapter_tags: list[str], adapter_tag_prefixes: list[str]):
+        self.adapter_tags = list(adapter_tags)
+        self.adapter_tag_prefixes = list(adapter_tag_prefixes)
+
+    async def project(self, source_path, config=None):
+        import hashlib
+        from datetime import datetime, timezone
+        from sage.source_adapters.base import ProjectionResult, HeadingNode
+
+        raw = source_path.read_bytes()
+        text = source_path.read_text()
+        mtime = datetime.fromtimestamp(
+            source_path.stat().st_mtime, tz=timezone.utc
+        ).isoformat()
+        return ProjectionResult(
+            text=text,
+            headings=[HeadingNode(level=1, text="Stub", path="Stub", content=text)],
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            adapter_version=self.VERSION,
+            title=source_path.stem,
+            metadata={
+                "source_modified_at": mtime,
+                "adapter_tags": list(self.adapter_tags),
+                "adapter_tag_prefixes": list(self.adapter_tag_prefixes),
+            },
+        )
+
+
+def _make_ingestion_service_with_tag_adapter(
+    *,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_config,
+    lifecycle_service,
+    adapter,
+):
+    """Build a fresh IngestionService using the given adapter under MARKDOWN."""
+    from sage.services.ingestion import IngestionService
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=minimal_config,
+        source_adapters={SourceType.MARKDOWN: adapter},
+        lifecycle_service=lifecycle_service,
+    )
+
+
+async def test_bh_131_adapter_tags_merge_on_new_ingest(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """BH-131: adapter_tags merge with caller-supplied tags on new ingest."""
+    adapter = _TagEmittingStubAdapter(
+        adapter_tags=["template:style:A", "template:style:B"],
+        adapter_tag_prefixes=["template:"],
+    )
+    service = _make_ingestion_service_with_tag_adapter(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+        minimal_config=minimal_config,
+        lifecycle_service=lifecycle_service,
+        adapter=adapter,
+    )
+
+    _create_test_file(
+        tmp_vault_dir, "patents/bh131_a.md",
+        content="# BH-131 case A\n\nWith adapter tags.",
+    )
+
+    request = IngestRequest(
+        source="patents/bh131_a.md",
+        adapter=SourceType.MARKDOWN,
+        metadata={"codes": "caller-tag"},
+    )
+    result = await service.ingest(request)
+    doc = result.document
+
+    assert "template:style:A" in doc.tags
+    assert "template:style:B" in doc.tags
+    assert "caller-tag" in doc.tags
+    # No duplicates
+    assert len(doc.tags) == len(set(doc.tags))
+
+    # Negative case: adapter that emits no adapter_tags leaves doc.tags
+    # derived from caller only.
+    plain_adapter = _TagEmittingStubAdapter(
+        adapter_tags=[], adapter_tag_prefixes=[],
+    )
+    # Tweak so the plain adapter doesn't emit the metadata keys at all
+    async def plain_project(source_path, config=None):
+        import hashlib
+        from datetime import datetime, timezone
+        from sage.source_adapters.base import ProjectionResult, HeadingNode
+        raw = source_path.read_bytes()
+        text = source_path.read_text()
+        return ProjectionResult(
+            text=text,
+            headings=[HeadingNode(level=1, text="Plain", path="Plain", content=text)],
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            adapter_version=plain_adapter.VERSION,
+            title=source_path.stem,
+            metadata={
+                "source_modified_at": datetime.fromtimestamp(
+                    source_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat(),
+            },
+        )
+    plain_adapter.project = plain_project
+
+    service_plain = _make_ingestion_service_with_tag_adapter(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+        minimal_config=minimal_config,
+        lifecycle_service=lifecycle_service,
+        adapter=plain_adapter,
+    )
+
+    _create_test_file(
+        tmp_vault_dir, "patents/bh131_plain.md",
+        content="# BH-131 case B\n\nWithout adapter tags.",
+    )
+    plain_result = await service_plain.ingest(
+        IngestRequest(
+            source="patents/bh131_plain.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"codes": "caller-tag"},
+        )
+    )
+    assert plain_result.document.tags == ["caller-tag"]
+
+
+async def test_bh_132_force_reingest_strips_stale_adapter_tags(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """BH-132: stale adapter-owned tags are stripped on force re-ingest."""
+    adapter = _TagEmittingStubAdapter(
+        adapter_tags=["template:style:Old", "template:has_numbering:Old"],
+        adapter_tag_prefixes=["template:"],
+    )
+    service = _make_ingestion_service_with_tag_adapter(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+        minimal_config=minimal_config,
+        lifecycle_service=lifecycle_service,
+        adapter=adapter,
+    )
+
+    file_path = _create_test_file(
+        tmp_vault_dir, "patents/bh132.md", content="# BH-132\n\nFirst.",
+    )
+
+    first = await service.ingest(
+        IngestRequest(
+            source="patents/bh132.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"codes": "caller-tag"},
+        )
+    )
+    assert "template:style:Old" in first.document.tags
+    assert "template:has_numbering:Old" in first.document.tags
+
+    # "Update" the adapter to emit a different tag set. Force re-ingest to
+    # trigger the stale-stripping path. Content must change to bypass the
+    # duplicate gate (BH-133 covers the byte-identical case).
+    file_path.write_text("# BH-132\n\nSecond revision.")
+    adapter.adapter_tags = ["template:style:New"]
+
+    second = await service.ingest(
+        IngestRequest(
+            source="patents/bh132.md",
+            adapter=SourceType.MARKDOWN,
+            force=True,
+            metadata={"codes": "caller-tag"},
+        )
+    )
+
+    assert "template:style:New" in second.document.tags
+    assert "template:style:Old" not in second.document.tags
+    assert "template:has_numbering:Old" not in second.document.tags
+    assert "caller-tag" in second.document.tags
+
+
+async def test_bh_133_byte_identical_reingest_raises_duplicate(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """BH-133: adapter_tags channel does not bypass the content-hash duplicate gate."""
+    adapter = _TagEmittingStubAdapter(
+        adapter_tags=["template:style:X"],
+        adapter_tag_prefixes=["template:"],
+    )
+    service = _make_ingestion_service_with_tag_adapter(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+        minimal_config=minimal_config,
+        lifecycle_service=lifecycle_service,
+        adapter=adapter,
+    )
+
+    _create_test_file(tmp_vault_dir, "patents/bh133.md", content="# BH-133\n\nOnly content.")
+
+    first = await service.ingest(
+        IngestRequest(source="patents/bh133.md", adapter=SourceType.MARKDOWN)
+    )
+    assert "template:style:X" in first.document.tags
+    original_adapter_version = first.document.adapter_version
+    original_updated_at = first.document.updated_at
+    original_tags = list(first.document.tags)
+
+    # Same file, no force: must raise DuplicateContentError
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await service.ingest(
+            IngestRequest(source="patents/bh133.md", adapter=SourceType.MARKDOWN)
+        )
+    assert exc_info.value.detail["existing_document_id"] == first.document.id
+
+    # Document state should be unchanged after the rejected re-ingest
+    fetched = await graph_store.get_document(first.document.id)
+    assert fetched.tags == original_tags
+    assert fetched.adapter_version == original_adapter_version
+    assert fetched.updated_at == original_updated_at
+
+
+# ---------------------------------------------------------------------------
+# BH-134: Empty projection text transitions to abstraction_skipped
+# ---------------------------------------------------------------------------
+
+
+class _EmptyTextStubAdapter:
+    """Stub adapter that returns an empty projection text, simulating a
+    Word template or other content-thin source."""
+
+    VERSION = "0.0.1-empty"
+    EXTENSIONS = [".md"]
+
+    async def project(self, source_path, config=None):
+        import hashlib
+        from datetime import datetime, timezone
+        from sage.source_adapters.base import ProjectionResult
+        raw = source_path.read_bytes()
+        return ProjectionResult(
+            text="",
+            headings=[],
+            content_hash=hashlib.sha256(raw).hexdigest(),
+            adapter_version=self.VERSION,
+            title=source_path.stem,
+            metadata={
+                "source_modified_at": datetime.fromtimestamp(
+                    source_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat(),
+            },
+        )
+
+
+class _StrictAbstractionProvider:
+    """Mirrors Qwen3's strict edge guard: raises on empty input.
+
+    Any test that reaches generate_abstract() with empty text via this
+    provider will fail. BH-134 relies on this behavior to verify that
+    the service-layer guard short-circuits before reaching here.
+    """
+
+    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+        if not text or not text.strip():
+            raise RuntimeError(
+                "Cannot generate abstract from empty document text"
+            )
+        return f"Strict stub abstract for {len(text)} chars."
+
+
+async def test_bh_134_empty_projection_text_skips_abstraction(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """BH-134: empty projection text transitions to abstraction_skipped."""
+    from sage.services.ingestion import IngestionService
+
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=_StrictAbstractionProvider(),
+        config=minimal_config,
+        source_adapters={SourceType.MARKDOWN: _EmptyTextStubAdapter()},
+        lifecycle_service=lifecycle_service,
+    )
+
+    _create_test_file(
+        tmp_vault_dir, "patents/bh134.md",
+        content="# Placeholder\n\nSource has bytes but adapter returns empty text.",
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="patents/bh134.md", adapter=SourceType.MARKDOWN)
+    )
+
+    fetched = await graph_store.get_document(result.document.id)
+    assert fetched.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED
+    assert fetched.semantic_abstract is None
+    assert fetched.pipeline_error is None
+
+
+async def test_bh_134_non_empty_text_still_runs_abstraction(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """BH-134 (control): non-empty text still reaches abstraction."""
+    from sage.services.ingestion import IngestionService
+
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=_StrictAbstractionProvider(),
+        config=minimal_config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle_service,
+    )
+
+    _create_test_file(
+        tmp_vault_dir, "patents/bh134_ctrl.md",
+        content="# Real\n\nNon-empty body content to abstract.",
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="patents/bh134_ctrl.md", adapter=SourceType.MARKDOWN)
+    )
+
+    fetched = await graph_store.get_document(result.document.id)
+    assert fetched.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert fetched.semantic_abstract is not None
+    assert "Strict stub abstract" in fetched.semantic_abstract

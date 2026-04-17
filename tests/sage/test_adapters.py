@@ -1351,6 +1351,477 @@ class TestDocxAdapter:
         assert result.headings[5].text == "II.1 Sub Beta"
 
 
+# ── Docx Adapter: .dotx template support ──────────────────────────
+
+
+def _add_custom_style(
+    doc,
+    style_id: str,
+    style_name: str,
+    style_type: str = "paragraph",
+    based_on: str | None = None,
+    num_id: int | None = None,
+) -> None:
+    """Inject a <w:style> element into styles.xml with customStyle="1".
+
+    python-docx does not expose `customStyle` when adding styles via its
+    API, so we go directly to XML. `num_id` links a paragraph style to a
+    numbering definition created via _inject_numbering().
+    """
+    style_type_attr = {
+        "paragraph": "paragraph",
+        "character": "character",
+        "table": "table",
+        "numbering": "numbering",
+    }[style_type]
+    style_elem = etree.SubElement(doc.styles.element, qn("w:style"))
+    style_elem.set(qn("w:type"), style_type_attr)
+    style_elem.set(qn("w:styleId"), style_id)
+    style_elem.set(qn("w:customStyle"), "1")
+    name_elem = etree.SubElement(style_elem, qn("w:name"))
+    name_elem.set(qn("w:val"), style_name)
+    if based_on is not None:
+        based_on_elem = etree.SubElement(style_elem, qn("w:basedOn"))
+        based_on_elem.set(qn("w:val"), based_on)
+    if num_id is not None and style_type == "paragraph":
+        pPr = etree.SubElement(style_elem, qn("w:pPr"))
+        numPr = etree.SubElement(pPr, qn("w:numPr"))
+        ilvl = etree.SubElement(numPr, qn("w:ilvl"))
+        ilvl.set(qn("w:val"), "0")
+        numId = etree.SubElement(numPr, qn("w:numId"))
+        numId.set(qn("w:val"), str(num_id))
+
+
+def _attach_numbering_to_builtin_style(doc, style_id: str, num_id: int) -> None:
+    """Wire an existing style (custom or built-in) to a numbering definition.
+
+    Ensures the style's w:pPr contains a numPr referencing num_id. Used to
+    simulate a template that has customized the built-in Heading 1 style
+    with auto-numbering.
+    """
+    style = doc.styles[style_id]
+    pPr = style.element.find(qn("w:pPr"))
+    if pPr is None:
+        pPr = etree.SubElement(style.element, qn("w:pPr"))
+    # Remove any existing numPr
+    existing = pPr.find(qn("w:numPr"))
+    if existing is not None:
+        pPr.remove(existing)
+    numPr = etree.SubElement(pPr, qn("w:numPr"))
+    ilvl = etree.SubElement(numPr, qn("w:ilvl"))
+    ilvl.set(qn("w:val"), "0")
+    numId = etree.SubElement(numPr, qn("w:numId"))
+    numId.set(qn("w:val"), str(num_id))
+
+
+def _convert_docx_to_dotx(docx_path: Path, dotx_path: Path) -> None:
+    """Rewrite a .docx's content-type entry to template flavor and save as .dotx.
+
+    Creates a structurally valid .dotx (OPC content type set to template)
+    that python-docx will reject at load unless the adapter's workaround
+    applies, so this fixture exercises the real format path.
+    """
+    import zipfile as _zipfile
+    with _zipfile.ZipFile(docx_path, "r") as z_in:
+        with _zipfile.ZipFile(dotx_path, "w", _zipfile.ZIP_DEFLATED) as z_out:
+            for item in z_in.namelist():
+                data = z_in.read(item)
+                if item == "[Content_Types].xml":
+                    data = data.replace(
+                        b"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+                        b"application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+                    )
+                z_out.writestr(item, data)
+
+
+def _build_template_fixture(tmp_path: Path, filename: str) -> Path:
+    """Build a .dotx fixture with the style surface required by AD-071/073.
+
+    The fixture contains:
+    - AppendixHeading (custom, paragraph, no numbering)
+    - DefinitionsHeader (custom, paragraph, active numbering)
+    - AnnotationChar (custom, character, based_on Normal)
+    - Built-in Heading 1 with active numbering (template-local wiring)
+    - Built-in Normal unmodified
+    """
+    doc = docx.Document()
+    doc.add_paragraph("Intro", style="Heading 1")
+    doc.add_paragraph("Body paragraph.")
+
+    # Numbering definitions for the two styles that need active numbering
+    _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
+    second_num_xml = """
+    <w:num w:numId="101"
+        xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+      <w:abstractNumId w:val="100"/>
+    </w:num>
+    """
+    numbering_part = doc.part.numbering_part
+    numbering_elm = numbering_part.numbering_definitions._numbering
+    numbering_elm.append(etree.fromstring(second_num_xml))
+
+    _add_custom_style(doc, "AppendixHeading", "Appendix Heading", "paragraph")
+    _add_custom_style(
+        doc, "DefinitionsHeader", "Definitions Header",
+        "paragraph", num_id=100,
+    )
+    _add_custom_style(
+        doc, "AnnotationChar", "Annotation Char",
+        "character", based_on="Normal",
+    )
+    _attach_numbering_to_builtin_style(doc, "Heading 1", num_id=101)
+
+    docx_path = tmp_path / (filename.removesuffix(".dotx") + ".docx")
+    dotx_path = tmp_path / filename
+    doc.save(str(docx_path))
+    _convert_docx_to_dotx(docx_path, dotx_path)
+    docx_path.unlink()
+    return dotx_path
+
+
+@requires_docx
+class TestDocxAdapterDotxSupport:
+    """AD-068 through AD-073: .dotx template support in DocxAdapter."""
+
+    async def test_ad_068_extensions_includes_dotx(self):
+        """AD-068: DocxAdapter.EXTENSIONS contains both .docx and .dotx."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        assert ".docx" in DocxAdapter.EXTENSIONS
+        assert ".dotx" in DocxAdapter.EXTENSIONS
+
+    async def test_ad_069_dotx_loads_without_error(self, tmp_path):
+        """AD-069: A .dotx file is parsed successfully despite template content type."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+        dotx_path = _build_template_fixture(tmp_path, "fixture.dotx")
+
+        result = await adapter.project(dotx_path)
+
+        assert len(result.text) > 0
+        assert isinstance(result.content_hash, str)
+        assert len(result.content_hash) == 64
+        assert len(result.headings) >= 1
+        # content_hash is over raw .dotx bytes, not the shadow copy
+        assert (
+            result.content_hash
+            == hashlib.sha256(dotx_path.read_bytes()).hexdigest()
+        )
+
+    async def test_ad_070_dotx_has_inventory_docx_does_not(self, tmp_path):
+        """AD-070: template_style_inventory is .dotx-only; absent on .docx."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+        dotx_path = _build_template_fixture(tmp_path, "t.dotx")
+
+        # Equivalent .docx with the same body content and custom styles
+        doc = docx.Document()
+        doc.add_paragraph("Intro", style="Heading 1")
+        doc.add_paragraph("Body paragraph.")
+        _add_custom_style(doc, "AppendixHeading", "Appendix Heading", "paragraph")
+        docx_path = tmp_path / "t.docx"
+        doc.save(str(docx_path))
+
+        dotx_result = await adapter.project(dotx_path)
+        docx_result = await adapter.project(docx_path)
+
+        assert "template_style_inventory" in dotx_result.metadata
+        assert isinstance(dotx_result.metadata["template_style_inventory"], list)
+        assert len(dotx_result.metadata["template_style_inventory"]) > 0
+
+        assert "template_style_inventory" not in docx_result.metadata
+
+    async def test_ad_071_inventory_entries_have_required_shape(self, tmp_path):
+        """AD-071: Every inventory entry carries exactly the six required fields."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+        dotx_path = _build_template_fixture(tmp_path, "shape.dotx")
+
+        result = await adapter.project(dotx_path)
+        inventory = result.metadata["template_style_inventory"]
+
+        required_keys = {
+            "id", "name", "type", "based_on", "has_numbering", "is_custom",
+            "numbering_detail",
+        }
+        allowed_types = {"paragraph", "character", "table", "numbering"}
+
+        for entry in inventory:
+            assert isinstance(entry, dict)
+            assert set(entry.keys()) == required_keys, (
+                f"entry keys {set(entry.keys())} != required {required_keys}"
+            )
+            assert isinstance(entry["id"], str) and entry["id"]
+            assert isinstance(entry["name"], str) and entry["name"]
+            assert entry["type"] in allowed_types
+            assert entry["based_on"] is None or isinstance(entry["based_on"], str)
+            assert isinstance(entry["has_numbering"], bool)
+            assert isinstance(entry["is_custom"], bool)
+            # numbering_detail internal consistency: dict iff has_numbering
+            if entry["has_numbering"]:
+                assert isinstance(entry["numbering_detail"], dict)
+            else:
+                assert entry["numbering_detail"] is None
+
+        # Verify the fixture produced a mix of custom and built-in
+        customs = [e for e in inventory if e["is_custom"]]
+        builtins = [e for e in inventory if not e["is_custom"]]
+        assert customs, "fixture should contain at least one custom style"
+        assert builtins, "fixture should contain at least one built-in style"
+
+        # Verify the AnnotationChar style is recognized as character type,
+        # not paragraph. Regression guard against the str(enum).split(".")
+        # type-detection bug.
+        ann = next((e for e in inventory if e["id"] == "AnnotationChar"), None)
+        assert ann is not None, "AnnotationChar custom style missing from inventory"
+        assert ann["type"] == "character"
+        assert ann["based_on"] == "Normal"
+
+    async def test_ad_072_has_numbering_reflects_active_reference(self, tmp_path):
+        """AD-072: has_numbering is True only for styles with an active numPr."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+        dotx_path = _build_template_fixture(tmp_path, "numbering.dotx")
+
+        result = await adapter.project(dotx_path)
+        inventory = result.metadata["template_style_inventory"]
+        by_id = {e["id"]: e for e in inventory}
+        by_name = {e["name"]: e for e in inventory}
+
+        assert by_id["DefinitionsHeader"]["has_numbering"] is True, (
+            "custom paragraph with active numPr should have has_numbering=True"
+        )
+        assert by_id["AppendixHeading"]["has_numbering"] is False, (
+            "custom paragraph with no numPr should have has_numbering=False"
+        )
+        assert by_id["AnnotationChar"]["has_numbering"] is False, (
+            "character style should always have has_numbering=False"
+        )
+        # Built-in Heading 1 has XML id "Heading1" but human name "Heading 1"
+        assert by_name["Heading 1"]["has_numbering"] is True, (
+            "built-in Heading 1 wired to active numbering should be True"
+        )
+
+    async def test_ad_073_dotx_emits_tags_docx_does_not(self, tmp_path):
+        """AD-073: .dotx emits adapter_tags with prescribed namespacing; .docx does not."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+        dotx_path = _build_template_fixture(tmp_path, "tags.dotx")
+
+        # Equivalent .docx (custom styles added but no template content type)
+        doc = docx.Document()
+        doc.add_paragraph("Intro", style="Heading 1")
+        _add_custom_style(doc, "AppendixHeading", "Appendix Heading", "paragraph")
+        docx_path = tmp_path / "tags.docx"
+        doc.save(str(docx_path))
+
+        dotx_result = await adapter.project(dotx_path)
+        docx_result = await adapter.project(docx_path)
+
+        tags = dotx_result.metadata["adapter_tags"]
+        assert isinstance(tags, list)
+
+        # Style-presence tags: custom styles only
+        assert "template:style:Appendix Heading" in tags
+        assert "template:style:Definitions Header" in tags
+        assert "template:style:Annotation Char" in tags
+        # Built-in styles must not appear in style-presence namespace
+        assert "template:style:Heading 1" not in tags
+        assert "template:style:Normal" not in tags
+
+        # Numbering tags: any style with has_numbering=True
+        assert "template:has_numbering:Definitions Header" in tags
+        assert "template:has_numbering:Heading 1" in tags  # built-in wired
+        assert "template:has_numbering:Appendix Heading" not in tags
+
+        # Adapter declares its owned prefixes so ingestion can strip stale
+        # adapter-owned tags on force re-ingest.
+        assert dotx_result.metadata["adapter_tag_prefixes"] == ["template:"]
+
+        # .docx does not emit adapter_tags
+        assert "adapter_tags" not in docx_result.metadata
+        assert "adapter_tag_prefixes" not in docx_result.metadata
+
+    async def test_ad_074_dotx_synthesizes_non_empty_text(self, tmp_path):
+        """AD-074: .dotx projection produces non-empty style-surface text."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+        dotx_path = _build_template_fixture(tmp_path, "surface.dotx")
+
+        result = await adapter.project(dotx_path)
+
+        text = result.text
+        assert text.strip(), "template projection must produce non-empty text"
+
+        # First line identifies the artifact as a Word template and includes
+        # the title (filename stem here; the helper does not inject a
+        # Title-styled paragraph).
+        first_line = text.splitlines()[0]
+        assert "template" in first_line.lower()
+        assert "surface" in first_line.lower() or "Surface" in first_line
+
+        # Every custom style's human name appears in the text
+        inventory = result.metadata["template_style_inventory"]
+        custom_names = [e["name"] for e in inventory if e["is_custom"]]
+        for name in custom_names:
+            assert name in text, f"custom style {name!r} missing from synthesized text"
+
+        # Built-in Heading 1 wiring is called out
+        assert "auto-numbering" in text or "auto-numbered" in text
+        assert "Heading 1" in text
+
+        # Built-in unmodified styles (Normal, Header, Footer) are NOT listed
+        # in the style-name sections -- they would flood every template's
+        # text with identical keyword noise. (The text MAY mention them in
+        # passing, e.g., via a basedOn chain, but the style-list sections
+        # should not enumerate them.)
+        styles_section_end = text.find("Built-in styles")
+        styles_section = text[:styles_section_end] if styles_section_end >= 0 else text
+        assert "Normal" not in styles_section
+        assert ": Header," not in styles_section  # avoid matching "Header Char"
+        assert ": Footer," not in styles_section
+
+    async def test_ad_075_numbering_detail_resolved_from_abstract(self, tmp_path):
+        """AD-075: numbering_detail carries num_id, abstract_num_id, ilvl,
+        num_fmt, lvl_text, and suppressed sourced from the resolved
+        numbering definition."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        # Build a fixture with distinct numbering definitions exercising
+        # decimal at ilvl 0, upperRoman at ilvl 1, and a lvlOverride that
+        # suppresses numbering (numFmt=none).
+        doc = docx.Document()
+        doc.add_paragraph("Placeholder", style="Heading 1")
+
+        abstract_xml = """
+        <w:abstractNum w:abstractNumId="300"
+            xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:lvl w:ilvl="0">
+            <w:start w:val="1"/>
+            <w:numFmt w:val="decimal"/>
+            <w:lvlText w:val="%1."/>
+            <w:lvlJc w:val="left"/>
+          </w:lvl>
+          <w:lvl w:ilvl="1">
+            <w:start w:val="1"/>
+            <w:numFmt w:val="upperRoman"/>
+            <w:lvlText w:val="%1.%2"/>
+            <w:lvlJc w:val="left"/>
+          </w:lvl>
+        </w:abstractNum>
+        """
+        num_decimal = """
+        <w:num w:numId="300"
+            xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:abstractNumId w:val="300"/>
+        </w:num>
+        """
+        num_roman = """
+        <w:num w:numId="301"
+            xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:abstractNumId w:val="300"/>
+        </w:num>
+        """
+        num_suppressed = """
+        <w:num w:numId="302"
+            xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:abstractNumId w:val="300"/>
+          <w:lvlOverride w:ilvl="0">
+            <w:lvl w:ilvl="0">
+              <w:start w:val="1"/>
+              <w:numFmt w:val="none"/>
+              <w:lvlText w:val=""/>
+              <w:lvlJc w:val="left"/>
+            </w:lvl>
+          </w:lvlOverride>
+        </w:num>
+        """
+        # Inject these into a fresh numbering part
+        doc.add_paragraph("dummy", style="List Bullet")
+        doc.element.body.remove(doc.element.body[-1])
+        numbering_elm = doc.part.numbering_part.numbering_definitions._numbering
+        for xml in (abstract_xml, num_decimal, num_roman, num_suppressed):
+            numbering_elm.append(etree.fromstring(xml))
+
+        _add_custom_style(doc, "DecimalHeading", "Decimal Heading", "paragraph", num_id=300)
+        _add_custom_style(doc, "RomanSubheading", "Roman Subheading", "paragraph", num_id=301)
+        _add_custom_style(doc, "SuppressedHeading", "Suppressed Heading", "paragraph", num_id=302)
+        _add_custom_style(doc, "PlainBody", "Plain Body", "paragraph")
+
+        # The default num_id=300 builds with ilvl=0 via _add_custom_style;
+        # override RomanSubheading's ilvl to 1 by direct XML edit.
+        roman_style = doc.styles["Roman Subheading"]
+        numPr = roman_style.element.find(qn("w:pPr")).find(qn("w:numPr"))
+        numPr.find(qn("w:ilvl")).set(qn("w:val"), "1")
+
+        docx_tmp = tmp_path / "numdetail_source.docx"
+        dotx_path = tmp_path / "numdetail.dotx"
+        doc.save(str(docx_tmp))
+        _convert_docx_to_dotx(docx_tmp, dotx_path)
+        docx_tmp.unlink()
+
+        result = await DocxAdapter().project(dotx_path)
+        inventory = result.metadata["template_style_inventory"]
+        by_id = {e["id"]: e for e in inventory}
+
+        # Decimal heading
+        dec = by_id["DecimalHeading"]
+        assert dec["has_numbering"] is True
+        detail = dec["numbering_detail"]
+        assert set(detail.keys()) == {
+            "num_id", "abstract_num_id", "ilvl", "num_fmt", "lvl_text", "suppressed",
+        }
+        assert detail["num_id"] == 300
+        assert detail["abstract_num_id"] == 300
+        assert detail["ilvl"] == 0
+        assert detail["num_fmt"] == "decimal"
+        assert detail["lvl_text"] == "%1."
+        assert detail["suppressed"] is False
+
+        # Roman subheading (same abstract, different ilvl)
+        roman = by_id["RomanSubheading"]
+        rdetail = roman["numbering_detail"]
+        assert rdetail["num_id"] == 301
+        assert rdetail["abstract_num_id"] == 300
+        assert rdetail["ilvl"] == 1
+        assert rdetail["num_fmt"] == "upperRoman"
+        assert rdetail["lvl_text"] == "%1.%2"
+        assert rdetail["suppressed"] is False
+
+        # Suppressed heading: same abstract, lvlOverride forces numFmt=none
+        sup = by_id["SuppressedHeading"]
+        assert sup["has_numbering"] is True, (
+            "style still references an active num; has_numbering remains True"
+        )
+        sdetail = sup["numbering_detail"]
+        assert sdetail["num_id"] == 302
+        assert sdetail["num_fmt"] == "none"
+        assert sdetail["suppressed"] is True
+
+        # Plain body has no numbering
+        plain = by_id["PlainBody"]
+        assert plain["has_numbering"] is False
+        assert plain["numbering_detail"] is None
+
+    async def test_ad_074_docx_projection_unchanged(self, tmp_path):
+        """AD-074 (negative): .docx projection does not receive synthesized text."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+        adapter = DocxAdapter()
+
+        doc = docx.Document()
+        doc.add_paragraph("Real Heading", style="Heading 1")
+        doc.add_paragraph("Body paragraph content.")
+        docx_path = tmp_path / "plain.docx"
+        doc.save(str(docx_path))
+
+        result = await adapter.project(docx_path)
+
+        # Text contains only the body content, not template synthesis markers
+        assert "Real Heading" in result.text
+        assert "Body paragraph content." in result.text
+        assert "Microsoft Word template" not in result.text
+        assert "user-authored" not in result.text
+
+
 # ── XLSX Adapter ──────────────────────────────────────────────────
 
 try:

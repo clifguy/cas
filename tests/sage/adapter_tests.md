@@ -829,3 +829,321 @@ attempt loading again.
 **Rationale:** Preserves the fail-fast diagnostic contract from the previous
 eager-loading design (AD-026 original). The error surfaces on first use
 rather than at startup, but is equally clear.
+
+---
+
+## 6. Docx Adapter -- Template (.dotx) Support
+
+Tests for the Word template branch of `DocxAdapter`. Templates share the
+WordprocessingML body structure with documents but are stored as `.dotx`
+files with a distinct OPC content type. A template's value is its style
+surface (which named styles are defined, their types, inheritance chain,
+and whether they carry active numbering), not its body text. These tests
+validate that the adapter (a) accepts `.dotx` files without error,
+(b) emits a structured style inventory on the `.dotx` branch only, and
+(c) emits namespaced tags via the `adapter_tags` channel so existing
+`sage_discover` tag filters can locate templates by defined style.
+
+### TEST-SAGE-AD-068: DocxAdapter registers .dotx as a supported extension
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.EXTENSIONS)
+**Category:** registration
+**Decision:** `DocxAdapter.EXTENSIONS` contains both `.docx` and `.dotx`.
+A single adapter handles both formats because `.dotx` is structurally
+identical WordprocessingML -- only the main part's OPC content type
+differs. Duplicating the adapter for a 1-3-file use case is not justified.
+
+**Precondition:** None.
+
+**Input:** Inspect `DocxAdapter.EXTENSIONS`.
+
+**Expected:**
+- The list contains `".docx"` and `".dotx"` (order not significant).
+
+**Rationale:** Extension registration is how the ingestion pipeline selects
+the adapter for a file. A missing `.dotx` entry would route template
+files to no adapter or to a generic fallback, either of which defeats
+the feature.
+
+### TEST-SAGE-AD-069: .dotx file is parsed successfully
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** format_compatibility
+**Decision:** `adapter.project(path_to_dotx)` completes without error and
+returns a valid `ProjectionResult`. The adapter handles the OPC
+content-type difference internally (e.g., by opening the package via a
+temp copy renamed to `.docx`, or by directly invoking the OPC layer).
+
+**Precondition:** A fixture `.dotx` file exists. Construction: create a
+`docx.Document` with one `Heading 1`, save to a `.docx` path, then
+rewrite the ZIP so the main part's `[Content_Types].xml` entry uses
+the template content type
+(`application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml`)
+and rename the file to `.dotx`.
+
+**Input:** `adapter.project(path_to_dotx)`.
+
+**Expected:**
+- Returns a `ProjectionResult` with non-empty `text`.
+- `content_hash` is a 64-char hex string (SHA-256 of raw `.dotx` bytes).
+- `headings` contains the heading present in the template.
+- No exception raised.
+
+**Rationale:** python-docx validates the main part's content type at
+`Document()` load time and historically rejected `.dotx`. If the
+adapter's workaround is correct, loading succeeds. If it regresses,
+every template ingest fails at stage 1.
+
+### TEST-SAGE-AD-070: .dotx projection populates template_style_inventory; .docx does not
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** metadata, template_surface
+**Decision:** When the source extension is `.dotx`, the adapter emits
+`projection.metadata["template_style_inventory"]` as a list of
+structured style entries. When the source extension is `.docx`, this
+key is absent (not present-but-empty) so callers can distinguish
+"template surface intentionally exposed" from "document with no
+templates". Inventory computation is gated on extension, not on
+heuristic detection of a template-like document.
+
+**Precondition:** A fixture `.dotx` and a fixture `.docx` with
+identical body content (one `Heading 1`, one body paragraph).
+
+**Input:**
+1. `adapter.project(path_to_dotx)`
+2. `adapter.project(path_to_docx)`
+
+**Expected:**
+- Case 1: `result.metadata["template_style_inventory"]` is a non-empty list.
+- Case 2: `"template_style_inventory"` is not a key in `result.metadata`.
+
+**Rationale:** Scoping the inventory to `.dotx` keeps document metadata
+lean and avoids implying style-surface intent for incidentally
+style-rich documents. The inventory becomes promotable to `.docx`
+later behind an opt-in flag if the need arises.
+
+### TEST-SAGE-AD-071: Each inventory entry carries required fields
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** metadata, schema_shape
+**Decision:** Every entry in `template_style_inventory` is a dict with
+exactly these keys: `id` (str, XML style ID), `name` (str, human style
+name), `type` (str, one of `paragraph`, `character`, `table`,
+`numbering`), `based_on` (str or None, the style ID this inherits
+from), `has_numbering` (bool), `is_custom` (bool, True iff the style
+element carries `w:customStyle="1"`), `numbering_detail` (dict or
+None; see AD-075 for its shape). Additional keys MAY be present only
+if introduced by a later spec revision.
+
+**Precondition:** A `.dotx` fixture with at least one style from each
+type (paragraph, character, table, numbering), at least one style
+whose `basedOn` points to another style, and a mix of built-in and
+user-authored (custom) styles.
+
+**Input:** `adapter.project(path_to_dotx)`
+
+**Expected:**
+- Every entry is a dict and contains exactly the required keys
+  (no extras, no omissions).
+- `id` and `name` are non-empty strings.
+- `type` is one of the four allowed values.
+- `based_on` is a string when inheritance exists, otherwise `None`.
+- `has_numbering` is a `bool` (not truthy/falsy non-bool).
+- `is_custom` is `True` for user-authored styles and `False` for
+  built-in styles the template merely carries without modification.
+- `numbering_detail` is a dict when `has_numbering` is True, otherwise
+  `None`. The two flags are required to be consistent.
+
+**Rationale:** The inventory is the primary durable query surface for
+template selection. A loose shape (keys that vary across entries,
+values of unexpected types) would force every downstream consumer to
+re-validate, defeating the point of a structured representation.
+Locking the shape now prevents silent drift. `is_custom` distinguishes
+styles the template author deliberately introduced from the ~20 stock
+Word styles that ride along in every template; downstream selection
+logic needs this to compare templates meaningfully.
+
+### TEST-SAGE-AD-072: has_numbering reflects active numbering reference
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** metadata, numbering_semantics
+**Decision:** For a paragraph style, `has_numbering` is `True` if and
+only if the style's `w:pPr > w:numPr > w:numId` resolves (via the
+document's numbering part) to an active abstract numbering definition.
+A `numId` of `0` or a missing numbering part yields `False`. For
+non-paragraph styles, `has_numbering` is always `False`.
+
+**Precondition:** A `.dotx` fixture with three styles:
+- `HeadingAutoNum` -- paragraph style with a valid `numPr` pointing at
+  an abstract numbering definition.
+- `HeadingPlain` -- paragraph style with no `numPr`.
+- `AnnotationChar` -- character style.
+
+**Input:** `adapter.project(path_to_dotx)`
+
+**Expected:**
+- Entry for `HeadingAutoNum` has `has_numbering == True`.
+- Entry for `HeadingPlain` has `has_numbering == False`.
+- Entry for `AnnotationChar` has `has_numbering == False`.
+
+**Rationale:** `has_numbering` is the semantic signal that distinguishes
+"this heading style auto-numbers" from "this heading style relies on
+hand-typed numbers". Templates that mix the two confuse agentic
+document construction. The bool must be grounded in XML truth, not in
+style name heuristics.
+
+### TEST-SAGE-AD-073: .dotx projection emits adapter_tags; .docx does not
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** metadata, discoverability
+**Decision:** When the source extension is `.dotx`, the adapter emits
+`projection.metadata["adapter_tags"]` as a list of strings. The list
+contains:
+- `template:style:<style_name>` for every entry whose
+  `is_custom == True`. Built-in styles are excluded here to prevent
+  every template from answering yes to queries about stock Word
+  styles (`Normal`, `Header`, `Footer`, etc.).
+- `template:has_numbering:<style_name>` for every entry whose
+  `has_numbering == True`, regardless of `is_custom`. Built-in
+  heading styles frequently carry template-local auto-numbering
+  wiring, and that wiring is a meaningful discriminator between
+  templates; restricting this tag to custom styles would hide it.
+
+When the source extension is `.docx`, `adapter_tags` is absent from
+`result.metadata`.
+
+**Precondition:** A `.dotx` fixture with:
+- custom paragraph style `AppendixHeading` with no numbering
+- custom paragraph style `DefinitionsHeader` with active numbering
+- built-in style `Heading 1` with active numbering (template-local
+  modification of the stock style)
+- built-in style `Normal` unmodified
+
+A `.docx` fixture with equivalent body content.
+
+**Input:**
+1. `adapter.project(path_to_dotx)`
+2. `adapter.project(path_to_docx)`
+
+**Expected:**
+- Case 1: `"adapter_tags"` is present; contains
+  `template:style:AppendixHeading`,
+  `template:style:DefinitionsHeader`,
+  `template:has_numbering:DefinitionsHeader`, and
+  `template:has_numbering:Heading 1`. Does NOT contain
+  `template:style:Heading 1` or `template:style:Normal` (built-in
+  styles excluded from the style-presence namespace).
+- Case 2: `"adapter_tags"` is not a key in `result.metadata`.
+
+**Rationale:** `adapter_tags` is the channel by which the adapter
+contributes to `document.tags` (see BH-131). The `template:` namespace
+prefix prevents collision with caller-supplied or filename-parsed tags
+and lets `sage_discover` queries filter cleanly. The asymmetry between
+the style-presence and has-numbering tag sets (custom-only vs.
+all-styles) reflects empirical observation: stock Word styles carry
+little selection signal by presence alone, but any style carrying
+template-local numbering wiring is a signal worth exposing.
+
+### TEST-SAGE-AD-074: .dotx projection produces non-empty text derived from style inventory
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, template_surface
+**Decision:** When the source extension is `.dotx`, the adapter
+synthesizes a descriptive prose projection from the style inventory so
+that:
+- The projection is not empty (abstraction does not crash; BH-134
+  covers the defensive fallback for other empty-text cases).
+- The template is findable via BM25 keyword search on its custom style
+  names.
+- The template's semantic embedding reflects what the template is for
+  rather than the near-zero body content that a raw parse produces.
+
+The synthesized text lists the custom-authored styles with their type,
+calls out built-in styles carrying template-local auto-numbering, and
+opens with a line identifying the file as a Word template with the
+document's title. `.docx` projections are unchanged.
+
+**Precondition:** A `.dotx` fixture containing:
+- Several custom paragraph styles (e.g., `USPTO Section`, `Definition`)
+- One custom character style (e.g., `Annotation Char`)
+- Built-in `Heading 1` wired to active numbering
+- No body content (simulating a real template).
+
+**Input:** `adapter.project(path_to_dotx)`
+
+**Expected:**
+- `result.text.strip()` is non-empty.
+- The first line identifies the artifact as a Word template and
+  includes the title (filename stem or Title-styled paragraph).
+- The text contains every custom style's human name.
+- The text mentions that `Heading 1` carries template-local
+  auto-numbering (or an equivalent phrasing).
+- The text does NOT contain style IDs from built-in styles that the
+  template does not modify (e.g., `Normal`, `Header`, `Footer`) --
+  mentioning them would flood every template's text with identical
+  keyword noise.
+
+**Negative:** For a `.docx` fixture with identical body content as
+the projection function would otherwise extract, `result.text` is
+unchanged from v0.1.0 behavior (no template-style-surface synthesis).
+
+**Rationale:** A template's value to an agentic workflow is its style
+surface, not its body. If the projected text is empty or near-empty,
+vector and BM25 retrieval cannot surface the template, and the
+abstraction provider's strict-quality gate blocks the pipeline. A
+synthesized description of the style surface gives retrieval
+something meaningful to index on and gives the abstraction provider
+a substantive input.
+
+### TEST-SAGE-AD-075: numbering_detail carries the resolved numbering definition
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** metadata, numbering_semantics
+**Decision:** For every inventory entry where `has_numbering` is True,
+the `numbering_detail` field is a dict with exactly these keys:
+- `num_id` (int): the `w:numId` the style's `numPr` references.
+- `abstract_num_id` (int): the `w:abstractNumId` that `num_id` resolves
+  to via the document's numbering part.
+- `ilvl` (int): the `w:ilvl` the style's `numPr` references (typically
+  0 for a heading-style reference).
+- `num_fmt` (str): the `w:numFmt` value at that `ilvl` in the resolved
+  abstract (e.g., `"decimal"`, `"upperRoman"`, `"lowerLetter"`,
+  `"none"`).
+- `lvl_text` (str): the `w:lvlText` template at that `ilvl`, exactly as
+  authored (e.g., `"%1."`, `"%1.%2"`, `"Section %1:"`).
+- `suppressed` (bool): True when a `<w:lvlOverride>` inside the
+  `<w:num>` sets `numFmt` to `"none"` at the matching `ilvl` (i.e.,
+  the style carries numbering wiring but the rendered output will have
+  no number). False otherwise.
+
+When `has_numbering` is False, `numbering_detail` is `None`. The two
+keys are required to be internally consistent.
+
+**Precondition:** A `.dotx` fixture with:
+- `DecimalHeading`: custom paragraph, numId→abstractNum with
+  `numFmt=decimal` and `lvlText="%1."` at ilvl 0.
+- `RomanSubheading`: custom paragraph, numId→abstractNum with
+  `numFmt=upperRoman` and `lvlText="%1.%2"` at ilvl 1.
+- `SuppressedHeading`: custom paragraph whose num carries a
+  `<w:lvlOverride w:ilvl="0"><w:lvl><w:numFmt w:val="none"/></w:lvl></w:lvlOverride>`.
+- `PlainBody`: custom paragraph with no numbering.
+
+**Input:** `adapter.project(path_to_dotx)`
+
+**Expected:**
+- `DecimalHeading`: `numbering_detail == {"num_id": N, "abstract_num_id": M, "ilvl": 0, "num_fmt": "decimal", "lvl_text": "%1.", "suppressed": False}` for some concrete integer IDs.
+- `RomanSubheading`: `num_fmt == "upperRoman"`, `lvl_text == "%1.%2"`, `ilvl == 1`, `suppressed == False`.
+- `SuppressedHeading`: `has_numbering == True`, `suppressed == True`.
+- `PlainBody`: `has_numbering == False`, `numbering_detail is None`.
+
+**Rationale:** A boolean `has_numbering` answers *whether* a style is
+numbered but not *how*. An agentic preflight step that generates
+a document from a selected template needs to verify not just that
+`AppendixHeading` exists but that it is wired to produce the expected
+format — e.g., that Appendix A/B/C comes out as "A" rather than "1" or
+that an intentionally-suppressed style will not render a visible
+number. The concrete `num_fmt`, `lvl_text`, and `suppressed` fields
+carry that verification signal. Keeping `has_numbering` alongside as
+a fast-path bool means filter queries do not need to check
+`numbering_detail is not None` on every entry.
+

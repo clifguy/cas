@@ -21,7 +21,22 @@ class HeadingNode:
 
 @dataclass
 class ProjectionResult:
-    """Output of a source adapter's projection stage."""
+    """Output of a source adapter's projection stage.
+
+    The ``metadata`` dict is a free-form channel from adapter to ingestion.
+    A few keys have reserved semantics:
+
+    - ``source_modified_at`` (ISO 8601 string): file mtime, surfaced to
+      the document's ``source_modified_at`` column.
+    - ``adapter_tags`` (list[str]): tag strings the adapter contributes
+      to ``document.tags``. Merged (union, deduplicated) with caller- and
+      filename-contributed tags.
+    - ``adapter_tag_prefixes`` (list[str]): namespace prefixes owned by
+      the adapter. On re-ingest, existing tags matching these prefixes
+      are stripped before the fresh ``adapter_tags`` are applied, so a
+      stale adapter-emitted tag does not persist when the adapter would
+      no longer emit it.
+    """
 
     text: str  # Full structured text
     headings: list[HeadingNode]  # Heading hierarchy
