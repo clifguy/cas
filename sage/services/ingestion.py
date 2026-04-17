@@ -137,17 +137,40 @@ class IngestionService:
         return str(dest.relative_to(storage_root))
 
     async def ingest(
-        self, request: IngestRequest,
+        self, request: IngestRequest, wait_for_pipeline: bool = True,
     ) -> IngestResult:
-        """Execute Stage 1 synchronously, schedule Stages 2-3 as background tasks.
+        """Execute Stage 1 synchronously and run Stages 2-3 sync or async.
+
+        When `wait_for_pipeline` is True (default), Stages 2-3 (embedding,
+        abstraction) are awaited inline; memory use is bounded to one
+        document at a time across successive calls (BH-068). This is the
+        mode the batch ingest service uses to preserve memory discipline
+        during bulk runs.
+
+        When `wait_for_pipeline` is False, Stages 2-3 dispatch via
+        `asyncio.create_task` and the call returns after projection,
+        record insertion, metadata application, and the supersede
+        lifecycle transition (if requested) have committed. Used by the
+        MCP `sage_ingest` tool to stay under the 60-second MCP client
+        timeout on documents whose abstraction latency would otherwise
+        exceed it. The supersede transition runs synchronously
+        regardless of this flag (BH-129): the version chain must be
+        complete when the call returns.
 
         Returns:
             IngestResult with the document and whether it was newly created.
+            When `wait_for_pipeline` is False the document's
+            pipeline_status will typically be non-terminal (indexing_in_progress
+            or projection_complete); callers poll `get_document` for terminal
+            state.
 
         Raises:
             DuplicateContentError: Same content hash exists anywhere in vault
                 (BH-018, BH-066), unless force flag set.
             AdapterNotFoundError: No adapter for requested source type.
+            DocumentNotFoundError: `supersedes_document_id` does not exist.
+            SupersedeTargetNotActiveError: predecessor is not active.
+            IdenticalContentSupersedeError: new content matches predecessor.
         """
         adapter = self._adapters.get(request.adapter)
         if adapter is None:
@@ -326,25 +349,35 @@ class IngestionService:
                 "document_date": source_modified_at.date().isoformat(),
             })
 
-        # Run pipeline sequentially (Stages 2-3) (BH-026)
-        # Sequential execution caps peak memory: only one document's
-        # embeddings and abstraction context reside in memory at a time.
-        await self._run_background_pipeline(doc.id, projection)
-
-        # Re-fetch document to reflect terminal pipeline status
-        doc = await self._store.get_document(doc.id) or doc
-
         # Apply the supersede lifecycle transition on the predecessor
-        # (BH-120). Creates the supersedes edge (new -> old) and sets
-        # the predecessor's lifecycle_status to "archived". Runs after
-        # the pipeline so the new document is fully indexed before the
-        # version chain changes. Uses the standard state machine via
-        # LifecycleService to honor vault-declared transitions.
+        # BEFORE dispatching Stages 2-3 (BH-120, BH-129). Creates the
+        # supersedes edge (new -> old) and sets the predecessor's
+        # lifecycle_status to "archived". Running this synchronously
+        # with record insertion guarantees the version chain is complete
+        # when ingest() returns, regardless of whether the caller
+        # chooses sync or async pipeline dispatch. Uses the standard
+        # state machine via LifecycleService to honor vault-declared
+        # transitions.
         if predecessor is not None and self._lifecycle_service is not None:
             await self._lifecycle_service.set_lifecycle(
                 predecessor.id,
                 SetLifecycleRequest(action="supersede", new_version_id=doc.id),
             )
+
+        # Stages 2-3 (indexing, abstraction) run sync or async per the
+        # caller's wait_for_pipeline choice (BH-026, BH-130). Sequential
+        # execution (wait_for_pipeline=True) caps peak memory at one
+        # document's embeddings and abstraction context -- the bulk
+        # ingest path. Fire-and-forget (wait_for_pipeline=False) returns
+        # immediately so MCP clients avoid the 60s RPC timeout on long
+        # abstractions; the task survives client disconnection because
+        # asyncio.create_task detaches it from the request-handling
+        # task.
+        if wait_for_pipeline:
+            await self._run_background_pipeline(doc.id, projection)
+            doc = await self._store.get_document(doc.id) or doc
+        else:
+            asyncio.create_task(self._run_background_pipeline(doc.id, projection))
 
         return IngestResult(document=doc, is_new=is_new)
 

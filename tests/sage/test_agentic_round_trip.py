@@ -8,16 +8,21 @@ re-ingest as a new version via `ingest(supersedes_document_id=...)`.
 import asyncio
 import base64
 import os
+import time
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sage.adapters.interfaces import AbstractionProvider
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
     StubEmbeddingProvider,
 )
+from sage.models.enums import PipelineStatus
+from sage.services.ingestion import IngestionService
+from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.api.errors import (
     ContentFileMissingError,
     ContentTooLargeError,
@@ -29,7 +34,61 @@ import hashlib
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
+from sage.models.enums import SourceType as _SourceType  # alias for fixture
 from sage.models.schemas import IngestRequest, SetLifecycleRequest
+
+
+# ---------------------------------------------------------------------------
+# Slow stub for BH-130
+# ---------------------------------------------------------------------------
+
+
+class _SlowStubAbstractionProvider(AbstractionProvider):
+    """Abstraction provider that sleeps for `delay_s` before returning.
+
+    Used to force a measurable gap between `wait_for_pipeline=True` and
+    `wait_for_pipeline=False` call durations without involving a real LLM.
+    """
+
+    def __init__(self, delay_s: float = 3.0) -> None:
+        self._delay_s = delay_s
+
+    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+        await asyncio.sleep(self._delay_s)
+        return f"Slow stub abstract ({self._delay_s}s delay)"
+
+
+# ---------------------------------------------------------------------------
+# Polling helper
+# ---------------------------------------------------------------------------
+
+
+_TERMINAL_PIPELINE_STATES = {
+    PipelineStatus.ABSTRACTION_COMPLETE,
+    PipelineStatus.ABSTRACTION_SKIPPED,
+    PipelineStatus.FAILED,
+}
+
+
+async def await_pipeline_terminal(graph_store, doc_id: str, timeout_s: float = 30.0):
+    """Poll `graph_store.get_document(doc_id)` until pipeline_status is
+    terminal or the timeout elapses. Returns the final Document record.
+
+    Fails the test if the timeout is reached with a non-terminal state,
+    which would indicate the background pipeline task is stuck or never
+    started.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        doc = await graph_store.get_document(doc_id)
+        if doc is not None and doc.pipeline_status in _TERMINAL_PIPELINE_STATES:
+            return doc
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"pipeline_status never reached terminal state for {doc_id}"
+                f"; last observed: {doc.pipeline_status if doc else 'doc missing'}"
+            )
+        await asyncio.sleep(0.05)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +400,129 @@ async def test_bh_128_mutual_exclusion(
     assert body["code"] == "content_delivery_conflict"
     # No file written on the conflict.
     assert not target.exists()
+
+
+# ---------------------------------------------------------------------------
+# TEST-SAGE-BH-129: supersede commits before pipeline completes
+# ---------------------------------------------------------------------------
+
+
+async def test_bh_129_supersede_atomic_with_ingest_response(
+    tmp_vault_dir, graph_store, ingestion_service, lifecycle_service
+):
+    _seed_file(tmp_vault_dir, "bh129_v1.md", "# V1\n\nOriginal content.")
+    _seed_file(tmp_vault_dir, "bh129_v2.md", "# V2\n\nRevised content.")
+
+    v1 = await ingestion_service.ingest(
+        IngestRequest(source="bh129_v1.md", adapter=_SourceType.MARKDOWN)
+    )
+
+    v2 = await ingestion_service.ingest(
+        IngestRequest(
+            source="bh129_v2.md",
+            adapter=_SourceType.MARKDOWN,
+            supersedes_document_id=v1.document.id,
+        ),
+        wait_for_pipeline=False,
+    )
+
+    # Immediately after ingest returns, with no polling, the version
+    # chain must be complete regardless of pipeline state.
+    predecessor = await graph_store.get_document(v1.document.id)
+    assert predecessor.lifecycle_status == "archived"
+
+    edges = await graph_store.get_edges_by_source(v2.document.id)
+    supersedes_edges = [
+        e for e in edges
+        if e.edge_type == "supersedes" and e.target_id == v1.document.id
+    ]
+    assert len(supersedes_edges) == 1
+
+    # New document is active even while background pipeline is pending.
+    new_doc_now = await graph_store.get_document(v2.document.id)
+    assert new_doc_now.lifecycle_status == "active"
+
+    # Allow background pipeline to complete, then verify terminal state.
+    terminal = await await_pipeline_terminal(graph_store, v2.document.id)
+    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+    # Supersedes edge and archival are unchanged by pipeline completion.
+    edges_after = await graph_store.get_edges_by_source(v2.document.id)
+    supersedes_after = [
+        e for e in edges_after
+        if e.edge_type == "supersedes" and e.target_id == v1.document.id
+    ]
+    assert [e.id for e in supersedes_after] == [e.id for e in supersedes_edges]
+    predecessor_after = await graph_store.get_document(v1.document.id)
+    assert predecessor_after.lifecycle_status == "archived"
+
+
+# ---------------------------------------------------------------------------
+# TEST-SAGE-BH-130: wait_for_pipeline=False returns in bounded time
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def slow_ingestion_service(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """IngestionService wired to a deliberately slow abstraction provider.
+
+    Used to prove wait_for_pipeline=False is not blocked by abstraction.
+    """
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=_SlowStubAbstractionProvider(delay_s=3.0),
+        config=minimal_config,
+        source_adapters={_SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle_service,
+    )
+
+
+async def test_bh_130_fire_and_forget_returns_fast(
+    tmp_vault_dir, graph_store, slow_ingestion_service
+):
+    _seed_file(tmp_vault_dir, "bh130_fast.md", "# Fast path\n\nBody.")
+
+    start = time.monotonic()
+    result = await slow_ingestion_service.ingest(
+        IngestRequest(source="bh130_fast.md", adapter=_SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+    elapsed = time.monotonic() - start
+
+    # Must return well before the 3s artificial abstraction delay.
+    assert elapsed < 2.0, f"fire-and-forget ingest took {elapsed:.2f}s"
+    # Background task will finish the pipeline eventually.
+    terminal = await await_pipeline_terminal(
+        graph_store, result.document.id, timeout_s=10.0
+    )
+    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+async def test_bh_130_sync_path_waits_for_pipeline(
+    tmp_vault_dir, graph_store, slow_ingestion_service
+):
+    _seed_file(tmp_vault_dir, "bh130_sync.md", "# Sync path\n\nBody.")
+
+    start = time.monotonic()
+    result = await slow_ingestion_service.ingest(
+        IngestRequest(source="bh130_sync.md", adapter=_SourceType.MARKDOWN),
+        wait_for_pipeline=True,
+    )
+    elapsed = time.monotonic() - start
+
+    # wait_for_pipeline=True must block until abstraction completes.
+    assert elapsed >= 3.0, f"sync ingest returned too fast: {elapsed:.2f}s"
+    assert result.document.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 
 # ---------------------------------------------------------------------------

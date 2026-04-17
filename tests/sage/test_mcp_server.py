@@ -519,6 +519,20 @@ async def test_reabstract_returns_started_status(vault_services):
     )
     doc_id = ingest_result["id"]
 
+    # sage_ingest dispatches Stages 2-3 in the background (BH-130).
+    # Wait for indexing to commit chunks so reabstract has a projection
+    # to work with.
+    for _ in range(200):
+        doc = _parse(await sage_get_document("test_vault", doc_id))
+        if doc.get("pipeline_status") in {
+            "indexing_complete",
+            "abstraction_in_progress",
+            "abstraction_complete",
+            "abstraction_skipped",
+        }:
+            break
+        await asyncio.sleep(0.05)
+
     result = _parse(await sage_reabstract("test_vault", doc_id))
     assert "error" not in result
     assert result["status"] == "reabstract_started"

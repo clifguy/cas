@@ -66,6 +66,18 @@ def register_sage_tools(
         """Ingest a source file into SAGE. Runs the three-stage pipeline:
         projection, indexing, and abstraction.
 
+        This tool dispatches Stages 2-3 (indexing, abstraction) as a
+        background task and returns in seconds with `pipeline_status`
+        typically non-terminal (projection_complete or
+        indexing_in_progress). Poll `sage_get_document` to observe
+        terminal status (abstraction_complete, abstraction_skipped, or
+        failed). The fire-and-forget dispatch keeps the RPC under the
+        60-second MCP client timeout for documents whose abstraction
+        latency would otherwise exceed it. The supersede lifecycle
+        transition (if requested) runs synchronously with record
+        insertion, so the version chain is complete when this tool
+        returns.
+
         Args:
             vault_id: Target vault identifier.
             source: Source file path relative to the vault's storage_root,
@@ -80,9 +92,9 @@ def register_sage_tools(
             force: Allow re-ingestion of duplicate content.
             supersedes_document_id: When provided, the ingested document
                 supersedes this predecessor. SAGE applies the `supersede`
-                lifecycle transition after ingestion: creates a
-                `supersedes` edge (new -> old) and archives the
-                predecessor. The predecessor must be active and its
+                lifecycle transition synchronously with record insertion:
+                creates a `supersedes` edge (new -> old) and archives
+                the predecessor. The predecessor must be active and its
                 content hash must differ from the new file.
         """
         try:
@@ -95,7 +107,12 @@ def register_sage_tools(
                 force=force,
                 supersedes_document_id=supersedes_document_id,
             )
-            result = await v.ingestion_service.ingest(request)
+            # Fire-and-forget pipeline keeps this RPC under the 60s MCP
+            # client timeout (BH-130). Callers poll sage_get_document
+            # for terminal pipeline_status.
+            result = await v.ingestion_service.ingest(
+                request, wait_for_pipeline=False
+            )
             return serialize(result.document)
         except (SAGEError, ValueError) as e:
             return error_response(e)

@@ -248,11 +248,29 @@ paths:
            semantic abstract (if enabled in vault configuration).
 
 
-        The endpoint returns immediately after Stage 1 (projection) with the
-        new document record and pipeline_status set to "projecting_complete".
-        Stages 2 and 3 continue asynchronously. Callers can poll via GET on
-        the document endpoint or subscribe to the ROOT Harness event stream
-        for completion notifications.
+        The HTTP endpoint runs all three stages synchronously and returns
+        with `pipeline_status` at its terminal value
+        (`abstraction_complete`, `abstraction_skipped`, or `failed`).
+        This sequential execution bounds peak memory at one document's
+        worth of embeddings and abstraction context (BH-026, BH-068),
+        which is what the bulk-ingest callers rely on.
+
+
+        The MCP `sage_ingest` tool wraps this same service but dispatches
+        Stages 2-3 as a background task and returns in seconds with
+        `pipeline_status` at a non-terminal value (typically
+        `indexing_in_progress`). MCP callers poll `sage_get_document`
+        to observe terminal status. This exists because the MCP client
+        transport imposes a 60-second RPC timeout that abstraction on
+        large documents can exceed (BH-130).
+
+
+        If `supersedes_document_id` is provided, the supersede lifecycle
+        transition (creating the `supersedes` edge and archiving the
+        predecessor) runs synchronously with document record insertion,
+        before Stages 2-3 begin. The version chain is complete the
+        moment the call returns, regardless of pipeline-stage timing
+        (BH-129).
 
 
         Records provenance: source_content_hash, adapter_version, created_by.

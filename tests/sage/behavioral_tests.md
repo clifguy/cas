@@ -2665,3 +2665,84 @@ write_to_path: "/tmp/A.md")`
 
 **Rationale:** Clear mutual exclusion keeps the response shape
 predictable. A caller that wants both can make two calls.
+
+---
+
+## Fast-Ack Ingest with Deferred Abstraction
+
+`IngestionService.ingest()` runs a three-stage pipeline (projection,
+indexing, abstraction). Abstraction via a local LLM can exceed the 60s
+MCP client timeout on non-trivial documents, which both breaks the
+client RPC and (pre-fix) prevented the supersede lifecycle transition
+from firing. These tests cover the fix: supersede transitions run
+synchronously with record insertion (before the slow stages), and
+Stages 2-3 dispatch as a background task when `wait_for_pipeline=False`.
+
+### TEST-SAGE-BH-129: ingest supersede transition commits before pipeline completes
+
+**Artifact:** `sage/services/ingestion.py` (supersede ordering)
+**Category:** ingestion
+**Decision:** When `supersedes_document_id` is provided, the supersede
+lifecycle transition fires immediately after the new document record is
+inserted and before Stages 2-3 (embedding, abstraction) run. The version
+chain is complete when `ingest` returns regardless of pipeline state.
+This eliminates the class of failures where a client-side RPC timeout
+during abstraction left the predecessor active and the supersedes edge
+unrecorded.
+
+**Precondition:** Document A active, pipeline terminal. Ingestion service
+configured to dispatch Stages 2-3 as a background task
+(`wait_for_pipeline=False`).
+
+**Input:** Ingest modified file as Document B with
+`supersedes_document_id: A` and `wait_for_pipeline=False`.
+
+**Expected (immediately after `ingest` returns, without polling):**
+- Document B exists, `lifecycle_status=active`.
+- Document A exists, `lifecycle_status=archived`.
+- A `supersedes` edge exists with `source_id=B`, `target_id=A`.
+- Document B's `pipeline_status` may be any non-terminal value
+  (projection_complete, indexing_in_progress, indexing_complete,
+  abstraction_in_progress) or terminal — both are acceptable depending
+  on scheduler timing.
+
+**Expected (after polling until B reaches a terminal pipeline state):**
+- Document B's `pipeline_status` is `abstraction_complete` (or
+  `abstraction_skipped` if abstraction is disabled).
+- No additional edge changes (the supersedes edge is unchanged).
+- Document A's lifecycle_status remains `archived`.
+
+**Rationale:** Supersede is cheap (one row insert, one column update)
+and must be atomic with the RPC response so the client never observes
+a partial version chain. Slow steps (embedding, abstraction) are
+decoupled from the response path.
+
+### TEST-SAGE-BH-130: ingest with wait_for_pipeline=False returns in bounded time
+
+**Artifact:** `sage/services/ingestion.py` (fire-and-forget dispatch)
+**Category:** ingestion
+**Decision:** `IngestionService.ingest(wait_for_pipeline=False)`
+dispatches Stages 2-3 via `asyncio.create_task` and returns after
+Stage 1 (projection) plus synchronous record/metadata/supersede
+operations complete. The call duration is independent of abstraction
+provider latency.
+
+**Precondition:** An abstraction provider whose `generate_abstract` call
+is artificially slow (e.g., sleeps for several seconds) is wired into
+the ingestion service.
+
+**Input (two cases):**
+- Ingest a new document with `wait_for_pipeline=False`.
+- Ingest a new document with `wait_for_pipeline=True`.
+
+**Expected:**
+- Case 1 returns within a small bound (e.g., under 2 seconds), well
+  below the artificial abstraction delay.
+- Case 2 returns only after the artificial delay elapses.
+- Both cases eventually observe `pipeline_status=abstraction_complete`
+  via polling.
+
+**Rationale:** Fast-ack is the core correctness property that rescues
+sage_ingest from the 60s MCP client ceiling. The test pins both
+directions (fast path fast; sync path still waits) so regressions in
+either are caught.
