@@ -102,15 +102,20 @@ class IngestRequest(BaseModel):
 
 
 class DocumentWithContent(Document):
-    """Document record optionally accompanied by the vault-local file bytes.
+    """Document record optionally accompanied by file-delivery information.
 
-    `content` and `content_size` are populated only when the caller of
-    `get_document` requested `include_content=true` (BH-117). Standard
-    responses omit both fields.
+    Field population depends on the `get_document` request mode:
+    - Default request: all extra fields are None (base Document shape).
+    - `include_content=true` (BH-117): `content` (base64 bytes) and
+      `content_size` are populated.
+    - `write_to_path=<path>` (BH-125): `written_to`, `content_size`, and
+      `content_hash` are populated; `content` is None.
     """
 
     content: str | None = None
     content_size: int | None = None
+    content_hash: str | None = None
+    written_to: str | None = None
 
 
 class SetLifecycleRequest(BaseModel):

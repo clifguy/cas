@@ -6,8 +6,6 @@ discover, export, refresh) and API query tools (vault stats, hash check,
 staging edges, pending metadata).
 """
 
-import base64
-import os
 import uuid as _uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -16,13 +14,13 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
-    ContentFileMissingError,
-    ContentTooLargeError,
+    ContentDeliveryConflictError,
     DocumentNotFoundError,
     EdgeNotFoundError,
     SAGEError,
     StagingEdgeNotFoundError,
 )
+from sage.api.routers.documents import attach_inline_content, deliver_to_path
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
     ChainRequest,
@@ -107,51 +105,51 @@ def register_sage_tools(
         vault_id: str,
         document_id: str,
         include_content: bool = False,
+        write_to_path: str | None = None,
     ) -> dict:
         """Retrieve a document record with all metadata, lifecycle state, and
-        pipeline status. Optionally includes the vault-local source file
-        bytes (base64) for the agentic read-modify-reingest round-trip.
+        pipeline status. Optional delivery of the vault-local source file
+        bytes supports the agentic read-modify-reingest round-trip.
+
+        Two mutually-exclusive delivery modes:
+        - include_content=true: inline base64 bytes in the response.
+          Fails with 413 if the file exceeds the inline ceiling
+          (default 100 MB; override via SAGE_MAX_INLINE_CONTENT_BYTES).
+          Best for small files.
+        - write_to_path=/abs/path: SAGE writes the bytes to the
+          filesystem path; response carries only metadata (written_to,
+          content_size, content_hash). Preferred for files that would
+          exceed MCP tool-result size ceilings.
 
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier.
-            include_content: When true, add `content` (base64-encoded
-                bytes of the vault-local source file) and `content_size`
-                (byte count) to the response. Default: false. Fails with
-                413 if the file exceeds the inline content ceiling
-                (default 100 MB; override via SAGE_MAX_INLINE_CONTENT_BYTES),
-                or 404 if the file is missing from the vault.
+            include_content: When true, add `content` (base64) and
+                `content_size` to the response. Default: false.
+            write_to_path: Absolute filesystem path. When set, SAGE
+                writes bytes there and populates `written_to`,
+                `content_size`, and `content_hash` in the response.
+                The target must not exist; its parent must exist and
+                be writable. Mutually exclusive with `include_content`.
         """
         try:
             v = get_vault(vault_id)
+            if include_content and write_to_path:
+                raise ContentDeliveryConflictError()
+
             doc = await v.graph_store.get_document(document_id)
             if doc is None:
                 raise DocumentNotFoundError(document_id)
 
             response = DocumentWithContent(**doc.model_dump())
+            storage_root = (
+                Path(v.config.vault.storage_root).expanduser().resolve()
+            )
 
             if include_content:
-                storage_root = (
-                    Path(v.config.vault.storage_root).expanduser().resolve()
-                )
-                file_path = storage_root / doc.source_path
-                if not file_path.exists():
-                    raise ContentFileMissingError(document_id, doc.source_path)
-
-                ceiling = int(
-                    os.environ.get(
-                        "SAGE_MAX_INLINE_CONTENT_BYTES",
-                        100 * 1024 * 1024,
-                    )
-                )
-                size = file_path.stat().st_size
-                if size > ceiling:
-                    raise ContentTooLargeError(document_id, size, ceiling)
-
-                response.content = base64.b64encode(
-                    file_path.read_bytes()
-                ).decode("ascii")
-                response.content_size = size
+                attach_inline_content(response, doc, storage_root)
+            elif write_to_path:
+                deliver_to_path(response, doc, storage_root, write_to_path)
 
             return serialize(response)
         except (SAGEError, ValueError) as e:

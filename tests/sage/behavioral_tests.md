@@ -2551,3 +2551,117 @@ after a supersede failure is not possible. Pre-validation plus a narrow race
 window between validation and supersede is the accepted posture. Agents that
 observe a post-ingest supersede failure can reconcile by calling
 `set_lifecycle(supersede)` explicitly on the new document.
+
+---
+
+## Agentic Round-Trip: Write-to-Path Delivery
+
+Base64-in-JSON delivery (`include_content=true`) bloats by 33% and consumes
+the agent's tool-result context. For moderately-sized documents this hits
+MCP transport ceilings (Claude Desktop rolls large tool results into
+synthetic attachments that the agent must read back chunk-by-chunk). These
+tests cover the `write_to_path` alternative: SAGE writes the vault-local
+file bytes to a caller-specified filesystem path, returning only metadata
+and a verification hash. The caller reads, edits, and re-ingests via the
+filesystem rather than through the tool-result channel.
+
+### TEST-SAGE-BH-125: get_document write_to_path writes file and returns metadata only
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** When `write_to_path` is provided, SAGE writes the
+authoritative file bytes from `storage_root/source_path` to the target
+path. The response contains the Document record plus `written_to`,
+`content_size`, and `content_hash` for verification. No `content` field
+(no base64 bytes in the response).
+
+**Precondition:** Document A ingested from a file with known bytes. The
+caller-chosen target path (e.g. `/tmp/agent_workspace/A.md`) does not
+exist; its parent directory exists and is writable.
+
+**Input:** `get_document(document_id: A, write_to_path:
+"/tmp/agent_workspace/A.md")`
+
+**Expected:**
+- Response contains the full Document record.
+- Response contains `written_to` equal to the caller-supplied path.
+- Response contains `content_size` equal to the byte count of the written
+  file.
+- Response contains `content_hash` (hex digest) matching the document's
+  `source_content_hash`.
+- Response does not contain a `content` field.
+- The file at the target path exists and its bytes exactly match the
+  vault-local file at `storage_root/source_path`.
+
+**Rationale:** The agentic round-trip works without moving bytes through
+the tool-result channel. Metadata is small and cheap; the caller verifies
+delivery via hash and size.
+
+### TEST-SAGE-BH-126: get_document write_to_path refuses existing target
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** SAGE refuses to overwrite an existing file at the target
+path. Accidental overwrite of agent working state is a silent-corruption
+class failure; callers must supply a fresh target or delete the prior
+file first.
+
+**Precondition:** Document A ingested. A file already exists at the
+caller-chosen target path (any contents, even zero bytes).
+
+**Input:** `get_document(document_id: A, write_to_path: <existing path>)`
+
+**Expected:**
+- Response is an error with status 409.
+- Error detail names the target path.
+- The existing file at the target path is unchanged (bytes match its
+  pre-call state).
+
+**Rationale:** Explicit is better than implicit. Agents that want to
+replace a file can delete it first; SAGE does not make that decision on
+the caller's behalf.
+
+### TEST-SAGE-BH-127: get_document write_to_path requires existing writable parent directory
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** SAGE does not create parent directories for the target
+path. Missing or unwritable parent directories return a clear error
+before any file operation is attempted.
+
+**Precondition:** Document A ingested.
+
+**Input (two cases):**
+- Target path whose parent directory does not exist.
+- Target path whose parent directory exists but is read-only.
+
+**Expected (both cases):**
+- Response is an error with status 400.
+- Error detail names the offending parent directory and the reason
+  (missing vs. unwritable).
+- No file is created or modified.
+
+**Rationale:** Silent mkdir behavior hides caller mistakes and risks
+creating directories in unexpected places. A loud 400 surfaces the
+problem at the interface.
+
+### TEST-SAGE-BH-128: get_document rejects both include_content and write_to_path
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (get_document endpoint)
+**Category:** document_access
+**Decision:** The two content-delivery modes are mutually exclusive.
+Supplying both in a single request is an interface error (the caller
+cannot want bytes in the response AND bytes on disk in one call).
+
+**Precondition:** Document A ingested.
+
+**Input:** `get_document(document_id: A, include_content: true,
+write_to_path: "/tmp/A.md")`
+
+**Expected:**
+- Response is an error with status 400.
+- Error detail names the conflict.
+- No file is written.
+
+**Rationale:** Clear mutual exclusion keeps the response shape
+predictable. A caller that wants both can make two calls.

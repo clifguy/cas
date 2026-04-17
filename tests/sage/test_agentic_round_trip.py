@@ -25,6 +25,7 @@ from sage.api.errors import (
     IdenticalContentSupersedeError,
     SupersedeTargetNotActiveError,
 )
+import hashlib
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
@@ -202,6 +203,144 @@ async def test_bh_119_include_content_missing_file_404(
         f"/sage_vaults/test_vault/documents/{doc['id']}"
     )
     assert resp2.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# TEST-SAGE-BH-125: write_to_path writes file and returns metadata only
+# ---------------------------------------------------------------------------
+
+
+async def test_bh_125_write_to_path_happy_path(
+    client, tmp_vault_dir, tmp_path
+):
+    body = "# BH-125\n\nExact byte sequence for on-disk delivery.\n"
+    _seed_file(tmp_vault_dir, "bh125.md", body)
+    doc = await _ingest_via_api(client, "bh125.md")
+
+    workspace = tmp_path / "agent_workspace"
+    workspace.mkdir()
+    target = workspace / "bh125_copy.md"
+    assert not target.exists()
+
+    resp = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc['id']}",
+        params={"write_to_path": str(target)},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["id"] == doc["id"]
+    assert payload["written_to"] == str(target)
+    assert payload["content_size"] == len(body.encode("utf-8"))
+    assert payload["content_hash"] == hashlib.sha256(
+        body.encode("utf-8")
+    ).hexdigest()
+    # No inline content in write_to_path mode.
+    assert payload.get("content") is None
+
+    # File landed correctly.
+    assert target.exists()
+    assert target.read_bytes() == body.encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# TEST-SAGE-BH-126: write_to_path refuses existing target
+# ---------------------------------------------------------------------------
+
+
+async def test_bh_126_write_to_path_refuses_existing_target(
+    client, tmp_vault_dir, tmp_path
+):
+    _seed_file(tmp_vault_dir, "bh126.md", "# BH-126\n\nBody.")
+    doc = await _ingest_via_api(client, "bh126.md")
+
+    target = tmp_path / "existing.md"
+    target.write_text("pre-existing content; must not be overwritten")
+    pre_bytes = target.read_bytes()
+
+    resp = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc['id']}",
+        params={"write_to_path": str(target)},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "write_path_exists"
+    assert body["detail"]["write_to_path"] == str(target)
+
+    # Existing file is unchanged.
+    assert target.read_bytes() == pre_bytes
+
+
+# ---------------------------------------------------------------------------
+# TEST-SAGE-BH-127: write_to_path requires existing writable parent
+# ---------------------------------------------------------------------------
+
+
+async def test_bh_127_write_to_path_missing_parent(
+    client, tmp_vault_dir, tmp_path
+):
+    _seed_file(tmp_vault_dir, "bh127a.md", "# BH-127\n\nBody.")
+    doc = await _ingest_via_api(client, "bh127a.md")
+
+    # Case 1: missing parent directory.
+    missing_target = tmp_path / "does_not_exist" / "out.md"
+    resp = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc['id']}",
+        params={"write_to_path": str(missing_target)},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "write_path_invalid"
+    assert "parent directory does not exist" in body["detail"]["reason"]
+    assert not missing_target.exists()
+
+
+async def test_bh_127_write_to_path_unwritable_parent(
+    client, tmp_vault_dir, tmp_path
+):
+    _seed_file(tmp_vault_dir, "bh127b.md", "# BH-127\n\nBody.")
+    doc = await _ingest_via_api(client, "bh127b.md")
+
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    try:
+        readonly.chmod(0o555)  # r-x, no write
+        target = readonly / "out.md"
+
+        resp = await client.get(
+            f"/sage_vaults/test_vault/documents/{doc['id']}",
+            params={"write_to_path": str(target)},
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["code"] == "write_path_invalid"
+        assert "not writable" in body["detail"]["reason"]
+        assert not target.exists()
+    finally:
+        # Restore write so pytest can clean up the tmp dir.
+        readonly.chmod(0o755)
+
+
+# ---------------------------------------------------------------------------
+# TEST-SAGE-BH-128: rejects both include_content and write_to_path
+# ---------------------------------------------------------------------------
+
+
+async def test_bh_128_mutual_exclusion(
+    client, tmp_vault_dir, tmp_path
+):
+    _seed_file(tmp_vault_dir, "bh128.md", "# BH-128\n\nBody.")
+    doc = await _ingest_via_api(client, "bh128.md")
+
+    target = tmp_path / "bh128_out.md"
+    resp = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc['id']}",
+        params={"include_content": "true", "write_to_path": str(target)},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "content_delivery_conflict"
+    # No file written on the conflict.
+    assert not target.exists()
 
 
 # ---------------------------------------------------------------------------

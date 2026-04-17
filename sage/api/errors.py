@@ -352,6 +352,41 @@ class SupersedeTargetNotActiveError(SAGEError):
         )
 
 
+class WritePathExistsError(SAGEError):
+    """409: write_to_path target already exists (BH-126)."""
+
+    def __init__(self, write_to_path: str) -> None:
+        super().__init__(
+            "write_path_exists",
+            f"Target path already exists: {write_to_path}",
+            409,
+            {"write_to_path": write_to_path},
+        )
+
+
+class WritePathInvalidError(SAGEError):
+    """400: write_to_path parent missing, not writable, or path not absolute (BH-127)."""
+
+    def __init__(self, write_to_path: str, reason: str) -> None:
+        super().__init__(
+            "write_path_invalid",
+            f"Cannot write to {write_to_path}: {reason}",
+            400,
+            {"write_to_path": write_to_path, "reason": reason},
+        )
+
+
+class ContentDeliveryConflictError(SAGEError):
+    """400: caller set both include_content and write_to_path (BH-128)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "content_delivery_conflict",
+            "include_content and write_to_path are mutually exclusive",
+            400,
+        )
+
+
 class IdenticalContentSupersedeError(SAGEError):
     """409: attempted supersede whose content matches the predecessor (BH-123)."""
 

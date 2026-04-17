@@ -326,6 +326,16 @@ paths:
         read-modify-reingest round-trip: an agent fetches the file,
         edits it locally, and re-ingests with
         `supersedes_document_id` (see POST /documents).
+
+
+        When `write_to_path` is provided, SAGE writes the authoritative
+        file bytes to the caller-specified filesystem path instead of
+        returning them in the response body. The response carries only
+        the Document record plus `written_to`, `content_size`, and
+        `content_hash` for delivery verification. This avoids inflating
+        the response with base64 payloads that exceed MCP tool-result
+        ceilings. `include_content` and `write_to_path` are mutually
+        exclusive.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -337,21 +347,55 @@ paths:
             When true, include the vault-local file bytes (base64) and
             byte count in the response. Default: false. Rejected with 413
             when the file exceeds the configured inline content ceiling.
+            Mutually exclusive with `write_to_path`.
           schema:
             type: boolean
             default: false
+        - name: write_to_path
+          in: query
+          required: false
+          description: >-
+            Absolute filesystem path. When supplied, SAGE writes the
+            vault-local file bytes to this path and returns metadata
+            (`written_to`, `content_size`, `content_hash`) without
+            inlining the bytes in the response. Target path must not
+            already exist; its parent directory must exist and be
+            writable. Mutually exclusive with `include_content`.
+          schema:
+            type: string
+            nullable: true
       responses:
         "200":
-          description: Document record, optionally with inline file content.
+          description: >-
+            Document record, optionally with inline file content or
+            delivery metadata for a file that was written to disk.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentWithContent"
+        "400":
+          description: >-
+            Request shape invalid: both `include_content` and
+            `write_to_path` supplied, `write_to_path` is not absolute,
+            or the parent directory of `write_to_path` is missing or
+            not writable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             Vault or document not found. Also returned when
-            `include_content=true` and the file at
-            `storage_root/source_path` is absent from the vault.
+            `include_content=true` or `write_to_path` is set and the
+            file at `storage_root/source_path` is absent from the vault.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            `write_to_path` target already exists. Callers must supply a
+            fresh path or delete the prior file before retrying.
           content:
             application/json:
               schema:
@@ -360,8 +404,9 @@ paths:
           description: >-
             `include_content=true` requested, but the file exceeds the
             configured inline content ceiling (default 100 MB; override
-            via `SAGE_MAX_INLINE_CONTENT_BYTES`). Use a filesystem-based
-            workflow for files above the ceiling.
+            via `SAGE_MAX_INLINE_CONTENT_BYTES`). Does not apply to
+            `write_to_path` delivery. Use `write_to_path` or a
+            filesystem-based workflow for files above the ceiling.
           content:
             application/json:
               schema:
@@ -1557,11 +1602,13 @@ components:
 
     DocumentWithContent:
       description: >-
-        Document record optionally accompanied by the vault-local file
-        bytes. Returned by GET /documents/{document_id}. The `content`
-        and `content_size` fields are populated only when the request
-        specified `include_content=true`. Default responses carry the
-        base Document shape with both fields absent.
+        Document record optionally accompanied by file-delivery
+        information. Returned by GET /documents/{document_id}. Fields
+        beyond the base Document are populated based on the request
+        mode: `include_content=true` fills `content` and `content_size`
+        (base64 bytes inline); `write_to_path=<path>` fills `written_to`,
+        `content_size`, and `content_hash` (bytes delivered to disk).
+        A default request omits all extra fields.
       allOf:
         - $ref: "#/components/schemas/Document"
         - type: object
@@ -1579,9 +1626,25 @@ components:
               nullable: true
               minimum: 0
               description: >-
-                Byte count of the vault-local source file. Present only
-                when the request specified `include_content=true`.
-                Equal to the length of the decoded `content` bytes.
+                Byte count of the vault-local source file. Populated
+                when the request specified `include_content=true` or
+                `write_to_path`.
+            content_hash:
+              type: string
+              nullable: true
+              description: >-
+                Hex digest of the vault-local source file bytes
+                (same algorithm as Document.source_content_hash).
+                Populated only when the request specified
+                `write_to_path`, for caller-side verification that the
+                on-disk bytes match the vault record.
+            written_to:
+              type: string
+              nullable: true
+              description: >-
+                Absolute path where SAGE wrote the source file bytes.
+                Populated only when the request specified
+                `write_to_path`. Equals the caller-supplied value.
 
     TraverseResponse:
       type: object
