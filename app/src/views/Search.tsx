@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
 import type { VaultContext } from '../App';
 import type { DiscoverHit, DiscoverRequest } from '../api/types';
@@ -6,6 +6,7 @@ import { discover } from '../api/discover';
 
 const PAGE_SIZE = 50;
 
+type Mode = 'hybrid' | 'semantic' | 'keyword' | 'browse';
 type SortColumn = 'title' | 'doc_type' | 'document_date' | 'lifecycle_status';
 type SortDir = 'asc' | 'desc';
 
@@ -16,222 +17,193 @@ interface SortState {
 
 export default function Search() {
   const { vaultId, vault } = useOutletContext<VaultContext>();
-  const [searchParams] = useSearchParams();
-  const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'hybrid' | 'semantic' | 'keyword' | 'browse'>('hybrid');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // --- URL-derived state ---
+  const urlQuery = searchParams.get('q') ?? '';
+  const urlMode = searchParams.get('mode') as Mode | null;
+  const urlDocType = searchParams.get('doc_type') ?? '';
+  const urlLifecycle = searchParams.get('lifecycle_status') ?? '';
+  const urlProject = searchParams.get('project') ?? '';
+  const urlPipelineStatus = searchParams.get('pipeline_status') ?? '';
+  const urlOffset = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10) || 0);
+  const urlSortBy = searchParams.get('sort_by') as SortColumn | null;
+  const urlSortOrder = searchParams.get('sort_order') as SortDir | null;
+
+  // Drill-down: filter params present but no mode param (dashboard deep-link).
+  const isDrillDown = !urlMode && Boolean(urlPipelineStatus || urlLifecycle || urlDocType);
+
+  // --- Form buffer state (syncs from URL so back/forward restores inputs) ---
+  const [queryInput, setQueryInput] = useState(urlQuery);
+  const [modeInput, setModeInput] = useState<Mode>(urlMode ?? 'hybrid');
+  const [docTypeFilter, setDocTypeFilter] = useState(urlDocType);
+  const [lifecycleFilter, setLifecycleFilter] = useState(urlLifecycle);
+  const [projectFilter, setProjectFilter] = useState(urlProject);
   const [showFilters, setShowFilters] = useState(false);
-  const [docTypeFilter, setDocTypeFilter] = useState('');
-  const [lifecycleFilter, setLifecycleFilter] = useState('');
-  const [projectFilter, setProjectFilter] = useState('');
+
+  useEffect(() => {
+    setQueryInput(urlQuery);
+    setModeInput(urlMode ?? 'hybrid');
+    setDocTypeFilter(urlDocType);
+    setLifecycleFilter(urlLifecycle);
+    setProjectFilter(urlProject);
+  }, [urlQuery, urlMode, urlDocType, urlLifecycle, urlProject]);
+
+  // --- Result state ---
   const [results, setResults] = useState<DiscoverHit[]>([]);
   const [totalAvailable, setTotalAvailable] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
 
-  // Drill-down state
-  const [filterResults, setFilterResults] = useState<DiscoverHit[] | null>(null);
-  const [filterTotal, setFilterTotal] = useState(0);
-  const [filterOffset, setFilterOffset] = useState(0);
-  const [filterHeading, setFilterHeading] = useState('');
-  const [filterSort, setFilterSort] = useState<SortState | null>(null);
+  // --- Execute search whenever the URL changes ---
+  const paramsKey = searchParams.toString();
+  useEffect(() => {
+    if (!vaultId) return;
+    let cancelled = false;
 
-  // Browse state
-  const [browseOffset, setBrowseOffset] = useState(0);
-  const [browseSort, setBrowseSort] = useState<SortState | null>(null);
-
-  if (!vault) return <div>Vault not found.</div>;
-
-  // Check for dashboard drill-down filter params
-  const filterDefs: Record<string, { filterKey: string; heading: (v: string) => string }> = {
-    pipeline_status: { filterKey: 'pipeline_status', heading: v => ({ abstraction_skipped: 'Deferred Abstracts', failed: 'Failed Ingestions' }[v] ?? v) },
-    lifecycle_status: { filterKey: 'lifecycle_status', heading: v => `Lifecycle: ${v}` },
-    doc_type: { filterKey: 'doc_type', heading: v => `Doc Type: ${v.replace(/_/g, ' ')}` },
-  };
-
-  // On first render with filter params, execute filtered catalog discover
-  const filterParam = Object.keys(filterDefs).find(p => searchParams.has(p));
-  if (filterParam && !filterResults && !searching) {
-    const value = searchParams.get(filterParam)!;
-    const def = filterDefs[filterParam];
-    setSearching(true);
-    setFilterHeading(def.heading(value));
-    setFilterOffset(0);
-    discover(vaultId, {
-      mode: 'catalog',
-      filters: { [def.filterKey]: value },
-      limit: PAGE_SIZE,
-      offset: 0,
-    })
-      .then(resp => {
-        setFilterResults(resp.results);
-        setFilterTotal(resp.total_available);
-        setSearching(false);
-      })
-      .catch(() => {
-        setFilterResults([]);
-        setFilterTotal(0);
-        setSearching(false);
-      });
-  }
-
-  async function loadFilterPage(offset: number, sort?: SortState | null) {
-    if (!filterParam) return;
-    const value = searchParams.get(filterParam)!;
-    const def = filterDefs[filterParam];
-    const activeSort = sort !== undefined ? sort : filterSort;
-    setSearching(true);
-    try {
-      const req: DiscoverRequest = {
-        mode: 'catalog',
-        filters: { [def.filterKey]: value },
-        limit: PAGE_SIZE,
-        offset,
-      };
-      if (activeSort) {
-        req.sort_by = activeSort.column;
-        req.sort_order = activeSort.direction;
-      }
-      const resp = await discover(vaultId, req);
-      setFilterResults(resp.results);
-      setFilterTotal(resp.total_available);
-      setFilterOffset(offset);
-    } catch {
-      // Keep existing results on error
-    }
-    setSearching(false);
-  }
-
-  function handleFilterSort(column: SortColumn) {
-    const newSort = toggleSort(filterSort, column);
-    setFilterSort(newSort);
-    loadFilterPage(0, newSort);
-  }
-
-  async function handleSearch(e?: React.FormEvent) {
-    if (e) e.preventDefault();
-
-    if (mode === 'browse') {
+    async function run(req: DiscoverRequest) {
       setSearching(true);
       try {
-        const filters = buildFilters();
-        const req: DiscoverRequest = {
-          mode: 'catalog',
-          filters: Object.keys(filters).length > 0 ? filters : undefined,
-          limit: PAGE_SIZE,
-          offset: 0,
-        };
-        if (browseSort) {
-          req.sort_by = browseSort.column;
-          req.sort_order = browseSort.direction;
-        }
         const resp = await discover(vaultId, req);
+        if (cancelled) return;
         setResults(resp.results);
         setTotalAvailable(resp.total_available);
-        setBrowseOffset(0);
         setHasSearched(true);
       } catch {
+        if (cancelled) return;
         setResults([]);
         setTotalAvailable(0);
         setHasSearched(true);
       }
-      setSearching(false);
-      return;
+      if (!cancelled) setSearching(false);
     }
 
-    // Semantic/keyword modes require a query
-    if (!query.trim()) return;
-    setSearching(true);
-    try {
-      const filters = buildFilters();
-      const useHybrid = mode === 'hybrid';
-      const resp = await discover(vaultId, {
-        mode: mode === 'keyword' ? 'keyword' : 'semantic',
-        query: query.trim(),
-        filters: Object.keys(filters).length > 0 ? filters : undefined,
-        use_hybrid: useHybrid,
-        limit: 20,
-      });
-      setResults(resp.results);
-      setTotalAvailable(resp.total_available);
-      setHasSearched(true);
-    } catch {
-      setResults([]);
-      setTotalAvailable(0);
-      setHasSearched(true);
-    }
-    setSearching(false);
-  }
-
-  function buildFilters(): Record<string, string> {
-    const filters: Record<string, string> = {};
-    if (docTypeFilter) filters.doc_type = docTypeFilter;
-    if (lifecycleFilter) filters.lifecycle_status = lifecycleFilter;
-    if (projectFilter) filters.project = projectFilter;
-    return filters;
-  }
-
-  async function loadBrowsePage(offset: number, sort?: SortState | null) {
-    const activeSort = sort !== undefined ? sort : browseSort;
-    setSearching(true);
-    try {
-      const filters = buildFilters();
+    if (isDrillDown) {
+      const filters: Record<string, string> = {};
+      if (urlPipelineStatus) filters.pipeline_status = urlPipelineStatus;
+      if (urlLifecycle) filters.lifecycle_status = urlLifecycle;
+      if (urlDocType) filters.doc_type = urlDocType;
+      const req: DiscoverRequest = {
+        mode: 'catalog',
+        filters,
+        limit: PAGE_SIZE,
+        offset: urlOffset,
+      };
+      if (urlSortBy && urlSortOrder) {
+        req.sort_by = urlSortBy;
+        req.sort_order = urlSortOrder;
+      }
+      run(req);
+    } else if (urlMode === 'browse') {
+      const filters = buildUrlFilters();
       const req: DiscoverRequest = {
         mode: 'catalog',
         filters: Object.keys(filters).length > 0 ? filters : undefined,
         limit: PAGE_SIZE,
-        offset,
+        offset: urlOffset,
       };
-      if (activeSort) {
-        req.sort_by = activeSort.column;
-        req.sort_order = activeSort.direction;
+      if (urlSortBy && urlSortOrder) {
+        req.sort_by = urlSortBy;
+        req.sort_order = urlSortOrder;
       }
-      const resp = await discover(vaultId, req);
-      setResults(resp.results);
-      setTotalAvailable(resp.total_available);
-      setBrowseOffset(offset);
-    } catch {
-      // Keep existing results on error
+      run(req);
+    } else if (urlMode && urlQuery.trim()) {
+      const filters = buildUrlFilters();
+      run({
+        mode: urlMode === 'keyword' ? 'keyword' : 'semantic',
+        query: urlQuery.trim(),
+        filters: Object.keys(filters).length > 0 ? filters : undefined,
+        use_hybrid: urlMode === 'hybrid',
+        limit: 20,
+      });
+    } else {
+      // No actionable URL state — clear to the empty landing view.
+      setResults([]);
+      setTotalAvailable(0);
+      setHasSearched(false);
+      setSearching(false);
     }
-    setSearching(false);
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramsKey, vaultId]);
+
+  function buildUrlFilters(): Record<string, string> {
+    const f: Record<string, string> = {};
+    if (urlDocType) f.doc_type = urlDocType;
+    if (urlLifecycle) f.lifecycle_status = urlLifecycle;
+    if (urlProject) f.project = urlProject;
+    return f;
   }
 
-  function handleBrowseSort(column: SortColumn) {
-    const newSort = toggleSort(browseSort, column);
-    setBrowseSort(newSort);
-    loadBrowsePage(0, newSort);
+  function handleSearch(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    // Semantic/keyword/hybrid need a query. Browse can run with no query.
+    if (modeInput !== 'browse' && !queryInput.trim()) return;
+
+    const next = new URLSearchParams();
+    next.set('mode', modeInput);
+    if (queryInput.trim()) next.set('q', queryInput.trim());
+    if (docTypeFilter) next.set('doc_type', docTypeFilter);
+    if (lifecycleFilter) next.set('lifecycle_status', lifecycleFilter);
+    if (projectFilter) next.set('project', projectFilter);
+    setSearchParams(next);
   }
 
-  // Dashboard drill-down view
-  if (filterResults !== null) {
-    const hasNext = filterOffset + PAGE_SIZE < filterTotal;
-    const hasPrev = filterOffset > 0;
+  function goToOffset(offset: number) {
+    const next = new URLSearchParams(searchParams);
+    next.set('offset', String(offset));
+    setSearchParams(next);
+  }
+
+  function handleSort(column: SortColumn) {
+    const current = urlSortBy && urlSortOrder
+      ? { column: urlSortBy, direction: urlSortOrder }
+      : null;
+    const newSort = toggleSort(current, column);
+    const next = new URLSearchParams(searchParams);
+    next.set('sort_by', newSort.column);
+    next.set('sort_order', newSort.direction);
+    next.set('offset', '0');
+    setSearchParams(next);
+  }
+
+  if (!vault) return <div>Vault not found.</div>;
+
+  const currentSort: SortState | null = urlSortBy && urlSortOrder
+    ? { column: urlSortBy, direction: urlSortOrder }
+    : null;
+
+  // --- Dashboard drill-down view ---
+  if (isDrillDown) {
+    const heading = drillDownHeading(urlPipelineStatus, urlLifecycle, urlDocType);
+    const hasNext = urlOffset + PAGE_SIZE < totalAvailable;
+    const hasPrev = urlOffset > 0;
     return (
       <div>
-        <h1 style={{ margin: '0 0 4px', textTransform: 'capitalize' }}>{filterHeading}</h1>
+        <h1 style={{ margin: '0 0 4px', textTransform: 'capitalize' }}>{heading}</h1>
         <p style={{ margin: '0 0 16px', fontSize: 13, color: '#666' }}>
-          {filterTotal} result{filterTotal !== 1 ? 's' : ''}
+          {totalAvailable} result{totalAvailable !== 1 ? 's' : ''}
         </p>
-        {filterResults.length === 0 ? (
+        {results.length === 0 && !searching ? (
           <div style={{ color: '#999' }}>No documents match this filter.</div>
         ) : (
           <>
-            <CatalogTable
-              hits={filterResults}
-              sort={filterSort}
-              onSort={handleFilterSort}
-            />
+            <CatalogTable hits={results} sort={currentSort} onSort={handleSort} />
             {(hasPrev || hasNext) && (
               <div style={paginationStyle}>
                 {hasPrev && (
-                  <button style={pageBtnStyle} onClick={() => loadFilterPage(filterOffset - PAGE_SIZE)}>
+                  <button style={pageBtnStyle} onClick={() => goToOffset(urlOffset - PAGE_SIZE)}>
                     Previous
                   </button>
                 )}
                 <span style={{ fontSize: 12, color: '#666' }}>
-                  {filterOffset + 1}&ndash;{Math.min(filterOffset + PAGE_SIZE, filterTotal)} of {filterTotal}
+                  {urlOffset + 1}&ndash;{Math.min(urlOffset + PAGE_SIZE, totalAvailable)} of {totalAvailable}
                 </span>
                 {hasNext && (
-                  <button style={pageBtnStyle} onClick={() => loadFilterPage(filterOffset + PAGE_SIZE)}>
+                  <button style={pageBtnStyle} onClick={() => goToOffset(urlOffset + PAGE_SIZE)}>
                     Next
                   </button>
                 )}
@@ -246,8 +218,8 @@ export default function Search() {
     );
   }
 
-  const isBrowse = mode === 'browse';
-  const showBrowsePagination = isBrowse && hasSearched && totalAvailable > PAGE_SIZE;
+  const isBrowse = modeInput === 'browse';
+  const showBrowsePagination = urlMode === 'browse' && hasSearched && totalAvailable > PAGE_SIZE;
 
   return (
     <div>
@@ -258,15 +230,15 @@ export default function Search() {
           {!isBrowse && (
             <input
               type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
+              value={queryInput}
+              onChange={e => setQueryInput(e.target.value)}
               placeholder="Search documents..."
               style={{ flex: 1, padding: '8px 12px', fontSize: 14 }}
             />
           )}
           <select
-            value={mode}
-            onChange={e => setMode(e.target.value as 'hybrid' | 'semantic' | 'keyword' | 'browse')}
+            value={modeInput}
+            onChange={e => setModeInput(e.target.value as Mode)}
             style={{ padding: '8px 12px' }}
           >
             <option value="hybrid">Hybrid</option>
@@ -363,16 +335,12 @@ export default function Search() {
       )}
 
       {/* Browse mode: sortable table */}
-      {isBrowse && hasSearched && results.length > 0 && (
-        <CatalogTable
-          hits={results}
-          sort={browseSort}
-          onSort={handleBrowseSort}
-        />
+      {urlMode === 'browse' && hasSearched && results.length > 0 && (
+        <CatalogTable hits={results} sort={currentSort} onSort={handleSort} />
       )}
 
-      {/* Semantic/keyword mode: card layout */}
-      {!isBrowse && results.map((hit) => (
+      {/* Semantic/keyword/hybrid: card layout */}
+      {urlMode && urlMode !== 'browse' && results.map((hit) => (
         <div key={hit.document.id} style={{ borderBottom: '1px solid #eee', padding: '16px 0' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
             <Link to={`/documents/${hit.document.id}`} style={{ fontSize: 15, fontWeight: 600, color: '#1565c0', textDecoration: 'none' }}>
@@ -403,16 +371,16 @@ export default function Search() {
 
       {showBrowsePagination && (
         <div style={paginationStyle}>
-          {browseOffset > 0 && (
-            <button style={pageBtnStyle} onClick={() => loadBrowsePage(browseOffset - PAGE_SIZE)}>
+          {urlOffset > 0 && (
+            <button style={pageBtnStyle} onClick={() => goToOffset(urlOffset - PAGE_SIZE)}>
               Previous
             </button>
           )}
           <span style={{ fontSize: 12, color: '#666' }}>
-            {browseOffset + 1}&ndash;{Math.min(browseOffset + PAGE_SIZE, totalAvailable)} of {totalAvailable}
+            {urlOffset + 1}&ndash;{Math.min(urlOffset + PAGE_SIZE, totalAvailable)} of {totalAvailable}
           </span>
-          {browseOffset + PAGE_SIZE < totalAvailable && (
-            <button style={pageBtnStyle} onClick={() => loadBrowsePage(browseOffset + PAGE_SIZE)}>
+          {urlOffset + PAGE_SIZE < totalAvailable && (
+            <button style={pageBtnStyle} onClick={() => goToOffset(urlOffset + PAGE_SIZE)}>
               Next
             </button>
           )}
@@ -492,9 +460,20 @@ function toggleSort(current: SortState | null, column: SortColumn): SortState {
   if (current?.column === column) {
     return { column, direction: current.direction === 'asc' ? 'desc' : 'asc' };
   }
-  // Default direction: desc for date, asc for title and status
   const defaultDir: SortDir = column === 'document_date' ? 'desc' : 'asc';
   return { column, direction: defaultDir };
+}
+
+function drillDownHeading(pipelineStatus: string, lifecycle: string, docType: string): string {
+  if (pipelineStatus) {
+    return ({
+      abstraction_skipped: 'Deferred Abstracts',
+      failed: 'Failed Ingestions',
+    } as Record<string, string>)[pipelineStatus] ?? pipelineStatus;
+  }
+  if (lifecycle) return `Lifecycle: ${lifecycle}`;
+  if (docType) return `Doc Type: ${docType.replace(/_/g, ' ')}`;
+  return '';
 }
 
 function formatDate(dateStr: string | null | undefined): string {

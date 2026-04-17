@@ -11,6 +11,8 @@ mutually-exclusive content-delivery modes:
 import base64
 import hashlib
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
@@ -105,6 +107,41 @@ def deliver_to_path(
     response.written_to = str(target)
     response.content_size = len(data)
     response.content_hash = hashlib.sha256(data).hexdigest()
+
+
+@router.post("/documents/{document_id}/open")
+async def open_document(
+    document_id: str,
+    vault_id: str = Depends(get_vault_id),
+    graph_store: GraphStore = Depends(get_graph_store),
+    config: VaultConfig = Depends(get_config),
+) -> dict:
+    """Open the document's source file using the local OS file association.
+
+    Local-only convenience: this endpoint invokes the host OS opener
+    (open/xdg-open/startfile) fire-and-forget. If CAS is ever deployed
+    beyond localhost, gate this behind a loopback check or remove it.
+    """
+    doc = await graph_store.get_document(document_id)
+    if doc is None:
+        raise DocumentNotFoundError(document_id)
+
+    storage_root = Path(config.vault.storage_root).expanduser().resolve()
+    file_path = storage_root / doc.source_path
+    if not file_path.exists():
+        raise ContentFileMissingError(doc.id, doc.source_path)
+
+    platform = sys.platform
+    if platform == "darwin":
+        subprocess.Popen(["open", str(file_path)])
+    elif platform.startswith("linux"):
+        subprocess.Popen(["xdg-open", str(file_path)])
+    elif platform == "win32":
+        os.startfile(str(file_path))  # type: ignore[attr-defined]
+    else:
+        subprocess.Popen(["xdg-open", str(file_path)])
+
+    return {"opened": True, "path": str(file_path)}
 
 
 @router.get("/documents/{document_id}", response_model=DocumentWithContent)

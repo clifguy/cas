@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Link, useParams, useOutletContext } from 'react-router-dom';
+import { Link, useParams, useOutletContext, useNavigate } from 'react-router-dom';
 import type { VaultContext } from '../App';
 import type { Document, Edge } from '../api/types';
-import { getDocument } from '../api/documents';
+import { getDocument, openDocument } from '../api/documents';
 import { traverse } from '../api/graph';
 import { createEdge } from '../api/graph';
 
 export default function DocumentDetail() {
   const { id } = useParams<{ id: string }>();
   const { vaultId } = useOutletContext<VaultContext>();
+  const navigate = useNavigate();
   const [doc, setDoc] = useState<Document | null>(null);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,6 +21,19 @@ export default function DocumentDetail() {
   const [newEdgeRationale, setNewEdgeRationale] = useState('');
   const [edgeError, setEdgeError] = useState('');
   const [neighborTitles, setNeighborTitles] = useState<Record<string, string>>({});
+  const [openStatus, setOpenStatus] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null);
+
+  async function handleOpen() {
+    if (!id) return;
+    setOpenStatus(null);
+    try {
+      await openDocument(vaultId, id);
+      setOpenStatus({ kind: 'ok', message: 'Opened' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to open';
+      setOpenStatus({ kind: 'err', message: msg });
+    }
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -89,10 +103,26 @@ export default function DocumentDetail() {
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <Link to="/search" style={{ fontSize: 12, color: '#666' }}>&larr; Back to search</Link>
+        <button
+          type="button"
+          onClick={() => navigate(-1)}
+          style={{ background: 'none', border: 'none', padding: 0, fontSize: 12, color: '#666', cursor: 'pointer', textDecoration: 'underline' }}
+        >
+          &larr; Back to search
+        </button>
       </div>
 
-      <h1 style={{ margin: '0 0 4px' }}>{doc.title}</h1>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, margin: '0 0 4px' }}>
+        <h1 style={{ margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>{doc.title}</h1>
+        <button type="button" onClick={handleOpen} style={btnStyle}>
+          Open
+        </button>
+        {openStatus && (
+          <span style={{ fontSize: 12, color: openStatus.kind === 'ok' ? '#2e7d32' : '#c62828' }}>
+            {openStatus.message}
+          </span>
+        )}
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
         {doc.doc_type && <Badge label={doc.doc_type.replace(/_/g, ' ')} color="#1565c0" />}
         <Badge label={doc.lifecycle_status} color="#2e7d32" />

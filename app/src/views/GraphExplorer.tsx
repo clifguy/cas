@@ -37,6 +37,18 @@ const lifecycleOpacity: Record<string, number> = {
   archived: 0.3,
 };
 
+// Decide which endpoint becomes the new center when the user clicks an edge.
+// If the edge touches the current center, return the opposite endpoint.
+// Otherwise default to the target, preserving the arrow direction as a cue.
+export function pickEdgeEndpoint(
+  edge: { from: string; to: string },
+  currentCenterId: string | undefined,
+): string {
+  if (edge.from === currentCenterId) return edge.to;
+  if (edge.to === currentCenterId) return edge.from;
+  return edge.to;
+}
+
 export default function GraphExplorer() {
   const { id } = useParams<{ id: string }>();
   const { vaultId, vault } = useOutletContext<VaultContext>();
@@ -173,14 +185,26 @@ export default function GraphExplorer() {
     const network = new Network(containerRef.current, { nodes: visNodes, edges: visEdges }, options);
     networkRef.current = network;
 
-    network.on('click', (params: { nodes: string[] }) => {
+    network.on('click', (params: { nodes: string[]; edges: string[] }) => {
       if (params.nodes.length > 0) {
         const clickedId = params.nodes[0];
         const doc = nodeMap.get(clickedId) ?? null;
         setSelectedNode(doc);
-      } else {
-        setSelectedNode(null);
+        return;
       }
+      if (params.edges.length > 0) {
+        const edgeId = params.edges[0];
+        const edgeInfo = visEdgeData.find(e => e.id === edgeId);
+        if (edgeInfo) {
+          const nextCenter = pickEdgeEndpoint({ from: edgeInfo.from, to: edgeInfo.to }, centerNodeId);
+          if (nextCenter !== centerNodeId) {
+            setSelectedNode(null);
+            setCenterNodeId(nextCenter);
+          }
+        }
+        return;
+      }
+      setSelectedNode(null);
     });
 
     network.on('doubleClick', (params: { nodes: string[] }) => {
@@ -282,6 +306,7 @@ export default function GraphExplorer() {
           <span>Node opacity = lifecycle state</span>
           <span>Orange border = center node</span>
           <span>Edge color/dash = edge type</span>
+          <span>Click edge = re-center on other endpoint</span>
           <span>Double-click = open document</span>
         </div>
       </div>

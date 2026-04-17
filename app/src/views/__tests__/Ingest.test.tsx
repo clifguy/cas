@@ -37,13 +37,12 @@ function WrapperWithContext({ ctx }: { ctx: VaultContext }) {
 }
 
 describe('Ingest view', () => {
-  it('renders all four step labels', () => {
+  it('renders all three step labels', () => {
     render(<TestWrapper vaultId="pim_health" vault={mockVault} />);
 
     expect(screen.getByText(/1\. Directory Input/)).toBeInTheDocument();
     expect(screen.getByText(/2\. Scan Preview/)).toBeInTheDocument();
-    expect(screen.getByText(/3\. Ingestion Progress/)).toBeInTheDocument();
-    expect(screen.getByText(/4\. Results Summary/)).toBeInTheDocument();
+    expect(screen.getByText(/3\. Ingestion/)).toBeInTheDocument();
   });
 
   it('starts on Step 1 with directory input and Scan button', () => {

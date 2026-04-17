@@ -418,6 +418,97 @@ async def test_read_projection_404(client):
     assert resp.json()["code"] == "document_not_found"
 
 
+# ---------------------------------------------------------------------------
+# Open-with-local-app
+# ---------------------------------------------------------------------------
+
+async def test_open_document_200(client, monkeypatch, tmp_vault_dir):
+    """POST /documents/{id}/open invokes the OS opener and returns 200."""
+    calls = []
+
+    def fake_popen(args, *a, **kw):
+        calls.append(args)
+        class _Dummy:
+            pass
+        return _Dummy()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("sys.platform", "darwin")
+
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.post(
+        f"/sage_vaults/test_vault/documents/{doc_id}/open",
+    )
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["opened"] is True
+    assert body["path"].endswith("test/sample.md")
+
+    # Subprocess got invoked with the macOS `open` command and the resolved path.
+    assert len(calls) == 1
+    invoked = calls[0]
+    assert invoked[0] == "open"
+    assert invoked[1].endswith("test/sample.md")
+
+
+async def test_open_document_uses_xdg_open_on_linux(client, monkeypatch):
+    """On Linux, the endpoint invokes xdg-open."""
+    calls = []
+
+    def fake_popen(args, *a, **kw):
+        calls.append(args)
+        class _Dummy:
+            pass
+        return _Dummy()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.post(
+        f"/sage_vaults/test_vault/documents/{doc_id}/open",
+    )
+    assert resp2.status_code == 200
+    assert calls[0][0] == "xdg-open"
+
+
+async def test_open_document_404_unknown_id(client):
+    """Unknown document id returns 404 with document_not_found."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/documents/nonexistent/open",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "document_not_found"
+
+
+async def test_open_document_missing_file_404(client, tmp_vault_dir):
+    """If the source file is missing on disk, return content_file_missing (404)."""
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "adapter": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    # Remove the file from disk after ingestion.
+    (tmp_vault_dir / "sources" / "test" / "sample.md").unlink()
+
+    resp2 = await client.post(
+        f"/sage_vaults/test_vault/documents/{doc_id}/open",
+    )
+    assert resp2.status_code == 404
+    assert resp2.json()["code"] == "content_file_missing"
+
+
 async def test_eval_retrieval_not_configured_400(client):
     """POST /eval-retrieval without assertions config returns 400."""
     resp = await client.post("/sage_vaults/test_vault/eval-retrieval")
