@@ -149,10 +149,11 @@ async def test_cr_004_source_anchor_outside_lineage(
 
 
 # ---------------------------------------------------------------------------
-# CR-005: transitive_source valid (target anchor copied from target_id)
+# CR-005: transitive_source valid; stored target_valid_from_version is null
+# (null-means-not-applicable per CAS-ADR-017).
 # ---------------------------------------------------------------------------
 
-async def test_cr_005_transitive_source_target_anchor_copied(
+async def test_cr_005_transitive_source_stores_null_target_anchor(
     graph_store, graph_ops_service
 ):
     await _seed(graph_store, "patent_v3", "uspto_template_v2")
@@ -166,7 +167,13 @@ async def test_cr_005_transitive_source_target_anchor_copied(
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_SOURCE
     assert edge.source_valid_from_version == "patent_v3"
-    assert edge.target_valid_from_version == "uspto_template_v2"
+    assert edge.target_valid_from_version is None
+
+    # Round-trip through the DB confirms the null is persisted, not just
+    # a Pydantic default on the in-memory instance.
+    read_back = await graph_store.get_edge(edge.id)
+    assert read_back is not None
+    assert read_back.target_valid_from_version is None
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +352,154 @@ async def test_retracts_missing_retracted_edge_id_rejected(
             source_valid_from_version="a7",
         ))
     assert "retracted_edge_id" in exc_info.value.detail["offending_fields"]
+
+
+# ===========================================================================
+# Section 7: transitive_target (mirror of transitive_source)
+#
+# No built-in edge type maps to transitive_target in the frozen 11-row
+# registry. These tests construct a custom EdgeTypeRegistry that maps
+# AUTHORITATIVE_FOR -> TRANSITIVE_TARGET so the policy paths are exercised.
+# ===========================================================================
+
+from sage.config import VaultConfig  # noqa: E402
+from sage.models.edge_registry import EdgeTypeRegistry  # noqa: E402
+from sage.services.graph_ops import GraphOpsService  # noqa: E402
+
+
+def _transitive_target_registry() -> EdgeTypeRegistry:
+    policies = {
+        EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
+        EdgeType.RETRACTS: ResolutionPolicy.NONE,
+        EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
+        EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
+        EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
+        EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
+    }
+    return EdgeTypeRegistry(policies)
+
+
+def _tt_service(graph_store, minimal_config: VaultConfig) -> GraphOpsService:
+    return GraphOpsService(
+        graph_store, minimal_config, edge_type_registry=_transitive_target_registry()
+    )
+
+
+# ---------------------------------------------------------------------------
+# CR-046: transitive_target valid — accepted
+# ---------------------------------------------------------------------------
+
+async def test_cr_046_transitive_target_valid(graph_store, minimal_config):
+    service = _tt_service(graph_store, minimal_config)
+    await _seed(graph_store, "a3", "b1", "b2")
+    # Target chain: b1 <- b2
+    from sage.models.schemas import Edge as _Edge
+    await graph_store.insert_edge(_Edge(
+        id="sup_b2_b1",
+        source_id="b2",
+        target_id="b1",
+        edge_type=EdgeType.SUPERSEDES,
+        resolution_policy=ResolutionPolicy.NONE,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    edge = await service.link(LinkRequest(
+        source_id="a3",
+        target_id="b2",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        target_valid_from_version="b2",
+    ))
+
+    assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_TARGET
+    assert edge.source_valid_from_version is None
+    assert edge.target_valid_from_version == "b2"
+
+    # Round-trip confirms null source anchor persists.
+    read_back = await graph_store.get_edge(edge.id)
+    assert read_back is not None
+    assert read_back.resolution_policy == ResolutionPolicy.TRANSITIVE_TARGET
+    assert read_back.source_valid_from_version is None
+    assert read_back.target_valid_from_version == "b2"
+
+
+# ---------------------------------------------------------------------------
+# CR-047: transitive_target missing target anchor — rejected
+# ---------------------------------------------------------------------------
+
+async def test_cr_047_transitive_target_missing_target_anchor(
+    graph_store, minimal_config
+):
+    service = _tt_service(graph_store, minimal_config)
+    await _seed(graph_store, "a3", "b2")
+
+    with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
+        await service.link(LinkRequest(
+            source_id="a3",
+            target_id="b2",
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+        ))
+    assert exc_info.value.code == "edge_anchor_policy_violation"
+    assert exc_info.value.detail["resolution_policy"] == "transitive_target"
+    assert "target_valid_from_version" in exc_info.value.detail["offending_fields"]
+
+
+# ---------------------------------------------------------------------------
+# CR-048: transitive_target with source anchor supplied — rejected
+# ---------------------------------------------------------------------------
+
+async def test_cr_048_transitive_target_with_source_anchor_rejected(
+    graph_store, minimal_config
+):
+    service = _tt_service(graph_store, minimal_config)
+    await _seed(graph_store, "a3", "b2")
+
+    with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
+        await service.link(LinkRequest(
+            source_id="a3",
+            target_id="b2",
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            source_valid_from_version="a3",
+            target_valid_from_version="b2",
+        ))
+    assert exc_info.value.code == "edge_anchor_policy_violation"
+    assert "source_valid_from_version" in exc_info.value.detail["offending_fields"]
+
+
+# ---------------------------------------------------------------------------
+# CR-049: transitive_target with target anchor outside target chain — rejected
+# ---------------------------------------------------------------------------
+
+async def test_cr_049_transitive_target_anchor_outside_target_chain(
+    graph_store, minimal_config
+):
+    service = _tt_service(graph_store, minimal_config)
+    await _seed(graph_store, "a3", "b1", "b2", "c1")
+
+    # b2 supersedes b1 only. c1 is on a different chain.
+    from sage.models.schemas import Edge as _Edge
+    await graph_store.insert_edge(_Edge(
+        id="sup_b2_b1",
+        source_id="b2",
+        target_id="b1",
+        edge_type=EdgeType.SUPERSEDES,
+        resolution_policy=ResolutionPolicy.NONE,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+    with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
+        await service.link(LinkRequest(
+            source_id="a3",
+            target_id="b2",
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            target_valid_from_version="c1",
+        ))
+    assert exc_info.value.code == "edge_anchor_policy_violation"
+    assert "target_valid_from_version" in exc_info.value.detail["offending_fields"]
 
 
 # ---------------------------------------------------------------------------

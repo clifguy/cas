@@ -898,6 +898,7 @@ components:
       enum:
         - none
         - transitive_source
+        - transitive_target
         - transitive_both
         - TBD
       description: >-
@@ -908,8 +909,14 @@ components:
         (meta-edges: supersedes, retracts, merged_from).
 
         `transitive_source`: the edge's source anchor must lie in the
-        queried document's supersedes lineage; target is frozen at the
-        edge's target_valid_from_version (e.g., derived_from).
+        queried document's supersedes lineage; target endpoint is frozen
+        at derivation (no target anchor; target_valid_from_version is null)
+        (e.g., derived_from).
+
+        `transitive_target`: mirror of transitive_source. The edge's target
+        anchor must lie in the queried document's supersedes lineage;
+        source endpoint is frozen at derivation (no source anchor;
+        source_valid_from_version is null).
 
         `transitive_both`: both source and target anchors must lie in
         their respective chains' lineages relative to the query document

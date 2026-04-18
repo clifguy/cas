@@ -35,8 +35,8 @@
           },
           "resolution_policy": {
             "type": "string",
-            "enum": ["none", "transitive_source", "transitive_both", "TBD"],
-            "description": "How chain-scoped resolution treats edges of this type. `none`: meta-edge / lineage fact, no propagation; `transitive_source`: source anchor must be in lineage, target frozen at derivation; `transitive_both`: both anchors participate in lineage resolution; `TBD`: policy not yet frozen, write-time creation is rejected."
+            "enum": ["none", "transitive_source", "transitive_target", "transitive_both", "TBD"],
+            "description": "How chain-scoped resolution treats edges of this type. `none`: meta-edge / lineage fact, no propagation; `transitive_source`: source anchor must be in source endpoint's lineage, target is frozen at derivation (no target anchor); `transitive_target`: mirror of transitive_source — target anchor must be in target endpoint's lineage, source is frozen at derivation (no source anchor); `transitive_both`: both anchors participate in lineage resolution; `TBD`: policy not yet frozen, write-time creation is rejected."
           },
           "notes": {
             "type": "string",

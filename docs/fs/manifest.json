@@ -164,7 +164,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.7",
+  "substrate_version": "1.8",
   "revision_history": [
     {
       "version": "0.1",
@@ -210,6 +210,11 @@
       "version": "1.7",
       "date": "2026-04-18",
       "summary": "Chain-scoped edge resolution with anchor and retraction primitives (CAS-ADR-017). New schema sage/edge_type_registry.schema.json: per-vault registry assigning a resolution_policy (none / transitive_source / transitive_both / TBD) to every edge type used by the vault; frozen per-edge at creation. Four changes to sage_core_api.openapi.yaml: (1) EdgeType enum extended with instantiated_from (live-tracking derivation, e.g., template instantiation), retracts (meta-edge disclaiming an earlier edge instance), and merged_from (meta-edge recording chain absorption with downstream tombstoning). (2) ResolutionPolicy enum added. (3) Edge schema extended with resolution_policy (required; frozen copy of registry value at creation), source_valid_from_version, target_valid_from_version, valid_until_version, and retracted_edge_id (all nullable); target_id made nullable to accommodate retracts edges. (4) LinkRequest schema extended with the same anchor and retracted_edge_id fields; write-time validation enforces the policy-keyed invariant and produces new 400 error codes EDGE_ANCHOR_POLICY_VIOLATION, RETRACT_TARGET_NOT_EDGE, MERGED_FROM_VALIDATION, TBD_POLICY_EDGE. (5) TraverseRequest: added debug boolean (default false). (6) TraverseResponse: added resolution_path (nullable array). (7) New ResolutionPathEntry schema discriminated by event_type (anchor_hit, anchor_miss, retracts_applied, tombstone_applied). sage/edge_inference.schema.json: edge_type enum extended with the three new values for consistency."
+    },
+    {
+      "version": "1.8",
+      "date": "2026-04-18",
+      "summary": "CAS-ADR-017 conformance alignment. (1) ResolutionPolicy enum gains transitive_target value in both sage_core_api.openapi.yaml and sage/edge_type_registry.schema.json, restoring the four-value resolution enumeration mandated by the ADR ({none, transitive_source, transitive_target, transitive_both}; TBD remains as a governance placeholder). transitive_target is the policy-level mirror of transitive_source: target anchor must lie in the queried document's lineage; source endpoint is frozen at derivation with source_valid_from_version null. No built-in edge type maps to this policy today; vaults opting into it via edge_type_registry now have a resolver and validator that honor it. (2) ResolutionPolicy description refined in the OpenAPI spec to document the null-means-not-applicable semantics for transitive_source (target_valid_from_version null) and transitive_target (source_valid_from_version null)."
     }
   ]
 }

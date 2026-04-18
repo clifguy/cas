@@ -370,3 +370,138 @@ async def test_cr_022_per_request_lineage_cache_coalesces_lookups(
     # graph: a1..a5, b1..b3). The exact upper bound is the number of
     # distinct endpoint doc_ids referenced.
     assert call_count["n"] <= 8
+
+
+# ===========================================================================
+# Section: transitive_target (mirror of transitive_source)
+#
+# The built-in registry has no transitive_target edge types. These tests
+# construct a custom EdgeTypeRegistry mapping AUTHORITATIVE_FOR to
+# transitive_target so the traversal paths (seed determination, anchor
+# filter) are exercised.
+# ===========================================================================
+
+from sage.models.edge_registry import EdgeTypeRegistry  # noqa: E402
+from sage.services.graph_ops import GraphOpsService  # noqa: E402
+
+
+def _tt_registry() -> EdgeTypeRegistry:
+    return EdgeTypeRegistry({
+        EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
+        EdgeType.RETRACTS: ResolutionPolicy.NONE,
+        EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
+        EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
+        EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
+        EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
+    })
+
+
+async def _seed_transitive_target_example(graph_store, service) -> None:
+    """Source chain a1..a5 (a3 is the frozen source); target chain b1..b3.
+
+    Edge: source=a3, target=b2, target_anchor=b2, policy=transitive_target.
+    """
+    await _seed_docs(
+        graph_store, "a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3"
+    )
+    await _seed_supersedes_chain(graph_store, ["a1", "a2", "a3", "a4", "a5"])
+    await _seed_supersedes_chain(graph_store, ["b1", "b2", "b3"])
+    await service.link(LinkRequest(
+        source_id="a3",
+        target_id="b2",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        target_valid_from_version="b2",
+    ))
+
+
+# ---------------------------------------------------------------------------
+# CR-050: transitive_target — target anchor in lineage — surfaces (both dirs)
+# ---------------------------------------------------------------------------
+
+async def test_cr_050_transitive_target_target_anchor_in_lineage_surfaces(
+    graph_store, minimal_config
+):
+    service = GraphOpsService(
+        graph_store, minimal_config, edge_type_registry=_tt_registry()
+    )
+    await _seed_transitive_target_example(graph_store, service)
+
+    # Outbound from the frozen source a3: seeds = [a3].
+    out = await service.traverse(TraverseRequest(
+        start_id="a3",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.OUTBOUND,
+        depth=2,
+    ))
+    assert [n.document.id for n in out.nodes] == ["b2"]
+
+    # Inbound from b3 (downstream of anchor b2): seeds = b3 lineage.
+    inbound = await service.traverse(TraverseRequest(
+        start_id="b3",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.INBOUND,
+        depth=2,
+    ))
+    assert [n.document.id for n in inbound.nodes] == ["a3"]
+
+
+# ---------------------------------------------------------------------------
+# CR-051: transitive_target — target anchor not in lineage — suppressed
+# ---------------------------------------------------------------------------
+
+async def test_cr_051_transitive_target_target_anchor_not_in_lineage_suppressed(
+    graph_store, minimal_config
+):
+    service = GraphOpsService(
+        graph_store, minimal_config, edge_type_registry=_tt_registry()
+    )
+    await _seed_transitive_target_example(graph_store, service)
+
+    # b1 is upstream of the anchor b2: anchor check fails.
+    out = await service.traverse(TraverseRequest(
+        start_id="b1",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.INBOUND,
+        depth=2,
+    ))
+    assert out.nodes == []
+
+
+# ---------------------------------------------------------------------------
+# CR-052: transitive_target — source chain advance is NOT seed-expanded
+# (source endpoint is frozen at derivation).
+# ---------------------------------------------------------------------------
+
+async def test_cr_052_transitive_target_source_frozen_not_seed_expanded(
+    graph_store, minimal_config
+):
+    service = GraphOpsService(
+        graph_store, minimal_config, edge_type_registry=_tt_registry()
+    )
+    await _seed_transitive_target_example(graph_store, service)
+
+    # a2 is an ancestor of a3 (the frozen source) on the source chain.
+    # Because the source endpoint is frozen, outbound seeds from a2 are
+    # exactly [a2], and no edge has source_id a2.
+    out = await service.traverse(TraverseRequest(
+        start_id="a2",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.OUTBOUND,
+        depth=2,
+    ))
+    assert out.nodes == []
+
+    # a4 is downstream of a3 on the source chain. Also must not surface:
+    # source is frozen at a3, not live-tracking.
+    out4 = await service.traverse(TraverseRequest(
+        start_id="a4",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.OUTBOUND,
+        depth=2,
+    ))
+    assert out4.nodes == []

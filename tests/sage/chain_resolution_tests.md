@@ -86,14 +86,14 @@ cases produce 400 with the documented error code.
 
 **Expected:** 400 `EDGE_ANCHOR_POLICY_VIOLATION`.
 
-### TEST-SAGE-CR-005: transitive_source edge with source anchor supplied and target anchor copied from target_id — accepted
+### TEST-SAGE-CR-005: transitive_source edge with source anchor supplied — accepted, target anchor stored as null
 
 **Category:** valid
 **Policy:** `transitive_source`
 
 **Input:** `link(source_id=patent_v3, target_id=uspto_template_v2, edge_type=derived_from, source_valid_from_version=patent_v3)`
 
-**Expected:** 201. Created Edge carries `resolution_policy: transitive_source`, `source_valid_from_version: patent_v3`, `target_valid_from_version: uspto_template_v2` (auto-populated from target_id at creation, frozen).
+**Expected:** 201. Created Edge carries `resolution_policy: transitive_source`, `source_valid_from_version: patent_v3`, `target_valid_from_version: null`. Target anchor is inapplicable for this policy (target is frozen at derivation; version specificity is already carried by `target_id`). Standard null-means-not-applicable semantics per CAS-ADR-017.
 
 ### TEST-SAGE-CR-006: transitive_source edge with target anchor explicitly supplied — rejected
 
@@ -488,5 +488,100 @@ is in play here.
 **Input:** Load a vault whose registry entry for `sync_target` has `resolution_policy: TBD`. Then attempt to create a `sync_target` edge.
 
 **Expected:** Vault loads successfully. Edge creation returns 400 `TBD_POLICY_EDGE` (see CR-010). This test confirms the two checks are independent: registry schema accepts TBD; write-time validator rejects TBD edge creation.
+
+---
+
+## Section 7 — transitive_target (mirror of transitive_source)
+
+These tests cover the fourth ADR-017 resolution policy: `transitive_target`.
+Under this policy the target chain lives (advances via supersedes and
+carries the target-side anchor); the source endpoint is frozen at
+derivation and carries no anchor. This is the policy-level mirror of
+`transitive_source`. No edge type in the built-in registry uses this
+policy today; tests construct a custom `EdgeTypeRegistry` that maps an
+otherwise-unused edge type to `transitive_target` so the resolver and
+validator paths are exercised end-to-end.
+
+### TEST-SAGE-CR-046: transitive_target edge with target anchor supplied — accepted
+
+**Category:** valid
+**Policy:** `transitive_target`
+
+**Precondition:** Custom registry maps `authoritative_for` → `transitive_target`. Target chain `b1 ← b2`.
+
+**Input:** `link(source_id=a3, target_id=b2, edge_type=authoritative_for, target_valid_from_version=b2)` (no `source_valid_from_version`).
+
+**Expected:** 201. Created Edge carries `resolution_policy: transitive_target`, `source_valid_from_version: null`, `target_valid_from_version: b2`.
+
+### TEST-SAGE-CR-047: transitive_target edge with missing target anchor — rejected
+
+**Category:** invalid
+**Policy:** `transitive_target`
+
+**Input:** `link(source_id=a3, target_id=b2, edge_type=authoritative_for)` (no `target_valid_from_version`).
+
+**Expected:** 400 `EDGE_ANCHOR_POLICY_VIOLATION`. `target_valid_from_version` is required for policy `transitive_target`. `offending_fields` includes `target_valid_from_version`.
+
+### TEST-SAGE-CR-048: transitive_target edge with source anchor supplied — rejected
+
+**Category:** invalid
+**Policy:** `transitive_target`
+
+**Input:** `link(source_id=a3, target_id=b2, edge_type=authoritative_for, source_valid_from_version=a3, target_valid_from_version=b2)`.
+
+**Expected:** 400 `EDGE_ANCHOR_POLICY_VIOLATION`. Source anchor is frozen at derivation and must be null for policy `transitive_target`. `offending_fields` includes `source_valid_from_version`.
+
+### TEST-SAGE-CR-049: transitive_target edge with target anchor outside target chain lineage — rejected
+
+**Category:** invalid
+**Policy:** `transitive_target`
+
+**Precondition:** Target chain has b1, b2 (b2 supersedes b1). Another chain has c1.
+
+**Input:** `link(source_id=a3, target_id=b2, edge_type=authoritative_for, target_valid_from_version=c1)` (target anchor points at a document not in b2's supersedes lineage).
+
+**Expected:** 400 `EDGE_ANCHOR_POLICY_VIOLATION`.
+
+### TEST-SAGE-CR-050: traverse with transitive_target — target anchor in lineage — surfaces (outbound from frozen source)
+
+**Category:** resolution
+**Policy:** `transitive_target`
+
+**Precondition:** Target chain `b1 ← b2 ← b3`. Edge with `source_id=a3, target_id=b2, target_valid_from_version=b2, resolution_policy=transitive_target`.
+
+**Input:** `traverse(start_id=a3, edge_type=authoritative_for, direction=outbound, depth=2)` and `traverse(start_id=b3, edge_type=authoritative_for, direction=inbound, depth=2)`.
+
+**Expected:** Both traversals surface the edge. Outbound from the frozen source a3 seeds exactly [a3]; inbound from b3 seeds the b3 supersedes lineage, which includes b2.
+
+### TEST-SAGE-CR-051: traverse with transitive_target — target anchor not in lineage — suppressed
+
+**Category:** resolution
+**Policy:** `transitive_target`
+
+**Input:** Same edge as CR-050. `traverse(start_id=b1, edge_type=authoritative_for, direction=inbound, depth=2)` (b1 is upstream of the anchor b2).
+
+**Expected:** Edge is NOT surfaced. Target anchor b2 is not in b1's lineage.
+
+### TEST-SAGE-CR-052: traverse with transitive_target — source chain advances — frozen source is not seed-expanded
+
+**Category:** resolution
+**Policy:** `transitive_target`
+
+**Precondition:** Source chain `a1 ← a2 ← a3`. Edge anchored at source=a3, target=b2, target anchor=b2, `resolution_policy=transitive_target`. (By policy, source anchor is null; source endpoint is frozen at a3.)
+
+**Input:** `traverse(start_id=a2, edge_type=authoritative_for, direction=outbound, depth=2)` (a2 is an ancestor of a3 on the source chain).
+
+**Expected:** Edge is NOT surfaced from a2. The source endpoint is frozen at a3; outbound seeds are [a2] (not a2's lineage), and no edge has source_id a2.
+
+### TEST-SAGE-CR-053: retracts suppression applies to transitive_target edges
+
+**Category:** resolution
+**Policy:** `transitive_target` + retracts
+
+**Precondition:** Same edge as CR-050. Retracts edge targeting it anchored at the source chain (a5 on source chain, where source chain now advances to a5). Note: retracting chain is the source chain here (the chain taking the governance action). Target chain progression is `b1 ← b2 ← b3`.
+
+**Input:** `traverse(start_id=a5, edge_type=authoritative_for, direction=outbound, depth=2)`.
+
+**Expected:** Edge is suppressed. The retracts primitive is one-sided per ADR-017 but the policy-level suppression rule is the same as for `transitive_source` / `transitive_both`: retracts anchored in the query start's supersedes lineage suppresses the target edge. Confirms `transitive_target` is a first-class suppressible policy.
 
 ---

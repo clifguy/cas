@@ -30,6 +30,7 @@ class EdgeType(StrEnum):
 class ResolutionPolicy(StrEnum):
     NONE = "none"
     TRANSITIVE_SOURCE = "transitive_source"
+    TRANSITIVE_TARGET = "transitive_target"
     TRANSITIVE_BOTH = "transitive_both"
     TBD = "TBD"
 

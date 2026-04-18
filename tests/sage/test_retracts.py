@@ -238,3 +238,79 @@ async def test_cr_028_retracts_of_supersedes_edge_does_not_affect_chain(
         depth=5,
     ))
     assert {n.document.id for n in out.nodes} == {"a1", "a2", "a3", "a4"}
+
+
+# ---------------------------------------------------------------------------
+# CR-053: retracts suppression applies to transitive_target edges
+# ---------------------------------------------------------------------------
+
+from sage.models.edge_registry import EdgeTypeRegistry  # noqa: E402
+from sage.services.graph_ops import GraphOpsService  # noqa: E402
+
+
+async def test_cr_053_retracts_suppresses_transitive_target_edge(
+    graph_store, minimal_config
+):
+    """Retracts must suppress transitive_target edges the same way it
+    suppresses transitive_source / transitive_both: when the retract
+    anchor is in the query start's supersedes lineage.
+
+    Setup: transitive_target edge from a3 (frozen source) to b2; retract
+    anchored at a3 on the same (source) chain. Baseline: with no
+    retract, outbound from a3 surfaces b2. With the retract in force,
+    outbound from a3 is empty.
+    """
+    registry = EdgeTypeRegistry({
+        EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
+        EdgeType.RETRACTS: ResolutionPolicy.NONE,
+        EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
+        EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
+        EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
+        EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
+        EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
+    })
+    service = GraphOpsService(
+        graph_store, minimal_config, edge_type_registry=registry
+    )
+
+    await _seed_docs(graph_store, "a3", "b1", "b2")
+    await _seed_supersedes_chain(graph_store, ["b1", "b2"])
+
+    auth = await service.link(LinkRequest(
+        source_id="a3",
+        target_id="b2",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        target_valid_from_version="b2",
+    ))
+
+    # Baseline: without a retract, the edge surfaces outbound from a3.
+    baseline = await service.traverse(TraverseRequest(
+        start_id="a3",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.OUTBOUND,
+        depth=2,
+    ))
+    assert [n.document.id for n in baseline.nodes] == ["b2"]
+
+    # Retract anchored at a3: retract.source_valid_from_version=a3 sits
+    # in the lineage of query start a3.
+    await service.link(LinkRequest(
+        source_id="a3",
+        target_id=None,
+        edge_type=EdgeType.RETRACTS,
+        retracted_edge_id=auth.id,
+        source_valid_from_version="a3",
+    ))
+
+    # Suppression fires: the transitive_target edge is filtered out.
+    suppressed = await service.traverse(TraverseRequest(
+        start_id="a3",
+        edge_type=EdgeType.AUTHORITATIVE_FOR,
+        direction=TraversalDirection.OUTBOUND,
+        depth=2,
+    ))
+    assert suppressed.nodes == []

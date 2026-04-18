@@ -311,6 +311,123 @@ async def test_traverse_no_edges(vault_services):
 
 
 # ---------------------------------------------------------------------------
+# Graph operations: anchor-bearing link and retracts (CAS-ADR-017, Chunk 8)
+# ---------------------------------------------------------------------------
+
+
+async def test_link_transitive_both_requires_anchors(vault_services):
+    """covers is transitive_both; omitting anchors via MCP surfaces a 400."""
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    # No anchor fields -> edge_anchor_policy_violation
+    result = _parse(
+        await sage_link("test_vault", doc_a["id"], doc_b["id"], "covers")
+    )
+    assert result["error"] == "edge_anchor_policy_violation"
+    assert result["detail"]["resolution_policy"] == "transitive_both"
+
+    # Same call with anchors populated -> 201 persistence
+    result = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "covers",
+            source_valid_from_version=doc_a["id"],
+            target_valid_from_version=doc_b["id"],
+        )
+    )
+    assert result["edge_type"] == "covers"
+    assert result["resolution_policy"] == "transitive_both"
+    assert result["source_valid_from_version"] == doc_a["id"]
+    assert result["target_valid_from_version"] == doc_b["id"]
+
+
+async def test_link_retracts_round_trip(vault_services):
+    """Retracts a covers edge through the MCP wrapper and verifies the
+    retracts edge round-trips with null target and the correct
+    retracted_edge_id."""
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    covers = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "covers",
+            source_valid_from_version=doc_a["id"],
+            target_valid_from_version=doc_b["id"],
+        )
+    )
+    assert "id" in covers
+
+    # Bad retracted_edge_id -> retract_target_not_edge
+    bad = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            None,
+            "retracts",
+            source_valid_from_version=doc_a["id"],
+            retracted_edge_id="does-not-exist",
+        )
+    )
+    assert bad["error"] == "retract_target_not_edge"
+
+    retract = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            None,
+            "retracts",
+            source_valid_from_version=doc_a["id"],
+            retracted_edge_id=covers["id"],
+        )
+    )
+    assert retract["edge_type"] == "retracts"
+    assert retract["resolution_policy"] == "none"
+    assert retract["retracted_edge_id"] == covers["id"]
+    assert "target_id" not in retract or retract.get("target_id") is None
+
+
+# ---------------------------------------------------------------------------
+# Graph operations: traverse with debug=True (CAS-ADR-017, Chunk 8)
+# ---------------------------------------------------------------------------
+
+
+async def test_traverse_debug_populates_resolution_path(vault_services):
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+    await sage_link(
+        "test_vault",
+        doc_a["id"],
+        doc_b["id"],
+        "covers",
+        source_valid_from_version=doc_a["id"],
+        target_valid_from_version=doc_b["id"],
+    )
+
+    off = _parse(
+        await sage_traverse("test_vault", doc_a["id"], edge_type="covers")
+    )
+    # debug defaults to False -> resolution_path is absent (exclude_none)
+    assert off.get("resolution_path") is None
+
+    on = _parse(
+        await sage_traverse(
+            "test_vault", doc_a["id"], edge_type="covers", debug=True
+        )
+    )
+    path = on.get("resolution_path") or []
+    assert any(e["event_type"] == "anchor_hit" for e in path)
+
+
+# ---------------------------------------------------------------------------
 # Retrieval: discover
 # ---------------------------------------------------------------------------
 

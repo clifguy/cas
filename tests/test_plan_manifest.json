@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.12",
+  "manifest_version": "0.9.13",
   "manifest_date": "2026-04-18",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -188,9 +188,9 @@
         "sage/services/graph_ops.py",
         "sage/storage/graph_store.py"
       ],
-      "test_count": 45,
+      "test_count": 53,
       "decision_date": "2026-04-18",
-      "notes": "CAS-ADR-017: chain-scoped edge resolution with anchor and retraction primitives. Six sections: write-time invariant enforcement (CR-001 through CR-012, 12 tests); traverse honors policy + anchors (CR-013 through CR-022, 10 tests); retracts edge end-to-end (CR-023 through CR-028, 6 tests); merged_from + tombstoning (CR-029 through CR-036, 8 tests); resolution_path debug payload (CR-037 through CR-042, 6 tests); registry coverage and TBD handling (CR-043 through CR-045, 3 tests). Canonical worked example: Chain A a1..a8, Chain B b1..b4, covers edge anchored at a3/b2. Encodes the frozen 11-row resolution_policy registry."
+      "notes": "CAS-ADR-017: chain-scoped edge resolution with anchor and retraction primitives. Seven sections: write-time invariant enforcement (CR-001 through CR-012, 12 tests); traverse honors policy + anchors (CR-013 through CR-022, 10 tests); retracts edge end-to-end (CR-023 through CR-028, 6 tests); merged_from + tombstoning (CR-029 through CR-036, 8 tests); resolution_path debug payload (CR-037 through CR-042, 6 tests); registry coverage and TBD handling (CR-043 through CR-045, 3 tests); transitive_target mirror policy (CR-046 through CR-053, 8 tests). Canonical worked example: Chain A a1..a8, Chain B b1..b4, covers edge anchored at a3/b2. CR-005 revised: transitive_source stores target_valid_from_version as null (null-means-not-applicable per the ADR), not auto-populated from target_id."
     }
   ],
   "fixture_directories": {
@@ -282,6 +282,11 @@
       "version": "0.9.12",
       "date": "2026-04-18",
       "summary": "Chain-scoped edge resolution test specifications (CAS-ADR-017, Chunk 1). New file tests/sage/chain_resolution_tests.md with 45 tier-2 behavioral tests (TEST-SAGE-CR-001 through CR-045) across six sections: write-time invariant enforcement by resolution_policy (12 tests), traverse honoring policy and anchor-in-lineage filtering (10 tests), retracts edge end-to-end (6 tests), merged_from + tombstoning (8 tests), resolution_path debug payload (6 tests), and registry coverage / TBD handling (3 tests). Canonical worked example: Chain A (a1..a8), Chain B (b1..b4), covers edge anchored at a3/b2. Encodes the frozen 11-row resolution_policy registry: supersedes/retracts/merged_from=none, derived_from=transitive_source, covers/references/bundles_with/depends_on/instantiated_from=transitive_both, authoritative_for/sync_target=TBD. tests/sage/contract_tests.md extended: new edge_type_registry.schema.json section (TEST-SAGE-ER-001 through ER-006, 6 tests) validates the new registry schema; new TEST-SAGE-API-005 through API-010 (6 tests) verify the extended EdgeType enum, the new ResolutionPolicy enum, Edge anchor-field shape, LinkRequest shape, TraverseRequest.debug, and TraverseResponse.resolution_path / ResolutionPathEntry. Contract test count: 53 -> 65."
+    },
+    {
+      "version": "0.9.13",
+      "date": "2026-04-18",
+      "summary": "CAS-ADR-017 conformance: align code to ADR on two prior deviations. (1) transitive_target added to the ResolutionPolicy enum (previously missing; ADR mandates four-value enumeration). New Section 7 in tests/sage/chain_resolution_tests.md: 8 tier-2 tests (CR-046 through CR-053) cover the mirror policy end-to-end: write-time invariant (target anchor required, source anchor forbidden, target anchor must be in target lineage), traversal semantics (source frozen at derivation - no seed expansion; target chain advances - seed expands to target lineage), and retracts-suppression applicability. (2) transitive_source stored representation: target_valid_from_version is null on the row (ADR's null-means-not-applicable), not auto-populated from target_id. CR-005 revised to assert null. Contract test enum constraints updated at tests/sage/contract_tests.md TEST-SAGE-ER-003 and TEST-SAGE-API-006 to include transitive_target. Chain resolution test count: 45 -> 53."
     }
   ]
 }

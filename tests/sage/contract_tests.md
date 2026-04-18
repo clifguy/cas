@@ -901,7 +901,7 @@ entries:
 
 **Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
 **Category:** invalid
-**Constraint:** `resolution_policy` must be one of [none, transitive_source, transitive_both, TBD]
+**Constraint:** `resolution_policy` must be one of [none, transitive_source, transitive_target, transitive_both, TBD]
 
 **Input:** Entry with `edge_type: covers, resolution_policy: "inherit"`.
 
@@ -1101,7 +1101,7 @@ entries:
 
 **Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (ResolutionPolicy schema)
 **Category:** valid
-**Constraint:** ResolutionPolicy enum is exactly [none, transitive_source, transitive_both, TBD]
+**Constraint:** ResolutionPolicy enum is exactly [none, transitive_source, transitive_target, transitive_both, TBD]
 
 **Input:** Load `components.schemas.ResolutionPolicy.enum`.
 

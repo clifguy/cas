@@ -263,19 +263,53 @@ def register_sage_tools(
     async def sage_link(
         vault_id: str,
         source_id: str,
-        target_id: str,
+        target_id: str | None,
         edge_type: str,
+        source_valid_from_version: str | None = None,
+        target_valid_from_version: str | None = None,
+        retracted_edge_id: str | None = None,
         notes: str | None = None,
         rationale: str | None = None,
     ) -> dict:
         """Create a typed edge between two documents in the graph.
 
+        Per CAS-ADR-017, each edge type has a registry-declared
+        resolution_policy that dictates which anchor fields are required
+        or forbidden:
+
+        - `none` (supersedes, retracts, merged_from): meta-edges; no
+          anchor fields. `retracts` additionally takes a one-sided
+          `source_valid_from_version` (anchor in the retracting chain)
+          and `retracted_edge_id` (the edge being retracted) instead of
+          a `target_id`.
+        - `transitive_source` (derived_from): requires
+          `source_valid_from_version`; no target anchor.
+        - `transitive_both` (covers, references, bundles_with,
+          depends_on, instantiated_from): requires both
+          `source_valid_from_version` and `target_valid_from_version`.
+
+        Anchors must lie in the supersedes lineage of their respective
+        endpoint. Violations surface as 400 errors with codes
+        `edge_anchor_policy_violation`, `retract_target_not_edge`,
+        `merged_from_validation`, or `tbd_policy_edge`.
+
         Args:
             vault_id: Target vault identifier.
             source_id: Source document identifier.
-            target_id: Target document identifier.
+            target_id: Target document identifier. Required for all edge
+                types except `retracts` (which uses `retracted_edge_id`);
+                pass null for `retracts` edges.
             edge_type: Edge type (supersedes, derived_from, covers, references,
-                bundles_with, authoritative_for, depends_on, sync_target).
+                bundles_with, depends_on, instantiated_from, retracts,
+                merged_from).
+            source_valid_from_version: Supersedes-lineage anchor on the
+                source chain. Required for `transitive_source`,
+                `transitive_both`, and `retracts` edges; forbidden on
+                policy-`none` meta-edges.
+            target_valid_from_version: Supersedes-lineage anchor on the
+                target chain. Required only for `transitive_both` edges.
+            retracted_edge_id: Edge-id of the edge instance being
+                retracted. Required (and valid only) on `retracts` edges.
             notes: Free-text notes about the edge.
             rationale: Rationale for creating this edge.
         """
@@ -285,6 +319,9 @@ def register_sage_tools(
                 source_id=source_id,
                 target_id=target_id,
                 edge_type=edge_type,
+                source_valid_from_version=source_valid_from_version,
+                target_valid_from_version=target_valid_from_version,
+                retracted_edge_id=retracted_edge_id,
                 notes=notes,
                 rationale=rationale,
             )
@@ -331,8 +368,15 @@ def register_sage_tools(
         edge_type: str | None = None,
         direction: str = "outbound",
         depth: int = 3,
+        debug: bool = False,
     ) -> dict:
         """Walk the document graph from a starting document.
+
+        Traversal honors chain-scoped edge resolution per CAS-ADR-017:
+        anchor fields determine which edges are visible from the query
+        version's lineage; `retracts` edges can suppress downstream
+        edges; `merged_from` tombstones suppress predecessor-chain edges
+        downstream of the termination point.
 
         Args:
             vault_id: Target vault identifier.
@@ -340,6 +384,11 @@ def register_sage_tools(
             edge_type: Filter by edge type (optional).
             direction: Traversal direction (outbound, inbound, both). Default: outbound.
             depth: Maximum traversal depth (1-1000). Default: 3.
+            debug: When true, populate `resolution_path` on the response
+                with per-event entries (`anchor_hit`, `anchor_miss`,
+                `retracts_applied`, `tombstone_applied`) explaining why
+                each candidate edge was surfaced or suppressed. Default:
+                false (zero overhead when disabled).
         """
         try:
             v = get_vault(vault_id)
@@ -348,6 +397,7 @@ def register_sage_tools(
                 edge_type=edge_type,
                 direction=direction,
                 depth=depth,
+                debug=debug,
             )
             response = await v.graph_ops_service.traverse(request)
             return serialize(response)

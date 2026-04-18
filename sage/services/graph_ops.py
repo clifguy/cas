@@ -36,6 +36,7 @@ from sage.models.schemas import (
     LinkRequest,
     PreconditionCheck,
     PreconditionResult,
+    ResolutionPathEntry,
     TraversalNode,
     TraverseRequest,
     TraverseResponse,
@@ -43,6 +44,56 @@ from sage.models.schemas import (
 from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
+
+
+class _ResolutionPathRecorder:
+    """Per-request collector for CAS-ADR-017 resolution_path debug events.
+
+    Allocated only when `TraverseRequest.debug=True`. Emission sites guard
+    with `if recorder is not None`, so the debug-off path has a single
+    branch-and-skip and no payload construction.
+    """
+
+    def __init__(self) -> None:
+        self.entries: list[ResolutionPathEntry] = []
+
+    def anchor_hit(
+        self, edge_id: str, anchor_field: str, anchor_version: str
+    ) -> None:
+        self.entries.append(ResolutionPathEntry(
+            event_type="anchor_hit",
+            edge_id=edge_id,
+            anchor_field=anchor_field,
+            anchor_version=anchor_version,
+        ))
+
+    def anchor_miss(
+        self, edge_id: str, anchor_field: str, anchor_version: str | None
+    ) -> None:
+        self.entries.append(ResolutionPathEntry(
+            event_type="anchor_miss",
+            edge_id=edge_id,
+            anchor_field=anchor_field,
+            anchor_version=anchor_version,
+        ))
+
+    def retracts_applied(
+        self, edge_id: str, retracting_edge_id: str
+    ) -> None:
+        self.entries.append(ResolutionPathEntry(
+            event_type="retracts_applied",
+            edge_id=edge_id,
+            retracted_edge_id=retracting_edge_id,
+        ))
+
+    def tombstone_applied(
+        self, edge_id: str, tombstone_version: str
+    ) -> None:
+        self.entries.append(ResolutionPathEntry(
+            event_type="tombstone_applied",
+            edge_id=edge_id,
+            tombstone_version=tombstone_version,
+        ))
 
 
 class _LineageCache:
@@ -125,13 +176,12 @@ class GraphOpsService:
 
         await self._validate_anchor_in_lineage(request, policy)
 
-        # `transitive_source`: target anchor is frozen at derivation,
-        # copied from target_id (the derivation-time target).
-        if policy == ResolutionPolicy.TRANSITIVE_SOURCE:
-            target_anchor = request.target_id
-        else:
-            target_anchor = request.target_valid_from_version
-
+        # CAS-ADR-017 null-means-not-applicable: each anchor is stored
+        # exactly as supplied. transitive_source edges carry a null
+        # target_valid_from_version (target frozen at derivation; version
+        # specificity already captured by target_id). transitive_target
+        # is the mirror. The shape validator enforces which of the two
+        # anchor fields must be populated for each policy.
         edge = Edge(
             id=str(uuid.uuid4()),
             source_id=request.source_id,
@@ -139,7 +189,7 @@ class GraphOpsService:
             edge_type=request.edge_type,
             resolution_policy=policy,
             source_valid_from_version=request.source_valid_from_version,
-            target_valid_from_version=target_anchor,
+            target_valid_from_version=request.target_valid_from_version,
             valid_until_version=None,
             retracted_edge_id=request.retracted_edge_id,
             created_at=datetime.now(timezone.utc),
@@ -275,6 +325,26 @@ class GraphOpsService:
                 )
             return
 
+        if policy == ResolutionPolicy.TRANSITIVE_TARGET:
+            if request.target_valid_from_version is None:
+                raise EdgeAnchorPolicyViolationError(
+                    edge_type.value,
+                    policy.value,
+                    "target_valid_from_version is required for policy 'transitive_target'",
+                    ["target_valid_from_version"],
+                )
+            if request.source_valid_from_version is not None:
+                raise EdgeAnchorPolicyViolationError(
+                    edge_type.value,
+                    policy.value,
+                    (
+                        "source_valid_from_version must be null for policy "
+                        "'transitive_target' (source anchor is frozen at derivation)"
+                    ),
+                    ["source_valid_from_version"],
+                )
+            return
+
         if policy == ResolutionPolicy.TRANSITIVE_BOTH:
             if request.source_valid_from_version is None:
                 offending.append("source_valid_from_version")
@@ -329,7 +399,10 @@ class GraphOpsService:
             )
 
         if (
-            policy == ResolutionPolicy.TRANSITIVE_BOTH
+            policy in (
+                ResolutionPolicy.TRANSITIVE_TARGET,
+                ResolutionPolicy.TRANSITIVE_BOTH,
+            )
             and request.target_valid_from_version is not None
             and request.target_id is not None
         ):
@@ -451,20 +524,21 @@ class GraphOpsService:
             raise DocumentNotFoundError(request.start_id)
 
         cache = _LineageCache(self._store)
+        recorder = _ResolutionPathRecorder() if request.debug else None
 
         raw = await self._collect_raw_with_seeds(request, cache)
 
         # Per-edge anchor filter (honors stored resolution_policy per CAS-ADR-017).
         filtered: list[dict] = []
         for row in raw:
-            if await self._edge_passes_anchor_filter(row, cache):
+            if await self._edge_passes_anchor_filter(row, cache, recorder):
                 filtered.append(row)
 
         # CAS-ADR-017 Chunk 5: retracts short-circuit. Only chain-resolved
         # edges (transitive_source, transitive_both) are suppressible; the
         # retracts primitive does not veto policy=none edges indiscriminately.
         filtered = await self._apply_retracts(
-            filtered, request.start_id, cache
+            filtered, request.start_id, cache, recorder
         )
 
         # CAS-ADR-017 Chunk 6: tombstone suppression. Edges whose
@@ -472,7 +546,7 @@ class GraphOpsService:
         # start_id are dropped. Equal-to-start is kept (CR-034: historical
         # query at the merge point still surfaces the edge).
         filtered = await self._apply_tombstones(
-            filtered, request.start_id, cache
+            filtered, request.start_id, cache, recorder
         )
 
         # Deduplicate: group by doc_id, pick most recent edge, min depth
@@ -535,13 +609,18 @@ class GraphOpsService:
                 edge_counts=counts,
             ))
 
-        return TraverseResponse(start_id=request.start_id, nodes=nodes)
+        return TraverseResponse(
+            start_id=request.start_id,
+            nodes=nodes,
+            resolution_path=recorder.entries if recorder is not None else None,
+        )
 
     async def _apply_retracts(
         self,
         rows: list[dict],
         query_start_id: str,
         cache: _LineageCache,
+        recorder: _ResolutionPathRecorder | None = None,
     ) -> list[dict]:
         """Drop rows whose candidate edge has an in-lineage retraction.
 
@@ -561,6 +640,7 @@ class GraphOpsService:
             policy = self._effective_policy(row)
             if policy in (
                 ResolutionPolicy.TRANSITIVE_SOURCE,
+                ResolutionPolicy.TRANSITIVE_TARGET,
                 ResolutionPolicy.TRANSITIVE_BOTH,
             ):
                 candidate_ids.append(row["edge_id"])
@@ -583,17 +663,23 @@ class GraphOpsService:
             policy = self._effective_policy(row)
             if policy not in (
                 ResolutionPolicy.TRANSITIVE_SOURCE,
+                ResolutionPolicy.TRANSITIVE_TARGET,
                 ResolutionPolicy.TRANSITIVE_BOTH,
             ):
                 kept.append(row)
                 continue
-            suppressed = any(
-                r.source_valid_from_version is not None
-                and r.source_valid_from_version in start_lineage
-                for r in retracts
+            suppressing = next(
+                (
+                    r for r in retracts
+                    if r.source_valid_from_version is not None
+                    and r.source_valid_from_version in start_lineage
+                ),
+                None,
             )
-            if not suppressed:
+            if suppressing is None:
                 kept.append(row)
+            elif recorder is not None:
+                recorder.retracts_applied(row["edge_id"], suppressing.id)
         return kept
 
     async def _apply_tombstones(
@@ -601,6 +687,7 @@ class GraphOpsService:
         rows: list[dict],
         query_start_id: str,
         cache: _LineageCache,
+        recorder: _ResolutionPathRecorder | None = None,
     ) -> list[dict]:
         """Drop rows tombstoned by an upstream merged_from.
 
@@ -633,6 +720,8 @@ class GraphOpsService:
             if tombstone in start_lineage:
                 # Tombstone is a strict ancestor of the query start:
                 # query is downstream of the termination -> suppress.
+                if recorder is not None:
+                    recorder.tombstone_applied(row["edge_id"], tombstone)
                 continue
             kept.append(row)
         return kept
@@ -731,6 +820,16 @@ class GraphOpsService:
             lineage = await cache.get(start_id)
             return list(lineage) if lineage else [start_id]
 
+        if policy == ResolutionPolicy.TRANSITIVE_TARGET:
+            # Mirror of transitive_source: source is frozen, target chain
+            # advances. Outbound from a source-side start is exact-match
+            # (source endpoint is frozen); inbound from a target-side
+            # start expands to target lineage.
+            if direction == TraversalDirection.OUTBOUND:
+                return [start_id]
+            lineage = await cache.get(start_id)
+            return list(lineage) if lineage else [start_id]
+
         if policy == ResolutionPolicy.TRANSITIVE_BOTH:
             lineage = await cache.get(start_id)
             return list(lineage) if lineage else [start_id]
@@ -738,7 +837,10 @@ class GraphOpsService:
         return [start_id]
 
     async def _edge_passes_anchor_filter(
-        self, row: dict, cache: _LineageCache
+        self,
+        row: dict,
+        cache: _LineageCache,
+        recorder: _ResolutionPathRecorder | None = None,
     ) -> bool:
         """True iff the edge's anchors sit in the appropriate lineages.
 
@@ -780,19 +882,91 @@ class GraphOpsService:
         target_anchor = row.get("target_valid_from_version")
         source_id = row["source_id"]
         target_id = row.get("target_id")
+        edge_id = row.get("edge_id")
 
         if policy == ResolutionPolicy.TRANSITIVE_SOURCE:
             if source_anchor is None:
+                if recorder is not None:
+                    recorder.anchor_miss(
+                        edge_id, "source_valid_from_version", None
+                    )
                 return False
-            return await self._anchor_in_lineage(source_anchor, source_id, cache)
+            hit = await self._anchor_in_lineage(source_anchor, source_id, cache)
+            if recorder is not None:
+                if hit:
+                    recorder.anchor_hit(
+                        edge_id, "source_valid_from_version", source_anchor
+                    )
+                else:
+                    recorder.anchor_miss(
+                        edge_id, "source_valid_from_version", source_anchor
+                    )
+            return hit
+
+        if policy == ResolutionPolicy.TRANSITIVE_TARGET:
+            if target_anchor is None or target_id is None:
+                if recorder is not None:
+                    recorder.anchor_miss(
+                        edge_id, "target_valid_from_version", target_anchor
+                    )
+                return False
+            hit = await self._anchor_in_lineage(target_anchor, target_id, cache)
+            if recorder is not None:
+                if hit:
+                    recorder.anchor_hit(
+                        edge_id, "target_valid_from_version", target_anchor
+                    )
+                else:
+                    recorder.anchor_miss(
+                        edge_id, "target_valid_from_version", target_anchor
+                    )
+            return hit
 
         if policy == ResolutionPolicy.TRANSITIVE_BOTH:
             if source_anchor is None or target_anchor is None or target_id is None:
+                if recorder is not None:
+                    missing_field = (
+                        "source_valid_from_version"
+                        if source_anchor is None
+                        else "target_valid_from_version"
+                    )
+                    missing_value = (
+                        source_anchor
+                        if missing_field == "source_valid_from_version"
+                        else target_anchor
+                    )
+                    recorder.anchor_miss(edge_id, missing_field, missing_value)
                 return False
-            if not await self._anchor_in_lineage(source_anchor, source_id, cache):
+            source_hit = await self._anchor_in_lineage(
+                source_anchor, source_id, cache
+            )
+            if not source_hit:
+                if recorder is not None:
+                    recorder.anchor_miss(
+                        edge_id, "source_valid_from_version", source_anchor
+                    )
                 return False
-            if not await self._anchor_in_lineage(target_anchor, target_id, cache):
+            target_hit = await self._anchor_in_lineage(
+                target_anchor, target_id, cache
+            )
+            if not target_hit:
+                if recorder is not None:
+                    # Source check passed; record both outcomes so the
+                    # trace shows which side dropped the edge.
+                    recorder.anchor_hit(
+                        edge_id, "source_valid_from_version", source_anchor
+                    )
+                    recorder.anchor_miss(
+                        edge_id, "target_valid_from_version", target_anchor
+                    )
                 return False
+            if recorder is not None:
+                recorder.anchor_hit(
+                    edge_id, "source_valid_from_version", source_anchor
+                )
+                recorder.anchor_hit(
+                    edge_id, "target_valid_from_version", target_anchor
+                )
             return True
 
         return True

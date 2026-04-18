@@ -8,8 +8,10 @@ type registry:
   - policy `none` (supersedes, retracts, merged_from):
       resolution_policy = 'none', anchors remain NULL.
   - policy `transitive_source` (derived_from):
-      resolution_policy set; source_valid_from_version = source_id,
-      target_valid_from_version = target_id.
+      resolution_policy set; source_valid_from_version = source_id.
+      target_valid_from_version stays NULL (null-means-not-applicable
+      per CAS-ADR-017; target is frozen at derivation, version
+      specificity already carried by target_id).
   - policy `transitive_both` (references, covers, bundles_with,
     depends_on, instantiated_from):
       resolution_policy set; source_valid_from_version = source_id,
@@ -49,6 +51,7 @@ from sage.models.enums import EdgeType, ResolutionPolicy
 class BackfillPlan:
     none_edge_ids: list[str]
     transitive_source_edge_ids: list[tuple[str, str, str]]  # (id, source_id, target_id)
+    transitive_target_edge_ids: list[tuple[str, str, str]]
     transitive_both_edge_ids: list[tuple[str, str, str]]
     tbd_edges: list[tuple[str, str]]  # (id, edge_type)
     unknown_edges: list[tuple[str, str]]  # edge_type not in registry
@@ -58,6 +61,7 @@ class BackfillPlan:
         return (
             len(self.none_edge_ids)
             + len(self.transitive_source_edge_ids)
+            + len(self.transitive_target_edge_ids)
             + len(self.transitive_both_edge_ids)
         )
 
@@ -82,6 +86,7 @@ def build_backfill_plan(
     plan = BackfillPlan(
         none_edge_ids=[],
         transitive_source_edge_ids=[],
+        transitive_target_edge_ids=[],
         transitive_both_edge_ids=[],
         tbd_edges=[],
         unknown_edges=[],
@@ -107,6 +112,8 @@ def build_backfill_plan(
             plan.none_edge_ids.append(edge_id)
         elif policy == ResolutionPolicy.TRANSITIVE_SOURCE:
             plan.transitive_source_edge_ids.append((edge_id, source_id, target_id))
+        elif policy == ResolutionPolicy.TRANSITIVE_TARGET:
+            plan.transitive_target_edge_ids.append((edge_id, source_id, target_id))
         elif policy == ResolutionPolicy.TRANSITIVE_BOTH:
             plan.transitive_both_edge_ids.append((edge_id, source_id, target_id))
         else:
@@ -126,14 +133,28 @@ def apply_backfill(conn: sqlite3.Connection, plan: BackfillPlan) -> None:
             "UPDATE edges SET resolution_policy = ? WHERE id = ?",
             (ResolutionPolicy.NONE.value, edge_id),
         )
-    for edge_id, source_id, target_id in plan.transitive_source_edge_ids:
+    for edge_id, source_id, _target_id in plan.transitive_source_edge_ids:
+        # transitive_source: target anchor is not applicable per CAS-ADR-017
+        # (null-means-not-applicable). Target version specificity is
+        # already carried by target_id; target_valid_from_version stays null.
         conn.execute(
             "UPDATE edges SET resolution_policy = ?, "
-            "source_valid_from_version = ?, target_valid_from_version = ? "
+            "source_valid_from_version = ? "
             "WHERE id = ?",
             (
                 ResolutionPolicy.TRANSITIVE_SOURCE.value,
                 source_id,
+                edge_id,
+            ),
+        )
+    for edge_id, _source_id, target_id in plan.transitive_target_edge_ids:
+        # Mirror of transitive_source: source anchor is not applicable.
+        conn.execute(
+            "UPDATE edges SET resolution_policy = ?, "
+            "target_valid_from_version = ? "
+            "WHERE id = ?",
+            (
+                ResolutionPolicy.TRANSITIVE_TARGET.value,
                 target_id,
                 edge_id,
             ),
@@ -192,6 +213,10 @@ def run_backfill(
         print(f"  policy=none:              {len(plan.none_edge_ids)}", file=out)
         print(
             f"  policy=transitive_source: {len(plan.transitive_source_edge_ids)}",
+            file=out,
+        )
+        print(
+            f"  policy=transitive_target: {len(plan.transitive_target_edge_ids)}",
             file=out,
         )
         print(

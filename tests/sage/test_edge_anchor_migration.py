@@ -138,7 +138,10 @@ def test_backfill_populates_all_three_policies(tmp_path):
         der = _read_edge(conn, "edge-der")
         assert der["resolution_policy"] == ResolutionPolicy.TRANSITIVE_SOURCE.value
         assert der["source_valid_from_version"] == "b1"
-        assert der["target_valid_from_version"] == "b2"
+        # transitive_source: target anchor is not applicable per CAS-ADR-017
+        # (target is frozen at derivation; version specificity carried by
+        # target_id). Backfill leaves target_valid_from_version null.
+        assert der["target_valid_from_version"] is None
 
         ref = _read_edge(conn, "edge-ref")
         assert ref["resolution_policy"] == ResolutionPolicy.TRANSITIVE_BOTH.value
