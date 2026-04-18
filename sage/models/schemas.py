@@ -7,12 +7,13 @@ extensions like 'filed' that aren't in the base enum.
 from datetime import datetime
 
 from pydantic import BaseModel, BeforeValidator, Field
-from typing import Annotated
+from typing import Annotated, Literal
 
 from sage.models.enums import (
     CatalogSortBy,
     EdgeType,
     PipelineStatus,
+    ResolutionPolicy,
     ResponseLevel,
     RetrievalMode,
     RetrievalScope,
@@ -73,8 +74,13 @@ class DocumentSummary(BaseModel):
 class Edge(BaseModel):
     id: str
     source_id: str
-    target_id: str
+    target_id: str | None = None
     edge_type: EdgeType
+    resolution_policy: ResolutionPolicy | None = None
+    source_valid_from_version: str | None = None
+    target_valid_from_version: str | None = None
+    valid_until_version: str | None = None
+    retracted_edge_id: str | None = None
     created_at: datetime
     notes: str | None = None
     rationale: str | None = None
@@ -159,10 +165,26 @@ class IngestResponse(BaseModel):
 
 class LinkRequest(BaseModel):
     source_id: str
-    target_id: str
+    target_id: str | None = None
     edge_type: EdgeType
+    source_valid_from_version: str | None = None
+    target_valid_from_version: str | None = None
+    retracted_edge_id: str | None = None
     notes: str | None = None
     rationale: str | None = None
+
+
+class ResolutionPathEntry(BaseModel):
+    event_type: Literal[
+        "anchor_hit", "anchor_miss", "retracts_applied", "tombstone_applied"
+    ]
+    edge_id: str
+    anchor_field: Literal[
+        "source_valid_from_version", "target_valid_from_version"
+    ] | None = None
+    anchor_version: str | None = None
+    retracted_edge_id: str | None = None
+    tombstone_version: str | None = None
 
 
 class TraverseRequest(BaseModel):
@@ -170,6 +192,7 @@ class TraverseRequest(BaseModel):
     edge_type: EdgeType | None = None
     direction: TraversalDirection = TraversalDirection.OUTBOUND
     depth: int = Field(default=3, ge=1, le=1000)
+    debug: bool = False
 
 
 class TraversalNode(BaseModel):
@@ -182,6 +205,7 @@ class TraversalNode(BaseModel):
 class TraverseResponse(BaseModel):
     start_id: str
     nodes: list[TraversalNode]
+    resolution_path: list[ResolutionPathEntry] | None = None
 
 
 class ChainRequest(BaseModel):

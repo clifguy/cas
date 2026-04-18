@@ -13,7 +13,7 @@ from sage.api.errors import (
     PipelineIncompleteError,
     SelfReferentialEdgeError,
 )
-from sage.models.enums import EdgeType, PipelineStatus, SourceType
+from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import ChainRequest, Document, Edge, LinkRequest, TraverseRequest
 
 
@@ -103,12 +103,16 @@ async def test_bh_031_duplicate_edges_permitted(graph_store, graph_ops_service):
         source_id="doc_a",
         target_id="doc_b",
         edge_type=EdgeType.REFERENCES,
+        source_valid_from_version="doc_a",
+        target_valid_from_version="doc_b",
         rationale="First rationale",
     ))
     edge2 = await graph_ops_service.link(LinkRequest(
         source_id="doc_a",
         target_id="doc_b",
         edge_type=EdgeType.REFERENCES,
+        source_valid_from_version="doc_a",
+        target_valid_from_version="doc_b",
         rationale="Updated understanding",
     ))
 
@@ -133,6 +137,8 @@ async def test_bh_032_edge_auto_generated_id(graph_store, graph_ops_service):
         source_id="doc_a",
         target_id="doc_b",
         edge_type=EdgeType.REFERENCES,
+        source_valid_from_version="doc_a",
+        target_valid_from_version="doc_b",
     ))
 
     assert edge.id
@@ -254,6 +260,9 @@ async def test_bh_037_traversal_deduplicates_with_edge_counts(
             source_id="doc_a",
             target_id="doc_b",
             edge_type=EdgeType.REFERENCES,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version="doc_a",
+            target_valid_from_version="doc_b",
             created_at=base_time + timedelta(hours=i),
             rationale=f"Rationale {i}",
         )
@@ -575,6 +584,9 @@ async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
             source_id="doc_a",
             target_id="doc_b",
             edge_type=EdgeType.COVERS,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version="doc_a",
+            target_valid_from_version="doc_b",
             created_at=now + timedelta(seconds=i),
         ))
 
@@ -604,6 +616,9 @@ async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
         source_id="doc_a",
         target_id="doc_b",
         edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version="doc_a",
+        target_valid_from_version="doc_b",
         created_at=datetime.now(timezone.utc),
     ))
 
@@ -680,6 +695,9 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
             source_id="doc_a",
             target_id="doc_b",
             edge_type=EdgeType.COVERS,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version="doc_a",
+            target_valid_from_version="doc_b",
             created_at=now + timedelta(seconds=i),
         ))
 
@@ -690,6 +708,9 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
             source_id="doc_b",
             target_id="doc_c",
             edge_type=EdgeType.REFERENCES,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version="doc_b",
+            target_valid_from_version="doc_c",
             created_at=now + timedelta(seconds=i),
         ))
 
@@ -719,6 +740,8 @@ async def test_unlink_deletes_existing_edge(graph_store, graph_ops_service):
         source_id="doc_a",
         target_id="doc_b",
         edge_type=EdgeType.REFERENCES,
+        source_valid_from_version="doc_a",
+        target_valid_from_version="doc_b",
     ))
 
     result = await graph_ops_service.unlink(edge.id)

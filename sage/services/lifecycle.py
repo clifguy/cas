@@ -16,7 +16,7 @@ from sage.api.errors import (
     MissingFieldError,
 )
 from sage.config import TransitionTable, VaultConfig, build_transition_table
-from sage.models.enums import EdgeType, TERMINAL_PIPELINE_STATUSES
+from sage.models.enums import EdgeType, ResolutionPolicy, TERMINAL_PIPELINE_STATUSES
 from sage.models.schemas import Document, Edge, SetLifecycleRequest, SetLifecycleResponse
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
@@ -112,6 +112,7 @@ class LifecycleService:
                     source_id=request.new_version_id,
                     target_id=document_id,
                     edge_type=EdgeType.SUPERSEDES,
+                    resolution_policy=ResolutionPolicy.NONE,
                     created_at=now,
                 )
                 updated_doc = await self._store.supersede_atomic(
@@ -174,6 +175,7 @@ class LifecycleService:
             source_id=new_version_id,
             target_id=predecessor.id,
             edge_type=EdgeType.SUPERSEDES,
+            resolution_policy=ResolutionPolicy.NONE,
             created_at=now,
         )
         return SupersedeTransition(

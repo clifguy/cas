@@ -779,7 +779,7 @@ staging_review_grouping: by_source_document
 
 **Artifact:** `docs/fs/sage/edge_inference.schema.json`
 **Category:** invalid
-**Constraint:** `edge_type` must be one of [supersedes, derived_from, covers, references, bundles_with, authoritative_for, depends_on, sync_target]
+**Constraint:** `edge_type` must be one of [supersedes, derived_from, instantiated_from, covers, references, bundles_with, authoritative_for, depends_on, sync_target, retracts, merged_from]
 
 **Input:**
 ```yaml
@@ -845,6 +845,98 @@ staging_review_grouping: "by_date"
 
 **Expected:** FAIL -- enum violation
 **Rationale:** Only defined grouping strategies are accepted.
+
+---
+
+## edge_type_registry.schema.json
+
+### TEST-SAGE-ER-001: Valid registry covering every EdgeType value
+
+**Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
+**Category:** valid
+**Constraint:** Registry accepts an entry for every EdgeType with a legal ResolutionPolicy
+
+**Input:**
+```yaml
+entries:
+  - edge_type: supersedes
+    resolution_policy: none
+  - edge_type: retracts
+    resolution_policy: none
+  - edge_type: merged_from
+    resolution_policy: none
+  - edge_type: derived_from
+    resolution_policy: transitive_source
+  - edge_type: instantiated_from
+    resolution_policy: transitive_both
+  - edge_type: covers
+    resolution_policy: transitive_both
+  - edge_type: references
+    resolution_policy: transitive_both
+  - edge_type: bundles_with
+    resolution_policy: transitive_both
+  - edge_type: depends_on
+    resolution_policy: transitive_both
+  - edge_type: authoritative_for
+    resolution_policy: TBD
+  - edge_type: sync_target
+    resolution_policy: TBD
+```
+
+**Expected:** PASS
+**Rationale:** The frozen CAS-ADR-017 assignment set must validate.
+
+### TEST-SAGE-ER-002: Invalid edge_type value
+
+**Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
+**Category:** invalid
+**Constraint:** `edge_type` must match EdgeType enum
+
+**Input:** Entry with `edge_type: "related_to"`.
+
+**Expected:** FAIL -- enum violation.
+**Rationale:** Registry must stay in sync with the authoritative EdgeType enum.
+
+### TEST-SAGE-ER-003: Invalid resolution_policy value
+
+**Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
+**Category:** invalid
+**Constraint:** `resolution_policy` must be one of [none, transitive_source, transitive_both, TBD]
+
+**Input:** Entry with `edge_type: covers, resolution_policy: "inherit"`.
+
+**Expected:** FAIL -- enum violation.
+
+### TEST-SAGE-ER-004: Missing required fields
+
+**Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
+**Category:** invalid
+**Constraint:** Each entry requires `edge_type` and `resolution_policy`
+
+**Input:** Entry with only `edge_type: covers`.
+
+**Expected:** FAIL -- `'resolution_policy' is a required property`.
+
+### TEST-SAGE-ER-005: Empty entries array rejected
+
+**Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
+**Category:** invalid
+**Constraint:** `entries` has `minItems: 1`
+
+**Input:** `{ "entries": [] }`
+
+**Expected:** FAIL -- minItems violation.
+**Rationale:** A registry with no entries is a configuration mistake, not a valid vault state.
+
+### TEST-SAGE-ER-006: Additional property on registry entry rejected
+
+**Artifact:** `docs/fs/sage/edge_type_registry.schema.json`
+**Category:** invalid
+**Constraint:** `additionalProperties: false` on entry items
+
+**Input:** Entry with `edge_type: covers, resolution_policy: transitive_both, inherit_from: foo`.
+
+**Expected:** FAIL -- additionalProperties violation.
 
 ---
 
@@ -993,3 +1085,75 @@ entries:
 
 **Expected:** Every path starts with `/sage_vaults/{vault_id}/`
 **Rationale:** Every operation is scoped to a single vault.
+
+### TEST-SAGE-API-005: EdgeType enum includes chain-resolution meta-edges
+
+**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (EdgeType schema)
+**Category:** valid
+**Constraint:** EdgeType enum is exactly [supersedes, derived_from, instantiated_from, covers, references, bundles_with, authoritative_for, depends_on, sync_target, retracts, merged_from]
+
+**Input:** Load `components.schemas.EdgeType.enum`.
+
+**Expected:** Enum set equals the constraint list (order-insensitive).
+**Rationale:** CAS-ADR-017 adds `instantiated_from`, `retracts`, `merged_from`. Drift here breaks registry validation.
+
+### TEST-SAGE-API-006: ResolutionPolicy enum defined
+
+**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (ResolutionPolicy schema)
+**Category:** valid
+**Constraint:** ResolutionPolicy enum is exactly [none, transitive_source, transitive_both, TBD]
+
+**Input:** Load `components.schemas.ResolutionPolicy.enum`.
+
+**Expected:** Enum set equals the constraint list.
+**Rationale:** Registry and Edge both reference this enum; drift corrupts resolution behavior.
+
+### TEST-SAGE-API-007: Edge schema carries anchor + retraction fields
+
+**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (Edge schema)
+**Category:** valid
+**Constraint:** Edge defines `resolution_policy` (required), `source_valid_from_version`, `target_valid_from_version`, `valid_until_version`, `retracted_edge_id` (all nullable), and `target_id` is nullable.
+
+**Input:** Load `components.schemas.Edge`.
+
+**Expected:**
+- `required` contains `resolution_policy`.
+- Properties `source_valid_from_version`, `target_valid_from_version`, `valid_until_version`, `retracted_edge_id` exist with `nullable: true`.
+- `target_id` has `nullable: true`.
+
+**Rationale:** CAS-ADR-017 depends on these fields being present at the contract boundary so Pydantic derivation and the migration script can key off a single source of truth.
+
+### TEST-SAGE-API-008: LinkRequest carries anchor + retracted_edge_id fields
+
+**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (LinkRequest schema)
+**Category:** valid
+**Constraint:** LinkRequest defines `source_valid_from_version`, `target_valid_from_version`, `retracted_edge_id` (all nullable); `target_id` is nullable; only `source_id` and `edge_type` remain required.
+
+**Input:** Load `components.schemas.LinkRequest`.
+
+**Expected:**
+- `required` equals `["source_id", "edge_type"]`.
+- The three anchor/retraction fields exist and are nullable.
+- `target_id` is nullable.
+
+**Rationale:** Retracts edges omit target_id; all other edges still require it via write-time validation.
+
+### TEST-SAGE-API-009: TraverseRequest carries debug flag
+
+**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml` (TraverseRequest schema)
+**Category:** valid
+**Constraint:** TraverseRequest.debug is a boolean with default false.
+
+**Input:** Load `components.schemas.TraverseRequest`.
+
+**Expected:** `properties.debug.type == "boolean"` and `default == false`.
+
+### TEST-SAGE-API-010: TraverseResponse defines resolution_path and ResolutionPathEntry
+
+**Artifact:** `docs/fs/sage/sage_core_api.openapi.yaml`
+**Category:** valid
+**Constraint:** TraverseResponse.resolution_path is a nullable array of ResolutionPathEntry; ResolutionPathEntry.event_type enum equals [anchor_hit, anchor_miss, retracts_applied, tombstone_applied].
+
+**Input:** Load `components.schemas.TraverseResponse` and `components.schemas.ResolutionPathEntry`.
+
+**Expected:** resolution_path is nullable array of `$ref: ResolutionPathEntry`; event_type enum matches exactly.

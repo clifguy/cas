@@ -16,12 +16,22 @@ class SourceType(StrEnum):
 class EdgeType(StrEnum):
     SUPERSEDES = "supersedes"
     DERIVED_FROM = "derived_from"
+    INSTANTIATED_FROM = "instantiated_from"
     COVERS = "covers"
     REFERENCES = "references"
     BUNDLES_WITH = "bundles_with"
     AUTHORITATIVE_FOR = "authoritative_for"
     DEPENDS_ON = "depends_on"
     SYNC_TARGET = "sync_target"
+    RETRACTS = "retracts"
+    MERGED_FROM = "merged_from"
+
+
+class ResolutionPolicy(StrEnum):
+    NONE = "none"
+    TRANSITIVE_SOURCE = "transitive_source"
+    TRANSITIVE_BOTH = "transitive_both"
+    TBD = "TBD"
 
 
 class PipelineStatus(StrEnum):

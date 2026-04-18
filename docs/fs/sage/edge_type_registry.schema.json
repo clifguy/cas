@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/sage/edge_type_registry.schema.json",
+  "title": "SAGE Edge Type Registry",
+  "description": "Per-vault registry assigning a resolution_policy to every edge type used by the vault. Consulted at edge creation (write-time invariant enforcement) and at traversal (chain-scoped resolution). Frozen per-edge at creation: the policy value is copied onto the edge row so later registry edits do not retroactively change resolution behavior for existing edges. See CAS-ADR-017.",
+  "type": "object",
+  "required": ["entries"],
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "type": "array",
+      "description": "Registry entries. Every edge type that appears in the vault's graph must have an entry. Entries for unused edge types are permitted.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["edge_type", "resolution_policy"],
+        "additionalProperties": false,
+        "properties": {
+          "edge_type": {
+            "type": "string",
+            "enum": [
+              "supersedes",
+              "derived_from",
+              "instantiated_from",
+              "covers",
+              "references",
+              "bundles_with",
+              "authoritative_for",
+              "depends_on",
+              "sync_target",
+              "retracts",
+              "merged_from"
+            ],
+            "description": "The edge type whose resolution policy is being declared."
+          },
+          "resolution_policy": {
+            "type": "string",
+            "enum": ["none", "transitive_source", "transitive_both", "TBD"],
+            "description": "How chain-scoped resolution treats edges of this type. `none`: meta-edge / lineage fact, no propagation; `transitive_source`: source anchor must be in lineage, target frozen at derivation; `transitive_both`: both anchors participate in lineage resolution; `TBD`: policy not yet frozen, write-time creation is rejected."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Optional free-text explanation of the policy choice."
+          }
+        }
+      }
+    }
+  }
+}

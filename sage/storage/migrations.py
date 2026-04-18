@@ -4,7 +4,7 @@ Executed at vault initialization. All tables use IF NOT EXISTS for
 idempotent re-initialization.
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DOCUMENTS_TABLE = """\
 CREATE TABLE IF NOT EXISTS documents (
@@ -40,8 +40,13 @@ EDGES_TABLE = """\
 CREATE TABLE IF NOT EXISTS edges (
     id TEXT PRIMARY KEY,              -- UUID (BH-032)
     source_id TEXT NOT NULL,
-    target_id TEXT NOT NULL,
+    target_id TEXT,                   -- nullable on `retracts` edges (CAS-ADR-017)
     edge_type TEXT NOT NULL,
+    resolution_policy TEXT,           -- frozen policy (CAS-ADR-017), populated by write-time validator
+    source_valid_from_version TEXT,   -- source-chain anchor (CAS-ADR-017)
+    target_valid_from_version TEXT,   -- target-chain anchor (CAS-ADR-017)
+    valid_until_version TEXT,         -- tombstone from merged_from termination (CAS-ADR-017)
+    retracted_edge_id TEXT,           -- edge instance being retracted (CAS-ADR-017)
     created_at TEXT NOT NULL,
     notes TEXT,
     rationale TEXT,
@@ -93,6 +98,14 @@ MIGRATIONS = [
     "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;",
     # v3 -> v4: document date metadata (BH-062)
     "ALTER TABLE documents ADD COLUMN document_date TEXT;",
+    # Chain-scoped edge resolution anchors and retracts target (CAS-ADR-017).
+    # All nullable; FKs enforced at the application layer since SQLite
+    # ALTER TABLE cannot add FK constraints.
+    "ALTER TABLE edges ADD COLUMN resolution_policy TEXT;",
+    "ALTER TABLE edges ADD COLUMN source_valid_from_version TEXT;",
+    "ALTER TABLE edges ADD COLUMN target_valid_from_version TEXT;",
+    "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;",
+    "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;",
 ]
 
 TABLES = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE]

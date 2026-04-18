@@ -212,6 +212,8 @@ async def test_link_201(app, client):
             "source_id": doc_id_a,
             "target_id": doc_id_b,
             "edge_type": "references",
+            "source_valid_from_version": doc_id_a,
+            "target_valid_from_version": doc_id_b,
             "rationale": "test link",
         },
     )

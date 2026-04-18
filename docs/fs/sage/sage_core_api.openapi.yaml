@@ -466,7 +466,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/Edge"
         "400":
-          description: Invalid edge type or self-referential edge.
+          description: >-
+            Invalid edge type, self-referential edge, or chain-scoped
+            resolution contract violation (CAS-ADR-017). Error codes:
+            EDGE_ANCHOR_POLICY_VIOLATION (anchor fields missing,
+            forbidden, or not in lineage for the edge type's
+            resolution_policy); RETRACT_TARGET_NOT_EDGE
+            (retracted_edge_id does not identify an existing edge in
+            this vault); MERGED_FROM_VALIDATION (merged_from chain-head
+            / chain-terminal validation failed); TBD_POLICY_EDGE
+            (attempt to create an edge whose registry policy is TBD).
           content:
             application/json:
               schema:
@@ -861,16 +870,54 @@ components:
       enum:
         - supersedes
         - derived_from
+        - instantiated_from
         - covers
         - references
         - bundles_with
         - authoritative_for
         - depends_on
         - sync_target
+        - retracts
+        - merged_from
       description: >-
         Typed, directed relationship between documents. See SAGE
         Architecture Reference Section 4.6 for semantics and traversal
-        use cases.
+        use cases. Each edge type has a resolution_policy declared in
+        the vault's edge_type_registry controlling how chain-scoped
+        resolution treats it during traversal (CAS-ADR-017).
+
+        `instantiated_from` models live-tracking derivation (e.g., a
+        checklist instantiated from a template that should propagate
+        template updates). `retracts` is a meta-edge pointing at an
+        earlier edge instance that the retracting chain now disclaims.
+        `merged_from` is a meta-edge recording that a successor chain
+        absorbs predecessor chains, tombstoning their downstream edges.
+
+    ResolutionPolicy:
+      type: string
+      enum:
+        - none
+        - transitive_source
+        - transitive_both
+        - TBD
+      description: >-
+        How the chain-scoped edge resolver treats an edge type during
+        traversal (CAS-ADR-017).
+
+        `none`: the edge is a lineage fact, not a propagating relationship
+        (meta-edges: supersedes, retracts, merged_from).
+
+        `transitive_source`: the edge's source anchor must lie in the
+        queried document's supersedes lineage; target is frozen at the
+        edge's target_valid_from_version (e.g., derived_from).
+
+        `transitive_both`: both source and target anchors must lie in
+        their respective chains' lineages relative to the query document
+        (e.g., covers, references, bundles_with, depends_on,
+        instantiated_from).
+
+        `TBD`: policy not yet frozen. Any attempt to create or migrate an
+        edge with a TBD policy raises a write-time error.
 
     LifecycleStatus:
       type: string
@@ -1141,12 +1188,18 @@ components:
       description: >-
         A typed, directed relationship between two documents in the
         graph store. Duplicate edges (same source, target, type) are
-        permitted; each has a unique id.
+        permitted; each has a unique id. Anchor fields
+        (source_valid_from_version, target_valid_from_version,
+        valid_until_version) and retracted_edge_id participate in
+        chain-scoped resolution (CAS-ADR-017); which anchor fields are
+        required at write time depends on the edge type's
+        resolution_policy.
       required:
         - id
         - source_id
         - target_id
         - edge_type
+        - resolution_policy
         - created_at
       properties:
         id:
@@ -1160,9 +1213,53 @@ components:
           description: Origin document ID.
         target_id:
           type: string
-          description: Target document ID.
+          nullable: true
+          description: >-
+            Target document ID. Null on `retracts` edges, which target
+            an edge instance rather than a document (see
+            retracted_edge_id).
         edge_type:
           $ref: "#/components/schemas/EdgeType"
+        resolution_policy:
+          $ref: "#/components/schemas/ResolutionPolicy"
+          description: >-
+            Effective resolution policy, copied from the vault's
+            edge_type_registry at edge creation time. Frozen on the
+            row so later registry edits do not retroactively change
+            resolution behavior for existing edges.
+        source_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Document ID of the version on the source chain where this
+            edge becomes applicable. Required for policies
+            `transitive_source` and `transitive_both`; must be null for
+            policy `none` (except `retracts`, which carries a one-sided
+            anchor on the retracting chain).
+        target_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Document ID of the version on the target chain where this
+            edge becomes applicable. Required for policy
+            `transitive_both`; frozen at edge creation for policy
+            `transitive_source` and copied from target_id; must be null
+            for policy `none`.
+        valid_until_version:
+          type: string
+          nullable: true
+          description: >-
+            Document ID marking the chain head at which this edge is
+            tombstoned by a `merged_from` termination. Null on a live
+            edge. Set atomically by the merge operation on predecessor
+            edges. Resolution ignores tombstoned edges downstream of
+            this version.
+        retracted_edge_id:
+          type: string
+          nullable: true
+          description: >-
+            Set only on `retracts` edges; identifies the edge instance
+            being retracted. Null on all other edge types.
         created_at:
           type: string
           format: date-time
@@ -1437,16 +1534,53 @@ components:
 
     LinkRequest:
       type: object
-      required: [source_id, target_id, edge_type]
+      required: [source_id, edge_type]
+      description: >-
+        Create an edge. target_id is required for all edge types except
+        `retracts` (which uses retracted_edge_id instead). Anchor fields
+        (source_valid_from_version, target_valid_from_version) are
+        required, optional, or forbidden depending on the edge type's
+        resolution_policy per CAS-ADR-017. Write-time validation enforces
+        the policy-keyed invariant and returns 400
+        EDGE_ANCHOR_POLICY_VIOLATION on violation. Creating an edge whose
+        registry policy is `TBD` returns 400 TBD_POLICY_EDGE.
       properties:
         source_id:
           type: string
           description: Origin document ID.
         target_id:
           type: string
-          description: Target document ID.
+          nullable: true
+          description: >-
+            Target document ID. Must be null on `retracts` edges;
+            required for every other edge type.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
+        source_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Document ID on the source chain where this edge becomes
+            applicable. Required for policies `transitive_source` and
+            `transitive_both`; also required (one-sided) for `retracts`.
+            Must be null for policy `none` on non-retracts edges. Must
+            lie in the supersedes lineage of source_id (or of the
+            retracting chain head for `retracts`).
+        target_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Document ID on the target chain where this edge becomes
+            applicable. Required for policy `transitive_both`; must be
+            null for policies `transitive_source`, `none`, and for
+            `retracts` edges. Must lie in the supersedes lineage of
+            target_id when supplied.
+        retracted_edge_id:
+          type: string
+          nullable: true
+          description: >-
+            Required for `retracts` edges; must identify an existing
+            edge in this vault. Must be null for all other edge types.
         notes:
           type: string
           nullable: true
@@ -1481,6 +1615,15 @@ components:
           maximum: 50
           default: 3
           description: Maximum traversal depth.
+        debug:
+          type: boolean
+          default: false
+          description: >-
+            When true, the response populates `resolution_path` with a
+            per-event trace of chain-scoped resolution decisions
+            (anchor hits and misses, retractions applied, tombstones
+            applied). Opt-in; response is unchanged when false
+            (CAS-ADR-017).
 
     ChainRequest:
       type: object
@@ -1675,6 +1818,68 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TraversalNode"
+        resolution_path:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/ResolutionPathEntry"
+          description: >-
+            Per-event trace of chain-scoped resolution decisions.
+            Present only when the request set `debug: true`; otherwise
+            null / omitted. Useful for diagnosing why an expected edge
+            was suppressed or why an unexpected edge surfaced.
+
+    ResolutionPathEntry:
+      type: object
+      required: [event_type, edge_id]
+      description: >-
+        One decision event from the chain-scoped edge resolver
+        (CAS-ADR-017). Discriminated by `event_type`.
+      properties:
+        event_type:
+          type: string
+          enum:
+            - anchor_hit
+            - anchor_miss
+            - retracts_applied
+            - tombstone_applied
+          description: >-
+            anchor_hit: the edge's anchor was found in the queried
+            version's supersedes lineage and the edge surfaced.
+            anchor_miss: anchor lay outside the lineage; edge
+            suppressed. retracts_applied: a `retracts` edge in the
+            queried lineage caused this edge to be suppressed.
+            tombstone_applied: a `merged_from` tombstone
+            (valid_until_version set) caused this edge to be suppressed
+            at the queried version.
+        edge_id:
+          type: string
+          description: The edge id whose resolution produced this event.
+        anchor_field:
+          type: string
+          nullable: true
+          enum: [source_valid_from_version, target_valid_from_version]
+          description: >-
+            Which anchor was checked. Populated for anchor_hit and
+            anchor_miss.
+        anchor_version:
+          type: string
+          nullable: true
+          description: >-
+            The document ID stored in the anchor field at the time of
+            the check. Populated for anchor_hit and anchor_miss.
+        retracted_edge_id:
+          type: string
+          nullable: true
+          description: >-
+            On retracts_applied: the edge id of the `retracts` edge
+            whose application produced this event.
+        tombstone_version:
+          type: string
+          nullable: true
+          description: >-
+            On tombstone_applied: the valid_until_version that
+            tombstoned the edge.
 
     TraversalNode:
       type: object

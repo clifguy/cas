@@ -249,13 +249,13 @@ async def test_link_creates_edge(vault_services):
             "test_vault",
             doc_a["id"],
             doc_b["id"],
-            "references",
+            "supersedes",
             rationale="test link",
         )
     )
     assert result["source_id"] == doc_a["id"]
     assert result["target_id"] == doc_b["id"]
-    assert result["edge_type"] == "references"
+    assert result["edge_type"] == "supersedes"
     assert "id" in result
 
 
@@ -293,7 +293,7 @@ async def test_traverse_returns_nodes(vault_services):
     doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    await sage_link("test_vault", doc_a["id"], doc_b["id"], "references")
+    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
     result = _parse(await sage_traverse("test_vault", doc_a["id"]))
     assert result["start_id"] == doc_a["id"]

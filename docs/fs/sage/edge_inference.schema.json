@@ -17,8 +17,8 @@
         "properties": {
           "edge_type": {
             "type": "string",
-            "enum": ["supersedes", "derived_from", "covers", "references", "bundles_with", "authoritative_for", "depends_on", "sync_target"],
-            "description": "The edge type being assigned to a tier."
+            "enum": ["supersedes", "derived_from", "instantiated_from", "covers", "references", "bundles_with", "authoritative_for", "depends_on", "sync_target", "retracts", "merged_from"],
+            "description": "The edge type being assigned to a tier. Must be a member of the EdgeType enum in the SAGE Core API; resolution_policy for each edge type is declared separately in the vault's edge_type_registry (CAS-ADR-017)."
           },
           "tier": {
             "type": "integer",

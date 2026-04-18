@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.11",
+  "manifest_version": "0.9.12",
   "manifest_date": "2026-04-18",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -21,10 +21,11 @@
         "docs/fs/sage/source_adapters.schema.json",
         "docs/fs/sage/metadata_extraction.schema.json",
         "docs/fs/sage/edge_inference.schema.json",
+        "docs/fs/sage/edge_type_registry.schema.json",
         "docs/fs/sage/decision_log.schema.json",
         "docs/fs/sage/sage_core_api.openapi.yaml"
       ],
-      "test_count": 53
+      "test_count": 65
     },
     {
       "path": "tests/root_harness/contract_tests.md",
@@ -175,6 +176,21 @@
       "test_count": 4,
       "decision_date": "2026-04-16",
       "notes": "CAS-ADR-016: SAGE normalizes UI-layer file metadata on ingest. UIN-001 (integration): BSD UF_HIDDEN chflag cleared on ingest -- the empirically observed Cowork vector. UIN-002 (unit): com.apple.FinderInfo invisible bit cleared by the sanitization helper (defensive path). UIN-003 (unit): non-invisibility FinderInfo bytes (type/creator codes, color labels) preserved. UIN-004 (resilience, cross-platform): plain file with no UI markers ingests without error. macOS-specific tests gated by pytest.mark.skipif(sys.platform != 'darwin')."
+    },
+    {
+      "path": "tests/sage/chain_resolution_tests.md",
+      "tier": 2,
+      "title": "SAGE Chain Resolution Tests",
+      "status": "specified",
+      "covers": [
+        "docs/fs/sage/sage_core_api.openapi.yaml",
+        "docs/fs/sage/edge_type_registry.schema.json",
+        "sage/services/graph_ops.py",
+        "sage/storage/graph_store.py"
+      ],
+      "test_count": 45,
+      "decision_date": "2026-04-18",
+      "notes": "CAS-ADR-017: chain-scoped edge resolution with anchor and retraction primitives. Six sections: write-time invariant enforcement (CR-001 through CR-012, 12 tests); traverse honors policy + anchors (CR-013 through CR-022, 10 tests); retracts edge end-to-end (CR-023 through CR-028, 6 tests); merged_from + tombstoning (CR-029 through CR-036, 8 tests); resolution_path debug payload (CR-037 through CR-042, 6 tests); registry coverage and TBD handling (CR-043 through CR-045, 3 tests). Canonical worked example: Chain A a1..a8, Chain B b1..b4, covers edge anchored at a3/b2. Encodes the frozen 11-row resolution_policy registry."
     }
   ],
   "fixture_directories": {
@@ -261,6 +277,11 @@
       "version": "0.9.11",
       "date": "2026-04-18",
       "summary": "Transactional supersede. 2 new behavioral tests (BH-135, BH-136) in tests/sage/test_supersede_atomicity.py. BH-135: lifecycle.set_lifecycle's supersede branch now wraps the predecessor lifecycle flip and the supersedes-edge insert in a single SQLite transaction via the new GraphStore.supersede_atomic primitive; an injected mid-transaction failure leaves the predecessor active rather than archived-without-edge. BH-136: ingest's new-document branch wraps the doc insert + predecessor flip + edge insert in a single transaction via the new GraphStore.insert_with_supersede_atomic primitive (LifecycleService.prepare_supersede produces the validated transition without writing); an injected mid-transaction failure leaves no orphan successor record. The orphan class Cowork observed with PV02 (successor record exists, predecessor still active, no supersedes edge) is closed by construction. The PV02 orphan itself will be repaired by a one-time surgical fix rather than a permanent repair API. Behavioral test count: 134 -> 136."
+    },
+    {
+      "version": "0.9.12",
+      "date": "2026-04-18",
+      "summary": "Chain-scoped edge resolution test specifications (CAS-ADR-017, Chunk 1). New file tests/sage/chain_resolution_tests.md with 45 tier-2 behavioral tests (TEST-SAGE-CR-001 through CR-045) across six sections: write-time invariant enforcement by resolution_policy (12 tests), traverse honoring policy and anchor-in-lineage filtering (10 tests), retracts edge end-to-end (6 tests), merged_from + tombstoning (8 tests), resolution_path debug payload (6 tests), and registry coverage / TBD handling (3 tests). Canonical worked example: Chain A (a1..a8), Chain B (b1..b4), covers edge anchored at a3/b2. Encodes the frozen 11-row resolution_policy registry: supersedes/retracts/merged_from=none, derived_from=transitive_source, covers/references/bundles_with/depends_on/instantiated_from=transitive_both, authoritative_for/sync_target=TBD. tests/sage/contract_tests.md extended: new edge_type_registry.schema.json section (TEST-SAGE-ER-001 through ER-006, 6 tests) validates the new registry schema; new TEST-SAGE-API-005 through API-010 (6 tests) verify the extended EdgeType enum, the new ResolutionPolicy enum, Edge anchor-field shape, LinkRequest shape, TraverseRequest.debug, and TraverseResponse.resolution_path / ResolutionPathEntry. Contract test count: 53 -> 65."
     }
   ]
 }

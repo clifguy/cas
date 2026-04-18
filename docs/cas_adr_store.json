@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.12",
+  "schema_version": "1.13",
   "description": "Architecture Decision Record store for Clif's Agentic System (CAS), comprising SAGE, ROOT Harness, and related artifacts",
   "canonical_document_names": [
     "CAS Overview",
@@ -1145,6 +1145,90 @@
         "On Linux and Windows, the sanitization step is a no-op.",
         "Generalizes: future UI-layer metadata mechanisms (quarantine flags, Spotlight tags, cloud-sync flags) are evaluated under the same principle. When a marker encodes source-artifact UI intent rather than canonical-artifact semantics, SAGE strips it on ingest.",
         "SAGE Architecture Reference Section 3.4 (Ingestion) updated to document the UI-normalization step as part of the external-file import path."
+      ]
+    },
+    {
+      "id": "ADR-017",
+      "title": "Chain-scoped edge resolution with anchor and retraction primitives",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-04-18",
+      "created_by": "Clif + Claude session",
+      "scope": "sage",
+      "tags": [
+        "sage",
+        "edges",
+        "supersedes",
+        "graph-semantics",
+        "chain-resolution"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "Formal Substrate"
+      ],
+      "context": "SAGE's edge model was designed with a simple mental picture: edges attach version-to-version, and transitive resolution through supersedes finds current endpoints. This works for asymmetric edges where one endpoint is a supersede chain and the other is a stable artifact; resolution walks the chain from the non-stable endpoint to find the current head. Real-world use has revealed a different shape in which both endpoints are independently advancing supersede chains. Each chain supersedes on its own schedule, and the semantic claim expressed by the edge is about the two chain identities, not about any particular version pair. The claim remains true as long as both chains exist. Naive transitive inheritance through supersedes produces three failures under this shape: (1) chain-to-chain relationships get redundantly re-expressed at every version pair; (2) mid-chain edge introduction retroactively applies the edge to predecessors that never had it; (3) mid-chain edge retraction still surfaces the old edge on downstream versions.",
+      "options_considered": [
+        {
+          "option": "Pure transitive inheritance through supersedes (status quo implicit model)",
+          "summary": "Edges attach to specific versions. Resolution walks the supersedes chain from both endpoints to find current heads.",
+          "pros": [
+            "Minimal primitives; nothing new to implement",
+            "Works correctly for asymmetric edges with one stable endpoint"
+          ],
+          "cons": [
+            "Cannot express chain-to-chain relationships correctly",
+            "Retroactively applies mid-chain edge introductions to predecessors",
+            "Cannot represent edge retraction without mutating history",
+            "Requires redundant edge creation to track chain-pair relationships faithfully"
+          ]
+        },
+        {
+          "option": "Re-anchor edges on every supersede event",
+          "summary": "On each supersede, edges are explicitly copied forward from the predecessor version to the successor, with any introductions or retractions expressed as differences.",
+          "pros": [
+            "Each version fully self-describes its edges",
+            "No resolver logic beyond direct edge lookup"
+          ],
+          "cons": [
+            "Edge count grows linearly with chain length, duplicating stable relationships",
+            "No distinction between stable chain-to-chain edges and per-version edges",
+            "Every supersede event becomes an edge-maintenance ceremony"
+          ]
+        },
+        {
+          "option": "Chain-scoped edge resolution with anchor and retraction primitives (chosen)",
+          "summary": "Each edge type declares its resolution policy: transitive on source, on target, on both, or neither. Edges carry two nullable anchor fields (source_valid_from_version, target_valid_from_version) governed by policy. Retractions are first-class edges anchored on the chain taking the governance action. Chain merges are marked by a first-class merged_from edge and require manual re-attachment on the successor chain.",
+          "pros": [
+            "One edge per chain-pair relationship, forever",
+            "Mid-chain introduction and retraction are representable without rewriting history",
+            "Edge semantics declared once per type, not per instance",
+            "Merge events become explicit review checkpoints rather than silent inheritance",
+            "Audit trail preserves historical coverage for time-travel queries"
+          ],
+          "cons": [
+            "Adds an edge-type registry with resolution-policy metadata",
+            "sage_traverse grows a registry lookup step",
+            "Existing edges need migration to carry anchor fields",
+            "Chain merges require explicit re-attachment tooling and human confirmation"
+          ]
+        }
+      ],
+      "decision": "SAGE adopts chain-scoped edge resolution. Every edge type declares a resolution_policy drawn from a four-valued enumeration: transitive_source, transitive_target, transitive_both, none. The edge-type registry carrying this declaration lives in SAGE core, not in vault configuration, to ensure consistent graph semantics across all vaults. Every edge row carries two nullable anchor fields, source_valid_from_version and target_valid_from_version, each referencing a document_id that identifies a chain member via its supersedes lineage. Chain identity is implicit: a document_id uniquely identifies its chain through the supersedes edges leading to it. Explicit chain_id is not introduced; the error-recovery procedure for the rare case of re-pointing a supersedes edge is documented separately and requires re-evaluation of edges keyed on the reassigned document_id. A write-time validator invariant governs which anchor fields must be populated, determined declaratively from resolution_policy: transitive_source requires source_valid_from_version and forbids target_valid_from_version; transitive_target is the mirror; transitive_both requires both; none forbids both (version specificity is already carried by the edge's source and target document_ids). Edge retraction is expressed by a first-class retracts edge. Its target is the specific edge instance being retracted, addressed by edge_id or equivalent stable key; its anchor identifies the version on the retracting chain from which the retraction takes effect going forward. Retraction is one-sided: the chain on which the retracts edge is anchored is the chain taking the governance action, and retraction applies from that chain's side. The counterpart chain's evolution is unaffected. Chain merges are marked by a first-class merged_from edge whose source is the first version of the successor chain and whose target is the terminal version of each predecessor chain. Chains are not first-class graph nodes; merged_from is an ordinary edge whose semantics express chain-level provenance. On merge, predecessor edges are tombstoned by setting valid_until_version on the edge at the terminal predecessor version; edges on the successor chain must be explicitly re-attached through tooling that surfaces predecessor edges for review. Auto-migration is forbidden. The meta-edges supersedes, retracts, and merged_from all carry resolution_policy: none. They are version-specific facts about lineage state, not relationships that propagate through it. The supersedes operation remains edge-free with respect to outbound edges on the superseded version: sage_ingest with supersedes_document_id does not propagate outbound edges forward, and the resolver performs inheritance walks at query time using the anchor and retraction primitives. sage_traverse is modified to consult the edge-type registry during chain walks and to honor anchor and retraction semantics.",
+      "rationale": "The chain-versus-version distinction is real and load-bearing. Relationships that persist across version turnover should be expressed as chain-to-chain edges with declared resolution policy, keeping the graph's edge count proportional to semantic relationships rather than to version cardinality. Anchoring via a document_id chain member, rather than a wall-clock timestamp, is robust to backfills, replays, and clock skew. First-class retraction edges preserve audit trails and support time-travel queries, which mutation-based approaches cannot. Anchoring retractions at the successor version, rather than the predecessor, matches the mental model that retraction takes effect going forward. Two separate nullable anchor fields, rather than a tuple-valued field, is the right schema shape for five reinforcing reasons. Uniform schema: every edge row has the same columns regardless of resolution_policy, so the resolver, traversal API, validators, and debug tooling read the relevant field directly without branching to interpret the schema. Standard null semantics: a null source_valid_from_version on a transitive_target edge is not a special case but a declaration of 'not applicable,' handled natively by every storage layer. Queryability: predicates like 'find all edges whose source anchor is a chain member of X' are indexed column queries; tuple variants would degrade into JSON blobs (losing indexability) or composite types (awkward for query planners). Policy evolution: adding a new resolution_policy in the future is schema-additive rather than schema-invasive; tuple variants would force reinterpretation of existing rows. Validator simplicity: the write-time invariant becomes a declarative table lookup from policy to required fields, enforced at the edge-write boundary rather than caught later by the resolver. Two distinct retraction mechanisms exist because they reflect different causes. In-chain retractions are governance events: a steward or agent decides that a relationship no longer holds from some version forward, and that decision is itself an auditable fact worth preserving as a first-class edge. Merge-triggered tombstones are mechanical consequences of a chain-topology operation; no separate governance act is occurring. Collapsing both into a single valid_until_version mechanism would lose the distinction between deliberate retraction and structural termination. Chain identity is kept implicit (via document_id through supersedes lineage) to avoid a schema addition whose benefit is marginal in the expected use pattern. Representing chain merges as first-class merged_from edges (rather than a marker on the terminal supersede) keeps chain lineage queryable, generalizes to forks, and cleanly separates version-level succession (supersedes) from chain-level provenance (merged_from). Requiring explicit re-attachment on merge converts a silent-inheritance hazard into a review checkpoint: the new chain's coverage may be a superset, subset, or reorganization of its predecessors, and the architecture should not assume any of the three. Worked example illustrating interval composition. Consider two chains: chain A with versions a1 through a9 and chain B with versions b1 through b5. At time T1, a covers edge with resolution_policy transitive_both is introduced between the chains, with source_valid_from_version = a3 and target_valid_from_version = b2. A query at (a5, b3) resolves to the edge: a5 is downstream of a3, b3 is downstream of b2, no retraction exists. At time T2, a retracts edge is introduced targeting the covers edge, anchored on chain A at a7. A query at (a8, b4) locates the covers edge during the walk, detects the retraction anchored at a7 (upstream of a8), and short-circuits; the edge does not surface. A query at (a6, b3) locates the covers edge and detects no retraction upstream of a6; the edge surfaces. At time T3, chain A is superseded into a new chain C via merge; a merged_from edge is attached from c1 to a9, and the covers edge's valid_until_version is set to a9. A query starting from c2 does not find the covers edge on chain A (it terminates at a9), and no covers edge on chain C exists until someone explicitly re-attaches one. This composition is the full set of interactions the resolver must handle. The merged_from edge type is substrate-level infrastructure. No immediate operational need forces its implementation. It is included now for shape coherence: the anchor and retraction primitives compose correctly only if the chain-topology operations are treated as first-class primitives at the same layer. Designing merged_from when the first merge occurs would either force a retrofitted change to established schemas or admit a silent-inheritance hazard for the first merge event.",
+      "consequences": [
+        "SAGE's edge schema gains source_valid_from_version and target_valid_from_version, both nullable document_id references, plus valid_until_version (nullable) used exclusively for merge-triggered tombstoning.",
+        "A write-time validator enforces the invariant that populated anchor fields match resolution_policy: transitive_source requires source only, transitive_target requires target only, transitive_both requires both, none forbids both. Violations are refused at the edge-write boundary.",
+        "The edge-type registry lives in SAGE core and gains a resolution_policy field with an enumerated type over {transitive_source, transitive_target, transitive_both, none}. The meta-edges supersedes, retracts, and merged_from all carry resolution_policy: none.",
+        "Two new edge types are introduced: retracts (governance-level edge retraction, anchored on the retracting chain, targeting the retracted edge instance) and merged_from (chain-level provenance, source at the first version of the successor chain, target at the terminal version of each predecessor).",
+        "sage_traverse is modified to consult the edge-type registry and honor anchor and retraction semantics during chain walks. Its return shape gains a resolution_path field, populated under a debug flag, exposing the edge instances consulted, the anchors evaluated, and any retractions applied during resolution.",
+        "sage_ingest with supersedes_document_id remains edge-free with respect to outbound edges on the superseded version: edges are not propagated at ingest time. The resolver performs inheritance walks at query time.",
+        "Existing edges require a one-time migration to populate anchor fields. For transitive_source edges, source_valid_from_version is set to the edge's source document_id (the edge becomes valid as of the version at which it was attached) and target_valid_from_version remains null; the mirror policy applies to transitive_target. No other edge data is touched.",
+        "Chain merges require tooling that surfaces predecessor edges for review on the successor chain and proposes re-attachments. Auto-migration is explicitly forbidden.",
+        "Performance envelope: transitive_both edges over chains accumulating many versions incur compounding chain-walk cost at query time. The resolver MAY cache per-chain-head edge sets with invalidation on supersedes ingest, retracts ingest, or merged_from ingest. Cache design is deferred to implementation; the ADR establishes that caching is expected but not normatively specified.",
+        "The Formal Substrate edge schema documents the four-valued resolution_policy enumeration, the source_valid_from_version / target_valid_from_version / valid_until_version field semantics, the retracts and merged_from edge types, and the write-time invariant. The Formal Substrate manifest updates to reflect these additions.",
+        "Time-travel queries become expressible: historical edge state at any version is recoverable through anchor and retraction markers without mutating current edges.",
+        "Chain-to-chain edges are attached once at relationship instantiation and otherwise untouched; routine version advancement does not touch the edge table.",
+        "An error-recovery procedure for re-pointing a supersedes edge (the rare case where a document is reassigned to a different chain) is documented separately and requires re-evaluation of edges whose anchor fields reference the reassigned document_id. Implicit chain identity otherwise remains uncompromised."
       ]
     }
   ]

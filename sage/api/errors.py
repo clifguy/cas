@@ -387,6 +387,95 @@ class ContentDeliveryConflictError(SAGEError):
         )
 
 
+class EdgeAnchorPolicyViolationError(SAGEError):
+    """400: edge violates the resolution-policy write-time invariant (CAS-ADR-017).
+
+    The invariant matrix is policy-keyed:
+      - none (non-retracts): all anchor fields null, target_id required.
+      - retracts: target_id null, retracted_edge_id required, source-side anchor only.
+      - transitive_source: source-side anchor required; no target-side anchor.
+      - transitive_both: both anchors required.
+    """
+
+    def __init__(
+        self,
+        edge_type: str,
+        resolution_policy: str,
+        violation: str,
+        offending_fields: list[str] | None = None,
+    ) -> None:
+        detail: dict = {
+            "edge_type": edge_type,
+            "resolution_policy": resolution_policy,
+            "violation": violation,
+        }
+        if offending_fields is not None:
+            detail["offending_fields"] = offending_fields
+        super().__init__(
+            "edge_anchor_policy_violation",
+            f"Edge violates resolution_policy '{resolution_policy}' invariant: {violation}",
+            400,
+            detail,
+        )
+
+
+class TBDPolicyEdgeError(SAGEError):
+    """400: attempted to create an edge whose registry policy is TBD (CAS-ADR-017)."""
+
+    def __init__(self, edge_type: str) -> None:
+        super().__init__(
+            "tbd_policy_edge",
+            (
+                f"Cannot create edge of type '{edge_type}': its resolution_policy "
+                "is TBD. Freeze the policy in the edge_type_registry before use."
+            ),
+            400,
+            {"edge_type": edge_type},
+        )
+
+
+class RetractTargetNotEdgeError(SAGEError):
+    """400: retracts edge references an unknown edge id (CAS-ADR-017, Chunk 5)."""
+
+    def __init__(self, retracted_edge_id: str) -> None:
+        super().__init__(
+            "retract_target_not_edge",
+            (
+                f"retracts edge references edge id '{retracted_edge_id}' that "
+                "does not exist in the edges table"
+            ),
+            400,
+            {"retracted_edge_id": retracted_edge_id},
+        )
+
+
+class MergedFromValidationError(SAGEError):
+    """400: merged_from edge violates chain-position invariants (CAS-ADR-017, Chunk 6).
+
+    The source (successor) must be the first version of its chain (no
+    outbound supersedes edges from it) and the target (predecessor) must
+    be the chain head (no supersedes edge points at it).
+    """
+
+    def __init__(
+        self,
+        violation: str,
+        source_id: str | None = None,
+        target_id: str | None = None,
+    ) -> None:
+        detail: dict = {"violation": violation}
+        if source_id is not None:
+            detail["source_id"] = source_id
+        if target_id is not None:
+            detail["target_id"] = target_id
+        super().__init__(
+            "merged_from_validation",
+            f"merged_from edge invalid: {violation}",
+            400,
+            detail,
+        )
+
+
 class IdenticalContentSupersedeError(SAGEError):
     """409: attempted supersede whose content matches the predecessor (BH-123)."""
 

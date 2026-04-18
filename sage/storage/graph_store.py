@@ -14,7 +14,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from sage.models.enums import EdgeType, PipelineStatus, SourceType, UserType
+from sage.models.enums import (
+    EdgeType,
+    PipelineStatus,
+    ResolutionPolicy,
+    SourceType,
+    UserType,
+)
 from sage.models.schemas import Document, Edge, StagingEdge, User
 from sage.storage.migrations import MIGRATIONS, POST_MIGRATION_DDL, TABLES
 
@@ -395,13 +401,23 @@ class GraphStore:
         committing. Caller handles commit/rollback.
         """
         conn.execute(
-            """INSERT INTO edges (id, source_id, target_id, edge_type, created_at, notes, rationale)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO edges (
+                id, source_id, target_id, edge_type, resolution_policy,
+                source_valid_from_version, target_valid_from_version,
+                valid_until_version, retracted_edge_id,
+                created_at, notes, rationale
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 edge.id,
                 edge.source_id,
                 edge.target_id,
                 edge.edge_type.value,
+                edge.resolution_policy.value if edge.resolution_policy else None,
+                edge.source_valid_from_version,
+                edge.target_valid_from_version,
+                edge.valid_until_version,
+                edge.retracted_edge_id,
                 edge.created_at.isoformat(),
                 edge.notes,
                 edge.rationale,
@@ -528,6 +544,168 @@ class GraphStore:
                 "SELECT * FROM edges WHERE target_id = ?", (target_id,)
             ).fetchall()
         return [self._row_to_edge(r) for r in rows]
+
+    async def get_supersedes_lineage(self, doc_id: str) -> list[str]:
+        """Return doc_id and all supersedes-predecessors, newest first.
+
+        Walks supersedes edges outbound (source=newer, target=older)
+        recursively from doc_id. Inclusive of doc_id. Empty list if
+        doc_id is not in the documents table (caller treats as missing).
+        """
+        return await self._run(self._get_supersedes_lineage_sync, doc_id)
+
+    def _get_supersedes_lineage_sync(self, doc_id: str) -> list[str]:
+        conn = self._get_connection()
+        exists = conn.execute(
+            "SELECT 1 FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        if exists is None:
+            return []
+        sql = (
+            "WITH RECURSIVE lineage(doc_id, depth) AS ("
+            "  SELECT ?, 0"
+            "  UNION ALL"
+            "  SELECT e.target_id, l.depth + 1 "
+            "  FROM edges e "
+            "  INNER JOIN lineage l ON e.source_id = l.doc_id "
+            "  WHERE e.edge_type = ?"
+            ") "
+            "SELECT doc_id FROM lineage ORDER BY depth"
+        )
+        rows = conn.execute(sql, (doc_id, EdgeType.SUPERSEDES.value)).fetchall()
+        return [r["doc_id"] for r in rows]
+
+    async def has_supersedes_successor(self, doc_id: str) -> bool:
+        """True if any supersedes edge points at doc_id (doc is not chain head).
+
+        Used by the merged_from write-time invariant: predecessor target
+        must be a chain head (no newer version supersedes it).
+        """
+        return await self._run(self._has_supersedes_successor_sync, doc_id)
+
+    def _has_supersedes_successor_sync(self, doc_id: str) -> bool:
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT 1 FROM edges WHERE edge_type = ? AND target_id = ? LIMIT 1",
+            (EdgeType.SUPERSEDES.value, doc_id),
+        ).fetchone()
+        return row is not None
+
+    async def has_supersedes_predecessor(self, doc_id: str) -> bool:
+        """True if doc_id supersedes something (doc is not chain first/oldest).
+
+        Used by the merged_from write-time invariant: successor source
+        must be the first version of its chain (nothing older).
+        """
+        return await self._run(self._has_supersedes_predecessor_sync, doc_id)
+
+    def _has_supersedes_predecessor_sync(self, doc_id: str) -> bool:
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT 1 FROM edges WHERE edge_type = ? AND source_id = ? LIMIT 1",
+            (EdgeType.SUPERSEDES.value, doc_id),
+        ).fetchone()
+        return row is not None
+
+    async def find_tombstone_candidates(
+        self, lineage_ids: list[str]
+    ) -> list[str]:
+        """Return edge_ids that should be tombstoned when a chain terminates.
+
+        Selects non-policy-none edges whose source_id or target_id sits
+        in `lineage_ids` and which are not already tombstoned. Caller
+        passes the supersedes lineage of the terminal predecessor; each
+        returned edge will receive `valid_until_version = predecessor_terminal`
+        in the same transaction as the merged_from insert.
+        """
+        return await self._run(self._find_tombstone_candidates_sync, lineage_ids)
+
+    def _find_tombstone_candidates_sync(
+        self, lineage_ids: list[str]
+    ) -> list[str]:
+        if not lineage_ids:
+            return []
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in lineage_ids)
+        # Policy-none edges (supersedes, retracts, merged_from) are
+        # exempt: lineage and meta-facts must remain navigable.
+        sql = (
+            f"SELECT id FROM edges "
+            f"WHERE valid_until_version IS NULL "
+            f"AND (resolution_policy IS NULL "
+            f"     OR resolution_policy != '{ResolutionPolicy.NONE.value}') "
+            f"AND (source_id IN ({placeholders}) OR target_id IN ({placeholders}))"
+        )
+        rows = conn.execute(sql, [*lineage_ids, *lineage_ids]).fetchall()
+        return [row["id"] for row in rows]
+
+    async def merge_atomic(
+        self,
+        merged_from_edge: Edge,
+        tombstone_edge_ids: list[str],
+        tombstone_version: str,
+    ) -> None:
+        """Insert the merged_from edge and tombstone predecessor-downstream
+        edges in a single SQLite transaction. Either both writes commit or
+        neither does (CAS-ADR-017, Chunk 6, CR-032).
+        """
+        await self._run(
+            self._merge_atomic_sync,
+            merged_from_edge,
+            tombstone_edge_ids,
+            tombstone_version,
+        )
+
+    def _merge_atomic_sync(
+        self,
+        merged_from_edge: Edge,
+        tombstone_edge_ids: list[str],
+        tombstone_version: str,
+    ) -> None:
+        conn = self._get_connection()
+        try:
+            self._exec_insert_edge(conn, merged_from_edge)
+            if tombstone_edge_ids:
+                placeholders = ",".join("?" for _ in tombstone_edge_ids)
+                conn.execute(
+                    f"UPDATE edges SET valid_until_version = ? "
+                    f"WHERE id IN ({placeholders})",
+                    [tombstone_version, *tombstone_edge_ids],
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    async def get_retracts_for_edges(
+        self, edge_ids: list[str]
+    ) -> dict[str, list[Edge]]:
+        """Return {retracted_edge_id: [retracts_edge, ...]} for the given ids.
+
+        Batch lookup used by the resolver to decide whether candidate
+        edges have been retracted. Only edges of type `retracts` whose
+        `retracted_edge_id` is in the input set are returned. Edges with
+        no retractions are omitted from the dict.
+        """
+        return await self._run(self._get_retracts_for_edges_sync, edge_ids)
+
+    def _get_retracts_for_edges_sync(
+        self, edge_ids: list[str]
+    ) -> dict[str, list[Edge]]:
+        if not edge_ids:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in edge_ids)
+        rows = conn.execute(
+            f"SELECT * FROM edges "
+            f"WHERE edge_type = ? AND retracted_edge_id IN ({placeholders})",
+            [EdgeType.RETRACTS.value, *edge_ids],
+        ).fetchall()
+        grouped: dict[str, list[Edge]] = {}
+        for row in rows:
+            edge = self._row_to_edge(row)
+            grouped.setdefault(edge.retracted_edge_id, []).append(edge)
+        return grouped
 
     async def get_edge(self, edge_id: str) -> Edge | None:
         """Get a production edge by ID. Returns None if not found."""
@@ -770,6 +948,8 @@ class GraphStore:
                 f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "
                 f"e.edge_type, e.created_at AS edge_created_at, "
                 f"e.notes, e.rationale, e.source_id, e.target_id, "
+                f"e.resolution_policy, e.source_valid_from_version, "
+                f"e.target_valid_from_version, e.valid_until_version, "
                 f"1 AS depth "
                 f"FROM edges e "
                 f"WHERE e.{match_col} = ?{type_filter}"
@@ -781,6 +961,8 @@ class GraphStore:
                 f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "
                 f"e.edge_type, e.created_at AS edge_created_at, "
                 f"e.notes, e.rationale, e.source_id, e.target_id, "
+                f"e.resolution_policy, e.source_valid_from_version, "
+                f"e.target_valid_from_version, e.valid_until_version, "
                 f"t.depth + 1 AS depth "
                 f"FROM edges e "
                 f"INNER JOIN traversal t ON e.{match_col} = t.doc_id "
@@ -838,6 +1020,10 @@ class GraphStore:
                 "rationale": row["rationale"],
                 "source_id": row["source_id"],
                 "target_id": row["target_id"],
+                "resolution_policy": row["resolution_policy"],
+                "source_valid_from_version": row["source_valid_from_version"],
+                "target_valid_from_version": row["target_valid_from_version"],
+                "valid_until_version": row["valid_until_version"],
                 "depth": row["depth"],
                 "d_title": row["title"],
                 "d_lifecycle_status": row["lifecycle_status"],
@@ -1059,11 +1245,30 @@ class GraphStore:
 
     @staticmethod
     def _row_to_edge(row: sqlite3.Row) -> Edge:
+        keys = row.keys()
+        policy_value = row["resolution_policy"] if "resolution_policy" in keys else None
         return Edge(
             id=row["id"],
             source_id=row["source_id"],
             target_id=row["target_id"],
             edge_type=EdgeType(row["edge_type"]),
+            resolution_policy=ResolutionPolicy(policy_value) if policy_value else None,
+            source_valid_from_version=(
+                row["source_valid_from_version"]
+                if "source_valid_from_version" in keys
+                else None
+            ),
+            target_valid_from_version=(
+                row["target_valid_from_version"]
+                if "target_valid_from_version" in keys
+                else None
+            ),
+            valid_until_version=(
+                row["valid_until_version"] if "valid_until_version" in keys else None
+            ),
+            retracted_edge_id=(
+                row["retracted_edge_id"] if "retracted_edge_id" in keys else None
+            ),
             created_at=datetime.fromisoformat(row["created_at"]),
             notes=row["notes"],
             rationale=row["rationale"],
