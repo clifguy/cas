@@ -92,6 +92,14 @@ class GraphStore:
 
     def _insert_document_sync(self, doc: Document) -> None:
         conn = self._get_connection()
+        self._exec_insert_document(conn, doc)
+        conn.commit()
+
+    def _exec_insert_document(self, conn: sqlite3.Connection, doc: Document) -> None:
+        """Issue the INSERT for a Document on the given connection without
+        committing. Used by both _insert_document_sync (commit-per-call)
+        and the compound atomic methods (multi-write transactions).
+        """
         conn.execute(
             """INSERT INTO documents (
                 id, title, source_type, source_path, lifecycle_status,
@@ -130,7 +138,6 @@ class GraphStore:
                 1 if doc.metadata_confirmed else 0,
             ),
         )
-        conn.commit()
 
     async def get_document(self, doc_id: str) -> Document | None:
         return await self._run(self._get_document_sync, doc_id)
@@ -151,7 +158,19 @@ class GraphStore:
         conn = self._get_connection()
         if not updates:
             return self._get_document_sync(doc_id)
+        self._exec_update_document(conn, doc_id, updates)
+        conn.commit()
+        return self._get_document_sync(doc_id)
 
+    def _exec_update_document(
+        self, conn: sqlite3.Connection, doc_id: str, updates: dict
+    ) -> None:
+        """Issue the UPDATE for a document on the given connection without
+        committing. Caller is responsible for commit/rollback. Mutates the
+        `updates` dict in place to JSON-serialize collection fields.
+        """
+        if not updates:
+            return
         # Serialize JSON fields if present
         if "tags" in updates:
             updates["tags"] = json.dumps(updates["tags"])
@@ -167,8 +186,6 @@ class GraphStore:
             f"UPDATE documents SET {set_clause} WHERE id = ?",
             values,
         )
-        conn.commit()
-        return self._get_document_sync(doc_id)
 
     async def list_all_documents(self) -> list[Document]:
         """Return all documents in the graph store."""
@@ -370,6 +387,13 @@ class GraphStore:
 
     def _insert_edge_sync(self, edge: Edge) -> None:
         conn = self._get_connection()
+        self._exec_insert_edge(conn, edge)
+        conn.commit()
+
+    def _exec_insert_edge(self, conn: sqlite3.Connection, edge: Edge) -> None:
+        """Issue the INSERT for an edge on the given connection without
+        committing. Caller handles commit/rollback.
+        """
         conn.execute(
             """INSERT INTO edges (id, source_id, target_id, edge_type, created_at, notes, rationale)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -383,7 +407,83 @@ class GraphStore:
                 edge.rationale,
             ),
         )
-        conn.commit()
+
+    # ------------------------------------------------------------------
+    # Compound atomic operations (BH-135, BH-136)
+    # ------------------------------------------------------------------
+
+    async def supersede_atomic(
+        self,
+        predecessor_id: str,
+        predecessor_updates: dict,
+        edge: Edge,
+    ) -> Document | None:
+        """Update the predecessor document and insert a supersedes edge in
+        a single SQLite transaction. Either both writes commit or neither
+        does. Used by LifecycleService.set_lifecycle for the supersede
+        action so a mid-operation failure cannot leave the predecessor
+        archived without the corresponding edge (BH-135).
+
+        Returns the updated predecessor document.
+        """
+        return await self._run(
+            self._supersede_atomic_sync, predecessor_id, predecessor_updates, edge
+        )
+
+    def _supersede_atomic_sync(
+        self, predecessor_id: str, predecessor_updates: dict, edge: Edge
+    ) -> Document | None:
+        conn = self._get_connection()
+        try:
+            self._exec_update_document(conn, predecessor_id, predecessor_updates)
+            self._exec_insert_edge(conn, edge)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return self._get_document_sync(predecessor_id)
+
+    async def insert_with_supersede_atomic(
+        self,
+        new_doc: Document,
+        predecessor_id: str,
+        predecessor_updates: dict,
+        edge: Edge,
+    ) -> tuple[Document, Document]:
+        """Insert a new document, update the predecessor, and insert the
+        supersedes edge in a single transaction. Used by IngestionService
+        to prevent the orphan class where a successor record exists but
+        the predecessor is still active (BH-136).
+
+        Returns (new_doc, updated_predecessor).
+        """
+        return await self._run(
+            self._insert_with_supersede_atomic_sync,
+            new_doc,
+            predecessor_id,
+            predecessor_updates,
+            edge,
+        )
+
+    def _insert_with_supersede_atomic_sync(
+        self,
+        new_doc: Document,
+        predecessor_id: str,
+        predecessor_updates: dict,
+        edge: Edge,
+    ) -> tuple[Document, Document]:
+        conn = self._get_connection()
+        try:
+            self._exec_insert_document(conn, new_doc)
+            self._exec_update_document(conn, predecessor_id, predecessor_updates)
+            self._exec_insert_edge(conn, edge)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        inserted = self._get_document_sync(new_doc.id)
+        updated_pred = self._get_document_sync(predecessor_id)
+        return inserted, updated_pred
 
     async def get_edges_by_source(
         self, source_id: str, edge_type: str | None = None

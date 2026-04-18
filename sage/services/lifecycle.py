@@ -6,13 +6,33 @@ error response.
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sage.api.errors import (
+    DocumentNotFoundError,
+    InvalidActionError,
+    InvalidLifecycleTransitionError,
+    MissingFieldError,
+)
 from sage.config import TransitionTable, VaultConfig, build_transition_table
-from sage.models.enums import PipelineStatus, TERMINAL_PIPELINE_STATUSES
+from sage.models.enums import EdgeType, TERMINAL_PIPELINE_STATUSES
 from sage.models.schemas import Document, Edge, SetLifecycleRequest, SetLifecycleResponse
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+
+
+@dataclass
+class SupersedeTransition:
+    """Pre-built supersede transition ready for atomic commit.
+
+    Produced by LifecycleService.prepare_supersede and consumed by
+    IngestionService when a supersede is bundled with a new document
+    insert (BH-136).
+    """
+
+    predecessor_updates: dict
+    edge: Edge
 
 
 class LifecycleService:
@@ -42,13 +62,6 @@ class LifecycleService:
             InvalidLifecycleTransitionError: action invalid from current state (409).
             DocumentNotFoundError: new_version_id does not exist (supersede).
         """
-        from sage.api.errors import (
-            DocumentNotFoundError,
-            InvalidActionError,
-            InvalidLifecycleTransitionError,
-            MissingFieldError,
-        )
-
         async with self._locks.lock(document_id):
             doc = await self._store.get_document(document_id)
             if doc is None:
@@ -75,29 +88,40 @@ class LifecycleService:
 
             to_state, creates_edge = result
 
-            # Supersede-specific validation (BH-016, BH-017)
+            # Supersede-specific validation (BH-016, BH-017) and atomic commit.
+            # The lifecycle flip and the supersedes edge insert run in a
+            # single SQLite transaction so a mid-operation failure cannot
+            # leave the predecessor archived without the corresponding
+            # edge (BH-135).
             if request.action == "supersede":
                 if not request.new_version_id:
-                    raise MissingFieldError("new_version_id", "supersede requires new_version_id")
+                    raise MissingFieldError(
+                        "new_version_id", "supersede requires new_version_id"
+                    )
                 new_doc = await self._store.get_document(request.new_version_id)
                 if new_doc is None:
                     raise DocumentNotFoundError(request.new_version_id)
 
-            # Execute transition
-            now = datetime.now(timezone.utc).isoformat()
-            updates = {"lifecycle_status": to_state, "updated_at": now}
-            updated_doc = await self._store.update_document(document_id, updates)
-
-            # Create supersedes edge if needed (BH-017)
-            if creates_edge == "supersedes" and request.new_version_id:
+                now = datetime.now(timezone.utc)
+                predecessor_updates = {
+                    "lifecycle_status": to_state,
+                    "updated_at": now.isoformat(),
+                }
                 edge = Edge(
                     id=str(uuid.uuid4()),
                     source_id=request.new_version_id,
                     target_id=document_id,
-                    edge_type="supersedes",
-                    created_at=datetime.now(timezone.utc),
+                    edge_type=EdgeType.SUPERSEDES,
+                    created_at=now,
                 )
-                await self._store.insert_edge(edge)
+                updated_doc = await self._store.supersede_atomic(
+                    document_id, predecessor_updates, edge
+                )
+            else:
+                # Non-supersede actions: single-row update is naturally atomic.
+                now = datetime.now(timezone.utc).isoformat()
+                updates = {"lifecycle_status": to_state, "updated_at": now}
+                updated_doc = await self._store.update_document(document_id, updates)
 
             # Generate warnings (BH-014, BH-015)
             warnings: list[str] = []
@@ -111,3 +135,47 @@ class LifecycleService:
                 document=updated_doc,
                 warnings=warnings if warnings else None,
             )
+
+    def prepare_supersede(
+        self,
+        predecessor: Document,
+        new_version_id: str,
+    ) -> SupersedeTransition:
+        """Validate the supersede transition and build the writes for it
+        without committing. Used by IngestionService to bundle the
+        predecessor flip and edge insert into the same SQLite transaction
+        as the new document insert (BH-136).
+
+        The caller is responsible for ensuring `predecessor` is freshly
+        loaded and that the calling context holds whatever lock is
+        appropriate.
+        """
+        result = self._table.validate_transition(
+            predecessor.lifecycle_status, "supersede"
+        )
+        if result is None:
+            valid = self._table.get_valid_actions(predecessor.lifecycle_status)
+            raise InvalidLifecycleTransitionError(
+                predecessor.lifecycle_status,
+                "supersede",
+                valid,
+                pipeline_status=predecessor.pipeline_status.value
+                if predecessor.pipeline_status
+                else None,
+            )
+        to_state, _ = result
+        now = datetime.now(timezone.utc)
+        predecessor_updates = {
+            "lifecycle_status": to_state,
+            "updated_at": now.isoformat(),
+        }
+        edge = Edge(
+            id=str(uuid.uuid4()),
+            source_id=new_version_id,
+            target_id=predecessor.id,
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=now,
+        )
+        return SupersedeTransition(
+            predecessor_updates=predecessor_updates, edge=edge
+        )

@@ -2884,3 +2884,70 @@ state, even though the document's tags, style inventory, and metadata
 are correctly indexed. The defensive skip keeps the pipeline moving
 to a clean terminal state while preserving the abstraction
 provider's strict-quality contract for non-empty inputs.
+
+### TEST-SAGE-BH-135: Lifecycle supersede transition is atomic on edge-insert failure
+
+**Artifact:** `sage/services/lifecycle.py` (set_lifecycle, supersede branch)
+**Category:** lifecycle, atomicity
+**Decision:** The predecessor lifecycle-status flip and the supersedes-edge
+insert run inside a single SQLite transaction. If the edge insert raises,
+the lifecycle flip is rolled back; the predecessor remains `active` and
+no `supersedes` edge exists. The caller can retry without leaving partial
+state behind.
+
+**Precondition:** Document A active, pipeline terminal. Document B active,
+pipeline terminal. (B is the would-be successor; in this test it already
+exists so we exercise set_lifecycle directly.)
+
+**Input:** Monkeypatch `GraphStore.insert_edge` to raise
+`RuntimeError("simulated lock contention")`. Then call
+`set_lifecycle(A.id, action="supersede", new_version_id=B.id)`.
+
+**Expected:**
+- The call raises (the underlying RuntimeError or a wrapped equivalent).
+- `get_document(A.id).lifecycle_status` is still `active`.
+- `get_edges_by_target(A.id, edge_type="supersedes")` returns an empty list.
+- After removing the monkeypatch, calling set_lifecycle again succeeds and
+  produces the expected end state (A archived, edge present).
+
+**Rationale:** The pre-fix behavior was two non-transactional writes: the
+lifecycle flip committed first, the edge insert committed second.
+Lock-contention or any other mid-operation failure left A archived with
+no supersedes edge -- a corrupt version chain that no client could repair
+through normal API calls. Wrapping both writes in one transaction
+eliminates the half-applied state by construction.
+
+### TEST-SAGE-BH-136: Ingest rolls back the new document when supersede fails
+
+**Artifact:** `sage/services/ingestion.py` (ingest, supersede block)
+**Category:** ingestion, atomicity
+**Decision:** The new document record insert and the supersede transition
+run inside a single SQLite transaction. If the supersede transition fails
+(for example, because the predecessor was concurrently archived between
+pre-validation and the supersede call), the new document record is not
+persisted. Callers either see a complete version chain or no new document
+at all -- never an orphan successor with an active predecessor.
+
+**Precondition:** Document A active, pipeline terminal. A second source
+file present in the vault (would-be successor).
+
+**Input:** Monkeypatch `GraphStore.insert_with_supersede_atomic` to raise
+`RuntimeError` mid-transaction (simulating a SQLite lock / constraint
+failure during the commit). Then call
+`ingest(source=successor_file, supersedes_document_id=A.id)`.
+
+**Expected:**
+- The call raises (the underlying RuntimeError or wrapped equivalent).
+- `list_all_documents()` still contains exactly one document (A).
+- A's `lifecycle_status` is unchanged.
+- No `supersedes` edges exist anywhere.
+- After removing the monkeypatch, retrying the ingest call succeeds and
+  produces the expected end state.
+
+**Rationale:** This is the Cowork-PV02 failure mode at the ingestion-service
+boundary. Pre-fix: the new document record was already inserted and
+metadata applied before the supersede call ran, so a supersede failure
+left an orphan record (no edge, predecessor still active). The
+transactional fix collapses the doc-insert / metadata / supersede sequence
+into a single all-or-nothing commit, eliminating the orphan class.
+

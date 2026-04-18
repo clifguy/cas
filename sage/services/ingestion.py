@@ -459,8 +459,23 @@ class IngestionService:
 
             # Remove old content store entries for re-indexing
             await self._content_store.remove_document(existing_id)
+
+            # Force-reingest with a supersede target: apply the supersede
+            # transition on the predecessor. The doc record was reused
+            # (no new insert) so atomicity collapses to lifecycle.set_lifecycle's
+            # own atomic primitive (BH-135).
+            if predecessor is not None and self._lifecycle_service is not None:
+                await self._lifecycle_service.set_lifecycle(
+                    predecessor.id,
+                    SetLifecycleRequest(action="supersede", new_version_id=doc.id),
+                )
         else:
-            # New document
+            # New document. When a predecessor is being superseded the
+            # doc insert + predecessor lifecycle flip + supersedes edge
+            # commit as a single SQLite transaction (BH-136). This
+            # eliminates the orphan class where a successor record exists
+            # but the predecessor was never archived. Without a
+            # predecessor it is a single-row insert.
             created_by = request.created_by or self._config.vault.owner
             doc_id = generate_document_id(
                 vault_relative, now.isoformat(), resolved_title
@@ -481,7 +496,25 @@ class IngestionService:
                 source_modified_at=source_modified_at,
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
             )
-            await self._store.insert_document(doc)
+            if predecessor is not None and self._lifecycle_service is not None:
+                # Re-read the predecessor inside the (about-to-commit)
+                # window to catch a concurrent archive that happened
+                # after pre-validation. prepare_supersede consults the
+                # transition table without writing.
+                fresh_pred = await self._store.get_document(predecessor.id)
+                if fresh_pred is None:
+                    raise DocumentNotFoundError(predecessor.id)
+                transition = self._lifecycle_service.prepare_supersede(
+                    fresh_pred, doc.id
+                )
+                doc, _updated_pred = await self._store.insert_with_supersede_atomic(
+                    doc,
+                    fresh_pred.id,
+                    transition.predecessor_updates,
+                    transition.edge,
+                )
+            else:
+                await self._store.insert_document(doc)
             is_new = True
 
         # Apply filename-parsed metadata (CAS-ADR-015). Precedence layer:
@@ -544,20 +577,10 @@ class IngestionService:
                 "document_date": source_modified_at.date().isoformat(),
             })
 
-        # Apply the supersede lifecycle transition on the predecessor
-        # BEFORE dispatching Stages 2-3 (BH-120, BH-129). Creates the
-        # supersedes edge (new -> old) and sets the predecessor's
-        # lifecycle_status to "archived". Running this synchronously
-        # with record insertion guarantees the version chain is complete
-        # when ingest() returns, regardless of whether the caller
-        # chooses sync or async pipeline dispatch. Uses the standard
-        # state machine via LifecycleService to honor vault-declared
-        # transitions.
-        if predecessor is not None and self._lifecycle_service is not None:
-            await self._lifecycle_service.set_lifecycle(
-                predecessor.id,
-                SetLifecycleRequest(action="supersede", new_version_id=doc.id),
-            )
+        # The supersede lifecycle transition was bundled into the same
+        # SQLite transaction as the new-document insert above (BH-129,
+        # BH-136). The version chain is therefore complete here for both
+        # the new-document and force-reingest branches.
 
         # Stages 2-3 (indexing, abstraction) run sync or async per the
         # caller's wait_for_pipeline choice (BH-026, BH-130). Sequential
