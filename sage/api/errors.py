@@ -273,6 +273,26 @@ class VaultAlreadyExistsError(SAGEError):
         )
 
 
+class DestructiveConfigChangeError(SAGEError):
+    """409: vault config update would orphan existing documents.
+
+    Raised when the merged config removes a doc_type or lifecycle state
+    that still has documents attached, and the caller has not passed
+    force=True (MCP) or ?force=true (REST).
+    """
+
+    def __init__(self, warnings: list[str]) -> None:
+        super().__init__(
+            "destructive_config_change",
+            (
+                "Vault configuration update would orphan existing documents. "
+                "Pass force=true to proceed."
+            ),
+            409,
+            {"warnings": warnings},
+        )
+
+
 class EdgeNotFoundError(SAGEError):
     """404: production edge not found."""
 

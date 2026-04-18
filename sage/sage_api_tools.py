@@ -15,13 +15,25 @@ from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
     ContentDeliveryConflictError,
+    DestructiveConfigChangeError,
     DocumentNotFoundError,
     EdgeNotFoundError,
     SAGEError,
     StagingEdgeNotFoundError,
+    VaultAlreadyExistsError,
+    VaultConfigValidationError,
+    VaultNotFoundError,
 )
 from sage.api.routers.documents import attach_inline_content, deliver_to_path
-from sage.mcp_init import SAGEServices
+from sage.mcp_init import SAGEServices, initialize_services, reload_vault_in_registry
+from sage.vault_management import (
+    _ALL_SECTIONS,
+    _check_destructive_changes,
+    _config_path_for_vault,
+    _get_default_config,
+    _validate_config,
+    _write_config_yaml,
+)
 from sage.models.schemas import (
     ChainRequest,
     DiscoverRequest,
@@ -621,6 +633,173 @@ def register_sage_tools(
         }
 
     @mcp.tool()
+    async def sage_create_vault(
+        vault_id: str | None = None,
+        name: str | None = None,
+        owner: str | None = None,
+        config: dict | None = None,
+    ) -> dict:
+        """Create a new vault and register it with the running SAGE instance.
+
+        Two modes, mutually exclusive:
+
+        - Convenience mode: pass vault_id, name, and owner (with config=None).
+          A minimal valid default config is generated, directories are
+          created, vault_config.yaml is written, services are initialized,
+          and the vault is registered. The full written config is echoed
+          back in the response so the caller can follow up with
+          sage_update_vault_config to adjust individual sections without
+          a separate read.
+
+        - Full-config mode: pass a complete config dict (with
+          vault_id/name/owner all None). The dict is validated, and the
+          vault is created from it.
+
+        Args:
+            vault_id: Unique identifier for the new vault (convenience mode).
+            name: Human-readable display name (convenience mode).
+            owner: Username of the vault owner (convenience mode).
+            config: Full vault config dict (full-config mode only).
+        """
+        try:
+            convenience_args_set = any(x is not None for x in (vault_id, name, owner))
+            if convenience_args_set and config is not None:
+                raise VaultConfigValidationError(
+                    [
+                        "Pass either (vault_id, name, owner) OR config, not both. "
+                        "Mixing the convenience args with a full config dict is not allowed."
+                    ]
+                )
+
+            if config is None:
+                if vault_id is None or name is None or owner is None:
+                    raise VaultConfigValidationError(
+                        ["vault_id, name, and owner are all required when config is not provided"]
+                    )
+                config_dict = _get_default_config(vault_id, name, owner)
+            else:
+                config_dict = config
+
+            validated = _validate_config(config_dict)
+            vid = validated.vault.id
+
+            if vid in vaults:
+                raise VaultAlreadyExistsError(vid)
+
+            config_path = _config_path_for_vault(vid)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            Path(validated.vault.storage_root).expanduser().mkdir(
+                parents=True, exist_ok=True
+            )
+            Path(validated.vault.brain_root).expanduser().mkdir(
+                parents=True, exist_ok=True
+            )
+
+            _write_config_yaml(config_path, config_dict)
+
+            services = await initialize_services(validated)
+            vaults[vid] = services
+
+            await services.user_service.bootstrap_owner()
+
+            return {
+                "vault_id": vid,
+                "name": validated.vault.name,
+                "storage_root": validated.vault.storage_root,
+                "config": config_dict,
+            }
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_get_vault_config(vault_id: str) -> dict:
+        """Return the full vault configuration as a dict.
+
+        Args:
+            vault_id: Target vault identifier.
+        """
+        try:
+            v = get_vault(vault_id)
+            return v.config.model_dump()
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_update_vault_config(
+        vault_id: str,
+        sections: dict,
+        force: bool = False,
+    ) -> dict:
+        """Update vault configuration at the section level.
+
+        Each key in `sections` replaces the corresponding top-level section
+        of the config wholesale; sections you do not include are preserved
+        unchanged. Partial-section merges are not supported -- if you pass
+        `{"document_types": {"doc_types": [...]}}`, the entire
+        `document_types` section is replaced by the dict you pass, so
+        include every key of that section you want to keep.
+
+        If the merged config would remove a doc_type or lifecycle state
+        that still has documents attached, the update is rejected with
+        a destructive_config_change error and the affected counts are
+        reported in the error detail. Pass force=True to proceed
+        anyway; the warnings then appear in the success response.
+
+        Changing `vault.id` is never permitted regardless of force -- use
+        sage_create_vault to make a new vault instead.
+
+        Args:
+            vault_id: Target vault identifier.
+            sections: Dict mapping top-level section name
+                (vault, document_types, lifecycle, source_adapters,
+                metadata_extraction, edge_inference, abstraction,
+                access_control_defaults, retrieval_health) to the new
+                section dict.
+            force: When True, proceed even if the update would orphan
+                existing documents. Default False.
+        """
+        try:
+            if vault_id not in vaults:
+                raise VaultNotFoundError(vault_id)
+
+            services = vaults[vault_id]
+            old_config = services.config
+
+            merged = old_config.model_dump()
+            for section_name, section_value in sections.items():
+                if section_name not in _ALL_SECTIONS:
+                    raise VaultConfigValidationError(
+                        [f"Unknown config section: {section_name}"]
+                    )
+                merged[section_name] = section_value
+
+            if "vault" in sections and sections["vault"].get("id") != vault_id:
+                raise VaultConfigValidationError(
+                    ["vault.id cannot be changed; create a new vault instead"]
+                )
+
+            new_config = _validate_config(merged)
+
+            warnings = await _check_destructive_changes(
+                old_config, new_config, services.graph_store
+            )
+            if warnings and not force:
+                raise DestructiveConfigChangeError(warnings)
+
+            config_path = _config_path_for_vault(vault_id)
+            _write_config_yaml(config_path, merged)
+
+            await reload_vault_in_registry(vaults, vault_id, new_config)
+
+            return {
+                "status": "updated",
+                "vault_id": vault_id,
+                "warnings": warnings,
+            }
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
     async def sage_vault_stats(vault_id: str) -> dict:
         """Vault statistics and health indicators.
 
@@ -840,6 +1019,9 @@ def register_sage_tools(
         "sage_read_projection": sage_read_projection,
         "sage_refresh_views": sage_refresh_views,
         "sage_list_vaults": sage_list_vaults,
+        "sage_create_vault": sage_create_vault,
+        "sage_get_vault_config": sage_get_vault_config,
+        "sage_update_vault_config": sage_update_vault_config,
         "sage_vault_stats": sage_vault_stats,
         "sage_hash_check": sage_hash_check,
         "sage_list_staging_edges": sage_list_staging_edges,

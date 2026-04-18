@@ -8,16 +8,15 @@ PUT  /sage_vaults/{vault_id}/config   -- update vault configuration (section-lev
 POST /sage_vaults                     -- create a new vault with config
 """
 
-import tempfile
 from pathlib import Path
 
-import yaml
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from sage.api.dependencies import get_graph_store, get_vault_id
 from sage.api.errors import (
+    DestructiveConfigChangeError,
     VaultAlreadyExistsError,
     VaultConfigValidationError,
     VaultNotFoundError,
@@ -35,162 +34,15 @@ from sage.models.schemas import (
     VaultSummary,
 )
 from sage.storage.graph_store import GraphStore
+from sage.vault_management import (
+    _ALL_SECTIONS,
+    _check_destructive_changes,
+    _config_path_for_vault,
+    _validate_config,
+    _write_config_yaml,
+)
 
 router = APIRouter(tags=["vaults"])
-
-# ---------------------------------------------------------------------------
-# Vault config helpers
-# ---------------------------------------------------------------------------
-
-# Sections that form the vault config.  Required sections must be present
-# in a valid config; optional sections may be absent.
-_REQUIRED_SECTIONS = (
-    "vault", "document_types", "lifecycle",
-    "source_adapters", "metadata_extraction", "edge_inference",
-)
-_OPTIONAL_SECTIONS = ("abstraction", "access_control_defaults", "retrieval_health")
-_ALL_SECTIONS = _REQUIRED_SECTIONS + _OPTIONAL_SECTIONS
-
-_VAULTS_ROOT = Path("~/sage_vaults").expanduser()
-
-
-def _validate_config(config_dict: dict) -> VaultConfig:
-    """Validate a config dict, raising VaultConfigValidationError on failure."""
-    try:
-        return VaultConfig.model_validate(config_dict)
-    except ValidationError as exc:
-        errors = [
-            f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
-            for e in exc.errors()
-        ]
-        raise VaultConfigValidationError(errors) from exc
-
-
-def _write_config_yaml(config_path: Path, config_dict: dict) -> None:
-    """Atomically write a config dict to YAML (temp file + rename)."""
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_path.parent), suffix=".yaml.tmp"
-    )
-    try:
-        with open(fd, "w") as f:
-            yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
-        Path(tmp_path).replace(config_path)
-    except BaseException:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
-
-
-async def _check_destructive_changes(
-    old_config: VaultConfig,
-    new_config: VaultConfig,
-    graph_store: GraphStore,
-) -> list[str]:
-    """Warn if removed doc_types or lifecycle states have existing documents."""
-    warnings: list[str] = []
-
-    old_doc_types = {dt.value for dt in old_config.document_types.doc_types}
-    new_doc_types = {dt.value for dt in new_config.document_types.doc_types}
-    removed_doc_types = old_doc_types - new_doc_types
-    if removed_doc_types:
-        counts = await graph_store.get_document_counts_by_field("doc_type")
-        for dt in sorted(removed_doc_types):
-            n = counts.get(dt, 0)
-            if n > 0:
-                warnings.append(
-                    f"Removing doc_type '{dt}' would affect {n} document(s)"
-                )
-
-    old_states = {s.value for s in old_config.lifecycle.states}
-    new_states = {s.value for s in new_config.lifecycle.states}
-    removed_states = old_states - new_states
-    if removed_states:
-        counts = await graph_store.get_document_counts_by_field("lifecycle_status")
-        for st in sorted(removed_states):
-            n = counts.get(st, 0)
-            if n > 0:
-                warnings.append(
-                    f"Removing lifecycle state '{st}' would affect {n} document(s)"
-                )
-
-    return warnings
-
-
-def _get_default_config(vault_id: str, name: str, owner: str) -> dict:
-    """Generate a minimal valid config dict for a new vault."""
-    return {
-        "vault": {
-            "id": vault_id,
-            "name": name,
-            "owner": owner,
-            "storage_root": str(_VAULTS_ROOT / vault_id / "sources"),
-            "brain_root": str(_VAULTS_ROOT / vault_id / "brain"),
-            "visibility": "personal",
-        },
-        "document_types": {
-            "doc_types": [
-                {
-                    "value": "document",
-                    "label": "Document",
-                    "description": "General-purpose document type.",
-                },
-                {
-                    "value": "reference",
-                    "label": "Reference",
-                    "description": "Reference material and supporting documents.",
-                },
-            ],
-        },
-        "lifecycle": {
-            "base_states_required": True,
-            "states": [
-                {"value": "active", "label": "Active"},
-                {"value": "completed", "label": "Completed"},
-                {"value": "archived", "label": "Archived", "is_terminal": True},
-            ],
-            "transitions": [
-                {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {
-                    "from_state": "active",
-                    "action": "supersede",
-                    "to_state": "archived",
-                    "creates_edge": "supersedes",
-                },
-                {"from_state": "active", "action": "complete", "to_state": "completed"},
-                {"from_state": "active", "action": "archive", "to_state": "archived"},
-                {"from_state": "completed", "action": "archive", "to_state": "archived"},
-                {"from_state": "archived", "action": "reactivate", "to_state": "active"},
-            ],
-        },
-        "source_adapters": {
-            "adapters": [
-                {"source_type": "markdown", "enabled": True},
-                {"source_type": "docx", "enabled": True},
-                {"source_type": "xlsx", "enabled": True},
-            ],
-        },
-        "metadata_extraction": {
-            "review_required": False,
-            "filename_extraction": {
-                "separator": "_",
-            },
-        },
-        "edge_inference": {
-            "tier_assignments": [
-                {
-                    "edge_type": "supersedes",
-                    "tier": 1,
-                    "inference_rules": [{"method": "version_chain"}],
-                },
-            ],
-        },
-        "abstraction": {"enabled": False},
-    }
-
-
-def _config_path_for_vault(vault_id: str) -> Path:
-    """Return the canonical config file path for a vault."""
-    return _VAULTS_ROOT / vault_id / "vault_config.yaml"
 
 
 def _build_vault_summary(
@@ -378,41 +230,43 @@ async def update_vault_config(
     request: Request,
     vault_id: str = Depends(get_vault_id),
     graph_store: GraphStore = Depends(get_graph_store),
+    force: bool = False,
 ) -> JSONResponse:
     """Update vault configuration at the section level.
 
-    Only provided sections are replaced; omitted sections are preserved.
-    Returns warnings if the update removes doc_types or lifecycle states
-    that have existing documents.
+    Each provided top-level section replaces the current section wholesale;
+    omitted sections are preserved. Partial-section merges are not supported.
+
+    If the merged config removes a doc_type or lifecycle state that still
+    has documents attached, the request is rejected with 409 and a
+    destructive_config_change error unless the caller passes
+    ?force=true. With force=true, the update proceeds and the warnings
+    are returned in the response.
     """
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
     services = registry[vault_id]
     old_config = services.config
 
-    # Build merged config dict: start from current, overlay provided sections
     merged = old_config.model_dump()
     body_dict = body.model_dump(exclude_none=True)
     for section in _ALL_SECTIONS:
         if section in body_dict:
             merged[section] = body_dict[section]
 
-    # Reject vault.id changes
     if "vault" in body_dict and body_dict["vault"].get("id") != vault_id:
         raise VaultConfigValidationError(
-            ["Cannot change vault.id; create a new vault instead"]
+            ["vault.id cannot be changed; create a new vault instead"]
         )
 
-    # Validate
     new_config = _validate_config(merged)
 
-    # Check for destructive changes
     warnings = await _check_destructive_changes(old_config, new_config, graph_store)
+    if warnings and not force:
+        raise DestructiveConfigChangeError(warnings)
 
-    # Write YAML atomically
     config_path = _config_path_for_vault(vault_id)
     _write_config_yaml(config_path, merged)
 
-    # Reload services
     await reload_vault_in_registry(registry, vault_id, new_config)
 
     return JSONResponse(
@@ -436,30 +290,23 @@ async def create_vault(
     """
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
 
-    # Validate config
     config = _validate_config(body.config)
     vault_id = config.vault.id
 
-    # Check for duplicate
     if vault_id in registry:
         raise VaultAlreadyExistsError(vault_id)
 
-    # Create directory structure
-    vault_dir = _VAULTS_ROOT / vault_id
-    vault_dir.mkdir(parents=True, exist_ok=True)
+    config_path = _config_path_for_vault(vault_id)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
     Path(config.vault.storage_root).expanduser().mkdir(parents=True, exist_ok=True)
     Path(config.vault.brain_root).expanduser().mkdir(parents=True, exist_ok=True)
 
-    # Write config
-    config_path = vault_dir / "vault_config.yaml"
     _write_config_yaml(config_path, body.config)
 
-    # Initialize and register
     from sage.mcp_init import initialize_services
     services = await initialize_services(config)
     registry[vault_id] = services
 
-    # Bootstrap owner
     await services.user_service.bootstrap_owner()
 
     return _build_vault_summary(config, services)

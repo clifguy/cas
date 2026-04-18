@@ -12,7 +12,7 @@ import pytest
 import yaml
 from httpx import ASGITransport, AsyncClient
 
-from sage.api.routers.vaults import _get_default_config
+from sage.vault_management import _get_default_config
 from sage.app import create_app, _initialize_services
 from sage.config import VaultConfig
 
@@ -134,9 +134,8 @@ async def test_update_config_400_id_change_rejected(client):
            "vault_config_validation_error" == resp.json()["code"]
 
 
-async def test_update_config_warns_orphan(client, tmp_vault_dir):
-    """Removing a doc_type that has documents produces a warning."""
-    # Ingest a document with doc_type 'note'
+async def _ingest_note_doc(client, tmp_vault_dir):
+    """Helper: ingest a document with doc_type 'note'."""
     sources = tmp_vault_dir / "sources"
     test_dir = sources / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
@@ -151,7 +150,14 @@ async def test_update_config_warns_orphan(client, tmp_vault_dir):
     )
     assert ingest_resp.status_code == 201
 
-    # Now remove 'note' from doc_types
+
+# TEST-SAGE-VM-REST-001
+async def test_update_config_destructive_without_force_returns_409(
+    client, tmp_vault_dir
+):
+    """Removing an in-use doc_type without force returns 409 + error."""
+    await _ingest_note_doc(client, tmp_vault_dir)
+
     resp = await client.put(
         "/sage_vaults/test_vault/config",
         json={"document_types": {
@@ -160,9 +166,76 @@ async def test_update_config_warns_orphan(client, tmp_vault_dir):
             ],
         }},
     )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["code"] == "destructive_config_change"
+    warnings = body.get("detail", {}).get("warnings", [])
+    assert any("note" in w for w in warnings)
+
+    # Config unchanged on disk / registry
+    get_resp = await client.get("/sage_vaults/test_vault/config")
+    dt_values = [dt["value"] for dt in get_resp.json()["document_types"]["doc_types"]]
+    assert "note" in dt_values
+
+
+# TEST-SAGE-VM-REST-002
+async def test_update_config_destructive_with_force_returns_200(
+    client, tmp_vault_dir
+):
+    """force=true allows the destructive update; warnings returned."""
+    await _ingest_note_doc(client, tmp_vault_dir)
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config?force=true",
+        json={"document_types": {
+            "doc_types": [
+                {"value": "memo", "label": "Memo"},
+            ],
+        }},
+    )
     assert resp.status_code == 200
     body = resp.json()
+    assert body["status"] == "updated"
     assert any("note" in w for w in body["warnings"])
+
+    get_resp = await client.get("/sage_vaults/test_vault/config")
+    dt_values = [dt["value"] for dt in get_resp.json()["document_types"]["doc_types"]]
+    assert "note" not in dt_values
+    assert "memo" in dt_values
+
+
+# TEST-SAGE-VM-REST-003
+async def test_update_config_non_destructive_ignores_force(client):
+    """A benign update returns 200 with empty warnings whether or not force is set."""
+    # Without force
+    resp1 = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={"vault": {
+            "id": "test_vault",
+            "name": "Renamed Once",
+            "owner": "testuser",
+            "storage_root": "/tmp/unused",
+            "brain_root": "/tmp/unused",
+            "visibility": "personal",
+        }},
+    )
+    assert resp1.status_code == 200
+    assert resp1.json()["warnings"] == []
+
+    # With force=true
+    resp2 = await client.put(
+        "/sage_vaults/test_vault/config?force=true",
+        json={"vault": {
+            "id": "test_vault",
+            "name": "Renamed Twice",
+            "owner": "testuser",
+            "storage_root": "/tmp/unused",
+            "brain_root": "/tmp/unused",
+            "visibility": "personal",
+        }},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["warnings"] == []
 
 
 async def test_update_config_preserves_other_sections(client):
