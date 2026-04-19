@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -21,10 +22,32 @@ from sage.models.enums import (
     SourceType,
     UserType,
 )
-from sage.models.schemas import Document, Edge, StagingEdge, User
+from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 from sage.storage.migrations import MIGRATIONS, POST_MIGRATION_DDL, TABLES
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class LinkReadContext:
+    """Pre-fetched state needed to validate and execute a LinkRequest.
+
+    Populated by `GraphStore.read_link_context` in a single executor
+    submission so the service layer can validate without issuing further
+    per-query round-trips. Fields that are not applicable to the request's
+    edge type are left at their default (empty / False / None).
+    """
+
+    source_exists: bool
+    target_exists: bool
+    retracted_edge: Edge | None = None
+    source_lineage: frozenset[str] = field(default_factory=frozenset)
+    target_lineage: frozenset[str] = field(default_factory=frozenset)
+    source_anchor_exists: bool = True
+    target_anchor_exists: bool = True
+    has_sup_predecessor: bool = False
+    has_sup_successor: bool = False
+    tombstone_candidates: tuple[str, ...] = ()
 
 
 class GraphStore:
@@ -676,6 +699,127 @@ class GraphStore:
         except Exception:
             conn.rollback()
             raise
+
+    async def read_link_context(
+        self, request: "LinkRequest", policy: ResolutionPolicy
+    ) -> LinkReadContext:
+        """Fetch all state needed to validate a LinkRequest in one submission.
+
+        Collapses what used to be up to 7 separate executor submissions
+        (document existence checks, anchor existence checks, two lineage
+        walks, merged_from chain-position probes, tombstone scan) into
+        one sync callable running on one thread against one connection.
+        The service layer then performs domain validation in Python
+        without further round-trips.
+
+        Fields not relevant to the request's edge type / policy are
+        populated with safe defaults and should not be inspected. See
+        `LinkReadContext` for the field taxonomy.
+        """
+        return await self._run(self._read_link_context_sync, request, policy)
+
+    def _read_link_context_sync(
+        self, request: "LinkRequest", policy: ResolutionPolicy
+    ) -> LinkReadContext:
+        conn = self._get_connection()
+
+        source_exists = conn.execute(
+            "SELECT 1 FROM documents WHERE id = ?", (request.source_id,)
+        ).fetchone() is not None
+
+        if request.target_id is None:
+            target_exists = True
+        else:
+            target_exists = conn.execute(
+                "SELECT 1 FROM documents WHERE id = ?", (request.target_id,)
+            ).fetchone() is not None
+
+        retracted_edge: Edge | None = None
+        if (
+            request.edge_type == EdgeType.RETRACTS
+            and request.retracted_edge_id is not None
+        ):
+            row = conn.execute(
+                "SELECT * FROM edges WHERE id = ?", (request.retracted_edge_id,)
+            ).fetchone()
+            if row is not None:
+                retracted_edge = self._row_to_edge(row)
+
+        source_anchor_exists = True
+        if request.source_valid_from_version is not None:
+            source_anchor_exists = conn.execute(
+                "SELECT 1 FROM documents WHERE id = ?",
+                (request.source_valid_from_version,),
+            ).fetchone() is not None
+
+        target_anchor_exists = True
+        if request.target_valid_from_version is not None:
+            target_anchor_exists = conn.execute(
+                "SELECT 1 FROM documents WHERE id = ?",
+                (request.target_valid_from_version,),
+            ).fetchone() is not None
+
+        # Source lineage: needed whenever a source-side anchor is present
+        # (transitive_source / transitive_both / retracts).
+        source_lineage: frozenset[str] = frozenset()
+        if source_exists and request.source_valid_from_version is not None:
+            source_lineage = frozenset(
+                self._get_supersedes_lineage_sync(request.source_id)
+            )
+
+        # Target lineage: needed for anchor validation of transitive_target /
+        # transitive_both, and also for merged_from tombstone scanning.
+        target_lineage: frozenset[str] = frozenset()
+        need_target_lineage = False
+        if (
+            policy in (
+                ResolutionPolicy.TRANSITIVE_TARGET,
+                ResolutionPolicy.TRANSITIVE_BOTH,
+            )
+            and request.target_valid_from_version is not None
+            and request.target_id is not None
+        ):
+            need_target_lineage = True
+        if (
+            request.edge_type == EdgeType.MERGED_FROM
+            and request.target_id is not None
+        ):
+            need_target_lineage = True
+        if need_target_lineage and target_exists:
+            target_lineage = frozenset(
+                self._get_supersedes_lineage_sync(request.target_id)
+            )
+
+        has_sup_predecessor = False
+        has_sup_successor = False
+        tombstone_candidates: tuple[str, ...] = ()
+        if request.edge_type == EdgeType.MERGED_FROM:
+            has_sup_predecessor = conn.execute(
+                "SELECT 1 FROM edges WHERE edge_type = ? AND source_id = ? LIMIT 1",
+                (EdgeType.SUPERSEDES.value, request.source_id),
+            ).fetchone() is not None
+            if request.target_id is not None:
+                has_sup_successor = conn.execute(
+                    "SELECT 1 FROM edges WHERE edge_type = ? AND target_id = ? LIMIT 1",
+                    (EdgeType.SUPERSEDES.value, request.target_id),
+                ).fetchone() is not None
+            if target_lineage:
+                tombstone_candidates = tuple(
+                    self._find_tombstone_candidates_sync(list(target_lineage))
+                )
+
+        return LinkReadContext(
+            source_exists=source_exists,
+            target_exists=target_exists,
+            retracted_edge=retracted_edge,
+            source_lineage=source_lineage,
+            target_lineage=target_lineage,
+            source_anchor_exists=source_anchor_exists,
+            target_anchor_exists=target_anchor_exists,
+            has_sup_predecessor=has_sup_predecessor,
+            has_sup_successor=has_sup_successor,
+            tombstone_candidates=tombstone_candidates,
+        )
 
     async def get_retracts_for_edges(
         self, edge_ids: list[str]

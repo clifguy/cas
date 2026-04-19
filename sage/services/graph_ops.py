@@ -3,6 +3,7 @@
 Covers behavioral tests BH-021, BH-023, BH-031 through BH-037.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -41,7 +42,7 @@ from sage.models.schemas import (
     TraverseRequest,
     TraverseResponse,
 )
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import GraphStore, LinkReadContext
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,13 @@ class GraphOpsService:
         self._store = graph_store
         self._config = config
         self._edge_type_registry = edge_type_registry or EdgeTypeRegistry.default()
+        # Serializes link() across concurrent callers. Rationale: SQLite
+        # writes serialize at the DB layer anyway, and per-call fan-out
+        # into the graph-store executor compounded under parallel load,
+        # filling the pool with orphaned work when MCP clients cancelled.
+        # Queueing at the asyncio layer is cheap and bounds the pool's
+        # backlog to one in-flight link's worth of submissions.
+        self._link_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Link (BH-031, BH-032, CAS-ADR-017)
@@ -144,94 +152,78 @@ class GraphOpsService:
         the policy, and any chain-scoped anchor must sit in the
         supersedes lineage of its endpoint document.
         """
-        # Document existence and self-reference are logically prior to
-        # anchor-shape validation: we reject unknown documents and
-        # self-loops first so callers get the most fundamental error.
-        source = await self._store.get_document(request.source_id)
-        if source is None:
-            raise DocumentNotFoundError(request.source_id)
-
-        if request.edge_type != EdgeType.RETRACTS:
-            if request.target_id is not None and request.source_id == request.target_id:
-                raise SelfReferentialEdgeError(request.source_id)
-            if request.target_id is not None:
-                target = await self._store.get_document(request.target_id)
-                if target is None:
-                    raise DocumentNotFoundError(request.target_id)
-
         policy = self._edge_type_registry.policy_for(request.edge_type)
 
-        if policy == ResolutionPolicy.TBD:
-            raise TBDPolicyEdgeError(request.edge_type.value)
+        async with self._link_lock:
+            ctx = await self._store.read_link_context(request, policy)
 
-        self._validate_link_request_shape(request, policy)
+            # Error order preserves pre-batching behavior: document
+            # existence → self-ref → target existence → TBD → shape →
+            # retracted-edge existence → merged_from chain positions →
+            # anchor lineage.
+            if not ctx.source_exists:
+                raise DocumentNotFoundError(request.source_id)
 
-        if request.edge_type == EdgeType.RETRACTS:
-            existing = await self._store.get_edge(request.retracted_edge_id)
-            if existing is None:
-                raise RetractTargetNotEdgeError(request.retracted_edge_id)
+            if request.edge_type != EdgeType.RETRACTS:
+                if (
+                    request.target_id is not None
+                    and request.source_id == request.target_id
+                ):
+                    raise SelfReferentialEdgeError(request.source_id)
+                if request.target_id is not None and not ctx.target_exists:
+                    raise DocumentNotFoundError(request.target_id)
 
-        if request.edge_type == EdgeType.MERGED_FROM:
-            await self._validate_merged_from_chain_positions(request)
+            if policy == ResolutionPolicy.TBD:
+                raise TBDPolicyEdgeError(request.edge_type.value)
 
-        await self._validate_anchor_in_lineage(request, policy)
+            self._validate_link_request_shape(request, policy)
 
-        # CAS-ADR-017 null-means-not-applicable: each anchor is stored
-        # exactly as supplied. transitive_source edges carry a null
-        # target_valid_from_version (target frozen at derivation; version
-        # specificity already captured by target_id). transitive_target
-        # is the mirror. The shape validator enforces which of the two
-        # anchor fields must be populated for each policy.
-        edge = Edge(
-            id=str(uuid.uuid4()),
-            source_id=request.source_id,
-            target_id=request.target_id,
-            edge_type=request.edge_type,
-            resolution_policy=policy,
-            source_valid_from_version=request.source_valid_from_version,
-            target_valid_from_version=request.target_valid_from_version,
-            valid_until_version=None,
-            retracted_edge_id=request.retracted_edge_id,
-            created_at=datetime.now(timezone.utc),
-            notes=request.notes,
-            rationale=request.rationale,
-        )
+            if request.edge_type == EdgeType.RETRACTS:
+                if ctx.retracted_edge is None:
+                    raise RetractTargetNotEdgeError(request.retracted_edge_id)
 
-        if request.edge_type == EdgeType.MERGED_FROM:
-            # Atomic: insert merged_from AND tombstone predecessor-chain
-            # non-policy-none edges with valid_until_version = terminal.
-            lineage = await self._store.get_supersedes_lineage(request.target_id)
-            tombstone_ids = await self._store.find_tombstone_candidates(list(lineage))
-            await self._store.merge_atomic(
-                edge, tombstone_ids, request.target_id
+            if request.edge_type == EdgeType.MERGED_FROM:
+                if ctx.has_sup_predecessor:
+                    raise MergedFromValidationError(
+                        "source is not the first version of its chain (has an "
+                        "outbound supersedes edge)",
+                        source_id=request.source_id,
+                        target_id=request.target_id,
+                    )
+                if ctx.has_sup_successor:
+                    raise MergedFromValidationError(
+                        "target is not a chain head (has a newer superseding version)",
+                        source_id=request.source_id,
+                        target_id=request.target_id,
+                    )
+
+            self._validate_anchors_from_context(request, policy, ctx)
+
+            edge = Edge(
+                id=str(uuid.uuid4()),
+                source_id=request.source_id,
+                target_id=request.target_id,
+                edge_type=request.edge_type,
+                resolution_policy=policy,
+                source_valid_from_version=request.source_valid_from_version,
+                target_valid_from_version=request.target_valid_from_version,
+                valid_until_version=None,
+                retracted_edge_id=request.retracted_edge_id,
+                created_at=datetime.now(timezone.utc),
+                notes=request.notes,
+                rationale=request.rationale,
             )
+
+            if request.edge_type == EdgeType.MERGED_FROM:
+                await self._store.merge_atomic(
+                    edge,
+                    list(ctx.tombstone_candidates),
+                    request.target_id,
+                )
+                return edge
+
+            await self._store.insert_edge(edge)
             return edge
-
-        await self._store.insert_edge(edge)
-        return edge
-
-    async def _validate_merged_from_chain_positions(
-        self, request: LinkRequest
-    ) -> None:
-        """Enforce CR-029..CR-031: chain-first successor, chain-head predecessor.
-
-        source_id (successor) must have no outbound supersedes edge
-        (nothing older on its chain); target_id (predecessor) must have
-        no inbound supersedes edge (nothing newer supersedes it).
-        """
-        if await self._store.has_supersedes_predecessor(request.source_id):
-            raise MergedFromValidationError(
-                "source is not the first version of its chain (has an "
-                "outbound supersedes edge)",
-                source_id=request.source_id,
-                target_id=request.target_id,
-            )
-        if await self._store.has_supersedes_successor(request.target_id):
-            raise MergedFromValidationError(
-                "target is not a chain head (has a newer superseding version)",
-                source_id=request.source_id,
-                target_id=request.target_id,
-            )
 
     def _validate_link_request_shape(
         self, request: LinkRequest, policy: ResolutionPolicy
@@ -362,40 +354,43 @@ class GraphOpsService:
                 )
             return
 
-    async def _validate_anchor_in_lineage(
-        self, request: LinkRequest, policy: ResolutionPolicy
+    def _validate_anchors_from_context(
+        self,
+        request: LinkRequest,
+        policy: ResolutionPolicy,
+        ctx: LinkReadContext,
     ) -> None:
-        """Verify chain-scoped anchor(s) are in their endpoint's supersedes lineage.
+        """Verify chain-scoped anchor(s) sit in the pre-fetched lineages.
 
-        Shape has already been validated. No-op for policy `none` and for
-        `retracts` (anchor is on a single chain, endpoint is source_id,
-        checked here). Missing anchor documents surface as
-        EdgeAnchorPolicyViolationError (the anchor must refer to a real
-        chain member for lineage semantics to be well-defined).
+        Pure Python — all DB state was gathered by `read_link_context`.
+        No-op for policy `none` except for `retracts`, which carries a
+        source-side anchor that must be in the retracting chain's lineage.
         """
         if policy == ResolutionPolicy.NONE:
-            # supersedes, merged_from, retracts all land here.
-            # retracts still carries a source-side anchor: check it on
-            # the retracting chain (source_id's lineage).
-            if request.edge_type == EdgeType.RETRACTS and (
-                request.source_valid_from_version is not None
+            if (
+                request.edge_type == EdgeType.RETRACTS
+                and request.source_valid_from_version is not None
             ):
-                await self._require_anchor_in_lineage(
+                self._check_anchor_in_lineage(
                     request.edge_type.value,
                     policy.value,
                     "source_valid_from_version",
                     request.source_valid_from_version,
                     request.source_id,
+                    ctx.source_anchor_exists,
+                    ctx.source_lineage,
                 )
             return
 
         if request.source_valid_from_version is not None:
-            await self._require_anchor_in_lineage(
+            self._check_anchor_in_lineage(
                 request.edge_type.value,
                 policy.value,
                 "source_valid_from_version",
                 request.source_valid_from_version,
                 request.source_id,
+                ctx.source_anchor_exists,
+                ctx.source_lineage,
             )
 
         if (
@@ -406,31 +401,33 @@ class GraphOpsService:
             and request.target_valid_from_version is not None
             and request.target_id is not None
         ):
-            await self._require_anchor_in_lineage(
+            self._check_anchor_in_lineage(
                 request.edge_type.value,
                 policy.value,
                 "target_valid_from_version",
                 request.target_valid_from_version,
                 request.target_id,
+                ctx.target_anchor_exists,
+                ctx.target_lineage,
             )
 
-    async def _require_anchor_in_lineage(
-        self,
+    @staticmethod
+    def _check_anchor_in_lineage(
         edge_type: str,
         policy: str,
         field: str,
         anchor_id: str,
         endpoint_id: str,
+        anchor_exists: bool,
+        lineage: frozenset[str],
     ) -> None:
-        anchor_doc = await self._store.get_document(anchor_id)
-        if anchor_doc is None:
+        if not anchor_exists:
             raise EdgeAnchorPolicyViolationError(
                 edge_type,
                 policy,
                 f"{field}={anchor_id!r} does not reference a known document",
                 [field],
             )
-        lineage = await self._store.get_supersedes_lineage(endpoint_id)
         if anchor_id not in lineage:
             raise EdgeAnchorPolicyViolationError(
                 edge_type,
