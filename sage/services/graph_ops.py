@@ -726,17 +726,20 @@ class GraphOpsService:
     def _effective_policy(self, row: dict) -> ResolutionPolicy:
         """Return the authoritative policy for an edge row.
 
-        Prefer the stored column (frozen at creation per CR-012); fall
-        back to the registry for legacy rows without it.
+        Prefer the stored column (frozen at creation per CR-012). For
+        legacy rows without a stored policy (pre-ADR-017 writes) fall
+        back to policy=none so the edge stays visible and retracts /
+        tombstones do not apply. Promoting NULL to the registry's
+        declared policy would require anchors that the legacy writer
+        had no way to stamp; the result would be silent suppression
+        of every legacy references / covers / derived_from edge. A
+        migration that backfills resolution_policy + anchors will
+        move legacy rows to full ADR-017 semantics.
         """
         stored = row.get("resolution_policy")
         if stored:
             return ResolutionPolicy(stored)
-        try:
-            edge_type_enum = EdgeType(row["edge_type"])
-        except ValueError:
-            return ResolutionPolicy.NONE
-        return self._edge_type_registry.policy_for(edge_type_enum)
+        return ResolutionPolicy.NONE
 
     async def _collect_raw_with_seeds(
         self, request: TraverseRequest, cache: _LineageCache
@@ -849,7 +852,7 @@ class GraphOpsService:
         """
         edge_type_val = row["edge_type"]
         try:
-            edge_type_enum = EdgeType(edge_type_val)
+            EdgeType(edge_type_val)
         except ValueError:
             logger.warning(
                 "traverse: edge %s has unknown edge_type=%r; suppressing",
@@ -858,12 +861,7 @@ class GraphOpsService:
             )
             return False
 
-        stored_policy = row.get("resolution_policy")
-        if stored_policy:
-            policy = ResolutionPolicy(stored_policy)
-        else:
-            # Pre-backfill or legacy row: consult registry.
-            policy = self._edge_type_registry.policy_for(edge_type_enum)
+        policy = self._effective_policy(row)
 
         if policy == ResolutionPolicy.NONE:
             return True

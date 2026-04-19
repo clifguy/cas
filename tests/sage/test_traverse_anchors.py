@@ -505,3 +505,104 @@ async def test_cr_052_transitive_target_source_frozen_not_seed_expanded(
         depth=2,
     ))
     assert out4.nodes == []
+
+
+# ---------------------------------------------------------------------------
+# Legacy (pre-ADR-017) edges: NULL resolution_policy must stay visible
+# ---------------------------------------------------------------------------
+#
+# Edges written before CAS-ADR-017 have no resolution_policy column value
+# and no anchor fields. The resolver's pre-fix fallback promoted NULL to
+# the registry's declared policy (e.g. transitive_both for references),
+# which then required anchors the legacy row could not provide -- every
+# legacy references/covers/derived_from edge was silently suppressed.
+# Now we treat NULL policy as "legacy; apply no chain filtering," so the
+# edge is returned as if we were running pre-ADR-017 semantics. When a
+# data migration backfills resolution_policy + anchors, full ADR-017
+# filtering will apply automatically.
+
+
+async def test_legacy_references_edge_surfaces_without_anchors(
+    graph_store, graph_ops_service
+):
+    """A legacy references edge (no policy, no anchors) must be visible."""
+    now = datetime.now(timezone.utc)
+    await _seed_docs(graph_store, "x", "y")
+    await graph_store.insert_edge(Edge(
+        id="legacy_ref_xy",
+        source_id="x",
+        target_id="y",
+        edge_type=EdgeType.REFERENCES,
+        created_at=now,
+    ))
+
+    out = await graph_ops_service.traverse(TraverseRequest(
+        start_id="x",
+        edge_type=EdgeType.REFERENCES,
+        direction=TraversalDirection.OUTBOUND,
+        depth=1,
+    ))
+    assert [n.document.id for n in out.nodes] == ["y"]
+
+    inbound = await graph_ops_service.traverse(TraverseRequest(
+        start_id="y",
+        edge_type=EdgeType.REFERENCES,
+        direction=TraversalDirection.INBOUND,
+        depth=1,
+    ))
+    assert [n.document.id for n in inbound.nodes] == ["x"]
+
+
+async def test_legacy_covers_edge_surfaces_without_anchors(
+    graph_store, graph_ops_service
+):
+    """A legacy covers edge (no policy, no anchors) must be visible."""
+    now = datetime.now(timezone.utc)
+    await _seed_docs(graph_store, "p", "q")
+    await graph_store.insert_edge(Edge(
+        id="legacy_cov_pq",
+        source_id="p",
+        target_id="q",
+        edge_type=EdgeType.COVERS,
+        created_at=now,
+    ))
+
+    out = await graph_ops_service.traverse(TraverseRequest(
+        start_id="p",
+        edge_type=EdgeType.COVERS,
+        direction=TraversalDirection.OUTBOUND,
+        depth=1,
+    ))
+    assert [n.document.id for n in out.nodes] == ["q"]
+
+
+async def test_legacy_and_anchored_edges_coexist_in_traverse(
+    graph_store, graph_ops_service
+):
+    """Mixed query: legacy edges plus new anchored edges both surface."""
+    now = datetime.now(timezone.utc)
+    await _seed_docs(graph_store, "s", "t1", "t2")
+    # Legacy: no policy, no anchors
+    await graph_store.insert_edge(Edge(
+        id="legacy_ref_s_t1",
+        source_id="s",
+        target_id="t1",
+        edge_type=EdgeType.REFERENCES,
+        created_at=now,
+    ))
+    # Modern: anchored, written via link()
+    await graph_ops_service.link(LinkRequest(
+        source_id="s",
+        target_id="t2",
+        edge_type=EdgeType.REFERENCES,
+        source_valid_from_version="s",
+        target_valid_from_version="t2",
+    ))
+
+    out = await graph_ops_service.traverse(TraverseRequest(
+        start_id="s",
+        edge_type=EdgeType.REFERENCES,
+        direction=TraversalDirection.OUTBOUND,
+        depth=1,
+    ))
+    assert sorted(n.document.id for n in out.nodes) == ["t1", "t2"]
