@@ -217,3 +217,94 @@ async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
     })
     fetched2 = await graph_store.get_document("doc_indexed")
     assert fetched2.indexed_at == fetched.indexed_at
+
+
+# ---------------------------------------------------------------------------
+# get_supersedes_lineage: recursive CTE must terminate on pathological graphs
+# ---------------------------------------------------------------------------
+#
+# Real vault data can develop integrity issues — pairs of documents where
+# each claims to supersede the other (2-cycle), or wide diamond patterns
+# from multi-predecessor / multi-successor edges. The lineage walk must
+# terminate cleanly in both cases; otherwise a single edge write whose
+# source or target happens to touch such a shape loops forever in the
+# recursive CTE, consuming the executor thread past any client timeout.
+
+from sage.models.enums import EdgeType
+from sage.models.schemas import Edge
+
+
+def _make_doc(doc_id: str) -> Document:
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title=f"Doc {doc_id}",
+        source_type=SourceType.MARKDOWN,
+        source_path=f"test/{doc_id}.md",
+        source_content_hash=f"hash_{doc_id}",
+        adapter_version="0.1.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+    )
+
+
+async def _make_supersedes_edge(graph_store, eid, newer, older):
+    await graph_store.insert_edge(Edge(
+        id=eid,
+        source_id=newer,
+        target_id=older,
+        edge_type=EdgeType.SUPERSEDES,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+
+async def test_get_supersedes_lineage_terminates_on_two_cycle(graph_store):
+    """A supersedes B and B supersedes A — lineage walk must terminate."""
+    await graph_store.insert_document(_make_doc("A"))
+    await graph_store.insert_document(_make_doc("B"))
+    await _make_supersedes_edge(graph_store, "e_ab", "A", "B")
+    await _make_supersedes_edge(graph_store, "e_ba", "B", "A")
+
+    result = await asyncio.wait_for(
+        graph_store.get_supersedes_lineage("A"), timeout=2.0,
+    )
+    assert set(result) == {"A", "B"}
+
+
+async def test_get_supersedes_lineage_dedupes_diamond(graph_store):
+    """Diamond (A->B, A->C, B->D, C->D) — result has each doc at most once.
+
+    Under UNION ALL the walk generated both A->B->D and A->C->D paths,
+    duplicating D (and multiplying combinatorially for wider diamonds).
+    """
+    for d in ("A", "B", "C", "D"):
+        await graph_store.insert_document(_make_doc(d))
+    await _make_supersedes_edge(graph_store, "e_ab", "A", "B")
+    await _make_supersedes_edge(graph_store, "e_ac", "A", "C")
+    await _make_supersedes_edge(graph_store, "e_bd", "B", "D")
+    await _make_supersedes_edge(graph_store, "e_cd", "C", "D")
+
+    result = await asyncio.wait_for(
+        graph_store.get_supersedes_lineage("A"), timeout=2.0,
+    )
+    assert sorted(result) == ["A", "B", "C", "D"]
+    assert len(result) == len(set(result)), (
+        f"lineage must not contain duplicates, got {result}"
+    )
+
+
+async def test_get_supersedes_lineage_linear_chain(graph_store):
+    """Linear chain: unchanged behavior — all ancestors returned."""
+    for d in ("v1", "v2", "v3", "v4"):
+        await graph_store.insert_document(_make_doc(d))
+    # v4 supersedes v3 supersedes v2 supersedes v1
+    await _make_supersedes_edge(graph_store, "e_43", "v4", "v3")
+    await _make_supersedes_edge(graph_store, "e_32", "v3", "v2")
+    await _make_supersedes_edge(graph_store, "e_21", "v2", "v1")
+
+    result = await graph_store.get_supersedes_lineage("v4")
+    assert set(result) == {"v1", "v2", "v3", "v4"}

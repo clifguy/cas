@@ -569,11 +569,12 @@ class GraphStore:
         return [self._row_to_edge(r) for r in rows]
 
     async def get_supersedes_lineage(self, doc_id: str) -> list[str]:
-        """Return doc_id and all supersedes-predecessors, newest first.
+        """Return doc_id and all supersedes-predecessors (unordered).
 
         Walks supersedes edges outbound (source=newer, target=older)
         recursively from doc_id. Inclusive of doc_id. Empty list if
         doc_id is not in the documents table (caller treats as missing).
+        Callers treat the result as a set; order is not preserved.
         """
         return await self._run(self._get_supersedes_lineage_sync, doc_id)
 
@@ -584,16 +585,21 @@ class GraphStore:
         ).fetchone()
         if exists is None:
             return []
+        # UNION (not UNION ALL) so the recursive CTE terminates on
+        # cycles and dedupes diamond fan-outs. Real vault data has
+        # developed 2-cycles (paired reciprocal supersedes edges) that
+        # would loop forever under UNION ALL; diamonds produced
+        # exponential duplicate paths.
         sql = (
-            "WITH RECURSIVE lineage(doc_id, depth) AS ("
-            "  SELECT ?, 0"
-            "  UNION ALL"
-            "  SELECT e.target_id, l.depth + 1 "
+            "WITH RECURSIVE lineage(doc_id) AS ("
+            "  SELECT ?"
+            "  UNION"
+            "  SELECT e.target_id "
             "  FROM edges e "
             "  INNER JOIN lineage l ON e.source_id = l.doc_id "
             "  WHERE e.edge_type = ?"
             ") "
-            "SELECT doc_id FROM lineage ORDER BY depth"
+            "SELECT doc_id FROM lineage"
         )
         rows = conn.execute(sql, (doc_id, EdgeType.SUPERSEDES.value)).fetchall()
         return [r["doc_id"] for r in rows]
