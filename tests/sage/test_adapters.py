@@ -2131,3 +2131,578 @@ class TestXlsxAdapter:
         # Content from both sheets present
         assert "100" in result.text
         assert "50" in result.text
+
+
+# ── PDF Adapter ───────────────────────────────────────────────────
+
+try:
+    import pdfplumber as _pdfplumber  # noqa: F401
+    import pypdf as _pypdf  # noqa: F401
+
+    _HAS_PDFPLUMBER = True
+except ImportError:
+    _HAS_PDFPLUMBER = False
+
+try:
+    from reportlab.pdfgen import canvas as _rl_canvas  # noqa: F401
+
+    _HAS_REPORTLAB = True
+except ImportError:
+    _HAS_REPORTLAB = False
+
+try:
+    from PIL import Image as _PilImage  # noqa: F401
+
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
+
+requires_pdf = pytest.mark.skipif(
+    not (_HAS_PDFPLUMBER and _HAS_REPORTLAB),
+    reason="pdfplumber, pypdf, or reportlab not available",
+)
+requires_pdf_with_image = pytest.mark.skipif(
+    not (_HAS_PDFPLUMBER and _HAS_REPORTLAB and _HAS_PIL),
+    reason="pdfplumber, pypdf, reportlab, or Pillow not available",
+)
+
+
+def _draw_paragraph_lines(c, lines: list[str], start_y: int = 750) -> None:
+    """Draw lines of text on the current page, top-down."""
+    y = start_y
+    for line in lines:
+        c.drawString(72, y, line)
+        y -= 14
+
+
+def _make_pdf_with_pages(
+    path: Path,
+    pages: list[list[str]],
+    info_title: str | None = None,
+) -> Path:
+    """Create a multi-page PDF with given lines per page.
+
+    pages: [[line1, line2, ...], [line1, line2, ...], ...]
+    Each inner list is the lines of one page.
+    """
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    # reportlab defaults /Info /Title to "untitled" if not set; explicitly
+    # clear it when the caller wants no /Info /Title.
+    c.setTitle(info_title if info_title is not None else "")
+    for page_lines in pages:
+        _draw_paragraph_lines(c, page_lines)
+        c.showPage()
+    c.save()
+    return path
+
+
+def _make_pdf_with_outline(
+    path: Path,
+    outline: list[tuple[int, str, int]],
+    pages: list[list[str]],
+    info_title: str | None = None,
+) -> Path:
+    """Create a multi-page PDF with a bookmark outline.
+
+    outline: list of (level_1_indexed, title, page_index_0_indexed).
+    pages: text lines per page.
+    """
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    # reportlab defaults /Info /Title to "untitled" if not set; explicitly
+    # clear it when the caller wants no /Info /Title.
+    c.setTitle(info_title if info_title is not None else "")
+
+    bookmarks_per_page: dict[int, list[tuple[int, str, str]]] = {}
+    for idx, (level, title, page_idx) in enumerate(outline):
+        key = f"BM_{idx}"
+        bookmarks_per_page.setdefault(page_idx, []).append((level, title, key))
+
+    parent_keys: list[str] = []
+    parent_levels: list[int] = []
+
+    for page_idx, page_lines in enumerate(pages):
+        for level, title, key in bookmarks_per_page.get(page_idx, []):
+            c.bookmarkPage(key)
+            while parent_levels and parent_levels[-1] >= level:
+                parent_keys.pop()
+                parent_levels.pop()
+            c.addOutlineEntry(title, key, level=level - 1, closed=False)
+            parent_keys.append(key)
+            parent_levels.append(level)
+        _draw_paragraph_lines(c, page_lines)
+        c.showPage()
+
+    c.showOutline()
+    c.save()
+    return path
+
+
+def _make_scanned_pdf(path: Path, image_caption: str = "scanned text") -> Path:
+    """Create a single-page PDF whose only content is a rasterized image.
+
+    No text drawing operations are performed, so pdfplumber extracts an
+    empty (or near-empty) text layer.
+    """
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+    from PIL import Image, ImageDraw
+
+    img_path = path.with_suffix(".png")
+    img = Image.new("RGB", (400, 100), color="white")
+    draw = ImageDraw.Draw(img)
+    draw.text((10, 40), image_caption, fill="black")
+    img.save(img_path)
+
+    c = canvas.Canvas(str(path), pagesize=letter)
+    c.setTitle("")
+    c.drawImage(str(img_path), 72, 600, width=400, height=100)
+    c.showPage()
+    c.save()
+    img_path.unlink()
+    return path
+
+
+def _make_encrypted_pdf(
+    path: Path, body_text: str = "encrypted content"
+) -> Path:
+    """Create a PDF and encrypt it with an owner password."""
+    import pypdf
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+
+    plain_path = path.with_suffix(".plain.pdf")
+    c = canvas.Canvas(str(plain_path), pagesize=letter)
+    c.drawString(72, 720, body_text)
+    c.showPage()
+    c.save()
+
+    reader = pypdf.PdfReader(str(plain_path))
+    writer = pypdf.PdfWriter(clone_from=reader)
+    writer.encrypt(user_password="userpw", owner_password="ownerpw")
+    with open(path, "wb") as f:
+        writer.write(f)
+    plain_path.unlink()
+    return path
+
+
+def _make_zero_page_pdf(path: Path) -> Path:
+    """Create a structurally-valid PDF with zero pages."""
+    import pypdf
+
+    writer = pypdf.PdfWriter()
+    with open(path, "wb") as f:
+        writer.write(f)
+    return path
+
+
+def _make_corrupt_pdf(path: Path) -> Path:
+    """Create a file that begins with a PDF header but is not a valid PDF."""
+    path.write_bytes(b"%PDF-1.7\nthis is not a valid PDF body content\n")
+    return path
+
+
+def _make_malformed_xref_pdf(path: Path) -> Path:
+    """Create a minimal PDF with intentionally-wrong xref offsets.
+
+    pypdf reads such PDFs by falling back to an object scan; the recovery
+    succeeds but emits stderr warnings ("incorrect startxref pointer",
+    "parsing for Object Streams", or similar). The adapter is required to
+    suppress these.
+    """
+    pdf_bytes = (
+        b"%PDF-1.4\n"
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]"
+        b" /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+        b"4 0 obj\n<< /Length 55 >>\nstream\n"
+        b"BT /F1 12 Tf 50 700 Td (MALFORMED_XREF_BODY) Tj ET\n"
+        b"endstream\nendobj\n"
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+        b"xref\n0 6\n"
+        b"0000000000 65535 f \n"
+        b"0000000999 00000 n \n"
+        b"0000000999 00000 n \n"
+        b"0000000999 00000 n \n"
+        b"0000000999 00000 n \n"
+        b"0000000999 00000 n \n"
+        b"trailer\n<< /Size 6 /Root 1 0 R >>\n"
+        b"startxref\n500\n%%EOF\n"
+    )
+    path.write_bytes(pdf_bytes)
+    return path
+
+
+@requires_pdf
+class TestPdfAdapter:
+    """AD-076 through AD-094: PDF source adapter tests (v0.1, native-text only)."""
+
+    # ── Section 8.1 — Registration & basic projection ────────────
+
+    def test_ad_076_extension_registration(self):
+        """AD-076: PdfAdapter registers .pdf as a supported extension."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+        import re
+
+        assert PdfAdapter.EXTENSIONS == [".pdf"]
+        assert isinstance(PdfAdapter.VERSION, str)
+        assert re.match(r"^\d+\.\d+\.\d+$", PdfAdapter.VERSION)
+
+    async def test_ad_077_native_text_flat_projection(self, tmp_path):
+        """AD-077: Native-text PDF without outline produces single flat heading."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(
+            tmp_path / "flat.pdf",
+            pages=[["UNIQUE_BODY_MARKER hello there", "second line"]],
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert "UNIQUE_BODY_MARKER" in result.text
+        assert len(result.headings) == 1
+        assert result.headings[0].level == 1
+        assert result.headings[0].path == result.title
+        assert "UNIQUE_BODY_MARKER" in result.headings[0].content
+
+    async def test_ad_078_content_hash_is_sha256_of_bytes(self, tmp_path):
+        """AD-078: content_hash is SHA-256 hex of raw source bytes."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+        import hashlib
+
+        path = _make_pdf_with_pages(
+            tmp_path / "hash.pdf", pages=[["hash test body"]]
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        expected = hashlib.sha256(path.read_bytes()).hexdigest()
+        assert result.content_hash == expected
+        assert len(result.content_hash) == 64
+        assert result.content_hash == result.content_hash.lower()
+
+    # ── Section 8.2 — Provenance & metadata ──────────────────────
+
+    async def test_ad_079_source_modified_at_from_mtime(self, tmp_path):
+        """AD-079: source_modified_at extracted from file mtime."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+        import os
+        from datetime import datetime, timezone
+
+        path = _make_pdf_with_pages(
+            tmp_path / "mtime.pdf", pages=[["mtime test"]]
+        )
+        # Set a known mtime
+        target_ts = datetime(2025, 6, 15, 12, 30, 0, tzinfo=timezone.utc).timestamp()
+        os.utime(path, (target_ts, target_ts))
+
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert isinstance(result.metadata["source_modified_at"], str)
+        parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
+        assert parsed.tzinfo is not None
+        assert abs((parsed - datetime.fromtimestamp(target_ts, tz=timezone.utc)).total_seconds()) < 1
+
+    async def test_ad_080_page_count_metadata(self, tmp_path):
+        """AD-080: page_count metadata reflects actual page count."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(
+            tmp_path / "multipage.pdf",
+            pages=[[f"page {i} body"] for i in range(7)],
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.metadata["page_count"] == 7
+        assert result.metadata["pages_extracted"] == 7
+        assert "pdf:truncated" not in result.metadata.get("adapter_tags", [])
+
+    # ── Section 8.3 — Title priority chain ───────────────────────
+
+    async def test_ad_081_title_from_info_title(self, tmp_path):
+        """AD-081: Title resolves from /Info /Title when present (priority 1)."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_outline(
+            tmp_path / "info_title.pdf",
+            outline=[(1, "Outline Heading 1", 0)],
+            pages=[["First Line Title", "more body"]],
+            info_title="Set Via Info",
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.title == "Set Via Info"
+
+    async def test_ad_082_title_from_first_outline_entry(self, tmp_path):
+        """AD-082: Title falls back to first outline entry when /Info absent."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_outline(
+            tmp_path / "outline_title.pdf",
+            outline=[(1, "Outline Heading 1", 0)],
+            pages=[["First Line Title", "more body"]],
+            info_title=None,
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.title == "Outline Heading 1"
+
+    async def test_ad_083_title_from_first_body_line(self, tmp_path):
+        """AD-083: Title falls back to first body line <=120 chars."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(
+            tmp_path / "body_title.pdf",
+            pages=[["First Line Title", "more content here"]],
+            info_title=None,
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.title == "First Line Title"
+
+    async def test_ad_084_title_falls_back_to_filename(self, tmp_path):
+        """AD-084: Title falls back to filename stem when no usable line."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        long_line = "X" * 200
+        path = _make_pdf_with_pages(
+            tmp_path / "long-leading-line.pdf",
+            pages=[[long_line]],
+            info_title=None,
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.title == "long-leading-line"
+
+    # ── Section 8.4 — Outline handling ───────────────────────────
+
+    async def test_ad_085_outline_produces_nested_headings(self, tmp_path):
+        """AD-085: Outlined PDF produces HeadingNodes mirroring outline structure."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_outline(
+            tmp_path / "outlined.pdf",
+            outline=[
+                (1, "Intro", 0),
+                (2, "Background", 1),
+                (3, "Prior Art", 2),
+            ],
+            pages=[
+                ["INTRO_BODY"],
+                ["BACKGROUND_BODY"],
+                ["PRIOR_ART_BODY"],
+            ],
+            info_title="Outlined Doc",
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert len(result.headings) == 3
+        assert result.headings[0].level == 1
+        assert result.headings[0].text == "Intro"
+        assert result.headings[0].path == "Intro"
+        assert "INTRO_BODY" in result.headings[0].content
+
+        assert result.headings[1].level == 2
+        assert result.headings[1].path == "Intro > Background"
+        assert "BACKGROUND_BODY" in result.headings[1].content
+
+        assert result.headings[2].level == 3
+        assert result.headings[2].path == "Intro > Background > Prior Art"
+        assert "PRIOR_ART_BODY" in result.headings[2].content
+
+    async def test_ad_086_has_outline_metadata_and_tag(self, tmp_path):
+        """AD-086: has_outline=True and pdf:has_outline tag emitted with outline."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        outlined = _make_pdf_with_outline(
+            tmp_path / "with_outline.pdf",
+            outline=[(1, "Section 1", 0)],
+            pages=[["body"]],
+            info_title="With Outline",
+        )
+        no_outline = _make_pdf_with_pages(
+            tmp_path / "no_outline.pdf",
+            pages=[["body"]],
+            info_title="No Outline",
+        )
+        adapter = PdfAdapter()
+
+        outlined_result = await adapter.project(outlined)
+        no_outline_result = await adapter.project(no_outline)
+
+        assert outlined_result.metadata["has_outline"] is True
+        assert "pdf:has_outline" in outlined_result.metadata.get("adapter_tags", [])
+        assert no_outline_result.metadata["has_outline"] is False
+        assert "pdf:has_outline" not in no_outline_result.metadata.get("adapter_tags", [])
+
+    async def test_ad_087_outline_depth_cap_drops_deeper_entries(self, tmp_path):
+        """AD-087: Outline depth cap (10) drops deeper entries; text preserved in ancestor."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        outline = [(level, f"Level{level}", level - 1) for level in range(1, 13)]
+        pages = [[f"BODY_L{level}"] for level in range(1, 13)]
+
+        path = _make_pdf_with_outline(
+            tmp_path / "deep.pdf",
+            outline=outline,
+            pages=pages,
+            info_title="Deep Outline",
+        )
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert max(node.level for node in result.headings) == 10
+        heading_texts = [node.text for node in result.headings]
+        assert "Level11" not in heading_texts
+        assert "Level12" not in heading_texts
+
+        level10_node = next(n for n in result.headings if n.level == 10)
+        assert "BODY_L11" in level10_node.content
+        assert "BODY_L12" in level10_node.content
+
+    # ── Section 8.5 — Scanned-PDF detection ──────────────────────
+
+    @requires_pdf_with_image
+    async def test_ad_088_scanned_pdf_emits_scanned_tag(self, tmp_path):
+        """AD-088: Scanned-only PDF produces empty projection with pdf:scanned tag."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_scanned_pdf(tmp_path / "scanned-doc.pdf")
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.text == ""
+        assert result.headings == []
+        assert "pdf:scanned" in result.metadata.get("adapter_tags", [])
+        assert "pdf:" in result.metadata.get("adapter_tag_prefixes", [])
+        assert result.title == "scanned-doc"
+
+    @requires_pdf_with_image
+    async def test_ad_089_adapter_tag_prefixes_declared(self, tmp_path):
+        """AD-089: adapter_tag_prefixes declares ['pdf:'] when any pdf: tag is contributed."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        outlined = _make_pdf_with_outline(
+            tmp_path / "outlined_for_prefixes.pdf",
+            outline=[(1, "Section 1", 0)],
+            pages=[["body"]],
+            info_title="With Outline",
+        )
+        scanned = _make_scanned_pdf(tmp_path / "scanned_for_prefixes.pdf")
+        adapter = PdfAdapter()
+
+        outlined_result = await adapter.project(outlined)
+        scanned_result = await adapter.project(scanned)
+
+        assert outlined_result.metadata.get("adapter_tag_prefixes") == ["pdf:"]
+        assert scanned_result.metadata.get("adapter_tag_prefixes") == ["pdf:"]
+
+    # ── Section 8.6 — Failure modes ──────────────────────────────
+
+    async def test_ad_090_encrypted_pdf_raises(self, tmp_path):
+        """AD-090: Encrypted PDF raises ValueError."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+        import re
+
+        path = _make_encrypted_pdf(tmp_path / "encrypted.pdf")
+        adapter = PdfAdapter()
+        with pytest.raises(ValueError, match=re.compile(r"encrypted", re.IGNORECASE)):
+            await adapter.project(path)
+
+    async def test_ad_091_corrupt_pdf_raises(self, tmp_path):
+        """AD-091: Corrupt PDF raises ValueError."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        bad_header = _make_corrupt_pdf(tmp_path / "garbage.pdf")
+        empty = tmp_path / "empty.pdf"
+        empty.write_bytes(b"")
+
+        adapter = PdfAdapter()
+
+        with pytest.raises(ValueError):
+            await adapter.project(bad_header)
+        with pytest.raises(ValueError):
+            await adapter.project(empty)
+
+    async def test_ad_092_malformed_pdf_no_stderr_leakage(self, tmp_path):
+        """AD-092: Malformed-but-readable PDF projects successfully without stderr leakage."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+        import contextlib
+        import io
+
+        path = _make_malformed_xref_pdf(tmp_path / "malformed.pdf")
+        adapter = PdfAdapter()
+
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            result = await adapter.project(path)
+
+        assert "MALFORMED_XREF_BODY" in result.text
+        stderr_content = captured.getvalue()
+        assert "incorrect startxref" not in stderr_content
+        assert "Ignoring wrong pointing object" not in stderr_content
+        assert "parsing for Object Streams" not in stderr_content
+
+    async def test_ad_093_zero_page_pdf_empty_projection(self, tmp_path):
+        """AD-093: Empty (zero-page) PDF produces empty projection without error."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_zero_page_pdf(tmp_path / "zero-pages.pdf")
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert result.text == ""
+        assert result.headings == []
+        assert result.metadata["page_count"] == 0
+        assert result.metadata["pages_extracted"] == 0
+        assert result.title == "zero-pages"
+
+    # ── Section 8.7 — Configuration ──────────────────────────────
+
+    async def test_ad_094_max_pages_truncation(self, tmp_path):
+        """AD-094: max_pages truncates; pages_extracted and pdf:truncated tag distinguish source vs. projection."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(
+            tmp_path / "ten_pages.pdf",
+            pages=[[f"PAGE_{i}_BODY"] for i in range(1, 11)],
+        )
+        adapter = PdfAdapter()
+
+        truncated = await adapter.project(path, config={"max_pages": 3})
+        no_truncation = await adapter.project(path, config={"max_pages": 10})
+        above_actual = await adapter.project(path, config={"max_pages": 100})
+
+        # Truncation case
+        assert truncated.metadata["page_count"] == 10
+        assert truncated.metadata["pages_extracted"] == 3
+        assert "pdf:truncated" in truncated.metadata.get("adapter_tags", [])
+        assert "PAGE_1_BODY" in truncated.text
+        assert "PAGE_2_BODY" in truncated.text
+        assert "PAGE_3_BODY" in truncated.text
+        assert "PAGE_4_BODY" not in truncated.text
+        assert "PAGE_10_BODY" not in truncated.text
+
+        # No-truncation case
+        assert no_truncation.metadata["page_count"] == 10
+        assert no_truncation.metadata["pages_extracted"] == 10
+        assert "pdf:truncated" not in no_truncation.metadata.get("adapter_tags", [])
+
+        # Limit-above-actual case
+        assert above_actual.metadata["page_count"] == 10
+        assert above_actual.metadata["pages_extracted"] == 10
+        assert "pdf:truncated" not in above_actual.metadata.get("adapter_tags", [])

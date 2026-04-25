@@ -1147,3 +1147,555 @@ carry that verification signal. Keeping `has_numbering` alongside as
 a fast-path bool means filter queries do not need to check
 `numbering_detail is not None` on every entry.
 
+---
+
+## 8. PDF Source Adapter
+
+Tier 2 behavioral tests for `sage/source_adapters/pdf_adapter.py`
+(PdfAdapter v0.1). Native-text-only scope: PDFs with a real text layer
+are projected directly via `pdfplumber`; image-only ("scanned") PDFs are
+detected and surfaced via an `adapter_tags` signal so the user can
+re-OCR them externally and re-ingest. OCR inside SAGE is out of scope
+for v0.1.
+
+Programmatic test fixtures generated via `reportlab` (text + outlined
+PDFs) and `Pillow` (image-only "scanned" PDFs); `reportlab` and
+`Pillow` are test-only dependencies.
+
+### Section 8.1 — Registration & basic projection
+
+### TEST-SAGE-AD-076: PdfAdapter registers `.pdf` as a supported extension
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter)
+**Category:** registration
+**Decision:** `PdfAdapter.EXTENSIONS == [".pdf"]`. The scan service derives
+its file-extension-to-adapter map from each adapter's `EXTENSIONS`
+class attribute, so a missing or misspelled value silently disables the
+adapter for the scan UI.
+
+**Precondition:** None (pure attribute check).
+
+**Input:** Inspect `PdfAdapter.EXTENSIONS`.
+
+**Expected:**
+- `PdfAdapter.EXTENSIONS == [".pdf"]`
+- `PdfAdapter.VERSION` is a non-empty string matching `r"^\d+\.\d+\.\d+$"`
+
+**Rationale:** Mirrors AD-068 for the docx adapter's `.dotx` registration.
+Encodes the contract between adapter and the scan service's auto-derived
+extension map.
+
+### TEST-SAGE-AD-077: Native-text projection extracts text and produces a flat single-section heading when no outline is present
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** projection, headings
+**Decision:** A PDF with a real text layer and no `/Outlines` produces a
+`ProjectionResult` whose `text` carries the full extracted body, and
+whose `headings` list contains exactly one `HeadingNode` at level 1
+covering the whole document.
+
+**Precondition:** A programmatic single-page PDF generated via
+`reportlab`, containing one paragraph of recognizable English text and
+no outline entries.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.text` contains the paragraph's recognizable substring.
+- `len(result.headings) == 1`
+- `result.headings[0].level == 1`
+- `result.headings[0].path == result.title`
+- `result.headings[0].content` equals `result.text` (modulo whitespace).
+
+**Rationale:** v0.1 deliberately defers font-size heuristics. When the
+PDF carries no outline, the adapter does not invent structure; it
+exposes the document as a single flat section so that retrieval still
+gets indexable chunks under a coherent `heading_path`. Most
+machine-generated PDFs (legal reports, exported letters, single-section
+memos) fall into this case.
+
+### TEST-SAGE-AD-078: `content_hash` is SHA-256 of raw source bytes
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** provenance, dedup
+**Decision:** `result.content_hash` is the lowercase hex SHA-256 of the
+source file's raw bytes, identical to other adapters.
+
+**Precondition:** Any readable PDF fixture.
+
+**Input:** `await adapter.project(source_path)`; independently compute
+`hashlib.sha256(source_path.read_bytes()).hexdigest()`.
+
+**Expected:**
+- `result.content_hash == hashlib.sha256(source_path.read_bytes()).hexdigest()`
+- All-lowercase, 64 hex characters.
+
+**Rationale:** The ingestion service uses `content_hash` for the dedup
+gate. A divergent hashing scheme (e.g., hashing the projected text
+instead of the source bytes) would break dedup across re-ingest and
+break the contract with other adapters. Mirrors AD-067 (xlsx) and the
+markdown adapter's hashing.
+
+### Section 8.2 — Provenance & metadata
+
+### TEST-SAGE-AD-079: `source_modified_at` extracted from file mtime
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** provenance, metadata
+**Decision:** The PDF adapter calls `source_path.stat()` to extract the
+file's `st_mtime` and includes it in `ProjectionResult.metadata` as an
+ISO 8601 UTC string keyed `"source_modified_at"`.
+
+**Precondition:** Programmatic PDF written to a tmp path; `os.utime` set
+to a known instant for determinism.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.metadata["source_modified_at"]` is a string.
+- `datetime.fromisoformat(...)` parses it successfully.
+- Parsed datetime is timezone-aware (UTC).
+- Parsed datetime matches the set mtime within 1-second tolerance.
+
+**Rationale:** Mirrors AD-034 (markdown). File-based adapters are the
+natural extraction point for filesystem provenance; the document's
+`source_modified_at` column is populated by the ingestion service from
+this metadata key.
+
+### TEST-SAGE-AD-080: `page_count` metadata reflects the actual page count of the source
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** metadata
+**Decision:** `result.metadata["page_count"]` is the integer page count
+of the source PDF, regardless of how many pages were projected. When
+truncation occurs (see AD-094) `page_count` continues to report the
+source's actual count; `pages_extracted` reports what was projected.
+
+**Precondition:** Programmatic 7-page PDF.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.metadata["page_count"] == 7`
+- `result.metadata["pages_extracted"] == 7` (no truncation here).
+- `"pdf:truncated"` not in `result.metadata.get("adapter_tags", [])`.
+
+**Rationale:** `page_count` describes the source artifact; truncation is
+a separate signal (AD-094). Overloading one field would lose the delta
+between "what's in the file" and "what the adapter chose to project,"
+which becomes valuable when re-ingesting after raising the
+`max_pages` config.
+
+### Section 8.3 — Title priority chain
+
+### TEST-SAGE-AD-081: Title resolves from `/Info /Title` when present (priority 1)
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** title, metadata
+**Decision:** When the PDF's `/Info` dictionary contains a non-empty
+`/Title` entry, the adapter returns that string as `result.title`,
+overriding all lower-priority sources.
+
+**Precondition:** Programmatic PDF with `/Info /Title = "Set Via Info"`,
+a different first outline entry "Outline Heading 1", a different first
+body line "First Line Title", and a non-trivial filename stem.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.title == "Set Via Info"`
+
+**Rationale:** Authors can set `/Info /Title` deliberately (Word's
+Document Properties, LaTeX `\title{}`, PDF export dialogs). When set,
+it represents the most authoritative title intent. Mirrors the
+DocxAdapter pattern of preferring the most-explicit title source.
+
+### TEST-SAGE-AD-082: Title falls back to first outline entry when `/Info /Title` absent (priority 2)
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** title, metadata
+**Decision:** When `/Info /Title` is absent or empty and the PDF has an
+outline, the first outline entry's text becomes `result.title`.
+
+**Precondition:** Programmatic PDF with empty `/Info` and an outline
+whose first entry is "Outline Heading 1".
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.title == "Outline Heading 1"`
+
+**Rationale:** Outline entries are author-curated structural markers,
+more reliable than body-line guessing. When `/Info` is silent, the
+outline is the next-best author intent.
+
+### TEST-SAGE-AD-083: Title falls back to first body line ≤120 chars when no `/Info` and no outline (priority 3)
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** title, heuristic
+**Decision:** When `/Info /Title` is absent and the PDF has no outline,
+the adapter scans the projected body text and returns the first
+non-empty line whose length is ≤120 characters as `result.title`. Empty
+or whitespace-only leading lines are skipped.
+
+**Precondition:** Programmatic PDF with empty `/Info`, no outline, and
+body text whose first non-empty line is "First Line Title" (well under
+120 chars), followed by additional content.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.title == "First Line Title"`
+
+**Rationale:** A short leading line is overwhelmingly likely to be a
+human-readable title. The 120-char cap rejects accidental title
+detection on cover pages where the first line is a paragraph of
+boilerplate. Mirrors the DocxAdapter `_extract_key_terms` fallback
+intent.
+
+### TEST-SAGE-AD-084: Title falls back to filename stem as last resort (priority 4)
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** title, fallback
+**Decision:** When `/Info /Title` is absent, no outline exists, and no
+body line ≤120 chars is found, `result.title` is `source_path.stem`.
+
+**Precondition:** Programmatic PDF with empty `/Info`, no outline, and
+a body whose first line exceeds 120 characters; saved as
+`tmp/long-leading-line.pdf`.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.title == "long-leading-line"`
+
+**Rationale:** Filename is the last resort signal. It will at least be
+human-typed (not adapter-guessed) and consistent with how the user
+already organizes the file. Empty-string titles are not acceptable
+because downstream code uses `title` as the root `heading_path`.
+
+### Section 8.4 — Outline handling
+
+### TEST-SAGE-AD-085: Outlined PDF produces HeadingNodes mirroring outline structure
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** projection, headings
+**Decision:** When the PDF has an outline, each outline entry becomes a
+`HeadingNode` whose `level` matches the outline depth (root = 1),
+`text` is the outline label, `path` is `" > ".join(ancestors + [text])`,
+and `content` is the text extracted from the page range from this
+entry's destination page up to (but not including) the next sibling or
+parent's next-sibling destination page.
+
+**Precondition:** Programmatic PDF with an outline:
+- Level 1: "Intro" (page 1)
+  - Level 2: "Background" (page 2)
+    - Level 3: "Prior Art" (page 3)
+
+Each section contains a paragraph whose text uniquely identifies it
+(e.g., "INTRO_BODY", "BACKGROUND_BODY", "PRIOR_ART_BODY").
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `len(result.headings) == 3`
+- `result.headings[0] == HeadingNode(level=1, text="Intro", path="Intro", content=...)` where content contains "INTRO_BODY".
+- `result.headings[1].path == "Intro > Background"`; content contains "BACKGROUND_BODY".
+- `result.headings[2].path == "Intro > Background > Prior Art"`; content contains "PRIOR_ART_BODY".
+
+**Rationale:** Outline-derived headings give retrieval the same
+structural anchoring that docx and markdown adapters provide via their
+native heading constructs. The `path` construction matches the
+HeadingNode docstring's example (`"Section 3 > Definitions >
+Normalization"`) so downstream chunk metadata is consistent across
+adapters.
+
+### TEST-SAGE-AD-086: `has_outline=True` and `pdf:has_outline` adapter tag emitted when outline present
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** metadata, tags
+**Decision:** When the PDF has a non-empty outline, the adapter sets
+`metadata["has_outline"] = True` and includes `"pdf:has_outline"` in
+`metadata["adapter_tags"]`. When no outline is present,
+`metadata["has_outline"] = False` and no `pdf:has_outline` tag is
+emitted.
+
+**Precondition:** Two fixtures — one with an outline, one without.
+
+**Input:** `await adapter.project(source_path)` for each.
+
+**Expected:**
+- Outlined fixture: `result.metadata["has_outline"] is True`;
+  `"pdf:has_outline" in result.metadata["adapter_tags"]`.
+- No-outline fixture: `result.metadata["has_outline"] is False`;
+  `"pdf:has_outline"` not in `result.metadata.get("adapter_tags", [])`.
+
+**Rationale:** Both the boolean and the tag carry the same signal in
+two channels. The boolean is structured and queryable; the tag flows
+into `document.tags` (via `adapter_tags` plumbing — BH-131) and is
+filterable in the discover/search UI without joining metadata. Mirrors
+AD-073's tag-emission contract for the docx adapter.
+
+### TEST-SAGE-AD-087: Outline depth cap (10) drops deeper entries; their text remains accessible via the level-10 ancestor's content
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** safety, headings
+**Decision:** Outline entries whose depth exceeds 10 are dropped from
+`result.headings`. Their underlying body text is still projected: by
+construction, the page range of the nearest level-≤10 ancestor covers
+the dropped entry's pages, so the dropped entry's body text appears in
+that ancestor's `content`.
+
+**Precondition:** Programmatic PDF with a synthetic 12-level deep
+outline. Each level's heading text is unique
+(`"Level1"`..`"Level12"`); each level's body contains a unique marker
+(`"BODY_L1"`..`"BODY_L12"`).
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `max(node.level for node in result.headings) == 10`
+- No `HeadingNode` exists with `text == "Level11"` or
+  `text == "Level12"`.
+- The level-10 `HeadingNode`'s `content` contains `"BODY_L11"` and
+  `"BODY_L12"` (their text is preserved within the ancestor's page
+  range).
+
+**Rationale:** Real-world outlines are rarely deeper than four levels;
+the cap exists purely as a safety bound against pathological or
+adversarial PDFs. Dropping (rather than collapsing into ancestors as
+explicit subheadings) preserves structural fidelity at the visible
+levels. Text loss is not a concern because page-range extraction
+inherently covers descendant page ranges.
+
+### Section 8.5 — Scanned-PDF detection
+
+### TEST-SAGE-AD-088: Scanned-only PDF produces empty projection with `pdf:scanned` tag
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** detection, tags
+**Decision:** A PDF whose pages collectively yield zero non-whitespace
+extracted characters (`total_chars == 0` after stripping each page) is
+treated as scanned. The adapter returns `result.text == ""`,
+`result.headings == []`, `metadata["adapter_tags"]` containing
+`"pdf:scanned"`, and `metadata["adapter_tag_prefixes"]` containing
+`"pdf:"`. The title is still resolved via the priority chain
+(typically falling through to filename stem since `/Info /Title`,
+outline, and body lines are all absent in image-only PDFs).
+
+The simpler "any text at all" threshold (vs. the originally-considered
+"chars/page < 50 AND total < 200") trades sensitivity for predictability:
+real-world scanned PDFs that happen to contain a few stray text-layer
+artifacts (page numbers, headers rendered as text alongside images) are
+not flagged, but neither are tiny native-text PDFs ever falsely flagged
+as scanned. False negatives are recoverable (the user notices an empty
+abstract and re-OCRs externally); false positives are not (the document
+gets indexed empty and silently disappears from search).
+
+**Precondition:** Programmatic single-page PDF generated by rendering
+the string "This image carries no text layer." into a PNG via Pillow,
+then embedding the PNG into a PDF page with no text drawing
+operations. The resulting PDF has zero extractable text.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.text == ""`
+- `result.headings == []`
+- `"pdf:scanned" in result.metadata["adapter_tags"]`
+- `"pdf:" in result.metadata["adapter_tag_prefixes"]`
+- `result.title == source_path.stem` (filename fallback applies).
+- No exception is raised.
+
+**Rationale:** Rather than failing or attempting in-process OCR, v0.1
+flags scanned PDFs and routes them through the empty-projection
+pathway, which the ingestion service transitions to
+`abstraction_skipped` (consistent with BH-134's empty-docx behavior).
+The user sees `pdf:scanned` in the scan UI and can re-OCR via Acrobat
+externally, then re-ingest. Defers OCR-quality and OCR-dependency
+debates to a Phase 2 decision.
+
+### TEST-SAGE-AD-089: `adapter_tag_prefixes` declares `["pdf:"]` whenever a `pdf:` tag is contributed
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** tags, re-ingest
+**Decision:** Whenever the adapter contributes any `pdf:`-prefixed
+tag in `metadata["adapter_tags"]` (e.g., `pdf:has_outline`,
+`pdf:scanned`, `pdf:truncated`), it must also set
+`metadata["adapter_tag_prefixes"] = ["pdf:"]` so that on force
+re-ingest, stale `pdf:`-prefixed tags are stripped from the
+document before fresh ones are applied. When no `pdf:` tag is
+contributed, `adapter_tag_prefixes` may be omitted or set to `[]`.
+
+**Precondition:** Two fixtures: an outlined PDF (emits
+`pdf:has_outline`) and a scanned PDF (emits `pdf:scanned`).
+
+**Input:** `await adapter.project(source_path)` for each.
+
+**Expected:**
+- Outlined fixture: `result.metadata["adapter_tag_prefixes"] == ["pdf:"]`.
+- Scanned fixture: `result.metadata["adapter_tag_prefixes"] == ["pdf:"]`.
+
+**Rationale:** Mirrors AD-073 / BH-132's `adapter_tag_prefixes`
+contract for the docx adapter. Without this declaration, the ingestion
+service has no way to know which `document.tags` are adapter-owned
+versus caller-owned, and stale tags accumulate across re-ingests.
+
+### Section 8.6 — Failure modes
+
+### TEST-SAGE-AD-090: Encrypted PDF raises `ValueError`
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** error_handling
+**Decision:** When the source PDF is encrypted (owner or user password
+set) and the adapter has no decryption credentials, `project()`
+raises `ValueError` whose message mentions "encrypted". The adapter
+does not attempt to silently produce an empty projection, because the
+file genuinely could be readable to a credentialed user; the failure
+must be loud.
+
+**Precondition:** Programmatic PDF generated with an owner password
+(via `reportlab.pdfgen.canvas` encryption arguments).
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `pytest.raises(ValueError)` with message matching `r"encrypted"i`.
+
+**Rationale:** Distinguishes "PDF format we can't currently read" from
+"PDF with no text layer." The first is a credential problem the user
+might solve; the second is OCR-deferred to Phase 2. Conflating them
+would hide encrypted files behind the `pdf:scanned` flag and confuse
+diagnosis.
+
+### TEST-SAGE-AD-091: Corrupt PDF raises `ValueError`
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** error_handling
+**Decision:** When the source file is not a valid PDF (e.g., truncated,
+not a PDF at all, or has unrecoverable structural damage),
+`project()` raises `ValueError`.
+
+**Precondition:** Two fixtures:
+- A file containing `b"%PDF-1.7\nnot real content"` (bad header
+  followed by garbage).
+- A file that is genuinely empty (0 bytes).
+
+**Input:** `await adapter.project(source_path)` for each.
+
+**Expected:**
+- Both raise `ValueError`.
+
+**Rationale:** The ingestion service catches adapter exceptions and
+records them as ingestion failures. Raising rather than returning an
+empty projection ensures the failure is surfaced and the document is
+not silently indexed with no content.
+
+### TEST-SAGE-AD-092: Malformed-but-readable PDF projects successfully without stderr leakage
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** error_handling, log_hygiene
+**Decision:** PDFs with mildly malformed xref tables (the class that
+`pdfminer.six` and `pypdf` print "Ignoring wrong pointing object N M
+(offset 0)" warnings for) project successfully. The adapter suppresses
+these stderr warnings inside `project()` (via a stderr redirect or
+`warnings`/`logging` filter scoped to the call) so the SAGE server log
+is not flooded.
+
+**Precondition:** A real-world malformed-xref PDF fixture. Either
+checked-in (small, license-clean) or generated by a fixture builder
+that constructs a PDF with intentionally-broken xref offsets but
+still-extractable content streams.
+
+**Input:**
+1. Capture stderr via `contextlib.redirect_stderr(io.StringIO())`.
+2. `await adapter.project(source_path)`.
+
+**Expected:**
+- `result.text` is non-empty (extraction succeeded).
+- The captured stderr buffer contains no occurrence of "Ignoring
+  wrong pointing object".
+
+**Rationale:** A real fraction of PDFs in the wild (the PV01
+patentability search report is one) parse cleanly content-wise but
+emit a flurry of object-pointer warnings during parsing. Letting these
+leak into the SAGE log creates noise that drowns real diagnostic
+signal. The adapter is the right place to scope the suppression so
+that other PDF tooling outside SAGE remains verbose by default.
+
+### TEST-SAGE-AD-093: Empty (zero-page) PDF produces empty projection without error
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** edge_case
+**Decision:** A structurally valid PDF with `/Pages /Count 0` (or
+otherwise containing no page objects) produces
+`result.text == ""`, `result.headings == []`, and
+`result.metadata["page_count"] == 0`. No exception is raised. The
+title falls through to filename stem.
+
+**Precondition:** Programmatic zero-page PDF.
+
+**Input:** `await adapter.project(source_path)`
+
+**Expected:**
+- `result.text == ""`
+- `result.headings == []`
+- `result.metadata["page_count"] == 0`
+- `result.metadata["pages_extracted"] == 0`
+- `result.title == source_path.stem`
+- No exception.
+
+**Rationale:** Treats zero-page PDFs the same as empty docx (BH-134):
+empty projection routes ingestion to `abstraction_skipped` rather than
+crashing the abstraction quality guard. Distinct from the scanned case
+(AD-088) because no `pdf:scanned` tag applies — there's no content to
+OCR.
+
+### Section 8.7 — Configuration
+
+### TEST-SAGE-AD-094: `max_pages` config: `pages_extracted` and `pdf:truncated` tag distinguish truncation from actual page count
+
+**Artifact:** `sage/source_adapters/pdf_adapter.py` (PdfAdapter.project)
+**Category:** config, truncation
+**Decision:** When the adapter receives `config={"max_pages": N}` and
+the source PDF has more than N pages, only the first N pages
+contribute to `result.text` and to outline-derived `HeadingNode`
+content. `metadata["page_count"]` continues to report the source's
+actual page count; `metadata["pages_extracted"]` reports N; and
+`metadata["adapter_tags"]` includes `"pdf:truncated"`. When the PDF
+has ≤N pages, `pages_extracted == page_count` and no `pdf:truncated`
+tag is emitted.
+
+**Precondition:** Programmatic 10-page PDF with each page containing a
+unique marker (`"PAGE_1_BODY"`..`"PAGE_10_BODY"`).
+
+**Input:**
+1. `await adapter.project(source_path, config={"max_pages": 3})`
+   (truncation case).
+2. `await adapter.project(source_path, config={"max_pages": 10})`
+   (no-truncation case).
+3. `await adapter.project(source_path, config={"max_pages": 100})`
+   (limit above actual count).
+
+**Expected:**
+- Truncation case (max_pages=3):
+  - `result.metadata["page_count"] == 10`
+  - `result.metadata["pages_extracted"] == 3`
+  - `"pdf:truncated" in result.metadata["adapter_tags"]`
+  - `result.text` contains `"PAGE_1_BODY"`, `"PAGE_2_BODY"`,
+    `"PAGE_3_BODY"`; does not contain `"PAGE_4_BODY"` or
+    `"PAGE_10_BODY"`.
+- No-truncation case (max_pages=10):
+  - `pages_extracted == page_count == 10`
+  - `"pdf:truncated"` not in `adapter_tags`.
+- Limit-above case (max_pages=100):
+  - `pages_extracted == page_count == 10`
+  - `"pdf:truncated"` not in `adapter_tags`.
+
+**Rationale:** Two-field design separates the artifact's ground truth
+(`page_count`) from the adapter's behavior (`pages_extracted`). The
+`pdf:truncated` tag surfaces the event in `document.tags` so it is
+filterable in the discover/search UI. If `max_pages` is later raised
+and the document re-ingested, the delta between the two fields makes
+the change visible without re-reading the file.
+

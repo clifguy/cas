@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.13",
-  "manifest_date": "2026-04-18",
+  "manifest_version": "0.9.14",
+  "manifest_date": "2026-04-25",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -95,9 +95,9 @@
         "sage/adapters/interfaces.py",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 37,
+      "test_count": 64,
       "decision_date": "2026-04-06",
-      "notes": "nomic-embed-text EmbeddingProvider (8 tests), LanceDB ContentStore (17 tests), Qwen3 AbstractionProvider (8 tests), Qwen3 lazy loading (3 tests), Markdown adapter provenance (1 test)."
+      "notes": "nomic-embed-text EmbeddingProvider (8 tests), LanceDB ContentStore (17 tests), Qwen3 AbstractionProvider (8 tests), Qwen3 lazy loading (3 tests), Markdown adapter provenance (1 test), Word template .dotx adapter (8 tests, AD-068..AD-075), PDF source adapter v0.1 native-text only (19 tests, AD-076..AD-094). Numbering gap AD-038..AD-067 reserved for docx/xlsx adapter spec backfill (tracker references those numbers; specs not yet present in this file)."
     },
     {
       "path": "tests/app/frontend_tests.md",

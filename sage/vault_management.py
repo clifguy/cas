@@ -139,6 +139,7 @@ def _get_default_config(vault_id: str, name: str, owner: str) -> dict:
                 {"source_type": "markdown", "enabled": True},
                 {"source_type": "docx", "enabled": True},
                 {"source_type": "xlsx", "enabled": True},
+                {"source_type": "pdf", "enabled": True},
             ],
         },
         "metadata_extraction": {
