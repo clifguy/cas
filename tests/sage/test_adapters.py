@@ -1,4 +1,4 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-037).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-099).
 
 Production adapter tests for nomic-embed-text EmbeddingProvider, LanceDB
 ContentStore, Qwen3 AbstractionProvider (with lazy loading), and Markdown
@@ -330,10 +330,10 @@ class TestLanceDBContentStore:
         await content_store.remove_document("nonexistent_doc")
         # No exception raised
 
-    async def test_ad_068_has_chunks_true(
+    async def test_ad_098_has_chunks_true(
         self, content_store, embedding_provider
     ):
-        """AD-068: has_chunks returns True for a document with indexed chunks."""
+        """AD-098: has_chunks returns True for a document with indexed chunks."""
         texts = ["chunk a", "chunk b"]
         embeddings = await embedding_provider.embed(texts)
         await content_store.index_chunks("doc_hc", [
@@ -341,8 +341,8 @@ class TestLanceDBContentStore:
         ])
         assert await content_store.has_chunks("doc_hc") is True
 
-    async def test_ad_069_has_chunks_false(self, content_store):
-        """AD-069: has_chunks returns False for a non-existent document."""
+    async def test_ad_099_has_chunks_false(self, content_store):
+        """AD-099: has_chunks returns False for a non-existent document."""
         assert await content_store.has_chunks("nonexistent_doc_999") is False
 
     async def test_ad_016_semantic_search_ranking(
@@ -701,10 +701,10 @@ class TestQwen3AbstractionProvider:
 
 @requires_qwen3
 class TestQwen3LazyLoading:
-    """Tests AD-035 through AD-037: lazy model loading behavior."""
+    """Tests AD-095 through AD-097: lazy model loading behavior."""
 
-    async def test_ad_035_defers_load_to_first_call(self):
-        """AD-035: Constructor does not load model; first call triggers load."""
+    async def test_ad_095_defers_load_to_first_call(self):
+        """AD-095: Constructor does not load model; first call triggers load."""
         provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
         assert provider._model is None
 
@@ -713,8 +713,8 @@ class TestQwen3LazyLoading:
         assert isinstance(result, str)
         assert len(result.strip()) > 0
 
-    async def test_ad_036_second_call_reuses_model(self):
-        """AD-036: Second generate_abstract() reuses the loaded model."""
+    async def test_ad_096_second_call_reuses_model(self):
+        """AD-096: Second generate_abstract() reuses the loaded model."""
         provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
 
         await provider.generate_abstract(SAMPLE_TEXT, 200)
@@ -724,8 +724,8 @@ class TestQwen3LazyLoading:
         await provider.generate_abstract("Different input text.", 200)
         assert provider._model is model_after_first  # Same object identity
 
-    async def test_ad_037_load_failure_raises_and_stays_unloaded(self):
-        """AD-037: Model load failure raises RuntimeError; provider
+    async def test_ad_097_load_failure_raises_and_stays_unloaded(self):
+        """AD-097: Model load failure raises RuntimeError; provider
         remains in unloaded state for potential retry."""
         provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
 

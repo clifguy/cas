@@ -1,20 +1,27 @@
 # SAGE Adapter Tests
 
-Tier 2 behavioral tests for production adapter implementations: LanceDB
-ContentStore and nomic-embed-text EmbeddingProvider.
+Tier 2 behavioral tests for production adapter implementations across the
+adapter surface: nomic-embed-text EmbeddingProvider, LanceDB ContentStore,
+Qwen3 AbstractionProvider (eager and lazy loading paths), and the source
+adapters (Markdown, Docx, Xlsx, Word template `.dotx`, PDF).
 
 These tests validate that the concrete adapter implementations satisfy the
-abstract interfaces defined in `sage/adapters/interfaces.py` with real storage
-and real embeddings. Distinct from the SAGE behavioral tests (TEST-SAGE-BH-*),
-which validate service-layer logic against those same interfaces using stubs.
+abstract interfaces defined in `sage/adapters/interfaces.py` (for retrieval
+and abstraction adapters) and `sage/source_adapters/base.py` (for source
+adapters) with real storage and real artifacts. Distinct from the SAGE
+behavioral tests (TEST-SAGE-BH-*), which validate service-layer logic
+against these same interfaces using stubs.
 
-Each test encodes a design decision made during adapter specification (2026-04-06).
+Each test encodes a design decision made during adapter specification.
 Tests are grouped by adapter in implementation dependency order: embedding
-provider first (produces vectors consumed by content store tests), then content
-store.
+provider first (produces vectors consumed by content store tests), then
+content store, then abstraction, then source adapters in the order they
+were added to the codebase.
 
 Test environment: tests use the test vault brain at `~/sage_vaults/test/brain/`
 for LanceDB storage, referencing `~/sage_vaults/test/vault_config.yaml`.
+Source adapter tests construct artifacts in `tmp_path` and exercise the
+adapter directly without going through the ingestion pipeline.
 
 ---
 
@@ -764,75 +771,793 @@ serializable without importing datetime into the base adapter module.
 
 ---
 
-## 5. Qwen3 AbstractionProvider -- Lazy Loading
+## 5. Docx Source Adapter
 
-### TEST-SAGE-AD-035: Lazy loading defers model allocation to first call
+Tier 2 behavioral tests for `sage/source_adapters/docx_adapter.py`
+(DocxAdapter). The adapter parses Word document structure via python-docx:
+heading extraction from paragraph styles via configurable
+`heading_style_map`, table extraction as pipe-delimited text rows, body
+paragraphs attached to the nearest preceding heading, content hashing of
+raw `.docx` bytes, source-modified provenance via file mtime, and a
+`_NumberingEngine` that computes rendered heading number prefixes from
+Word numbering definitions (decimal, upperRoman, lowerRoman, upperLetter,
+lowerLetter) with counter reset on parent level increment.
 
-**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
-**Category:** initialization, memory
-**Decision:** Constructor stores configuration only. The `_ensure_loaded()` guard
-in `generate_abstract()` triggers model load on first invocation.
+These tests exercise the `.docx` branch only. Template (`.dotx`) handling
+is specified separately in section 7.
 
-**Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
+### TEST-SAGE-AD-035: Basic projection returns valid ProjectionResult
 
-**Input:**
-1. Construct provider with valid model ID.
-2. Verify `_model` is None (not loaded).
-3. Call `generate_abstract()` with sample text.
-4. Verify `_model` is not None (loaded).
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, shape
+**Decision:** A `.docx` with one `Heading 1` and one body paragraph
+projects to a non-empty `ProjectionResult` with non-empty `text`, exactly
+one heading, a 64-character SHA-256 `content_hash`, `title` resolved
+from the filename stem (no `Title`-styled paragraph present), and
+`adapter_version == DocxAdapter.VERSION`.
 
-**Expected:**
-- After construction: `provider._model is None`
-- After first call: `provider._model is not None`
-- The call returns a valid non-empty abstract
+**Precondition:** A `.docx` constructed with one paragraph styled
+`Heading 1` ("Introduction") and one plain paragraph.
 
-**Rationale:** Confirms the lazy loading contract: construction is cheap, load
-happens on demand. Tests the internal state transition from unloaded to loaded.
-
-### TEST-SAGE-AD-036: Second call reuses already-loaded model
-
-**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
-**Category:** initialization, performance
-**Decision:** `_ensure_loaded()` is idempotent. After the first load, subsequent
-calls skip the load path entirely.
-
-**Precondition:** Provider constructed, first `generate_abstract()` already called.
-
-**Input:** Call `generate_abstract()` a second time with different text.
+**Input:** `adapter.project(path)`.
 
 **Expected:**
-- Second call succeeds and returns a valid abstract
-- The model object identity is the same as after the first call (no reload)
+- `result.text` is a non-empty `str`.
+- `len(result.headings) == 1` and `result.headings[0].text == "Introduction"`.
+- `result.content_hash` is a 64-char hex string.
+- `result.title == "basic"` (the filename stem).
+- `result.adapter_version == DocxAdapter.VERSION`.
 
-**Rationale:** Prevents accidental double-loading, which would waste ~16-20 GB
-and add significant latency. The idempotency check is a simple `if self._model
-is not None: return` guard.
+**Rationale:** The basic-shape test guarantees that the simplest
+non-trivial input produces a fully-populated projection. Failures here
+indicate a broken adapter contract rather than a feature-specific bug.
 
-### TEST-SAGE-AD-037: Model load failure on first call raises RuntimeError
+### TEST-SAGE-AD-036: Heading extraction uses heading_style_map config
 
-**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
-**Category:** initialization, error
-**Decision:** If the model fails to load on first `generate_abstract()`, the
-provider raises RuntimeError with a diagnostic message. The provider remains
-in the unloaded state so that a retry (after fixing the environment) can
-attempt loading again.
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** configuration, headings
+**Decision:** Callers can map any paragraph style to any heading level by
+passing `config={"heading_style_map": {<style_name>: <level>, ...}}`.
+The adapter does not hard-code which paragraph styles count as headings.
 
-**Precondition:** Provider constructed with an invalid model ID.
+**Precondition:** A `.docx` with one paragraph styled `Title` and one
+plain body paragraph.
 
-**Input:** Call `generate_abstract()` with sample text.
+**Input:** `adapter.project(path, config={"heading_style_map": {"Title": 1}})`.
 
 **Expected:**
-- Raises RuntimeError
-- Error message includes the model ID
-- `provider._model` remains None (load failure does not leave partial state)
+- `len(result.headings) == 1`.
+- `result.headings[0].level == 1` and `result.headings[0].text == "My Title"`.
 
-**Rationale:** Preserves the fail-fast diagnostic contract from the previous
-eager-loading design (AD-026 original). The error surfaces on first use
-rather than at startup, but is equally clear.
+**Rationale:** Patent and contract templates use `Title` as the
+top-level heading; clinical templates use custom styles like
+`USPTO Section`. A configurable map is the only way to handle this
+without per-vault adapter forks.
+
+### TEST-SAGE-AD-037: Default heading styles work without explicit config
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** configuration, defaults
+**Decision:** When `config` omits `heading_style_map`, the adapter
+falls back to `Heading 1` through `Heading 9` mapped to levels 1-9 (the
+standard Word style identifiers).
+
+**Precondition:** A `.docx` with paragraphs styled `Heading 1`,
+`Heading 2`, `Heading 3` ("Level One", "Level Two", "Level Three").
+
+**Input:** `adapter.project(path)` (no config).
+
+**Expected:**
+- `len(result.headings) == 3`.
+- Levels are 1, 2, 3 in order.
+
+**Rationale:** Most Word documents use the stock heading styles. The
+default keeps the simple case zero-config and surfaces typed levels for
+the heading hierarchy logic in subsequent tests.
+
+### TEST-SAGE-AD-038: Heading hierarchy paths use ' > ' separator
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** headings, hierarchy
+**Decision:** `HeadingNode.path` for a heading is the breadcrumb of all
+its ancestors plus its own text, joined by `" > "`. The root heading's
+path is just its own text.
+
+**Precondition:** A `.docx` with `Chapter` (H1), `Section` (H2),
+`Subsection` (H3) in order.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.headings[0].path == "Chapter"`.
+- `result.headings[1].path == "Chapter > Section"`.
+- `result.headings[2].path == "Chapter > Section > Subsection"`.
+
+**Rationale:** Path strings are the durable cross-adapter identifier
+used by `sage_read_section`, `sage_read_projection`, and the heading-
+prefix retrieval contract (AD-020 through AD-022). The separator must
+be stable; downstream consumers split on `" > "`.
+
+### TEST-SAGE-AD-039: Title priority: Title style > filename > key terms
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** title_extraction
+**Decision:** Title resolution follows a three-step priority chain:
+1. The first paragraph styled `Title` (Word's stock title style).
+2. The filename stem, if non-empty after stripping the extension.
+3. Stop-word-filtered key terms (up to 6) from the first body paragraph
+   when neither of the above produces a usable title (filename is
+   degenerate, e.g., `.docx` with no stem).
+
+**Precondition:** Three fixture cases:
+- Case 1: `.docx` named `AuthoritativeAccumulator.docx` containing a
+  `Title`-styled paragraph "Formal Document Title" and an `H1`
+  "System Architecture".
+- Case 2: `.docx` named `AuthoritativeAccumulator.docx` with `H1`
+  "Introduction" and a body paragraph (no `Title` style).
+- Case 3: `.docx` named `.docx` (degenerate filename) with `H1`
+  "Abstract" and a body paragraph mentioning "authoritative
+  accumulator", "clinical normalization", and stop words.
+
+**Input:** `adapter.project(path)` for each case.
+
+**Expected:**
+- Case 1: `result.title == "Formal Document Title"`.
+- Case 2: `result.title == "AuthoritativeAccumulator"`.
+- Case 3: `"authoritative" in result.title.lower()` and `"the"` is not
+  among the lower-cased title's whitespace-split tokens.
+
+**Rationale:** Patent documents use the `Title` paragraph style for
+their actual title; `H1` is typically a generic section heading
+("System Architecture", "Introduction") that misleads search. The
+key-terms fallback is the last-resort path for the rare case where
+neither a `Title` style nor a meaningful filename stem is available.
+
+### TEST-SAGE-AD-040: content_hash is SHA-256 of raw .docx bytes
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** identity, provenance
+**Decision:** `result.content_hash` is the SHA-256 hex digest of the
+raw `.docx` file bytes (the OPC ZIP package), not of the extracted
+text or any normalized form.
+
+**Precondition:** A `.docx` with arbitrary content saved to disk.
+
+**Input:** Compute `hashlib.sha256(path.read_bytes()).hexdigest()`,
+then call `adapter.project(path)`.
+
+**Expected:** `result.content_hash` equals the expected hash.
+
+**Rationale:** Content-hash equality drives the duplicate-ingest gate
+(BH-133). Hashing raw bytes makes two ingests of the same physical
+file equivalent; hashing extracted text would treat reformatted
+duplicates as distinct, which is the wrong answer for change
+detection.
+
+### TEST-SAGE-AD-041: source_modified_at extracted from file mtime
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** provenance
+**Decision:** `result.metadata["source_modified_at"]` is an ISO 8601
+timezone-aware string derived from `path.stat().st_mtime`, parsed via
+`datetime.fromisoformat`.
+
+**Precondition:** A `.docx` whose mtime is set to a known UTC datetime
+(e.g., 2023-06-15 12:00:00 UTC) via `os.utime`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `"source_modified_at"` is a key in `result.metadata`.
+- `datetime.fromisoformat(result.metadata["source_modified_at"])`
+  parses successfully and has a non-None `tzinfo`.
+- The parsed datetime is within one second of the known mtime.
+
+**Rationale:** Source-modified provenance is set by every file-based
+adapter so the ingestion service can populate
+`Document.source_modified_at` (BH-049 through BH-052). The ISO 8601
+string keeps `ProjectionResult.metadata` JSON-serializable.
+
+### TEST-SAGE-AD-042: Table content extracted as pipe-delimited text rows
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, tables
+**Decision:** Word tables are rendered as Markdown-style pipe-delimited
+rows in the projected text: `"| cell | cell | ... |"` per row, header
+row included.
+
+**Precondition:** A `.docx` with one `H1` "Data Section" and one table
+with rows `[["Name", "Value"], ["alpha", "1"], ["beta", "2"]]`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `"| Name | Value |"` is in `result.text`.
+- `"| alpha | 1 |"` is in `result.text`.
+- `"| beta | 2 |"` is in `result.text`.
+
+**Rationale:** Pipe-delimited rows are readable by both BM25 keyword
+search (token-level) and the abstraction provider (the format reads as
+intentional structure, not as garbled text). Skipping tables would
+silently drop the most information-dense parts of patent claim charts
+and clinical reference tables.
+
+### TEST-SAGE-AD-043: Mixed headings, paragraphs, tables in correct order
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, ordering
+**Decision:** Body paragraphs and tables that appear between two
+headings attach to the preceding heading's `content`. The text emerges
+in document order, not in any reordered or grouped layout.
+
+**Precondition:** A `.docx` with: `H1` "Overview", body "Intro
+paragraph.", a 2x2 table, `H2` "Details", body "Detail paragraph."
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `len(result.headings) == 2`; texts are `"Overview"` then `"Details"`.
+- `result.headings[0].content` contains both `"| A | B |"` and
+  `"Intro paragraph."` (the table and paragraph between H1 and H2
+  attach to "Overview").
+
+**Rationale:** Section-level retrieval (`sage_read_section`) and
+heading-prefix queries (AD-020) depend on body content being attached
+to the right heading. Mis-attribution would surface the wrong
+neighborhood to an agent trying to read a specific section.
+
+### TEST-SAGE-AD-044: Empty document produces valid result with filename title
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** edge_case
+**Decision:** A `.docx` containing no paragraphs at all projects
+successfully: empty headings list, valid content hash, filename-stem
+title.
+
+**Precondition:** A `.docx` with no paragraphs, saved to a path whose
+stem is `empty_doc`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.title == "empty_doc"`.
+- `result.headings == []`.
+- `result.text` is a `str` (may be empty or whitespace).
+- `result.content_hash` is a non-empty `str`.
+
+**Rationale:** Empty Word documents are uncommon but real (e.g., a
+freshly-saved file that has not been written to). The adapter must
+not crash; the empty-text consequence is handled by BH-134
+(abstraction_skipped) one stage downstream.
+
+### TEST-SAGE-AD-045: Custom heading_style_map overrides defaults
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** configuration
+**Decision:** When `config["heading_style_map"]` is supplied, custom
+entries are added to (not replacing) the default mapping. A document
+using both `Title` (mapped via config to level 1) and `Heading 1`
+(level 1 via default) produces both as level-1 headings.
+
+**Precondition:** A `.docx` with `Title`-styled "Custom Top" and
+`Heading 1`-styled "Standard H1".
+
+**Input:** `adapter.project(path, config={"heading_style_map": {"Title": 1}})`.
+
+**Expected:**
+- One heading with text "Custom Top" at level 1.
+- One heading with text "Standard H1" at level 1.
+
+**Rationale:** Replacing the default map would force callers to repeat
+the standard `Heading 1`..`Heading 9` entries every time they wanted
+to add one extra style. Additive merge keeps the common case terse.
+
+### TEST-SAGE-AD-046: Non-heading paragraphs appear as content under nearest heading
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, content_attachment
+**Decision:** Each body paragraph attaches to the most recently seen
+heading. Paragraphs preceding any heading would be unattached (this
+fixture exercises only the post-heading case).
+
+**Precondition:** A `.docx` with: `H1` "Section A", body "First body
+paragraph.", body "Second body paragraph.", `H1` "Section B", body
+"Third body paragraph."
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- Both "First body paragraph." and "Second body paragraph." appear in
+  `result.headings[0].content`.
+- "Third body paragraph." appears in `result.headings[1].content`.
+- "First body paragraph." does NOT appear in
+  `result.headings[1].content`.
+
+**Rationale:** The "nearest preceding heading" rule is the canonical
+attachment rule for Markdown and DocBook; matching it here keeps
+section semantics consistent across source formats.
+
+### TEST-SAGE-AD-047: adapter_version matches DocxAdapter.VERSION
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.VERSION)
+**Category:** versioning
+**Decision:** Every `ProjectionResult` carries
+`adapter_version == DocxAdapter.VERSION` (the class constant). The
+adapter does not synthesize the version per call.
+
+**Precondition:** Any `.docx`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:** `result.adapter_version == DocxAdapter.VERSION`.
+
+**Rationale:** Adapter version is recorded on each `Document` so a
+later projection-format change can be detected and re-projected
+documents identified. Sourcing the value from the class constant
+guarantees the adapter cannot lie about its own version.
+
+### TEST-SAGE-AD-048: Decimal heading numbering prepended to heading text
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (_NumberingEngine)
+**Category:** numbering, projection
+**Decision:** When a heading paragraph carries a `numPr` referencing
+an abstract numbering definition with `numFmt="decimal"`, the rendered
+number ("1", "1.1", "2.1.3") is prepended to the heading text with a
+single space.
+
+**Precondition:** A `.docx` with a decimal numbering definition (`numId
+100`, abstract num with `numFmt=decimal` at ilvls 0..2) and three
+headings: `H1` "Introduction" (ilvl 0), `H1` "Background" (ilvl 0),
+`H2` "Definitions" (ilvl 1), all referencing `numId 100`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.headings[0].text == "1 Introduction"`.
+- `result.headings[1].text == "2 Background"`.
+- `result.headings[2].text == "2.1 Definitions"`.
+
+**Rationale:** Word renders numbered headings with the prefix visible
+to the human reader; without it, the projected text loses the
+heading's rendered identity. Patent claims and clinical procedures
+routinely cross-reference "Section 2.1", and the prefix must be
+present in the text for those references to resolve via search.
+
+### TEST-SAGE-AD-049: Child counters reset when parent level increments
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (_NumberingEngine)
+**Category:** numbering, counter_state
+**Decision:** When the engine sees a heading at a parent level after
+having emitted children at a deeper level, the deeper-level counter
+resets to zero so the next child starts at `.1` rather than continuing.
+
+**Precondition:** A `.docx` using `numId 100` (decimal numFmt) with
+heading sequence: H1 "Part A", H2 "Sub One", H2 "Sub Two", H1 "Part B",
+H2 "Sub One Again".
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- "1 Part A", "1.1 Sub One", "1.2 Sub Two", "2 Part B", "2.1 Sub One
+  Again" (counter reset on the second H1).
+
+**Rationale:** Without reset, "Sub One Again" would render as "2.3"
+and break the numbering invariant Word users expect. The reset rule
+also makes the projected numbers match what the human reader sees in
+the rendered Word document.
+
+### TEST-SAGE-AD-050: upperRoman and lowerLetter numbering formats
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (_NumberingEngine)
+**Category:** numbering, formats
+**Decision:** The engine renders `numFmt` values `upperRoman` (I, II,
+III, ...) and `lowerLetter` (a, b, c, ...) in addition to `decimal`.
+Mixed-format prefixes are joined left-to-right by `.`.
+
+**Precondition:** A `.docx` using `numId 200` whose abstract numbering
+has `upperRoman` at ilvl 0, `decimal` at ilvl 1, `lowerLetter` at
+ilvl 2. Three headings: `H1` "First Chapter" (ilvl 0), `H2` "First
+Section" (ilvl 1), `H3` "First Item" (ilvl 2).
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- "I First Chapter", "I.1 First Section", "I.1.a First Item".
+
+**Rationale:** Patent applications and legal briefs use Roman/letter
+numbering mixed with decimals (the canonical "I.A.1.a" form). The
+engine must render every supported format correctly; falling back
+to decimal silently would mis-name half the patent corpus.
+
+### TEST-SAGE-AD-051: Cross-ref field cached results in text, instructions excluded
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, fields
+**Decision:** Cross-reference fields (REF, PAGEREF, etc.) project as
+their cached display value (`w:t` element inside the field) and
+exclude the field instruction (`w:instrText` element). Inline runs
+adjacent to the field appear in the projected text in their original
+order.
+
+**Precondition:** A `.docx` paragraph containing: text "See Section ",
+a REF field with instruction `" REF _Ref12345 \\r \\h "` and cached
+result "1.1", text " for details."
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- "See Section 1.1 for details." appears in `result.text`.
+- "REF _Ref12345" does NOT appear in `result.text`.
+- "instrText" does NOT appear in `result.text`.
+
+**Rationale:** Field instructions are markup, not content; including
+them would pollute the projected text with strings like
+"REF _Ref12345 \\r \\h" that mean nothing to a reader and degrade
+both BM25 search and abstraction quality. The cached display value is
+what the human sees when the document is open in Word.
+
+### TEST-SAGE-AD-052: Multi-level numbering with mixed formats (I.2.a)
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (_NumberingEngine)
+**Category:** numbering, integration
+**Decision:** A multi-level numbering scheme with multiple chapters,
+each with subsections and items, produces correct prefixes throughout
+including counter resets across chapter boundaries.
+
+**Precondition:** A `.docx` using `numId 200` (Roman/decimal/letter
+mix) with sequence: H1 "Alpha", H2 "Sub Alpha", H3 "Detail A", H3
+"Detail B", H1 "Beta", H2 "Sub Beta".
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- "I Alpha", "I.1 Sub Alpha", "I.1.a Detail A", "I.1.b Detail B",
+  "II Beta", "II.1 Sub Beta".
+
+**Rationale:** Integration test that combines multi-format rendering
+(AD-050) with counter reset (AD-049). A regression in either would
+produce an incorrect prefix here without necessarily breaking the
+narrower individual tests.
 
 ---
 
-## 6. Docx Adapter -- Template (.dotx) Support
+## 6. Xlsx Source Adapter
+
+Tier 2 behavioral tests for `sage/source_adapters/xlsx_adapter.py`
+(XlsxAdapter). The adapter is a lightweight structural-digest projector
+for Excel workbooks via openpyxl in read-only mode. Each worksheet
+becomes a level-1 `HeadingNode`; heading paths are flat sheet names with
+no hierarchy. Per-sheet content is the column header row (pipe-delimited),
+a configurable preview of data rows (default 5), and a dimensions line
+(`"<n> rows" / "<m> columns"`). Title resolves from the first sheet's
+name with fallback to the filename stem when the sheet is named with
+the openpyxl default ("Sheet"/"Sheet1").
+
+The adapter is designed for discovery, not full-content search; an agent
+that needs full data retrieves the source `.xlsx` programmatically.
+
+### TEST-SAGE-AD-053: Basic projection returns valid ProjectionResult
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** projection, shape
+**Decision:** A single-sheet workbook ("Sales") with header row and two
+data rows projects to a non-empty result with one level-1 heading,
+non-empty text, a 64-character SHA-256 content hash, and
+`adapter_version == XlsxAdapter.VERSION`.
+
+**Precondition:** A `.xlsx` with one sheet "Sales" containing rows
+`[["Product", "Revenue"], ["Widget", 100], ["Gadget", 200]]`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.text` is a non-empty `str`.
+- `len(result.headings) == 1` with `text == "Sales"` and `level == 1`.
+- `result.content_hash` is a 64-char hex string.
+- `result.adapter_version == XlsxAdapter.VERSION`.
+
+**Rationale:** Mirrors AD-035 (docx) for the xlsx adapter: the basic
+shape contract must hold for the simplest non-trivial input.
+
+### TEST-SAGE-AD-054: Multiple sheets produce one level-1 HeadingNode each
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** projection, multisheet
+**Decision:** A workbook with N sheets produces N `HeadingNode`s in
+sheet order, each at level 1.
+
+**Precondition:** A `.xlsx` with three sheets ("Revenue", "Expenses",
+"Summary"), each non-empty.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `len(result.headings) == 3`.
+- Heading texts in order: `["Revenue", "Expenses", "Summary"]`.
+- Every heading has `level == 1`.
+
+**Rationale:** Sheets are siblings, not nested. A spreadsheet's
+organizational structure is laid out across tabs, and the projected
+heading tree must reflect that flat layout for downstream
+heading-prefix retrieval to work.
+
+### TEST-SAGE-AD-055: Heading paths are sheet names only (no hierarchy)
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** headings, hierarchy
+**Decision:** `HeadingNode.path` for an xlsx heading equals the sheet
+name verbatim. The `" > "` separator (used by the docx adapter for
+nested headings) does not appear in xlsx heading paths.
+
+**Precondition:** A `.xlsx` with sheets "Alpha" and "Beta", each
+non-empty.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.headings[0].path == "Alpha"`.
+- `result.headings[1].path == "Beta"`.
+- `" > "` is not a substring of either path.
+
+**Rationale:** Heading paths are the durable retrieval-side identifier
+(see AD-038). For xlsx, the absence of nesting in the path is itself
+a signal: agents reading sheet content via `sage_read_section` know
+the path is the sheet name.
+
+### TEST-SAGE-AD-056: First row rendered as pipe-delimited header row
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** projection, headers
+**Decision:** The first row of every sheet is treated as a header row
+and rendered as a pipe-delimited Markdown-style row in the heading's
+content.
+
+**Precondition:** A `.xlsx` with one sheet "Data" whose first row is
+`["Name", "Age", "City"]`.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:** `"| Name | Age | City |"` is in `result.headings[0].content`.
+
+**Rationale:** Header-row text carries the schema signal that a
+discovery query needs ("which sheet has a `City` column?"). Rendering
+it as a Markdown row matches the docx table format (AD-042) so a
+single retrieval consumer handles both.
+
+### TEST-SAGE-AD-057: Default config includes first 5 data rows, omits row 6+
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** projection, preview
+**Decision:** With no config, the adapter projects the first 5 data
+rows (rows 2-6) as preview content and omits subsequent rows. The
+default of 5 balances signal against projection size.
+
+**Precondition:** A `.xlsx` with one sheet "Data" containing 8 data
+rows after the header (`val_1` through `val_8`).
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `val_1` through `val_5` appear in the heading content.
+- `val_6`, `val_7`, `val_8` do not appear.
+
+**Rationale:** Spreadsheets can have tens of thousands of rows.
+Projecting them all defeats the digest goal and overwhelms BM25 with
+data noise. The preview captures schema and a representative sample;
+agents who need full data retrieve the source file.
+
+### TEST-SAGE-AD-058: preview_rows config limits data rows per sheet
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** configuration, preview
+**Decision:** `config={"preview_rows": N}` overrides the default of 5,
+projecting exactly N data rows per sheet.
+
+**Precondition:** Same fixture as AD-057.
+
+**Input:** `adapter.project(path, config={"preview_rows": 2})`.
+
+**Expected:**
+- `val_1` and `val_2` appear in the heading content.
+- `val_3` does not.
+
+**Rationale:** Vault operators can tune preview depth per workbook
+type — clinical reference tables that fit in 20 rows might warrant
+the full content; transaction logs warrant a tight preview.
+
+### TEST-SAGE-AD-059: Content includes dimensions line for each sheet
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** projection, metadata
+**Decision:** Each sheet's projected content includes a dimensions
+line listing the row count (header included) and column count, in
+the form `"<N> rows"` / `"<M> columns"`.
+
+**Precondition:** A `.xlsx` with one sheet "Big" containing 1 header
+row + 20 data rows × 3 columns (21 rows total, 3 columns).
+
+**Input:** `adapter.project(path)`.
+
+**Expected:** `"21 rows"` and `"3 columns"` both appear in
+`result.headings[0].content`.
+
+**Rationale:** Dimensions tell the retrieval consumer "how big is this
+sheet?" without forcing a full re-read. An agent making a routing
+decision (preview vs. fetch the file) can act on the digest alone.
+
+### TEST-SAGE-AD-060: Title extracted from first sheet name
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** title_extraction
+**Decision:** When the first sheet has a non-default name, that name
+becomes the projection's `title`.
+
+**Precondition:** A `.xlsx` named `report.xlsx` with first sheet
+"Quarterly Report" and second sheet "Details".
+
+**Input:** `adapter.project(path)`.
+
+**Expected:** `result.title == "Quarterly Report"`.
+
+**Rationale:** Sheet names in real workbooks usually carry the
+spreadsheet's purpose ("Quarterly Report", "Patient Roster") more
+directly than the filename. Preferring the first sheet name as title
+matches what a human opening the file would call it.
+
+### TEST-SAGE-AD-061: Default sheet name falls back to filename stem
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** title_extraction, fallback
+**Decision:** When the first sheet has openpyxl's default name
+("Sheet" or "Sheet1"), the adapter falls back to the filename stem.
+A default sheet name is taken as a signal that the author did not
+choose a name, not as a meaningful title.
+
+**Precondition:** A `.xlsx` named `my_data.xlsx` whose only sheet has
+the default name "Sheet".
+
+**Input:** `adapter.project(path)`.
+
+**Expected:** `result.title == "my_data"`.
+
+**Rationale:** "Sheet" is a placeholder, not a title. Using it would
+flood the title field with the same noise word for every freshly-saved
+workbook. The filename stem is the next-best signal.
+
+### TEST-SAGE-AD-062: content_hash is SHA-256 of raw .xlsx file bytes
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** identity, provenance
+**Decision:** `result.content_hash` is the SHA-256 hex digest of the
+raw `.xlsx` bytes (the OPC ZIP package), not of the projected text or
+any normalized form.
+
+**Precondition:** A `.xlsx` with arbitrary content saved to disk.
+
+**Input:** Compute `hashlib.sha256(path.read_bytes()).hexdigest()`,
+then call `adapter.project(path)`.
+
+**Expected:** `result.content_hash` equals the expected hash.
+
+**Rationale:** Mirrors AD-040 (docx) and AD-078 (pdf). Hashing raw
+bytes is the cross-adapter convention; reformatted re-saves produce
+new hashes (reflecting actual content change), and identical files
+produce identical hashes regardless of when they were ingested.
+
+### TEST-SAGE-AD-063: source_modified_at extracted from file mtime, timezone-aware
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** provenance
+**Decision:** `result.metadata["source_modified_at"]` is an ISO 8601
+timezone-aware string derived from `path.stat().st_mtime`.
+
+**Precondition:** A `.xlsx` whose mtime is set to a known UTC datetime
+(e.g., 2023-09-01 14:00:00 UTC).
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `"source_modified_at"` is a key in `result.metadata`.
+- The string parses via `datetime.fromisoformat` to a tz-aware
+  datetime within one second of the known mtime.
+
+**Rationale:** Mirrors AD-041 (docx). All file-based adapters share
+the same provenance contract.
+
+### TEST-SAGE-AD-064: Empty workbook produces valid result with filename-stem title
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** edge_case
+**Decision:** A workbook with no data (only the default empty "Sheet")
+projects successfully: filename-stem title, valid content hash, no
+crash.
+
+**Precondition:** A `.xlsx` named `empty_book.xlsx` containing only
+the default empty "Sheet".
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.title == "empty_book"`.
+- `result.text` is a `str` (may be empty).
+- `result.content_hash` is a 64-char hex string.
+
+**Rationale:** Mirrors AD-044 (docx empty document). The empty-text
+abstraction path is the same (BH-134 covers
+`abstraction_skipped` transition).
+
+### TEST-SAGE-AD-065: max_sheets config limits number of sheets projected
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** configuration, projection
+**Decision:** `config={"max_sheets": N}` truncates projection to the
+first N sheets in workbook order.
+
+**Precondition:** A `.xlsx` with 5 sheets named `Sheet_1`..`Sheet_5`.
+
+**Input:** `adapter.project(path, config={"max_sheets": 2})`.
+
+**Expected:**
+- `len(result.headings) == 2`.
+- `result.headings[0].text == "Sheet_1"`.
+- `result.headings[1].text == "Sheet_2"`.
+
+**Rationale:** Some workbooks aggregate hundreds of sheets (one per
+day, per patient, per case). The default ingests all sheets, but
+operators can cap the projection if those workbooks would otherwise
+dominate the index without adding distinct retrieval signal.
+
+### TEST-SAGE-AD-066: metadata includes sheet_names, total_sheets, dimensions
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** metadata
+**Decision:** `result.metadata` contains:
+- `sheet_names`: list of sheet names in workbook order
+- `total_sheets`: integer count
+- `dimensions`: dict mapping each sheet name to its dimensions
+  (rows × columns)
+
+**Precondition:** A `.xlsx` with two sheets: "Alpha" (3 rows × 2
+columns), "Beta" (2 rows × 1 column).
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `result.metadata["sheet_names"] == ["Alpha", "Beta"]`.
+- `result.metadata["total_sheets"] == 2`.
+- `"Alpha"` and `"Beta"` are keys in `result.metadata["dimensions"]`.
+
+**Rationale:** Sheet inventory is the workbook's structural fingerprint.
+A consumer that does not need full content can filter or route on the
+sheet names alone (e.g., "all workbooks containing a `Demographics`
+sheet").
+
+### TEST-SAGE-AD-067: result.text concatenates all sheet projections with markdown headings
+
+**Artifact:** `sage/source_adapters/xlsx_adapter.py` (XlsxAdapter.project)
+**Category:** projection, full_text
+**Decision:** `result.text` is the concatenation of all sheet
+projections, each prefixed by a Markdown level-1 heading
+(`# <sheet_name>`). This is the input for the abstraction stage.
+
+**Precondition:** A `.xlsx` with sheets "Revenue" and "Costs", each
+with header and one data row.
+
+**Input:** `adapter.project(path)`.
+
+**Expected:**
+- `"# Revenue"` is in `result.text`.
+- `"# Costs"` is in `result.text`.
+- Cell values from both sheets (`100`, `50`) are in `result.text`.
+
+**Rationale:** Markdown headings give the abstraction provider
+sheet-level structure to anchor on, and BM25 search picks up sheet
+names as tokenizable content. A flat concatenation without separators
+would erase the multi-sheet identity of the workbook.
+
+---
+
+## 7. Docx Adapter -- Template (.dotx) Support
 
 Tests for the Word template branch of `DocxAdapter`. Templates share the
 WordprocessingML body structure with documents but are stored as `.dotx`
@@ -1698,4 +2423,137 @@ unique marker (`"PAGE_1_BODY"`..`"PAGE_10_BODY"`).
 filterable in the discover/search UI. If `max_pages` is later raised
 and the document re-ingested, the delta between the two fields makes
 the change visible without re-reading the file.
+
+---
+
+## 9. Qwen3 AbstractionProvider -- Lazy Loading
+
+These three tests cover the lazy-loading branch of `Qwen3AbstractionProvider`
+(deferred from AD-026's eager-load contract per CAS-ADR-013 / v0.9.0,
+2026-04-11). They were originally numbered AD-035..AD-037; renumbered
+to AD-095..AD-097 (2026-04-25) to densely pack the source-adapter spec
+range AD-035..AD-094 after backfilling docx/xlsx specs.
+
+### TEST-SAGE-AD-095: Lazy loading defers model allocation to first call
+
+**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
+**Category:** initialization, memory
+**Decision:** Constructor stores configuration only. The `_ensure_loaded()` guard
+in `generate_abstract()` triggers model load on first invocation.
+
+**Precondition:** Qwen3-30B-A3B-Instruct-2507 model weights available locally.
+
+**Input:**
+1. Construct provider with valid model ID.
+2. Verify `_model` is None (not loaded).
+3. Call `generate_abstract()` with sample text.
+4. Verify `_model` is not None (loaded).
+
+**Expected:**
+- After construction: `provider._model is None`
+- After first call: `provider._model is not None`
+- The call returns a valid non-empty abstract
+
+**Rationale:** Confirms the lazy loading contract: construction is cheap, load
+happens on demand. Tests the internal state transition from unloaded to loaded.
+
+### TEST-SAGE-AD-096: Second call reuses already-loaded model
+
+**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
+**Category:** initialization, performance
+**Decision:** `_ensure_loaded()` is idempotent. After the first load, subsequent
+calls skip the load path entirely.
+
+**Precondition:** Provider constructed, first `generate_abstract()` already called.
+
+**Input:** Call `generate_abstract()` a second time with different text.
+
+**Expected:**
+- Second call succeeds and returns a valid abstract
+- The model object identity is the same as after the first call (no reload)
+
+**Rationale:** Prevents accidental double-loading, which would waste ~16-20 GB
+and add significant latency. The idempotency check is a simple `if self._model
+is not None: return` guard.
+
+### TEST-SAGE-AD-097: Model load failure on first call raises RuntimeError
+
+**Artifact:** `sage/adapters/abstraction_qwen3.py` (Qwen3AbstractionProvider)
+**Category:** initialization, error
+**Decision:** If the model fails to load on first `generate_abstract()`, the
+provider raises RuntimeError with a diagnostic message. The provider remains
+in the unloaded state so that a retry (after fixing the environment) can
+attempt loading again.
+
+**Precondition:** Provider constructed with an invalid model ID.
+
+**Input:** Call `generate_abstract()` with sample text.
+
+**Expected:**
+- Raises RuntimeError
+- Error message includes the model ID
+- `provider._model` remains None (load failure does not leave partial state)
+
+**Rationale:** Preserves the fail-fast diagnostic contract from the previous
+eager-loading design (AD-026 original). The error surfaces on first use
+rather than at startup, but is equally clear.
+
+---
+
+## 10. LanceDB ContentStore -- has_chunks Existence Check
+
+These two tests cover the `has_chunks(document_id)` lightweight existence
+probe added to the `ContentStore` interface in v0.9.9 (2026-04-15) for the
+async fire-and-forget reabstract path. They supplement the LanceDB
+ContentStore tests in Section 2 (AD-009..AD-025), which cover the full
+content-storage contract.
+
+These specs were originally numbered AD-068..AD-069 in pytest (delivered
+2026-04-15) without a corresponding markdown spec; the same AD numbers
+were then claimed in v0.9.10 (2026-04-17) for the dotx adapter spec
+(Section 7). Renumbered to AD-098..AD-099 (2026-04-25) in v0.9.16 to
+resolve the cross-class collision; the dotx specs at AD-068..AD-075
+remain frozen.
+
+### TEST-SAGE-AD-098: has_chunks returns True for a document with indexed chunks
+
+**Artifact:** `sage/adapters/interfaces.py` (ContentStore.has_chunks)
+**Category:** existence_check, performance
+**Decision:** `has_chunks(document_id)` returns True iff the content store
+has at least one chunk row for the given document. Implemented as a
+`SELECT ... LIMIT 1` query, not a `get_all_chunks` followed by a length
+check.
+
+**Precondition:** A document indexed via `index_chunks` with at least one
+chunk.
+
+**Input:** `content_store.has_chunks(document_id)`.
+
+**Expected:** Returns `True`.
+
+**Rationale:** `sage_reabstract`'s fast-ack synchronous prefix needs an
+existence probe that does not block on loading every chunk; the LIMIT 1
+path keeps the prefix O(1) regardless of document size. Without this,
+large documents would extend the synchronous portion past the 60-second
+MCP ceiling and undo the async fire-and-forget design (BH-116..BH-122).
+
+### TEST-SAGE-AD-099: has_chunks returns False for a non-existent document
+
+**Artifact:** `sage/adapters/interfaces.py` (ContentStore.has_chunks)
+**Category:** existence_check, edge_case
+**Decision:** `has_chunks(document_id)` returns False when no chunks exist
+for the given id, including the case where the id has never been indexed
+and the case where the chunks table itself does not yet exist.
+
+**Precondition:** A content store with no chunks for
+`"nonexistent_doc_999"`.
+
+**Input:** `content_store.has_chunks("nonexistent_doc_999")`.
+
+**Expected:** Returns `False`.
+
+**Rationale:** False is the signal that triggers `NoProjectionError` in
+the synchronous prefix of `sage_reabstract` (BH-121). Lifting the
+empty-table edge case into the same return type as the populated-but-no-
+match case keeps callers from needing two layers of error handling.
 
