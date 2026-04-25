@@ -4,7 +4,61 @@ Executed at vault initialization. All tables use IF NOT EXISTS for
 idempotent re-initialization.
 """
 
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+
 SCHEMA_VERSION = 2
+
+
+class SchemaMigrationRequired(RuntimeError):
+    """Raised when SAGE detects a pending schema migration but the
+    server was launched without the ``--migrate`` flag.
+    """
+
+
+@dataclass(frozen=True)
+class Migration:
+    """A single ALTER-style schema migration.
+
+    ``table`` and ``column`` are used by ``pending_migrations`` to detect
+    whether the migration has already been applied (column-presence check
+    via ``PRAGMA table_info``). ``ddl`` is the statement to execute when
+    ``--migrate`` is set.
+    """
+
+    table: str
+    column: str
+    ddl: str
+
+
+def pending_migrations(
+    conn: sqlite3.Connection,
+    migrations: list["Migration"] | None = None,
+) -> list["Migration"]:
+    """Return migrations whose column is not yet present on its table.
+
+    Read-only: issues only ``PRAGMA table_info`` queries. Does not apply
+    any DDL. If a referenced table does not yet exist, the migration is
+    treated as not-pending (the table will be created from ``TABLES``
+    with the column already in its CREATE definition).
+    """
+    if migrations is None:
+        migrations = MIGRATION_PLAN
+    pending: list[Migration] = []
+    table_columns: dict[str, set[str]] = {}
+    for m in migrations:
+        if m.table not in table_columns:
+            rows = conn.execute(f"PRAGMA table_info({m.table})").fetchall()
+            if not rows:
+                # Table absent: TABLES will create it with the column already present.
+                table_columns[m.table] = {m.column}
+            else:
+                table_columns[m.table] = {row[1] for row in rows}
+        if m.column not in table_columns[m.table]:
+            pending.append(m)
+    return pending
 
 DOCUMENTS_TABLE = """\
 CREATE TABLE IF NOT EXISTS documents (
@@ -91,22 +145,35 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
 ]
 
-MIGRATIONS = [
+MIGRATION_PLAN: list[Migration] = [
     # v1 -> v2: source file provenance (BH-049)
-    "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;",
+    Migration("documents", "source_modified_at",
+              "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;"),
     # v2 -> v3: metadata confirmation tracking (BE-014)
-    "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;",
+    Migration("documents", "metadata_confirmed",
+              "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;"),
     # v3 -> v4: document date metadata (BH-062)
-    "ALTER TABLE documents ADD COLUMN document_date TEXT;",
+    Migration("documents", "document_date",
+              "ALTER TABLE documents ADD COLUMN document_date TEXT;"),
     # Chain-scoped edge resolution anchors and retracts target (CAS-ADR-017).
     # All nullable; FKs enforced at the application layer since SQLite
     # ALTER TABLE cannot add FK constraints.
-    "ALTER TABLE edges ADD COLUMN resolution_policy TEXT;",
-    "ALTER TABLE edges ADD COLUMN source_valid_from_version TEXT;",
-    "ALTER TABLE edges ADD COLUMN target_valid_from_version TEXT;",
-    "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;",
-    "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;",
+    Migration("edges", "resolution_policy",
+              "ALTER TABLE edges ADD COLUMN resolution_policy TEXT;"),
+    Migration("edges", "source_valid_from_version",
+              "ALTER TABLE edges ADD COLUMN source_valid_from_version TEXT;"),
+    Migration("edges", "target_valid_from_version",
+              "ALTER TABLE edges ADD COLUMN target_valid_from_version TEXT;"),
+    Migration("edges", "valid_until_version",
+              "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;"),
+    Migration("edges", "retracted_edge_id",
+              "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;"),
 ]
+
+# Backwards-compatible string-of-DDL view for callers that just want the
+# raw ALTER statements (e.g., tests that build a legacy-shaped DB and
+# the standalone scripts/migrate_edge_anchors.py harness).
+MIGRATIONS: list[str] = [m.ddl for m in MIGRATION_PLAN]
 
 TABLES = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE]
 

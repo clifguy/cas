@@ -52,6 +52,7 @@ async def initialize_services(
     content_store: ContentStore | None = None,
     embedding_provider: EmbeddingProvider | None = None,
     abstraction_provider: AbstractionProvider | None = None,
+    migrate: bool = False,
 ) -> SAGEServices:
     """Initialize all SAGE services for a vault configuration.
 
@@ -60,6 +61,9 @@ async def initialize_services(
         content_store: Optional override (default: LanceDBContentStore).
         embedding_provider: Optional override (default: NomicEmbeddingProvider).
         abstraction_provider: Optional override (default: from config).
+        migrate: If True, apply any pending schema migrations to the graph
+            store and content store. If False (default), raise
+            ``SchemaMigrationRequired`` when a migration is needed.
 
     Returns:
         SAGEServices dataclass with all services ready to use.
@@ -68,13 +72,13 @@ async def initialize_services(
     brain_root.mkdir(parents=True, exist_ok=True)
 
     graph_store = GraphStore(brain_root / "graph.db")
-    await graph_store.initialize()
+    await graph_store.initialize(migrate=migrate)
 
     lock_manager = DocumentLockManager()
 
     # Content store: injected or production LanceDB
     if content_store is None:
-        content_store = LanceDBContentStore(brain_root)
+        content_store = LanceDBContentStore(brain_root, migrate=migrate)
 
     # Embedding provider: injected or production Nomic
     if embedding_provider is None:

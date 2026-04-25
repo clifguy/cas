@@ -12,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from sage.adapters.interfaces import Chunk, ContentStore, SearchResult
+from sage.storage.migrations import SchemaMigrationRequired
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +43,24 @@ class LanceDBContentStore(ContentStore):
     eagerly after every mutation (AD-019).
     """
 
-    def __init__(self, brain_root: str | Path) -> None:
+    def __init__(self, brain_root: str | Path, migrate: bool = False) -> None:
         self._brain_root = Path(brain_root)
         self._brain_root.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._brain_root / "lancedb"))
         self._table_exists = CHUNKS_TABLE in self._db.list_tables().tables
-        self._migrate_schema_if_needed()
+        self._migrate_schema_if_needed(migrate=migrate)
+
+    def pending_schema_columns(self) -> set[str]:
+        """Return the set of columns that would be added by a migration.
+
+        Empty set means no migration is pending. Read-only.
+        """
+        table = self._get_table()
+        if table is None:
+            return set()
+        existing = set(table.schema.names)
+        needed = set(CHUNKS_SCHEMA.names)
+        return needed - existing
 
     def _get_table(self) -> lancedb.table.Table | None:
         """Return the chunks table, or None if it hasn't been created yet."""
@@ -68,39 +81,61 @@ class LanceDBContentStore(ContentStore):
         logger.info("Created chunks table at %s", self._brain_root)
         return table
 
-    def _migrate_schema_if_needed(self) -> None:
+    def _migrate_schema_if_needed(self, *, migrate: bool) -> None:
         """Add missing metadata columns to an existing chunks table.
 
-        Materializes all rows to a DataFrame, writes a parquet backup,
-        then drops and recreates with the current schema. The backup is
-        deleted only after successful recreation. If the process crashes
-        mid-migration, the parquet file survives for manual recovery.
+        When ``migrate`` is False and a migration is required, raises
+        ``SchemaMigrationRequired`` rather than mutating the table.
+
+        When ``migrate`` is True, materializes all rows, writes a parquet
+        backup, then drops and recreates with the current schema. The
+        backup is deleted only after successful recreation; if the process
+        crashes mid-migration the parquet file survives for manual
+        recovery, and a subsequent ``--migrate`` run will refuse to
+        proceed until the operator removes it.
         """
         table = self._get_table()
         if table is None:
             return
         existing_names = set(table.schema.names)
         needed = set(CHUNKS_SCHEMA.names)
-        if needed.issubset(existing_names):
+        missing = needed - existing_names
+        if not missing:
             return
 
-        logger.info(
-            "Migrating chunks table schema: adding %s",
-            needed - existing_names,
-        )
+        if not migrate:
+            raise SchemaMigrationRequired(
+                f"LanceDB chunks table at {self._brain_root} is missing "
+                f"columns {sorted(missing)}. Re-run the server with "
+                f"--migrate to rebuild the table (destructive: drops and "
+                f"recreates from a parquet backup)."
+            )
+
+        recovery_path = self._brain_root / "chunks_migration_backup.parquet"
+        if recovery_path.exists():
+            raise RuntimeError(
+                f"A prior LanceDB schema migration appears to have failed: "
+                f"{recovery_path} already exists. Inspect or remove this "
+                f"backup before retrying --migrate so it is not overwritten."
+            )
+
         # Materialize all rows before any destructive operation
         arrow_table = table.to_arrow()
-        if arrow_table.num_rows == 0:
+        row_count = arrow_table.num_rows
+        logger.info(
+            "Migrating chunks table at %s: adding %s, %d rows to rewrite",
+            self._brain_root, sorted(missing), row_count,
+        )
+        if row_count == 0:
             self._db.drop_table(CHUNKS_TABLE)
             self._table_exists = False
             return
 
         rows = arrow_table.to_pylist()
         for row in rows:
-            for col in needed - existing_names:
+            for col in missing:
                 row.setdefault(col, None)
 
-        recovery_path = self._brain_root / "chunks_migration_backup.parquet"
         try:
             pq.write_table(arrow_table, recovery_path)
             self._db.drop_table(CHUNKS_TABLE)

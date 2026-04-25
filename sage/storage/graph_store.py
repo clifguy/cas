@@ -23,7 +23,13 @@ from sage.models.enums import (
     UserType,
 )
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
-from sage.storage.migrations import MIGRATIONS, POST_MIGRATION_DDL, TABLES
+from sage.storage.migrations import (
+    MIGRATION_PLAN,
+    POST_MIGRATION_DDL,
+    SchemaMigrationRequired,
+    TABLES,
+    pending_migrations,
+)
 
 T = TypeVar("T")
 
@@ -77,26 +83,43 @@ class GraphStore:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
 
-    async def initialize(self) -> None:
-        """Create database, start executor pool, run migrations."""
+    async def initialize(self, migrate: bool = False) -> None:
+        """Create database, start executor pool, optionally run migrations.
+
+        Args:
+            migrate: If True, apply any pending ALTER TABLE migrations.
+                If False (default) and migrations are pending against an
+                existing database, raise ``SchemaMigrationRequired``
+                rather than silently mutating the schema.
+        """
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._executor = ThreadPoolExecutor(
             max_workers=self._max_connections,
             thread_name_prefix="sage-graph",
         )
-        await self._run(self._initialize_sync)
+        await self._run(self._initialize_sync, migrate)
 
-    def _initialize_sync(self) -> None:
+    def _initialize_sync(self, migrate: bool) -> None:
         conn = self._get_connection()
         # 1. Create tables (IF NOT EXISTS -- no-op for existing databases)
         for ddl in TABLES:
             conn.execute(ddl)
-        # 2. Apply ALTER TABLE migrations so new columns exist before indexes
-        for migration in MIGRATIONS:
+        # 2. Detect and (optionally) apply pending ALTER TABLE migrations.
+        pending = pending_migrations(conn, MIGRATION_PLAN)
+        if pending and not migrate:
+            details = ", ".join(f"{m.table}.{m.column}" for m in pending)
+            raise SchemaMigrationRequired(
+                f"GraphStore at {self._db_path} has {len(pending)} pending "
+                f"schema migration(s): {details}. Re-run the server with "
+                f"--migrate to apply them."
+            )
+        for m in pending:
             try:
-                conn.execute(migration)
+                conn.execute(m.ddl)
             except sqlite3.OperationalError:
-                pass  # Column already exists
+                # Defensive: should not occur given the table_info check,
+                # but tolerate concurrent migration in tests.
+                pass
         # 3. Create indexes (may reference columns added by migrations)
         for ddl in POST_MIGRATION_DDL:
             conn.execute(ddl)

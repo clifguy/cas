@@ -76,9 +76,11 @@ class _GracefulSSEMiddleware:
             logger.debug("Suppressed SSE shutdown RuntimeError: %s", exc)
 
 
-async def _initialize_vault(app: FastAPI, config: VaultConfig, **overrides) -> None:
+async def _initialize_vault(
+    app: FastAPI, config: VaultConfig, *, migrate: bool = False, **overrides
+) -> None:
     """Initialize services for one vault and add to the registry."""
-    services = await initialize_services(config, **overrides)
+    services = await initialize_services(config, migrate=migrate, **overrides)
     app.state.vault_registry[config.vault.id] = services
 
 
@@ -116,6 +118,7 @@ def create_app(
     config: VaultConfig | None = None,
     config_paths: list[Path] | None = None,
     configs: list[VaultConfig] | None = None,
+    migrate: bool = False,
 ) -> FastAPI:
     """Create and configure the SAGE Core API application.
 
@@ -124,8 +127,11 @@ def create_app(
         config: Pre-loaded single VaultConfig (used in testing).
         config_paths: Paths to multiple vault YAML config files.
         configs: Pre-loaded VaultConfig list (used in testing).
+        migrate: If True, apply any pending schema migrations on startup.
+            Default False; legacy schemas cause startup to fail with
+            ``SchemaMigrationRequired`` so the operator can opt in.
 
-        Exactly one of these must be provided.
+        Exactly one of the config arguments must be provided.
     """
 
     @asynccontextmanager
@@ -139,15 +145,15 @@ def create_app(
         if config_paths is not None:
             for cp in config_paths:
                 vc = load_vault_config(cp)
-                await _initialize_vault(app, vc)
+                await _initialize_vault(app, vc, migrate=migrate)
         elif configs is not None:
             for vc in configs:
-                await _initialize_vault(app, vc)
+                await _initialize_vault(app, vc, migrate=migrate)
         elif config_path is not None:
             vc = load_vault_config(config_path)
-            await _initialize_vault(app, vc)
+            await _initialize_vault(app, vc, migrate=migrate)
         elif config is not None:
-            await _initialize_vault(app, config)
+            await _initialize_vault(app, config, migrate=migrate)
         else:
             # No configs = empty vault registry (valid per BE-002)
             pass
