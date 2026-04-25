@@ -100,11 +100,63 @@ export interface DocumentSummary {
 
 // --- Edge ---
 
+// Edge type names accepted by SAGE Core API (CAS-ADR-017).
+export type EdgeType =
+  | 'supersedes'
+  | 'derived_from'
+  | 'instantiated_from'
+  | 'covers'
+  | 'references'
+  | 'bundles_with'
+  | 'authoritative_for'
+  | 'depends_on'
+  | 'sync_target'
+  | 'retracts'
+  | 'merged_from';
+
+// Resolution policy controlling chain-scoped edge resolution (CAS-ADR-017).
+export type ResolutionPolicy =
+  | 'none'
+  | 'transitive_source'
+  | 'transitive_target'
+  | 'transitive_both'
+  | 'TBD';
+
+// Frontend mirror of sage/models/edge_registry.py _DEFAULT_POLICIES.
+// Used to drive conditional edge-creation form fields and tombstoning UX.
+// Must be kept in sync with the SAGE registry; a registry mismatch
+// surfaces as an EDGE_ANCHOR_POLICY_VIOLATION at write time, which the
+// form translates to a user-readable error.
+export const DEFAULT_EDGE_POLICIES: Record<EdgeType, ResolutionPolicy> = {
+  supersedes: 'none',
+  retracts: 'none',
+  merged_from: 'none',
+  derived_from: 'transitive_source',
+  instantiated_from: 'transitive_both',
+  references: 'transitive_both',
+  covers: 'transitive_both',
+  bundles_with: 'transitive_both',
+  depends_on: 'transitive_both',
+  authoritative_for: 'TBD',
+  sync_target: 'TBD',
+};
+
 export interface Edge {
   id: string;
   source_id: string;
-  target_id: string;
-  edge_type: string;
+  // Null on `retracts` edges, which target an edge instance via
+  // retracted_edge_id rather than a document.
+  target_id: string | null;
+  edge_type: EdgeType | string;
+  resolution_policy: ResolutionPolicy;
+  // Anchor fields governed by resolution_policy (CAS-ADR-017).
+  source_valid_from_version: string | null;
+  target_valid_from_version: string | null;
+  // Set atomically by a merged_from termination on predecessor edges.
+  // Resolution suppresses tombstoned edges downstream of this version.
+  valid_until_version: string | null;
+  // Set only on `retracts` edges; identifies the retracted edge instance.
+  retracted_edge_id: string | null;
   created_at: string;
   notes: string | null;
   rationale: string | null;
@@ -183,20 +235,41 @@ export interface ChainResponse {
 
 export interface TraverseRequest {
   start_id: string;
-  edge_type?: string;
+  edge_type?: string | string[];
   direction?: 'outbound' | 'inbound' | 'both';
   depth?: number;
+  // Opt-in chain-scoped resolution trace (CAS-ADR-017).
+  debug?: boolean;
 }
 
 export interface TraverseResponse {
   start_id: string;
   nodes: TraversalNode[];
+  // Populated only when the request set `debug: true`.
+  resolution_path?: ResolutionPathEntry[] | null;
+}
+
+// One decision event from the chain-scoped edge resolver (CAS-ADR-017).
+export interface ResolutionPathEntry {
+  event_type: 'anchor_hit' | 'anchor_miss' | 'retracts_applied' | 'tombstone_applied';
+  edge_id: string;
+  anchor_field?: 'source_valid_from_version' | 'target_valid_from_version' | null;
+  anchor_version?: string | null;
+  retracted_edge_id?: string | null;
+  tombstone_version?: string | null;
 }
 
 export interface LinkRequest {
   source_id: string;
-  target_id: string;
-  edge_type: string;
+  // Required for every edge type except `retracts`.
+  target_id?: string | null;
+  edge_type: EdgeType | string;
+  // Required for transitive_source, transitive_both, and `retracts`.
+  source_valid_from_version?: string | null;
+  // Required for transitive_both only.
+  target_valid_from_version?: string | null;
+  // Required for `retracts` only; must identify an existing edge.
+  retracted_edge_id?: string | null;
   notes?: string;
   rationale?: string;
 }

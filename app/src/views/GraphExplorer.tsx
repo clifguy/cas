@@ -3,7 +3,7 @@ import { useParams, useNavigate, useOutletContext } from 'react-router-dom';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import type { VaultContext } from '../App';
-import type { DocumentSummary, TraversalNode } from '../api/types';
+import type { DocumentSummary, TraversalNode, ResolutionPathEntry } from '../api/types';
 import { traverse } from '../api/graph';
 import { getDocument as fetchDocument } from '../api/documents';
 
@@ -19,16 +19,20 @@ const docTypeShapes: Record<string, string> = {
   bookmark: 'triangleDown',
 };
 
-// Edge dash patterns by type
+// Edge dash patterns by type. retracts and merged_from are CAS-ADR-017
+// meta-edges: shown but visually distinct from semantic relationships.
 const edgeStyles: Record<string, { dashes: boolean | number[]; color: string }> = {
   supersedes: { dashes: false, color: '#c62828' },
   derived_from: { dashes: [10, 5], color: '#1565c0' },
+  instantiated_from: { dashes: [12, 3, 3, 3], color: '#0277bd' },
   covers: { dashes: [5, 5], color: '#2e7d32' },
   bundles_with: { dashes: [2, 4], color: '#f57f17' },
   references: { dashes: [8, 3, 2, 3], color: '#6a1b9a' },
   authoritative_for: { dashes: false, color: '#00695c' },
   depends_on: { dashes: [15, 5], color: '#e65100' },
   sync_target: { dashes: [4, 4], color: '#37474f' },
+  retracts: { dashes: [3, 3], color: '#b71c1c' },
+  merged_from: { dashes: [12, 6], color: '#4527a0' },
 };
 
 const lifecycleOpacity: Record<string, number> = {
@@ -80,6 +84,9 @@ export default function GraphExplorer() {
   const [traversalData, setTraversalData] = useState<TraversalNode[]>([]);
   const [centerDoc, setCenterDoc] = useState<DocumentSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  // Chain-scoped resolution debug trace (CAS-ADR-017). Off by default.
+  const [debugMode, setDebugMode] = useState(false);
+  const [resolutionPath, setResolutionPath] = useState<ResolutionPathEntry[]>([]);
 
   // Fetch traversal data from API
   useEffect(() => {
@@ -87,11 +94,12 @@ export default function GraphExplorer() {
     setLoading(true);
 
     Promise.all([
-      traverse(vaultId, { start_id: centerNodeId, direction: 'both', depth }),
+      traverse(vaultId, { start_id: centerNodeId, direction: 'both', depth, debug: debugMode }),
       fetchDocument(vaultId, centerNodeId),
     ])
       .then(([resp, doc]) => {
         setTraversalData(resp.nodes);
+        setResolutionPath(resp.resolution_path ?? []);
         setCenterDoc({
           id: doc.id,
           title: doc.title,
@@ -102,14 +110,17 @@ export default function GraphExplorer() {
           project: doc.project,
           doc_type: doc.doc_type,
           tags: doc.tags,
+          document_date: doc.document_date,
+          source_modified_at: doc.source_modified_at,
         });
         setLoading(false);
       })
       .catch(() => {
         setTraversalData([]);
+        setResolutionPath([]);
         setLoading(false);
       });
-  }, [vaultId, centerNodeId, depth]);
+  }, [vaultId, centerNodeId, depth, debugMode]);
 
   // Build and render vis-network from traversal data
   const renderGraph = useCallback(() => {
@@ -146,25 +157,31 @@ export default function GraphExplorer() {
       };
     }));
 
-    // Deduplicate edges and filter to edges where both endpoints are in nodeMap
+    // Deduplicate edges and filter to edges where both endpoints are in nodeMap.
+    // `retracts` edges have null target_id (target is an edge, not a doc); they
+    // are dropped from the graph view since vis-network needs document endpoints.
     const seenEdges = new Set<string>();
     const visEdgeData = filteredEdges
       .filter(n => {
         if (seenEdges.has(n.edge.id)) return false;
         seenEdges.add(n.edge.id);
+        if (n.edge.target_id == null) return false;
         return nodeMap.has(n.edge.source_id) && nodeMap.has(n.edge.target_id);
       })
       .map(n => {
         const style = edgeStyles[n.edge.edge_type] ?? { dashes: false, color: '#999' };
+        const tombstoned = n.edge.valid_until_version != null;
         return {
           id: n.edge.id,
           from: n.edge.source_id,
-          to: n.edge.target_id,
-          dashes: style.dashes,
-          color: { color: style.color },
+          // target_id is non-null here (filtered above) but TS narrowing
+          // doesn't carry through .filter; cast for the network payload.
+          to: n.edge.target_id as string,
+          dashes: tombstoned ? [1, 4] as number[] : style.dashes,
+          color: { color: style.color, opacity: tombstoned ? 0.35 : 1 },
           arrows: 'to',
-          label: n.edge.edge_type.replace(/_/g, ' '),
-          font: { size: 9, color: '#999', strokeWidth: 0 },
+          label: n.edge.edge_type.replace(/_/g, ' ') + (tombstoned ? ' (tombstoned)' : ''),
+          font: { size: 9, color: tombstoned ? '#bbb' : '#999', strokeWidth: 0 },
         };
       });
 
@@ -273,6 +290,20 @@ export default function GraphExplorer() {
         </div>
 
         <div>
+          <label style={controlLabelStyle}>Resolution debug</label>
+          <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={debugMode}
+              onChange={e => setDebugMode(e.target.checked)}
+            />
+            <span title="When on, traverse returns a resolution_path trace of anchor checks, retracts, and tombstones (CAS-ADR-017).">
+              Debug chain resolution
+            </span>
+          </label>
+        </div>
+
+        <div>
           <label style={controlLabelStyle}>&nbsp;</label>
           <button
             onClick={() => { if (selectedNode) setCenterNodeId(selectedNode.id); }}
@@ -306,10 +337,56 @@ export default function GraphExplorer() {
           <span>Node opacity = lifecycle state</span>
           <span>Orange border = center node</span>
           <span>Edge color/dash = edge type</span>
+          <span>Faded edge with dotted pattern = tombstoned (merged_from terminated)</span>
           <span>Click edge = re-center on other endpoint</span>
           <span>Double-click = open document</span>
         </div>
+        <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+          Note: <code>retracts</code> edges target an edge instance (not a document)
+          and are not rendered in the graph view; use the Document Detail edge
+          list to inspect them.
+        </div>
       </div>
+
+      {debugMode && (
+        <div style={{ marginTop: 16, padding: 12, background: '#fffde7', border: '1px solid #ffe082', borderRadius: 4 }}>
+          <div style={{ fontSize: 12, color: '#5d4037', marginBottom: 6, fontWeight: 600 }}>
+            Resolution path ({resolutionPath.length} {resolutionPath.length === 1 ? 'event' : 'events'})
+          </div>
+          {resolutionPath.length === 0 ? (
+            <div style={{ fontSize: 11, color: '#888' }}>
+              No chain-scoped resolution events for this traversal.
+            </div>
+          ) : (
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              <table style={{ borderCollapse: 'collapse', fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>
+                <thead>
+                  <tr style={{ color: '#666', textAlign: 'left' }}>
+                    <th style={resCellStyle}>event</th>
+                    <th style={resCellStyle}>edge_id</th>
+                    <th style={resCellStyle}>anchor_field</th>
+                    <th style={resCellStyle}>anchor_version</th>
+                    <th style={resCellStyle}>retracted_edge_id</th>
+                    <th style={resCellStyle}>tombstone_version</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resolutionPath.map((entry, i) => (
+                    <tr key={i} style={{ color: resEventColor(entry.event_type) }}>
+                      <td style={resCellStyle}>{entry.event_type}</td>
+                      <td style={resCellStyle}>{entry.edge_id}</td>
+                      <td style={resCellStyle}>{entry.anchor_field ?? ''}</td>
+                      <td style={resCellStyle}>{entry.anchor_version ?? ''}</td>
+                      <td style={resCellStyle}>{entry.retracted_edge_id ?? ''}</td>
+                      <td style={resCellStyle}>{entry.tombstone_version ?? ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -322,3 +399,22 @@ const controlLabelStyle: React.CSSProperties = {
   fontWeight: 600,
   textTransform: 'uppercase',
 };
+
+const resCellStyle: React.CSSProperties = {
+  padding: '2px 8px',
+  borderBottom: '1px solid #f0e9d2',
+  whiteSpace: 'nowrap',
+};
+
+function resEventColor(event: ResolutionPathEntry['event_type']): string {
+  switch (event) {
+    case 'anchor_hit':
+      return '#2e7d32';
+    case 'anchor_miss':
+      return '#c62828';
+    case 'retracts_applied':
+      return '#b71c1c';
+    case 'tombstone_applied':
+      return '#6d4c41';
+  }
+}

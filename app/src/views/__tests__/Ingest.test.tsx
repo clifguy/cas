@@ -17,6 +17,7 @@ const mockVault: VaultSummary = {
   doc_types: [],
   lifecycle_states: [],
   adapters: [],
+  projects: [],
 };
 
 function TestWrapper({ vaultId, vault }: { vaultId: string; vault: VaultSummary | null }) {

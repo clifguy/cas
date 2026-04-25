@@ -1,10 +1,51 @@
 import { useState, useEffect } from 'react';
 import { Link, useParams, useOutletContext, useNavigate } from 'react-router-dom';
 import type { VaultContext } from '../App';
-import type { Document, Edge } from '../api/types';
+import type { Document, Edge, EdgeType, LinkRequest, ResolutionPolicy } from '../api/types';
+import { DEFAULT_EDGE_POLICIES } from '../api/types';
 import { getDocument, openDocument } from '../api/documents';
 import { traverse } from '../api/graph';
 import { createEdge } from '../api/graph';
+
+// Edge types in the order we render them in the form dropdown and edge list.
+// Mirrors the SAGE EdgeType enum and the registry order.
+const EDGE_TYPES_ORDERED: EdgeType[] = [
+  'supersedes',
+  'derived_from',
+  'instantiated_from',
+  'covers',
+  'references',
+  'bundles_with',
+  'depends_on',
+  'authoritative_for',
+  'sync_target',
+  'retracts',
+  'merged_from',
+];
+
+// Anchor-field requirements derived from resolution_policy (CAS-ADR-017).
+// `retracts` is policy=none but carries a one-sided source anchor.
+function anchorRequirements(edgeType: EdgeType, policy: ResolutionPolicy): {
+  needsSourceAnchor: boolean;
+  needsTargetAnchor: boolean;
+  needsTarget: boolean;
+  needsRetractedEdge: boolean;
+} {
+  if (edgeType === 'retracts') {
+    return { needsSourceAnchor: true, needsTargetAnchor: false, needsTarget: false, needsRetractedEdge: true };
+  }
+  switch (policy) {
+    case 'transitive_source':
+      return { needsSourceAnchor: true, needsTargetAnchor: false, needsTarget: true, needsRetractedEdge: false };
+    case 'transitive_target':
+      return { needsSourceAnchor: false, needsTargetAnchor: true, needsTarget: true, needsRetractedEdge: false };
+    case 'transitive_both':
+      return { needsSourceAnchor: true, needsTargetAnchor: true, needsTarget: true, needsRetractedEdge: false };
+    default:
+      // 'none' (non-retracts) and 'TBD' (form rejects submission separately)
+      return { needsSourceAnchor: false, needsTargetAnchor: false, needsTarget: true, needsRetractedEdge: false };
+  }
+}
 
 export default function DocumentDetail() {
   const { id } = useParams<{ id: string }>();
@@ -15,10 +56,13 @@ export default function DocumentDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showEdgeDialog, setShowEdgeDialog] = useState(false);
-  const [newEdgeType, setNewEdgeType] = useState('covers');
+  const [newEdgeType, setNewEdgeType] = useState<EdgeType>('covers');
   const [newTargetId, setNewTargetId] = useState('');
   const [newEdgeNotes, setNewEdgeNotes] = useState('');
   const [newEdgeRationale, setNewEdgeRationale] = useState('');
+  const [newSourceAnchor, setNewSourceAnchor] = useState('');
+  const [newTargetAnchor, setNewTargetAnchor] = useState('');
+  const [newRetractedEdgeId, setNewRetractedEdgeId] = useState('');
   const [edgeError, setEdgeError] = useState('');
   const [neighborTitles, setNeighborTitles] = useState<Record<string, string>>({});
   const [openStatus, setOpenStatus] = useState<{ kind: 'ok' | 'err'; message: string } | null>(null);
@@ -79,25 +123,66 @@ export default function DocumentDetail() {
   }
 
   async function handleCreateEdge() {
-    if (!id || !newTargetId) return;
+    if (!id) return;
+    const policy = DEFAULT_EDGE_POLICIES[newEdgeType] ?? 'none';
+    if (policy === 'TBD') {
+      setEdgeError(
+        `Edge type '${newEdgeType}' has resolution_policy=TBD; freeze the policy in the registry before use.`,
+      );
+      return;
+    }
+    const reqs = anchorRequirements(newEdgeType, policy);
+    if (reqs.needsTarget && !newTargetId.trim()) {
+      setEdgeError('Target document ID is required for this edge type.');
+      return;
+    }
+    if (reqs.needsRetractedEdge && !newRetractedEdgeId.trim()) {
+      setEdgeError('Retracted edge ID is required for `retracts` edges.');
+      return;
+    }
+    if (reqs.needsSourceAnchor && !newSourceAnchor.trim()) {
+      setEdgeError('Source anchor (source_valid_from_version) is required for this edge type.');
+      return;
+    }
+    if (reqs.needsTargetAnchor && !newTargetAnchor.trim()) {
+      setEdgeError('Target anchor (target_valid_from_version) is required for this edge type.');
+      return;
+    }
+
     setEdgeError('');
+    const payload: LinkRequest = {
+      source_id: id,
+      edge_type: newEdgeType,
+      ...(reqs.needsTarget && { target_id: newTargetId.trim() }),
+      ...(reqs.needsRetractedEdge && { retracted_edge_id: newRetractedEdgeId.trim() }),
+      ...(reqs.needsSourceAnchor && { source_valid_from_version: newSourceAnchor.trim() }),
+      ...(reqs.needsTargetAnchor && { target_valid_from_version: newTargetAnchor.trim() }),
+      ...(newEdgeNotes.trim() && { notes: newEdgeNotes.trim() }),
+      ...(newEdgeRationale.trim() && { rationale: newEdgeRationale.trim() }),
+    };
     try {
-      const newEdge = await createEdge(vaultId, {
-        source_id: id,
-        target_id: newTargetId,
-        edge_type: newEdgeType,
-        ...(newEdgeNotes.trim() && { notes: newEdgeNotes.trim() }),
-        ...(newEdgeRationale.trim() && { rationale: newEdgeRationale.trim() }),
-      });
+      const newEdge = await createEdge(vaultId, payload);
       setEdges(prev => [...prev, newEdge]);
       setShowEdgeDialog(false);
       setNewTargetId('');
       setNewEdgeNotes('');
       setNewEdgeRationale('');
+      setNewSourceAnchor('');
+      setNewTargetAnchor('');
+      setNewRetractedEdgeId('');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to create edge';
       setEdgeError(msg);
     }
+  }
+
+  // Pre-fill anchor defaults to the current source/target ids when the user
+  // changes edge type or target. This makes "attach at current heads" one click.
+  function onChangeEdgeType(t: EdgeType) {
+    setNewEdgeType(t);
+    setEdgeError('');
+    if (id) setNewSourceAnchor(prev => (prev ? prev : id));
+    if (newTargetId) setNewTargetAnchor(prev => (prev ? prev : newTargetId));
   }
 
   return (
@@ -206,14 +291,41 @@ export default function DocumentDetail() {
                 {edgeType.replace(/_/g, ' ')}
               </h4>
               {group.map(e => {
-                const relatedId = e.source_id === id ? e.target_id : e.source_id;
+                const tombstoned = e.valid_until_version != null;
+                const isRetracts = e.edge_type === 'retracts';
+                // `retracts` has a null target_id; surface the retracted edge id instead.
+                const relatedId = isRetracts
+                  ? null
+                  : e.source_id === id ? e.target_id : e.source_id;
                 const direction = e.source_id === id ? 'to' : 'from';
+                const rowStyle: React.CSSProperties = {
+                  fontSize: 13,
+                  marginBottom: 4,
+                  paddingLeft: 12,
+                  opacity: tombstoned ? 0.5 : 1,
+                };
                 return (
-                  <div key={e.id} style={{ fontSize: 13, marginBottom: 4, paddingLeft: 12 }}>
-                    {direction}{' '}
-                    <Link to={`/documents/${relatedId}`} style={{ color: '#1565c0' }}>
-                      {resolveTitle(relatedId)}
-                    </Link>
+                  <div key={e.id} style={rowStyle}>
+                    {isRetracts ? (
+                      <span>retracts edge <code style={{ fontSize: 11 }}>{e.retracted_edge_id ?? '?'}</code></span>
+                    ) : (
+                      <>
+                        {direction}{' '}
+                        {relatedId ? (
+                          <Link to={`/documents/${relatedId}`} style={{ color: '#1565c0' }}>
+                            {resolveTitle(relatedId)}
+                          </Link>
+                        ) : (
+                          <span style={{ color: '#999' }}>(no target)</span>
+                        )}
+                      </>
+                    )}
+                    <AnchorBadges edge={e} />
+                    {tombstoned && (
+                      <span style={tombstoneBadgeStyle} title={`Tombstoned at ${e.valid_until_version}`}>
+                        tombstoned
+                      </span>
+                    )}
                     {e.notes && <span style={{ color: '#999', fontSize: 11 }}> - {e.notes}</span>}
                   </div>
                 );
@@ -232,59 +344,121 @@ export default function DocumentDetail() {
         </div>
       </Section>
 
-      {showEdgeDialog && (
-        <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 16, marginTop: 8, background: '#fafafa' }}>
-          <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Create Edge</h4>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <div>
-              <label style={filterLabelStyle}>Edge type</label>
-              <select value={newEdgeType} onChange={e => setNewEdgeType(e.target.value)} style={{ padding: '4px 8px' }}>
-                <option value="supersedes">supersedes</option>
-                <option value="covers">covers</option>
-                <option value="derived_from">derived_from</option>
-                <option value="references">references</option>
-                <option value="bundles_with">bundles_with</option>
-                <option value="authoritative_for">authoritative_for</option>
-                <option value="depends_on">depends_on</option>
-                <option value="sync_target">sync_target</option>
-              </select>
+      {showEdgeDialog && (() => {
+        const policy = DEFAULT_EDGE_POLICIES[newEdgeType] ?? 'none';
+        const reqs = anchorRequirements(newEdgeType, policy);
+        const isTBD = policy === 'TBD';
+        return (
+          <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 16, marginTop: 8, background: '#fafafa' }}>
+            <h4 style={{ margin: '0 0 12px', fontSize: 14 }}>Create Edge</h4>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <div>
+                <label style={filterLabelStyle}>Edge type</label>
+                <select
+                  value={newEdgeType}
+                  onChange={e => onChangeEdgeType(e.target.value as EdgeType)}
+                  style={{ padding: '4px 8px' }}
+                >
+                  {EDGE_TYPES_ORDERED.map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+                <div style={policyHintStyle}>
+                  resolution_policy: <code>{policy}</code>
+                </div>
+              </div>
+              {reqs.needsTarget && (
+                <div>
+                  <label style={filterLabelStyle}>Target document ID</label>
+                  <input
+                    type="text"
+                    value={newTargetId}
+                    onChange={e => setNewTargetId(e.target.value)}
+                    placeholder="Enter document ID"
+                    style={{ padding: '4px 8px' }}
+                  />
+                </div>
+              )}
+              {reqs.needsRetractedEdge && (
+                <div>
+                  <label style={filterLabelStyle}>Retracted edge ID</label>
+                  <input
+                    type="text"
+                    value={newRetractedEdgeId}
+                    onChange={e => setNewRetractedEdgeId(e.target.value)}
+                    placeholder="Edge id to retract"
+                    style={{ padding: '4px 8px' }}
+                  />
+                </div>
+              )}
+              {reqs.needsSourceAnchor && (
+                <div>
+                  <label style={filterLabelStyle}>
+                    Source anchor (chain member)
+                  </label>
+                  <input
+                    type="text"
+                    value={newSourceAnchor}
+                    onChange={e => setNewSourceAnchor(e.target.value)}
+                    placeholder={id ?? 'document_id on source chain'}
+                    style={{ padding: '4px 8px' }}
+                  />
+                </div>
+              )}
+              {reqs.needsTargetAnchor && (
+                <div>
+                  <label style={filterLabelStyle}>
+                    Target anchor (chain member)
+                  </label>
+                  <input
+                    type="text"
+                    value={newTargetAnchor}
+                    onChange={e => setNewTargetAnchor(e.target.value)}
+                    placeholder="document_id on target chain"
+                    style={{ padding: '4px 8px' }}
+                  />
+                </div>
+              )}
+              <div>
+                <label style={filterLabelStyle}>Notes (optional)</label>
+                <input
+                  type="text"
+                  value={newEdgeNotes}
+                  onChange={e => setNewEdgeNotes(e.target.value)}
+                  placeholder="Brief description"
+                  style={{ padding: '4px 8px' }}
+                />
+              </div>
+              <div>
+                <label style={filterLabelStyle}>Rationale (optional)</label>
+                <input
+                  type="text"
+                  value={newEdgeRationale}
+                  onChange={e => setNewEdgeRationale(e.target.value)}
+                  placeholder="Why this edge exists"
+                  style={{ padding: '4px 8px' }}
+                />
+              </div>
+              <button
+                style={{ ...btnStyle, ...(isTBD ? { background: '#aaa', cursor: 'not-allowed' } : {}) }}
+                onClick={handleCreateEdge}
+                disabled={isTBD}
+                title={isTBD ? 'Resolution policy is TBD; freeze it in the registry first.' : undefined}
+              >
+                Create
+              </button>
+              <button style={{ ...btnStyle, background: '#eee', color: '#333' }} onClick={() => { setShowEdgeDialog(false); setEdgeError(''); }}>Cancel</button>
             </div>
-            <div>
-              <label style={filterLabelStyle}>Target document ID</label>
-              <input
-                type="text"
-                value={newTargetId}
-                onChange={e => setNewTargetId(e.target.value)}
-                placeholder="Enter document ID"
-                style={{ padding: '4px 8px' }}
-              />
-            </div>
-            <div>
-              <label style={filterLabelStyle}>Notes (optional)</label>
-              <input
-                type="text"
-                value={newEdgeNotes}
-                onChange={e => setNewEdgeNotes(e.target.value)}
-                placeholder="Brief description"
-                style={{ padding: '4px 8px' }}
-              />
-            </div>
-            <div>
-              <label style={filterLabelStyle}>Rationale (optional)</label>
-              <input
-                type="text"
-                value={newEdgeRationale}
-                onChange={e => setNewEdgeRationale(e.target.value)}
-                placeholder="Why this edge exists"
-                style={{ padding: '4px 8px' }}
-              />
-            </div>
-            <button style={btnStyle} onClick={handleCreateEdge}>Create</button>
-            <button style={{ ...btnStyle, background: '#eee', color: '#333' }} onClick={() => { setShowEdgeDialog(false); setEdgeError(''); }}>Cancel</button>
+            {isTBD && (
+              <div style={{ color: '#bf360c', fontSize: 12, marginTop: 8 }}>
+                Edge type <code>{newEdgeType}</code> has resolution_policy=TBD.
+                The SAGE registry rejects creation until the policy is frozen.
+              </div>
+            )}
+            {edgeError && <div style={{ color: '#c62828', fontSize: 12, marginTop: 8 }}>{edgeError}</div>}
           </div>
-          {edgeError && <div style={{ color: '#c62828', fontSize: 12, marginTop: 8 }}>{edgeError}</div>}
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -321,6 +495,55 @@ function Badge({ label, color }: { label: string; color: string }) {
   );
 }
 
+function AnchorBadges({ edge }: { edge: Edge }) {
+  const parts: string[] = [];
+  if (edge.source_valid_from_version) parts.push(`src@${shortId(edge.source_valid_from_version)}`);
+  if (edge.target_valid_from_version) parts.push(`tgt@${shortId(edge.target_valid_from_version)}`);
+  if (parts.length === 0) return null;
+  return (
+    <span style={anchorBadgeStyle} title="Anchor: chain member where this edge becomes applicable">
+      {parts.join(' ')}
+    </span>
+  );
+}
+
+function shortId(docId: string): string {
+  // Heuristic short form for inline display: keep last 8 chars after a hyphen,
+  // or first 8 chars if shorter than 12. Hover already shows full id via title.
+  if (docId.length <= 12) return docId;
+  const tail = docId.split('-').pop();
+  if (tail && tail.length <= 12) return tail;
+  return docId.slice(0, 8) + '...';
+}
+
 const btnStyle: React.CSSProperties = { padding: '6px 16px', border: '1px solid #ccc', borderRadius: 4, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 13 };
 const filterLabelStyle: React.CSSProperties = { display: 'block', fontSize: 11, color: '#666', marginBottom: 4, fontWeight: 500 };
 const tdStyle: React.CSSProperties = { padding: '5px 10px', borderBottom: '1px solid #eee', fontSize: 13 };
+const anchorBadgeStyle: React.CSSProperties = {
+  display: 'inline-block',
+  marginLeft: 8,
+  padding: '0 6px',
+  fontSize: 10,
+  fontFamily: 'ui-monospace, monospace',
+  color: '#1565c0',
+  background: '#1565c018',
+  borderRadius: 3,
+};
+const tombstoneBadgeStyle: React.CSSProperties = {
+  display: 'inline-block',
+  marginLeft: 8,
+  padding: '0 6px',
+  fontSize: 10,
+  fontWeight: 600,
+  color: '#6d4c41',
+  background: '#6d4c4118',
+  borderRadius: 3,
+  textTransform: 'uppercase',
+  letterSpacing: 0.3,
+};
+const policyHintStyle: React.CSSProperties = {
+  marginTop: 4,
+  fontSize: 10,
+  color: '#888',
+  fontFamily: 'ui-monospace, monospace',
+};
