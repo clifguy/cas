@@ -91,7 +91,6 @@ source_adapters:
     - source_type: docx
       enabled: true
       config:
-        watch_paths: ["reports"]
         file_extensions: [".docx"]
 metadata_extraction:
   review_required: true
@@ -506,7 +505,6 @@ adapters:
   - source_type: docx
     enabled: true
     config:
-      watch_paths: ["patents", "references"]
       file_extensions: [".docx"]
       heading_style_map:
         "Heading 1": 1

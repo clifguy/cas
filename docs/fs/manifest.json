@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-03-31",
+  "manifest_date": "2026-04-25",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -164,7 +164,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.8",
+  "substrate_version": "1.9",
   "revision_history": [
     {
       "version": "0.1",
@@ -215,6 +215,11 @@
       "version": "1.8",
       "date": "2026-04-18",
       "summary": "CAS-ADR-017 conformance alignment. (1) ResolutionPolicy enum gains transitive_target value in both sage_core_api.openapi.yaml and sage/edge_type_registry.schema.json, restoring the four-value resolution enumeration mandated by the ADR ({none, transitive_source, transitive_target, transitive_both}; TBD remains as a governance placeholder). transitive_target is the policy-level mirror of transitive_source: target anchor must lie in the queried document's lineage; source endpoint is frozen at derivation with source_valid_from_version null. No built-in edge type maps to this policy today; vaults opting into it via edge_type_registry now have a resolver and validator that honor it. (2) ResolutionPolicy description refined in the OpenAPI spec to document the null-means-not-applicable semantics for transitive_source (target_valid_from_version null) and transitive_target (source_valid_from_version null)."
+    },
+    {
+      "version": "1.9",
+      "date": "2026-04-25",
+      "summary": "Intentional-ingestion constraint applied to source_adapters schema (CAS-ADR-018). Two changes to sage/source_adapters.schema.json: (1) Removed the watch_paths property from per-adapter config. SAGE provides no file watcher, polling loop, or auto-ingest; the field was a forward-declared slot for an unimplemented capability that the ADR now formally excludes. (2) Updated file_extensions description from 'Used by the file watcher and bulk ingestion' to 'Used by directory scans and bulk ingestion' to reflect the actual consumer surface (app_scan_directory / app_batch_ingest / sage_ingest)."
     }
   ]
 }

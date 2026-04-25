@@ -1230,6 +1230,81 @@
         "Chain-to-chain edges are attached once at relationship instantiation and otherwise untouched; routine version advancement does not touch the edge table.",
         "An error-recovery procedure for re-pointing a supersedes edge (the rare case where a document is reassigned to a different chain) is documented separately and requires re-evaluation of edges whose anchor fields reference the reassigned document_id. Implicit chain identity otherwise remains uncompromised."
       ]
+    },
+    {
+      "id": "ADR-018",
+      "title": "Ingestion is exclusively intentional; SAGE provides no file watcher or auto-ingest",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-04-25",
+      "created_by": "Clif + Claude session",
+      "scope": "sage",
+      "tags": [
+        "sage",
+        "ingestion",
+        "boundary",
+        "scope-exclusion"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "Formal Substrate"
+      ],
+      "context": "The SAGE source_adapters schema carried a watch_paths property on each adapter's config, and prose in the SAGE Architecture Reference (Source Change Detection) and Deployment Model described a file watcher as a SAGE capability. No code ever consumed the field: there is no watcher process, no polling loop, no scheduled scan, and no consumer of watch_paths anywhere in the SAGE source tree. The schema slot and the prose were forward declarations for a capability that was never built and that, on review, is not wanted. Source files have a life independent of SAGE; the system records provenance at ingestion and detects change on re-ingestion via content-hash comparison. Adding a watcher would expand SAGE's surface from a request-response state substrate to a long-running observer of the user's file system, with all the operational consequences that entails (process supervision, cross-platform watcher implementations, cloud-sync filesystem races, security posture for file-event subscription, surprise ingestion of files the user did not intend to commit to the canonical record).",
+      "options_considered": [
+        {
+          "option": "Implement the file watcher described in the architecture",
+          "summary": "Build a watcher process per vault that monitors watch_paths, detects file create / modify / delete events, and triggers ingest or re-ingest automatically. Provide a polling fallback for paths the watcher cannot observe.",
+          "pros": [
+            "Matches the prose in the SAGE Architecture Reference as written",
+            "Removes the manual step of invoking ingest after dropping a file"
+          ],
+          "cons": [
+            "Expands SAGE from request-response to long-running observer; introduces process-supervision concerns",
+            "Cross-platform watcher implementations differ (inotify, FSEvents, ReadDirectoryChangesW) and degrade on cloud-sync filesystems",
+            "Auto-ingest removes the user's intentional act of committing a file to the canonical record; files appear in the graph as a side effect of saving them",
+            "Watcher events fire mid-write; debouncing logic adds complexity and can still racewith partial-write states",
+            "Security posture: a watcher subscribing to file events sees more than what it ingests, including names of files the user never intended to expose"
+          ]
+        },
+        {
+          "option": "Leave watch_paths in the schema as a forward declaration",
+          "summary": "Keep the field in the schema as a documented intent, even though no code reads it.",
+          "pros": [
+            "No churn to the schema, vault configs, or contract tests"
+          ],
+          "cons": [
+            "Schema-as-contract is undermined when published fields have no implementation",
+            "Vault authors who populate watch_paths reasonably expect it to do something",
+            "Drift between contract and code accumulates; the next reader has to relitigate the question"
+          ]
+        },
+        {
+          "option": "Remove watch_paths and formalize the intentional-ingestion constraint (chosen)",
+          "summary": "Strip watch_paths from the source_adapters schema, vault configs, and contract-test fixtures. Establish as an architectural constraint that documents enter SAGE only through an explicit MCP tool or API call (sage_ingest, app_scan_directory + app_batch_ingest). Source change detection happens only when a caller invokes ingest on a known path; SAGE then re-runs the adapter, hash-compares, and supersedes if changed.",
+          "pros": [
+            "Schema and code agree on what SAGE actually does",
+            "Ingestion remains a deliberate, auditable act by a caller (human via the application, agent via MCP)",
+            "SAGE stays a request-response state substrate with no long-running observer surface",
+            "Cross-platform behavior is determined by the caller's directory walk, not by a per-OS watcher implementation",
+            "Cloud-sync filesystem semantics, partial-write races, and file-event security posture become non-issues"
+          ],
+          "cons": [
+            "Adding files to a vault requires the user (or an agent) to explicitly trigger a scan / ingest; no passive ingestion of file-drops",
+            "The SAGE Architecture Reference's Source Change Detection section and the Deployment Model's indexing row are out of date and require revision when those documents are next updated"
+          ]
+        }
+      ],
+      "decision": "SAGE does not implement file watching, polling, scheduled scans, or any other form of auto-ingest. Documents enter SAGE only when a caller explicitly invokes an ingest operation: sage_ingest for a single document, or app_scan_directory followed by app_batch_ingest for bulk paths. Source change detection is tied to that explicit invocation: when a caller re-ingests a known path, SAGE re-runs the source adapter, compares the new content_hash against the stored source_content_hash, and creates a supersedes-linked successor document if they differ. The watch_paths property is removed from the source_adapters schema. Vault configs that carried it are migrated to drop the field. The SAGE Architecture Reference's Source Change Detection section and the Deployment Model's indexing row are flagged as stale and will be revised in their next pass; this ADR is the authoritative statement of the constraint until then.",
+      "rationale": "SAGE's architectural identity is a request-response state substrate. Ingestion that happens as a side effect of the user's filesystem activity is incompatible with that identity in three ways. First, it shifts the trust boundary: with explicit ingest, the caller commits the file; with a watcher, the file commits itself and the user finds out later. The caller's intentional act is the auditable signal that something belongs in the canonical record. Second, it shifts the operational footprint: a watcher requires SAGE to be a long-running process with per-vault subscriptions, cross-platform event handling, and recovery semantics for missed events; the request-response model has no such requirements. Third, it shifts the failure mode: with a watcher, partial writes, swap-file activity from editors, and cloud-sync transients all become candidate ingestion events that the watcher must filter out or debounce; with explicit ingest, the caller chooses the moment when the file is in a known-good state. The CAS Application's directory-scan workflow already provides the convenience that watching would offer (drop files into a directory, then click Scan), without any of these costs. Removing watch_paths rather than leaving it as a forward declaration enforces the principle that the schema is the contract: published fields must have implementations behind them. This is the second instance in the system where a forward-declared schema field would have been better not declared (the first was source_references in the manifest, removed in Formal Substrate v0.1).",
+      "consequences": [
+        "sage/source_adapters.schema.json drops the watch_paths property; the file_extensions description is updated to refer to directory scans and bulk ingestion rather than 'the file watcher'.",
+        "Live vault configs that reference watch_paths are cleaned up. The pim_health vault (the only live vault carrying the field) has its three adapter entries (docx, markdown, xlsx) stripped of watch_paths.",
+        "Contract-test fixtures in tests/sage/contract_tests.md are revised to drop watch_paths from the example YAML; no test count or assertion change.",
+        "The SAGE Architecture Reference's 'Source Change Detection' section (currently describes a file watcher as capability #2 alongside provenance and versioned re-ingestion) is stale. Source change detection occurs only on caller-initiated re-ingest, comparing new content_hash to the stored source_content_hash and creating a supersedes-linked successor if they differ. Provenance capture (capability #1) and versioned re-ingestion (capability #3) are unchanged.",
+        "The Deployment Model's Phase 1 / Phase 2 indexing row ('Incremental, file-watcher or on-demand') is stale. Indexing is on-demand only, in both phases.",
+        "SAGE's runtime surface remains request-response. No watcher processes, no per-vault long-running subscriptions, no platform-specific filesystem-event integration code is in scope.",
+        "Future reintroduction of file watching, if ever desired, requires a superseding ADR. The constraint is not a deferred design question; it is a positive architectural choice."
+      ]
     }
   ]
 }

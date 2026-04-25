@@ -29,15 +29,10 @@
             "type": "object",
             "description": "Adapter-specific configuration. Structure varies by source_type.",
             "properties": {
-              "watch_paths": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Directories to watch for new or changed files of this source type. Paths are absolute or relative to the vault's storage_root."
-              },
               "file_extensions": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "File extensions that trigger this adapter (e.g., ['.md'], ['.docx']). Used by the file watcher and bulk ingestion."
+                "description": "File extensions that trigger this adapter (e.g., ['.md'], ['.docx']). Used by directory scans and bulk ingestion."
               },
               "heading_style_map": {
                 "type": "object",
