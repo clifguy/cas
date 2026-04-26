@@ -96,17 +96,19 @@ class EdgeInferenceEngine:
     def _version_chain(self, items: list[InferenceItem]) -> list[PlannedEdge]:
         """Version chain inference (Tier 1, supersedes).
 
-        Groups items by title identity, sorts by normalized version,
-        creates a linear chain: each version supersedes its immediate
-        predecessor. A versionless file in a group with versioned files
-        is treated as the original (sorts before all versions).
+        Groups items by title, project, and doc_type, sorts by normalized
+        version, creates a linear chain: each version supersedes its
+        immediate predecessor. A versionless file in a group with versioned
+        files is treated as the original (sorts before all versions). Items
+        with different doc_types do not chain even if they share a title;
+        items with null doc_type group only with other null-doc_type items.
         """
         edges: list[PlannedEdge] = []
 
-        # Group by (title, project) -- version chain identity
-        groups: dict[tuple[str, str | None], list[InferenceItem]] = {}
+        # Group by (title, project, doc_type) -- version chain identity
+        groups: dict[tuple[str, str | None, str | None], list[InferenceItem]] = {}
         for item in items:
-            key = (item.parsed.title.lower(), item.parsed.project)
+            key = (item.parsed.title.lower(), item.parsed.project, item.parsed.doc_type)
             groups.setdefault(key, []).append(item)
 
         for _key, group in groups.items():

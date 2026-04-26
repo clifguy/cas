@@ -359,9 +359,9 @@ redundant transitive edges.
 **Artifact:** Project tracker (edge inference design decisions)
 **Category:** version_chain
 
-**Decision:** Version chains are scoped to documents sharing the same title
-(and optionally project and code). Documents with different titles are in
-separate chains even if their version numbers overlap.
+**Decision:** Version chains are scoped to documents sharing the same title,
+project, and doc_type. Documents with different titles, different projects, or
+different doc_types are in separate chains even if their version numbers overlap.
 
 **Precondition:** Four files, two titles.
 
@@ -378,6 +378,34 @@ separate chains even if their version numbers overlap.
 
 **Rationale:** Version numbers are meaningful only within a document lineage.
 v2 of one document does not supersede v1 of a different document.
+
+### TEST-APP-EI-015b: Version chain does not cross doc_type boundary
+
+**Artifact:** Project tracker (edge inference design decisions, 2026-04-25)
+**Category:** version_chain
+
+**Decision:** Two documents that share a title and project but have different
+doc_types do not form a version chain. The doc_type is part of the chain
+identity. Documents with null doc_type group only with other null-doc_type
+documents (a conservative default: a chain is only inferred when both ends are
+confirmed to be the same kind of document).
+
+**Precondition:** Edge inference engine initialized.
+
+**Input:** Three files with the same title and project, mixed doc_types:
+- `Claim-Set_v1.docx` (doc_type: `patent_draft`)
+- `Claim-Set_v2.docx` (doc_type: `work_plan`)
+- `Claim-Set_v3.docx` (doc_type: `patent_draft`)
+
+**Expected:** Edge plan contains exactly one supersedes edge:
+- `Claim-Set_v3` supersedes `Claim-Set_v1` (both `patent_draft`)
+- No edges involving the `work_plan` v2
+
+**Rationale:** Tightens the inference rule against false positives where two
+unrelated artifacts happen to share a title (e.g., a patent draft and a work
+plan that governs it, both named "Claim-Set"). A document genuinely changing
+type across versions is rare and is better captured manually than risked as an
+auto-inferred Tier 1 edge.
 
 ### TEST-APP-EI-016: Version chain includes existing vault documents
 

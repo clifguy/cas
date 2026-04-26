@@ -551,7 +551,7 @@ class TestVersionChain:
         assert not any(e.source_ref == "f7" and e.target_ref == "f1" for e in supersedes)
 
     def test_ei_015_groups_by_title(self):
-        """Version chains scoped to documents sharing the same title."""
+        """Version chains scoped to documents sharing title, project, and doc_type."""
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem("a1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")),
@@ -564,6 +564,23 @@ class TestVersionChain:
         assert len(supersedes) == 2
         assert any(e.source_ref == "a2" and e.target_ref == "a1" for e in supersedes)
         assert any(e.source_ref == "b2" and e.target_ref == "b1" for e in supersedes)
+
+    def test_ei_015b_doc_type_mismatch_no_chain(self):
+        """Version chain does not cross doc_type boundary."""
+        engine = EdgeInferenceEngine()
+        items = [
+            InferenceItem("p1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")),
+            InferenceItem("w2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="work_plan")),
+            InferenceItem("p3", False, ParsedMetadata("Claim-Set", version="v3", doc_type="patent_draft")),
+        ]
+        plan = engine.build_edge_plan(items, [])
+        supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
+        assert len(supersedes) == 1
+        # Only the two patent_draft items chain (v3 supersedes v1)
+        assert supersedes[0].source_ref == "p3"
+        assert supersedes[0].target_ref == "p1"
+        # The work_plan v2 does not participate in any edge
+        assert not any("w2" in (e.source_ref, e.target_ref) for e in supersedes)
 
     def test_ei_016_includes_existing_vault_docs(self):
         """Version chain includes existing vault documents."""
