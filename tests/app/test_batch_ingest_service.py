@@ -680,3 +680,34 @@ class TestCallerIntegration:
         assert d["errors"][0]["filename"] == "bad.md"
         # Should have at least one supersedes edge from the version chain
         assert d["edges_created"].get("supersedes", 0) >= 1
+
+    @pytest.mark.asyncio
+    async def test_bis_020_metadata_pending_counts_unconfirmed_only(self):
+        """metadata_pending counts docs with metadata_confirmed=False, not all new docs."""
+        services = _make_services()
+        call_idx = 0
+
+        async def mixed_confirm(request):
+            nonlocal call_idx
+            call_idx += 1
+            confirmed = call_idx == 2  # second doc auto-confirmed
+            return _make_ingest_result(
+                f"doc-{call_idx}", metadata_confirmed=confirmed
+            )
+
+        services.ingestion_service.ingest = AsyncMock(side_effect=mixed_confirm)
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[
+                _fd("/tmp/a.md", title="A"),
+                _fd("/tmp/b.md", title="B"),
+                _fd("/tmp/c.md", title="C"),
+            ],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        assert result.docs_new == 3
+        assert result.metadata_pending == 2
+        assert result.to_dict()["metadata_pending"] == 2

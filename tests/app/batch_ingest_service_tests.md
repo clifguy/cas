@@ -429,3 +429,33 @@ returned IngestSummary.
 
 **Rationale:** The refactoring must be behavior-preserving. The router
 becomes a thin adapter from Pydantic -> FileDescriptor -> service -> SSE.
+
+### TEST-BIS-020: metadata_pending counts unconfirmed documents, not new+version
+
+**Artifact:** Bug fix (post-ingest summary in CAS app)
+**Category:** batch_ingest_service
+
+**Decision:** `IngestSummary.metadata_pending` reflects the count of ingested
+documents whose `metadata_confirmed` flag is False after the per-file pipeline
+completes, not a blanket `docs_new + docs_version`. The previous behavior
+overstated the review queue: in vaults with `metadata_extraction.review_required`
+false, ingest auto-confirms metadata (CAS-ADR-015 / ME-008), so the Review tab
+would show zero items while the Ingest results panel reported "N pending."
+The summary counter is incremented per file from the IngestResult's document
+state.
+
+**Precondition:** Service instantiated.
+
+**Input:** Three files. Mock `ingestion_service.ingest` to return:
+- file 1: IngestResult with document.metadata_confirmed=False (pending review)
+- file 2: IngestResult with document.metadata_confirmed=True (auto-confirmed)
+- file 3: IngestResult with document.metadata_confirmed=False (pending review)
+
+**Expected:**
+- `summary.metadata_pending == 2`
+- `summary.docs_new == 3` (unchanged)
+- `to_dict()["metadata_pending"] == 2`
+
+**Rationale:** The summary counter must agree with what the Review tab will
+show. Otherwise users see contradictory information across screens (the
+regression that motivated this fix).

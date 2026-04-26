@@ -62,6 +62,7 @@ class IngestSummary:
     """Result of a batch ingestion run."""
     docs_new: int = 0
     docs_version: int = 0
+    metadata_pending: int = 0
     abstracts_generated: int = 0
     abstracts_deferred: int = 0
     edges_created: dict[str, int] = field(default_factory=dict)
@@ -78,7 +79,7 @@ class IngestSummary:
                 "new": self.docs_new,
                 "new_version": self.docs_version,
             },
-            "metadata_pending": self.docs_new + self.docs_version,
+            "metadata_pending": self.metadata_pending,
             "edges_created": self.edges_created,
             "edges_staged": self.edges_staged,
             "edges_dropped": self.edges_dropped,
@@ -160,6 +161,9 @@ class BatchIngestService:
                     summary.docs_new += 1
                 else:
                     summary.docs_version += 1
+
+                if not ingest_result.document.metadata_confirmed:
+                    summary.metadata_pending += 1
 
                 if vault_services.config.abstraction.enabled:
                     summary.abstracts_generated += 1
