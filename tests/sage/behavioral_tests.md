@@ -1037,6 +1037,140 @@ content chronology. Conflating the two would lose one of those signals.
 
 ---
 
+## 10. External Source Imports
+
+These tests cover the rule that ingestion of a file located outside the
+vault's `storage_root` copies the file verbatim into `{storage_root}/imports/`
+so the vault remains self-contained. Files already inside `storage_root` are
+ingested in place. Specifications backfilled 2026-04-25 from the pytest
+implementations in `tests/sage/test_ingestion.py` (originally delivered
+2026-04-06 as commit 5cd10d8).
+
+### TEST-SAGE-BH-053: External file is copied verbatim to imports/ subdirectory
+
+**Artifact:** `sage/services/ingestion.py` (external file import); commit
+5cd10d8 (2026-04-06)
+**Category:** ingestion
+
+**Decision:** When the source path resolves outside the vault's
+`storage_root`, ingestion copies the file verbatim into
+`{storage_root}/imports/`. The original bytes are preserved exactly; no
+adapter transformation is applied to the imported file at the filesystem
+level.
+
+**Precondition:** Vault initialized. Source file lives in a directory
+outside `storage_root` (e.g., a Cowork session upload directory).
+
+**Input:** `ingest(source="<absolute path outside storage_root>", adapter="markdown")`
+
+**Expected:**
+- Ingestion succeeds with `is_new=true`.
+- A file exists at `{storage_root}/imports/<original-filename>`.
+- The imported file's bytes match the original source file exactly.
+
+**Rationale:** A vault must be self-contained for portability and for the
+SAGE invariant that the vault is the system of record. External-path
+ingestion that left the source in place would leave dangling references
+the moment the external location moved or was cleared.
+
+### TEST-SAGE-BH-054: Imported file source_path records vault-relative path
+
+**Artifact:** `sage/services/ingestion.py` (external file import); commit
+5cd10d8 (2026-04-06)
+**Category:** ingestion
+
+**Decision:** After import, the document record's `source_path` is the
+vault-relative path (`imports/<filename>`), not the original absolute path.
+All downstream consumers see the document as if it had always been in the
+vault.
+
+**Precondition:** Vault initialized. Source file outside `storage_root`.
+
+**Input:** `ingest(source="<absolute external path>", adapter="markdown")`
+
+**Expected:**
+- `doc.source_path == "imports/<filename>"`.
+
+**Rationale:** Storing the absolute external path would couple the document
+record to the host filesystem layout at ingestion time and break vault
+relocation. The vault-relative path is stable and portable.
+
+### TEST-SAGE-BH-055: Name collision on import appends 8-char content hash
+
+**Artifact:** `sage/services/ingestion.py` (external file import); commit
+5cd10d8 (2026-04-06)
+**Category:** ingestion
+
+**Decision:** When `imports/` already contains a file with the same name
+but different content, the new file is written with an 8-character content
+hash inserted before the extension (`<stem>_<8-char-hash>.<ext>`). The
+existing file is left untouched.
+
+**Precondition:** `{storage_root}/imports/report.md` already exists with
+some content. A second external file named `report.md` with different
+content is being ingested.
+
+**Input:** `ingest(source="<external>/report.md", adapter="markdown")`
+
+**Expected:**
+- `doc.source_path` matches `imports/report_<8-char-hash>.md`.
+- The disambiguated file exists in `imports/` and contains the new content.
+- The pre-existing `imports/report.md` is unchanged.
+
+**Rationale:** Filename collisions are a normal occurrence when multiple
+external batches contribute documents. Hash-suffixing on content
+disambiguates without overwriting prior imports and yields a stable name
+for identical content (the pure-dedup case is handled separately by the
+ingestion deduplication path).
+
+### TEST-SAGE-BH-056: File already inside storage_root is not copied
+
+**Artifact:** `sage/services/ingestion.py` (in-vault ingestion path);
+commit 5cd10d8 (2026-04-06)
+**Category:** ingestion
+
+**Decision:** If the source path already lies inside `storage_root`, the
+file is ingested in place. No copy is made and the `imports/` directory is
+not created or touched.
+
+**Precondition:** A file exists at `{storage_root}/patents/internal.md`.
+
+**Input:** `ingest(source="patents/internal.md", adapter="markdown")`
+
+**Expected:**
+- `doc.source_path == "patents/internal.md"` (the original relative path).
+- `{storage_root}/imports/` does not exist (or remains untouched).
+
+**Rationale:** The import-on-ingest behavior is specifically for
+external-path inputs. Copying in-vault files would duplicate storage and
+break the user's organizational layout.
+
+### TEST-SAGE-BH-057: imports/ directory is created on demand
+
+**Artifact:** `sage/services/ingestion.py` (external file import); commit
+5cd10d8 (2026-04-06)
+**Category:** ingestion
+
+**Decision:** The `imports/` subdirectory under `storage_root` is created
+automatically on the first external-file import. It does not need to
+pre-exist in the vault layout.
+
+**Precondition:** Vault initialized; `{storage_root}/imports/` does not
+exist. External source file ready for ingest.
+
+**Input:** `ingest(source="<external>/fresh.md", adapter="markdown")`
+
+**Expected:**
+- `{storage_root}/imports/` exists after ingestion.
+- The imported file is present at `imports/fresh.md`.
+
+**Rationale:** Lazy creation keeps fresh vaults clean of empty directories
+until they have a reason to exist. Operators do not need to remember to
+create `imports/` as part of vault provisioning.
+
+
+---
+
 ## Schema Changes Required
 
 These design decisions require modifications to the Formal Substrate:
@@ -1588,6 +1722,120 @@ must match ALL specified filters to appear in results.
 **Rationale:** AND semantics are the natural interpretation for metadata filters.
 OR semantics would require explicit combinators and are not needed for the
 primary use cases (drill-down from dashboard, tag-based enumeration).
+
+
+## Catalog Sort
+
+These tests cover the `sort_by` and `sort_order` parameters on
+`DiscoverRequest` for catalog-mode retrieval. Sort columns are constrained
+to a server-side allowlist (SQL injection prevention) and are silently
+ignored by non-catalog modes. Specifications backfilled 2026-04-25 from
+the pytest implementations in `tests/sage/test_retrieval.py` (originally
+delivered 2026-04-13 as part of the catalog sort + Browse mode + sortable
+tables work, project tracker v0.9.4).
+
+### TEST-SAGE-BH-080: Catalog default sort -- lifecycle then document_date desc
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
+sort_order); `sage/storage/graph_store.py` (query_documents)
+**Category:** retrieval
+
+**Decision:** When no `sort_by` is supplied to a catalog-mode discover
+request, results are sorted by lifecycle status (active first) and then by
+`document_date` descending, with null dates sorted last within each
+lifecycle group. This makes "recent active work" the default view for
+drill-down and Browse use cases.
+
+**Precondition:** Vault contains 5 documents with a mix of lifecycle
+statuses (active, archived) and `document_date` values (some null).
+
+**Input:** `discover(mode="catalog", limit=10)` with no sort parameters.
+
+**Expected:**
+- Active documents appear before archived documents.
+- Within each lifecycle group, documents are ordered by `document_date`
+  descending.
+- Documents with `document_date == null` appear last within their group.
+
+**Rationale:** A no-arg catalog request should land on the most useful
+default for human browsing. Active-first matches the typical drill-down
+intent ("what's currently in play"); date-desc matches recency expectations
+from email- and file-browser conventions.
+
+### TEST-SAGE-BH-081: Catalog sort by title ascending
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
+sort_order); `sage/storage/graph_store.py` (query_documents)
+**Category:** retrieval
+
+**Decision:** `sort_by="title"` with `sort_order="asc"` returns documents
+sorted alphabetically by title ascending. Sort is performed at the SQL
+layer using a column allowlist; no client-side sorting is required.
+
+**Precondition:** Vault with multiple documents whose titles cover the
+sort range.
+
+**Input:** `discover(mode="catalog", sort_by="title", sort_order="asc",
+limit=10)`
+
+**Expected:**
+- Returned `document.title` values are in ascending alphabetical order.
+
+**Rationale:** Title sort is the second-most common navigation order after
+recency and is essential for finding a known document by name when
+recency-based ordering does not place it on the first page.
+
+### TEST-SAGE-BH-082: Catalog sort by document_date descending, nulls last
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
+sort_order); `sage/storage/graph_store.py` (query_documents)
+**Category:** retrieval
+
+**Decision:** `sort_by="document_date"` with `sort_order="desc"` orders
+documents from newest to oldest by `document_date`. Documents with
+`document_date == null` appear last regardless of sort direction.
+
+**Precondition:** Vault with 5 documents -- 4 with distinct
+`document_date` values and 1 with null.
+
+**Input:** `discover(mode="catalog", sort_by="document_date",
+sort_order="desc", limit=10)`
+
+**Expected:**
+- Documents are ordered: 2026-04-10, 2026-04-01, 2026-03-15, 2026-02-10,
+  null.
+
+**Rationale:** Null-last is the consistent rule across all sortable
+nullable columns. It avoids burying populated rows under a wall of
+unknown-value rows when the user is sorting to find the most-recent
+populated entry.
+
+### TEST-SAGE-BH-083: Sort parameters are silently ignored by non-catalog modes
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (DiscoverRequest.sort_by,
+sort_order); `sage/services/retrieval.py`
+**Category:** retrieval
+
+**Decision:** When `sort_by` and `sort_order` are present on a
+non-catalog-mode request (semantic, keyword, hybrid), they are silently
+ignored. The request does not error. Relevance-based modes have their own
+ordering (relevance score) and a sort override would conflict with it.
+
+**Precondition:** Vault has at least one document with indexed chunks
+matching the query.
+
+**Input:** `discover(mode="keyword", query="patents",
+sort_by="document_date", sort_order="desc", limit=10)`
+
+**Expected:**
+- Request succeeds without raising.
+- `response.mode == "keyword"`.
+- Result ordering reflects keyword relevance, not document_date.
+
+**Rationale:** Silently ignoring rather than rejecting keeps the API
+ergonomic for clients (e.g., a UI that always sets sort fields) while
+preserving the intuition that mode-specific scoring drives non-catalog
+result order.
 
 
 ## Document-Level Response Mode
