@@ -61,6 +61,19 @@ These govern all implementation decisions:
 - **Pydantic v2** for runtime models (derived from schemas)
 - **pytest** for testing
 
+## Local Environment
+
+This is a single-developer Mac setup, not a portable Linux service. Adapt commands and assumptions accordingly.
+
+- **Platform.** macOS 26.4.1 (Darwin 25.4) on Apple Silicon (Mac16,11), 14 cores, 64 GB unified memory. Homebrew at `/opt/homebrew`. No `apt`/`yum`/`/proc`. Use `pbcopy`/`pbpaste`, `sysctl`, `launchctl`. Default shell is zsh.
+- **Python.** 3.14.3 via Homebrew. **Always use the project venv at `.venv/`** — invoke as `.venv/bin/python` or activate it; never the system Python. The CAS package is installed editable (`__editable__.cas-0.1.0.pth`), so edits under `sage/`, `root_harness/`, `app/` take effect without reinstall. Re-run `pip install -e ".[test,mlx]"` only after changing `pyproject.toml` or adding new top-level packages.
+- **MCP setup.** The SAGE MCP server is configured in `~/.claude/settings.json` and runs from `.venv/bin/python -m sage.mcp_server` against the `test` and `pim_health` vaults. **Edits to SAGE MCP server code require a Claude Code restart** to take effect — the running server holds the old import.
+- **RAM budget.** Full server runtime with Qwen3-30B loaded via MLX sits around 20 GB. The 64 GB total leaves comfortable headroom for LanceDB and normal desktop workload, but **flag any suggestion that would spin up a second concurrent model or move to a significantly larger model** — that's where the budget gets tight.
+- **Stale-state pitfalls.**
+  - LanceDB and SQLite stores live **outside** the repo (paths in `sage/config.yaml`). `git reset`/`git clean` will not touch them; stale graph/vector state persists across branch switches.
+  - SAGE vault configs at `~/sage_vaults/{vault_id}/vault_config.yaml` are outside the repo and outside cloud sync — they survive everything except manual deletion.
+  - Once the SAGE Core API runs under uvicorn (or ROOT Harness comes online), long-running processes will hold imports in memory; restart the server after touching anything in its import path. *(Add a bullet for ROOT Harness / LangGraph state stores when those exist.)*
+
 ## Coding Conventions
 
 - Type hints on all function signatures.
