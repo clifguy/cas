@@ -58,6 +58,11 @@
               }
             }
           }
+        },
+        "timezone": {
+          "type": "string",
+          "default": "UTC",
+          "description": "IANA timezone name (e.g., 'America/Chicago') used to derive document_date from source_modified_at when no filename or caller-supplied date is available. Defaults to UTC."
         }
       }
     },

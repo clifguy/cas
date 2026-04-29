@@ -172,6 +172,30 @@ async def test_update_metadata_partial(vault_services):
     assert result["doc_type"] == "note"
 
 
+async def test_update_metadata_sets_document_date(vault_services):
+    """sage_update_metadata accepts and persists a document_date string,
+    and the value is readable via sage_get_document. Catches the wiring
+    fault where a parameter is declared on the MCP tool but not threaded
+    into UpdateMetadataRequest.
+    """
+    ingest_result = _parse(
+        await sage_ingest("test_vault", "test/sample.md", "markdown")
+    )
+    doc_id = ingest_result["id"]
+
+    updated = _parse(
+        await sage_update_metadata(
+            "test_vault",
+            doc_id,
+            document_date="2026-04-28",
+        )
+    )
+    assert updated["document_date"] == "2026-04-28"
+
+    fetched = _parse(await sage_get_document("test_vault", doc_id))
+    assert fetched["document_date"] == "2026-04-28"
+
+
 async def test_update_metadata_invalid_doc_type(vault_services):
     ingest_result = _parse(
         await sage_ingest("test_vault", "test/sample.md", "markdown")

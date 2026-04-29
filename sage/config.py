@@ -19,6 +19,7 @@ class VaultIdentity(BaseModel):
     brain_root: str
     visibility: str
     members: list[dict] | None = None
+    timezone: str = "UTC"
 
 
 class LifecycleTransition(BaseModel):

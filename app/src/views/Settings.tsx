@@ -271,6 +271,11 @@ function IdentityEditor({
                   </select>
                 </td>
               </tr>
+              <EditableFieldRow
+                label="Timezone"
+                value={draft.timezone}
+                onChange={v => update('timezone', v)}
+              />
             </>
           ) : (
             <>
@@ -280,6 +285,7 @@ function IdentityEditor({
               <FieldRow label="Storage Root" value={config.storage_root} />
               <FieldRow label="Brain Root" value={config.brain_root} />
               <FieldRow label="Visibility" value={config.visibility} />
+              <FieldRow label="Timezone" value={config.timezone} />
             </>
           )}
         </tbody>

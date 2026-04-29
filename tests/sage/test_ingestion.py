@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from sage.api.errors import DuplicateContentError
+from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
@@ -658,6 +659,93 @@ async def test_bh_063_fallback_to_source_modified_at_date(
 
     assert doc.document_date == "2025-06-15"
     assert doc.source_modified_at is not None
+
+
+# ---------------------------------------------------------------------------
+# Vault-local timezone applied to source_modified_at fallback
+# ---------------------------------------------------------------------------
+
+async def test_document_date_fallback_uses_vault_timezone(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+    lifecycle_service,
+):
+    """When vault.timezone is set, the fallback derives document_date in
+    that zone, not UTC. Regression guard for the UTC-midnight drift bug:
+    a Chicago-evening mtime that crosses UTC midnight should attribute
+    to the local calendar date.
+    """
+    from sage.services.ingestion import IngestionService
+
+    config_dict = minimal_vault_config_dict.copy()
+    config_dict["vault"] = {**config_dict["vault"], "timezone": "America/Chicago"}
+    config = VaultConfig.model_validate(config_dict)
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle_service,
+    )
+
+    full_path = _create_test_file(tmp_vault_dir, "patents/late_evening.md")
+    # 2026-04-29 00:33 UTC is 2026-04-28 19:33 CDT.
+    chicago_evening_mtime = datetime(2026, 4, 29, 0, 33, 0, tzinfo=timezone.utc)
+    os.utime(
+        full_path,
+        (full_path.stat().st_atime, chicago_evening_mtime.timestamp()),
+    )
+
+    request = IngestRequest(
+        source="patents/late_evening.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    result = await service.ingest(request)
+    doc = result.document
+
+    assert doc.document_date == "2026-04-28"
+
+
+def test_vault_identity_carries_timezone_field(minimal_vault_config_dict):
+    """VaultConfig accepts an explicit vault.timezone and defaults to UTC
+    when the field is omitted.
+    """
+    omitted = VaultConfig.model_validate(minimal_vault_config_dict)
+    assert omitted.vault.timezone == "UTC"
+
+    explicit_dict = minimal_vault_config_dict.copy()
+    explicit_dict["vault"] = {**explicit_dict["vault"], "timezone": "America/Chicago"}
+    explicit = VaultConfig.model_validate(explicit_dict)
+    assert explicit.vault.timezone == "America/Chicago"
+
+
+async def test_document_date_fallback_defaults_to_utc(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """A vault config without an explicit timezone keeps the BH-063
+    behavior: fallback uses the UTC calendar date of source_modified_at.
+    Regression guard for existing vaults.
+    """
+    full_path = _create_test_file(tmp_vault_dir, "patents/utc_default.md")
+    known_mtime = datetime(2025, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
+    os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
+
+    request = IngestRequest(
+        source="patents/utc_default.md",
+        adapter=SourceType.MARKDOWN,
+    )
+    result = await ingestion_service.ingest(request)
+    doc = result.document
+
+    assert doc.document_date == "2025-06-15"
 
 
 # ---------------------------------------------------------------------------

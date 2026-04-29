@@ -20,6 +20,7 @@ import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
@@ -571,10 +572,15 @@ class IngestionService:
         if not doc.doc_type:
             doc = await self._store.update_document(doc.id, {"doc_type": "misc"})
 
-        # Fallback: derive document_date from source_modified_at (BH-063)
+        # Fallback: derive document_date from source_modified_at (BH-063).
+        # Convert to the vault owner's local zone before taking the
+        # calendar date so a late-evening local mtime that crosses UTC
+        # midnight still attributes to the local work date.
         if not doc.document_date and source_modified_at:
+            local_tz = ZoneInfo(self._config.vault.timezone)
+            local_date = source_modified_at.astimezone(local_tz).date()
             doc = await self._store.update_document(doc.id, {
-                "document_date": source_modified_at.date().isoformat(),
+                "document_date": local_date.isoformat(),
             })
 
         # The supersede lifecycle transition was bundled into the same

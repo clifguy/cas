@@ -194,6 +194,7 @@ def register_sage_tools(
         tags: list[str] | None = None,
         doc_type: str | None = None,
         authority_scope: str | None = None,
+        document_date: str | None = None,
     ) -> dict:
         """Update mutable metadata fields on a document. Only include fields
         you want to change.
@@ -207,6 +208,9 @@ def register_sage_tools(
             tags: Freeform tags.
             doc_type: Document type (must be defined in vault config).
             authority_scope: Authority scope identifier.
+            document_date: Document calendar date (YYYY-MM-DD). Use to
+                correct fallback-derived dates that misattributed across
+                UTC midnight.
         """
         try:
             v = get_vault(vault_id)
@@ -217,6 +221,7 @@ def register_sage_tools(
                 tags=tags,
                 doc_type=doc_type,
                 authority_scope=authority_scope,
+                document_date=document_date,
             )
             doc = await v.metadata_service.update_metadata(
                 document_id, request, v.config.vault.owner
@@ -314,12 +319,16 @@ def register_sage_tools(
             edge_type: Edge type (supersedes, derived_from, covers, references,
                 bundles_with, depends_on, instantiated_from, retracts,
                 merged_from).
-            source_valid_from_version: Supersedes-lineage anchor on the
-                source chain. Required for `transitive_source`,
-                `transitive_both`, and `retracts` edges; forbidden on
-                policy-`none` meta-edges.
-            target_valid_from_version: Supersedes-lineage anchor on the
-                target chain. Required only for `transitive_both` edges.
+            source_valid_from_version: Document ID of the source-chain
+                version that anchors this edge in the supersedes
+                lineage (a `documents.id`, not a version label string).
+                Required for `transitive_source`, `transitive_both`,
+                and `retracts` edges; forbidden on policy-`none`
+                meta-edges.
+            target_valid_from_version: Document ID of the target-chain
+                version that anchors this edge in the supersedes
+                lineage (a `documents.id`, not a version label string).
+                Required only for `transitive_both` edges.
             retracted_edge_id: Edge-id of the edge instance being
                 retracted. Required (and valid only) on `retracts` edges.
             notes: Free-text notes about the edge.

@@ -1474,6 +1474,12 @@ components:
         authority_scope:
           type: string
           nullable: true
+        document_date:
+          type: string
+          format: date
+          description: >-
+            Document calendar date (YYYY-MM-DD). Editable to correct
+            fallback-derived dates that misattributed across UTC midnight.
 
     IngestRequest:
       type: object

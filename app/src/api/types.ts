@@ -345,6 +345,7 @@ export interface VaultIdentityConfig {
   brain_root: string;
   visibility: string;
   members: Record<string, unknown>[] | null;
+  timezone: string;
 }
 
 export interface DocTypeConfig {
