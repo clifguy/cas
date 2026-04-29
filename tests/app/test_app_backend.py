@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sage.services.filename_parser import FilenameParser, ParsedMetadata, normalize_version
+from sage.services.filename_parser import (
+    FilenameParser,
+    ParsedMetadata,
+    format_version,
+    normalize_version,
+)
 from app.backend.edge_inference import (
     EdgeInferenceEngine,
     EdgePlan,
@@ -531,6 +536,31 @@ class TestVersionChain:
         assert normalize_version("v6a") == (6, 0, 0)
         assert normalize_version("v3_1b") == (3, 1, 0)
         assert normalize_version("v2a.4") == (2, 4, 0)
+
+    def test_format_version_preserves_trailing_zero_patch(self):
+        """A 3-component input keeps its patch component even when zero."""
+        assert format_version("v8.2.0") == "v8.2.0"
+        assert format_version("v9.1.0") == "v9.1.0"
+        assert format_version("v3.0.0") == "v3.0.0"
+        # Underscore separator and uppercase prefix behave the same.
+        assert format_version("v8_2_0") == "v8.2.0"
+        assert format_version("V1_0_0") == "v1.0.0"
+
+    def test_format_version_existing_canonical_forms_unchanged(self):
+        """Single- and two-component inputs continue to canonicalize as before."""
+        assert format_version("v7") == "v7.0"
+        assert format_version("v10_2") == "v10.2"
+        assert format_version("v8_4_1") == "v8.4.1"
+        assert format_version("V3_2") == "v3.2"
+        assert format_version("v6a") == "v6.0"
+        assert format_version("v3_1b") == "v3.1"
+
+    def test_filename_parser_preserves_trailing_zero_patch_end_to_end(self):
+        """Full parse path round-trips a vN.M.0 version without truncation."""
+        p = FilenameParser(_pim_metadata_extraction())
+        assert p.parse("2026-04-28_PIM_Doc_v8.2.0").version == "v8.2.0"
+        assert p.parse("2026-04-28_PIM_Doc_v9.1.0").version == "v9.1.0"
+        assert p.parse("2026-04-28_PIM_Doc_v3.0.0").version == "v3.0.0"
 
     def test_ei_014_linear_chain(self):
         """Linear chain: each version supersedes immediate predecessor."""

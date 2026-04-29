@@ -63,11 +63,21 @@ def normalize_version(version_str: str) -> tuple[int, int, int]:
 def format_version(version_str: str) -> str:
     """Canonical version string: 'v{major}.{minor}' or 'v{major}.{minor}.{patch}'.
 
-    Converts any parsed version token to a consistent decimal format:
-      v1_0 -> v1.0, V3_2 -> v3.2, v8_4_1 -> v8.4.1, v7 -> v7.0, v6a -> v6.0.
+    Preserves the originally-supplied number of numeric components so a
+    trailing-zero patch is not dropped: v8.2.0 stays v8.2.0, not v8.2.
+
+      v1_0 -> v1.0, V3_2 -> v3.2, v8_4_1 -> v8.4.1, v7 -> v7.0, v6a -> v6.0,
+      v8.2.0 -> v8.2.0, v9.1.0 -> v9.1.0, v3.0.0 -> v3.0.0.
     """
     major, minor, patch = normalize_version(version_str)
-    if patch:
+    parts = re.split(r"[._]", version_str.lstrip("vV"))
+    supplied = 0
+    for p in parts[:3]:
+        if re.match(r"\d", p):
+            supplied += 1
+        else:
+            break
+    if supplied >= 3:
         return f"v{major}.{minor}.{patch}"
     return f"v{major}.{minor}"
 
