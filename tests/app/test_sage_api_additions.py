@@ -306,6 +306,8 @@ class TestVaultStatistics:
         assert isinstance(body["by_edge_type"], dict)
         assert body["staging_edge_count"] == 1
         assert isinstance(body["lancedb_size_bytes"], int)
+        assert isinstance(body["lancedb_chunk_count"], int)
+        assert body["lancedb_chunk_count"] >= 0
         assert isinstance(body["sqlite_size_bytes"], int)
         assert body["last_ingestion_at"] is not None
 
@@ -359,6 +361,7 @@ class TestVaultStatistics:
         assert body["total_documents"] == 0
         assert body["total_edges"] == 0
         assert body["staging_edge_count"] == 0
+        assert body["lancedb_chunk_count"] == 0
         assert body["last_ingestion_at"] is None
         assert body["by_lifecycle_state"] == {}
         assert body["by_doc_type"] == {}

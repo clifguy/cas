@@ -849,6 +849,7 @@ def register_sage_tools(
                 if lancedb_dir.exists()
                 else 0
             )
+            lancedb_chunk_count = await v.content_store.count_chunks()
 
             result = {
                 "total_documents": total_docs,
@@ -859,6 +860,7 @@ def register_sage_tools(
                 "by_edge_type": by_edge_type,
                 "staging_edge_count": staging_count,
                 "lancedb_size_bytes": lancedb_size,
+                "lancedb_chunk_count": lancedb_chunk_count,
                 "sqlite_size_bytes": sqlite_size,
                 "last_ingestion_at": last_ingestion,
                 "health": {

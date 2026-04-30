@@ -36,6 +36,7 @@ class SAGEServices:
 
     config: VaultConfig
     graph_store: GraphStore
+    content_store: ContentStore
     lock_manager: DocumentLockManager
     user_service: UserService
     lifecycle_service: LifecycleService
@@ -136,6 +137,7 @@ async def initialize_services(
     return SAGEServices(
         config=config,
         graph_store=graph_store,
+        content_store=content_store,
         lock_manager=lock_manager,
         user_service=user_service,
         lifecycle_service=lifecycle_service,

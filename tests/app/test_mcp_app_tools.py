@@ -271,6 +271,17 @@ class TestSageVaultStats:
         assert result["sqlite_size_bytes"] > 0
         # LanceDB directory may not exist or be empty before first ingest
         assert result["lancedb_size_bytes"] >= 0
+        # Chunk count is 0 before any indexing
+        assert result["lancedb_chunk_count"] == 0
+
+    async def test_lancedb_chunk_count_nonzero_after_indexing(self, single_vault):
+        """lancedb_chunk_count reflects the number of indexed chunk rows."""
+        services, config = single_vault
+        await sage_ingest("test_vault", "sample.md", "markdown")
+        await asyncio.sleep(0.5)  # allow indexing to complete
+
+        result = _parse(await sage_vault_stats("test_vault"))
+        assert result["lancedb_chunk_count"] > 0
 
 
 # ---------------------------------------------------------------------------

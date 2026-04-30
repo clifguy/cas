@@ -217,6 +217,16 @@ class LanceDBContentStore(ContentStore):
         table.add(rows)
         self._rebuild_fts(table)
 
+    async def count_chunks(self) -> int:
+        """Return the total number of chunk rows across all documents.
+
+        Returns 0 when the chunks table has not yet been created.
+        """
+        table = self._get_table()
+        if table is None:
+            return 0
+        return table.count_rows()
+
     async def remove_document(self, document_id: str) -> None:
         """Remove all chunks for a document (AD-014, AD-015).
 

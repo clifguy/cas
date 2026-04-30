@@ -394,6 +394,7 @@ class VaultStatsResponse(BaseModel):
     by_edge_type: dict[str, int]
     staging_edge_count: int
     lancedb_size_bytes: int
+    lancedb_chunk_count: int
     sqlite_size_bytes: int
     last_ingestion_at: datetime | None
     health: HealthIndicators

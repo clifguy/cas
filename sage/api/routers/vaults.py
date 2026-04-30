@@ -165,6 +165,8 @@ async def vault_stats(
             if f.is_file():
                 lancedb_size += f.stat().st_size
 
+    lancedb_chunk_count = await services.content_store.count_chunks()
+
     return VaultStatsResponse(
         total_documents=total_documents,
         by_lifecycle_state=by_lifecycle,
@@ -174,6 +176,7 @@ async def vault_stats(
         by_edge_type=by_edge_type,
         staging_edge_count=staging_count,
         lancedb_size_bytes=lancedb_size,
+        lancedb_chunk_count=lancedb_chunk_count,
         sqlite_size_bytes=sqlite_size,
         last_ingestion_at=last_ingestion,
         health=HealthIndicators(

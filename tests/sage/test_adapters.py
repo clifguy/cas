@@ -345,6 +345,39 @@ class TestLanceDBContentStore:
         """AD-099: has_chunks returns False for a non-existent document."""
         assert await content_store.has_chunks("nonexistent_doc_999") is False
 
+    async def test_ad_100_count_chunks_empty_store(self, content_store):
+        """AD-100: count_chunks returns 0 when the chunks table does not yet exist."""
+        assert await content_store.count_chunks() == 0
+
+    async def test_ad_101_count_chunks_reflects_total_rows(
+        self, content_store, embedding_provider
+    ):
+        """AD-101: count_chunks returns the total chunk row count across all documents,
+        and updates correctly after index_chunks and remove_document."""
+        texts_a = ["alpha one", "alpha two", "alpha three"]
+        texts_b = ["beta one", "beta two"]
+        emb_a = await embedding_provider.embed(texts_a)
+        emb_b = await embedding_provider.embed(texts_b)
+
+        await content_store.index_chunks("doc_a", [
+            Chunk("doc_a", "H", texts_a[i], emb_a[i], i) for i in range(3)
+        ])
+        assert await content_store.count_chunks() == 3
+
+        await content_store.index_chunks("doc_b", [
+            Chunk("doc_b", "H", texts_b[i], emb_b[i], i) for i in range(2)
+        ])
+        assert await content_store.count_chunks() == 5
+
+        # Re-indexing the same document_id replaces existing rows (AD-025)
+        await content_store.index_chunks("doc_a", [
+            Chunk("doc_a", "H", "alpha solo", emb_a[0], 0),
+        ])
+        assert await content_store.count_chunks() == 3  # 1 (doc_a) + 2 (doc_b)
+
+        await content_store.remove_document("doc_a")
+        assert await content_store.count_chunks() == 2
+
     async def test_ad_016_semantic_search_ranking(
         self, populated_store, embedding_provider
     ):

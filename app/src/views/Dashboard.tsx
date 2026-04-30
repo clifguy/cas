@@ -10,6 +10,10 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+function formatCount(n: number): string {
+  return n.toLocaleString();
+}
+
 export default function Dashboard() {
   const { vaultId, vault } = useOutletContext<VaultContext>();
   const [stats, setStats] = useState<VaultStats | null>(null);
@@ -63,7 +67,8 @@ export default function Dashboard() {
 
         {/* Storage */}
         <StatGroupLabel>Storage</StatGroupLabel>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <CountCard value={formatCount(stats.lancedb_chunk_count)} label="LanceDB Chunks" />
           <CountCard value={formatBytes(stats.lancedb_size_bytes)} label="LanceDB" />
           <CountCard value={formatBytes(stats.sqlite_size_bytes)} label="SQLite" />
           <CountCard

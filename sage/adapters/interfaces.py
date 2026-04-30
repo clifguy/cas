@@ -116,6 +116,13 @@ class ContentStore(ABC):
         Used by export_projection to reconstruct the projection text.
         """
 
+    @abstractmethod
+    async def count_chunks(self) -> int:
+        """Return the total number of chunk rows across all documents.
+
+        Returns 0 when the underlying table has not been created yet.
+        """
+
 
 class EmbeddingProvider(ABC):
     """Interface for text embedding (sentence-transformers in production)."""

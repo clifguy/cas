@@ -134,6 +134,10 @@ class StubContentStore(ContentStore):
         chunks = self._store.get(document_id, [])
         return sorted(chunks, key=lambda c: c.chunk_index)
 
+    async def count_chunks(self) -> int:
+        """Return the total number of chunk rows across all documents."""
+        return sum(len(chunks) for chunks in self._store.values())
+
 
 def _chunk_matches_filters(
     chunk: Chunk, filters: dict[str, str | list[str]] | None,
