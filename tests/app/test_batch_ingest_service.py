@@ -76,6 +76,7 @@ def _make_services(
     services.graph_store.list_all_documents = AsyncMock(
         return_value=existing_docs or []
     )
+    services.graph_store.get_edges_by_source = AsyncMock(return_value=[])
 
     # Ingestion service -- default: succeed and return new doc
     call_count = 0
@@ -711,3 +712,356 @@ class TestCallerIntegration:
         assert result.docs_new == 3
         assert result.metadata_pending == 2
         assert result.to_dict()["metadata_pending"] == 2
+
+
+# ---------------------------------------------------------------------------
+# 8. Chain Repair (TEST-CR-001 through TEST-CR-005)
+# ---------------------------------------------------------------------------
+#
+# Out-of-order ingestion of versioned documents must produce a correct linear
+# supersedes chain. When a new version slots between existing chain members,
+# the engine removes incorrect predecessor edges and inserts the right ones.
+# Provenance gate: auto-removal only when removed edges were created by
+# version_chain inference; otherwise the entire group's repair is staged.
+
+
+from sage.models.schemas import Edge, LinkRequest
+
+
+VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
+
+
+def _make_edge(
+    edge_id: str,
+    source_id: str,
+    target_id: str,
+    *,
+    edge_type: EdgeType = EdgeType.SUPERSEDES,
+    rationale: str | None = None,
+) -> Edge:
+    """Build a minimal Edge for in-memory mock graph state."""
+    return Edge(
+        id=edge_id,
+        source_id=source_id,
+        target_id=target_id,
+        edge_type=edge_type,
+        created_at=datetime.now(timezone.utc),
+        rationale=rationale,
+    )
+
+
+class _MockGraphState:
+    """In-memory graph state for chain-repair tests.
+
+    Tracks documents and edges, and exposes async methods that match the
+    GraphStore / GraphOpsService surfaces the chain-repair planner uses.
+    """
+
+    def __init__(
+        self,
+        docs: list[Document],
+        edges: list[Edge],
+    ):
+        self.docs: dict[str, Document] = {d.id: d for d in docs}
+        self.edges: dict[str, Edge] = {e.id: e for e in edges}
+        self.removed_edge_ids: list[str] = []
+        self.added_link_requests: list[LinkRequest] = []
+        self._next_edge_seq = 1
+
+    async def list_all_documents(self) -> list[Document]:
+        return list(self.docs.values())
+
+    async def get_edges_by_source(
+        self, source_id: str, edge_type: str | None = None
+    ) -> list[Edge]:
+        return [
+            e for e in self.edges.values()
+            if e.source_id == source_id
+            and (edge_type is None or e.edge_type.value == edge_type)
+        ]
+
+    async def get_edges_by_target(
+        self, target_id: str, edge_type: str | None = None
+    ) -> list[Edge]:
+        return [
+            e for e in self.edges.values()
+            if e.target_id == target_id
+            and (edge_type is None or e.edge_type.value == edge_type)
+        ]
+
+    async def get_edge(self, edge_id: str) -> Edge | None:
+        return self.edges.get(edge_id)
+
+    async def get_document(self, doc_id: str) -> Document | None:
+        return self.docs.get(doc_id)
+
+    async def update_document(self, doc_id: str, fields: dict) -> None:
+        d = self.docs[doc_id]
+        for k, v in fields.items():
+            setattr(d, k, v)
+
+    async def insert_staging_edge(self, staging) -> None:
+        # Tracking only; no real staging in unit tests.
+        if not hasattr(self, "staged_edges"):
+            self.staged_edges = []
+        self.staged_edges.append(staging)
+
+    async def link(self, request: LinkRequest) -> dict:
+        self.added_link_requests.append(request)
+        edge_id = f"edge-new-{self._next_edge_seq}"
+        self._next_edge_seq += 1
+        self.edges[edge_id] = _make_edge(
+            edge_id,
+            request.source_id,
+            request.target_id,
+            edge_type=request.edge_type,
+            rationale=request.rationale,
+        )
+        return {"edge_id": edge_id}
+
+    async def unlink(self, edge_id: str) -> dict:
+        self.removed_edge_ids.append(edge_id)
+        if edge_id in self.edges:
+            del self.edges[edge_id]
+        return {"deleted": True, "edge_id": edge_id}
+
+
+def _make_chain_services(
+    docs: list[Document],
+    edges: list[Edge],
+    *,
+    abstraction_enabled: bool = False,
+) -> tuple[MagicMock, _MockGraphState]:
+    """Build a SAGEServices mock backed by a _MockGraphState."""
+    state = _MockGraphState(docs, edges)
+    services = MagicMock()
+    services.config.abstraction.enabled = abstraction_enabled
+    services.graph_store.list_all_documents = AsyncMock(
+        side_effect=state.list_all_documents
+    )
+    services.graph_store.get_edges_by_source = AsyncMock(
+        side_effect=state.get_edges_by_source
+    )
+    services.graph_store.get_edges_by_target = AsyncMock(
+        side_effect=state.get_edges_by_target
+    )
+    services.graph_store.get_edge = AsyncMock(side_effect=state.get_edge)
+    services.graph_store.get_document = AsyncMock(side_effect=state.get_document)
+    services.graph_store.update_document = AsyncMock(
+        side_effect=state.update_document
+    )
+    services.graph_store.insert_staging_edge = AsyncMock(
+        side_effect=state.insert_staging_edge
+    )
+    services.graph_ops_service.link = AsyncMock(side_effect=state.link)
+    services.graph_ops_service.unlink = AsyncMock(side_effect=state.unlink)
+
+    # Standard ingestion mock: each new file becomes a fresh document.
+    call_count = 0
+
+    async def _ingest(request):
+        nonlocal call_count
+        call_count += 1
+        new_id = f"doc-new-{call_count}"
+        new_doc = _make_document(
+            new_id,
+            title=request.metadata.get("title", "Untitled") if request.metadata else "Untitled",
+            project=request.metadata.get("project") if request.metadata else None,
+            doc_type=request.metadata.get("doc_type") if request.metadata else None,
+            version_label=request.metadata.get("version_label") if request.metadata else None,
+            tags=(request.metadata.get("codes", "").split(",") if request.metadata and request.metadata.get("codes") else []),
+        )
+        state.docs[new_id] = new_doc
+        return IngestResult(document=new_doc, is_new=True)
+
+    services.ingestion_service.ingest = AsyncMock(side_effect=_ingest)
+    return services, state
+
+
+CHAIN_KW = dict(
+    title="Claim-Set",
+    project="PIM",
+    doc_type="patent_draft",
+    codes=["PV06"],
+)
+
+
+class TestChainRepair:
+    """Out-of-order arrival rebuilds correct linear supersedes chains."""
+
+    @pytest.mark.asyncio
+    async def test_cr_001_intermediate_arrival_repairs_chain(self):
+        """v2 arriving after v1/v3 fixes the chain to v1<-v2<-v3."""
+        v1 = _make_document(
+            "v1", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v1",
+            tags=["PV06"], lifecycle_status="archived",
+        )
+        v3 = _make_document(
+            "v3", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v3",
+            tags=["PV06"], lifecycle_status="active",
+        )
+        existing_edge = _make_edge(
+            "e-v3-v1", "v3", "v1",
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        # Two new edges: v3->v2 and v2->v1
+        assert result.edges_created.get("supersedes", 0) == 2
+        # One removal: v3->v1
+        assert result.edges_removed == 1
+        assert "e-v3-v1" in state.removed_edge_ids
+
+        # Surviving edges form the correct chain
+        adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}
+        v2_id = next(d.id for d in state.docs.values() if d.version_label == "v2")
+        assert ("v3", v2_id) in adjacency
+        assert (v2_id, "v1") in adjacency
+        assert ("v3", "v1") not in adjacency
+
+        # Lifecycle: v1 still archived, v2 archived, v3 active
+        assert state.docs["v1"].lifecycle_status == "archived"
+        assert state.docs[v2_id].lifecycle_status == "archived"
+        assert state.docs["v3"].lifecycle_status == "active"
+
+    @pytest.mark.asyncio
+    async def test_cr_002_provenance_gate_stages_when_removed_edge_is_manual(self):
+        """Hand-curated v3->v1 edge is preserved; repair goes to staging."""
+        v1 = _make_document(
+            "v1", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v1",
+            tags=["PV06"], lifecycle_status="archived",
+        )
+        v3 = _make_document(
+            "v3", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v3",
+            tags=["PV06"], lifecycle_status="active",
+        )
+        # Non-version_chain rationale -> manual edge
+        existing_edge = _make_edge(
+            "e-v3-v1", "v3", "v1",
+            rationale="Manually curated by Clif: v3 directly supersedes v1.",
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        # No Tier 1 changes
+        assert result.edges_created.get("supersedes", 0) == 0
+        assert result.edges_removed == 0
+        # Repair lands in staging instead
+        assert result.edges_staged.get("supersedes", 0) >= 2
+        # Existing manual edge untouched
+        assert "e-v3-v1" in state.edges
+        assert state.removed_edge_ids == []
+        # Lifecycle untouched: v2 not auto-archived
+        v2_id = next(d.id for d in state.docs.values() if d.version_label == "v2")
+        assert state.docs[v2_id].lifecycle_status == "active"
+        assert state.docs["v3"].lifecycle_status == "active"
+
+    @pytest.mark.asyncio
+    async def test_cr_003_within_batch_out_of_order_still_correct(self):
+        """Regression guard: [v1, v3, v2] in one batch yields v1<-v2<-v3."""
+        services, state = _make_chain_services([], [])
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[
+                _fd("/tmp/v1.md", version="v1", **CHAIN_KW),
+                _fd("/tmp/v3.md", version="v3", **CHAIN_KW),
+                _fd("/tmp/v2.md", version="v2", **CHAIN_KW),
+            ],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        assert result.edges_created.get("supersedes", 0) == 2
+        assert result.edges_removed == 0
+
+        # Map version labels to assigned doc IDs
+        by_ver = {d.version_label: d.id for d in state.docs.values()}
+        adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}
+        assert (by_ver["v3"], by_ver["v2"]) in adjacency
+        assert (by_ver["v2"], by_ver["v1"]) in adjacency
+        # v1 and v2 archived, v3 active
+        assert state.docs[by_ver["v1"]].lifecycle_status == "archived"
+        assert state.docs[by_ver["v2"]].lifecycle_status == "archived"
+        assert state.docs[by_ver["v3"]].lifecycle_status == "active"
+
+    @pytest.mark.asyncio
+    async def test_cr_004_new_head_arrival_no_removals(self):
+        """v4 onto v1<-v2<-v3 chain adds v3<-v4 with no edge removals."""
+        v1 = _make_document(
+            "v1", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v1",
+            tags=["PV06"], lifecycle_status="archived",
+        )
+        v2 = _make_document(
+            "v2", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v2",
+            tags=["PV06"], lifecycle_status="archived",
+        )
+        v3 = _make_document(
+            "v3", title="Claim-Set", project="PIM",
+            doc_type="patent_draft", version_label="v3",
+            tags=["PV06"], lifecycle_status="active",
+        )
+        e1 = _make_edge(
+            "e-v2-v1", "v2", "v1",
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v2 supersedes v1 (title: Claim-Set)",
+        )
+        e2 = _make_edge(
+            "e-v3-v2", "v3", "v2",
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v2 (title: Claim-Set)",
+        )
+        services, state = _make_chain_services([v1, v2, v3], [e1, e2])
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/v4.md", version="v4", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        assert result.edges_created.get("supersedes", 0) == 1
+        assert result.edges_removed == 0
+        # Original chain edges intact
+        assert "e-v2-v1" in state.edges
+        assert "e-v3-v2" in state.edges
+        # New head linked
+        v4_id = next(d.id for d in state.docs.values() if d.version_label == "v4")
+        adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}
+        assert (v4_id, "v3") in adjacency
+        assert state.docs["v3"].lifecycle_status == "archived"
+        assert state.docs[v4_id].lifecycle_status == "active"
+
+    @pytest.mark.asyncio
+    async def test_cr_005_singleton_arrival_no_chain_no_edges(self):
+        """Empty vault + single v1 = no supersedes edges, no errors."""
+        services, state = _make_chain_services([], [])
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/v1.md", version="v1", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        assert result.edges_created.get("supersedes", 0) == 0
+        assert result.edges_staged.get("supersedes", 0) == 0
+        assert result.edges_removed == 0
+        assert state.removed_edge_ids == []

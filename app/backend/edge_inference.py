@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 
 from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.models.enums import EdgeType
-from sage.models.schemas import LinkRequest, StagingEdge
+from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.graph_ops import GraphOpsService
 from sage.storage.graph_store import GraphStore
 
@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 WORKFLOW_DOC_TYPES = frozenset({
     "checklist", "work_plan", "session_context", "template",
 })
+
+# Rationale prefix marks edges authored by version_chain inference.
+# Provenance check: a chain-repair removal targeting a non-prefixed edge
+# downgrades the entire group's repair to Tier 2 staging.
+VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
+
+
+def _is_version_chain_edge(edge: Edge) -> bool:
+    return (
+        edge.rationale is not None
+        and edge.rationale.startswith(VERSION_CHAIN_RATIONALE_PREFIX)
+    )
 
 
 @dataclass
@@ -51,14 +63,25 @@ class PlannedEdge:
 
 
 @dataclass
+class PlannedEdgeRemoval:
+    edge_id: str
+    source_id: str
+    target_id: str
+    edge_type: EdgeType
+    reason: str
+
+
+@dataclass
 class EdgePlan:
     edges: list[PlannedEdge] = field(default_factory=list)
+    removals: list[PlannedEdgeRemoval] = field(default_factory=list)
 
 
 @dataclass
 class EdgeResult:
     edges_created: dict[str, int] = field(default_factory=dict)
     edges_staged: dict[str, int] = field(default_factory=dict)
+    edges_removed: int = 0
     edges_dropped: int = 0
     warnings: list[dict[str, str]] = field(default_factory=list)
 
@@ -78,50 +101,78 @@ class EdgeInferenceEngine:
         self,
         scan_items: list[InferenceItem],
         existing_items: list[InferenceItem],
+        existing_supersedes_edges: list[Edge] | None = None,
     ) -> EdgePlan:
-        """Phase 1: build edge plan from full manifest + existing vault docs.
+        """Phase 1: build edge plan from full manifest + existing vault state.
 
         Args:
             scan_items: New files from the scan (ref = file_path).
-            existing_items: Existing vault documents (ref = document_id).
+            existing_items: Existing vault documents that may participate in
+                a chain. Includes both active heads and archived predecessors
+                reachable via supersedes edges from any active head whose
+                chain identity matches a new arrival.
+            existing_supersedes_edges: Existing supersedes edges between
+                members of any chain identity that has a new arrival. Used
+                to diff existing vs desired chain and emit removals.
         """
         all_items = scan_items + existing_items
         plan = EdgePlan()
 
-        plan.edges.extend(self._version_chain(all_items))
+        chain_edges, chain_removals = self._chain_repair_plan(
+            all_items, existing_supersedes_edges or []
+        )
+        plan.edges.extend(chain_edges)
+        plan.removals.extend(chain_removals)
         plan.edges.extend(self._filename_code_match(all_items))
 
         return plan
 
-    def _version_chain(self, items: list[InferenceItem]) -> list[PlannedEdge]:
-        """Version chain inference (Tier 1, supersedes).
+    def _chain_repair_plan(
+        self,
+        items: list[InferenceItem],
+        existing_edges: list[Edge],
+    ) -> tuple[list[PlannedEdge], list[PlannedEdgeRemoval]]:
+        """Version chain inference with chain repair (Tier 1, supersedes).
 
-        Groups items by title, project, and doc_type, sorts by normalized
-        version, creates a linear chain: each version supersedes its
-        immediate predecessor. A versionless file in a group with versioned
-        files is treated as the original (sorts before all versions). Items
-        with different doc_types do not chain even if they share a title;
-        items with null doc_type group only with other null-doc_type items.
+        Groups items by title, project, and doc_type. For each group with
+        at least one new arrival and one versioned item, computes the
+        desired linear supersedes chain (sorted by normalized version),
+        diffs against existing supersedes edges between group members,
+        and emits adds + removals.
+
+        Provenance gate: if any edge in a group's removal set has a
+        non-version_chain rationale, the entire group's repair is downgraded
+        to Tier 2 staging and no removals are emitted -- a human reviews
+        before any hand-curated edge is replaced.
+
+        A versionless file in a group with versioned files is treated as
+        the original (sorts before all versions). Items with different
+        doc_types do not chain even if they share a title; items with null
+        doc_type group only with other null-doc_type items.
         """
-        edges: list[PlannedEdge] = []
-
-        # Group by (title, project, doc_type) -- version chain identity
+        # Group by (title, project, doc_type) -- chain identity
         groups: dict[tuple[str, str | None, str | None], list[InferenceItem]] = {}
         for item in items:
             key = (item.parsed.title.lower(), item.parsed.project, item.parsed.doc_type)
             groups.setdefault(key, []).append(item)
 
+        # Index existing edges by (source_id, target_id) for fast diff
+        existing_by_pair: dict[tuple[str, str], Edge] = {
+            (e.source_id, e.target_id): e for e in existing_edges
+        }
+
+        added: list[PlannedEdge] = []
+        removed: list[PlannedEdgeRemoval] = []
+
         for _key, group in groups.items():
-            # Need at least one versioned item to form a chain
+            if not any(not it.is_existing for it in group):
+                continue  # nothing new -- skip
             versioned = [it for it in group if it.parsed.version is not None]
             if not versioned:
-                continue  # all versionless, nothing to chain
-
+                continue  # all versionless
             if len(group) < 2:
-                continue  # EI-017: need at least 2 items
+                continue
 
-            # Sort by normalized version ascending.
-            # None version -> (0,0,0), sorts before any real version.
             sorted_group = sorted(
                 group,
                 key=lambda it: normalize_version(it.parsed.version)
@@ -129,30 +180,78 @@ class EdgeInferenceEngine:
                 else (0, 0, 0),
             )
 
-            # Linear chain: each version supersedes its immediate predecessor.
-            # Only plan edges where at least one side is new -- existing-to-
-            # existing edges are already in the graph.
+            # Desired chain: each version supersedes its immediate predecessor.
+            desired_pairs: set[tuple[str, str]] = set()
+            desired_edge_specs: list[tuple[InferenceItem, InferenceItem]] = []
             for i in range(1, len(sorted_group)):
                 newer = sorted_group[i]
                 older = sorted_group[i - 1]
+                desired_pairs.add((newer.ref, older.ref))
+                desired_edge_specs.append((newer, older))
+
+            # Existing edges restricted to this group's members
+            group_member_ids = {it.ref for it in group if it.is_existing}
+            group_existing_edges = [
+                e for e in existing_edges
+                if e.source_id in group_member_ids
+                and e.target_id in group_member_ids
+            ]
+
+            # Diff
+            group_removals: list[PlannedEdgeRemoval] = []
+            for e in group_existing_edges:
+                if (e.source_id, e.target_id) not in desired_pairs:
+                    group_removals.append(PlannedEdgeRemoval(
+                        edge_id=e.id,
+                        source_id=e.source_id,
+                        target_id=e.target_id,
+                        edge_type=e.edge_type,
+                        reason=(
+                            f"chain_repair: {e.source_id} -> {e.target_id} "
+                            "no longer in desired chain"
+                        ),
+                    ))
+
+            group_adds: list[PlannedEdge] = []
+            for newer, older in desired_edge_specs:
+                if (newer.ref, older.ref) in existing_by_pair:
+                    continue  # already exists in correct position
                 if newer.is_existing and older.is_existing:
-                    continue
+                    # Both existing but no edge between them -- emit add
+                    pass
                 newer_label = newer.parsed.version or "(original)"
                 older_label = older.parsed.version or "(original)"
-                edges.append(PlannedEdge(
+                group_adds.append(PlannedEdge(
                     source_ref=newer.ref,
                     target_ref=older.ref,
                     edge_type=EdgeType.SUPERSEDES,
                     tier=1,
                     method="version_chain",
                     evidence=(
+                        f"{VERSION_CHAIN_RATIONALE_PREFIX} "
                         f"{newer_label} supersedes "
                         f"{older_label} "
                         f"(title: {newer.parsed.title})"
                     ),
                 ))
 
-        return edges
+            # Provenance gate: if any to-be-removed edge isn't version_chain,
+            # downgrade the entire group's plan (adds + removals) to Tier 2.
+            if group_removals and not all(
+                _is_version_chain_edge(existing_by_pair[(r.source_id, r.target_id)])
+                for r in group_removals
+            ):
+                for add in group_adds:
+                    add.tier = 2
+                # Drop removals -- staging only proposes the new edges; the
+                # human reviewer decides what to do with the conflicting
+                # existing edges.
+                added.extend(group_adds)
+            else:
+                added.extend(group_adds)
+                removed.extend(group_removals)
+
+        return added, removed
 
     def _filename_code_match(
         self, items: list[InferenceItem]
@@ -209,14 +308,36 @@ async def resolve_and_execute(
 ) -> EdgeResult:
     """Phase 2: resolve file paths to document IDs and execute edges.
 
+    Removals run first so chain-repair leaves no transient invalid state
+    visible to the lifecycle side effects fired during the add pass.
+
     Args:
         edge_plan: The pre-ingest edge plan.
         path_to_id: Mapping from file_path to SAGE document_id for
             successfully ingested files.
         graph_store: For staging edge insertion.
-        graph_ops_service: For Tier 1 link() calls.
+        graph_ops_service: For Tier 1 link() and unlink() calls.
     """
     result = EdgeResult()
+
+    # Removals first (chain-repair: drop incorrect predecessor edges before
+    # adding correct ones).
+    for removal in edge_plan.removals:
+        try:
+            await graph_ops_service.unlink(removal.edge_id)
+            result.edges_removed += 1
+        except Exception as exc:
+            logger.exception(
+                "Failed to remove edge %s (%s -> %s)",
+                removal.edge_id, removal.source_id, removal.target_id,
+            )
+            result.warnings.append({
+                "source": removal.source_id,
+                "target": removal.target_id,
+                "edge_type": removal.edge_type.value,
+                "reason": "edge_removal_failed",
+                "detail": str(exc),
+            })
 
     for planned in edge_plan.edges:
         source_id = path_to_id.get(planned.source_ref, planned.source_ref)

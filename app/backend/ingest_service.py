@@ -67,6 +67,7 @@ class IngestSummary:
     abstracts_deferred: int = 0
     edges_created: dict[str, int] = field(default_factory=dict)
     edges_staged: dict[str, int] = field(default_factory=dict)
+    edges_removed: int = 0
     edges_dropped: int = 0
     edge_warnings: list[dict[str, str]] = field(default_factory=list)
     error_count: int = 0
@@ -82,6 +83,7 @@ class IngestSummary:
             "metadata_pending": self.metadata_pending,
             "edges_created": self.edges_created,
             "edges_staged": self.edges_staged,
+            "edges_removed": self.edges_removed,
             "edges_dropped": self.edges_dropped,
             "abstracts_generated": self.abstracts_generated,
             "abstracts_deferred": self.abstracts_deferred,
@@ -192,6 +194,7 @@ class BatchIngestService:
             )
             summary.edges_created = edge_result.edges_created
             summary.edges_staged = edge_result.edges_staged
+            summary.edges_removed = edge_result.edges_removed
             summary.edges_dropped = edge_result.edges_dropped
             summary.edge_warnings = edge_result.warnings
 
@@ -202,7 +205,12 @@ class BatchIngestService:
         files: list[FileDescriptor],
         vault_services: SAGEServices,
     ) -> EdgePlan:
-        """Phase 1: build edge plan from file descriptors + existing vault docs."""
+        """Phase 1: build edge plan from file descriptors + existing vault docs.
+
+        Includes archived predecessors of any chain whose identity matches a
+        new arrival, so chain-repair can diff the full historical chain
+        against the desired chain.
+        """
         engine = EdgeInferenceEngine()
 
         # Build scan items from file descriptors
@@ -226,27 +234,63 @@ class BatchIngestService:
                 parsed=parsed,
             ))
 
-        # Fetch existing vault documents (active only -- archived/completed
-        # documents already have their place in the graph and should not
-        # participate in automatic edge inference).
+        # Chain identities present in this batch (only versioned items
+        # participate in chain repair).
+        scan_chain_keys: set[tuple[str, str | None, str | None]] = {
+            (it.parsed.title.lower(), it.parsed.project, it.parsed.doc_type)
+            for it in scan_items
+            if it.parsed.version is not None
+        }
+
+        # Fetch all docs once. Active docs always participate. Archived docs
+        # participate only when they share a chain identity with a new
+        # arrival (so chain-repair can see the full historical chain).
         existing_items: list[InferenceItem] = []
+        existing_chain_doc_ids: list[str] = []
         all_docs = await vault_services.graph_store.list_all_documents()
         for doc in all_docs:
-            if doc.lifecycle_status != "active":
-                continue
-            existing_items.append(InferenceItem(
-                ref=doc.id,
-                is_existing=True,
-                parsed=ParsedMetadata(
-                    title=doc.title,
-                    project=doc.project,
-                    codes=doc.tags,
-                    version=doc.version_label,
-                    doc_type=doc.doc_type,
-                ),
-            ))
+            doc_chain_key = (
+                doc.title.lower() if doc.title else "",
+                doc.project,
+                doc.doc_type,
+            )
+            in_repair_scope = doc_chain_key in scan_chain_keys
+            if doc.lifecycle_status == "active" or in_repair_scope:
+                existing_items.append(InferenceItem(
+                    ref=doc.id,
+                    is_existing=True,
+                    parsed=ParsedMetadata(
+                        title=doc.title,
+                        project=doc.project,
+                        codes=doc.tags,
+                        version=doc.version_label,
+                        doc_type=doc.doc_type,
+                    ),
+                ))
+                if in_repair_scope:
+                    existing_chain_doc_ids.append(doc.id)
 
-        return engine.build_edge_plan(scan_items, existing_items)
+        # Fetch existing supersedes edges between chain-scope members so the
+        # engine can diff existing vs desired chain.
+        existing_supersedes_edges = []
+        seen_edge_ids: set[str] = set()
+        chain_id_set = set(existing_chain_doc_ids)
+        for doc_id in existing_chain_doc_ids:
+            edges = await vault_services.graph_store.get_edges_by_source(
+                doc_id, "supersedes"
+            )
+            for e in edges:
+                if e.id in seen_edge_ids:
+                    continue
+                if e.target_id in chain_id_set:
+                    existing_supersedes_edges.append(e)
+                    seen_edge_ids.add(e.id)
+
+        return engine.build_edge_plan(
+            scan_items,
+            existing_items,
+            existing_supersedes_edges=existing_supersedes_edges,
+        )
 
 
 # ---------------------------------------------------------------------------
