@@ -15,7 +15,11 @@
 # are not defined here.
 #
 # Architectural invariants enforced by this API:
-#   - No-delete invariant: no DELETE endpoints exist for documents or edges.
+#   - No-delete invariant: documents are never deleted (SAGE Architecture
+#     Reference §6.4); supersession and archival are the lifecycle
+#     mechanisms. Edges may be removed via DELETE /sage_vaults/{vault_id}/
+#     edges/{edge_id} (unlink) since the no-delete invariant applies to
+#     documents only.
 #   - Vault isolation: every endpoint is scoped to a single vault.
 #   - Named operations: set_lifecycle and update_metadata are separate
 #     endpoints per CAS-ADR-014.
@@ -815,6 +819,513 @@ paths:
                     description: Number of symlink directories created or updated.
         "404":
           description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Vault Management
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults:
+    get:
+      operationId: list_vaults
+      summary: List all vaults registered with the running SAGE instance.
+      description: >-
+        Returns a VaultSummary for every vault in the in-memory registry.
+        Each summary includes the vault's identity, storage root,
+        configured doc types, lifecycle states, registered source
+        adapters, and the set of distinct project identifiers observed
+        in the vault's documents.
+
+
+        Used by the CAS Application to populate the vault selector and
+        to drive vault-scoped UI menus (doc_type pickers, lifecycle
+        filter dropdowns, adapter registry table).
+      tags: [Vault Management]
+      responses:
+        "200":
+          description: List of vaults (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/VaultSummary"
+
+    post:
+      operationId: create_vault
+      summary: Create a new vault from a full configuration object.
+      description: >-
+        Validates the supplied configuration against the vault config
+        schema (docs/fs/sage/vault_config.schema.json), creates the
+        vault directory hierarchy, writes the YAML config to disk,
+        initializes services, registers the vault in the running
+        instance, and bootstraps the owner user.
+
+
+        Vault id collisions return 409. Validation failures return 400
+        with a list of failed schema constraints.
+      tags: [Vault Management]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVaultRequest"
+      responses:
+        "201":
+          description: Vault created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VaultSummary"
+        "400":
+          description: Configuration failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Vault id already exists in the registry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/stats:
+    get:
+      operationId: vault_stats
+      summary: Return Dashboard statistics and health indicators for a vault.
+      description: >-
+        Aggregates document, edge, storage, and pipeline-status counts
+        from the graph store and content store. Used by the CAS
+        Application Dashboard view.
+
+
+        Storage figures: lancedb_size_bytes is computed by walking the
+        on-disk LanceDB directory; lancedb_chunk_count is the row count
+        from the chunks table. sqlite_size_bytes covers the graph.db
+        file (and WAL/SHM siblings when present in the MCP variant).
+
+
+        Health indicators include pending metadata reviews, pending
+        edge reviews, deferred abstracts (null when abstraction is
+        disabled in the vault config), and failed ingestions.
+      tags: [Vault Management]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Vault statistics and health indicators.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VaultStatsResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/config:
+    get:
+      operationId: get_vault_config
+      summary: Return the full vault configuration.
+      description: >-
+        Returns the configuration as a JSON object conforming to
+        vault_config.schema.json (docs/fs/sage/). Section structure
+        follows the schema: vault, document_types, lifecycle,
+        source_adapters, metadata_extraction, edge_inference,
+        abstraction, access_control_defaults, retrieval_health.
+      tags: [Vault Management]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Vault configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: >-
+                  Vault configuration object. Structure defined by
+                  docs/fs/sage/vault_config.schema.json.
+                additionalProperties: true
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    put:
+      operationId: update_vault_config
+      summary: Update vault configuration at the section level.
+      description: >-
+        Each top-level section provided in the request body replaces
+        the current section wholesale; omitted sections are preserved
+        unchanged. Partial-section merges are not supported -- callers
+        must supply the complete section.
+
+
+        After validation, the YAML file is rewritten and the vault is
+        reloaded in the registry (services reinitialized against the
+        new config).
+
+
+        Destructive changes (removing a doc_type or lifecycle state
+        that still has documents attached) are rejected with 409 and a
+        warnings list unless the caller passes ?force=true.
+      tags: [Vault Management]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - name: force
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            When true, proceed with destructive changes; warnings are
+            returned in the response. When false (default), destructive
+            changes return 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateVaultConfigRequest"
+      responses:
+        "200":
+          description: Configuration updated and vault reloaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateVaultConfigResponse"
+        "400":
+          description: vault.id mutation attempted, or merged config failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Destructive change without force=true.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/hash-check:
+    post:
+      operationId: hash_check
+      summary: Bulk hash existence check against the graph store.
+      description: >-
+        For each supplied SHA-256 hash, returns whether it matches an
+        existing document and, if so, the document id. Used during the
+        directory scan flow to differentiate new files from
+        already-ingested ones before showing per-file ingestion
+        decisions to the user.
+      tags: [Vault Management]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HashCheckRequest"
+      responses:
+        "200":
+          description: Per-hash existence map.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/HashCheckMatch"
+                description: Map of SHA-256 hash to existence record.
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Staging Edges (Tier 2 review queue)
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/staging-edges:
+    get:
+      operationId: list_staging_edges
+      summary: List Tier 2 inferred edges awaiting review.
+      description: >-
+        Returns staging edges produced by post-ingest edge inference
+        (filename_code_match and other Tier 2 strategies). These are
+        proposed but not yet committed to the production edge table;
+        the user reviews them in the Edge Review queue and either
+        confirms (promote to production) or dismisses (delete).
+      tags: [Staging Edges]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Staging edges.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StagingEdge"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/staging-edges/{edge_id}/confirm:
+    post:
+      operationId: confirm_staging_edge
+      summary: Confirm a staging edge by promoting it to a production edge.
+      description: >-
+        Inserts a production Edge with a fresh id mirroring the staging
+        edge's source/target/edge_type, copies inference_evidence into
+        the new edge's rationale, then deletes the staging edge.
+      tags: [Staging Edges]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - name: edge_id
+          in: path
+          required: true
+          description: Staging edge id to confirm.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Staging edge confirmed; production edge created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagingEdgeConfirmResponse"
+        "404":
+          description: Staging edge or vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/staging-edges/{edge_id}/dismiss:
+    post:
+      operationId: dismiss_staging_edge
+      summary: Dismiss a staging edge by deleting it without promotion.
+      description: >-
+        Deletes the staging edge from the staging table. No production
+        edge is created. Used when the inferred edge is incorrect or
+        not useful.
+      tags: [Staging Edges]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - name: edge_id
+          in: path
+          required: true
+          description: Staging edge id to dismiss.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Staging edge dismissed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StagingEdgeDismissResponse"
+        "404":
+          description: Staging edge or vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Pending Metadata
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/pending-metadata:
+    get:
+      operationId: list_pending_metadata
+      summary: List documents whose extracted metadata is unconfirmed.
+      description: >-
+        Returns documents with metadata_confirmed=False. Each item
+        includes the full Document record plus a per-field
+        ExtractedField annotation (value + source: "filename",
+        "content", or "default"; optionally an alt_value/alt_source
+        for fields with a secondary candidate, e.g. title from content
+        with filename as alternative).
+
+
+        Used by the Metadata Review queue to drive the per-document
+        review workflow.
+      tags: [Pending Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Documents awaiting metadata confirmation.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingMetadataItem"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Document Operations (read endpoints + local OS open)
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/documents/{document_id}/open:
+    post:
+      operationId: open_document
+      summary: Open a document's source file using the local OS file association.
+      description: >-
+        Local-only convenience endpoint. Invokes the host OS opener
+        (open on macOS, xdg-open on Linux, os.startfile on Windows)
+        fire-and-forget. If CAS is ever deployed beyond localhost,
+        this endpoint must be gated behind a loopback check or removed.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Open command dispatched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenDocumentResponse"
+        "404":
+          description: Document, vault, or backing source file not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/documents/{document_id}/projection:
+    get:
+      operationId: read_projection
+      summary: Return a document's full projection text.
+      description: >-
+        Reassembles the document projection (canonical text used during
+        ingestion) and returns it as a single string alongside a
+        metadata header. Equivalent to uploading the document into the
+        caller's context. Useful for agents that need the full document
+        in one read instead of stitching chunks from a discover call.
+      tags: [Utilities]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Projection text and metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadProjectionResponse"
+        "404":
+          description: Document, vault, or projection not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/documents/{document_id}/section/{heading_path}:
+    get:
+      operationId: read_section
+      summary: Return a document section by heading path prefix.
+      description: >-
+        Returns the concatenated text of all chunks whose heading_path
+        matches the supplied prefix exactly or descends from it. The
+        heading_path uses " > " as a separator (URL-encoded) and is
+        captured as a path parameter, so nested heading paths with
+        slashes are not supported.
+      tags: [Utilities]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+        - name: heading_path
+          in: path
+          required: true
+          description: >-
+            Heading path prefix (e.g. "Methods" or
+            "Methods > Synchronization"). Matched as exact or
+            descendant.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Section text and chunk count.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadSectionResponse"
+        "404":
+          description: Document, vault, or matching section not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Edge Deletion (unlink)
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/edges/{edge_id}:
+    delete:
+      operationId: unlink
+      summary: Remove an edge from the graph.
+      description: >-
+        Deletes the specified edge. Documents are never deleted (per
+        the no-delete invariant in SAGE Architecture Reference §6.4),
+        but edges may be deleted directly when the relationship they
+        record is no longer correct.
+
+
+        Idempotent in spirit: deleting a non-existent edge returns 404.
+        After deletion, traversal results no longer include the edge,
+        and dependent operations (chain walks, precondition checks)
+        proceed as if the edge had never existed.
+      tags: [Graph]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - name: edge_id
+          in: path
+          required: true
+          description: Edge id to delete.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Edge deleted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnlinkResponse"
+        "404":
+          description: Edge or vault not found.
           content:
             application/json:
               schema:
@@ -2069,6 +2580,426 @@ components:
             outside the assertion's top-k threshold.
 
     # -------------------------------------------------------------------------
+    # Vault Listing and Statistics
+    # -------------------------------------------------------------------------
+
+    VaultDocTypeEntry:
+      type: object
+      required: [value, label]
+      properties:
+        value:
+          type: string
+          description: Doc type identifier (e.g. "patent_draft").
+        label:
+          type: string
+          description: Human-readable label for UI display.
+
+    VaultLifecycleState:
+      type: object
+      required: [value, label, is_terminal]
+      properties:
+        value:
+          type: string
+        label:
+          type: string
+        is_terminal:
+          type: boolean
+          description: Terminal states cannot be transitioned out of.
+
+    VaultAdapterInfo:
+      type: object
+      required: [source_type, enabled, extensions]
+      properties:
+        source_type:
+          $ref: "#/components/schemas/SourceType"
+        enabled:
+          type: boolean
+          description: >-
+            Whether the adapter is enabled in the vault config. Disabled
+            adapters surface in scan results as status "adapter_disabled".
+        extensions:
+          type: array
+          items:
+            type: string
+          description: File extensions handled by this adapter (e.g. [".md", ".markdown"]).
+
+    VaultSummary:
+      type: object
+      required: [id, name, storage_root]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        storage_root:
+          type: string
+          description: Path to the vault's source-file storage root.
+        doc_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/VaultDocTypeEntry"
+        lifecycle_states:
+          type: array
+          items:
+            $ref: "#/components/schemas/VaultLifecycleState"
+        adapters:
+          type: array
+          items:
+            $ref: "#/components/schemas/VaultAdapterInfo"
+        projects:
+          type: array
+          items:
+            type: string
+          description: >-
+            Distinct project identifiers observed across the vault's
+            documents. Derived from the project metadata field at
+            response time.
+
+    HealthIndicators:
+      type: object
+      required:
+        - pending_metadata_count
+        - pending_edge_count
+        - failed_ingestion_count
+      properties:
+        pending_metadata_count:
+          type: integer
+          description: Documents whose extracted metadata is unconfirmed.
+        pending_edge_count:
+          type: integer
+          description: Tier 2 staging edges awaiting review.
+        deferred_abstract_count:
+          type: integer
+          nullable: true
+          description: >-
+            Documents with pipeline_status=abstraction_skipped. Null when
+            abstraction is disabled in the vault config.
+        failed_ingestion_count:
+          type: integer
+          description: Documents with pipeline_status=failed.
+
+    VaultStatsResponse:
+      type: object
+      required:
+        - total_documents
+        - by_lifecycle_state
+        - by_doc_type
+        - by_source_adapter
+        - total_edges
+        - by_edge_type
+        - staging_edge_count
+        - lancedb_size_bytes
+        - lancedb_chunk_count
+        - sqlite_size_bytes
+        - health
+      properties:
+        total_documents:
+          type: integer
+        by_lifecycle_state:
+          type: object
+          additionalProperties:
+            type: integer
+        by_doc_type:
+          type: object
+          additionalProperties:
+            type: integer
+        by_source_adapter:
+          type: object
+          additionalProperties:
+            type: integer
+        total_edges:
+          type: integer
+        by_edge_type:
+          type: object
+          additionalProperties:
+            type: integer
+        staging_edge_count:
+          type: integer
+        lancedb_size_bytes:
+          type: integer
+          description: On-disk size of the LanceDB directory in bytes.
+        lancedb_chunk_count:
+          type: integer
+          description: Total chunk row count across all documents.
+        sqlite_size_bytes:
+          type: integer
+          description: Size of the graph.db SQLite file in bytes.
+        last_ingestion_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Timestamp of the most recent successful ingestion, if any.
+        health:
+          $ref: "#/components/schemas/HealthIndicators"
+
+    # -------------------------------------------------------------------------
+    # Vault Configuration
+    # -------------------------------------------------------------------------
+
+    CreateVaultRequest:
+      type: object
+      required: [config]
+      properties:
+        config:
+          type: object
+          description: >-
+            Full vault configuration object. Structure defined by
+            docs/fs/sage/vault_config.schema.json.
+          additionalProperties: true
+
+    UpdateVaultConfigRequest:
+      type: object
+      description: >-
+        Section-level config update. Each provided top-level section
+        replaces the current section wholesale; omitted sections are
+        preserved unchanged. Section structure follows
+        docs/fs/sage/vault_config.schema.json.
+      properties:
+        vault:
+          type: object
+          nullable: true
+          additionalProperties: true
+        document_types:
+          type: object
+          nullable: true
+          additionalProperties: true
+        lifecycle:
+          type: object
+          nullable: true
+          additionalProperties: true
+        source_adapters:
+          type: object
+          nullable: true
+          additionalProperties: true
+        metadata_extraction:
+          type: object
+          nullable: true
+          additionalProperties: true
+        edge_inference:
+          type: object
+          nullable: true
+          additionalProperties: true
+        abstraction:
+          type: object
+          nullable: true
+          additionalProperties: true
+        access_control_defaults:
+          type: object
+          nullable: true
+          additionalProperties: true
+        retrieval_health:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    UpdateVaultConfigResponse:
+      type: object
+      required: [status, vault_id, warnings]
+      properties:
+        status:
+          type: string
+          enum: [updated]
+        vault_id:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Destructive-change warnings (only populated when force=true
+            was used to override 409 rejection).
+
+    # -------------------------------------------------------------------------
+    # Hash Check
+    # -------------------------------------------------------------------------
+
+    HashCheckRequest:
+      type: object
+      required: [hashes]
+      properties:
+        hashes:
+          type: array
+          items:
+            type: string
+          description: SHA-256 hex digests to check for existence.
+
+    HashCheckMatch:
+      type: object
+      required: [exists]
+      properties:
+        exists:
+          type: boolean
+        document_id:
+          type: string
+          nullable: true
+          description: Document id when exists=true; null otherwise.
+
+    # -------------------------------------------------------------------------
+    # Staging Edges
+    # -------------------------------------------------------------------------
+
+    StagingEdge:
+      type: object
+      required: [id, source_id, target_id, edge_type, inference_evidence, created_at]
+      properties:
+        id:
+          type: string
+        source_id:
+          type: string
+        target_id:
+          type: string
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+        inference_evidence:
+          type: string
+          description: >-
+            Free-text rationale produced by the inference strategy that
+            proposed this edge (e.g. "filename code 'PV07' matches
+            covered document").
+        confidence_tier:
+          type: integer
+          default: 2
+          description: Inference tier (Tier 2 = staged for review).
+        created_at:
+          type: string
+          format: date-time
+
+    StagingEdgeConfirmResponse:
+      type: object
+      required: [confirmed, staging_edge_id, production_edge_id]
+      properties:
+        confirmed:
+          type: boolean
+          enum: [true]
+        staging_edge_id:
+          type: string
+          description: Id of the staging edge that was promoted (now deleted).
+        production_edge_id:
+          type: string
+          description: Id of the production edge created.
+
+    StagingEdgeDismissResponse:
+      type: object
+      required: [dismissed, staging_edge_id]
+      properties:
+        dismissed:
+          type: boolean
+          enum: [true]
+        staging_edge_id:
+          type: string
+
+    # -------------------------------------------------------------------------
+    # Pending Metadata
+    # -------------------------------------------------------------------------
+
+    ExtractedField:
+      type: object
+      required: [source]
+      properties:
+        value:
+          type: string
+          nullable: true
+          description: The extracted value, or null if unavailable.
+        source:
+          type: string
+          enum: [filename, content, default]
+          description: How this field was derived.
+        alt_value:
+          type: string
+          nullable: true
+          description: Optional alternative candidate value.
+        alt_source:
+          type: string
+          nullable: true
+          description: Source label for alt_value.
+
+    PendingMetadataItem:
+      type: object
+      required: [document, extracted_fields]
+      properties:
+        document:
+          $ref: "#/components/schemas/Document"
+        extracted_fields:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ExtractedField"
+          description: >-
+            Per-field annotation. Keys include "title", "doc_type",
+            "project", "tags", "document_date" depending on which
+            fields were extracted.
+
+    # -------------------------------------------------------------------------
+    # Document Read and OS Open
+    # -------------------------------------------------------------------------
+
+    ReadProjectionResponse:
+      type: object
+      required: [document_id, title, lifecycle_status, source_path, projection_text]
+      properties:
+        document_id:
+          type: string
+        title:
+          type: string
+        version_label:
+          type: string
+          nullable: true
+        lifecycle_status:
+          type: string
+        doc_type:
+          type: string
+          nullable: true
+        source_path:
+          type: string
+        projection_text:
+          type: string
+          description: >-
+            Full canonical projection text reassembled from stored chunks.
+
+    ReadSectionResponse:
+      type: object
+      required: [document_id, title, heading_path, chunk_count, section_text]
+      properties:
+        document_id:
+          type: string
+        title:
+          type: string
+        heading_path:
+          type: string
+        chunk_count:
+          type: integer
+          description: Number of chunks matched by the heading_path prefix.
+        section_text:
+          type: string
+
+    OpenDocumentResponse:
+      type: object
+      required: [opened, path]
+      properties:
+        opened:
+          type: boolean
+          enum: [true]
+        path:
+          type: string
+          description: Absolute filesystem path that was dispatched to the OS opener.
+
+    # -------------------------------------------------------------------------
+    # Unlink
+    # -------------------------------------------------------------------------
+
+    UnlinkResponse:
+      type: object
+      required: [deleted, edge_id]
+      properties:
+        deleted:
+          type: boolean
+          enum: [true]
+        edge_id:
+          type: string
+
+    # -------------------------------------------------------------------------
     # Error Response
     # -------------------------------------------------------------------------
 
@@ -2105,12 +3036,18 @@ tags:
   - name: Document Lifecycle
     description: Lifecycle state transitions (CAS-ADR-014).
   - name: Document Metadata
-    description: Document record access and mutable metadata updates.
+    description: Document record access, mutable metadata updates, and local OS file open.
   - name: Ingestion
     description: Three-stage ingestion pipeline (projection, indexing, abstraction).
   - name: Graph
-    description: Edge creation, graph traversal, and precondition checking.
+    description: Edge creation, deletion, graph traversal, and precondition checking.
   - name: Access Control
     description: User registration and editor-based write control.
   - name: Utilities
-    description: Projection export, retrieval health checks, and filesystem views.
+    description: Projection export, projection/section reads, retrieval health checks, and filesystem views.
+  - name: Vault Management
+    description: Vault listing, creation, statistics, configuration, and bulk hash checks.
+  - name: Staging Edges
+    description: Tier 2 inferred edges awaiting review (list, confirm, dismiss).
+  - name: Pending Metadata
+    description: Documents with unconfirmed extracted metadata.

@@ -1,0 +1,467 @@
+# =============================================================================
+# CAS Application API — OpenAPI Specification
+# =============================================================================
+#
+# Formal Substrate artifact for CAS (Clif's Agentic System).
+# Target path: ~/repos/cas/docs/fs/cas_app_api.openapi.yaml
+#
+# Source authority: CAS Application Spec (docs/ref/2026-04-08_CAS_REF_App-Spec_v0_4.docx).
+#
+# This specification defines the HTTP surface of the CAS Application
+# backend. Routes are mounted under the /app prefix to keep the CAS
+# Application surface architecturally distinct from the SAGE Core API
+# (sage_core_api.openapi.yaml). The two specs are validated together
+# by tests/sage/test_openapi_conformance.py.
+#
+# Scope: workflow tools that wrap SAGE Core operations with UI-oriented
+# behaviors (filename parsing, batch ingestion with edge inference,
+# directory scans). Does NOT define MCP tool schemas; those are derived
+# by the MCP adapter layer.
+#
+# Architectural invariants:
+#   - Vault scoping: every mutating operation includes vault_id in
+#     the request body and resolves it against the running registry.
+#   - SSE for long operations: batch ingestion streams progress events
+#     so the UI can render per-file status during the run.
+#
+# Related artifacts:
+#   - SAGE Core API: docs/fs/sage/sage_core_api.openapi.yaml
+#   - Vault config schema: docs/fs/sage/vault_config.schema.json
+# =============================================================================
+
+openapi: "3.1.0"
+
+info:
+  title: CAS Application API
+  version: "0.1.0"
+  description: >-
+    HTTP API for the CAS Application backend. Provides workflow tools
+    (directory scan, batch ingest with two-phase edge inference) that
+    wrap SAGE Core operations behind UI-oriented entry points. Mounted
+    at the /app prefix on the same FastAPI server that hosts the SAGE
+    Core API.
+  contact:
+    name: CAS Project
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:8000
+    description: Phase 1 local development (FastAPI)
+
+# =============================================================================
+# Paths
+# =============================================================================
+
+paths:
+
+  # ---------------------------------------------------------------------------
+  # Directory scan
+  # ---------------------------------------------------------------------------
+
+  /app/scan:
+    post:
+      operationId: app_scan_directory
+      summary: Scan a filesystem directory and return file status with parsed metadata.
+      description: >-
+        Walks a directory (optionally bounded by max_depth), classifies each
+        file by file extension against the vault's registered source
+        adapters, parses filename metadata using the vault's configured
+        filename_extraction rules, hashes file contents with SHA-256, and
+        cross-references against the vault's graph store to determine
+        per-file ingestion status.
+
+
+        Status values returned per file:
+
+        - **new**: hash is unknown to the vault; eligible for ingestion.
+
+        - **modified**: source_path is known but content hash differs.
+
+        - **unchanged**: source_path and content hash both match an
+          existing document.
+
+        - **adapter_disabled**: the file's extension matches a vault
+          adapter that has been disabled in the vault config.
+
+        - **no_adapter**: no registered adapter handles this extension.
+
+
+        Used by the Ingest view to preview a directory before triggering
+        batch ingestion.
+      tags: [Scan]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanRequest"
+      responses:
+        "200":
+          description: Scan results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanResponse"
+        "400":
+          description: Directory not found or not readable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Batch ingest with SSE streaming
+  # ---------------------------------------------------------------------------
+
+  /app/ingest:
+    post:
+      operationId: app_batch_ingest
+      summary: Ingest a batch of files with two-phase edge inference, streamed via Server-Sent Events.
+      description: >-
+        Three-phase pipeline implemented by app.backend.ingest_service.BatchIngestService:
+
+
+        - Phase 1: build the edge plan from the supplied parsed_metadata
+          and the existing vault graph (version_chain Tier 1 supersedes,
+          filename_code_match Tier 2 covers).
+
+        - Phase 2: per-file sequential ingestion with metadata application
+          and per-file error isolation (one failure does not abort the
+          batch).
+
+        - Phase 3: post-ingest edge resolution -- Tier 1 via link(),
+          Tier 2 via staging_edges insertion; edges referencing
+          failed-ingest files are dropped.
+
+
+        Response is `text/event-stream` with two event types:
+
+
+        - `progress` events emitted on file start, completion, and error,
+          carrying file_index, total_files, filename, stage, status, and
+          (on success) document_id or (on error) error message.
+
+        - `summary` event emitted once at the end, carrying the
+          IngestSummary dict (counts of new docs, edges created/staged,
+          metadata pending, abstracts generated/deferred, errors).
+
+
+        See ScanResponse for how files are first classified before being
+        passed to this endpoint.
+      tags: [Ingest]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+      responses:
+        "200":
+          description: Server-Sent Event stream of progress and summary events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  SSE stream. Each event is a `data:` line with a JSON
+                  payload conforming to ProgressEvent or SummaryEvent.
+                  See components.schemas.ProgressEvent and
+                  components.schemas.SummaryEvent.
+        "400":
+          description: No files selected for ingestion.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+# =============================================================================
+# Components
+# =============================================================================
+
+components:
+
+  schemas:
+
+    # -------------------------------------------------------------------------
+    # Scan
+    # -------------------------------------------------------------------------
+
+    ScanRequest:
+      type: object
+      required: [vault_id, directory]
+      properties:
+        vault_id:
+          type: string
+          description: Target vault identifier.
+        directory:
+          type: string
+          description: >-
+            Absolute or user-relative directory path. Surrounding single
+            or double quotes are stripped to tolerate paste-with-quotes
+            from terminals or finder.
+        max_depth:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >-
+            Optional recursion ceiling. 0 = scan the directory root only,
+            1 = root plus one subdirectory level, etc. Null = unlimited
+            depth.
+
+    ScanResponse:
+      type: object
+      required: [files, warnings]
+      properties:
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanResultResponse"
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Non-fatal scan warnings (e.g. unreadable file, malformed
+            symlink). Files that produced warnings may also appear in
+            files[] with status "no_adapter" or be omitted depending on
+            the warning class.
+
+    ScanResultResponse:
+      type: object
+      required: [file_path, file_hash, source_modified_at, parsed_metadata, sage_status]
+      properties:
+        file_path:
+          type: string
+          description: Absolute file path on disk.
+        file_hash:
+          type: string
+          description: SHA-256 hex digest of file contents.
+        source_modified_at:
+          type: string
+          format: date-time
+          description: File mtime (st_mtime) as an ISO 8601 timestamp.
+        adapter:
+          type: string
+          nullable: true
+          description: >-
+            Source adapter name matching this extension, or null when no
+            registered adapter handles the extension.
+        parsed_metadata:
+          $ref: "#/components/schemas/ParsedMetadata"
+        sage_status:
+          type: string
+          enum: [new, modified, unchanged, adapter_disabled, no_adapter]
+          description: Vault-relative status for this file. See operation description.
+
+    ParsedMetadata:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          description: Human-readable title extracted from the filename or content.
+        date:
+          type: string
+          format: date
+          nullable: true
+          description: Document calendar date (YYYY-MM-DD) extracted from filename.
+        project:
+          type: string
+          nullable: true
+          description: >-
+            Project identifier extracted from filename when the vault's
+            project_identifier rule matches a segment.
+        codes:
+          type: array
+          items:
+            type: string
+          description: >-
+            Code identifiers extracted from filename via known_code_patterns
+            (e.g. "PV07", "CD-2"). Order preserved from the filename.
+        version:
+          type: string
+          nullable: true
+          description: Canonical version label (e.g. "v1.2.0", "v3.0").
+        doc_type:
+          type: string
+          nullable: true
+          description: >-
+            Document type resolved by the vault's keyword_to_doc_type and
+            code_to_doc_type rules. Null if no rule matches.
+
+    # -------------------------------------------------------------------------
+    # Ingest
+    # -------------------------------------------------------------------------
+
+    IngestRequest:
+      type: object
+      required: [vault_id, files]
+      properties:
+        vault_id:
+          type: string
+          description: Target vault identifier.
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/IngestFileItem"
+          description: Files to ingest. Empty list returns 400.
+        infer_edges:
+          type: boolean
+          default: true
+          description: >-
+            When true, the post-ingest phase runs version_chain (Tier 1
+            supersedes) and filename_code_match (Tier 2 covers) edge
+            inference. When false, edges are not inferred; ingestion is
+            otherwise unchanged.
+
+    IngestFileItem:
+      type: object
+      required: [file_path, adapter]
+      properties:
+        file_path:
+          type: string
+          description: Absolute file path on disk.
+        adapter:
+          type: string
+          description: Source adapter name to use for this file.
+        parsed_metadata:
+          $ref: "#/components/schemas/ParsedMetadata"
+
+    ProgressEvent:
+      type: object
+      description: >-
+        SSE `progress` event payload. Emitted on file start, completion,
+        and error during the per-file ingestion phase.
+      required: [event_type, file_index, total_files, filename, stage, status]
+      properties:
+        event_type:
+          type: string
+          enum: [progress]
+        file_index:
+          type: integer
+          description: Zero-based index of this file in the batch.
+        total_files:
+          type: integer
+          description: Total file count in the batch.
+        filename:
+          type: string
+        stage:
+          type: string
+          enum: [projection]
+          description: Pipeline stage the event applies to.
+        status:
+          type: string
+          enum: [started, completed, failed]
+        document_id:
+          type: string
+          description: Set when status="completed". Document ID assigned by SAGE.
+        error:
+          type: string
+          description: Set when status="failed". Caller-facing error message.
+
+    SummaryEvent:
+      type: object
+      description: >-
+        SSE `summary` event payload. Emitted once at the end of the
+        batch, after all per-file events. Mirrors the IngestSummary
+        dataclass returned to non-streaming callers (MCP tool).
+      required:
+        - event_type
+        - documents_created
+        - metadata_pending
+        - edges_created
+        - edges_staged
+        - edges_removed
+        - edges_dropped
+        - abstracts_generated
+        - abstracts_deferred
+        - error_count
+        - errors
+      properties:
+        event_type:
+          type: string
+          enum: [summary]
+        documents_created:
+          type: object
+          required: [new, new_version]
+          properties:
+            new:
+              type: integer
+              description: Documents newly inserted this batch.
+            new_version:
+              type: integer
+              description: Documents inserted as a new version of an existing chain.
+        metadata_pending:
+          type: integer
+          description: >-
+            Count of documents in this batch whose extracted metadata is
+            not yet confirmed.
+        edges_created:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Tier 1 edges created in production, keyed by edge type.
+        edges_staged:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Tier 2 edges inserted into staging_edges, keyed by edge type.
+        edges_removed:
+          type: integer
+          description: Pre-existing edges removed during this batch (e.g. supersession cleanup).
+        edges_dropped:
+          type: integer
+          description: Edges in the original plan that were dropped because their referenced files failed to ingest.
+        abstracts_generated:
+          type: integer
+        abstracts_deferred:
+          type: integer
+          description: >-
+            Documents for which abstraction was skipped (empty projection
+            or abstraction disabled in vault config).
+        error_count:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            description: Per-file error record (filename, error message).
+        edge_warnings:
+          type: array
+          items:
+            type: object
+          description: >-
+            Optional edge-inference warnings (e.g. ambiguous version
+            chains). Present only when warnings were produced.
+
+    # -------------------------------------------------------------------------
+    # Common
+    # -------------------------------------------------------------------------
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code (e.g. vault_not_found).
+        message:
+          type: string
+          description: Human-readable error message.
+        detail:
+          type: object
+          nullable: true
+          description: Optional structured error detail.
