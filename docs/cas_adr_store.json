@@ -1305,6 +1305,88 @@
         "SAGE's runtime surface remains request-response. No watcher processes, no per-vault long-running subscriptions, no platform-specific filesystem-event integration code is in scope.",
         "Future reintroduction of file watching, if ever desired, requires a superseding ADR. The constraint is not a deferred design question; it is a positive architectural choice."
       ]
+    },
+    {
+      "id": "ADR-019",
+      "title": "Auto edge inference may delete its own prior edges to repair chains; hand-curated edges are protected by a provenance gate",
+      "status": "proposed",
+      "superseded_by": null,
+      "date": "2026-04-29",
+      "created_by": "Clif + Claude session",
+      "scope": "cross_cutting",
+      "tags": [
+        "sage",
+        "edge-inference",
+        "ingestion",
+        "provenance",
+        "chain-repair",
+        "bulk-ingest"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "CAS Application Spec",
+        "Test Plan"
+      ],
+      "context": "Bulk ingest auto edge inference (app/backend/edge_inference.py) groups documents by (title, project, doc_type) and emits a linear supersedes chain sorted by normalized version. Within a single batch this works regardless of arrival order — the engine sorts before chaining. Across batches it does not. Two reinforcing constraints in the prior implementation produced incorrect chains when a version arrived later than its successor: (1) the engine fetched only active documents from the vault, so a previously-superseded predecessor was invisible to subsequent inference passes; (2) the engine added new edges but never removed stale ones. Concrete failure: ingest v1 in batch 1 (active), ingest v3 in batch 2 (engine sees v1 active, emits v3→v1, archives v1), ingest v2 in batch 3 (engine sees v3 active and v1 archived/hidden, emits v3→v2, archives v2). Result: v3 has two outbound supersedes edges (→ v1 and → v2), the v2→v1 edge is missing, and the chain is forked rather than linear. Fixing this requires the engine to compute the desired chain against the full historical chain (including archived predecessors) and emit edge removals as well as adds. That capability raises a question with architectural weight: should auto inference be allowed to delete edges it did not create? The supersedes graph carries both auto-inferred edges (from filename version detection) and hand-curated edges (created via the link operation by a human reviewer or an agent acting on a reviewer's behalf). The two have different epistemic status: auto-inferred edges are mechanical conclusions from filename metadata that the engine can re-derive at any time; hand-curated edges encode reviewer judgment that the engine has no way to reproduce. A chain-repair operation that conflates them risks silently overwriting reviewer judgment with mechanical inference, which is the opposite of the intended trust direction (humans correct the engine; the engine does not correct humans). The decision must establish where chain repair sits on the auto/manual authority spectrum without giving up the bug fix.",
+      "options_considered": [
+        {
+          "option": "Always stage chain-repair edge removals as Tier 2 (conservative)",
+          "summary": "Whenever chain repair would remove an existing edge, emit the proposed adds + removals as Tier 2 staging entries regardless of how the existing edge was authored. The human reviewer approves the repair in the staging UI; the engine never deletes a production edge automatically.",
+          "pros": [
+            "No edge deletion happens without explicit human approval; the manual-curation invariant is absolute",
+            "Uniform behavior — reviewers do not have to reason about provenance",
+            "Aligns with the existing two-tier model where the reviewer is the only mutation authority for ambiguous decisions"
+          ],
+          "cons": [
+            "The most common chain-repair case (engine fixing a chain it built itself) becomes a manual review task; 'ingest in any order, get the right chain' is no longer automatic",
+            "Reviewer queue fills with mechanical fix-ups that have no judgment content; risk of approval fatigue degrading the value of staging review",
+            "The reviewer cannot easily distinguish 'engine repairing its own work' from 'engine proposing to overwrite my work' — both look like Tier 2 supersedes proposals in the queue"
+          ]
+        },
+        {
+          "option": "Always auto-repair as Tier 1 (aggressive)",
+          "summary": "Treat the supersedes chain as a derived, mechanical structure: chain identity (title, project, doc_type) is invariant, order is deterministic from normalized version. Whenever the existing chain disagrees with the desired chain, the engine corrects it automatically — adds missing edges and removes stale ones, regardless of how the existing edges were authored.",
+          "pros": [
+            "Out-of-order ingestion always converges to the correct chain with no human intervention",
+            "Treats the supersedes graph as a true derived view of filename metadata, simplifying the mental model",
+            "No new schema or rationale conventions required"
+          ],
+          "cons": [
+            "Can silently delete hand-curated edges; a reviewer who manually attached v3 directly to v1 (perhaps because v2 was an aborted draft) loses that edge as soon as v2 is later ingested with the same chain identity",
+            "Reverses the trust direction: the engine corrects the human rather than the human correcting the engine",
+            "No record of the deletion is visible to the reviewer until they notice the missing edge; loss of curated state is silent",
+            "Would require either tombstoning deleted edges or a separate audit log to make the deletion recoverable; both add architectural surface"
+          ]
+        },
+        {
+          "option": "Provenance-gated repair: auto only when removed edges were themselves auto-inferred (chosen)",
+          "summary": "Stamp every auto-inferred chain edge with a recognizable rationale signature ('[version_chain]' prefix on the rationale field). Chain repair computes the desired chain and the diff against existing edges as before. If every edge in a group's removal set carries the version_chain signature, the repair executes as Tier 1: removals via graph_ops_service.unlink, adds via graph_ops_service.link, lifecycle side effects unchanged. If any edge in the removal set lacks the signature (i.e. is hand-curated), the entire group's repair is downgraded to Tier 2 staging: the proposed new edges are inserted into staging_edges for human review, and the conflicting hand-curated edge is left untouched in the production graph.",
+          "pros": [
+            "Common case is automatic: the engine repairing a chain it built itself requires no human intervention",
+            "Hand-curated edges are never silently deleted; the reviewer's judgment is preserved by default",
+            "Trust direction is preserved: the engine corrects its own prior conclusions but defers to human judgment when the two disagree",
+            "Provenance signal is local to the rationale field; no separate edge table or audit log is required",
+            "Group-level (not edge-level) gate: if any part of a chain group has a hand-curated edge, the entire group's repair stages, so the reviewer sees the full proposed picture in one place rather than receiving a mix of auto and staged changes within the same chain"
+          ],
+          "cons": [
+            "Two policies operate side by side; reviewers must understand why some chain repairs appear in staging and others do not",
+            "Pre-existing edges in live vaults lack the version_chain rationale prefix; until those chains are touched and replanned, every chain repair against legacy data downgrades to Tier 2 staging",
+            "The rationale field carries a structural signal (the prefix) in addition to its human-readable content; future changes to rationale formatting must preserve the prefix or update the recognition logic"
+          ]
+        }
+      ],
+      "decision": "Auto edge inference may delete supersedes edges it previously created in order to repair a chain when an out-of-order arrival inserts an intermediate version. Recognition is by rationale prefix: edges authored by version_chain inference carry a leading '[version_chain]' marker on the rationale field, set at creation time in app/backend/edge_inference.py. Chain repair operates per chain-identity group ((title.lower(), project, doc_type)). For each group with a new versioned arrival, the engine computes the desired sorted chain, diffs it against existing supersedes edges between group members, and produces a candidate set of adds and removals. If every edge in the candidate removal set carries the version_chain rationale prefix, the repair executes as Tier 1 (immediate): removals are processed first via graph_ops_service.unlink, then adds via graph_ops_service.link, and the existing lifecycle side effect on Tier 1 supersedes adds (transition target to archived) fires as before. If any edge in the candidate removal set lacks the prefix, the entire group's repair is downgraded to Tier 2: the proposed new edges are emitted as staging_edges entries for human review, the candidate removals are dropped from the executed plan, and the hand-curated edges remain in the production graph untouched. The downgrade is group-level, not edge-level, so the human reviewer sees the complete proposed repair in one staging context rather than a partially-applied half-state. The IngestSummary surface gains an edges_removed counter (also surfaced in to_dict) so callers can observe when chain-repair removals occurred.",
+      "rationale": "The supersedes graph carries two epistemically distinct kinds of edges: mechanical conclusions from filename version metadata (which the engine can re-derive at any time) and reviewer judgments (which the engine cannot reproduce). The right policy is to let the engine update its own prior conclusions while protecting reviewer judgments by default. This preserves the trust direction the system depends on elsewhere — humans correct the engine; the engine does not silently correct humans. The rationale-prefix mechanism is the smallest architectural surface that makes the distinction recordable and recognizable: the rationale field already exists, already carries a human-readable explanation, and is already the place where edge provenance information naturally lives. A separate created_by_method field would have been more explicit but would have required a schema migration of the edges table, with no operational benefit beyond the prefix scheme. Group-level downgrade (rather than per-edge mixed application) reflects the observation that a chain is a coherent structure: applying part of a repair while leaving the rest for human review produces a chain that is neither the prior state nor the desired state, which is worse than either. Putting the entire group in front of the reviewer when any part of it is contested gives the reviewer one decision to make rather than several partially-coupled ones. The conservative behavior on legacy edges (chain repair against a vault whose existing chain edges predate the prefix convention will downgrade to Tier 2) is acceptable: the worst outcome is that the reviewer sees a staging proposal where they would have preferred an automatic execution. The opposite error — silently deleting a legacy hand-curated edge because the recognition logic cannot tell it apart from an auto edge — is not recoverable without an audit log this system does not maintain.",
+      "consequences": [
+        "Edges authored by version_chain inference now carry a '[version_chain] ' prefix on the rationale field. The recognition function _is_version_chain_edge in app/backend/edge_inference.py checks rationale.startswith(VERSION_CHAIN_RATIONALE_PREFIX); future edge-rationale formatting changes must preserve the prefix or update the recognition logic in lockstep.",
+        "EdgePlan in app/backend/edge_inference.py gains a removals: list[PlannedEdgeRemoval] field. resolve_and_execute processes removals before adds so chain-repair leaves no transient invalid state visible to the lifecycle side effect that fires on Tier 1 adds.",
+        "EdgeResult and IngestSummary gain an edges_removed: int counter, also surfaced via IngestSummary.to_dict(). Both MCP (app_batch_ingest) and FastAPI (POST /app/ingest) callers emit the new field; downstream consumers (the React app's Ingest results panel) need to tolerate it.",
+        "_build_edge_plan in app/backend/ingest_service.py now (a) includes archived documents whose chain identity matches a new versioned arrival and (b) pre-fetches existing supersedes edges between those chain-scope members. This is the only place where archived documents participate in auto edge inference; the prior 'active only' rule still applies to non-chain-repair inference.",
+        "Pre-existing supersedes edges in live vaults lack the [version_chain] prefix and will therefore be treated as hand-curated by the provenance gate. The first chain-repair operation that would touch a legacy edge downgrades the entire group's repair to Tier 2 staging. This is intentional: legacy edges may be hand-curated, and there is no safe way to distinguish them retroactively. Vault owners who want chain repair to operate at Tier 1 against legacy data must re-author the affected chains so the new edges carry the prefix.",
+        "The CAS Application's staging review surface (Review tab) currently presents Tier 2 supersedes proposals as standalone edge suggestions. Chain-repair proposals are structurally different: they propose a new edge that conflicts with an existing edge in the production graph. The staging UI does not yet surface this conflict context; the reviewer sees the proposed new edge but is not shown the existing edge it would replace. A follow-on UX change is needed so the reviewer can see and act on both sides of the conflict in one place. Until that change lands, reviewers approving chain-repair staging entries should also manually inspect and unlink the conflicting hand-curated edge if the repair is correct.",
+        "Test coverage for chain repair lives in tests/app/test_batch_ingest_service.py (TestChainRepair, TEST-CR-001 through TEST-CR-005), with an in-memory _MockGraphState that backs the GraphStore and GraphOpsService surfaces the planner uses. The Test Plan version note should be updated to reflect the new test scope when next bumped.",
+        "Future expansion of auto edge inference to other edge types (covers, depends_on, etc.) inherits the provenance-prefix convention: any edge type that gains an automatic creator must stamp its rationale with a recognizable prefix and check it before any deletion."
+      ]
     }
   ]
 }
