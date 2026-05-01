@@ -1327,25 +1327,25 @@
         "CAS Application Spec",
         "Test Plan"
       ],
-      "context": "Bulk ingest auto edge inference (app/backend/edge_inference.py) groups documents by (title, project, doc_type) and emits a linear supersedes chain sorted by normalized version. Within a single batch this works regardless of arrival order — the engine sorts before chaining. Across batches it does not. Two reinforcing constraints in the prior implementation produced incorrect chains when a version arrived later than its successor: (1) the engine fetched only active documents from the vault, so a previously-superseded predecessor was invisible to subsequent inference passes; (2) the engine added new edges but never removed stale ones. Concrete failure: ingest v1 in batch 1 (active), ingest v3 in batch 2 (engine sees v1 active, emits v3→v1, archives v1), ingest v2 in batch 3 (engine sees v3 active and v1 archived/hidden, emits v3→v2, archives v2). Result: v3 has two outbound supersedes edges (→ v1 and → v2), the v2→v1 edge is missing, and the chain is forked rather than linear. Fixing this requires the engine to compute the desired chain against the full historical chain (including archived predecessors) and emit edge removals as well as adds. That capability raises a question with architectural weight: should auto inference be allowed to delete edges it did not create? The supersedes graph carries both auto-inferred edges (from filename version detection) and hand-curated edges (created via the link operation by a human reviewer or an agent acting on a reviewer's behalf). The two have different epistemic status: auto-inferred edges are mechanical conclusions from filename metadata that the engine can re-derive at any time; hand-curated edges encode reviewer judgment that the engine has no way to reproduce. A chain-repair operation that conflates them risks silently overwriting reviewer judgment with mechanical inference, which is the opposite of the intended trust direction (humans correct the engine; the engine does not correct humans). The decision must establish where chain repair sits on the auto/manual authority spectrum without giving up the bug fix.",
+      "context": "Bulk ingest auto edge inference (app/backend/edge_inference.py) groups documents by (title, project, doc_type) and emits a linear supersedes chain sorted by normalized version. Within a single batch this works regardless of arrival order \u2014 the engine sorts before chaining. Across batches it does not. Two reinforcing constraints in the prior implementation produced incorrect chains when a version arrived later than its successor: (1) the engine fetched only active documents from the vault, so a previously-superseded predecessor was invisible to subsequent inference passes; (2) the engine added new edges but never removed stale ones. Concrete failure: ingest v1 in batch 1 (active), ingest v3 in batch 2 (engine sees v1 active, emits v3\u2192v1, archives v1), ingest v2 in batch 3 (engine sees v3 active and v1 archived/hidden, emits v3\u2192v2, archives v2). Result: v3 has two outbound supersedes edges (\u2192 v1 and \u2192 v2), the v2\u2192v1 edge is missing, and the chain is forked rather than linear. Fixing this requires the engine to compute the desired chain against the full historical chain (including archived predecessors) and emit edge removals as well as adds. That capability raises a question with architectural weight: should auto inference be allowed to delete edges it did not create? The supersedes graph carries both auto-inferred edges (from filename version detection) and hand-curated edges (created via the link operation by a human reviewer or an agent acting on a reviewer's behalf). The two have different epistemic status: auto-inferred edges are mechanical conclusions from filename metadata that the engine can re-derive at any time; hand-curated edges encode reviewer judgment that the engine has no way to reproduce. A chain-repair operation that conflates them risks silently overwriting reviewer judgment with mechanical inference, which is the opposite of the intended trust direction (humans correct the engine; the engine does not correct humans). The decision must establish where chain repair sits on the auto/manual authority spectrum without giving up the bug fix.",
       "options_considered": [
         {
           "option": "Always stage chain-repair edge removals as Tier 2 (conservative)",
           "summary": "Whenever chain repair would remove an existing edge, emit the proposed adds + removals as Tier 2 staging entries regardless of how the existing edge was authored. The human reviewer approves the repair in the staging UI; the engine never deletes a production edge automatically.",
           "pros": [
             "No edge deletion happens without explicit human approval; the manual-curation invariant is absolute",
-            "Uniform behavior — reviewers do not have to reason about provenance",
+            "Uniform behavior \u2014 reviewers do not have to reason about provenance",
             "Aligns with the existing two-tier model where the reviewer is the only mutation authority for ambiguous decisions"
           ],
           "cons": [
             "The most common chain-repair case (engine fixing a chain it built itself) becomes a manual review task; 'ingest in any order, get the right chain' is no longer automatic",
             "Reviewer queue fills with mechanical fix-ups that have no judgment content; risk of approval fatigue degrading the value of staging review",
-            "The reviewer cannot easily distinguish 'engine repairing its own work' from 'engine proposing to overwrite my work' — both look like Tier 2 supersedes proposals in the queue"
+            "The reviewer cannot easily distinguish 'engine repairing its own work' from 'engine proposing to overwrite my work' \u2014 both look like Tier 2 supersedes proposals in the queue"
           ]
         },
         {
           "option": "Always auto-repair as Tier 1 (aggressive)",
-          "summary": "Treat the supersedes chain as a derived, mechanical structure: chain identity (title, project, doc_type) is invariant, order is deterministic from normalized version. Whenever the existing chain disagrees with the desired chain, the engine corrects it automatically — adds missing edges and removes stale ones, regardless of how the existing edges were authored.",
+          "summary": "Treat the supersedes chain as a derived, mechanical structure: chain identity (title, project, doc_type) is invariant, order is deterministic from normalized version. Whenever the existing chain disagrees with the desired chain, the engine corrects it automatically \u2014 adds missing edges and removes stale ones, regardless of how the existing edges were authored.",
           "pros": [
             "Out-of-order ingestion always converges to the correct chain with no human intervention",
             "Treats the supersedes graph as a true derived view of filename metadata, simplifying the mental model",
@@ -1376,7 +1376,7 @@
         }
       ],
       "decision": "Auto edge inference may delete supersedes edges it previously created in order to repair a chain when an out-of-order arrival inserts an intermediate version. Recognition is by rationale prefix: edges authored by version_chain inference carry a leading '[version_chain]' marker on the rationale field, set at creation time in app/backend/edge_inference.py. Chain repair operates per chain-identity group ((title.lower(), project, doc_type)). For each group with a new versioned arrival, the engine computes the desired sorted chain, diffs it against existing supersedes edges between group members, and produces a candidate set of adds and removals. If every edge in the candidate removal set carries the version_chain rationale prefix, the repair executes as Tier 1 (immediate): removals are processed first via graph_ops_service.unlink, then adds via graph_ops_service.link, and the existing lifecycle side effect on Tier 1 supersedes adds (transition target to archived) fires as before. If any edge in the candidate removal set lacks the prefix, the entire group's repair is downgraded to Tier 2: the proposed new edges are emitted as staging_edges entries for human review, the candidate removals are dropped from the executed plan, and the hand-curated edges remain in the production graph untouched. The downgrade is group-level, not edge-level, so the human reviewer sees the complete proposed repair in one staging context rather than a partially-applied half-state. The IngestSummary surface gains an edges_removed counter (also surfaced in to_dict) so callers can observe when chain-repair removals occurred.",
-      "rationale": "The supersedes graph carries two epistemically distinct kinds of edges: mechanical conclusions from filename version metadata (which the engine can re-derive at any time) and reviewer judgments (which the engine cannot reproduce). The right policy is to let the engine update its own prior conclusions while protecting reviewer judgments by default. This preserves the trust direction the system depends on elsewhere — humans correct the engine; the engine does not silently correct humans. The rationale-prefix mechanism is the smallest architectural surface that makes the distinction recordable and recognizable: the rationale field already exists, already carries a human-readable explanation, and is already the place where edge provenance information naturally lives. A separate created_by_method field would have been more explicit but would have required a schema migration of the edges table, with no operational benefit beyond the prefix scheme. Group-level downgrade (rather than per-edge mixed application) reflects the observation that a chain is a coherent structure: applying part of a repair while leaving the rest for human review produces a chain that is neither the prior state nor the desired state, which is worse than either. Putting the entire group in front of the reviewer when any part of it is contested gives the reviewer one decision to make rather than several partially-coupled ones. The conservative behavior on legacy edges (chain repair against a vault whose existing chain edges predate the prefix convention will downgrade to Tier 2) is acceptable: the worst outcome is that the reviewer sees a staging proposal where they would have preferred an automatic execution. The opposite error — silently deleting a legacy hand-curated edge because the recognition logic cannot tell it apart from an auto edge — is not recoverable without an audit log this system does not maintain.",
+      "rationale": "The supersedes graph carries two epistemically distinct kinds of edges: mechanical conclusions from filename version metadata (which the engine can re-derive at any time) and reviewer judgments (which the engine cannot reproduce). The right policy is to let the engine update its own prior conclusions while protecting reviewer judgments by default. This preserves the trust direction the system depends on elsewhere \u2014 humans correct the engine; the engine does not silently correct humans. The rationale-prefix mechanism is the smallest architectural surface that makes the distinction recordable and recognizable: the rationale field already exists, already carries a human-readable explanation, and is already the place where edge provenance information naturally lives. A separate created_by_method field would have been more explicit but would have required a schema migration of the edges table, with no operational benefit beyond the prefix scheme. Group-level downgrade (rather than per-edge mixed application) reflects the observation that a chain is a coherent structure: applying part of a repair while leaving the rest for human review produces a chain that is neither the prior state nor the desired state, which is worse than either. Putting the entire group in front of the reviewer when any part of it is contested gives the reviewer one decision to make rather than several partially-coupled ones. The conservative behavior on legacy edges (chain repair against a vault whose existing chain edges predate the prefix convention will downgrade to Tier 2) is acceptable: the worst outcome is that the reviewer sees a staging proposal where they would have preferred an automatic execution. The opposite error \u2014 silently deleting a legacy hand-curated edge because the recognition logic cannot tell it apart from an auto edge \u2014 is not recoverable without an audit log this system does not maintain.",
       "consequences": [
         "Edges authored by version_chain inference now carry a '[version_chain] ' prefix on the rationale field. The recognition function _is_version_chain_edge in app/backend/edge_inference.py checks rationale.startswith(VERSION_CHAIN_RATIONALE_PREFIX); future edge-rationale formatting changes must preserve the prefix or update the recognition logic in lockstep.",
         "EdgePlan in app/backend/edge_inference.py gains a removals: list[PlannedEdgeRemoval] field. resolve_and_execute processes removals before adds so chain-repair leaves no transient invalid state visible to the lifecycle side effect that fires on Tier 1 adds.",
@@ -1386,6 +1386,106 @@
         "The CAS Application's staging review surface (Review tab) currently presents Tier 2 supersedes proposals as standalone edge suggestions. Chain-repair proposals are structurally different: they propose a new edge that conflicts with an existing edge in the production graph. The staging UI does not yet surface this conflict context; the reviewer sees the proposed new edge but is not shown the existing edge it would replace. A follow-on UX change is needed so the reviewer can see and act on both sides of the conflict in one place. Until that change lands, reviewers approving chain-repair staging entries should also manually inspect and unlink the conflicting hand-curated edge if the repair is correct.",
         "Test coverage for chain repair lives in tests/app/test_batch_ingest_service.py (TestChainRepair, TEST-CR-001 through TEST-CR-005), with an in-memory _MockGraphState that backs the GraphStore and GraphOpsService surfaces the planner uses. The Test Plan version note should be updated to reflect the new test scope when next bumped.",
         "Future expansion of auto edge inference to other edge types (covers, depends_on, etc.) inherits the provenance-prefix convention: any edge type that gains an automatic creator must stamp its rationale with a recognizable prefix and check it before any deletion."
+      ]
+    },
+    {
+      "id": "ADR-020",
+      "title": "Abstract generation prompt: descriptive framing for agent relevance triage",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-05-01",
+      "created_by": "Clif + Claude session",
+      "scope": "sage",
+      "tags": [
+        "semantic-abstract",
+        "prompt-design",
+        "agent-triage",
+        "determinism",
+        "ingestion-pipeline"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "Formal Substrate"
+      ],
+      "context": "ADR-011 establishes that semantic abstracts are generated at ingestion and stored on the document record. It does not address how the generation prompt should be shaped. Two facts about the abstract's runtime context now make the prompt design architectural rather than implementation detail. First, the abstract's purpose is agent relevance triage: an autonomous agent that has discovered the document via an MCP discovery tool (sage_discover, sage_traverse) reads the abstract to decide whether to fetch the full document. The agent already sees title, doc_type, tags, project, lifecycle_status, and document_date in the same payload, so the abstract must carry what those fields cannot -- what the document is about, what it claims or prescribes, and what it covers. Second, abstract generation runs under greedy decoding (temperature 0.0), per the determinism property tested by TEST-SAGE-AD-029. Determinism is the right choice for reproducibility and governance, but it has a corollary: when a prompt-source pair has a pathological attractor for any expected document class, that pathology reproduces identically on every re-run. The original prompt ('You are a technical abstraction engine. Given the full text of a document, produce a concise semantic abstract that captures the key concepts, methods, and findings.') was research-paper-shaped and document-type-blind. Empirical investigation of seven editorial-guideline documents in the theology vault documented four failure modes: (1) genre-instantiation, where prescriptive documents about a writing genre produce specimens of that genre rather than descriptions of the prescription; (2) hypothetical-paper composition, where a guideline about academic theology becomes the abstract of an invented paper on divine silence; (3) fabricated specifics, where a guideline about executive communications produces an abstract containing an invented $120,000 budget reallocation with fabricated percentages and dates; (4) framing-tax openings, where the master Editorial Guidelines document opens with three sentences of generic AI-discourse boilerplate before reaching content. Only the shortest, most instruction-dense source (Social Media) escaped these patterns.",
+      "options_considered": [
+        {
+          "option": "Status quo: single generic technical-abstract prompt",
+          "summary": "Keep the prompt as-is; treat the failures as model limitations.",
+          "pros": [
+            "Zero implementation change",
+            "Preserves a single uniform prompt across all document types"
+          ],
+          "cons": [
+            "The four failure modes are reproducible and architectural, not transient model artifacts",
+            "The Church Leadership case (fabricated $120,000 reallocation) is a factual-safety failure, not a quality issue",
+            "Determinism guarantees the pathology persists across re-runs"
+          ]
+        },
+        {
+          "option": "Switch to sampling (temperature > 0) to introduce variance",
+          "summary": "Replace greedy decoding with low-temperature sampling so re-runs produce different outputs.",
+          "pros": [
+            "Some runs would land in non-pathological output regions"
+          ],
+          "cons": [
+            "Masks the prompt problem rather than fixing it",
+            "Breaks the reproducibility property tested by TEST-SAGE-AD-029",
+            "Stored abstracts become non-deterministic relative to source, complicating debugging and governance",
+            "A prompt that has bad attractors at temperature 0 still has them at temperature 0.7; sampling just rolls dice across them"
+          ]
+        },
+        {
+          "option": "Per-doc-type prompt overrides via vault config",
+          "summary": "Allow each vault's configuration to specify per-doc-type prompt templates.",
+          "pros": [
+            "Maximum flexibility for domain-specific prompts"
+          ],
+          "cons": [
+            "Heavier than the documented failures require",
+            "Multiplies prompts to maintain and test as new doc_types emerge",
+            "The keystone fix (descriptive framing) is uniform across all doc_types; the per-type signal is captured by passing doc_type into a single template"
+          ]
+        },
+        {
+          "option": "Two-pass abstraction with self-critique",
+          "summary": "Generate, then have the model critique its own output against the doc-vs-genre rule, then revise.",
+          "pros": [
+            "Could catch failures the first pass misses"
+          ],
+          "cons": [
+            "Violates the standing principle on planning-then-execution separation: post-completion self-evaluation is a known failure mode",
+            "Doubles the inference cost per document",
+            "Does not address the root cause (prompt shape); adds a layer that may itself drift"
+          ]
+        },
+        {
+          "option": "Descriptive third-person prompt with doc_type parameter and explicit anti-fabrication clause",
+          "summary": "Reframe the prompt around the abstract's purpose (agent relevance triage), require descriptive third-person voice, surface doc_type to the model, forbid composing in the genre the document discusses, forbid introducing specifics not in the source, and instruct against restating metadata the agent already sees.",
+          "pros": [
+            "Descriptive third-person framing makes genre-instantiation grammatically impossible: the abstract cannot open with a sample pastoral letter when it must open with 'This document...'",
+            "doc_type lets the model choose appropriate descriptive verbs (prescribes, argues, narrates, defines) without per-type prompt variants",
+            "The no-fabrication clause directly addresses the highest-risk failure (invented specifics in authoritative-looking abstracts)",
+            "Aligns the prompt with the abstract's actual consumer (the discovering agent) and the visible discovery-surface metadata",
+            "Single template, single call, retains greedy decoding and the TEST-SAGE-AD-029 determinism property",
+            "Empirical A/B against the seven editorial-guideline documents eliminated all four failure modes including the fabricated-budget case"
+          ],
+          "cons": [
+            "Adds doc_type as a required parameter on AbstractionProvider.generate_abstract, requiring an interface change and threading through the ingestion service",
+            "Re-abstracting existing documents requires either bulk reabstract or accepting a mixed corpus during transition"
+          ]
+        }
+      ],
+      "decision": "The system prompt for semantic abstract generation must (a) frame the task as producing a relevance-triage card for an agent that has discovered the document via search; (b) require descriptive third-person framing ('This document...', 'The guideline...', 'The text...'); (c) receive the document's doc_type as a parameterized input substituted into the prompt; (d) forbid writing in the voice, style, or genre the document discusses; (e) forbid introducing specifics (numbers, names, dates, quotes, examples) not present in the source text; (f) instruct against restating metadata (title, doc_type, tags, project) that the agent sees alongside the abstract in MCP tool responses; (g) preserve the density-proportional length behavior established by ADR-011. The AbstractionProvider.generate_abstract interface gains a doc_type: str | None parameter, threaded from the document record through the ingestion service to the provider.",
+      "rationale": "The abstract's runtime context -- visible alongside doc_type and other metadata to a discovering agent who is using the abstract to triage relevance -- narrows the prompt design space considerably. The agent does not need a miniature replica of the document or a research-paper abstract; it needs a description of what the document is and contains. Descriptive third-person framing is the keystone because it operates structurally rather than by enumeration: a model instructed to begin with 'This document...' cannot grammatically produce a sample pastoral letter, devotional opening, op-ed lede, or hypothetical paper abstract. The doc_type signal disambiguates meta-documents from specimens (a guideline about pastoral writing versus a pastoral letter) without requiring per-type prompt variants. The no-fabrication clause is the necessary supplement because descriptive prose can still hallucinate specifics. Together, the three constraints close all four failure modes documented in the seven-document A/B. The decision to keep greedy decoding (TEST-SAGE-AD-029) unchanged is deliberate: determinism is correct for reproducibility and governance, and the right response to a deterministic system with a bad attractor is to fix the attractor at the prompt design level, not to introduce sampling noise.",
+      "consequences": [
+        "AbstractionProvider.generate_abstract gains a required doc_type: str | None parameter. The Qwen3 implementation and all stub implementations are updated. The interface change is reflected in the formal substrate.",
+        "IngestionService threads doc_type from the Document record through _generate_abstract_text, _stage3_abstraction, _run_background_pipeline, and _reabstract_background to the provider. Both the initial-ingest and reabstract code paths pass doc_type.",
+        "The system prompt is template-substituted at call time with the doc_type clause. doc_type=None omits the clause cleanly.",
+        "TEST-SAGE-AD-029 (deterministic output under greedy decoding) is preserved unchanged. The determinism property is now relied upon by this ADR's argument: prompt design must close all expected attractors because re-runs will not vary.",
+        "Empirical validation: the seven editorial-guideline documents in the theology vault (Pastoral, Blog/Devotional, Public Writing, Church Leadership/Executive, Academic Theology, Editorial Guidelines master, Social Media) were re-abstracted in-process. All four prior failure modes -- genre-instantiation, hypothetical-paper composition, fabricated specifics, framing-tax openings -- were eliminated. The Social Media control remained clean.",
+        "Stored abstracts under the old prompt are not automatically migrated. Re-abstraction of existing documents is an operational decision (per-vault, on demand via sage_reabstract).",
+        "Per-doc-type prompt overrides remain available as future work if a doc_type emerges where the descriptive third-person framing is structurally inappropriate. The current single-template design covers the documented cases."
       ]
     }
   ]

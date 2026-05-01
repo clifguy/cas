@@ -53,7 +53,9 @@ class _SlowStubAbstractionProvider(AbstractionProvider):
     def __init__(self, delay_s: float = 3.0) -> None:
         self._delay_s = delay_s
 
-    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+    async def generate_abstract(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         await asyncio.sleep(self._delay_s)
         return f"Slow stub abstract ({self._delay_s}s delay)"
 

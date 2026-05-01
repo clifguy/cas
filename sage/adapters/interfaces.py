@@ -136,5 +136,13 @@ class AbstractionProvider(ABC):
     """Interface for semantic abstract generation (MLX/Qwen3 in production)."""
 
     @abstractmethod
-    async def generate_abstract(self, text: str, max_tokens: int) -> str:
-        """Generate a density-proportional semantic abstract."""
+    async def generate_abstract(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
+        """Generate a density-proportional semantic abstract.
+
+        doc_type is surfaced to the model so it can pick the right
+        descriptive verbs (prescribes, argues, narrates, defines) and
+        avoid restating identifying metadata the agent already sees.
+        Pass None when no doc_type is available.
+        """

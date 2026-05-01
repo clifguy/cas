@@ -598,15 +598,20 @@ class IngestionService:
         # asyncio.create_task detaches it from the request-handling
         # task.
         if wait_for_pipeline:
-            await self._run_background_pipeline(doc.id, projection)
+            await self._run_background_pipeline(doc.id, projection, doc.doc_type)
             doc = await self._store.get_document(doc.id) or doc
         else:
-            asyncio.create_task(self._run_background_pipeline(doc.id, projection))
+            asyncio.create_task(
+                self._run_background_pipeline(doc.id, projection, doc.doc_type)
+            )
 
         return IngestResult(document=doc, is_new=is_new)
 
     async def _run_background_pipeline(
-        self, document_id: str, projection: ProjectionResult
+        self,
+        document_id: str,
+        projection: ProjectionResult,
+        doc_type: str | None,
     ) -> None:
         """Run Stages 2-3 as a background task. Updates pipeline_status
         in the graph store as it progresses. Catches all exceptions and
@@ -638,7 +643,7 @@ class IngestionService:
                     })
                 return
 
-            await self._stage3_abstraction(document_id, projection)
+            await self._stage3_abstraction(document_id, projection, doc_type)
         except Exception as exc:
             logger.exception(
                 "Pipeline failed for document %s", document_id
@@ -693,7 +698,9 @@ class IngestionService:
                 "updated_at": now.isoformat(),
             })
 
-    async def _generate_abstract_text(self, text: str) -> str:
+    async def _generate_abstract_text(
+        self, text: str, doc_type: str | None
+    ) -> str:
         """Generate a semantic abstract from document text.
 
         Shared core for both initial ingestion (stage 3) and reabstract.
@@ -703,6 +710,9 @@ class IngestionService:
 
         Args:
             text: Full projection text of the document.
+            doc_type: The document's type, threaded into the abstraction
+                prompt so the model can pick appropriate descriptive
+                verbs and skip metadata the agent already sees.
 
         Returns:
             Trimmed abstract string.
@@ -710,12 +720,15 @@ class IngestionService:
         word_count = len(text.split())
         max_tokens = compute_max_tokens(word_count, self._config.abstraction)
         raw_abstract = await self._abstraction.generate_abstract(
-            text, max_tokens
+            text, max_tokens, doc_type
         )
         return trim_to_sentence_boundary(raw_abstract)
 
     async def _stage3_abstraction(
-        self, document_id: str, projection: ProjectionResult
+        self,
+        document_id: str,
+        projection: ProjectionResult,
+        doc_type: str | None,
     ) -> None:
         """Stage 3: Generate semantic abstract via LLM (BH-024, BH-025)."""
         async with self._locks.lock(document_id):
@@ -724,7 +737,7 @@ class IngestionService:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
 
-        abstract = await self._generate_abstract_text(projection.text)
+        abstract = await self._generate_abstract_text(projection.text, doc_type)
 
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
@@ -771,7 +784,7 @@ class IngestionService:
             })
 
         asyncio.create_task(
-            self._reabstract_background(document_id)
+            self._reabstract_background(document_id, doc.doc_type)
         )
 
         now = datetime.now(timezone.utc)
@@ -784,7 +797,9 @@ class IngestionService:
             "dispatched_at": now.isoformat(),
         }
 
-    async def _reabstract_background(self, document_id: str) -> None:
+    async def _reabstract_background(
+        self, document_id: str, doc_type: str | None
+    ) -> None:
         """Background worker for reabstract. Loads chunks, generates
         abstract, and updates the document. Sets pipeline_status to
         FAILED on error.
@@ -801,7 +816,7 @@ class IngestionService:
             projection_text = "\n\n".join(
                 chunk.content for chunk in chunks
             )
-            abstract = await self._generate_abstract_text(projection_text)
+            abstract = await self._generate_abstract_text(projection_text, doc_type)
             now = datetime.now(timezone.utc)
             async with self._locks.lock(document_id):
                 await self._store.update_document(document_id, {

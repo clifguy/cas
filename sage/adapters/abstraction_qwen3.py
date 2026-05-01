@@ -10,13 +10,33 @@ from sage.adapters.interfaces import AbstractionProvider
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = (
-    "You are a technical abstraction engine. Given the full text of a document, "
-    "produce a concise semantic abstract that captures the key concepts, methods, "
-    "and findings. The abstract should be density-proportional: longer for complex, "
-    "information-rich documents; shorter for simple ones. Output only the abstract "
-    "text with no preamble, labels, or commentary."
+SYSTEM_PROMPT_TEMPLATE = (
+    "You are producing a relevance-triage card for an autonomous agent that "
+    "has discovered this document via search. The agent will read this card "
+    "to decide whether to fetch the full document. Write a description of "
+    "the document in third person (\"This document...\", \"The guideline...\", "
+    "\"The text...\"). Cover what the document is about, what it claims or "
+    "prescribes, what topics it covers, and where relevant what it does not "
+    "cover.\n"
+    "\n"
+    "Do not write in the voice, style, or genre the document discusses -- "
+    "describe the document, do not produce a specimen of it. Do not introduce "
+    "specifics (numbers, names, dates, quotes, examples) that are not present "
+    "in the source text. The document's title{doc_type_clause}, tags, and "
+    "project are already visible to the agent; do not restate them. Length "
+    "should be proportional to the document's complexity: longer for dense "
+    "or multi-topic documents, shorter for simple or narrowly-scoped ones. "
+    "Output only the description, with no preamble, labels, or commentary."
 )
+
+
+def _format_system_prompt(doc_type: str | None) -> str:
+    """Render the system prompt with optional doc_type substitution."""
+    if doc_type:
+        clause = f", type (\"{doc_type}\")"
+    else:
+        clause = ""
+    return SYSTEM_PROMPT_TEMPLATE.format(doc_type_clause=clause)
 
 DEFAULT_CONTEXT_WINDOW = 32768
 
@@ -84,7 +104,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         # Validation probe (AD-026)
         try:
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _format_system_prompt(None)},
                 {"role": "user", "content": "Test document content."},
             ]
             probe_prompt = tokenizer.apply_chat_template(
@@ -119,10 +139,10 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._tokenizer = tokenizer
         logger.info("Abstraction model loaded: %s", self._model_id)
 
-    def _build_prompt(self, text: str) -> str:
+    def _build_prompt(self, text: str, doc_type: str | None) -> str:
         """Build a chat-template prompt for abstract generation."""
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _format_system_prompt(doc_type)},
             {"role": "user", "content": text},
         ]
         return self._tokenizer.apply_chat_template(
@@ -132,14 +152,16 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             enable_thinking=False,
         )
 
-    def _truncate_for_context(self, text: str, max_tokens: int) -> str:
+    def _truncate_for_context(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         """Truncate document text to fit within context window (AD-031).
 
         Preserves leading content (title, abstract, introduction) by
         truncating from the end. Returns the original text if it fits.
         """
         # Measure template overhead with empty user content
-        overhead_prompt = self._build_prompt("")
+        overhead_prompt = self._build_prompt("", doc_type)
         overhead_tokens = len(self._tokenizer.encode(overhead_prompt))
 
         available = self._context_window - max_tokens - overhead_tokens
@@ -160,7 +182,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         truncated_tokens = text_tokens[:available]
         return self._tokenizer.decode(truncated_tokens)
 
-    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+    async def generate_abstract(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         """Generate a semantic abstract from document text.
 
         On first call, loads the MLX model and validates with a probe
@@ -169,6 +193,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         Args:
             text: Full document text from the projection stage.
             max_tokens: Upper bound on abstract length in tokens.
+            doc_type: The document's type, surfaced to the model so it
+                can choose appropriate descriptive verbs (prescribes,
+                argues, narrates, defines). May be None.
 
         Returns:
             Non-empty abstract string (AD-027).
@@ -187,10 +214,10 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._ensure_loaded()
 
         # Truncate if needed (AD-031)
-        truncated_text = self._truncate_for_context(text, max_tokens)
+        truncated_text = self._truncate_for_context(text, max_tokens, doc_type)
 
         # Build prompt and generate (AD-028, AD-029)
-        prompt = self._build_prompt(truncated_text)
+        prompt = self._build_prompt(truncated_text, doc_type)
         result = self._generate_fn(
             self._model,
             self._tokenizer,

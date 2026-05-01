@@ -654,11 +654,11 @@ class TestQwen3AbstractionProvider:
         """AD-026: Bad model ID raises RuntimeError on first generate_abstract()."""
         provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
-            await provider.generate_abstract("Test text.", 200)
+            await provider.generate_abstract("Test text.", 200, None)
 
     async def test_ad_027_non_empty_output(self, qwen3_provider):
         """AD-027: Generated abstract is a non-empty string."""
-        result = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+        result = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
         assert isinstance(result, str)
         assert len(result.strip()) > 0
         assert result == result.strip()  # No leading/trailing whitespace
@@ -667,7 +667,7 @@ class TestQwen3AbstractionProvider:
         """AD-028: Output respects max_tokens upper bound."""
         # Use a longer input to encourage full-length generation
         long_text = SAMPLE_TEXT * 5
-        result = await qwen3_provider.generate_abstract(long_text, 100)
+        result = await qwen3_provider.generate_abstract(long_text, 100, None)
 
         # Tokenize the result using the model's tokenizer
         tokens = qwen3_provider._tokenizer.encode(result)
@@ -677,14 +677,14 @@ class TestQwen3AbstractionProvider:
 
     async def test_ad_029_deterministic(self, qwen3_provider):
         """AD-029: Same input produces identical output."""
-        r1 = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
-        r2 = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+        r1 = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
+        r2 = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
         assert r1 == r2
 
     async def test_ad_030_short_input(self, qwen3_provider):
         """AD-030: Short input produces a valid abstract."""
         result = await qwen3_provider.generate_abstract(
-            "Brief note about record linkage.", 200
+            "Brief note about record linkage.", 200, None
         )
         assert isinstance(result, str)
         assert len(result.strip()) > 0
@@ -695,7 +695,7 @@ class TestQwen3AbstractionProvider:
         very_long_text = SAMPLE_TEXT * 200
         assert len(very_long_text) > 50_000
 
-        result = await qwen3_provider.generate_abstract(very_long_text, 200)
+        result = await qwen3_provider.generate_abstract(very_long_text, 200, None)
         assert isinstance(result, str)
         assert len(result.strip()) > 0
 
@@ -703,7 +703,7 @@ class TestQwen3AbstractionProvider:
         self, qwen3_provider, embedding_provider
     ):
         """AD-032: Abstract is semantically related to input."""
-        abstract = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+        abstract = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
 
         # Embed both input and abstract
         vecs = await embedding_provider.embed([SAMPLE_TEXT, abstract])
@@ -729,7 +729,7 @@ class TestQwen3AbstractionProvider:
         monkeypatch.setattr(qwen3_provider, "_generate_fn", failing_generate)
 
         with pytest.raises(RuntimeError, match="Simulated MLX inference failure"):
-            await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200)
+            await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
 
 
 @requires_qwen3
@@ -741,7 +741,7 @@ class TestQwen3LazyLoading:
         provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
         assert provider._model is None
 
-        result = await provider.generate_abstract(SAMPLE_TEXT, 200)
+        result = await provider.generate_abstract(SAMPLE_TEXT, 200, None)
         assert provider._model is not None
         assert isinstance(result, str)
         assert len(result.strip()) > 0
@@ -750,11 +750,11 @@ class TestQwen3LazyLoading:
         """AD-096: Second generate_abstract() reuses the loaded model."""
         provider = Qwen3AbstractionProvider(model_id=QWEN3_MODEL_ID)
 
-        await provider.generate_abstract(SAMPLE_TEXT, 200)
+        await provider.generate_abstract(SAMPLE_TEXT, 200, None)
         model_after_first = provider._model
         assert model_after_first is not None
 
-        await provider.generate_abstract("Different input text.", 200)
+        await provider.generate_abstract("Different input text.", 200, None)
         assert provider._model is model_after_first  # Same object identity
 
     async def test_ad_097_load_failure_raises_and_stays_unloaded(self):
@@ -763,7 +763,7 @@ class TestQwen3LazyLoading:
         provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
 
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
-            await provider.generate_abstract(SAMPLE_TEXT, 200)
+            await provider.generate_abstract(SAMPLE_TEXT, 200, None)
 
         assert provider._model is None  # No partial state
 

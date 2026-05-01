@@ -942,18 +942,20 @@ async def test_generate_abstract_text_uses_density_proportional_budget(
     captured = {}
     original = ingestion_service._abstraction.generate_abstract
 
-    async def spy(text: str, max_tokens: int) -> str:
+    async def spy(text: str, max_tokens: int, doc_type: str | None) -> str:
         captured["max_tokens"] = max_tokens
-        return await original(text, max_tokens)
+        captured["doc_type"] = doc_type
+        return await original(text, max_tokens, doc_type)
 
     ingestion_service._abstraction.generate_abstract = spy
 
     text = "word " * 10000  # 10000 words
-    result = await ingestion_service._generate_abstract_text(text)
+    result = await ingestion_service._generate_abstract_text(text, "guideline")
 
     assert "max_tokens" in captured
     # 150 + 10000 * 0.02 = 350, not the old fixed 500
     assert captured["max_tokens"] == 350
+    assert captured["doc_type"] == "guideline"
     assert result  # non-empty
 
 
@@ -963,12 +965,14 @@ async def test_generate_abstract_text_trims_sentence_boundary(
     """_generate_abstract_text should trim output to the last complete
     sentence boundary."""
     # Replace stub to return text truncated mid-sentence
-    async def truncated_output(text: str, max_tokens: int) -> str:
+    async def truncated_output(
+        text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         return "First sentence. Second sentence. Third incompl"
 
     ingestion_service._abstraction.generate_abstract = truncated_output
 
-    result = await ingestion_service._generate_abstract_text("any input")
+    result = await ingestion_service._generate_abstract_text("any input", None)
     assert result == "First sentence. Second sentence."
 
 
@@ -977,12 +981,14 @@ async def test_generate_abstract_text_returns_complete_sentences_unchanged(
 ):
     """When abstraction output ends at a sentence boundary, it should be
     returned unchanged."""
-    async def clean_output(text: str, max_tokens: int) -> str:
+    async def clean_output(
+        text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         return "Complete sentence one. Complete sentence two."
 
     ingestion_service._abstraction.generate_abstract = clean_output
 
-    result = await ingestion_service._generate_abstract_text("any input")
+    result = await ingestion_service._generate_abstract_text("any input", None)
     assert result == "Complete sentence one. Complete sentence two."
 
 
@@ -1042,7 +1048,9 @@ async def test_reabstract_background_updates_abstract_on_success(
     original_abstract = result.document.semantic_abstract
 
     # Swap abstraction provider to produce different output
-    async def new_abstract(text: str, max_tokens: int) -> str:
+    async def new_abstract(
+        text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         return "Regenerated abstract from new model."
 
     ingestion_service._abstraction.generate_abstract = new_abstract
@@ -1443,7 +1451,9 @@ class _StrictAbstractionProvider:
     the service-layer guard short-circuits before reaching here.
     """
 
-    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+    async def generate_abstract(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         if not text or not text.strip():
             raise RuntimeError(
                 "Cannot generate abstract from empty document text"

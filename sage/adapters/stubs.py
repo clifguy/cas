@@ -202,12 +202,16 @@ class SeededEmbeddingProvider(EmbeddingProvider):
 class StubAbstractionProvider(AbstractionProvider):
     """Returns deterministic abstract text for testing."""
 
-    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+    async def generate_abstract(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         return f"Stub abstract for {len(text)} chars of input."
 
 
 class FailingAbstractionProvider(AbstractionProvider):
     """Always fails -- for testing BH-024 (LLM failure = failed status)."""
 
-    async def generate_abstract(self, text: str, max_tokens: int) -> str:
+    async def generate_abstract(
+        self, text: str, max_tokens: int, doc_type: str | None
+    ) -> str:
         raise RuntimeError("LLM unavailable (simulated failure)")
