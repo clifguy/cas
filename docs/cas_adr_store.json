@@ -1487,6 +1487,109 @@
         "Stored abstracts under the old prompt are not automatically migrated. Re-abstraction of existing documents is an operational decision (per-vault, on demand via sage_reabstract).",
         "Per-doc-type prompt overrides remain available as future work if a doc_type emerges where the descriptive third-person framing is structurally inappropriate. The current single-template design covers the documented cases."
       ]
+    },
+    {
+      "id": "ADR-021",
+      "title": "Metadata inference and review are caller responsibilities; SAGE accepts authoritative values",
+      "status": "proposed",
+      "superseded_by": null,
+      "date": "2026-05-01",
+      "created_by": "Clif + Claude session",
+      "scope": "cross_cutting",
+      "tags": [
+        "sage",
+        "ingestion",
+        "metadata-inference",
+        "review-queue",
+        "boundary-rule",
+        "cas-app",
+        "supersedes",
+        "doc-type",
+        "filename-parser"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "Formal Substrate"
+      ],
+      "context": "Two related symptoms surfaced in the same session and resolve to a single boundary problem. Symptom one: an agent ingest of ChecklistTemplate v3.2 (which supersedes v3.1.2 with doc_type=steering_template) produced doc_type=reference_document on the new version, requiring a manual sage_update_metadata correction. Investigation showed that SAGE's ingest pipeline (sage/services/ingestion.py) infers doc_type from filename pattern rules in the vault config (sage/services/filename_parser.py) and never consults the predecessor's doc_type even when supersedes_document_id is supplied. Symptom two: routine agent ingests via the SAGE MCP toolset are appearing in the CAS application's bulk-ingest review queue. Investigation showed that the review queue is the SAGE pending_metadata feed (sage/api/routers/pending_metadata.py), populated whenever the vault config sets metadata_extraction.review_required=true. The CAS application consumes that feed but does not own it. Both symptoms trace to the same boundary leak: SAGE is performing inference and review-queue management on behalf of callers who, in the agent case, already have authoritative metadata. The two standing principles that bear directly: principle 4 (SAGE indexes everything and owns nothing) implies that vault-specific filename heuristics -- which encode caller opinions about how filenames map to metadata -- are out of place in SAGE; principle 5 (boundary rule) places caller-side concerns above SAGE. The bulk-ingest review feature is correct in concept and the CAS application's bulk-ingest UI is functioning correctly; only the implementation placement is wrong. All agents currently using SAGE go through the SAGE MCP toolset, so the caller-side surface to update is bounded.",
+      "options_considered": [
+        {
+          "option": "Status quo with chain inheritance only",
+          "summary": "Leave filename inference and the auto-populated review queue inside SAGE. Add only the narrow fix: when supersedes_document_id is present and the caller omits doc_type, inherit the predecessor's doc_type.",
+          "pros": [
+            "Smallest possible code change",
+            "Resolves the immediate doc_type regression"
+          ],
+          "cons": [
+            "Does not address the review-queue pollution; agent ingests continue to land in the CAS application's review list",
+            "Leaves the boundary leak in place; principle 4 violation persists",
+            "Two related symptoms get one fix; the second symptom resurfaces under any future inference rule"
+          ]
+        },
+        {
+          "option": "Per-vault default-to-review with caller override",
+          "summary": "Keep review_required as a vault config switch but allow callers to override it per-call. Filename inference continues to run inside SAGE.",
+          "pros": [
+            "Backward compatible with existing vault configs",
+            "Lets agents opt out of review per call"
+          ],
+          "cons": [
+            "Inference still lives in SAGE; principle 4 violation only partially addressed",
+            "The same vault sees both authoritative agent ingests and uncertain bulk-ingest uploads; per-vault default is the wrong granularity. Per-call is the right one",
+            "Two configuration surfaces (vault config + per-call flag) interact and must be reasoned about together"
+          ]
+        },
+        {
+          "option": "Hard reject on doc_type divergence across a supersedes edge",
+          "summary": "Refuse the ingest when the inferred doc_type disagrees with the predecessor's doc_type unless the caller passes an explicit override flag.",
+          "pros": [
+            "No silent mistakes on chain extensions",
+            "Forces every doc_type transition to be deliberate"
+          ],
+          "cons": [
+            "Adds a new failure mode to a forgiving pipeline",
+            "Treats inference as authoritative enough to gate ingest; the underlying problem is that inference should not be running for authoritative callers in the first place",
+            "Does not address the review-queue pollution"
+          ]
+        },
+        {
+          "option": "SAGE accepts authoritative values; inference and review become caller responsibilities; chain inheritance retained as a graph-state exception (chosen)",
+          "summary": "Add a needs_review boolean to IngestRequest, defaulting to false. When false, SAGE commits caller values as-is and does not invoke filename inference. When true, SAGE marks metadata_confirmed=false and the document appears in pending_metadata. FilenameParser remains as a SAGE-provided library, exposed via a new parse_filename endpoint and MCP tool that callers invoke before ingest if they want filename-based suggestions. One exception is retained inside SAGE: when supersedes_document_id is present and the caller omits doc_type, project, or authority_scope, the new document inherits the missing value(s) from the predecessor on a per-field basis. Caller-supplied values continue to win. The vault config option metadata_extraction.review_required is deprecated and removed once the CAS application is updated to pass needs_review=true explicitly.",
+          "pros": [
+            "Resolves both symptoms with one architectural decision: chain inheritance fixes the doc_type regression; needs_review=false default removes the review-queue pollution for agent callers",
+            "Aligns implementation with the standing principles: SAGE owns graph state (chain context); callers own caller-side opinions (filename heuristics)",
+            "Per-call granularity matches the actual decision boundary: the same vault legitimately receives both authoritative and uncertain ingests",
+            "FilenameParser is preserved as reusable infrastructure, not deleted",
+            "The narrow chain-inheritance exception covers a coherent cluster of three type-shaped fields (doc_type, project, authority_scope) that describe what kind of document it is and where it sits in the workflow; version-specific fields (title, version_label, document_date) are correctly excluded as definitionally different across versions, and tags is excluded because it carries set semantics with normal editorial drift",
+            "Reading the inherited fields from the predecessor is a graph-state operation that depends on chain context only SAGE owns; it is not pattern matching against caller-defined rules",
+            "Mirrors the trust direction established in ADR-019 for edges: SAGE corrects its own prior conclusions but defers to caller/human authority"
+          ],
+          "cons": [
+            "Requires a coordinated change across schemas, the ingest pipeline, the SAGE MCP toolset, and the CAS application's bulk ingest workflow",
+            "Pre-existing entries in the pending_metadata queue need a one-time decision (bulk confirm, bulk archive, or hand-walk) before the new default takes effect",
+            "Behavior of vaults with metadata_extraction.review_required=true changes: review now requires explicit needs_review=true on each ingest. During the transition, the CAS application must pass the flag; agents must omit it",
+            "FilenameParser becomes a callable library invoked outside the ingest pipeline; an additional round trip is required when the CAS application wants suggestions before commit"
+          ]
+        }
+      ],
+      "decision": "SAGE ingest accepts authoritative values from the caller. IngestRequest gains a needs_review: bool field with default false. When needs_review=false, the ingest pipeline commits caller-supplied values as-is, does not invoke filename inference, and does not set metadata_confirmed=false. When needs_review=true, the document is marked metadata_confirmed=false and appears in the pending_metadata feed for human confirmation; in this mode the pipeline may also invoke filename inference to populate fields the caller did not supply. FilenameParser (sage/services/filename_parser.py) is preserved as a SAGE-provided library and exposed via a new endpoint (POST /parse-filename) and a corresponding MCP tool, both of which return parsed metadata without performing an ingest. One exception is retained inside the ingest pipeline: when IngestRequest.supersedes_document_id is present, the pipeline reads the predecessor's doc_type, project, and authority_scope, and for each of these three fields applies the predecessor's value to the new document if and only if the caller did not supply a value. Caller-supplied values continue to win on a per-field basis. The exception is scoped to these three type-shaped fields. Version-specific fields (title, version_label, document_date) are not inherited because they are definitionally different across versions. tags is excluded from automatic inheritance because it carries set semantics and editorial drift across a chain is normal; callers that want predecessor tags carried forward must do so deliberately. Further expansion of chain inheritance is deferred until a concrete need surfaces. The vault config option metadata_extraction.review_required is deprecated. Once the CAS application's bulk ingest workflow is updated to pass needs_review=true explicitly, the field is removed from vault config schemas and the auto-set behavior is removed from the ingest pipeline.",
+      "rationale": "The decision rests on a clean separation of authority. SAGE is the substrate for graph state; callers are the authority for caller-side opinions. Filename heuristics are caller-side opinions: a pattern like 'PV codes map to patent_draft' is a domain choice for a particular workflow, not a property of the substrate. Embedding those rules inside SAGE's ingest pipeline forces SAGE to speak for callers who already have authoritative metadata, which produced both observed symptoms. The narrow chain-inheritance exception covers a coherent cluster of three type-shaped fields -- doc_type, project, authority_scope -- that share a common property: each describes the kind of document or where it sits in the workflow rather than which version it is, and each is typically stable across a supersedes chain. Reading these fields from the predecessor at ingest is a graph-state operation that depends on chain context only SAGE owns; it is not pattern matching against caller-defined rules. Explicit caller-supplied values still take precedence on a per-field basis, which preserves the caller's authoritative role for cases where a chain transition legitimately changes one of these values. The exclusion of title, version_label, and document_date follows directly from the same reasoning: these fields are version-specific by nature. The exclusion of tags is principled rather than arbitrary: tags carry set semantics with normal editorial drift across a chain, and inherit has no unambiguous default (union, replace, or skip), so the field is left to deliberate caller action. The per-call needs_review flag is preferred over a per-vault default because the same vault legitimately receives both kinds of ingests. The pim_health vault sees authoritative agent ingests through the SAGE MCP toolset and uncertain human-driven bulk uploads through the CAS application; the choice of whether to enqueue for review is a property of the call, not the vault. Default false (rather than default true with explicit opt-out) reflects the empirical pattern: the dominant ingest source today is agents calling with authoritative metadata; bulk-ingest review is the minority case and the call site that needs it (CAS app bulk ingest) is a single, known consumer that can be updated to pass the flag explicitly. The trust direction established by ADR-019 for edges (engine corrects its own prior conclusions; humans correct the engine; engine never silently corrects humans) extends here to metadata: SAGE may inherit type-shaped fields from a predecessor it has direct chain knowledge of, but it does not silently overwrite caller-supplied values with inferences derived from caller-defined patterns.",
+      "consequences": [
+        "IngestRequest gains needs_review: bool with default false. Schema change in docs/fs/sage/; manifest version bump; Pydantic regen in sage/models/schemas.py per principle 8.",
+        "sage/services/ingestion.py: filename inference (_parse_source_filename and the apply step) and the metadata_confirmed=false setter are gated on needs_review=true. The default path commits caller-supplied metadata as-is and leaves metadata_confirmed at its default (true).",
+        "sage/services/ingestion.py: when IngestRequest.supersedes_document_id is set, the pipeline reads the predecessor's doc_type, project, and authority_scope. For each of these three fields, if the caller did not supply a value, the predecessor's value is applied to the new document before any vault default. Caller-supplied values continue to win on a per-field basis (e.g., omitting doc_type while supplying project triggers inheritance of doc_type only).",
+        "New endpoint POST /parse-filename and corresponding MCP tool exposure of FilenameParser. Returns parsed metadata (project, codes, title, version, date, doc_type) without performing an ingest. FilenameParser logic is unchanged; only the entry point is new.",
+        "sage/sage_api_tools.py and sage/mcp_server.py: sage_ingest tool docstring is updated to document the contract -- agents calling SAGE directly should pass complete metadata and leave needs_review at its default (false); needs_review=true is for callers (notably the CAS application's bulk ingest workflow) that intend the document to be held for human confirmation.",
+        "sage/api/routers/ingestion.py and sage/api/routers/pending_metadata.py: route handlers carry the new field through; pending_metadata response shape is unchanged but is populated only when callers opt in via needs_review=true.",
+        "Existing entries in pending_metadata at the time of the migration require a one-time decision per vault: bulk-confirm in place, bulk-archive, or hand-walk. The decision is recorded in the project tracker, not this ADR.",
+        "Vault config: metadata_extraction.review_required is deprecated. The pim_health vault config retains the field during the transition but the ingest pipeline ignores it once needs_review is wired through. The field and the supporting code path are removed in a cleanup commit after the CAS application is updated to pass needs_review=true on bulk-ingest calls.",
+        "CAS application bulk ingest workflow: call parse_filename to obtain suggestions, present to the human for confirmation or edit, then call sage_ingest with the confirmed metadata. The application chooses between needs_review=true (if a second-look review queue is desired even after in-line confirmation) and needs_review=false (if the in-line confirmation is the authoritative step). The default path is the latter; the former is available for cautious workflows.",
+        "Agent ingest pattern stabilizes as: pass complete metadata at ingest, omit needs_review (default false). The earlier proposed three-step pattern (ingest, set metadata, review edges) collapses to two steps for the chain-extension common case because chain inheritance fills doc_type, project, and authority_scope when omitted.",
+        "ADR-020 (descriptive abstraction prompt with doc_type parameter) interacts positively: chain inheritance produces a correct doc_type at ingest, which is then threaded into the abstraction prompt. Prior to chain inheritance, an incorrectly inferred doc_type would have shaped the abstract incorrectly.",
+        "Test coverage: ingest with needs_review=false skips the queue and commits caller values; ingest with needs_review=true marks metadata_confirmed=false and invokes filename inference; chain inheritance fires for doc_type, project, and authority_scope when supersedes_document_id is set and the corresponding field is omitted; per-field independence is preserved (one field can be inherited while another is caller-supplied); explicit caller-supplied values win over chain inheritance on a per-field basis; parse_filename endpoint returns parsed metadata without side effects.",
+        "Future expansion of chain inheritance beyond the type-shaped trio inherits this ADR's rationale: the field must be one whose authoritative value is recoverable from chain context (graph state SAGE owns) rather than derived from caller-defined patterns or version-specific by nature. tags would require a separate decision on inheritance semantics (union, replace, skip) before being added; pattern-derived and version-specific fields remain caller-side concerns.",
+        "All CAS documentation is currently stale and will be updated as part of post-beta consolidation. The canonical documents named in 'affects' (SAGE Architecture Reference, Formal Substrate) will be revised at that time. Until consolidation, this ADR is the authoritative record of the decision and its rationale."
+      ]
     }
   ]
 }
