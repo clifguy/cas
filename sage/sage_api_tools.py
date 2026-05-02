@@ -46,6 +46,7 @@ from sage.models.schemas import (
     TraverseRequest,
     UpdateMetadataRequest,
 )
+from sage.models.enums import SourceType
 
 
 def register_sage_tools(
@@ -74,6 +75,8 @@ def register_sage_tools(
         created_by: str | None = None,
         force: bool = False,
         supersedes_document_id: str | None = None,
+        needs_review: bool = False,
+        metadata: dict | None = None,
     ) -> dict:
         """Ingest a source file into SAGE. Runs the three-stage pipeline:
         projection, indexing, and abstraction.
@@ -89,6 +92,16 @@ def register_sage_tools(
         transition (if requested) runs synchronously with record
         insertion, so the version chain is complete when this tool
         returns.
+
+        Per CAS-ADR-021, callers are authoritative for metadata. Pass
+        prepared values via `metadata` and leave `needs_review` at the
+        default false; the document is committed with caller-supplied
+        values authoritative and metadata_confirmed=true. Set
+        needs_review=true to defer to the metadata-review queue:
+        filename inference runs, parsed values populate fields the
+        caller did not supply, and the document is held with
+        metadata_confirmed=false until a reviewer confirms via
+        sage_update_metadata.
 
         Args:
             vault_id: Target vault identifier.
@@ -107,7 +120,27 @@ def register_sage_tools(
                 lifecycle transition synchronously with record insertion:
                 creates a `supersedes` edge (new -> old) and archives
                 the predecessor. The predecessor must be active and its
-                content hash must differ from the new file.
+                content hash must differ from the new file. Per
+                CAS-ADR-021, the trio fields (doc_type, project,
+                authority_scope) inherit from the predecessor when the
+                caller omits them and the predecessor's value is
+                non-None.
+            needs_review: When true, the document enters the
+                metadata-review queue (metadata_confirmed=false) and
+                filename inference fills in fields the caller did not
+                supply. Default false: filename inference is skipped
+                and caller metadata is committed authoritatively. Use
+                sage_parse_filename ahead of ingest if you want
+                filename-based suggestions without entering the review
+                queue.
+            metadata: Caller-supplied metadata fields applied to the
+                document at ingest. Per the CAS-ADR-021 precedence
+                chain, caller values win over filename parse, chain
+                inheritance, and vault defaults on a per-field basis.
+                Recognized keys are the mutable document fields
+                (title, version_label, project, doc_type,
+                authority_scope, document_date, tags). Tags may be
+                supplied as a comma-separated string.
         """
         try:
             v = get_vault(vault_id)
@@ -118,6 +151,8 @@ def register_sage_tools(
                 created_by=created_by,
                 force=force,
                 supersedes_document_id=supersedes_document_id,
+                needs_review=needs_review,
+                metadata=metadata,
             )
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP
             # client timeout (BH-130). Callers poll sage_get_document
@@ -126,6 +161,41 @@ def register_sage_tools(
                 request, wait_for_pipeline=False
             )
             return serialize(result.document)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_parse_filename(
+        vault_id: str,
+        filename: str,
+        adapter: str,
+    ) -> dict:
+        """Parse a filename's basename through the vault's
+        FilenameParser and return the extracted metadata. Side-effect
+        free: no document is created and vault state is unchanged.
+
+        Per CAS-ADR-021, this is the agent-facing companion to
+        sage_ingest's caller-authoritative metadata flow. Call this
+        first to obtain filename-derived suggestions, decide which
+        fields to keep, then call sage_ingest with metadata=...
+        carrying the resolved values. Fields the parser could not
+        extract come back null. When the vault has no
+        filename_extraction.pattern configured, all fields are null.
+
+        Args:
+            vault_id: Target vault identifier.
+            filename: Filename to parse. The basename is preferred;
+                directory components are stripped before parsing.
+            adapter: Source adapter (markdown, docx, pdf, email,
+                onenote, teams_chat). Must be enabled on the vault.
+        """
+        try:
+            v = get_vault(vault_id)
+            adapter_enum = SourceType(adapter)
+            response = v.ingestion_service.parse_filename(
+                filename, adapter_enum
+            )
+            return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -1016,6 +1086,7 @@ def register_sage_tools(
 
     return {
         "sage_ingest": sage_ingest,
+        "sage_parse_filename": sage_parse_filename,
         "sage_reabstract": sage_reabstract,
         "sage_get_document": sage_get_document,
         "sage_update_metadata": sage_update_metadata,

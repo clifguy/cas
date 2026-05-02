@@ -36,7 +36,12 @@ from sage.api.errors import (
 )
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
+from sage.models.schemas import (
+    Document,
+    IngestRequest,
+    ParseFilenameResponse,
+    SetLifecycleRequest,
+)
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identity import generate_document_id
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
@@ -390,9 +395,17 @@ class IngestionService:
             storage_root / vault_relative, request.config
         )
 
-        # Parse filename per vault config (CAS-ADR-015). Active only when the
-        # vault declares a filename_extraction.pattern; None otherwise.
-        parsed = self._parse_source_filename(source_path, request.adapter)
+        # Parse filename per vault config (CAS-ADR-015) only when the caller
+        # opts in to review (CAS-ADR-021). Default ingests are caller-
+        # authoritative: filename inference does not run and the adapter's
+        # ProjectionResult.title remains the title fallback. When
+        # needs_review is True, current filename-inference behavior is
+        # preserved end-to-end.
+        parsed = (
+            self._parse_source_filename(source_path, request.adapter)
+            if request.needs_review
+            else None
+        )
 
         # Resolve title with precedence: caller > filename parse > adapter.
         # The adapter's ProjectionResult.title is a content-extraction
@@ -536,6 +549,31 @@ class IngestionService:
             if metadata_updates:
                 doc = await self._store.update_document(doc.id, metadata_updates)
 
+        # Chain inheritance for type-shaped trio fields (CAS-ADR-021). When
+        # the new document supersedes a predecessor, copy doc_type, project,
+        # and authority_scope down the chain on a per-field basis: each
+        # field inherits only when the predecessor has a non-None value AND
+        # the caller did not supply the field AND the field is unset on the
+        # new document. Caller-supplied values continue to win per-field;
+        # this step only fills gaps. Version-specific fields (title,
+        # version_label, document_date) and tags are explicitly excluded.
+        if predecessor is not None:
+            caller_keys = set((request.metadata or {}).keys())
+            inheritance_updates: dict = {}
+            for field in ("doc_type", "project", "authority_scope"):
+                pred_value = getattr(predecessor, field, None)
+                doc_value = getattr(doc, field, None)
+                if (
+                    pred_value is not None
+                    and doc_value is None
+                    and field not in caller_keys
+                ):
+                    inheritance_updates[field] = pred_value
+            if inheritance_updates:
+                doc = await self._store.update_document(
+                    doc.id, inheritance_updates
+                )
+
         # Merge adapter-emitted tags into document.tags (BH-131, BH-132).
         # The adapter declares owned namespace prefixes so force re-ingest
         # can strip stale adapter-owned tags before applying the fresh set,
@@ -556,11 +594,14 @@ class IngestionService:
             if merged != (doc.tags or []):
                 doc = await self._store.update_document(doc.id, {"tags": merged})
 
-        # Set metadata_confirmed per vault's review_required flag (ME-008).
-        # A vault that trusts its naming conventions (review_required=false)
-        # confirms metadata at ingest; a vault that requires review leaves
-        # metadata unconfirmed until update_metadata is called.
-        confirm = not self._review_required
+        # Set metadata_confirmed per the caller's needs_review flag
+        # (CAS-ADR-021). Caller-authoritative ingests (needs_review=False,
+        # the default) commit confirmed; review-queue ingests
+        # (needs_review=True) leave metadata unconfirmed until
+        # update_metadata is called. The vault config's
+        # metadata_extraction.review_required field is vestigial; removal
+        # is tracked in the ADR-021 cleanup.
+        confirm = not request.needs_review
         if doc.metadata_confirmed != confirm:
             doc = await self._store.update_document(
                 doc.id, {"metadata_confirmed": confirm}
@@ -878,6 +919,33 @@ class IngestionService:
             adapter.value if isinstance(adapter, SourceType) else str(adapter)
         )
         return self._filename_parser.parse(source_path.stem, adapter=adapter_value)
+
+    def parse_filename(
+        self, filename: str, adapter: SourceType | str
+    ) -> ParseFilenameResponse:
+        """Side-effect-free filename parse for the parse-filename endpoint.
+
+        Wraps the per-vault FilenameParser without performing an ingest.
+        Returns a ParseFilenameResponse whose fields are all null when
+        the vault has no filename_extraction.pattern configured. When a
+        pattern is configured, fields the parser could not extract are
+        null and the codes field is an empty list rather than null.
+        """
+        if self._filename_parser is None:
+            return ParseFilenameResponse()
+        adapter_value = (
+            adapter.value if isinstance(adapter, SourceType) else str(adapter)
+        )
+        stem = Path(filename).stem
+        parsed = self._filename_parser.parse(stem, adapter=adapter_value)
+        return ParseFilenameResponse(
+            title=parsed.title,
+            project=parsed.project,
+            version_label=parsed.version,
+            document_date=parsed.date,
+            doc_type=parsed.doc_type,
+            codes=list(parsed.codes),
+        )
 
     @staticmethod
     def _build_metadata_updates_from_parsed(parsed: ParsedMetadata) -> dict:

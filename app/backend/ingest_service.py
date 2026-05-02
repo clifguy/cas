@@ -153,6 +153,12 @@ class BatchIngestService:
                     source=fd.file_path,
                     adapter=SourceType(fd.adapter),
                     metadata=metadata_dict,
+                    # CAS-ADR-021: SAGE's default is to commit caller-
+                    # supplied metadata as authoritative. The CAS bulk-
+                    # ingest workflow surfaces inferred values for human
+                    # confirmation, so it explicitly opts the document
+                    # into the metadata-review queue.
+                    needs_review=True,
                 )
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,

@@ -228,6 +228,8 @@ async def test_me_001_filename_parse_populates_record(
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
         adapter=SourceType.MARKDOWN,
+        # ADR-021: filename inference runs only under needs_review=True.
+        needs_review=True,
     )
     result = await pim_style_ingestion_service.ingest(request)
     doc = result.document
@@ -257,6 +259,8 @@ async def test_me_002_caller_metadata_overrides_filename_parse(
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
         adapter=SourceType.MARKDOWN,
+        # ADR-021: filename inference runs only under needs_review=True.
+        needs_review=True,
         metadata={
             "title": "Custom Title",
             "project": "OTHER",
@@ -294,6 +298,8 @@ async def test_me_003_filename_title_overrides_adapter_title(
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
         adapter=SourceType.MARKDOWN,
+        # ADR-021: filename inference runs only under needs_review=True.
+        needs_review=True,
     )
     result = await pim_style_ingestion_service.ingest(request)
 
@@ -380,6 +386,8 @@ async def test_me_005_filename_doc_type_is_not_overwritten_by_misc(
     request = IngestRequest(
         source="refs/2026-02-01_PIM_REF_Glossary_v2.md",
         adapter=SourceType.MARKDOWN,
+        # ADR-021: filename inference runs only under needs_review=True.
+        needs_review=True,
     )
     result = await pim_style_ingestion_service.ingest(request)
 
@@ -408,6 +416,8 @@ async def test_me_006_doc_type_defaults_to_misc_when_unresolved(
     request = IngestRequest(
         source="random/2026-03-01_PIM_Untagged-Note.md",
         adapter=SourceType.MARKDOWN,
+        # ADR-021: filename inference runs only under needs_review=True.
+        needs_review=True,
     )
     result = await pim_style_ingestion_service.ingest(request)
     doc = result.document
@@ -443,12 +453,15 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
         IngestRequest(
             source="patents/2026-03-09_PIM_PV06_A_v1.md",
             adapter=SourceType.MARKDOWN,
+            # ADR-021: filename inference runs only under needs_review=True.
+            needs_review=True,
         )
     )
     docx_result = await pim_style_ingestion_service.ingest(
         IngestRequest(
             source="patents/2026-03-09_PIM_PV06_A_v1.docx",
             adapter=SourceType.DOCX,
+            needs_review=True,
         )
     )
 
@@ -465,63 +478,15 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
 
 
 # ---------------------------------------------------------------------------
-# TEST-SAGE-ME-008: review_required flag controls metadata_confirmed at ingest
+# TEST-SAGE-ME-008: removed by CAS-ADR-021 implementation Chunk 2.
+#
+# The vault-config metadata_extraction.review_required flag no longer
+# drives metadata_confirmed at ingest; behavior is gated on
+# IngestRequest.needs_review (caller-authoritative). Coverage of the
+# new contract lives in tests/sage/test_ad021_ingestion.py
+# (TEST-AD021-001, TEST-AD021-002, TEST-AD021-003). The vault config
+# field itself is removed in ADR-021 cleanup Phase B.
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def review_required_ingestion_service(
-    graph_store,
-    lock_manager,
-    stub_content_store,
-    stub_embedding_provider,
-    stub_abstraction_provider,
-    tmp_vault_dir,
-):
-    """Ingestion service for a vault with review_required=True."""
-    config_dict = _pim_vault_config_dict(tmp_vault_dir, review_required=True)
-    config = VaultConfig.model_validate(config_dict)
-    return IngestionService(
-        graph_store=graph_store,
-        lock_manager=lock_manager,
-        content_store=stub_content_store,
-        embedding_provider=stub_embedding_provider,
-        abstraction_provider=stub_abstraction_provider,
-        config=config,
-        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
-    )
-
-
-async def test_me_008_review_not_required_sets_metadata_confirmed_true(
-    tmp_vault_dir, pim_style_ingestion_service
-):
-    _write_md(
-        tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_A_v1.md",
-        body="# A\n\nBody.\n",
-    )
-    request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_A_v1.md",
-        adapter=SourceType.MARKDOWN,
-    )
-    result = await pim_style_ingestion_service.ingest(request)
-    assert result.document.metadata_confirmed is True
-
-
-async def test_me_008_review_required_sets_metadata_confirmed_false(
-    tmp_vault_dir, review_required_ingestion_service
-):
-    _write_md(
-        tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_A_v1.md",
-        body="# A\n\nBody.\n",
-    )
-    request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_A_v1.md",
-        adapter=SourceType.MARKDOWN,
-    )
-    result = await review_required_ingestion_service.ingest(request)
-    assert result.document.metadata_confirmed is False
 
 
 # ---------------------------------------------------------------------------

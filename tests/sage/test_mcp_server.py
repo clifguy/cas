@@ -31,6 +31,7 @@ from sage.mcp_server import (
     sage_get_document,
     sage_ingest,
     sage_link,
+    sage_parse_filename,
     sage_read_projection,
     sage_reabstract,
     sage_refresh_views,
@@ -41,6 +42,8 @@ from sage.mcp_server import (
     sage_update_metadata,
     sage_vault_stats,
 )
+
+from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 
 
 @pytest.fixture
@@ -124,6 +127,96 @@ async def test_ingest_force_bypasses_duplicate(vault_services):
 async def test_ingest_missing_file_returns_error(vault_services):
     result = _parse(await sage_ingest("test_vault", "no/such/file.md", "markdown"))
     assert result["error"] == "source_file_not_found"
+
+
+# ---------------------------------------------------------------------------
+# CAS-ADR-021: sage_ingest accepts needs_review and metadata; new
+# sage_parse_filename MCP tool returns parsed fields side-effect-free.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pim_vault_services(tmp_vault_dir):
+    """Initialize a PIM-style vault (with filename_extraction) for the
+    sage_parse_filename test. Registered in the MCP vault registry under
+    its config-declared id (test_metadata_vault).
+    """
+    config = VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
+    services = await initialize_services(
+        config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
+    _mcp._vaults["test_metadata_vault"] = services
+
+    yield services
+
+    await asyncio.sleep(0.5)
+    await services.graph_store.close()
+    _mcp._vaults.pop("test_metadata_vault", None)
+
+
+async def test_ad021_013_sage_ingest_accepts_metadata_and_needs_review(
+    vault_services,
+):
+    """sage_ingest threads metadata + needs_review through to the
+    pipeline. Default needs_review=False commits caller-supplied
+    metadata as authoritative (metadata_confirmed=True).
+    """
+    result = _parse(
+        await sage_ingest(
+            "test_vault",
+            "test/sample.md",
+            "markdown",
+            metadata={"title": "Caller Title", "doc_type": "memo"},
+        )
+    )
+    # No error from the tool surface
+    assert "error" not in result
+    # Caller metadata applied to the document record
+    assert result["title"] == "Caller Title"
+    assert result["doc_type"] == "memo"
+    # Default needs_review=False -> caller-authoritative ingest
+    assert result["metadata_confirmed"] is True
+
+
+async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
+    pim_vault_services,
+):
+    """sage_parse_filename returns parsed fields for a filename
+    matching the vault's pattern, and creates no documents.
+    """
+    graph_store = pim_vault_services.graph_store
+
+    documents_before = await graph_store.list_all_documents()
+    pending_before = await graph_store.list_pending_metadata_documents()
+    assert documents_before == []
+    assert pending_before == []
+
+    result = _parse(
+        await sage_parse_filename(
+            "test_metadata_vault",
+            "2026-03-09_PIM_PV06_Claim-Set_v6.md",
+            "markdown",
+        )
+    )
+
+    assert result["title"] == "Claim-Set"
+    assert result["project"] == "PIM"
+    assert result["version_label"] == "v6.0"
+    assert result["document_date"] == "2026-03-09"
+    assert result["doc_type"] == "patent_draft"
+    assert result["codes"] == ["PV06"]
+
+    documents_after = await graph_store.list_all_documents()
+    pending_after = await graph_store.list_pending_metadata_documents()
+    assert documents_after == [], (
+        "sage_parse_filename must not create document records"
+    )
+    assert pending_after == [], (
+        "sage_parse_filename must not enqueue pending_metadata entries"
+    )
 
 
 # ---------------------------------------------------------------------------

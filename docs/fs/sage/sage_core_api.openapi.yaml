@@ -1193,6 +1193,42 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/parse-filename:
+    post:
+      operationId: parse_filename
+      summary: Parse a filename without ingesting.
+      description: >-
+        Side-effect-free wrapper over the vault's FilenameParser.
+        Returns the metadata fields the parser would extract from
+        the supplied filename under the named adapter. No document
+        is created; vault state is unchanged. Intended for callers
+        that want filename-based suggestions to populate a UI before
+        submitting an ingest with caller-authoritative metadata
+        (CAS-ADR-021). When the vault has no filename_extraction
+        pattern configured, all parsed fields are returned as null.
+      tags: [Utilities]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParseFilenameRequest"
+      responses:
+        "200":
+          description: Parsed filename metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParseFilenameResponse"
+        "404":
+          description: Vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   # ---------------------------------------------------------------------------
   # Document Operations (read endpoints + local OS open)
   # ---------------------------------------------------------------------------
@@ -2027,6 +2063,21 @@ components:
             exists with the same source_path and source_content_hash).
             Returns 200 (re-processed) instead of 201 (new). The
             document ID is preserved. Use for pipeline failure recovery.
+        needs_review:
+          type: boolean
+          default: false
+          description: >-
+            When true, the document is held in the metadata-review queue
+            after ingest: filename inference runs, parsed values populate
+            the document where the caller did not supply them, and
+            metadata_confirmed is set to false so the document appears in
+            pending-metadata. When false (default per CAS-ADR-021),
+            filename inference is skipped entirely; the document is
+            committed with caller-supplied metadata authoritative and
+            metadata_confirmed=true. Bulk-ingest UIs that want human
+            confirmation of inferred values pass needs_review=true
+            explicitly; agent ingests with prepared metadata leave it
+            at the default.
         metadata:
           type: object
           additionalProperties:
@@ -2034,14 +2085,15 @@ components:
           nullable: true
           description: >-
             Caller-supplied metadata fields to merge into the document
-            record at ingestion time. Typically populated from parsed
-            filename segments (title, date, project, codes, version,
-            doc_type) by the application backend's filename parser.
-            These values participate in the standard metadata precedence
-            chain: manual entry > content extraction > filename
-            extraction > caller-supplied. Fields with null values are
-            ignored. Unknown field names are stored but have no
-            schema-enforced semantics.
+            record at ingestion time. Per CAS-ADR-021, callers are
+            authoritative for metadata; SAGE applies values per-field
+            with the precedence chain caller > filename parse (only
+            when needs_review=true) > chain inherit (predecessor's
+            doc_type, project, authority_scope when supersedes_document_id
+            is set and the caller omitted the field) > vault default
+            (doc_type only, falls through to "misc"). Fields with null
+            values are ignored. Unknown field names are stored but have
+            no schema-enforced semantics.
         supersedes_document_id:
           type: string
           nullable: true
@@ -2055,6 +2107,66 @@ components:
             validation (exists + active + different content hash) runs
             before projection; failures return 404/409 before any
             pipeline work begins.
+
+    ParseFilenameRequest:
+      type: object
+      required: [filename, adapter]
+      description: >-
+        Inputs for the side-effect-free filename parser endpoint.
+        Carries the bare filename (basename, not a full path) and the
+        adapter under whose vault configuration the parse should run.
+      properties:
+        filename:
+          type: string
+          description: >-
+            Filename to parse. Should be the basename of the source
+            file; the parser does not consume directory components.
+        adapter:
+          $ref: "#/components/schemas/SourceType"
+          description: >-
+            Source adapter whose filename_extraction configuration
+            governs the parse. Must be an enabled adapter for the
+            vault.
+
+    ParseFilenameResponse:
+      type: object
+      description: >-
+        Metadata fields the FilenameParser extracted from the supplied
+        filename. All fields are nullable; a field is null when the
+        parser could not extract it (no pattern configured, pattern
+        did not match, or the captured segment was empty). No document
+        is created and vault state is unchanged.
+      properties:
+        title:
+          type: string
+          nullable: true
+        project:
+          type: string
+          nullable: true
+        version_label:
+          type: string
+          nullable: true
+        document_date:
+          type: string
+          nullable: true
+          description: ISO-8601 date string when extractable.
+        doc_type:
+          type: string
+          nullable: true
+          description: >-
+            Resolved doc_type after applying the vault's
+            keyword_to_doc_type and code_to_doc_type maps over the
+            parsed segments. Null when no mapping fires.
+        codes:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: >-
+            Code segments extracted from the filename via
+            known_code_patterns or the configured filename pattern.
+            Null when the parser has no pattern; empty list when the
+            pattern ran but matched no codes.
 
     LinkRequest:
       type: object

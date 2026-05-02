@@ -103,8 +103,23 @@ class IngestRequest(BaseModel):
     config: dict | None = None
     created_by: str | None = None
     force: bool = False
+    needs_review: bool = False
     metadata: dict[str, str] | None = None
     supersedes_document_id: str | None = None
+
+
+class ParseFilenameRequest(BaseModel):
+    filename: str
+    adapter: SourceType
+
+
+class ParseFilenameResponse(BaseModel):
+    title: str | None = None
+    project: str | None = None
+    version_label: str | None = None
+    document_date: str | None = None
+    doc_type: str | None = None
+    codes: list[str] | None = None
 
 
 class DocumentWithContent(Document):

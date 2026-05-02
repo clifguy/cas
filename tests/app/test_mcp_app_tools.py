@@ -415,15 +415,17 @@ class TestSagePendingMetadata:
     async def test_mcp_013_returns_pending(self, tmp_path):
         """sage_pending_metadata returns documents awaiting confirmation in envelope.
 
-        Per CAS-ADR-015 (ME-008), ingest sets metadata_confirmed based on the
-        vault's metadata_extraction.review_required flag. This test uses a
-        vault configured with review_required=True so that ingested documents
-        legitimately land in pending state.
+        Under CAS-ADR-021, metadata_confirmed=False is driven by the
+        caller's IngestRequest.needs_review flag, not by vault config.
+        The MCP tool surface does not yet expose needs_review (Chunk 4),
+        so the test seeds a pending document by inserting it directly
+        via the graph store. This keeps the test focused on
+        sage_pending_metadata's behavior, decoupled from how a document
+        comes to be unconfirmed.
         """
         cfg_dict = _make_vault_config_dict(
             tmp_path, "review_vault", "Review Required Vault"
         )
-        cfg_dict["metadata_extraction"]["review_required"] = True
         config = VaultConfig.model_validate(cfg_dict)
         services = await initialize_services(
             config,
@@ -433,11 +435,24 @@ class TestSagePendingMetadata:
         )
         _mcp._vaults["review_vault"] = services
         try:
-            sources = Path(config.vault.storage_root)
-            (sources / "sample.md").write_text("# Sample\n\nContent.")
-
-            await sage_ingest("review_vault", "sample.md", "markdown")
-            await asyncio.sleep(0.1)
+            now = datetime.now(timezone.utc)
+            pending_doc = Document(
+                id="pending-doc-1",
+                title="Pending Sample",
+                source_type=SourceType.MARKDOWN,
+                source_path="sample.md",
+                lifecycle_status="active",
+                source_content_hash="0" * 64,
+                adapter_version="1.0",
+                created_by="testuser",
+                created_at=now,
+                last_modified_by="testuser",
+                updated_at=now,
+                projected_at=now,
+                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                metadata_confirmed=False,
+            )
+            await services.graph_store.insert_document(pending_doc)
 
             result = _parse(await sage_pending_metadata("review_vault"))
             assert result["vault_id"] == "review_vault"

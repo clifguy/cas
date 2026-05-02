@@ -1491,7 +1491,7 @@
     {
       "id": "ADR-021",
       "title": "Metadata inference and review are caller responsibilities; SAGE accepts authoritative values",
-      "status": "proposed",
+      "status": "accepted",
       "superseded_by": null,
       "date": "2026-05-01",
       "created_by": "Clif + Claude session",

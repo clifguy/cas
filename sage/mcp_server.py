@@ -151,6 +151,7 @@ _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 # ---------------------------------------------------------------------------
 
 sage_ingest = _sage_tools["sage_ingest"]
+sage_parse_filename = _sage_tools["sage_parse_filename"]
 sage_reabstract = _sage_tools["sage_reabstract"]
 sage_get_document = _sage_tools["sage_get_document"]
 sage_update_metadata = _sage_tools["sage_update_metadata"]

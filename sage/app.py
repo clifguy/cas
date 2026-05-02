@@ -16,6 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import (
     documents,
+    filename_parser,
     graph_ops,
     ingestion,
     lifecycle,
@@ -187,6 +188,7 @@ def create_app(
     app.include_router(utilities.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(staging_edges.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(pending_metadata.router, prefix="/sage_vaults/{vault_id}")
+    app.include_router(filename_parser.router, prefix="/sage_vaults/{vault_id}")
 
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)
