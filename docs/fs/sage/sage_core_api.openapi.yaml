@@ -2081,7 +2081,11 @@ components:
         metadata:
           type: object
           additionalProperties:
-            type: string
+            oneOf:
+              - type: string
+              - type: array
+                items:
+                  type: string
           nullable: true
           description: >-
             Caller-supplied metadata fields to merge into the document
@@ -2093,7 +2097,10 @@ components:
             is set and the caller omitted the field) > vault default
             (doc_type only, falls through to "misc"). Fields with null
             values are ignored. Unknown field names are stored but have
-            no schema-enforced semantics.
+            no schema-enforced semantics. Values are strings except
+            tags, which may be supplied as a list of strings or as a
+            comma-separated string (parity with sage_update_metadata's
+            list-typed tags field).
         supersedes_document_id:
           type: string
           nullable: true

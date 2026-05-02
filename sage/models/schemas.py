@@ -104,7 +104,7 @@ class IngestRequest(BaseModel):
     created_by: str | None = None
     force: bool = False
     needs_review: bool = False
-    metadata: dict[str, str] | None = None
+    metadata: dict[str, str | list[str]] | None = None
     supersedes_document_id: str | None = None
 
 

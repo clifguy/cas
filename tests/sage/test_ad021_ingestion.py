@@ -1,4 +1,4 @@
-"""Ingestion behavior tests for CAS-ADR-021 (TEST-AD021-001 through 009).
+"""Ingestion behavior tests for CAS-ADR-021 (TEST-AD021-001 through 014).
 
 Validates the runtime behavior change introduced in Chunk 2 of the
 ADR-021 implementation:
@@ -402,3 +402,110 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
     assert v2.document.project == "PIM"
     assert v2.document.doc_type == "patent_draft"
     assert v2.document.authority_scope == "domain"
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-010: caller-supplied tags as a list land on the document.
+# Parity with sage_update_metadata's tags: list[str] contract.
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_010_caller_tags_list_form(
+    tmp_vault_dir, pim_ingestion_service
+):
+    _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
+
+    result = await pim_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"tags": ["PV02", "PV"]},
+        )
+    )
+    assert result.document.tags == ["PV02", "PV"]
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-011: caller-supplied tags as a comma-separated string land on
+# the document. Honors the sage_ingest docstring contract.
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_011_caller_tags_comma_separated_string(
+    tmp_vault_dir, pim_ingestion_service
+):
+    _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
+
+    result = await pim_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"tags": "PV,PV02"},
+        )
+    )
+    assert result.document.tags == ["PV", "PV02"]
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-012: single-token string (no comma) wraps to a one-element
+# list. Regression guard for the reported defect where "PV02" produced [].
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_012_caller_tags_single_token_string(
+    tmp_vault_dir, pim_ingestion_service
+):
+    _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
+
+    result = await pim_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"tags": "PV02"},
+        )
+    )
+    assert result.document.tags == ["PV02"]
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-013: empty string yields empty tags. No tags supplied is
+# distinguishable from explicit empty input only via metadata key
+# presence; both must produce doc.tags == [].
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_013_caller_tags_empty_string(
+    tmp_vault_dir, pim_ingestion_service
+):
+    _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
+
+    result = await pim_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"tags": ""},
+        )
+    )
+    assert result.document.tags == []
+
+
+# ---------------------------------------------------------------------------
+# TEST-AD021-014: whitespace and empty fragments are pruned in the string
+# form. Mirrors the existing `codes` branch precedent
+# (`[c.strip() for c in value.split(",") if c.strip()]`).
+# ---------------------------------------------------------------------------
+
+
+async def test_ad021_014_caller_tags_string_strips_and_filters(
+    tmp_vault_dir, pim_ingestion_service
+):
+    _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
+
+    result = await pim_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"tags": "PV02, , PV"},
+        )
+    )
+    assert result.document.tags == ["PV02", "PV"]

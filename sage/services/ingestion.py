@@ -867,7 +867,7 @@ class IngestionService:
                 })
 
     @staticmethod
-    def _build_metadata_updates(metadata: dict[str, str]) -> dict:
+    def _build_metadata_updates(metadata: dict[str, str | list[str]]) -> dict:
         """Convert caller-supplied metadata dict to document field updates.
 
         Known fields are mapped to document columns. Unknown fields are
@@ -889,6 +889,15 @@ class IngestionService:
             elif key == "codes":
                 # codes stored as comma-separated string -> tags list
                 updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
+            elif key == "tags":
+                if isinstance(value, list):
+                    updates["tags"] = [
+                        str(t).strip() for t in value if str(t).strip()
+                    ]
+                else:
+                    updates["tags"] = [
+                        t.strip() for t in str(value).split(",") if t.strip()
+                    ]
         return updates
 
     def _parse_source_filename(

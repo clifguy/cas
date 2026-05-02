@@ -140,7 +140,9 @@ def register_sage_tools(
                 Recognized keys are the mutable document fields
                 (title, version_label, project, doc_type,
                 authority_scope, document_date, tags). Tags may be
-                supplied as a comma-separated string.
+                supplied as a list of strings or as a comma-separated
+                string; whitespace is trimmed and empty fragments are
+                dropped in the string form.
         """
         try:
             v = get_vault(vault_id)

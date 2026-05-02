@@ -173,7 +173,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.13",
+  "substrate_version": "1.14",
   "revision_history": [
     {
       "version": "0.1",
@@ -249,6 +249,11 @@
       "version": "1.13",
       "date": "2026-05-01",
       "summary": "Substrate-conformance fix: add the long-missing project_identifier property to sage/metadata_extraction.schema.json under filename_extraction. The field is read by sage/services/filename_parser.py (self._project_id) and used to disambiguate a leading short-uppercase filename segment from a code (matching segment is classified as the document's project rather than as a code, overriding known_code_patterns). It has been present in the pim_health vault YAML and in SAGE/app test fixtures since before CAS-ADR-021, but was absent from the schema's filename_extraction.additionalProperties=false allowlist, so a strict JSON Schema validation pass against pim_health failed even when the runtime path (Pydantic VaultConfig) accepted it. Discovered during CAS-ADR-021 cleanup Phase B verification and originally flagged as out-of-scope in CAS-ADR-021_cleanup.md; landed as a separate substrate-conformance commit. No code, test, or YAML edits required -- the field is already consumed correctly everywhere it appears. The CAS Application API spec already references project_identifier (cas_app_api.openapi.yaml ParseFilenameResponse.project description)."
+    },
+    {
+      "version": "1.14",
+      "date": "2026-05-02",
+      "summary": "Additive widening of IngestRequest.metadata to support list-typed values for the tags field, plus a paired implementation fix. One change to sage/sage_core_api.openapi.yaml: metadata.additionalProperties widened from `type: string` to `oneOf: [string, array<string>]`. Backward compatible (every prior shape still validates). Motivated by a defect: sage_ingest's docstring promised that a comma-separated tags string would land on doc.tags, but sage/services/ingestion.py:_build_metadata_updates lacked a `tags` branch and silently dropped the value, requiring callers to ingest first then call sage_update_metadata to apply tags. The implementation fix adds the missing branch (accepts list[str] OR comma-separated string); the schema widening allows the list form -- which sage_update_metadata already accepts -- to flow through ingest as well, removing the cross-tool shape mismatch. No new architectural constraint; no ADR required. Ingestion regression coverage added at tests/sage/test_ad021_ingestion.py (TEST-AD021-010 through 014)."
     }
   ]
 }
