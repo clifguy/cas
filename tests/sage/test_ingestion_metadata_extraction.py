@@ -49,7 +49,7 @@ requires_docx = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 
-def _pim_metadata_extraction(review_required: bool = False) -> dict:
+def _pim_metadata_extraction() -> dict:
     """PIM Health-like metadata extraction config.
 
     Mirrors the fixture used in tests/app/test_app_backend.py so that
@@ -57,7 +57,6 @@ def _pim_metadata_extraction(review_required: bool = False) -> dict:
     app backend has always validated against.
     """
     return {
-        "review_required": review_required,
         "filename_extraction": {
             "pattern": "{date}_{project}_{code}_{title}_{version}",
             "separator": "_",
@@ -93,7 +92,7 @@ def _pim_metadata_extraction(review_required: bool = False) -> dict:
     }
 
 
-def _pim_vault_config_dict(tmp_vault_dir: Path, review_required: bool = False) -> dict:
+def _pim_vault_config_dict(tmp_vault_dir: Path) -> dict:
     """Build a PIM-Health-like vault config for tests in this module.
 
     Uses both markdown and docx adapters so ME-007 can exercise both
@@ -145,7 +144,7 @@ def _pim_vault_config_dict(tmp_vault_dir: Path, review_required: bool = False) -
                 {"source_type": "docx", "enabled": True},
             ],
         },
-        "metadata_extraction": _pim_metadata_extraction(review_required),
+        "metadata_extraction": _pim_metadata_extraction(),
         "edge_inference": {
             "tier_assignments": [
                 {
@@ -325,7 +324,7 @@ def no_pattern_ingestion_service(
     """IngestionService whose vault has NO filename_extraction block."""
     config_dict = _pim_vault_config_dict(tmp_vault_dir)
     # Strip filename_extraction: vault declares no filename convention.
-    config_dict["metadata_extraction"] = {"review_required": False}
+    config_dict["metadata_extraction"] = {}
     config = VaultConfig.model_validate(config_dict)
     return IngestionService(
         graph_store=graph_store,

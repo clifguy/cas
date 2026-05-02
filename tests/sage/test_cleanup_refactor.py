@@ -64,7 +64,6 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
             "adapters": [{"source_type": "markdown", "enabled": True}],
         },
         "metadata_extraction": {
-            "review_required": False,
             "filename_extraction": {
                 "separator": "_",
                 "known_code_patterns": ["^[A-Z][A-Z0-9]{1,7}$"],

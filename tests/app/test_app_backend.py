@@ -50,7 +50,6 @@ from sage.models.schemas import Document
 def _pim_metadata_extraction():
     """PIM Health-like metadata extraction config."""
     return {
-        "review_required": False,
         "filename_extraction": {
             "pattern": "{date}_{project}_{code}_{title}_{version}",
             "separator": "_",

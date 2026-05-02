@@ -4,14 +4,8 @@
   "title": "SAGE Metadata Extraction Configuration",
   "description": "Defines the vault-configured two-stage metadata extraction pipeline: filename extraction then content extraction. Precedence: manual entry overrides content extraction overrides filename extraction. See SAGE Architecture Reference Section 3.4.6.",
   "type": "object",
-  "required": ["review_required"],
   "additionalProperties": false,
   "properties": {
-    "review_required": {
-      "type": "boolean",
-      "default": false,
-      "description": "Whether extracted metadata requires interactive confirmation before populating the document record. Set to false for vaults with trusted naming conventions (e.g., PIM Health). Set to true for vaults where naming conventions are less reliable."
-    },
     "filename_extraction": {
       "type": "object",
       "description": "Stage 1: parse the source filename and map segments to metadata fields. The parser is tolerant and content-aware: all segments are nullable except title. It recognizes date (YYYY-MM-DD pattern), version (v-prefix from right), project (known identifier), and codes (from known_code_patterns). Files without date codes use st_mtime as fallback. Codes are extracted as a list (documents may carry multiple codes with different roles).",

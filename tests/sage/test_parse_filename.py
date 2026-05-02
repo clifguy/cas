@@ -61,7 +61,7 @@ async def pim_app(tmp_vault_dir):
 async def no_pattern_app(tmp_vault_dir):
     """SAGE app whose vault has NO filename_extraction block."""
     config_dict = _pim_vault_config_dict(tmp_vault_dir)
-    config_dict["metadata_extraction"] = {"review_required": False}
+    config_dict["metadata_extraction"] = {}
     config = VaultConfig.model_validate(config_dict)
     app = await _build_app(config)
     yield app

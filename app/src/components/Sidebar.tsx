@@ -88,7 +88,6 @@ export default function Sidebar({ activeVault, onVaultChange, onVaultCreated, va
           ],
         },
         metadata_extraction: {
-          review_required: false,
           filename_extraction: { separator: '_' },
         },
         edge_inference: {

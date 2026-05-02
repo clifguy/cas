@@ -218,7 +218,7 @@ async def test_bh041_retrieval_assertions_from_yaml(
             ],
         },
         "source_adapters": {"adapters": [{"source_type": "markdown", "enabled": True}]},
-        "metadata_extraction": {"review_required": False},
+        "metadata_extraction": {},
         "edge_inference": {"tier_assignments": []},
         "retrieval_health": {
             "assertions_file": "retrieval_assertions.yaml",
@@ -314,7 +314,7 @@ async def test_bh042_missing_assertions_file(
             ],
         },
         "source_adapters": {"adapters": [{"source_type": "markdown", "enabled": True}]},
-        "metadata_extraction": {"review_required": False},
+        "metadata_extraction": {},
         "edge_inference": {"tier_assignments": []},
         "retrieval_health": {
             "assertions_file": "nonexistent.yaml",
@@ -367,7 +367,7 @@ async def test_bh042_malformed_assertions_file(
             ],
         },
         "source_adapters": {"adapters": [{"source_type": "markdown", "enabled": True}]},
-        "metadata_extraction": {"review_required": False},
+        "metadata_extraction": {},
         "edge_inference": {"tier_assignments": []},
         "retrieval_health": {
             "assertions_file": "bad_assertions.yaml",

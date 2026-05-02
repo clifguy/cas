@@ -112,7 +112,7 @@ def _make_full_config_dict(vaults_root: Path, vault_id: str, name: str, owner: s
         "source_adapters": {
             "adapters": [{"source_type": "markdown", "enabled": True}],
         },
-        "metadata_extraction": {"review_required": False},
+        "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [
                 {

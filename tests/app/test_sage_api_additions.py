@@ -80,7 +80,7 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
         "source_adapters": {
             "adapters": [{"source_type": "markdown", "enabled": True}],
         },
-        "metadata_extraction": {"review_required": False},
+        "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [
                 {

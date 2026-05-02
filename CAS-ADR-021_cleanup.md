@@ -56,7 +56,7 @@ These are sequenced as three phases. Phase A is coordination-critical (must acco
 
 ## Phase B — Vestigial code and configuration removal
 
-**Status:** `pending`
+**Status:** `complete`
 **Goal:** Remove the `metadata_extraction.review_required` flag and all dependent code now that the runtime behavior is driven by `request.needs_review` rather than vault config.
 
 **Critical files:**
@@ -180,5 +180,34 @@ Append a new entry at the end of each Claude Code session that touches this clea
   - `tests/sage/test_ingestion_metadata_extraction.py::_pim_metadata_extraction` still accepts a `review_required` parameter; vestigial after Chunk 2 (only the `False` path is exercised). Remove during Phase B alongside the schema change.
   - `tests/app/test_app_backend.py::_pim_metadata_extraction` and `tests/app/test_mcp_app_tools.py::_make_vault_config_dict` still write `"review_required": False`. Remove with the schema removal in Phase B.
 - Commit SHA(s): not yet committed; staged with the implementation Chunk 1 + 2 changes.
+
+### 2026-05-01 — Phase B — pending → complete
+
+- Schema-first removal of `metadata_extraction.review_required`:
+  - `docs/fs/sage/metadata_extraction.schema.json`: removed the `review_required` property and dropped it from the top-level `required` array. The schema now has no required properties; an empty `metadata_extraction: {}` block is valid.
+  - `docs/fs/manifest.json`: bumped `substrate_version` 1.11 -> 1.12 with a revision_history entry covering the cleanup.
+- SAGE code:
+  - `sage/services/ingestion.py`: removed the `self._review_required` member from `__init__`, removed the now-stale comment block describing the field, and trimmed the ADR-021 setter comment to drop the "field is vestigial" note. `IngestionService` no longer reads `review_required` from vault config.
+  - `sage/vault_management.py`: removed `"review_required": False,` from the default vault-creation config.
+- Frontend:
+  - `app/src/components/Sidebar.tsx`: removed `review_required: false,` from the `defaultConfig` payload sent on vault creation. Verified by the test sweep (vault-creation paths in `tests/app/test_mcp_vault_management.py`); not exercised in the dev-server preview because the change is a payload-trim with no rendered surface.
+- Tests:
+  - Removed `test_ad021_003_vault_review_required_no_longer_consulted` from `tests/sage/test_ad021_ingestion.py` along with its `pim_config_review_required` and `pim_ingestion_service_review_required` fixtures. The premise (vault flag is read but ignored) dissolves once the field can no longer be set. Replaced with a one-paragraph comment marker preserving context. AD021-001 (default skips queue) and AD021-002 (`needs_review=True` enters queue) provide the remaining caller-side coverage.
+  - `tests/sage/test_ingestion_metadata_extraction.py`: stripped the `review_required` parameter from `_pim_metadata_extraction` and `_pim_vault_config_dict`; updated the no-pattern fixture to construct an empty `metadata_extraction: {}` block.
+  - `tests/sage/conftest.py`, `tests/sage/test_utilities.py` (3 sites), `tests/sage/test_cleanup_refactor.py`, `tests/sage/test_migrate_flag.py`, `tests/sage/test_parse_filename.py`: removed the `review_required` key from `metadata_extraction` dicts.
+  - `tests/app/test_app_backend.py`, `tests/app/test_mcp_vault_management.py`, `tests/app/test_sage_api_additions.py`, `tests/app/test_mcp_app_tools.py`: same removal.
+- Live vault YAMLs (out-of-repo, operational edits):
+  - `~/sage_vaults/pim_health/vault_config.yaml`: removed `review_required: true`.
+  - `~/sage_vaults/test_vault/vault_config.yaml`: replaced `review_required: false` with `metadata_extraction: {}`.
+  - `~/sage_vaults/theology/vault_config.yaml`, `~/sage_vaults/new_vault/vault_config.yaml`: removed `review_required: false`.
+  - Behavioral effect of pim_health change: agent ingests through pim_health that omit `needs_review` will now commit authoritative (`metadata_confirmed=true`) rather than landing in the review queue. This is the designed ADR-021 end-state. CAS UI bulk ingests are unaffected because Phase A passes `needs_review=true` explicitly.
+- Verification:
+  - JSON Schema meta-validation clean against draft 2020-12.
+  - All four live vault YAMLs validate against the updated `metadata_extraction` schema (modulo a pre-existing, unrelated drift in pim_health where `filename_extraction.project_identifier: PIM` is not in the schema's allowlist; same drift exists in `tests/sage/test_ingestion_metadata_extraction.py` test fixtures and predates ADR-021 -- not in Phase B scope).
+  - Full sweep `.venv/bin/python -m pytest tests/sage tests/app` -> **736 passed** (predicted 736 = 737 baseline - 1 deleted `test_ad021_003`), 2 unrelated deprecation warnings.
+  - Anti-coincidental-pass: schema rejects `{"review_required": false, ...}` with the expected `additionalProperties` error; clean payload and empty-dict payload both validate; live vault YAMLs are confirmed clean post-test (the test suite rewrites `test_vault` and `new_vault` to pytest-tmp storage paths but does not reintroduce `review_required`).
+- Out-of-scope finding (flagged, not addressed):
+  - `filename_extraction.project_identifier` schema drift -- present in pim_health vault YAML and in the SAGE/app test fixtures, but not in the `filename_extraction` schema's `additionalProperties: false` allowlist. Pre-existing condition; outside ADR-021 scope. A follow-up cleanup would either add the property to the schema or remove it from the YAML/fixtures, depending on whether the parser still consumes it.
+- Commit SHA(s): not yet committed.
 
 ---

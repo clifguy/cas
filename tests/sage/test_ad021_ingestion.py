@@ -53,19 +53,6 @@ def pim_config(tmp_vault_dir):
     return VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
 
 
-@pytest.fixture
-def pim_config_review_required(tmp_vault_dir):
-    """Same as pim_config but with metadata_extraction.review_required=True.
-
-    Used to prove that the vault-level review_required flag is no longer
-    consulted at ingest time (TEST-AD021-003): the config field is now
-    vestigial and behavior is driven by request.needs_review.
-    """
-    return VaultConfig.model_validate(
-        _pim_vault_config_dict(tmp_vault_dir, review_required=True)
-    )
-
-
 def _build_ingestion_service(config, graph_store, lock_manager):
     lifecycle = LifecycleService(graph_store, lock_manager, config)
     return IngestionService(
@@ -83,15 +70,6 @@ def _build_ingestion_service(config, graph_store, lock_manager):
 @pytest.fixture
 def pim_ingestion_service(pim_config, graph_store, lock_manager):
     return _build_ingestion_service(pim_config, graph_store, lock_manager)
-
-
-@pytest.fixture
-def pim_ingestion_service_review_required(
-    pim_config_review_required, graph_store, lock_manager
-):
-    return _build_ingestion_service(
-        pim_config_review_required, graph_store, lock_manager
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -167,31 +145,13 @@ async def test_ad021_002_needs_review_true_runs_filename_inference(
 
 
 # ---------------------------------------------------------------------------
-# TEST-AD021-003: needs_review=False excludes a document from the review
-# queue even when the vault config carries the now-vestigial
-# metadata_extraction.review_required=true flag.
+# TEST-AD021-003 was removed in CAS-ADR-021 cleanup Phase B. The test
+# proved that vault-level metadata_extraction.review_required=true was
+# read but ignored once needs_review became authoritative; Phase B
+# removed the field from the schema, so the premise is moot. Caller-side
+# control of the review queue is covered end-to-end by AD021-001
+# (default skips queue) and AD021-002 (needs_review=True enters queue).
 # ---------------------------------------------------------------------------
-
-
-async def test_ad021_003_vault_review_required_no_longer_consulted(
-    tmp_vault_dir, pim_ingestion_service_review_required
-):
-    _write_md(
-        tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_A_v1.md",
-        body="# A\n\nBody.\n",
-    )
-
-    request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_A_v1.md",
-        adapter=SourceType.MARKDOWN,
-        # needs_review left at default False
-    )
-    result = await pim_ingestion_service_review_required.ingest(request)
-
-    # Vault-level review_required=True must NOT push the doc into the
-    # review queue under ADR-021. The flag is read but ignored.
-    assert result.document.metadata_confirmed is True
 
 
 # ---------------------------------------------------------------------------

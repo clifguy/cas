@@ -143,7 +143,6 @@ def _get_default_config(vault_id: str, name: str, owner: str) -> dict:
             ],
         },
         "metadata_extraction": {
-            "review_required": False,
             "filename_extraction": {
                 "separator": "_",
             },

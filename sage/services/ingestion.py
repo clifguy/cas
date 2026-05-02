@@ -264,13 +264,6 @@ class IngestionService:
             ]
             self._filename_parser = FilenameParser(me, doc_types=doc_types_raw)
 
-        # review_required controls metadata_confirmed at ingest (ME-008).
-        # When the vault's naming conventions are declared trustworthy
-        # (review_required=false), ingested documents are marked confirmed.
-        # When review is required, documents await interactive confirmation
-        # via update_metadata.
-        self._review_required: bool = bool(me.get("review_required", False))
-
     @property
     def registered_adapters(self) -> dict[SourceType, SourceAdapter]:
         """Return the runtime adapter registry."""
@@ -598,9 +591,7 @@ class IngestionService:
         # (CAS-ADR-021). Caller-authoritative ingests (needs_review=False,
         # the default) commit confirmed; review-queue ingests
         # (needs_review=True) leave metadata unconfirmed until
-        # update_metadata is called. The vault config's
-        # metadata_extraction.review_required field is vestigial; removal
-        # is tracked in the ADR-021 cleanup.
+        # update_metadata is called.
         confirm = not request.needs_review
         if doc.metadata_confirmed != confirm:
             doc = await self._store.update_document(

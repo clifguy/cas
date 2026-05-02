@@ -80,7 +80,7 @@ def minimal_vault_config_dict(tmp_vault_dir):
         "source_adapters": {
             "adapters": [{"source_type": "markdown", "enabled": True}],
         },
-        "metadata_extraction": {"review_required": False},
+        "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [
                 {
