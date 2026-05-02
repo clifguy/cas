@@ -21,5 +21,8 @@ htmlcov/
 .env
 CLAUDE.local.md
 
+# Claude Code scratch (worktrees created by EnterWorktree)
+.claude/worktrees/
+
 # Generated data files
 repo_file_inventory.xlsx
