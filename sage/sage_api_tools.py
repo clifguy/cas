@@ -655,12 +655,19 @@ def register_sage_tools(
         """Read a section of a document by heading path.
 
         Returns clean readable text for a heading subtree without loading
-        the full document. Uses structural prefix matching: requesting
-        "Technical Description" returns that heading plus all children
-        (e.g. "Technical Description > Composite Claim Binding").
+        the full document. Uses structural prefix matching from the
+        document root: requesting "Technical Description" returns that
+        heading plus all children (e.g.
+        "Technical Description > Composite Claim Binding"). Bare-text
+        queries that match the *tail* of a stored path (e.g. "CLAIMS"
+        against a stored "CLAIMS -- Remove Before Filing") will not match
+        — when this happens, the heading_not_found error includes a
+        ``candidate_matches`` field listing stored paths that contain the
+        query as a substring, so you can retry with the exact path.
 
-        Use this instead of sage_discover deterministic mode when you need
-        readable text rather than search-formatted chunks.
+        For free-text "find this section by name regardless of path
+        position," prefer sage_discover semantic or keyword mode — both
+        index heading_path text alongside content.
 
         Args:
             vault_id: Target vault identifier.

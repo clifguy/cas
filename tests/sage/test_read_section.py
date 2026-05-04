@@ -223,6 +223,50 @@ async def test_read_section_heading_not_found_lists_available(
     assert any("Technical Description" in h for h in headings)
 
 
+async def test_read_section_heading_not_found_surfaces_substring_candidates(
+    multi_section_service, multi_section_doc
+):
+    """When the query is a tail/middle of a stored path, the error response
+    surfaces matching candidate paths so the caller can retry with the
+    exact stored path in one extra round-trip. Common case: query
+    'Composite' against stored 'Technical Description > Composite Claim Binding'.
+    """
+    utilities, _ = multi_section_service
+
+    with pytest.raises(HeadingNotFoundError) as exc_info:
+        await utilities.read_section(multi_section_doc.id, "Composite")
+
+    detail = exc_info.value.detail
+    # The substring "Composite" doesn't equal or left-prefix any stored path
+    # (each stored path begins with a top-level heading), so exact match fails.
+    # But several stored paths contain "Composite" as a tail/middle segment.
+    assert "candidate_matches" in detail, (
+        "Expected candidate_matches in heading_not_found detail; got: "
+        + str(detail)
+    )
+    candidates = detail["candidate_matches"]
+    assert candidates, "candidate_matches should not be empty when substring hits exist"
+    assert all("composite" in c.lower() for c in candidates)
+
+
+async def test_read_section_heading_not_found_no_candidates_when_no_substring_match(
+    multi_section_service, multi_section_doc
+):
+    """If the query has no substring matches in any stored heading_path,
+    candidate_matches is omitted from the error detail entirely (rather
+    than being an empty list)."""
+    utilities, _ = multi_section_service
+
+    with pytest.raises(HeadingNotFoundError) as exc_info:
+        await utilities.read_section(
+            multi_section_doc.id, "ZZZ_NoSuchPhrase_QQQ"
+        )
+
+    detail = exc_info.value.detail
+    assert "available_headings" in detail
+    assert "candidate_matches" not in detail
+
+
 # ---------------------------------------------------------------------------
 # Error: document exists but has no chunks
 # ---------------------------------------------------------------------------

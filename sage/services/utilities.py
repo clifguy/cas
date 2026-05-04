@@ -195,7 +195,21 @@ class UtilitiesService:
         )
         if not chunks:
             available = await self._content.get_heading_paths(document_id)
-            raise HeadingNotFoundError(heading_path, document_id, available)
+            # Surface case-insensitive substring matches as candidate hints.
+            # Helps the common case where the caller's query is the *tail*
+            # of a stored path (e.g. "CLAIMS" vs stored
+            # "CLAIMS -- Remove Before Filing"): the response gives one
+            # actionable next path to retry with rather than a long list.
+            needle = heading_path.casefold()
+            candidates = [
+                h for h in (available or []) if needle in h.casefold()
+            ]
+            raise HeadingNotFoundError(
+                heading_path,
+                document_id,
+                available_headings=available,
+                candidate_matches=candidates if candidates else None,
+            )
 
         section_text = "\n\n".join(chunk.content for chunk in chunks)
 

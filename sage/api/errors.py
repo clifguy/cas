@@ -124,15 +124,25 @@ class PipelineIncompleteError(SAGEError):
 
 
 class HeadingNotFoundError(SAGEError):
-    """404: heading path not found in document (BH-030)."""
+    """404: heading path not found in document (BH-030).
+
+    ``available_headings`` is the full enumeration. ``candidate_matches``
+    is a substring-match shortlist (case-insensitive) computed by the
+    caller — useful when the query is the *tail* of a stored path (e.g.
+    "CLAIMS" against a stored "CLAIMS -- Remove Before Filing") so the
+    caller can retry with the exact path in one extra round-trip.
+    """
 
     def __init__(
         self,
         heading_path: str,
         document_id: str,
         available_headings: list[str] | None = None,
+        candidate_matches: list[str] | None = None,
     ) -> None:
         detail: dict = {"heading_path": heading_path, "document_id": document_id}
+        if candidate_matches:
+            detail["candidate_matches"] = candidate_matches
         if available_headings is not None:
             detail["available_headings"] = available_headings
         super().__init__(
