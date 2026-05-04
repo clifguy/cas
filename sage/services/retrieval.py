@@ -79,32 +79,83 @@ class RetrievalService:
         multiplier = 10 if request.filters else 5
         return request.limit * multiplier
 
-    @staticmethod
-    def _content_filters(
+    async def _content_filters(
+        self,
         request: DiscoverRequest,
-    ) -> dict[str, str | list[str]] | None:
-        """Extract filters applicable at the content-store level (pre-filter).
+    ) -> tuple[dict[str, str | list[str]] | None, bool]:
+        """Build the pre-search filter dict for the content store.
 
-        doc_type and document_id are stored in the content store and can
-        be pre-filtered at query time.  Other filter fields (project,
-        lifecycle_status, tags) remain post-filter via _passes_scope.
+        Resolves all metadata filters into a content-store pre-filter so
+        the LanceDB top-K cutoff operates on the correct corpus. Two
+        kinds of filters merge here:
+
+        * Chunk-level: ``doc_type`` is stored on each chunk (column).
+          Passed through directly.
+        * Document-level: ``lifecycle_status``, ``project``, ``tags``,
+          ``pipeline_status``, ``document_ids``. Resolved against the
+          graph store into a list of matching ``document_id`` values
+          which is then attached to the chunk filter.
+
+        Returns ``(filters, has_doc_constraints)``. ``has_doc_constraints``
+        is True when document-level filters were resolved (regardless of
+        whether any documents matched). When True and the resolved
+        document_ids list is empty, callers should short-circuit to an
+        empty result rather than querying the content store unfiltered.
         """
         if not request.filters:
-            return None
+            return None, False
+
+        f = request.filters
         result: dict[str, str | list[str]] = {}
-        if request.filters.doc_type:
-            result["doc_type"] = request.filters.doc_type
-        if request.filters.document_ids:
-            result["document_id"] = request.filters.document_ids
-        return result or None
+        if f.doc_type:
+            result["doc_type"] = f.doc_type
+
+        # Identify doc-level filters that must be resolved via the graph
+        # store. document_ids alone counts because the resolution must
+        # also intersect against doc-level filter rules (none here, so
+        # passthrough).
+        has_doc_constraints = bool(
+            f.lifecycle_status or f.project or f.tags
+            or f.pipeline_status or f.document_ids
+        )
+        if has_doc_constraints:
+            target_ids = set(f.document_ids or [])
+            all_docs = await self._graph.list_all_documents()
+            matching: list[str] = []
+            for doc in all_docs:
+                if target_ids and doc.id not in target_ids:
+                    continue
+                if f.lifecycle_status and doc.lifecycle_status != f.lifecycle_status:
+                    continue
+                if f.project and doc.project != f.project:
+                    continue
+                if f.tags and not set(f.tags).issubset(set(doc.tags or [])):
+                    continue
+                if f.pipeline_status and doc.pipeline_status.value != f.pipeline_status:
+                    continue
+                matching.append(doc.id)
+            result["document_id"] = matching
+
+        return (result or None, has_doc_constraints)
 
     @staticmethod
     def _build_hints(
         raw_count: int,
         request: DiscoverRequest,
     ) -> dict[str, object] | None:
-        """Build hints dict when results are empty but raw results existed."""
-        if raw_count == 0:
+        """Build hints dict when results are empty.
+
+        Two scenarios:
+        * ``raw_count > 0``: chunks were fetched but post-filtering culled
+          them. Hints surface ``total_before_filtering`` so callers see
+          the gap.
+        * ``raw_count == 0`` AND filters were active: pre-resolution
+          found zero matching documents, so no chunks were even searched.
+          Hints surface the active filters with ``total_before_filtering=0``
+          so callers see what filtered out.
+        * ``raw_count == 0`` and no filters: no useful hints — return None.
+        """
+        if raw_count == 0 and not request.filters:
             return None
         hints: dict[str, object] = {"total_before_filtering": raw_count}
         if request.filters:
@@ -237,7 +288,19 @@ class RetrievalService:
             hits = await self._list_filtered(request)
         else:
             fetch_limit = self._fetch_limit(request)
-            content_filters = self._content_filters(request)
+            content_filters, has_doc_constraints = await self._content_filters(request)
+            # Short-circuit when document-level filters resolved to zero
+            # matching docs — skip the search entirely. Surface hints so
+            # the caller sees the active filters that culled the result.
+            if has_doc_constraints and not (
+                content_filters and content_filters.get("document_id")
+            ):
+                return DiscoverResponse(
+                    mode=RetrievalMode.KEYWORD,
+                    results=[],
+                    total_available=0,
+                    hints=self._build_hints(0, request),
+                )
             results = await self._content.search_bm25(
                 request.query, fetch_limit, filters=content_filters,
             )
@@ -308,7 +371,19 @@ class RetrievalService:
         embeddings = await self._embedding.embed([request.query])
         query_embedding = embeddings[0]
 
-        content_filters = self._content_filters(request)
+        content_filters, has_doc_constraints = await self._content_filters(request)
+        # Short-circuit when document-level filters resolved to zero
+        # matching docs — skip the search entirely. Surface hints so the
+        # caller sees the active filters that culled the result.
+        if has_doc_constraints and not (
+            content_filters and content_filters.get("document_id")
+        ):
+            return DiscoverResponse(
+                mode=RetrievalMode.SEMANTIC,
+                results=[],
+                total_available=0,
+                hints=self._build_hints(0, request),
+            )
 
         if request.use_hybrid:
             # Hybrid: RRF fusion of vector + BM25 (BH-027)

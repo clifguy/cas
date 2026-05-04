@@ -51,6 +51,57 @@ from sage.storage.graph_store import GraphStore
 logger = logging.getLogger(__name__)
 
 
+_MAX_CANDIDATE_MATCHES = 10
+
+
+def _rank_candidate_matches(
+    query: str, available: list[str] | None,
+) -> list[str]:
+    """Rank ``available`` heading paths by how directly they match ``query``.
+
+    Returns at most ``_MAX_CANDIDATE_MATCHES`` paths sorted from best to
+    worst fit. Used to populate ``candidate_matches`` in heading_not_found
+    errors so callers can quickly pick the correct stored path. The
+    ranking favors matches in the leaf segment over matches buried in
+    parent segments, and shorter paths over longer ones — both heuristics
+    point toward navigation targets and away from content paragraphs that
+    happen to mention the query word.
+
+    Tier 0: leaf segment equals query (case-insensitive, whitespace-trimmed)
+    Tier 1: leaf segment starts with query (case-insensitive)
+    Tier 2: leaf segment contains query as substring
+    Tier 3: query appears in some parent segment but not the leaf
+    No tier: query not found anywhere → not a candidate
+
+    Within a tier, paths are ordered by ``len(heading_path)`` ascending.
+    """
+    if not available:
+        return []
+    needle = query.casefold().strip()
+    if not needle:
+        return []
+
+    scored: list[tuple[int, int, str]] = []  # (tier, length, heading_path)
+    for hp in available:
+        segments = hp.split(" > ")
+        leaf = segments[-1].casefold()
+        leaf_stripped = leaf.strip()
+        if leaf_stripped == needle:
+            tier = 0
+        elif leaf.startswith(needle) or leaf_stripped.startswith(needle):
+            tier = 1
+        elif needle in leaf:
+            tier = 2
+        elif any(needle in seg.casefold() for seg in segments[:-1]):
+            tier = 3
+        else:
+            continue
+        scored.append((tier, len(hp), hp))
+
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [hp for _, _, hp in scored[:_MAX_CANDIDATE_MATCHES]]
+
+
 class UtilitiesService:
     def __init__(
         self,
@@ -195,15 +246,7 @@ class UtilitiesService:
         )
         if not chunks:
             available = await self._content.get_heading_paths(document_id)
-            # Surface case-insensitive substring matches as candidate hints.
-            # Helps the common case where the caller's query is the *tail*
-            # of a stored path (e.g. "CLAIMS" vs stored
-            # "CLAIMS -- Remove Before Filing"): the response gives one
-            # actionable next path to retry with rather than a long list.
-            needle = heading_path.casefold()
-            candidates = [
-                h for h in (available or []) if needle in h.casefold()
-            ]
+            candidates = _rank_candidate_matches(heading_path, available)
             raise HeadingNotFoundError(
                 heading_path,
                 document_id,

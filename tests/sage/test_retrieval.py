@@ -2512,7 +2512,12 @@ async def test_semantic_empty_results_with_hints_when_filtered_out(
         [("Section 1", "Interesting patent content about claims.")],
     )
 
-    # Search matches content but filter by a non-matching project
+    # Search matches content but filter by a non-matching project.
+    # With pre-filter resolution, the project filter resolves to zero
+    # matching documents and the search short-circuits before calling
+    # the content store. total_before_filtering is 0 (no chunks were
+    # fetched), but hints still surface the active filters so the
+    # caller can see why their search was empty.
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="patent claims",
@@ -2521,8 +2526,9 @@ async def test_semantic_empty_results_with_hints_when_filtered_out(
     response = await retrieval_service.discover(request)
     assert response.results == []
     assert response.hints is not None
-    assert response.hints["total_before_filtering"] > 0
+    assert response.hints["total_before_filtering"] == 0
     assert "active_filters" in response.hints
+    assert response.hints["active_filters"].get("project") == "nonexistent_project"
 
 
 # ---------------------------------------------------------------------------
@@ -2548,7 +2554,10 @@ async def test_keyword_empty_results_with_hints_when_filtered_out(
     response = await retrieval_service.discover(request)
     assert response.results == []
     assert response.hints is not None
-    assert response.hints["total_before_filtering"] > 0
+    # Pre-filter short-circuits: total_before_filtering is 0 (no chunks
+    # fetched) but hints still surface the active_filters that culled.
+    assert response.hints["total_before_filtering"] == 0
+    assert "active_filters" in response.hints
 
 
 async def test_keyword_nonempty_results_no_hints(
@@ -2783,3 +2792,154 @@ async def test_min_relevance_does_not_apply_to_catalog(
     )
     response = await retrieval_service.discover(request)
     assert len(response.results) > 0
+
+
+# ---------------------------------------------------------------------------
+# Pre-filter resolution: doc-level filters (lifecycle/project/tags/pipeline)
+# must be resolved to a document_ids set BEFORE the LanceDB top-K cutoff,
+# not post-filtered against the result. Cowork-reported failure: many
+# archived patent_draft chunks dominate top-K vector ranking, the
+# lifecycle_status=active post-filter drops them all, returning zero hits
+# even though active patent_drafts exist that match the query.
+# ---------------------------------------------------------------------------
+
+
+async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """When archived versions outnumber active versions in the chunk store
+    such that the LanceDB top-K returns only archived chunks, the
+    lifecycle_status=active filter must still surface the active document.
+    The filter must be resolved BEFORE the top-K cutoff, not as a
+    post-filter discarding the entire fetched set.
+    """
+    # 20 archived patent_drafts that match the query, inserted first so
+    # they dominate the stable-sort tie-breaking on identical embeddings.
+    for i in range(20):
+        doc = _make_doc(
+            f"archived_{i}",
+            lifecycle_status="archived",
+            doc_type="patent_draft",
+        )
+        await graph_store.insert_document(doc)
+        await _index_doc_chunks(
+            stub_content_store,
+            seeded_embedding_provider,
+            f"archived_{i}",
+            [("Fraud Screening Module", "fraud screening risk score detection")],
+            doc_type="patent_draft",
+        )
+
+    # 1 active patent_draft with the same matching content.
+    active_doc = _make_doc(
+        "active_target",
+        lifecycle_status="active",
+        doc_type="patent_draft",
+    )
+    await graph_store.insert_document(active_doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        "active_target",
+        [("Fraud Screening Module", "fraud screening risk score detection")],
+        doc_type="patent_draft",
+    )
+
+    # limit=1, so fetch_limit = 1*10 = 10. Without pre-resolution, the
+    # top-10 are all archived (insertion order); the active filter culls
+    # all of them → zero results. With pre-resolution, the doc_id pre-
+    # filter limits LanceDB's corpus to just `active_target` and the
+    # query returns it.
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="fraud screening",
+        limit=1,
+        filters=RetrievalFilters(
+            doc_type="patent_draft",
+            lifecycle_status="active",
+        ),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "active_target" in doc_ids, (
+        f"Active patent_draft must surface even when archived versions "
+        f"dominate top-K. Got doc_ids: {doc_ids}"
+    )
+
+
+async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """Same pre-resolution requirement applies to keyword (BM25) mode."""
+    for i in range(20):
+        doc = _make_doc(
+            f"archived_kw_{i}",
+            lifecycle_status="archived",
+            doc_type="patent_draft",
+        )
+        await graph_store.insert_document(doc)
+        await _index_doc_chunks(
+            stub_content_store,
+            seeded_embedding_provider,
+            f"archived_kw_{i}",
+            [("Fraud Screening Module", "fraud screening risk score detection")],
+            doc_type="patent_draft",
+        )
+
+    active_doc = _make_doc(
+        "active_kw_target",
+        lifecycle_status="active",
+        doc_type="patent_draft",
+    )
+    await graph_store.insert_document(active_doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        "active_kw_target",
+        [("Fraud Screening Module", "fraud screening risk score detection")],
+        doc_type="patent_draft",
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="fraud screening",
+        limit=1,
+        filters=RetrievalFilters(
+            doc_type="patent_draft",
+            lifecycle_status="active",
+        ),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert "active_kw_target" in doc_ids
+
+
+async def test_pre_resolved_filters_return_empty_when_zero_docs_match(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """When the metadata filters (e.g. lifecycle_status) match zero
+    documents, the search returns an empty result without querying
+    LanceDB at all (or via an impossible ID list)."""
+    doc = _make_doc("doc_only", lifecycle_status="active", doc_type="patent_draft")
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_only",
+        [("Section", "fraud screening content")],
+        doc_type="patent_draft",
+    )
+
+    # Filter excludes the only document — no docs match.
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="fraud screening",
+        filters=RetrievalFilters(
+            doc_type="patent_draft",
+            lifecycle_status="filed",  # no doc has this status
+        ),
+    )
+    response = await retrieval_service.discover(request)
+    assert response.results == []

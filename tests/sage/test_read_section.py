@@ -249,6 +249,71 @@ async def test_read_section_heading_not_found_surfaces_substring_candidates(
     assert all("composite" in c.lower() for c in candidates)
 
 
+def test_rank_candidate_matches_prefers_leaf_match_over_content_mention():
+    """Leaf-prefix matches outrank parent-segment or buried-substring matches.
+
+    PV13-style data: 'CLAIMS' as a query should surface
+    'CLAIMS -- Remove Before Filing' (leaf starts with CLAIMS) before
+    'Verification Result: A claims pre-adjudication outcome...' (claims
+    appears mid-leaf in a definition entry).
+    """
+    from sage.services.utilities import _rank_candidate_matches
+
+    available = [
+        "Verification Result: A claims pre-adjudication outcome that maps to a code.",
+        "CLAIMS -- Remove Before Filing",
+        "Definitions > Claim Element: Used in claims for granular billing analysis.",
+        "Appendix: Internal Revision History",
+    ]
+    candidates = _rank_candidate_matches("CLAIMS", available)
+
+    # The exact-leaf-prefix candidate must come first.
+    assert candidates[0] == "CLAIMS -- Remove Before Filing"
+    # All returned candidates must contain "claims" (case-insensitive).
+    assert all("claims" in c.lower() for c in candidates)
+
+
+def test_rank_candidate_matches_caps_at_max_candidates():
+    """When many headings substring-match, return at most the cap (10)."""
+    from sage.services.utilities import _rank_candidate_matches, _MAX_CANDIDATE_MATCHES
+
+    available = [f"Definitions > Term {i}: This entry mentions claims." for i in range(50)]
+    candidates = _rank_candidate_matches("claims", available)
+    assert len(candidates) <= _MAX_CANDIDATE_MATCHES
+
+
+def test_rank_candidate_matches_returns_empty_for_no_match():
+    from sage.services.utilities import _rank_candidate_matches
+
+    available = ["Introduction", "Methods", "Conclusion"]
+    assert _rank_candidate_matches("nonexistent", available) == []
+
+
+def test_rank_candidate_matches_handles_empty_inputs():
+    from sage.services.utilities import _rank_candidate_matches
+
+    assert _rank_candidate_matches("", ["heading"]) == []
+    assert _rank_candidate_matches("heading", None) == []
+    assert _rank_candidate_matches("heading", []) == []
+
+
+def test_rank_candidate_matches_orders_by_tier_then_length():
+    """Within a tier, shorter paths come first (more navigation-like)."""
+    from sage.services.utilities import _rank_candidate_matches
+
+    available = [
+        "DETAILED DESCRIPTION > Interpretive Conventions > Subsection About Claims",
+        "DETAILED DESCRIPTION > Claims",  # tier 0 (leaf eq)
+        "Foo > Bar > Baz Claims Long Path Ending Here",  # tier 2 (leaf substring)
+        "CLAIMS",  # tier 0 (leaf eq, shorter path)
+    ]
+    candidates = _rank_candidate_matches("claims", available)
+    # Tier 0 entries (exact leaf match) come first; among them the shorter
+    # path "CLAIMS" beats "DETAILED DESCRIPTION > Claims".
+    assert candidates[0] == "CLAIMS"
+    assert candidates[1] == "DETAILED DESCRIPTION > Claims"
+
+
 async def test_read_section_heading_not_found_no_candidates_when_no_substring_match(
     multi_section_service, multi_section_doc
 ):
