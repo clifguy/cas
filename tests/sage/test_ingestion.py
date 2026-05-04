@@ -1990,3 +1990,70 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
         "Stored chunk.content must be body text only; got: " + repr(second.content)
     )
     assert second_heading not in second.content
+
+
+@requires_docx
+async def test_empty_content_heading_still_emits_chunk(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """A heading whose immediate next paragraph is another same-or-higher
+    level heading produces no body content for itself. The chunker MUST
+    still emit a chunk for that heading so its heading_path enters the
+    FTS index. Without this, a heading like "DETAILED DESCRIPTION" that's
+    immediately followed by another top-level heading vanishes from the
+    indexed surface — invisible to BM25, semantic search, and
+    sage_read_section heading enumeration. Word's Find finds it; SAGE
+    must too. Closes the gap surfaced by Cowork on PV01 v10.2.2 et al.
+    """
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config=None,  # use defaults: Heading 1-9 only
+    )
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "empty_heading.docx"
+    # Two same-level headings back-to-back. The first ("EMPTY PARENT")
+    # has no body content because the next paragraph is also a heading.
+    _write_styled_docx(
+        docx_path,
+        [
+            ("EMPTY PARENT", "Heading 1"),
+            ("FIRST CHILD", "Heading 1"),
+            ("Some body content under FIRST CHILD.", "Normal"),
+        ],
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="empty_heading.docx", adapter=SourceType.DOCX)
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    assert "EMPTY PARENT" in heading_paths, (
+        f"Heading 'EMPTY PARENT' must produce a chunk even with empty body "
+        f"content. Got heading_paths: {heading_paths}"
+    )
+    assert "FIRST CHILD" in heading_paths
+
+    chunks = await stub_content_store.get_all_chunks(result.document.id)
+    by_path = {c.heading_path: c for c in chunks}
+    assert "EMPTY PARENT" in by_path
+    # The empty-content marker chunk has no body content (the BH-058
+    # search-preamble may be prepended on chunk[0], which is fine — the
+    # heading_path is what makes the heading searchable).
+    parent = by_path["EMPTY PARENT"]
+    assert "Some body content" not in parent.content, (
+        "Body of FIRST CHILD must not leak into the EMPTY PARENT chunk."
+    )

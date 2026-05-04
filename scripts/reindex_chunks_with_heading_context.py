@@ -39,7 +39,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
@@ -174,6 +174,24 @@ async def reindex_with_services(
         f"\nDone. {n_done} document(s) re-indexed in "
         f"{elapsed.total_seconds():.1f}s."
     )
+
+    # Compact LanceDB fragments and prune old version metadata.
+    # ``cleanup_older_than=timedelta(0)`` removes every version except
+    # the latest. Without this, the FTS-index version churn from
+    # _rebuild_fts (called per index_chunks) accumulates dramatically —
+    # we observed 121 GB of _indices/ retained as version history when
+    # the actual chunk data was 591 MB.
+    try:
+        table = store._get_table()
+        if table is not None:
+            print("\nCompacting LanceDB fragments and pruning old versions...")
+            opt_started = datetime.now(timezone.utc)
+            table.optimize(cleanup_older_than=timedelta(0))
+            opt_elapsed = datetime.now(timezone.utc) - opt_started
+            print(f"Compaction done in {opt_elapsed.total_seconds():.1f}s.")
+    except Exception as exc:
+        print(f"Compaction step failed (non-fatal): {exc!r}", file=sys.stderr)
+
     return 0
 
 

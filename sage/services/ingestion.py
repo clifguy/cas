@@ -1039,21 +1039,29 @@ class IngestionService:
     ) -> list[Chunk]:
         """Split projection into chunks by heading.
 
+        Emits one chunk per heading regardless of whether the heading has
+        immediate body content. A heading whose next paragraph is another
+        heading at the same or higher level (e.g. a USPTO Section like
+        "DETAILED DESCRIPTION" immediately followed by another section
+        marker) ends up with empty body content — but its heading_path
+        must still enter the FTS index so that searches for the heading
+        text find the document, matching the behavior of Word's Find on
+        a heading paragraph.
+
         Prepends a search preamble to the first chunk so that document
         identity signals (title, source filename, tags) are indexed in
         both BM25 and vector search (BH-058).
         """
         chunks: list[Chunk] = []
         for i, heading in enumerate(projection.headings):
-            if heading.content.strip():
-                chunks.append(
-                    Chunk(
-                        document_id=document_id,
-                        heading_path=heading.path,
-                        content=heading.content,
-                        chunk_index=i,
-                    )
+            chunks.append(
+                Chunk(
+                    document_id=document_id,
+                    heading_path=heading.path,
+                    content=heading.content,  # may be empty
+                    chunk_index=i,
                 )
+            )
 
         # If no headings, create a single chunk from the full text
         if not chunks and projection.text.strip():
