@@ -225,6 +225,25 @@ class IngestResult:
     is_new: bool
 
 
+def _deep_merge_dicts(base: dict, override: dict) -> dict:
+    """Recursively merge override into a copy of base.
+
+    Override values replace base values at the same key, except when both
+    sides hold dicts at the same key — those merge recursively.
+    """
+    result = dict(base)
+    for key, value in override.items():
+        if (
+            key in result
+            and isinstance(result[key], dict)
+            and isinstance(value, dict)
+        ):
+            result[key] = _deep_merge_dicts(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 class IngestionService:
     def __init__(
         self,
@@ -268,6 +287,39 @@ class IngestionService:
     def registered_adapters(self) -> dict[SourceType, SourceAdapter]:
         """Return the runtime adapter registry."""
         return dict(self._adapters)
+
+    def _merge_adapter_config(
+        self, source_type: SourceType, request_config: dict | None
+    ) -> dict | None:
+        """Return adapter config with vault-level base merged with per-request override.
+
+        Looks up the vault's ``source_adapters.adapters[]`` entry whose
+        ``source_type`` matches ``source_type``. If found, its ``config``
+        dict is the base; ``request_config`` overrides on collision via
+        recursive merge (request keys override vault keys; nested dicts
+        merge key-by-key, e.g. ``heading_style_map`` accumulates entries
+        from both sources). Returns ``None`` when both are absent so
+        adapters that branch on ``config is None`` keep their legacy
+        fast path.
+        """
+        adapters_block = (
+            self._config.source_adapters.get("adapters")
+            if isinstance(self._config.source_adapters, dict)
+            else None
+        )
+        vault_config: dict | None = None
+        if adapters_block:
+            for entry in adapters_block:
+                if entry.get("source_type") == source_type.value:
+                    vault_config = entry.get("config")
+                    break
+        if vault_config is None and request_config is None:
+            return None
+        if vault_config is None:
+            return dict(request_config) if request_config else None
+        if not request_config:
+            return dict(vault_config)
+        return _deep_merge_dicts(vault_config, request_config)
 
     def _ensure_vault_local(
         self, source_path: Path, storage_root: Path
@@ -383,9 +435,16 @@ class IngestionService:
         source_path = source_path.resolve()
         vault_relative = self._ensure_vault_local(source_path, storage_root)
 
-        # Stage 1: Projection (synchronous)
+        # Stage 1: Projection (synchronous). Merge vault-level adapter config
+        # with the per-request config; per-request keys override vault keys
+        # on collision. The vault's source_adapters[].config is the authority
+        # for adapter behavior across all ingests; the request override is a
+        # per-call escape hatch.
+        merged_config = self._merge_adapter_config(
+            request.adapter, request.config
+        )
         projection = await adapter.project(
-            storage_root / vault_relative, request.config
+            storage_root / vault_relative, merged_config
         )
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller

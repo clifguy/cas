@@ -45,6 +45,7 @@ class SAGEServices:
     graph_ops_service: GraphOpsService
     retrieval_service: RetrievalService
     utilities_service: UtilitiesService
+    config_path: Path | None = None
 
 
 async def initialize_services(
@@ -54,6 +55,7 @@ async def initialize_services(
     embedding_provider: EmbeddingProvider | None = None,
     abstraction_provider: AbstractionProvider | None = None,
     migrate: bool = False,
+    config_path: Path | None = None,
 ) -> SAGEServices:
     """Initialize all SAGE services for a vault configuration.
 
@@ -65,6 +67,9 @@ async def initialize_services(
         migrate: If True, apply any pending schema migrations to the graph
             store and content store. If False (default), raise
             ``SchemaMigrationRequired`` when a migration is needed.
+        config_path: Source path of the vault_config.yaml file. Stored on
+            the returned ``SAGEServices`` so that ``sage_reload_vault`` can
+            re-read the file from disk to pick up edits made externally.
 
     Returns:
         SAGEServices dataclass with all services ready to use.
@@ -146,6 +151,7 @@ async def initialize_services(
         graph_ops_service=graph_ops_service,
         retrieval_service=retrieval_service,
         utilities_service=utilities_service,
+        config_path=config_path,
     )
 
 
@@ -153,6 +159,7 @@ async def reload_vault_in_registry(
     registry: dict[str, SAGEServices],
     vault_id: str,
     config: VaultConfig,
+    config_path: Path | None = None,
 ) -> SAGEServices:
     """Close old services for a vault and reinitialize from a new config.
 
@@ -162,6 +169,8 @@ async def reload_vault_in_registry(
     old = registry.get(vault_id)
     if old:
         await old.graph_store.close()
-    new_services = await initialize_services(config)
+        if config_path is None:
+            config_path = old.config_path
+    new_services = await initialize_services(config, config_path=config_path)
     registry[vault_id] = new_services
     return new_services

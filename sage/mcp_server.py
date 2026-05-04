@@ -83,7 +83,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     if standalone:
         for config_path in _config_paths:
             config = load_vault_config(config_path)
-            services = await initialize_services(config)
+            services = await initialize_services(config, config_path=config_path)
             _vaults[config.vault.id] = services
 
     yield
@@ -106,11 +106,17 @@ mcp = FastMCP("SAGE", lifespan=_lifespan)
 
 
 @mcp.tool()
-async def sage_reload_vault(vault_id: str) -> str:
-    """Reload a vault by closing its current services and reinitializing from
-    the same configuration. Use this when vault databases have been modified
-    externally (e.g. by the FastAPI server, another MCP client, or direct
-    database operations) and the current MCP session is seeing stale data.
+async def sage_reload_vault(vault_id: str) -> dict:
+    """Reload a vault by closing its current services and reinitializing.
+
+    When the vault was originally loaded from a YAML file (the production
+    path), the file is re-read from disk so on-disk edits to vault_config.yaml
+    take effect. Vaults initialized from an in-memory ``VaultConfig`` (for
+    example, in tests that bypass the file system) reuse the existing config.
+
+    Use this after modifying vault_config.yaml on disk, or when external
+    database changes (FastAPI server, another MCP client, direct DB writes)
+    leave the current MCP session with stale data.
 
     Args:
         vault_id: Target vault identifier.
@@ -124,13 +130,18 @@ async def sage_reload_vault(vault_id: str) -> str:
         )
 
     old_services = _vaults[vault_id]
-    config = old_services.config
+    config_path = old_services.config_path
+    if config_path is not None:
+        config = load_vault_config(config_path)
+    else:
+        config = old_services.config
 
     # Tear down old services
     await old_services.graph_store.close()
 
-    # Reinitialize from the same config
-    new_services = await initialize_services(config)
+    # Reinitialize, preserving the config_path so a subsequent reload can
+    # also re-read from disk.
+    new_services = await initialize_services(config, config_path=config_path)
     _vaults[vault_id] = new_services
 
     # Return confirmation with basic stats

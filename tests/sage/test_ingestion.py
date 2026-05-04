@@ -1535,3 +1535,314 @@ async def test_bh_134_non_empty_text_still_runs_abstraction(
     assert fetched.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
     assert fetched.semantic_abstract is not None
     assert "Strict stub abstract" in fetched.semantic_abstract
+
+
+# ---------------------------------------------------------------------------
+# Vault-level adapter config propagation
+#
+# The vault config's source_adapters.adapters[].config is authoritative for
+# adapter behavior. Per-request IngestRequest.config is a per-call override
+# that takes precedence on key collisions.
+# ---------------------------------------------------------------------------
+
+import copy as _copy
+from typing import Any
+
+try:
+    import docx as _docx_module
+    _HAS_DOCX = True
+except ImportError:
+    _HAS_DOCX = False
+
+requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not available")
+
+
+def _write_styled_docx(path: Path, paragraphs: list[tuple[str, str]]) -> None:
+    """Write a .docx with the given (text, style) paragraphs.
+
+    Style names must already exist in the document's style set. Built-in
+    styles like "Title", "Heading 1", "Subtitle", "Normal" are pre-defined
+    by python-docx.
+    """
+    doc = _docx_module.Document()
+    for text, style in paragraphs:
+        doc.add_paragraph(text, style=style)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+
+
+def _build_vault_config_with_docx(
+    base_dict: dict, vault_docx_config: dict | None
+) -> VaultConfig:
+    """Return a VaultConfig that adds a docx adapter entry to base_dict.
+
+    If vault_docx_config is None, the docx adapter is registered with no
+    config (falls through to defaults). Otherwise, vault_docx_config is
+    placed under source_adapters.adapters[docx].config.
+    """
+    config_dict = _copy.deepcopy(base_dict)
+    docx_entry: dict[str, Any] = {"source_type": "docx", "enabled": True}
+    if vault_docx_config is not None:
+        docx_entry["config"] = vault_docx_config
+    config_dict["source_adapters"]["adapters"].append(docx_entry)
+    return VaultConfig.model_validate(config_dict)
+
+
+def _make_ingestion_with_docx(
+    config: VaultConfig,
+    *,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+):
+    """Construct an IngestionService with real DocxAdapter + Markdown stub."""
+    from sage.services.ingestion import IngestionService
+    from sage.services.lifecycle import LifecycleService
+    from sage.source_adapters.docx_adapter import DocxAdapter
+
+    lifecycle_service = LifecycleService(graph_store, lock_manager, config)
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={
+            SourceType.MARKDOWN: MarkdownAdapter(),
+            SourceType.DOCX: DocxAdapter(),
+        },
+        lifecycle_service=lifecycle_service,
+    )
+
+
+@requires_docx
+async def test_vault_adapter_config_reaches_adapter_at_ingest(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """The PIM use case: vault config's heading_style_map flows to docx adapter."""
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config={"heading_style_map": {"Title": 1}},
+    )
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "vault_config_docx.docx"
+    _write_styled_docx(
+        docx_path,
+        [("CLAIMS", "Title"), ("Body content under CLAIMS.", "Normal")],
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="vault_config_docx.docx", adapter=SourceType.DOCX)
+    )
+
+    # The Title-styled "CLAIMS" paragraph must be recognized as a heading
+    # because the vault config maps Title -> level 1. Without the fix, the
+    # adapter receives request.config (None) and falls back to defaults
+    # (Heading 1-9 only), so no chunk gets heading_path "CLAIMS".
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    assert "CLAIMS" in heading_paths, (
+        f"Expected 'CLAIMS' as a heading_path; got: {heading_paths}"
+    )
+
+
+@requires_docx
+async def test_request_config_overrides_vault_adapter_config_on_key_collision(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """Per-request config overrides vault-level on key collisions."""
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config={"heading_style_map": {"Title": 1}},
+    )
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "override.docx"
+    # Two Title paragraphs so we can see hierarchy levels in heading paths.
+    _write_styled_docx(
+        docx_path,
+        [
+            ("Outer", "Heading 1"),
+            ("Inner", "Title"),
+            ("Body", "Normal"),
+        ],
+    )
+
+    # Request asks for Title=2; vault says Title=1. Request must win.
+    result = await service.ingest(
+        IngestRequest(
+            source="override.docx",
+            adapter=SourceType.DOCX,
+            config={"heading_style_map": {"Title": 2}},
+        )
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    # If Title is level 2, it nests under Heading 1: path should be "Outer > Inner".
+    # If Title were level 1 (vault value), the path would be just "Inner".
+    assert "Outer > Inner" in heading_paths, (
+        f"Expected Title=2 (request wins); got heading_paths: {heading_paths}"
+    )
+
+
+@requires_docx
+async def test_request_config_merges_with_vault_adapter_config_no_collision(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """Non-conflicting keys merge; both vault and request mappings apply."""
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config={"heading_style_map": {"Title": 1}},
+    )
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "merge.docx"
+    # Each heading needs body content beneath it; chunks are only created
+    # for headings whose content is non-empty.
+    _write_styled_docx(
+        docx_path,
+        [
+            ("VaultStyleHeading", "Title"),
+            ("Vault body.", "Normal"),
+            ("RequestStyleHeading", "Subtitle"),
+            ("Request body.", "Normal"),
+        ],
+    )
+
+    # Vault: Title -> 1. Request adds: Subtitle -> 1. No collision; both apply.
+    result = await service.ingest(
+        IngestRequest(
+            source="merge.docx",
+            adapter=SourceType.DOCX,
+            config={"heading_style_map": {"Subtitle": 1}},
+        )
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    assert "VaultStyleHeading" in heading_paths
+    assert "RequestStyleHeading" in heading_paths
+
+
+@requires_docx
+async def test_no_vault_adapter_entry_falls_through_to_request_config(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """Vault config with no docx adapter entry: request.config still works."""
+    # No docx entry added; minimal_vault_config_dict only has markdown.
+    config = VaultConfig.model_validate(_copy.deepcopy(minimal_vault_config_dict))
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "no_vault_entry.docx"
+    _write_styled_docx(
+        docx_path,
+        [("RequestOnly", "Title"), ("Body", "Normal")],
+    )
+
+    result = await service.ingest(
+        IngestRequest(
+            source="no_vault_entry.docx",
+            adapter=SourceType.DOCX,
+            config={"heading_style_map": {"Title": 1}},
+        )
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    assert "RequestOnly" in heading_paths
+
+
+@requires_docx
+async def test_no_request_config_and_no_vault_adapter_config_uses_defaults(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """Both configs absent: adapter falls back to _DEFAULT_STYLE_MAP."""
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict, vault_docx_config=None
+    )
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "defaults.docx"
+    _write_styled_docx(
+        docx_path,
+        [
+            ("BuiltInH1", "Heading 1"),
+            ("CustomTitle", "Title"),  # not in defaults
+            ("Body", "Normal"),
+        ],
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="defaults.docx", adapter=SourceType.DOCX)
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    # Heading 1 is in defaults; Title is not.
+    assert "BuiltInH1" in heading_paths
+    assert "CustomTitle" not in heading_paths

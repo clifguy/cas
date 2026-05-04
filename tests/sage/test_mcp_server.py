@@ -739,6 +739,59 @@ async def test_reload_vault_sees_external_changes(vault_services):
     assert stats_after["total_documents"] == 2
 
 
+async def test_reload_vault_picks_up_yaml_edits(
+    minimal_vault_config_dict, tmp_vault_dir, tmp_path
+):
+    """Reload re-reads vault_config.yaml from disk and reflects edits.
+
+    Documents the contract: when a vault was loaded from a YAML file and
+    the file is later edited, sage_reload_vault must pick up the new
+    values, not silently reuse the in-memory config.
+    """
+    import yaml as _yaml
+    from sage.config import load_vault_config
+
+    config_path = tmp_path / "vault_config.yaml"
+    initial_config_dict = _copy_dict(minimal_vault_config_dict)
+    initial_config_dict["abstraction"] = {"enabled": True, "model": "stub"}
+    config_path.write_text(_yaml.safe_dump(initial_config_dict))
+
+    config = load_vault_config(config_path)
+    services = await initialize_services(
+        config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+        config_path=config_path,
+    )
+    _mcp._vaults["yaml_reload_vault"] = services
+    try:
+        # Sanity check: starting state matches what we wrote
+        assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is True
+
+        # Edit the YAML on disk
+        edited = _copy_dict(initial_config_dict)
+        edited["abstraction"]["enabled"] = False
+        config_path.write_text(_yaml.safe_dump(edited))
+
+        # Reload
+        result = _parse(await sage_reload_vault("yaml_reload_vault"))
+        assert result["reloaded"] is True
+
+        # In-memory config now reflects the edit
+        assert (
+            _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is False
+        ), "sage_reload_vault did not re-read the YAML from disk"
+    finally:
+        await _mcp._vaults["yaml_reload_vault"].graph_store.close()
+        _mcp._vaults.pop("yaml_reload_vault", None)
+
+
+def _copy_dict(d: dict) -> dict:
+    import copy as _copy
+    return _copy.deepcopy(d)
+
+
 # ---------------------------------------------------------------------------
 # Reabstract
 # ---------------------------------------------------------------------------
