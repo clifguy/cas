@@ -174,12 +174,20 @@ class LanceDBContentStore(ContentStore):
         return " AND ".join(clauses) if clauses else None
 
     def _rebuild_fts(self, table: lancedb.table.Table) -> None:
-        """Rebuild the FTS index on the content column (AD-019).
+        """Rebuild FTS indexes on content and heading_path columns (AD-019, AD-102).
+
+        Two separate FTS indexes are maintained so that BM25 search
+        (``table.search(query, query_type="fts")``) covers both the body
+        content AND the heading_path tokens. The heading_path index lets
+        agents find a section by its heading text alone (the equivalent of
+        Word's Find on a heading) without needing to know document
+        structure or call deterministic-mode lookups.
 
         Called after every mutation to keep search results consistent.
         """
         try:
             table.create_fts_index("content", replace=True, with_position=True)
+            table.create_fts_index("heading_path", replace=True, with_position=True)
         except Exception:
             # FTS index creation can fail on empty tables; that's fine
             logger.debug("FTS index rebuild skipped (likely empty table)")

@@ -462,6 +462,73 @@ class TestLanceDBContentStore:
         )
         assert results3 == []
 
+    async def test_ad_102_bm25_finds_chunk_by_heading_text_only(
+        self, content_store, embedding_provider
+    ):
+        """AD-102: BM25 surfaces chunks via heading_path FTS index even when
+        the query terms do not appear in the chunk's body content. This
+        captures the agent-search-by-section-name use case (the equivalent
+        of Word's Find on a heading).
+        """
+        body_only = (
+            "Cryptographic seal verification gates each accumulator commit."
+        )
+        vec = (await embedding_provider.embed([body_only]))[0]
+        await content_store.index_chunks("doc_pv", [
+            Chunk(
+                document_id="doc_pv",
+                heading_path="Technical Description > Exemplary Embodiment Walkthrough",
+                content=body_only,
+                embedding=vec,
+                chunk_index=0,
+            ),
+        ])
+
+        # Query term "exemplary" appears ONLY in heading_path, not in body.
+        # No morphological variants in body either ("method" is absent).
+        results = await content_store.search_bm25("exemplary", limit=10)
+
+        assert len(results) > 0, (
+            "Expected BM25 to surface the chunk via heading_path FTS index; "
+            "without the index, the query 'exemplary' has no match in body content."
+        )
+        assert results[0].document_id == "doc_pv"
+
+    async def test_ad_103_bm25_still_finds_by_body_content(
+        self, content_store, embedding_provider
+    ):
+        """AD-103 (regression): BM25 keyword search on body-text terms still
+        works after adding heading_path FTS index."""
+        body = "Cryptographic seal verification gates each accumulator commit."
+        vec = (await embedding_provider.embed([body]))[0]
+        await content_store.index_chunks("doc_a", [
+            Chunk("doc_a", "Section X > Subsection Y", body, vec, 0),
+        ])
+
+        results = await content_store.search_bm25("cryptographic seal", limit=10)
+        assert len(results) > 0
+        assert results[0].document_id == "doc_a"
+
+    async def test_ad_104_chunk_content_unchanged_by_indexing(
+        self, content_store, embedding_provider
+    ):
+        """AD-104: chunk.content stored and returned via get_all_chunks is the
+        body text only — heading_path is not concatenated into content. The
+        heading-context-embedding strategy operates on the *embedding input*,
+        not the stored content field.
+        """
+        body = "A method, comprising: receiving, by a processing unit, a record."
+        heading = "Technical Description > Exemplary Methods"
+        vec = (await embedding_provider.embed([body]))[0]
+        await content_store.index_chunks("doc_clean", [
+            Chunk("doc_clean", heading, body, vec, 0),
+        ])
+
+        chunks = await content_store.get_all_chunks("doc_clean")
+        assert len(chunks) == 1
+        assert chunks[0].content == body
+        assert heading not in chunks[0].content
+
     async def test_ad_020_heading_prefix_exact_and_child(
         self, content_store, embedding_provider
     ):

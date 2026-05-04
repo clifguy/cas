@@ -1846,3 +1846,147 @@ async def test_no_request_config_and_no_vault_adapter_config_uses_defaults(
     # Heading 1 is in defaults; Title is not.
     assert "BuiltInH1" in heading_paths
     assert "CustomTitle" not in heading_paths
+
+
+# ---------------------------------------------------------------------------
+# Heading-context embedding
+#
+# At index time, the embedder receives `heading_path + content`, not just
+# `content`. This makes semantic search reach chunks whose query terms
+# appear only in the heading hierarchy — the agent equivalent of Word's
+# Find on a heading.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingEmbeddingProvider:
+    """Captures the texts passed to embed() for assertion."""
+
+    def __init__(self) -> None:
+        self.last_inputs: list[str] = []
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.last_inputs = list(texts)
+        return [[0.0] * 768 for _ in texts]
+
+
+@requires_docx
+async def test_embedder_receives_combined_heading_path_and_content(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """The text passed to the embedder includes heading_path + content,
+    so semantic search can find chunks via heading-only query terms.
+
+    Heading text is deliberately distinct from the document title so the
+    BH-058 search preamble (which prepends Title/Source/Tags to chunk[0])
+    does not accidentally include the heading text — that would mask a
+    failure of the heading-context-embedding logic.
+    """
+    from sage.services.ingestion import IngestionService
+    from sage.services.lifecycle import LifecycleService
+    from sage.source_adapters.docx_adapter import DocxAdapter
+
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config=None,  # use defaults (Heading 1-9 only)
+    )
+    lifecycle_service = LifecycleService(graph_store, lock_manager, config)
+    recording_embedder = _RecordingEmbeddingProvider()
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=recording_embedder,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={
+            SourceType.MARKDOWN: MarkdownAdapter(),
+            SourceType.DOCX: DocxAdapter(),
+        },
+        lifecycle_service=lifecycle_service,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "plain_filename.docx"
+    # Filename is "plain_filename" → doc title is "plain_filename".
+    # Heading text "Distinctive Marker Phrase" appears nowhere in the
+    # filename or body, so the only way it can reach the embedder is
+    # via heading_path concatenation.
+    _write_styled_docx(
+        docx_path,
+        [
+            ("Distinctive Marker Phrase", "Heading 1"),
+            ("Cryptographic accumulator seals govern the commit.", "Normal"),
+        ],
+    )
+
+    await service.ingest(
+        IngestRequest(source="plain_filename.docx", adapter=SourceType.DOCX)
+    )
+
+    assert recording_embedder.last_inputs, "embedder was not called"
+    combined = recording_embedder.last_inputs[0]
+    assert "Distinctive Marker Phrase" in combined, (
+        f"heading_path missing from embed input: {combined!r}"
+    )
+    assert "Cryptographic accumulator seals" in combined, (
+        f"body content missing from embed input: {combined!r}"
+    )
+
+
+@requires_docx
+async def test_chunk_content_field_unchanged_by_combined_embedding(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """The chunk.content field stored in the content store is body text
+    only — heading_path is NOT prepended to the stored content. The
+    combined heading+content text is used solely as embedder input."""
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict,
+        vault_docx_config={"heading_style_map": {"Title": 1}},
+    )
+    service = _make_ingestion_with_docx(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+    docx_path = tmp_vault_dir / "sources" / "clean_content.docx"
+    body_first = "First section body content."
+    second_heading = "Exemplary Methods"
+    body_second = "Second section body about cryptographic accumulator seals."
+    _write_styled_docx(
+        docx_path,
+        [
+            ("Introduction", "Title"),
+            (body_first, "Normal"),
+            (second_heading, "Title"),
+            (body_second, "Normal"),
+        ],
+    )
+
+    result = await service.ingest(
+        IngestRequest(source="clean_content.docx", adapter=SourceType.DOCX)
+    )
+
+    chunks = await stub_content_store.get_all_chunks(result.document.id)
+    # Assert on the SECOND chunk (avoid BH-058 search_preamble which mutates
+    # only chunk[0].content with title/source/tags).
+    assert len(chunks) >= 2
+    second = next(c for c in chunks if c.heading_path == second_heading)
+    assert second.content == body_second, (
+        "Stored chunk.content must be body text only; got: " + repr(second.content)
+    )
+    assert second_heading not in second.content

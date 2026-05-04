@@ -12,7 +12,10 @@ from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapt
 
 
 class MarkdownAdapter(SourceAdapter):
-    VERSION = "0.1.0"
+    # 0.2.0: chunks indexed with heading-context (heading_path embedded with
+    # content, plus FTS index on heading_path) — see content_store_lancedb
+    # _rebuild_fts and ingestion._stage2_indexing.
+    VERSION = "0.2.0"
     EXTENSIONS = [".md", ".markdown"]
 
     async def project(

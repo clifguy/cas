@@ -246,7 +246,10 @@ def _extract_paragraph_text(p_elem) -> str:
 class DocxAdapter(SourceAdapter):
     """Source adapter for Microsoft Word (.docx) documents and (.dotx) templates."""
 
-    VERSION = "0.2.0"
+    # 0.3.0: chunks indexed with heading-context (heading_path embedded with
+    # content, plus FTS index on heading_path) — see content_store_lancedb
+    # _rebuild_fts and ingestion._stage2_indexing.
+    VERSION = "0.3.0"
     EXTENSIONS = [".docx", ".dotx"]
 
     async def project(

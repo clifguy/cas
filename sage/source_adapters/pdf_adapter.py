@@ -172,7 +172,10 @@ def _extract_info_title(reader: pypdf.PdfReader) -> str | None:
 
 
 class PdfAdapter(SourceAdapter):
-    VERSION = "0.1.0"
+    # 0.2.0: chunks indexed with heading-context (heading_path embedded with
+    # content, plus FTS index on heading_path) — see content_store_lancedb
+    # _rebuild_fts and ingestion._stage2_indexing.
+    VERSION = "0.2.0"
     EXTENSIONS = [".pdf"]
 
     async def project(

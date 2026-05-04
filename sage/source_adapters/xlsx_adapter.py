@@ -23,7 +23,10 @@ _DEFAULT_PREVIEW_ROWS = 5
 
 
 class XlsxAdapter(SourceAdapter):
-    VERSION = "0.1.0"
+    # 0.2.0: chunks indexed with heading-context (heading_path embedded with
+    # content, plus FTS index on heading_path) — see content_store_lancedb
+    # _rebuild_fts and ingestion._stage2_indexing.
+    VERSION = "0.2.0"
     EXTENSIONS = [".xlsx"]
 
     async def project(

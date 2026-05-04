@@ -770,9 +770,15 @@ class IngestionService:
             for chunk in chunks:
                 chunk.doc_type = doc.doc_type
 
-        # Embed all chunks
+        # Embed all chunks. Combine heading_path with content so that
+        # semantic search can reach chunks via heading-text-only queries
+        # (the equivalent of Word's Find on a heading). Stored chunk.content
+        # is unchanged — heading_path travels with the embedder input only.
         if chunks:
-            texts = [c.content for c in chunks]
+            texts = [
+                f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content
+                for c in chunks
+            ]
             embeddings = await self._embedding.embed(texts)
             for chunk, embedding in zip(chunks, embeddings):
                 chunk.embedding = embedding
