@@ -529,6 +529,39 @@ class TestLanceDBContentStore:
         assert chunks[0].content == body
         assert heading not in chunks[0].content
 
+    async def test_ad_105_get_all_chunks_preserves_doc_type(
+        self, content_store, embedding_provider
+    ):
+        """AD-105: get_all_chunks must populate Chunk.doc_type from the
+        stored row. Earlier this read path defaulted to None, which caused
+        a reindex round-trip (read→re-embed→re-write) to silently wipe the
+        doc_type column for every chunk and break ``filters={"doc_type":
+        "patent_draft"}`` filtering. Regression guard.
+        """
+        body = "patent body content"
+        vec = (await embedding_provider.embed([body]))[0]
+        original = Chunk(
+            document_id="doc_with_type",
+            heading_path="H",
+            content=body,
+            embedding=vec,
+            chunk_index=0,
+            doc_type="patent_draft",
+        )
+        await content_store.index_chunks("doc_with_type", [original])
+
+        chunks = await content_store.get_all_chunks("doc_with_type")
+        assert len(chunks) == 1
+        assert chunks[0].doc_type == "patent_draft", (
+            "get_all_chunks must round-trip doc_type so reindex flows "
+            "preserve it across read→write cycles."
+        )
+
+        # Round-trip simulating a reindex pass: read, re-write unchanged.
+        await content_store.index_chunks("doc_with_type", chunks)
+        chunks_after = await content_store.get_all_chunks("doc_with_type")
+        assert chunks_after[0].doc_type == "patent_draft"
+
     async def test_ad_020_heading_prefix_exact_and_child(
         self, content_store, embedding_provider
     ):

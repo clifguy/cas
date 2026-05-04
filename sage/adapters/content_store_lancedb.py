@@ -464,6 +464,7 @@ class LanceDBContentStore(ContentStore):
                 content=row["content"],
                 embedding=row["vector"] if "vector" in row else None,
                 chunk_index=row["chunk_index"],
+                doc_type=row.get("doc_type"),
             )
             for row in results
         ]
