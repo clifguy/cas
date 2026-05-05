@@ -4,9 +4,10 @@ lifecycle_status is str (not enum) because vaults define domain-specific
 extensions like 'filed' that aren't in the base enum.
 """
 
+import re
 from datetime import datetime
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
 from typing import Annotated, Literal
 
 from sage.models.enums import (
@@ -107,6 +108,16 @@ class IngestRequest(BaseModel):
     metadata: dict[str, str | list[str]] | None = None
     supersedes_document_id: str | None = None
 
+    @model_validator(mode="after")
+    def _validate_metadata_dates(self) -> "IngestRequest":
+        if self.metadata is None:
+            return self
+        for key in ("document_date", "date"):
+            value = self.metadata.get(key)
+            if isinstance(value, str):
+                _validate_document_date(value)
+        return self
+
 
 class ParseFilenameRequest(BaseModel):
     filename: str
@@ -158,6 +169,28 @@ def _coerce_tags(v: str | list[str] | None) -> list[str] | None:
     return v
 
 
+_DOCUMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_document_date(v: str | None) -> str | None:
+    """Reject values that are not the contract YYYY-MM-DD shape.
+
+    The substrate stores ``document_date`` as a calendar-date string and
+    every internal write path (filename parser, source_modified_at
+    fallback) produces YYYY-MM-DD by construction. Caller-supplied
+    values flow through verbatim, so a strict regex check at the
+    boundary stops datetime-ISO strings (``2026-05-05T00:00:00Z``) from
+    poisoning downstream readers that parse with ``strptime``.
+    """
+    if v is None:
+        return v
+    if not _DOCUMENT_DATE_RE.match(v):
+        raise ValueError(
+            f"document_date must be YYYY-MM-DD (got {v!r})"
+        )
+    return v
+
+
 class UpdateMetadataRequest(BaseModel):
     title: str | None = None
     version_label: str | None = None
@@ -165,7 +198,9 @@ class UpdateMetadataRequest(BaseModel):
     tags: Annotated[list[str] | None, BeforeValidator(_coerce_tags)] = None
     doc_type: str | None = None
     authority_scope: str | None = None
-    document_date: str | None = None
+    document_date: Annotated[
+        str | None, AfterValidator(_validate_document_date)
+    ] = None
 
 
 class RegisterUserRequest(BaseModel):
