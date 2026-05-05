@@ -2943,3 +2943,18 @@ async def test_pre_resolved_filters_return_empty_when_zero_docs_match(
     )
     response = await retrieval_service.discover(request)
     assert response.results == []
+
+
+# ---------------------------------------------------------------------------
+# _parse_document_date: tolerate ISO-with-time form alongside YYYY-MM-DD.
+# Pre-fix, the helper used strptime("%Y-%m-%d") and silently dropped
+# `2026-05-05T00:00:00Z` to None. The fix accepts both shapes via
+# datetime.fromisoformat.
+# ---------------------------------------------------------------------------
+
+
+def test_parse_document_date_accepts_iso_with_z():
+    from sage.services.retrieval import _parse_document_date
+
+    result = _parse_document_date("2026-05-05T00:00:00Z")
+    assert result == datetime(2026, 5, 5, tzinfo=timezone.utc)

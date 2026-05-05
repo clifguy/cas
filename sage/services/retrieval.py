@@ -44,14 +44,22 @@ _RRF_K = 60
 
 
 def _parse_document_date(date_str: str | None) -> datetime | None:
-    """Parse a YYYY-MM-DD date string into a UTC datetime, or None."""
+    """Parse a document_date string into a UTC datetime, or None.
+
+    Accepts the contract YYYY-MM-DD shape plus any other ISO-8601 form
+    datetime.fromisoformat understands (including the trailing Z that
+    ingest paths have historically produced for some records). Naive
+    results are treated as UTC; aware results are normalized to UTC.
+    """
     if not date_str:
         return None
     try:
-        parsed = datetime.strptime(date_str, "%Y-%m-%d")
-        return parsed.replace(tzinfo=timezone.utc)
+        parsed = datetime.fromisoformat(date_str)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class RetrievalService:

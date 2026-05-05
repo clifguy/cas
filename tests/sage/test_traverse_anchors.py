@@ -22,7 +22,12 @@ from sage.models.enums import (
     SourceType,
     TraversalDirection,
 )
-from sage.models.schemas import Document, Edge, LinkRequest, TraverseRequest
+from sage.models.schemas import (
+    Document,
+    Edge,
+    LinkRequest,
+    TraverseRequest,
+)
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -606,3 +611,91 @@ async def test_legacy_and_anchored_edges_coexist_in_traverse(
         depth=1,
     ))
     assert sorted(n.document.id for n in out.nodes) == ["t1", "t2"]
+
+
+# ---------------------------------------------------------------------------
+# document_date tolerance: traverse must not crash on records whose
+# document_date was persisted in ISO-with-time form rather than YYYY-MM-DD.
+# Pre-fix, the strict strptime in graph_ops.traverse raised
+# `ValueError: unconverted data remains: T00:00:00Z`, which the MCP layer
+# then mislabeled as `unknown_vault`.
+# ---------------------------------------------------------------------------
+
+
+def _make_doc_with_date(doc_id: str, document_date: str | None) -> Document:
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title=f"Doc {doc_id}",
+        source_type=SourceType.MARKDOWN,
+        source_path=f"test/{doc_id}.md",
+        source_content_hash=f"hash_{doc_id}",
+        adapter_version="0.1.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        document_date=document_date,
+    )
+
+
+async def _seed_simple_ref_pair(graph_store, target_doc_date: str | None):
+    src = _make_doc_with_date("src", document_date=None)
+    tgt = _make_doc_with_date("tgt", document_date=target_doc_date)
+    await graph_store.insert_document(src)
+    await graph_store.insert_document(tgt)
+    await graph_store.insert_edge(Edge(
+        id="ref_src_tgt",
+        source_id="src",
+        target_id="tgt",
+        edge_type=EdgeType.REFERENCES,
+        created_at=datetime.now(timezone.utc),
+    ))
+
+
+async def test_traverse_document_date_yyyy_mm_dd(graph_store, graph_ops_service):
+    """Contract-shape document_date round-trips as midnight UTC."""
+    await _seed_simple_ref_pair(graph_store, "2026-05-05")
+
+    out = await graph_ops_service.traverse(TraverseRequest(
+        start_id="src",
+        edge_type=EdgeType.REFERENCES,
+        direction=TraversalDirection.OUTBOUND,
+        depth=1,
+    ))
+    assert [n.document.id for n in out.nodes] == ["tgt"]
+    assert out.nodes[0].document.document_date == datetime(
+        2026, 5, 5, tzinfo=timezone.utc
+    )
+
+
+async def test_traverse_document_date_iso_with_z(graph_store, graph_ops_service):
+    """Bug repro: ISO-with-Z document_date must not crash traverse."""
+    await _seed_simple_ref_pair(graph_store, "2026-05-05T00:00:00Z")
+
+    out = await graph_ops_service.traverse(TraverseRequest(
+        start_id="src",
+        edge_type=EdgeType.REFERENCES,
+        direction=TraversalDirection.OUTBOUND,
+        depth=1,
+    ))
+    assert [n.document.id for n in out.nodes] == ["tgt"]
+    assert out.nodes[0].document.document_date == datetime(
+        2026, 5, 5, tzinfo=timezone.utc
+    )
+
+
+async def test_traverse_document_date_malformed(graph_store, graph_ops_service):
+    """Defensive: an unparseable document_date renders as None rather than raising."""
+    await _seed_simple_ref_pair(graph_store, "not a date")
+
+    out = await graph_ops_service.traverse(TraverseRequest(
+        start_id="src",
+        edge_type=EdgeType.REFERENCES,
+        direction=TraversalDirection.OUTBOUND,
+        depth=1,
+    ))
+    assert [n.document.id for n in out.nodes] == ["tgt"]
+    assert out.nodes[0].document.document_date is None

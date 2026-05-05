@@ -96,6 +96,31 @@ async def test_unknown_vault_lists_available(vault_services):
 
 
 # ---------------------------------------------------------------------------
+# _error_response: distinguish vault-routing failures from other ValueErrors.
+# Pre-fix, every non-SAGEError ValueError was labeled `unknown_vault`,
+# which masked unrelated bugs (e.g., a date-parse failure deep in traverse).
+# ---------------------------------------------------------------------------
+
+
+def test_error_response_value_error_returns_internal_error():
+    """A generic ValueError is no longer mislabeled as unknown_vault."""
+    from sage.mcp_server import _error_response
+
+    result = _error_response(ValueError("boom"))
+    assert result["error"] == "internal_error"
+    assert result["message"] == "boom"
+
+
+def test_error_response_vault_not_found_returns_unknown_vault():
+    """The unknown_vault label is reserved for actual vault-routing failures."""
+    from sage.mcp_server import VaultNotFoundError, _error_response
+
+    result = _error_response(VaultNotFoundError("Unknown vault_id: x"))
+    assert result["error"] == "unknown_vault"
+    assert "Unknown vault_id: x" in result["message"]
+
+
+# ---------------------------------------------------------------------------
 # Ingestion
 # ---------------------------------------------------------------------------
 

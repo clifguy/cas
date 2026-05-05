@@ -32,11 +32,21 @@ from sage.sage_api_tools import register_sage_tools
 _vaults: dict[str, SAGEServices] = {}
 
 
+class VaultNotFoundError(ValueError):
+    """Raised when a tool is called with a vault_id that is not registered.
+
+    ValueError-derived so existing tool callsites that catch
+    `(SAGEError, ValueError)` continue to handle vault routing without
+    change; `_error_response` distinguishes this case from other
+    ValueErrors so the latter no longer surface as `unknown_vault`.
+    """
+
+
 def _get_vault(vault_id: str) -> SAGEServices:
-    """Look up services for a vault. Raises ValueError if unknown."""
+    """Look up services for a vault. Raises VaultNotFoundError if unknown."""
     if vault_id not in _vaults:
         available = ", ".join(sorted(_vaults.keys())) or "(none)"
-        raise ValueError(
+        raise VaultNotFoundError(
             f"Unknown vault_id: {vault_id}. Available vaults: {available}"
         )
     return _vaults[vault_id]
@@ -56,13 +66,15 @@ def _serialize(obj: object) -> dict:
 
 
 def _error_response(exc: SAGEError | ValueError) -> dict:
-    """Format a SAGE or vault-routing error as a dict for MCP response."""
+    """Format a SAGE error, vault-routing error, or other ValueError for MCP."""
     if isinstance(exc, SAGEError):
         payload: dict = {"error": exc.code, "message": exc.message}
         if exc.detail:
             payload["detail"] = exc.detail
-    else:
+    elif isinstance(exc, VaultNotFoundError):
         payload = {"error": "unknown_vault", "message": str(exc)}
+    else:
+        payload = {"error": "internal_error", "message": str(exc)}
     return payload
 
 
@@ -123,7 +135,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
     """
     if vault_id not in _vaults:
         return _error_response(
-            ValueError(
+            VaultNotFoundError(
                 f"Unknown vault_id: {vault_id}. "
                 f"Available vaults: {', '.join(sorted(_vaults.keys())) or '(none)'}"
             )

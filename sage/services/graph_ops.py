@@ -47,6 +47,24 @@ from sage.storage.graph_store import GraphStore, LinkReadContext
 logger = logging.getLogger(__name__)
 
 
+def _parse_doc_date(date_str: str) -> datetime | None:
+    """Parse a stored document_date string into a UTC datetime, or None.
+
+    Tolerant of the contract YYYY-MM-DD shape and any other ISO-8601 form
+    datetime.fromisoformat understands (including a trailing Z); naive
+    results are treated as UTC. Returns None on unparseable input rather
+    than raising, since the read path should not crash on out-of-spec
+    data already persisted by upstream paths.
+    """
+    try:
+        parsed = datetime.fromisoformat(date_str)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class _ResolutionPathRecorder:
     """Per-request collector for CAS-ADR-017 resolution_path debug events.
 
@@ -568,9 +586,7 @@ class GraphOpsService:
                 doc_type=best["d_doc_type"],
                 tags=json.loads(best["d_tags"]) if best["d_tags"] else [],
                 document_date=(
-                    datetime.strptime(best["d_document_date"], "%Y-%m-%d").replace(
-                        tzinfo=timezone.utc
-                    )
+                    _parse_doc_date(best["d_document_date"])
                     if best.get("d_document_date")
                     else None
                 ),
