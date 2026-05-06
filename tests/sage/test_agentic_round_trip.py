@@ -38,6 +38,18 @@ from sage.models.enums import SourceType as _SourceType  # alias for fixture
 from sage.models.schemas import IngestRequest, SetLifecycleRequest
 
 
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid IngestRequest / SetLifecycleRequest instances.
+    Deterministic — the same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
+
 # ---------------------------------------------------------------------------
 # Slow stub for BH-130
 # ---------------------------------------------------------------------------
@@ -579,7 +591,7 @@ async def test_bh_121_supersedes_nonexistent_predecessor(
             IngestRequest(
                 source="bh121.md",
                 adapter=SourceType.MARKDOWN,
-                supersedes_document_id="nonexistent_id",
+                supersedes_document_id=_id("nonexistent_id"),
             )
         )
     assert exc_info.value.status_code == 404
@@ -687,7 +699,7 @@ async def test_bh_124_validation_before_projection(
             IngestRequest(
                 source="bh124_case1.md",
                 adapter=SourceType.MARKDOWN,
-                supersedes_document_id="bogus_predecessor",
+                supersedes_document_id=_id("bogus_predecessor"),
             )
         )
     assert await graph_store.list_all_documents() == []

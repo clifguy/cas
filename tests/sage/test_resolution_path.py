@@ -10,6 +10,8 @@ When `debug=True`, the resolver emits one entry per decision
 (anchor_hit, anchor_miss, retracts_applied, tombstone_applied).
 """
 
+import hashlib
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sage.models.enums import (
@@ -20,6 +22,18 @@ from sage.models.enums import (
     TraversalDirection,
 )
 from sage.models.schemas import Document, Edge, LinkRequest, TraverseRequest
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid LinkRequest / TraverseRequest / ChainRequest
+    instances. Deterministic — the same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -50,7 +64,7 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
     for i in range(1, len(chain)):
         newer, older = chain[i], chain[i - 1]
         await graph_store.insert_edge(Edge(
-            id=f"sup_{newer}_{older}",
+            id=str(uuid.uuid4()),
             source_id=newer,
             target_id=older,
             edge_type=EdgeType.SUPERSEDES,
@@ -61,17 +75,17 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
 
 async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
     """Chain A (a1..a5), Chain B (b1..b3), covers edge at a3/b2."""
-    chain_a = ["a1", "a2", "a3", "a4", "a5"]
-    chain_b = ["b1", "b2", "b3"]
+    chain_a = [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5")]
+    chain_b = [_id("b1"), _id("b2"), _id("b3")]
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
     return covers.id
 
@@ -87,7 +101,7 @@ async def test_cr_037_debug_false_produces_no_resolution_path(
 
     # Default (debug defaulted to false).
     out = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a5",
+        start_id=_id("a5"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -96,7 +110,7 @@ async def test_cr_037_debug_false_produces_no_resolution_path(
 
     # Explicit debug=False.
     out_explicit = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a5",
+        start_id=_id("a5"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -115,7 +129,7 @@ async def test_cr_038_debug_records_anchor_hit_on_surfaced_edge(
     covers_id = await _seed_ab_worked_example(graph_store, graph_ops_service)
 
     out = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a5",
+        start_id=_id("a5"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -133,11 +147,11 @@ async def test_cr_038_debug_records_anchor_hit_on_surfaced_edge(
     source_hit = next(
         e for e in hits if e.anchor_field == "source_valid_from_version"
     )
-    assert source_hit.anchor_version == "a3"
+    assert source_hit.anchor_version == _id("a3")
     target_hit = next(
         e for e in hits if e.anchor_field == "target_valid_from_version"
     )
-    assert target_hit.anchor_version == "b2"
+    assert target_hit.anchor_version == _id("b2")
 
 
 # ---------------------------------------------------------------------------
@@ -152,8 +166,8 @@ async def test_cr_039_debug_records_anchor_miss_on_suppressed_edge(
     edges created via `link`, so the path is exercised by inserting a
     malformed edge directly (simulating a legacy row or data corruption).
     """
-    chain_a = ["a1", "a2", "a3"]
-    chain_b = ["b1", "b2"]
+    chain_a = [_id("a1"), _id("a2"), _id("a3")]
+    chain_b = [_id("b1"), _id("b2")]
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
@@ -163,18 +177,18 @@ async def test_cr_039_debug_records_anchor_miss_on_suppressed_edge(
     # inserting the row directly.
     bad_edge = Edge(
         id="bad_covers",
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
         resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-        source_valid_from_version="a99",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a99"),
+        target_valid_from_version=_id("b2"),
         created_at=datetime.now(timezone.utc),
     )
     await graph_store.insert_edge(bad_edge)
 
     out = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a3",
+        start_id=_id("a3"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -190,7 +204,7 @@ async def test_cr_039_debug_records_anchor_miss_on_suppressed_edge(
     ]
     assert len(misses) == 1
     assert misses[0].anchor_field == "source_valid_from_version"
-    assert misses[0].anchor_version == "a99"
+    assert misses[0].anchor_version == _id("a99")
 
 
 # ---------------------------------------------------------------------------
@@ -201,28 +215,28 @@ async def test_cr_040_debug_records_retracts_applied(
     graph_store, graph_ops_service
 ):
     # Extended chain-A to a8 so we can anchor a retract at a7.
-    chain_a = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]
-    chain_b = ["b1", "b2", "b3"]
+    chain_a = [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5"), _id("a6"), _id("a7"), _id("a8")]
+    chain_b = [_id("b1"), _id("b2"), _id("b3")]
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
     retracts_edge = await graph_ops_service.link(LinkRequest(
-        source_id="a7",
+        source_id=_id("a7"),
         target_id=None,
         edge_type=EdgeType.RETRACTS,
         retracted_edge_id=covers.id,
-        source_valid_from_version="a7",
+        source_valid_from_version=_id("a7"),
     ))
 
     out = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a8",
+        start_id=_id("a8"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -247,35 +261,35 @@ async def test_cr_041_debug_records_tombstone_applied(
     graph_store, graph_ops_service
 ):
     # Build chains A (a1..a8) and B (b1..b4); covers edge at a3/b2.
-    chain_a = ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]
-    chain_b = ["b1", "b2", "b3", "b4"]
+    chain_a = [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5"), _id("a6"), _id("a7"), _id("a8")]
+    chain_b = [_id("b1"), _id("b2"), _id("b3"), _id("b4")]
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
 
     # c1 merged_from a8: tombstones the covers edge with valid_until=a8.
-    await _seed_docs(graph_store, "c1")
+    await _seed_docs(graph_store, _id("c1"))
     await graph_ops_service.link(LinkRequest(
-        source_id="c1",
-        target_id="a8",
+        source_id=_id("c1"),
+        target_id=_id("a8"),
         edge_type=EdgeType.MERGED_FROM,
     ))
 
     # Append a hypothetical a9 post-merge so a8 is a strict ancestor on
     # chain A. A query from a9 is downstream of the merge termination:
     # tombstone suppresses the covers edge (strict-ancestor arm).
-    await _seed_docs(graph_store, "a9")
-    await _seed_supersedes_chain(graph_store, ["a8", "a9"])
+    await _seed_docs(graph_store, _id("a9"))
+    await _seed_supersedes_chain(graph_store, [_id("a8"), _id("a9")])
 
     out = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a9",
+        start_id=_id("a9"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -289,7 +303,7 @@ async def test_cr_041_debug_records_tombstone_applied(
         if e.event_type == "tombstone_applied" and e.edge_id == covers.id
     ]
     assert len(tombstone_events) == 1
-    assert tombstone_events[0].tombstone_version == "a8"
+    assert tombstone_events[0].tombstone_version == _id("a8")
 
 
 # ---------------------------------------------------------------------------
@@ -305,44 +319,44 @@ async def test_cr_042_resolution_path_preserves_event_order(
     anchor events must precede any later-phase events.
     """
     # Chain A (a1..a5) + Chain B (b1..b3).
-    chain_a = ["a1", "a2", "a3", "a4", "a5"]
-    chain_b = ["b1", "b2", "b3"]
+    chain_a = [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5")]
+    chain_b = [_id("b1"), _id("b2"), _id("b3")]
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
 
     # Chain C (c1..c2) for a second covers edge; add a retract to mix
     # event types on this one.
-    chain_c = ["c1", "c2"]
+    chain_c = [_id("c1"), _id("c2")]
     await _seed_docs(graph_store, *chain_c)
     await _seed_supersedes_chain(graph_store, chain_c)
 
     covers_ab = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
     covers_ac = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="c1",
+        source_id=_id("a3"),
+        target_id=_id("c1"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="c1",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("c1"),
     ))
 
     # Retract covers_ac anchored at a3 (in lineage of any a-chain query).
     await graph_ops_service.link(LinkRequest(
-        source_id="a3",
+        source_id=_id("a3"),
         target_id=None,
         edge_type=EdgeType.RETRACTS,
         retracted_edge_id=covers_ac.id,
-        source_valid_from_version="a3",
+        source_valid_from_version=_id("a3"),
     ))
 
     out = await graph_ops_service.traverse(TraverseRequest(
-        start_id="a5",
+        start_id=_id("a5"),
         edge_type=EdgeType.COVERS,
         direction=TraversalDirection.OUTBOUND,
         depth=2,
@@ -352,7 +366,7 @@ async def test_cr_042_resolution_path_preserves_event_order(
     assert out.resolution_path is not None
     # covers_ab should surface (anchor_hit events); covers_ac should be
     # suppressed by the retract (anchor_hit events then retracts_applied).
-    assert {n.document.id for n in out.nodes} == {"b2"}
+    assert {n.document.id for n in out.nodes} == {_id("b2")}
 
     # Event ordering invariant: for covers_ac, the retracts_applied
     # event must follow any anchor_hit/anchor_miss events for that edge.

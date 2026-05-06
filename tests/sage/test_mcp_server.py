@@ -508,6 +508,11 @@ async def test_link_retracts_round_trip(vault_services):
     assert "id" in covers
 
     # Bad retracted_edge_id -> retract_target_not_edge
+    # Use a valid-shape UUID that doesn't exist in the store; the runtime
+    # check inside graph_ops then surfaces retract_target_not_edge. A
+    # malformed-shape value would short-circuit at LinkRequest validation
+    # and yield a generic ValidationError instead.
+    import uuid as _uuid
     bad = _parse(
         await sage_link(
             "test_vault",
@@ -515,7 +520,7 @@ async def test_link_retracts_round_trip(vault_services):
             None,
             "retracts",
             source_valid_from_version=doc_a["id"],
-            retracted_edge_id="does-not-exist",
+            retracted_edge_id=str(_uuid.uuid4()),
         )
     )
     assert bad["error"] == "retract_target_not_edge"

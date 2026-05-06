@@ -11,6 +11,7 @@ cheaply instead of compounding fan-out.
 """
 
 import asyncio
+import hashlib
 import time
 from datetime import datetime, timezone
 
@@ -18,6 +19,18 @@ import pytest
 
 from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import Document, Edge, LinkRequest
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid LinkRequest / TraverseRequest / ChainRequest
+    instances. Deterministic — the same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -51,8 +64,8 @@ async def test_link_transitive_both_bounded_executor_submissions(
     insert_edge × 1). The fix batches all reads into one submission via
     read_link_context, plus one submission for insert_edge.
     """
-    await graph_store.insert_document(_make_doc("doc_a"))
-    await graph_store.insert_document(_make_doc("doc_b"))
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
 
     counter = {"count": 0}
     original_run = graph_store._run
@@ -64,11 +77,11 @@ async def test_link_transitive_both_bounded_executor_submissions(
     monkeypatch.setattr(graph_store, "_run", counting_run)
 
     await graph_ops_service.link(LinkRequest(
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,  # transitive_both per default registry
-        source_valid_from_version="doc_a",
-        target_valid_from_version="doc_b",
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
     ))
 
     assert counter["count"] <= 2, (
@@ -86,8 +99,8 @@ async def test_link_merged_from_bounded_executor_submissions(
     merge_atomic). The fix batches all reads plus the merge into two.
     """
     # Two chain heads with no outbound / inbound supersedes.
-    await graph_store.insert_document(_make_doc("c1"))
-    await graph_store.insert_document(_make_doc("p1"))
+    await graph_store.insert_document(_make_doc(_id("c1")))
+    await graph_store.insert_document(_make_doc(_id("p1")))
 
     counter = {"count": 0}
     original_run = graph_store._run
@@ -99,8 +112,8 @@ async def test_link_merged_from_bounded_executor_submissions(
     monkeypatch.setattr(graph_store, "_run", counting_run)
 
     await graph_ops_service.link(LinkRequest(
-        source_id="c1",
-        target_id="p1",
+        source_id=_id("c1"),
+        target_id=_id("p1"),
         edge_type=EdgeType.MERGED_FROM,
     ))
 
@@ -124,7 +137,7 @@ async def test_link_serializes_concurrent_calls(
     and its insert never interleave with another's).
     """
     for name in ("doc_a", "doc_b", "doc_c", "doc_d"):
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     active = {"count": 0, "peak": 0}
     original_run = graph_store._run
@@ -153,10 +166,10 @@ async def test_link_serializes_concurrent_calls(
         ))
 
     results = await asyncio.gather(
-        do_link("doc_a", "doc_b"),
-        do_link("doc_c", "doc_d"),
-        do_link("doc_a", "doc_c"),
-        do_link("doc_b", "doc_d"),
+        do_link(_id("doc_a"), _id("doc_b")),
+        do_link(_id("doc_c"), _id("doc_d")),
+        do_link(_id("doc_a"), _id("doc_c")),
+        do_link(_id("doc_b"), _id("doc_d")),
     )
 
     assert len(results) == 4
@@ -188,17 +201,17 @@ async def test_cancelled_parallel_link_calls_drain_quickly(
     settle in well under a second on any reasonable machine.
     """
     for i in range(20):
-        await graph_store.insert_document(_make_doc(f"d{i}"))
+        await graph_store.insert_document(_make_doc(_id(f"d{i}")))
 
     # Spawn many concurrent link tasks, then cancel all after letting
     # the scheduler tick once so they can enter the lock queue.
     tasks = [
         asyncio.create_task(graph_ops_service.link(LinkRequest(
-            source_id=f"d{i}",
-            target_id=f"d{(i + 1) % 20}",
+            source_id=_id(f"d{i}"),
+            target_id=_id(f"d{(i + 1) % 20}"),
             edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=f"d{i}",
-            target_valid_from_version=f"d{(i + 1) % 20}",
+            source_valid_from_version=_id(f"d{i}"),
+            target_valid_from_version=_id(f"d{(i + 1) % 20}"),
         )))
         for i in range(20)
     ]

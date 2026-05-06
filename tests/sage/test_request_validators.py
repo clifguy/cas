@@ -14,11 +14,26 @@ under either the ``document_date`` or filename-parser-keyed ``date``
 slot).
 """
 
+import uuid
+
 import pytest
 from pydantic import ValidationError
 
-from sage.models.enums import SourceType
-from sage.models.schemas import IngestRequest, UpdateMetadataRequest
+from sage.models.enums import EdgeType, SourceType
+from sage.models.schemas import (
+    ChainRequest,
+    HashCheckRequest,
+    IngestRequest,
+    LinkRequest,
+    SetLifecycleRequest,
+    TraverseRequest,
+    UpdateMetadataRequest,
+)
+
+# Shaped IDs used throughout these tests. The 8-hex prefix is required by
+# the document-ID regex in sage/services/identity.py.
+_DOC_A = "deadbeef_doc_a"
+_DOC_B = "cafebabe_doc_b"
 
 
 # ---------------------------------------------------------------------------
@@ -79,3 +94,109 @@ def test_ingest_metadata_date_iso_with_z_rejected():
             metadata={"date": "2026-05-05T00:00:00Z"},
         )
     assert "date" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# DocumentIdStr — applied to LinkRequest source/target/anchor fields,
+# TraverseRequest.start_id, ChainRequest.document_id,
+# IngestRequest.supersedes_document_id, SetLifecycleRequest.new_version_id.
+# ---------------------------------------------------------------------------
+
+
+def test_link_request_accepts_shaped_document_ids():
+    """Valid document IDs (8 hex + underscore + slug) construct without error."""
+    req = LinkRequest(
+        source_id=_DOC_A,
+        target_id=_DOC_B,
+        edge_type=EdgeType.REFERENCES,
+    )
+    assert req.source_id == _DOC_A
+    assert req.target_id == _DOC_B
+
+
+def test_link_request_rejects_version_label_in_anchor():
+    """The MEMORY.md-captured failure mode: caller passes a version_label
+    string ('v8.2.0') into an anchor slot expecting a document ID."""
+    with pytest.raises(ValidationError) as excinfo:
+        LinkRequest(
+            source_id=_DOC_A,
+            target_id=_DOC_B,
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version="v8.2.0",
+            target_valid_from_version=_DOC_B,
+        )
+    assert "source_valid_from_version" in str(excinfo.value)
+
+
+def test_traverse_request_rejects_malformed_start_id():
+    with pytest.raises(ValidationError) as excinfo:
+        TraverseRequest(start_id="bad")
+    assert "start_id" in str(excinfo.value)
+
+
+def test_chain_request_rejects_malformed_document_id():
+    with pytest.raises(ValidationError) as excinfo:
+        ChainRequest(document_id="bad", edge_type=EdgeType.SUPERSEDES)
+    assert "document_id" in str(excinfo.value)
+
+
+def test_ingest_request_rejects_malformed_supersedes_document_id():
+    with pytest.raises(ValidationError) as excinfo:
+        IngestRequest(
+            source="x",
+            adapter=SourceType.MARKDOWN,
+            supersedes_document_id="bad",
+        )
+    assert "supersedes_document_id" in str(excinfo.value)
+
+
+def test_set_lifecycle_request_rejects_malformed_new_version_id():
+    with pytest.raises(ValidationError) as excinfo:
+        SetLifecycleRequest(action="supersede", new_version_id="bad")
+    assert "new_version_id" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# EdgeIdStr — applied to LinkRequest.retracted_edge_id (UUID4).
+# ---------------------------------------------------------------------------
+
+
+def test_link_request_accepts_uuid_retracted_edge_id():
+    edge_uuid = str(uuid.uuid4())
+    req = LinkRequest(
+        source_id=_DOC_A,
+        edge_type=EdgeType.RETRACTS,
+        retracted_edge_id=edge_uuid,
+    )
+    assert req.retracted_edge_id == edge_uuid
+
+
+def test_link_request_rejects_non_uuid_retracted_edge_id():
+    with pytest.raises(ValidationError) as excinfo:
+        LinkRequest(
+            source_id=_DOC_A,
+            edge_type=EdgeType.RETRACTS,
+            retracted_edge_id="not-a-uuid",
+        )
+    assert "retracted_edge_id" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Sha256Str — applied to HashCheckRequest.hashes.
+# ---------------------------------------------------------------------------
+
+
+def test_hash_check_request_accepts_valid_sha256():
+    valid_hash = "sha256:" + "a" * 64
+    req = HashCheckRequest(hashes=[valid_hash])
+    assert req.hashes == [valid_hash]
+
+
+def test_hash_check_request_rejects_missing_prefix():
+    with pytest.raises(ValidationError):
+        HashCheckRequest(hashes=["a" * 64])
+
+
+def test_hash_check_request_rejects_wrong_length():
+    with pytest.raises(ValidationError):
+        HashCheckRequest(hashes=["sha256:" + "a" * 32])

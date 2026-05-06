@@ -4,6 +4,8 @@ Covers link (edge creation), check_preconditions (dependency validation),
 traverse (graph walk with deduplication), and discover deterministic stub.
 """
 
+import hashlib
+
 import pytest
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +17,18 @@ from sage.api.errors import (
 )
 from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import ChainRequest, Document, Edge, LinkRequest, TraverseRequest
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid LinkRequest / TraverseRequest / ChainRequest
+    instances. Deterministic — the same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _make_doc(
@@ -94,32 +108,32 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(
 # ---------------------------------------------------------------------------
 
 async def test_bh_031_duplicate_edges_permitted(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     edge1 = await graph_ops_service.link(LinkRequest(
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
-        source_valid_from_version="doc_a",
-        target_valid_from_version="doc_b",
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
         rationale="First rationale",
     ))
     edge2 = await graph_ops_service.link(LinkRequest(
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
-        source_valid_from_version="doc_a",
-        target_valid_from_version="doc_b",
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
         rationale="Updated understanding",
     ))
 
     assert edge1.id != edge2.id
 
     # Both edges exist in the store
-    edges = await graph_store.get_edges_by_source("doc_a", "references")
+    edges = await graph_store.get_edges_by_source(_id("doc_a"), "references")
     assert len(edges) == 2
 
 
@@ -128,17 +142,17 @@ async def test_bh_031_duplicate_edges_permitted(graph_store, graph_ops_service):
 # ---------------------------------------------------------------------------
 
 async def test_bh_032_edge_auto_generated_id(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     edge = await graph_ops_service.link(LinkRequest(
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
-        source_valid_from_version="doc_a",
-        target_valid_from_version="doc_b",
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
     ))
 
     assert edge.id
@@ -248,8 +262,8 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, pim_graph_ops_service)
 async def test_bh_037_traversal_deduplicates_with_edge_counts(
     graph_store, graph_ops_service
 ):
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
@@ -257,26 +271,26 @@ async def test_bh_037_traversal_deduplicates_with_edge_counts(
     for i in range(3):
         edge = Edge(
             id=f"edge_ref_{i}",
-            source_id="doc_a",
-            target_id="doc_b",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.REFERENCES,
             resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-            source_valid_from_version="doc_a",
-            target_valid_from_version="doc_b",
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
             created_at=base_time + timedelta(hours=i),
             rationale=f"Rationale {i}",
         )
         await graph_store.insert_edge(edge)
 
     result = await graph_ops_service.traverse(TraverseRequest(
-        start_id="doc_a",
+        start_id=_id("doc_a"),
         edge_type=EdgeType.REFERENCES,
         depth=1,
     ))
 
     assert len(result.nodes) == 1
     node = result.nodes[0]
-    assert node.document.id == "doc_b"
+    assert node.document.id == _id("doc_b")
     assert node.edge_counts == {"references": 3}
     # Most recent edge (edge_ref_2) should be shown
     assert node.edge.id == "edge_ref_2"
@@ -288,45 +302,45 @@ async def test_bh_037_traversal_deduplicates_with_edge_counts(
 # ---------------------------------------------------------------------------
 
 async def test_link_self_referential_raises_400(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
+    doc_a = _make_doc(_id("doc_a"))
     await graph_store.insert_document(doc_a)
 
     with pytest.raises(SelfReferentialEdgeError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="doc_a",
-            target_id="doc_a",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_a"),
             edge_type=EdgeType.REFERENCES,
         ))
     assert exc_info.value.status_code == 400
 
 
 async def test_link_nonexistent_source_raises_404(graph_store, graph_ops_service):
-    doc_b = _make_doc("doc_b")
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_b)
 
     with pytest.raises(DocumentNotFoundError):
         await graph_ops_service.link(LinkRequest(
-            source_id="nonexistent",
-            target_id="doc_b",
+            source_id=_id("nonexistent"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.REFERENCES,
         ))
 
 
 async def test_link_nonexistent_target_raises_404(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
+    doc_a = _make_doc(_id("doc_a"))
     await graph_store.insert_document(doc_a)
 
     with pytest.raises(DocumentNotFoundError):
         await graph_ops_service.link(LinkRequest(
-            source_id="doc_a",
-            target_id="nonexistent",
+            source_id=_id("doc_a"),
+            target_id=_id("nonexistent"),
             edge_type=EdgeType.REFERENCES,
         ))
 
 
 async def test_traverse_nonexistent_start_raises_404(graph_store, graph_ops_service):
     with pytest.raises(DocumentNotFoundError):
-        await graph_ops_service.traverse(TraverseRequest(start_id="nonexistent"))
+        await graph_ops_service.traverse(TraverseRequest(start_id=_id("nonexistent")))
 
 
 async def test_check_preconditions_nonexistent_function_raises_404(
@@ -348,18 +362,18 @@ async def _create_linear_chain(graph_store, count: int = 5):
     """
     doc_ids = []
     for i in range(1, count + 1):
-        doc = _make_doc(f"v{i}")
+        doc = _make_doc(_id(f"v{i}"))
         doc.version_label = f"v{i}"
         doc.document_date = f"2026-01-{i:02d}"
         await graph_store.insert_document(doc)
-        doc_ids.append(f"v{i}")
+        doc_ids.append(_id(f"v{i}"))
 
     # Each version supersedes its predecessor: v2->v1, v3->v2, etc.
     for i in range(1, count):
         edge = Edge(
             id=f"edge_sup_{i}",
-            source_id=f"v{i+1}",
-            target_id=f"v{i}",
+            source_id=_id(f"v{i+1}"),
+            target_id=_id(f"v{i}"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=datetime.now(timezone.utc),
         )
@@ -371,19 +385,19 @@ async def test_bh_089_linear_chain_ordered(graph_store, graph_ops_service):
     doc_ids = await _create_linear_chain(graph_store, 5)
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="v3",
+        document_id=_id("v3"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
     assert result.length == 5
     assert result.is_linear is True
-    assert result.head_id == "v5"
-    assert result.tail_id == "v1"
+    assert result.head_id == _id("v5")
+    assert result.tail_id == _id("v1")
     assert result.query_position == 2
     # Verify ordering: positions 0..4 map to v1..v5
     for i, entry in enumerate(result.chain):
         assert entry.position == i
-        assert entry.id == f"v{i+1}"
+        assert entry.id == _id(f"v{i+1}")
         assert entry.version_label == f"v{i+1}"
 
 
@@ -395,14 +409,14 @@ async def test_bh_090_chain_from_head(graph_store, graph_ops_service):
     await _create_linear_chain(graph_store, 5)
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="v5",
+        document_id=_id("v5"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
     assert result.length == 5
     assert result.query_position == 4
-    assert result.head_id == "v5"
-    assert result.tail_id == "v1"
+    assert result.head_id == _id("v5")
+    assert result.tail_id == _id("v1")
 
 
 # ---------------------------------------------------------------------------
@@ -413,14 +427,14 @@ async def test_bh_091_chain_from_tail(graph_store, graph_ops_service):
     await _create_linear_chain(graph_store, 5)
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="v1",
+        document_id=_id("v1"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
     assert result.length == 5
     assert result.query_position == 0
-    assert result.head_id == "v5"
-    assert result.tail_id == "v1"
+    assert result.head_id == _id("v5")
+    assert result.tail_id == _id("v1")
 
 
 # ---------------------------------------------------------------------------
@@ -428,20 +442,20 @@ async def test_bh_091_chain_from_tail(graph_store, graph_ops_service):
 # ---------------------------------------------------------------------------
 
 async def test_bh_092_single_node_chain(graph_store, graph_ops_service):
-    doc = _make_doc("doc_solo")
+    doc = _make_doc(_id("doc_solo"))
     await graph_store.insert_document(doc)
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_solo",
+        document_id=_id("doc_solo"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
     assert result.length == 1
     assert result.is_linear is True
-    assert result.head_id == "doc_solo"
-    assert result.tail_id == "doc_solo"
+    assert result.head_id == _id("doc_solo")
+    assert result.tail_id == _id("doc_solo")
     assert result.query_position == 0
-    assert result.chain[0].id == "doc_solo"
+    assert result.chain[0].id == _id("doc_solo")
 
 
 # ---------------------------------------------------------------------------
@@ -451,27 +465,27 @@ async def test_bh_092_single_node_chain(graph_store, graph_ops_service):
 async def test_bh_093_fork_detection(graph_store, graph_ops_service):
     # doc_a is the common predecessor; doc_b and doc_c both supersede doc_a
     for name in ["doc_a", "doc_b", "doc_c"]:
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     for i, src in enumerate(["doc_b", "doc_c"]):
         edge = Edge(
             id=f"edge_fork_{i}",
-            source_id=src,
-            target_id="doc_a",
+            source_id=_id(src),
+            target_id=_id("doc_a"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=datetime.now(timezone.utc),
         )
         await graph_store.insert_edge(edge)
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_a",
+        document_id=_id("doc_a"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
     assert result.is_linear is False
     assert result.length == 3
     chain_ids = {e.id for e in result.chain}
-    assert chain_ids == {"doc_a", "doc_b", "doc_c"}
+    assert chain_ids == {_id("doc_a"), _id("doc_b"), _id("doc_c")}
 
 
 # ---------------------------------------------------------------------------
@@ -482,34 +496,34 @@ async def test_bh_094_chain_ignores_other_edge_types(
     graph_store, graph_ops_service
 ):
     for name in ["doc_a", "doc_b", "doc_c"]:
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     # doc_a supersedes doc_b
     await graph_store.insert_edge(Edge(
         id="edge_sup",
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.SUPERSEDES,
         created_at=datetime.now(timezone.utc),
     ))
     # doc_a covers doc_c (different edge type)
     await graph_store.insert_edge(Edge(
         id="edge_cov",
-        source_id="doc_a",
-        target_id="doc_c",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_c"),
         edge_type=EdgeType.COVERS,
         created_at=datetime.now(timezone.utc),
     ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_a",
+        document_id=_id("doc_a"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
     assert result.length == 2
     chain_ids = {e.id for e in result.chain}
-    assert chain_ids == {"doc_a", "doc_b"}
-    assert "doc_c" not in chain_ids
+    assert chain_ids == {_id("doc_a"), _id("doc_b")}
+    assert _id("doc_c") not in chain_ids
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +533,7 @@ async def test_bh_094_chain_ignores_other_edge_types(
 async def test_bh_095_chain_nonexistent_document(graph_store, graph_ops_service):
     with pytest.raises(DocumentNotFoundError):
         await graph_ops_service.chain(ChainRequest(
-            document_id="nonexistent",
+            document_id=_id("nonexistent"),
             edge_type=EdgeType.SUPERSEDES,
         ))
 
@@ -530,26 +544,26 @@ async def test_bh_095_chain_nonexistent_document(graph_store, graph_ops_service)
 
 async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
     for name in ["doc_a", "doc_b", "doc_c"]:
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     # doc_a -> doc_b -> doc_c via references
     await graph_store.insert_edge(Edge(
         id="edge_ref_1",
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
         created_at=datetime.now(timezone.utc),
     ))
     await graph_store.insert_edge(Edge(
         id="edge_ref_2",
-        source_id="doc_b",
-        target_id="doc_c",
+        source_id=_id("doc_b"),
+        target_id=_id("doc_c"),
         edge_type=EdgeType.REFERENCES,
         created_at=datetime.now(timezone.utc),
     ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_b",
+        document_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
     ))
 
@@ -563,8 +577,8 @@ async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
 # ---------------------------------------------------------------------------
 
 async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
@@ -573,25 +587,25 @@ async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
     for i in range(2):
         await graph_store.insert_edge(Edge(
             id=f"edge_sup_{i}",
-            source_id="doc_a",
-            target_id="doc_b",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=now + timedelta(seconds=i),
         ))
     for i in range(3):
         await graph_store.insert_edge(Edge(
             id=f"edge_cov_{i}",
-            source_id="doc_a",
-            target_id="doc_b",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.COVERS,
             resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-            source_valid_from_version="doc_a",
-            target_valid_from_version="doc_b",
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
             created_at=now + timedelta(seconds=i),
         ))
 
     result = await graph_ops_service.traverse(TraverseRequest(
-        start_id="doc_a",
+        start_id=_id("doc_a"),
         direction="outbound",
         depth=1,
     ))
@@ -606,24 +620,24 @@ async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
 # ---------------------------------------------------------------------------
 
 async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     await graph_store.insert_edge(Edge(
         id="edge_ref",
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
         resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-        source_valid_from_version="doc_a",
-        target_valid_from_version="doc_b",
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
         created_at=datetime.now(timezone.utc),
     ))
 
     result = await graph_ops_service.traverse(TraverseRequest(
-        start_id="doc_a",
+        start_id=_id("doc_a"),
         direction="outbound",
         depth=1,
     ))
@@ -637,8 +651,8 @@ async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
 # ---------------------------------------------------------------------------
 
 async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
@@ -646,22 +660,22 @@ async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
     for i in range(2):
         await graph_store.insert_edge(Edge(
             id=f"edge_sup_{i}",
-            source_id="doc_a",
-            target_id="doc_b",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=now + timedelta(seconds=i),
         ))
     for i in range(3):
         await graph_store.insert_edge(Edge(
             id=f"edge_cov_{i}",
-            source_id="doc_a",
-            target_id="doc_b",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.COVERS,
             created_at=now + timedelta(seconds=i),
         ))
 
     result = await graph_ops_service.traverse(TraverseRequest(
-        start_id="doc_a",
+        start_id=_id("doc_a"),
         edge_type=EdgeType.SUPERSEDES,
         direction="outbound",
         depth=1,
@@ -678,26 +692,26 @@ async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
 
 async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
     for name in ["doc_a", "doc_b", "doc_c"]:
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     now = datetime.now(timezone.utc)
     # doc_a -> doc_b: 1 supersedes + 2 covers
     await graph_store.insert_edge(Edge(
         id="edge_sup_ab",
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.SUPERSEDES,
         created_at=now,
     ))
     for i in range(2):
         await graph_store.insert_edge(Edge(
             id=f"edge_cov_ab_{i}",
-            source_id="doc_a",
-            target_id="doc_b",
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
             edge_type=EdgeType.COVERS,
             resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-            source_valid_from_version="doc_a",
-            target_valid_from_version="doc_b",
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
             created_at=now + timedelta(seconds=i),
         ))
 
@@ -705,24 +719,24 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
     for i in range(3):
         await graph_store.insert_edge(Edge(
             id=f"edge_ref_bc_{i}",
-            source_id="doc_b",
-            target_id="doc_c",
+            source_id=_id("doc_b"),
+            target_id=_id("doc_c"),
             edge_type=EdgeType.REFERENCES,
             resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-            source_valid_from_version="doc_b",
-            target_valid_from_version="doc_c",
+            source_valid_from_version=_id("doc_b"),
+            target_valid_from_version=_id("doc_c"),
             created_at=now + timedelta(seconds=i),
         ))
 
     result = await graph_ops_service.traverse(TraverseRequest(
-        start_id="doc_a",
+        start_id=_id("doc_a"),
         direction="outbound",
         depth=2,
     ))
 
     nodes_by_id = {n.document.id: n for n in result.nodes}
-    assert nodes_by_id["doc_b"].edge_counts == {"supersedes": 1, "covers": 2}
-    assert nodes_by_id["doc_c"].edge_counts == {"references": 3}
+    assert nodes_by_id[_id("doc_b")].edge_counts == {"supersedes": 1, "covers": 2}
+    assert nodes_by_id[_id("doc_c")].edge_counts == {"references": 3}
 
 
 # ---------------------------------------------------------------------------
@@ -731,24 +745,24 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
 
 async def test_unlink_deletes_existing_edge(graph_store, graph_ops_service):
     """unlink removes a production edge and returns confirmation."""
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     edge = await graph_ops_service.link(LinkRequest(
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
-        source_valid_from_version="doc_a",
-        target_valid_from_version="doc_b",
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
     ))
 
     result = await graph_ops_service.unlink(edge.id)
     assert result == {"deleted": True, "edge_id": edge.id}
 
     # Edge no longer exists in the store
-    edges = await graph_store.get_edges_by_source("doc_a")
+    edges = await graph_store.get_edges_by_source(_id("doc_a"))
     assert len(edges) == 0
 
 
@@ -827,19 +841,19 @@ async def test_chain_single_node_shows_available_edge_types(
 ):
     """Chain of length 1 includes available_edge_types when other edges exist."""
     for name in ["doc_x", "doc_y"]:
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     # doc_x has a references edge but no supersedes edges
     await graph_store.insert_edge(Edge(
         id="edge_ref_only",
-        source_id="doc_x",
-        target_id="doc_y",
+        source_id=_id("doc_x"),
+        target_id=_id("doc_y"),
         edge_type=EdgeType.REFERENCES,
         created_at=datetime.now(timezone.utc),
     ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_x",
+        document_id=_id("doc_x"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
@@ -852,10 +866,10 @@ async def test_chain_single_node_no_edges_at_all(
     graph_store, graph_ops_service
 ):
     """Chain of length 1 with no edges of any type has empty available_edge_types."""
-    await graph_store.insert_document(_make_doc("doc_isolated"))
+    await graph_store.insert_document(_make_doc(_id("doc_isolated")))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_isolated",
+        document_id=_id("doc_isolated"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
@@ -869,18 +883,18 @@ async def test_chain_with_matching_edges_no_hint(
 ):
     """Chain with actual matching edges has available_edge_types as None."""
     for name in ["doc_p", "doc_q"]:
-        await graph_store.insert_document(_make_doc(name))
+        await graph_store.insert_document(_make_doc(_id(name)))
 
     await graph_store.insert_edge(Edge(
         id="edge_sup_pq",
-        source_id="doc_p",
-        target_id="doc_q",
+        source_id=_id("doc_p"),
+        target_id=_id("doc_q"),
         edge_type=EdgeType.SUPERSEDES,
         created_at=datetime.now(timezone.utc),
     ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="doc_p",
+        document_id=_id("doc_p"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 
@@ -896,18 +910,18 @@ async def test_chain_slice_limit(graph_store, graph_ops_service):
     """Chain with limit returns only the requested number of entries."""
     # Create a 4-version chain: v1 <- v2 <- v3 <- v4 (newest)
     for i in range(1, 5):
-        await graph_store.insert_document(_make_doc(f"sv{i}"))
+        await graph_store.insert_document(_make_doc(_id(f"sv{i}")))
     for i in range(1, 4):
         await graph_store.insert_edge(Edge(
             id=f"edge_sv_{i}",
-            source_id=f"sv{i+1}",
-            target_id=f"sv{i}",
+            source_id=_id(f"sv{i+1}"),
+            target_id=_id(f"sv{i}"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=datetime.now(timezone.utc),
         ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="sv1",
+        document_id=_id("sv1"),
         edge_type=EdgeType.SUPERSEDES,
         limit=2,
     ))
@@ -916,25 +930,25 @@ async def test_chain_slice_limit(graph_store, graph_ops_service):
     assert len(result.chain) == 2
     assert result.total_length == 4
     # Default offset=0 means oldest first: sv1, sv2
-    assert result.chain[0].id == "sv1"
-    assert result.chain[1].id == "sv2"
+    assert result.chain[0].id == _id("sv1")
+    assert result.chain[1].id == _id("sv2")
 
 
 async def test_chain_slice_offset_and_limit(graph_store, graph_ops_service):
     """Chain with offset+limit returns the correct slice."""
     for i in range(1, 5):
-        await graph_store.insert_document(_make_doc(f"so{i}"))
+        await graph_store.insert_document(_make_doc(_id(f"so{i}")))
     for i in range(1, 4):
         await graph_store.insert_edge(Edge(
             id=f"edge_so_{i}",
-            source_id=f"so{i+1}",
-            target_id=f"so{i}",
+            source_id=_id(f"so{i+1}"),
+            target_id=_id(f"so{i}"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=datetime.now(timezone.utc),
         ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="so1",
+        document_id=_id("so1"),
         edge_type=EdgeType.SUPERSEDES,
         limit=2,
         offset=1,
@@ -943,25 +957,25 @@ async def test_chain_slice_offset_and_limit(graph_store, graph_ops_service):
     assert len(result.chain) == 2
     assert result.total_length == 4
     # offset=1: skip sv1, get sv2, sv3
-    assert result.chain[0].id == "so2"
-    assert result.chain[1].id == "so3"
+    assert result.chain[0].id == _id("so2")
+    assert result.chain[1].id == _id("so3")
 
 
 async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
     """Chain without limit/offset returns all entries and total_length == length."""
     for i in range(1, 4):
-        await graph_store.insert_document(_make_doc(f"sf{i}"))
+        await graph_store.insert_document(_make_doc(_id(f"sf{i}")))
     for i in range(1, 3):
         await graph_store.insert_edge(Edge(
             id=f"edge_sf_{i}",
-            source_id=f"sf{i+1}",
-            target_id=f"sf{i}",
+            source_id=_id(f"sf{i+1}"),
+            target_id=_id(f"sf{i}"),
             edge_type=EdgeType.SUPERSEDES,
             created_at=datetime.now(timezone.utc),
         ))
 
     result = await graph_ops_service.chain(ChainRequest(
-        document_id="sf1",
+        document_id=_id("sf1"),
         edge_type=EdgeType.SUPERSEDES,
     ))
 

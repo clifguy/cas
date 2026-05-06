@@ -5,6 +5,7 @@ extensions like 'filed' that aren't in the base enum.
 """
 
 import re
+import uuid
 from datetime import datetime
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
@@ -23,6 +24,55 @@ from sage.models.enums import (
     TraversalDirection,
     UserType,
 )
+
+
+# ---------------------------------------------------------------------------
+# Shape-bearing primitive aliases.
+#
+# Pattern: each alias pairs a regex/parse helper with an ``Annotated``
+# alias applied at every request-model field carrying that shape. The
+# absence of an alias on a field with a known shape contract is the
+# anomaly we want reviewers to notice.
+# ---------------------------------------------------------------------------
+
+# Document ID: 8 hex chars + "_" + slug. See sage/services/identity.py.
+_DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _validate_document_id(v: str) -> str:
+    if not _DOCUMENT_ID_RE.match(v):
+        raise ValueError(
+            f"document id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})"
+        )
+    return v
+
+
+DocumentIdStr = Annotated[str, AfterValidator(_validate_document_id)]
+
+
+def _validate_edge_id(v: str) -> str:
+    try:
+        uuid.UUID(v)
+    except ValueError as exc:
+        raise ValueError(f"edge id must be a UUID (got {v!r})") from exc
+    return v
+
+
+EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id)]
+
+
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _validate_sha256(v: str) -> str:
+    if not _SHA256_RE.match(v):
+        raise ValueError(
+            f"hash must match {_SHA256_RE.pattern!r} (got {v!r})"
+        )
+    return v
+
+
+Sha256Str = Annotated[str, AfterValidator(_validate_sha256)]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +156,7 @@ class IngestRequest(BaseModel):
     force: bool = False
     needs_review: bool = False
     metadata: dict[str, str | list[str]] | None = None
-    supersedes_document_id: str | None = None
+    supersedes_document_id: DocumentIdStr | None = None
 
     @model_validator(mode="after")
     def _validate_metadata_dates(self) -> "IngestRequest":
@@ -152,7 +202,7 @@ class DocumentWithContent(Document):
 
 class SetLifecycleRequest(BaseModel):
     action: str
-    new_version_id: str | None = None
+    new_version_id: DocumentIdStr | None = None
 
 
 class SetLifecycleResponse(BaseModel):
@@ -191,6 +241,9 @@ def _validate_document_date(v: str | None) -> str | None:
     return v
 
 
+DocumentDateStr = Annotated[str | None, AfterValidator(_validate_document_date)]
+
+
 class UpdateMetadataRequest(BaseModel):
     title: str | None = None
     version_label: str | None = None
@@ -198,9 +251,7 @@ class UpdateMetadataRequest(BaseModel):
     tags: Annotated[list[str] | None, BeforeValidator(_coerce_tags)] = None
     doc_type: str | None = None
     authority_scope: str | None = None
-    document_date: Annotated[
-        str | None, AfterValidator(_validate_document_date)
-    ] = None
+    document_date: DocumentDateStr = None
 
 
 class RegisterUserRequest(BaseModel):
@@ -214,12 +265,12 @@ class IngestResponse(BaseModel):
 
 
 class LinkRequest(BaseModel):
-    source_id: str
-    target_id: str | None = None
+    source_id: DocumentIdStr
+    target_id: DocumentIdStr | None = None
     edge_type: EdgeType
-    source_valid_from_version: str | None = None
-    target_valid_from_version: str | None = None
-    retracted_edge_id: str | None = None
+    source_valid_from_version: DocumentIdStr | None = None
+    target_valid_from_version: DocumentIdStr | None = None
+    retracted_edge_id: EdgeIdStr | None = None
     notes: str | None = None
     rationale: str | None = None
 
@@ -238,7 +289,7 @@ class ResolutionPathEntry(BaseModel):
 
 
 class TraverseRequest(BaseModel):
-    start_id: str
+    start_id: DocumentIdStr
     edge_type: EdgeType | None = None
     direction: TraversalDirection = TraversalDirection.OUTBOUND
     depth: int = Field(default=3, ge=1, le=1000)
@@ -259,7 +310,7 @@ class TraverseResponse(BaseModel):
 
 
 class ChainRequest(BaseModel):
-    document_id: str
+    document_id: DocumentIdStr
     edge_type: EdgeType
     limit: int | None = None
     offset: int = 0
@@ -455,7 +506,7 @@ class VaultStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class HashCheckRequest(BaseModel):
-    hashes: list[str]
+    hashes: list[Sha256Str]
 
 
 class HashCheckMatch(BaseModel):

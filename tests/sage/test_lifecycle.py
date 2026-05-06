@@ -4,6 +4,8 @@ Covers invalid transition error responses, domain-specific valid_actions,
 pipeline warnings during transitions, and supersede with edge creation.
 """
 
+import hashlib
+
 import pytest
 from datetime import datetime, timezone
 
@@ -15,6 +17,18 @@ from sage.api.errors import (
 )
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, SetLifecycleRequest
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid SetLifecycleRequest instances. Deterministic — the
+    same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _make_doc(
@@ -139,11 +153,11 @@ async def test_bh_016_supersede_requires_existing_version(graph_store, lifecycle
     with pytest.raises(DocumentNotFoundError) as exc_info:
         await lifecycle_service.set_lifecycle(
             "doc_old",
-            SetLifecycleRequest(action="supersede", new_version_id="nonexistent_id"),
+            SetLifecycleRequest(action="supersede", new_version_id=_id("nonexistent_id")),
         )
 
     assert exc_info.value.status_code == 404
-    assert exc_info.value.detail["document_id"] == "nonexistent_id"
+    assert exc_info.value.detail["document_id"] == _id("nonexistent_id")
 
 
 async def test_bh_016_supersede_requires_new_version_id_field(graph_store, lifecycle_service):
@@ -163,24 +177,24 @@ async def test_bh_016_supersede_requires_new_version_id_field(graph_store, lifec
 # ---------------------------------------------------------------------------
 
 async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
-    doc_old = _make_doc("doc_to_supersede")
-    doc_new = _make_doc("doc_replacement")
+    doc_old = _make_doc(_id("doc_to_supersede"))
+    doc_new = _make_doc(_id("doc_replacement"))
     await graph_store.insert_document(doc_old)
     await graph_store.insert_document(doc_new)
 
     response = await lifecycle_service.set_lifecycle(
-        "doc_to_supersede",
-        SetLifecycleRequest(action="supersede", new_version_id="doc_replacement"),
+        _id("doc_to_supersede"),
+        SetLifecycleRequest(action="supersede", new_version_id=_id("doc_replacement")),
     )
 
     # doc_old transitions to archived
     assert response.document.lifecycle_status == "archived"
 
     # Supersedes edge exists: new -> old
-    edges = await graph_store.get_edges_by_source("doc_replacement", "supersedes")
+    edges = await graph_store.get_edges_by_source(_id("doc_replacement"), "supersedes")
     assert len(edges) == 1
-    assert edges[0].source_id == "doc_replacement"
-    assert edges[0].target_id == "doc_to_supersede"
+    assert edges[0].source_id == _id("doc_replacement")
+    assert edges[0].target_id == _id("doc_to_supersede")
     assert edges[0].id  # auto-generated ID
 
 

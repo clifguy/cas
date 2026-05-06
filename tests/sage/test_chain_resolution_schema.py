@@ -8,6 +8,8 @@ land in Chunks 4 and 5 respectively and are marked skipped here with a
 pointer to the owning chunk.
 """
 
+import hashlib
+import uuid
 from datetime import datetime, timezone
 
 import pytest
@@ -19,6 +21,18 @@ from sage.api.errors import (
 )
 from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import Document, Edge, LinkRequest
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid LinkRequest / TraverseRequest / ChainRequest
+    instances. Deterministic — the same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -49,19 +63,19 @@ async def _seed(graph_store, *doc_ids: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def test_cr_001_transitive_both_valid(graph_store, graph_ops_service):
-    await _seed(graph_store, "a3", "b2")
+    await _seed(graph_store, _id("a3"), _id("b2"))
 
     edge = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_BOTH
-    assert edge.source_valid_from_version == "a3"
-    assert edge.target_valid_from_version == "b2"
+    assert edge.source_valid_from_version == _id("a3")
+    assert edge.target_valid_from_version == _id("b2")
     assert edge.valid_until_version is None
     assert edge.retracted_edge_id is None
 
@@ -73,14 +87,14 @@ async def test_cr_001_transitive_both_valid(graph_store, graph_ops_service):
 async def test_cr_002_transitive_both_missing_source_anchor(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a3", "b2")
+    await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a3",
-            target_id="b2",
+            source_id=_id("a3"),
+            target_id=_id("b2"),
             edge_type=EdgeType.COVERS,
-            target_valid_from_version="b2",
+            target_valid_from_version=_id("b2"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert exc_info.value.status_code == 400
@@ -94,14 +108,14 @@ async def test_cr_002_transitive_both_missing_source_anchor(
 async def test_cr_003_transitive_both_missing_target_anchor(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a3", "b2")
+    await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a3",
-            target_id="b2",
+            source_id=_id("a3"),
+            target_id=_id("b2"),
             edge_type=EdgeType.COVERS,
-            source_valid_from_version="a3",
+            source_valid_from_version=_id("a3"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert "target_valid_from_version" in exc_info.value.detail["offending_fields"]
@@ -117,20 +131,20 @@ async def test_cr_004_source_anchor_outside_lineage(
     # Chain: a3 is the oldest, a5 is the newest (a4 supersedes a3, a5
     # supersedes a4). source_id=a3's lineage is just {a3}; an anchor of
     # a5 (a descendant, not an ancestor) is NOT in its lineage.
-    await _seed(graph_store, "a3", "a4", "a5", "b2")
+    await _seed(graph_store, _id("a3"), _id("a4"), _id("a5"), _id("b2"))
     now = datetime.now(timezone.utc)
     await graph_store.insert_edge(Edge(
-        id="sup_a4_a3",
-        source_id="a4",
-        target_id="a3",
+        id=str(uuid.uuid4()),
+        source_id=_id("a4"),
+        target_id=_id("a3"),
         edge_type=EdgeType.SUPERSEDES,
         resolution_policy=ResolutionPolicy.NONE,
         created_at=now,
     ))
     await graph_store.insert_edge(Edge(
-        id="sup_a5_a4",
-        source_id="a5",
-        target_id="a4",
+        id=str(uuid.uuid4()),
+        source_id=_id("a5"),
+        target_id=_id("a4"),
         edge_type=EdgeType.SUPERSEDES,
         resolution_policy=ResolutionPolicy.NONE,
         created_at=now,
@@ -138,11 +152,11 @@ async def test_cr_004_source_anchor_outside_lineage(
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a3",
-            target_id="b2",
+            source_id=_id("a3"),
+            target_id=_id("b2"),
             edge_type=EdgeType.COVERS,
-            source_valid_from_version="a5",
-            target_valid_from_version="b2",
+            source_valid_from_version=_id("a5"),
+            target_valid_from_version=_id("b2"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert "source_valid_from_version" in exc_info.value.detail["offending_fields"]
@@ -156,17 +170,17 @@ async def test_cr_004_source_anchor_outside_lineage(
 async def test_cr_005_transitive_source_stores_null_target_anchor(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "patent_v3", "uspto_template_v2")
+    await _seed(graph_store, _id("patent_v3"), _id("uspto_template_v2"))
 
     edge = await graph_ops_service.link(LinkRequest(
-        source_id="patent_v3",
-        target_id="uspto_template_v2",
+        source_id=_id("patent_v3"),
+        target_id=_id("uspto_template_v2"),
         edge_type=EdgeType.DERIVED_FROM,
-        source_valid_from_version="patent_v3",
+        source_valid_from_version=_id("patent_v3"),
     ))
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_SOURCE
-    assert edge.source_valid_from_version == "patent_v3"
+    assert edge.source_valid_from_version == _id("patent_v3")
     assert edge.target_valid_from_version is None
 
     # Round-trip through the DB confirms the null is persisted, not just
@@ -183,15 +197,15 @@ async def test_cr_005_transitive_source_stores_null_target_anchor(
 async def test_cr_006_transitive_source_explicit_target_anchor_rejected(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "patent_v3", "uspto_template_v2")
+    await _seed(graph_store, _id("patent_v3"), _id("uspto_template_v2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="patent_v3",
-            target_id="uspto_template_v2",
+            source_id=_id("patent_v3"),
+            target_id=_id("uspto_template_v2"),
             edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version="patent_v3",
-            target_valid_from_version="uspto_template_v1",
+            source_valid_from_version=_id("patent_v3"),
+            target_valid_from_version=_id("uspto_template_v1"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert "target_valid_from_version" in exc_info.value.detail["offending_fields"]
@@ -204,14 +218,14 @@ async def test_cr_006_transitive_source_explicit_target_anchor_rejected(
 async def test_cr_007_supersedes_with_anchors_rejected(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a5", "a4")
+    await _seed(graph_store, _id("a5"), _id("a4"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a5",
-            target_id="a4",
+            source_id=_id("a5"),
+            target_id=_id("a4"),
             edge_type=EdgeType.SUPERSEDES,
-            source_valid_from_version="a5",
+            source_valid_from_version=_id("a5"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert exc_info.value.detail["resolution_policy"] == "none"
@@ -223,27 +237,27 @@ async def test_cr_007_supersedes_with_anchors_rejected(
 # ---------------------------------------------------------------------------
 
 async def test_cr_008_retracts_shape_accepted(graph_store, graph_ops_service):
-    await _seed(graph_store, "a3", "b2", "a7")
+    await _seed(graph_store, _id("a3"), _id("b2"), _id("a7"))
     covers = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
 
     edge = await graph_ops_service.link(LinkRequest(
-        source_id="a7",
+        source_id=_id("a7"),
         target_id=None,
         edge_type=EdgeType.RETRACTS,
         retracted_edge_id=covers.id,
-        source_valid_from_version="a7",
+        source_valid_from_version=_id("a7"),
     ))
 
     assert edge.resolution_policy == ResolutionPolicy.NONE
     assert edge.target_id is None
     assert edge.retracted_edge_id == covers.id
-    assert edge.source_valid_from_version == "a7"
+    assert edge.source_valid_from_version == _id("a7")
     assert edge.target_valid_from_version is None
 
 
@@ -254,19 +268,23 @@ async def test_cr_008_retracts_shape_accepted(graph_store, graph_ops_service):
 async def test_cr_009_retracts_unknown_target_edge(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a7")
+    await _seed(graph_store, _id("a7"))
 
+    # Use a valid-shape UUID that doesn't exist in the store; the runtime
+    # check inside graph_ops then surfaces RetractTargetNotEdgeError. A
+    # malformed-shape value would short-circuit at LinkRequest validation.
+    bogus_edge_id = str(uuid.uuid4())
     with pytest.raises(RetractTargetNotEdgeError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a7",
+            source_id=_id("a7"),
             target_id=None,
             edge_type=EdgeType.RETRACTS,
-            retracted_edge_id="does-not-exist",
-            source_valid_from_version="a7",
+            retracted_edge_id=bogus_edge_id,
+            source_valid_from_version=_id("a7"),
         ))
     assert exc_info.value.code == "retract_target_not_edge"
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail["retracted_edge_id"] == "does-not-exist"
+    assert exc_info.value.detail["retracted_edge_id"] == bogus_edge_id
 
 
 # ---------------------------------------------------------------------------
@@ -274,15 +292,15 @@ async def test_cr_009_retracts_unknown_target_edge(
 # ---------------------------------------------------------------------------
 
 async def test_cr_010_tbd_policy_edge_rejected(graph_store, graph_ops_service):
-    await _seed(graph_store, "d1", "d2")
+    await _seed(graph_store, _id("d1"), _id("d2"))
 
     with pytest.raises(TBDPolicyEdgeError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="d1",
-            target_id="d2",
+            source_id=_id("d1"),
+            target_id=_id("d2"),
             edge_type=EdgeType.AUTHORITATIVE_FOR,
-            source_valid_from_version="d1",
-            target_valid_from_version="d2",
+            source_valid_from_version=_id("d1"),
+            target_valid_from_version=_id("d2"),
         ))
     assert exc_info.value.code == "tbd_policy_edge"
     assert exc_info.value.status_code == 400
@@ -295,14 +313,14 @@ async def test_cr_010_tbd_policy_edge_rejected(graph_store, graph_ops_service):
 async def test_cr_011_non_retracts_missing_target_rejected(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a3")
+    await _seed(graph_store, _id("a3"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a3",
+            source_id=_id("a3"),
             target_id=None,
             edge_type=EdgeType.COVERS,
-            source_valid_from_version="a3",
+            source_valid_from_version=_id("a3"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert "target_id" in exc_info.value.detail["offending_fields"]
@@ -315,14 +333,14 @@ async def test_cr_011_non_retracts_missing_target_rejected(
 async def test_cr_012_resolution_policy_frozen_on_row(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a3", "b2")
+    await _seed(graph_store, _id("a3"), _id("b2"))
 
     created = await graph_ops_service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.COVERS,
-        source_valid_from_version="a3",
-        target_valid_from_version="b2",
+        source_valid_from_version=_id("a3"),
+        target_valid_from_version=_id("b2"),
     ))
 
     # Round-trip through the DB: the policy column is populated and
@@ -331,8 +349,8 @@ async def test_cr_012_resolution_policy_frozen_on_row(
     read_back = await graph_store.get_edge(created.id)
     assert read_back is not None
     assert read_back.resolution_policy == ResolutionPolicy.TRANSITIVE_BOTH
-    assert read_back.source_valid_from_version == "a3"
-    assert read_back.target_valid_from_version == "b2"
+    assert read_back.source_valid_from_version == _id("a3")
+    assert read_back.target_valid_from_version == _id("b2")
 
 
 # ---------------------------------------------------------------------------
@@ -342,14 +360,14 @@ async def test_cr_012_resolution_policy_frozen_on_row(
 async def test_retracts_missing_retracted_edge_id_rejected(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a7")
+    await _seed(graph_store, _id("a7"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a7",
+            source_id=_id("a7"),
             target_id=None,
             edge_type=EdgeType.RETRACTS,
-            source_valid_from_version="a7",
+            source_valid_from_version=_id("a7"),
         ))
     assert "retracted_edge_id" in exc_info.value.detail["offending_fields"]
 
@@ -396,35 +414,35 @@ def _tt_service(graph_store, minimal_config: VaultConfig) -> GraphOpsService:
 
 async def test_cr_046_transitive_target_valid(graph_store, minimal_config):
     service = _tt_service(graph_store, minimal_config)
-    await _seed(graph_store, "a3", "b1", "b2")
+    await _seed(graph_store, _id("a3"), _id("b1"), _id("b2"))
     # Target chain: b1 <- b2
     from sage.models.schemas import Edge as _Edge
     await graph_store.insert_edge(_Edge(
-        id="sup_b2_b1",
-        source_id="b2",
-        target_id="b1",
+        id=str(uuid.uuid4()),
+        source_id=_id("b2"),
+        target_id=_id("b1"),
         edge_type=EdgeType.SUPERSEDES,
         resolution_policy=ResolutionPolicy.NONE,
         created_at=datetime.now(timezone.utc),
     ))
 
     edge = await service.link(LinkRequest(
-        source_id="a3",
-        target_id="b2",
+        source_id=_id("a3"),
+        target_id=_id("b2"),
         edge_type=EdgeType.AUTHORITATIVE_FOR,
-        target_valid_from_version="b2",
+        target_valid_from_version=_id("b2"),
     ))
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_TARGET
     assert edge.source_valid_from_version is None
-    assert edge.target_valid_from_version == "b2"
+    assert edge.target_valid_from_version == _id("b2")
 
     # Round-trip confirms null source anchor persists.
     read_back = await graph_store.get_edge(edge.id)
     assert read_back is not None
     assert read_back.resolution_policy == ResolutionPolicy.TRANSITIVE_TARGET
     assert read_back.source_valid_from_version is None
-    assert read_back.target_valid_from_version == "b2"
+    assert read_back.target_valid_from_version == _id("b2")
 
 
 # ---------------------------------------------------------------------------
@@ -435,12 +453,12 @@ async def test_cr_047_transitive_target_missing_target_anchor(
     graph_store, minimal_config
 ):
     service = _tt_service(graph_store, minimal_config)
-    await _seed(graph_store, "a3", "b2")
+    await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await service.link(LinkRequest(
-            source_id="a3",
-            target_id="b2",
+            source_id=_id("a3"),
+            target_id=_id("b2"),
             edge_type=EdgeType.AUTHORITATIVE_FOR,
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
@@ -456,15 +474,15 @@ async def test_cr_048_transitive_target_with_source_anchor_rejected(
     graph_store, minimal_config
 ):
     service = _tt_service(graph_store, minimal_config)
-    await _seed(graph_store, "a3", "b2")
+    await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await service.link(LinkRequest(
-            source_id="a3",
-            target_id="b2",
+            source_id=_id("a3"),
+            target_id=_id("b2"),
             edge_type=EdgeType.AUTHORITATIVE_FOR,
-            source_valid_from_version="a3",
-            target_valid_from_version="b2",
+            source_valid_from_version=_id("a3"),
+            target_valid_from_version=_id("b2"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert "source_valid_from_version" in exc_info.value.detail["offending_fields"]
@@ -478,14 +496,14 @@ async def test_cr_049_transitive_target_anchor_outside_target_chain(
     graph_store, minimal_config
 ):
     service = _tt_service(graph_store, minimal_config)
-    await _seed(graph_store, "a3", "b1", "b2", "c1")
+    await _seed(graph_store, _id("a3"), _id("b1"), _id("b2"), _id("c1"))
 
     # b2 supersedes b1 only. c1 is on a different chain.
     from sage.models.schemas import Edge as _Edge
     await graph_store.insert_edge(_Edge(
-        id="sup_b2_b1",
-        source_id="b2",
-        target_id="b1",
+        id=str(uuid.uuid4()),
+        source_id=_id("b2"),
+        target_id=_id("b1"),
         edge_type=EdgeType.SUPERSEDES,
         resolution_policy=ResolutionPolicy.NONE,
         created_at=datetime.now(timezone.utc),
@@ -493,10 +511,10 @@ async def test_cr_049_transitive_target_anchor_outside_target_chain(
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await service.link(LinkRequest(
-            source_id="a3",
-            target_id="b2",
+            source_id=_id("a3"),
+            target_id=_id("b2"),
             edge_type=EdgeType.AUTHORITATIVE_FOR,
-            target_valid_from_version="c1",
+            target_valid_from_version=_id("c1"),
         ))
     assert exc_info.value.code == "edge_anchor_policy_violation"
     assert "target_valid_from_version" in exc_info.value.detail["offending_fields"]
@@ -509,13 +527,13 @@ async def test_cr_049_transitive_target_anchor_outside_target_chain(
 async def test_retracts_missing_source_anchor_rejected(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, "a7")
+    await _seed(graph_store, _id("a7"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(LinkRequest(
-            source_id="a7",
+            source_id=_id("a7"),
             target_id=None,
             edge_type=EdgeType.RETRACTS,
-            retracted_edge_id="some-edge-id",
+            retracted_edge_id=str(uuid.uuid4()),
         ))
     assert "source_valid_from_version" in exc_info.value.detail["offending_fields"]

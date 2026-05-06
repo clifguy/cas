@@ -7,6 +7,7 @@ PV02: a successor record exists, the predecessor is still active, and
 no supersedes edge was ever created.
 """
 
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,18 @@ import pytest
 from sage.api.errors import InvalidLifecycleTransitionError
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid LinkRequest / TraverseRequest / ChainRequest
+    instances. Deterministic — the same name always yields the same id.
+    """
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _make_doc(
@@ -64,8 +77,8 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     lifecycle_status must NOT be flipped. State is left consistent so
     the caller can retry without leaving partial state behind.
     """
-    pred = _make_doc("pred_135", lifecycle_status="active")
-    succ = _make_doc("succ_135", lifecycle_status="active")
+    pred = _make_doc(_id("pred_135"), lifecycle_status="active")
+    succ = _make_doc(_id("succ_135"), lifecycle_status="active")
     await graph_store.insert_document(pred)
     await graph_store.insert_document(succ)
 
