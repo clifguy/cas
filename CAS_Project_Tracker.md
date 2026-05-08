@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v96
+**Version:** v97
 **Last updated:** 2026-05-08
 
 ---
@@ -14,7 +14,7 @@
 | 3 | ROOT Harness Architecture Reference | v1.0 | Development | — |
 | 4 | Deployment Model | v2.0 | Development | — |
 | 5 | ADR Store | v1.13 (schema), 20 ADRs | Development | — |
-| 6 | Formatting Standards | v1.0 | Development | — |
+| 6 | Formatting Standards | v2.0 | Development | — |
 | 7 | Formal Substrate | v1.9 | Development | — |
 | 8 | Test Plan | v0.9.19 (tier 1 + SAGE tier 2 behavioral + adapter + provenance + app + MCP + edge inference + batch ingest service + catalog mode + catalog sort + frontend Search + response level + abstract consumers + lifecycle tier sort + title extraction + async reabstract + .dotx template adapter + adapter_tags channel + template style inventory with numbering detail + transactional supersede with repair tool + link fan-out bound + cycle-safe lineage + legacy edge visibility + PDF source adapter v0.1 + docx/xlsx adapter spec backfill + has_chunks spec backfill + schema migration CLI gating + version_chain doc_type tightening + manifest reconciliation + BH backfill + spec-file registry sweep + metadata_pending counter fix) | Development | — |
 | 9 | CAS Application Spec | v1.0 | Development | — |
@@ -86,12 +86,13 @@
 - CAS-ADR-021 cleanup Phase B complete (2026-05-01): Vestigial `metadata_extraction.review_required` removed schema-first across the substrate (manifest 1.11 -> 1.12), SAGE code (`sage/services/ingestion.py` `_review_required` member, `sage/vault_management.py` default-write), CAS frontend (`app/src/components/Sidebar.tsx` vault-creation payload), all SAGE+app test fixtures, and the four live vault YAMLs (`pim_health`, `test_vault`, `theology`, `new_vault`). `tests/sage/test_ad021_ingestion.py::test_ad021_003_vault_review_required_no_longer_consulted` deleted along with its fixtures (premise dissolves once the field cannot be set; AD021-001/002 retain caller-side coverage). Full pytest tests/sage tests/app: **736 passed** (737 baseline minus the deleted test). Anti-coincidental-pass: schema rejects `review_required` reintroduction with the expected `additionalProperties` error; clean and empty payloads validate. Phase C (CAS docs refresh) remains parked for post-beta consolidation. Out-of-scope finding flagged in cleanup tracker: `filename_extraction.project_identifier` schema drift in pim_health vault and test fixtures predates ADR-021. Detail in CAS-ADR-021_cleanup.md.
 - No further pending work identified.
 
-### 6. Formatting Standards (v1.0)
+### 6. Formatting Standards (v2.0)
 
 - v0.1 delivered 2026-03-25. Covers file naming, page setup, typography, paragraph styles, tables, headers/footers, cover page, cross-reference fields, revision history and ADR index appendix formats, and programmatic editing conventions.
 - v0.2 delivered 2026-03-25. Added Section Numbering subsection documenting multilevel list numbering linked to heading styles.
 - v0.2.1 delivered 2026-03-25. CAS ADR disambiguation: updated ADR references to use "CAS ADR" prefix convention.
 - v1.0 delivered 2026-03-30. Instantiation deliverable format flexibility. Updated INST type code description and post-table guidance to acknowledge that deliverables may be YAML configuration directories. Promoted to v1.0: all sections have complete coverage with no known gaps.
+- v2.0 delivered 2026-05-08. Comprehensive update codifying the authoring conventions established across the SAGE Architecture Reference, Deployment Model, CAS Application Spec, and CAS Overview revisions of this round, and applying those conventions to this document itself. Section 9 Cross-References and Fields gains an inter-document references rule: when citing another CAS reference document in prose, use the document's generic italicized name without a version label, since document versions evolve and generic names remain stable. Section 10.1 Appendix Title rewritten: "Appendix: Revision History" is the default for the single-appendix structure that the no-ADR-Index convention produces; the lettered form applies only when a document genuinely has multiple appendices. Section 10.2 Entry Format gains a "do not revise existing entries" rule: each new version appends an entry; existing entries are immutable. Section 11 (formerly ADR Index Appendix) renamed to "ADR References" and rewritten as the no-ADR-Index rule: the cas_adr_store.json is the authoritative, machine-consumable, never-stale index of CAS architecture decisions, and reference documents cite specific ADRs inline by ID where load-bearing without enumerating them in an appendix. New Section 12 Authoring Conventions section codifying Citation Discipline, Scope Discipline, No Historical Framing in the Body, and Self-Contained Narrative; the four subsections operationalize the Single source of truth, Pointer direction, and Architectural-vs-deployment distinction design principles defined in the CAS Overview. Section 13 (formerly Section 12) Programmatic Editing Conventions intro updated to acknowledge xml.etree.ElementTree and lxml as alternatives to python-docx, reflecting the actual tooling used in this round of revisions. Appendix A (ADR Index) removed entirely per the no-ADR-Index convention this document codifies. Appendix B (Revision History) renamed to Appendix to reflect the single-appendix structure. Promoted to v2.0: the document now codifies the conventions it documents. The v1.0 file remains as the predecessor in the eventual supersedes chain when the cas vault is provisioned per CAS-ADR-022.
 - No further pending corrections or revisions identified.
 
 ### 7. Formal Substrate (v1.1)
