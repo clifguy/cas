@@ -1,7 +1,7 @@
 # CAS Project Tracker
 
-**Version:** v92
-**Last updated:** 2026-05-07
+**Version:** v93
+**Last updated:** 2026-05-08
 
 ---
 
@@ -10,7 +10,7 @@
 | # | Artifact | Current Version | Status | Next Version |
 |---|----------|----------------|--------|--------------|
 | 1 | CAS Overview | v1.3 | Development | — |
-| 2 | SAGE Architecture Reference | v1.4 | Development | — |
+| 2 | SAGE Architecture Reference | v2.0 | Development | — |
 | 3 | ROOT Harness Architecture Reference | v1.0 | Development | — |
 | 4 | Deployment Model | v1.0 | Development | — |
 | 5 | ADR Store | v1.13 (schema), 20 ADRs | Development | — |
@@ -40,12 +40,13 @@
 - v1.3 delivered 2026-03-30. Instantiation deliverable format flexibility. Updated Domain Instantiations subsection (Section 4.5) to acknowledge that deliverables may be YAML configuration directories rather than Word documents, following the format-follows-access-pattern principle.
 - No further pending corrections or revisions identified.
 
-### 2. SAGE Architecture Reference (v1.4)
+### 2. SAGE Architecture Reference (v2.0)
 
 - v1.1 delivered 2026-03-26. CAS ADR disambiguation: replaced bare "ADR" references with "CAS ADR" and "CAS-ADR-NNN" throughout.
 - v1.2 delivered 2026-03-30. Semantic abstract and retrieval health monitoring (CAS-ADR-011).
 - v1.3 delivered 2026-03-30. Named Core API operations (CAS-ADR-014). Decomposed organize() into set_lifecycle() and update_metadata() in the Core API Operations table (Section 7). Forcing function: policy enforcement requires gating by operation name, not parameter inspection. Added CAS-ADR-014 to the ADR Index.
 - v1.4 delivered 2026-03-30. Formal Substrate v1.0 conformance. Added get_document(document_id) to the Core API Operations table (Section 7). Returns the full document record including all metadata tiers, lifecycle status, and pipeline status. Required by the formal substrate's OpenAPI specification: the async ingest pattern (endpoint returns immediately after projection) needs a polling mechanism for callers to check indexing and abstraction progress.
+- v2.0 delivered 2026-05-06. Comprehensive rewrite to as-built state. Substantive incorporation of CAS-ADRs 011 through 021 and Formal Substrate revisions through v1.14. Standards established for the reference-doc refresh and applied uniformly: self-contained narrative (the .docx alone explains the system; ADRs serve as audit trail and conflict-resolution authority), no historical framing in the body (Revision History appendix is the one place comparison is appropriate), and an architectural-vs-deployment distinction governing what content belongs in the Architecture Reference versus the Deployment Model. Edge model rewritten for chain-scoped resolution (CAS-ADR-017) with three new edge types (instantiated_from, retracts, merged_from). Source change detection rewritten to remove the file watcher (CAS-ADR-018); ingestion is exclusively intentional. Metadata extraction rewritten for caller-owned model with chain inheritance for the type-shaped trio (CAS-ADR-021). Edge inference rewritten with mechanical-vs-curated provenance gate (CAS-ADR-019). UI-layer file metadata normalization documented (CAS-ADR-016). Retrieval architecture expanded with catalog and keyword modes, salience reranking, abstract-boosted retrieval, document-level response mode, pre-filter resolution, and the chain walk operation. Lifecycle state machine simplified (superseded removed from the base set). Object model gains decision logs (CAS-ADR-012) and the pipeline-status surface. Core API restructured by tag (thirty-two operations across eight subsections, plus the CAS Application API surface). Mechanical conformance: PASS (4 / 0 / 0). Deployment-laden content extracted to docs/audit/2026-05-06_deployment-notes-source-material.md for the forthcoming Deployment Model rewrite. Two candidate ADRs surfaced and remain in `proposed` status awaiting ratification: CAS-ADR-022 (CAS reference docs maintained as a dedicated `cas` SAGE vault with supersedes-edge version history; vault to be provisioned at ~/sage_vaults/cas/) and CAS-ADR-023 (linear supersedes chain by construction; per-vault override rejected to keep graph semantics uniform).
 - No further pending corrections or revisions identified.
 
 ### 3. ROOT Harness Architecture Reference (v1.0)
