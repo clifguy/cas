@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v94
+**Version:** v95
 **Last updated:** 2026-05-08
 
 ---
@@ -17,7 +17,7 @@
 | 6 | Formatting Standards | v1.0 | Development | — |
 | 7 | Formal Substrate | v1.9 | Development | — |
 | 8 | Test Plan | v0.9.19 (tier 1 + SAGE tier 2 behavioral + adapter + provenance + app + MCP + edge inference + batch ingest service + catalog mode + catalog sort + frontend Search + response level + abstract consumers + lifecycle tier sort + title extraction + async reabstract + .dotx template adapter + adapter_tags channel + template style inventory with numbering detail + transactional supersede with repair tool + link fan-out bound + cycle-safe lineage + legacy edge visibility + PDF source adapter v0.1 + docx/xlsx adapter spec backfill + has_chunks spec backfill + schema migration CLI gating + version_chain doc_type tightening + manifest reconciliation + BH backfill + spec-file registry sweep + metadata_pending counter fix) | Development | — |
-| 9 | CAS Application Spec | v0.4 | Development | — |
+| 9 | CAS Application Spec | v1.0 | Development | — |
 | 10 | Working Code | — | Planned | — |
 
 ## Domain Instantiation Documents
@@ -150,13 +150,14 @@
 - Deferred to step 20: pipeline-level bypass for documents with existing abstract sections (e.g., patent ABSTRACT headings). Vault-configurable option to prefer existing abstracts over LLM generation.
 - Pending: tier 2 behavioral test specifications for ROOT Harness (policy enforcement, workflow dispatch, interrupt handling). To be developed one subsystem ahead of implementation.
 
-### 9. CAS Application Spec (v0.4)
+### 9. CAS Application Spec (v1.0)
 
 - Specification for the human-facing CAS Application web client.
 - v0.1 delivered 2026-04-06. Initial draft establishing the SAGE interface: technology stack (NiceGUI), navigation structure, six views (Dashboard, Ingest, Review, Search, Document Detail, Graph Explorer).
 - v0.2 delivered 2026-04-08. Scope correction: this document covers the full CAS Application, not solely the SAGE interface.
 - v0.3 delivered 2026-04-08. Disambiguation pass resolving eleven ambiguities to definitive specifications.
 - v0.4 delivered 2026-04-08. Technology stack revision: replaced NiceGUI with React SPA served by FastAPI Python backend. vis.js imported directly as a React component. Node.js required at build time only.
+- v1.0 delivered 2026-05-08. Comprehensive rewrite to the as-built state of the application, applying the standards established for the reference-doc refresh: self-contained narrative, no historical framing in the body, citation discipline (REF docs are authoritative; CLAUDE.md is reserved for steering Claude and is not cited), scope discipline (the App Spec describes CAS; the user's choice of browser is out of scope), and the no-ADR-Index-appendix convention. Substantive incorporation of CAS-ADRs 015 through 019 and 021. Section 3 Technology Stack rewritten: vis.js → vis-network terminology, Vite and react-router-dom called out, CAS Application API (cas_app_api.openapi.yaml) added as the second consumed surface alongside the SAGE Core API, cross-reference to the Deployment Model for single-process topology rather than re-description. Section 4 Navigation Structure: top-level view count corrected from four to five with the addition of Settings. Section 5.2 Vault Statistics edge-type breakdown updated to eleven edge types per CAS-ADR-017. Section 5.4 Adapter Registry reframed as a Dashboard read-only summary with management performed in the Settings view's Source Adapters tab. Section 6 Ingest View: Step 2 status values expanded from four to five (adds Adapter disabled per the OpenAPI for app_scan_directory); Infer edges toggle documented; Step 4 Results Summary updated for CAS-ADR-019 mechanical-vs-curated provenance gate and CAS-ADR-021 needs_review semantics. Sections 7 and 8 (Metadata Review and Edge Review) consolidated into a single Review section with Metadata and Edges sub-tabs, mirroring the built application; content updated for CAS-ADR-021 caller-owned metadata model and CAS-ADR-019 chain-identity-group repair semantics. Section 9 Search: retrieval modes expanded from three to four (adds Browse for filter-driven catalog browsing); pagination, sortable columns, URL-state, and pipeline_status filter added. Section 10 Document Detail: Edge List updated for the eleven-edge-type taxonomy and meta-edge category (retracts, merged_from); Manual Edge Creation rewritten against the registry-driven model with anchor fields per CAS-ADR-017. Section 11 Graph Explorer: vis.js → vis-network; doc_type-to-shape and edge-type-to-dash-pattern-and-color mappings committed. New Settings section inserted before the Appendix: seven tabs (Identity, Document Types, Lifecycle, Source Adapters, Metadata Extraction, Edge Inference, Abstraction) plus the vault-creation flow, with each tab cross-referenced to the relevant subschema in vault_config.schema.json. Appendix A (Revision History) renamed to Appendix to reflect the no-ADR-Index-appendix convention; with only one appendix the suffix-letter is unnecessary. Promoted to v1.0: all sections have complete coverage with no known gaps. The v0.4 file remains as the predecessor in the eventual supersedes chain when the cas vault is provisioned per CAS-ADR-022.
 - React wireframe v0.4 delivered 2026-04-08. All six views rendered with static mock data mirroring SAGE API response shapes. Committed as `61745fa`.
 - **Approved architectural decisions for application backend:**
   - Directory scan and batch ingestion are application-layer orchestration, not SAGE Core API operations. The browser cannot access the filesystem; the FastAPI application backend handles directory walking, file hashing, adapter matching, and per-file ingestion loops.
