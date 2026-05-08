@@ -79,24 +79,35 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: load vault configs and initialize services
+# Lifespan: discover vault configs and initialize services
 # ---------------------------------------------------------------------------
 
-_config_paths: list[Path] = []
+_vault_root: Path | None = None
 
 
 @asynccontextmanager
 async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
-    # When mounted on FastAPI, _config_paths is empty and _vaults is
+    # When mounted on FastAPI, _vault_root is None and _vaults is
     # pre-populated by the parent app's lifespan.  Skip init/teardown
     # so the FastAPI lifespan owns the vault lifecycle.
-    standalone = bool(_config_paths)
+    standalone = _vault_root is not None
 
     if standalone:
-        for config_path in _config_paths:
-            config = load_vault_config(config_path)
-            services = await initialize_services(config, config_path=config_path)
-            _vaults[config.vault.id] = services
+        from sage.vault_discovery import discover_vault_configs
+
+        for config_path in discover_vault_configs(_vault_root):
+            try:
+                config = load_vault_config(config_path)
+                services = await initialize_services(
+                    config, config_path=config_path
+                )
+                _vaults[config.vault.id] = services
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).error(
+                    "Skipping vault at %s: failed to load (%s)", config_path, exc
+                )
 
     yield
 
@@ -224,15 +235,32 @@ def mount_on_app(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python -m sage.mcp_server <config1.yaml> [config2.yaml ...]")
-        sys.exit(1)
+    import argparse
+    import os
 
-    for arg in sys.argv[1:]:
-        path = Path(arg)
-        if not path.exists():
-            print(f"Config file not found: {path}")
-            sys.exit(1)
-        _config_paths.append(path)
+    parser = argparse.ArgumentParser(
+        prog="python -m sage.mcp_server",
+        description=(
+            "Run the SAGE MCP server over stdio. Vaults are auto-discovered "
+            "from the vault root."
+        ),
+    )
+    parser.add_argument(
+        "--vault-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory containing one subdirectory per vault. "
+            "Defaults to $SAGE_VAULT_ROOT, then ~/sage_vaults."
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.vault_root is not None:
+        _vault_root = args.vault_root.expanduser()
+    elif os.environ.get("SAGE_VAULT_ROOT"):
+        _vault_root = Path(os.environ["SAGE_VAULT_ROOT"]).expanduser()
+    else:
+        _vault_root = Path.home() / "sage_vaults"
 
     mcp.run(transport="stdio")

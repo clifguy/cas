@@ -491,19 +491,12 @@ async def test_mig_010_initialize_services_propagates_flag(tmp_path):
         await services.graph_store.close()
 
 
-# ── MIG-011, MIG-012: __main__ argparse defaults ──────────────────
-
-
-def test_mig_011_main_default_no_migrate():
-    from sage.__main__ import _build_parser
-    args = _build_parser().parse_args(["some_config.yaml"])
-    assert args.migrate is False
-
-
-def test_mig_012_main_with_migrate_flag():
-    from sage.__main__ import _build_parser
-    args = _build_parser().parse_args(["some_config.yaml", "--migrate"])
-    assert args.migrate is True
+# ── MIG-011, MIG-012 retired ──────────────────────────────────────
+# These tested the --migrate flag and positional config_path args on
+# `python -m sage`. Both have been removed: vaults are auto-discovered
+# from the vault root, and migration is its own CLI (`python -m
+# sage.migrate`). Equivalent coverage lives in tests/sage/test_main_args.py
+# (parser shape) and tests/sage/test_migrate_cli.py (migration CLI).
 
 
 # ── MIG-013: Owner bootstrap remains always-on ────────────────────

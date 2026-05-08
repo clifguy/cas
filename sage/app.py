@@ -78,10 +78,14 @@ class _GracefulSSEMiddleware:
 
 
 async def _initialize_vault(
-    app: FastAPI, config: VaultConfig, *, migrate: bool = False, **overrides
+    app: FastAPI, config: VaultConfig, **overrides
 ) -> None:
-    """Initialize services for one vault and add to the registry."""
-    services = await initialize_services(config, migrate=migrate, **overrides)
+    """Initialize services for one vault and add to the registry.
+
+    Schema migrations are no longer applied here. Run ``python -m sage.migrate``
+    out of band before starting the server when a vault's schema has advanced.
+    """
+    services = await initialize_services(config, **overrides)
     app.state.vault_registry[config.vault.id] = services
 
 
@@ -115,24 +119,26 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
 
 
 def create_app(
-    config_path: Path | None = None,
+    vault_root: Path | None = None,
     config: VaultConfig | None = None,
-    config_paths: list[Path] | None = None,
     configs: list[VaultConfig] | None = None,
-    migrate: bool = False,
 ) -> FastAPI:
     """Create and configure the SAGE Core API application.
 
     Args:
-        config_path: Path to a single vault YAML config file.
+        vault_root: Directory containing one subdirectory per vault. Each
+            subdirectory must contain a ``vault_config.yaml``. The lifespan
+            discovers and initializes every qualifying vault. A vault whose
+            config fails to parse or whose services fail to initialize is
+            logged and skipped; healthy vaults still load.
         config: Pre-loaded single VaultConfig (used in testing).
-        config_paths: Paths to multiple vault YAML config files.
         configs: Pre-loaded VaultConfig list (used in testing).
-        migrate: If True, apply any pending schema migrations on startup.
-            Default False; legacy schemas cause startup to fail with
-            ``SchemaMigrationRequired`` so the operator can opt in.
 
-        Exactly one of the config arguments must be provided.
+    Exactly one of ``vault_root``, ``config``, or ``configs`` should be
+    provided. None is also valid: the registry stays empty (BE-002).
+
+    Schema migrations are not applied at startup. Use
+    ``python -m sage.migrate`` to advance schemas before starting the server.
     """
 
     @asynccontextmanager
@@ -140,21 +146,24 @@ def create_app(
         # Use the MCP server's _vaults dict as the canonical registry so
         # both the REST API and MCP SSE transport share the same services.
         from sage.mcp_server import _vaults
+        from sage.vault_discovery import discover_vault_configs
 
         app.state.vault_registry = _vaults
 
-        if config_paths is not None:
-            for cp in config_paths:
-                vc = load_vault_config(cp)
-                await _initialize_vault(app, vc, migrate=migrate)
+        if vault_root is not None:
+            for cp in discover_vault_configs(vault_root):
+                try:
+                    vc = load_vault_config(cp)
+                    await _initialize_vault(app, vc)
+                except Exception as exc:
+                    logger.error(
+                        "Skipping vault at %s: failed to load (%s)", cp, exc
+                    )
         elif configs is not None:
             for vc in configs:
-                await _initialize_vault(app, vc, migrate=migrate)
-        elif config_path is not None:
-            vc = load_vault_config(config_path)
-            await _initialize_vault(app, vc, migrate=migrate)
+                await _initialize_vault(app, vc)
         elif config is not None:
-            await _initialize_vault(app, config, migrate=migrate)
+            await _initialize_vault(app, config)
         else:
             # No configs = empty vault registry (valid per BE-002)
             pass
