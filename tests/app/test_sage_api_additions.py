@@ -385,8 +385,14 @@ class TestHashCheck:
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
 
-        doc1 = _make_document("doc-001", source_hash="sha256:abc123def456")
-        doc3 = _make_document("doc-003", source_hash="sha256:patent456")
+        DOC1_ID = "dddddddd_doc_001"
+        DOC3_ID = "dddddddd_doc_003"
+        HASH_DOC1 = "sha256:" + "a" * 64
+        HASH_UNKNOWN = "sha256:" + "f" * 64
+        HASH_DOC3 = "sha256:" + "b" * 64
+
+        doc1 = _make_document(DOC1_ID, source_hash=HASH_DOC1)
+        doc3 = _make_document(DOC3_ID, source_hash=HASH_DOC3)
         await gs.insert_document(doc1)
         await gs.insert_document(doc3)
 
@@ -394,21 +400,21 @@ class TestHashCheck:
             "/sage_vaults/pim_health/hash-check",
             json={
                 "hashes": [
-                    "sha256:abc123def456",
-                    "sha256:unknown",
-                    "sha256:patent456",
+                    HASH_DOC1,
+                    HASH_UNKNOWN,
+                    HASH_DOC3,
                 ]
             },
         )
         assert resp.status_code == 200
         body = resp.json()
 
-        assert body["sha256:abc123def456"]["exists"] is True
-        assert body["sha256:abc123def456"]["document_id"] == "doc-001"
-        assert body["sha256:unknown"]["exists"] is False
-        assert body["sha256:unknown"].get("document_id") is None
-        assert body["sha256:patent456"]["exists"] is True
-        assert body["sha256:patent456"]["document_id"] == "doc-003"
+        assert body[HASH_DOC1]["exists"] is True
+        assert body[HASH_DOC1]["document_id"] == DOC1_ID
+        assert body[HASH_UNKNOWN]["exists"] is False
+        assert body[HASH_UNKNOWN].get("document_id") is None
+        assert body[HASH_DOC3]["exists"] is True
+        assert body[HASH_DOC3]["document_id"] == DOC3_ID
 
     async def test_be_008_hash_check_empty_array(self, multi_client):
         """Hash check with empty array returns empty result."""

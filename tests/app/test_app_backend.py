@@ -780,10 +780,12 @@ class TestTwoPhaseOrchestration:
     @pytest.mark.asyncio
     async def test_ei_026_post_ingest_resolves_ids(self):
         """Post-ingest creation resolves file paths to document IDs."""
+        DOC_V7 = "aaaaaaa7_doc_v7"
+        DOC_V6 = "aaaaaaa6_doc_v6"
         plan = EdgePlan(edges=[
             PlannedEdge("f_v7", "f_v6", EdgeType.SUPERSEDES, 1, "version_chain", "v7 > v6"),
         ])
-        path_to_id = {"f_v7": "doc-v7", "f_v6": "doc-v6"}
+        path_to_id = {"f_v7": DOC_V7, "f_v6": DOC_V6}
 
         # Use mock objects for graph_store and graph_ops_service
         class MockGraphOps:
@@ -804,15 +806,15 @@ class TestTwoPhaseOrchestration:
 
         assert result.edges_created == {"supersedes": 1}
         assert len(mock_ops.linked) == 1
-        assert mock_ops.linked[0].source_id == "doc-v7"
-        assert mock_ops.linked[0].target_id == "doc-v6"
+        assert mock_ops.linked[0].source_id == DOC_V7
+        assert mock_ops.linked[0].target_id == DOC_V6
 
     @pytest.mark.asyncio
     async def test_ei_027_tier_routing(self):
         """Tier 1 via link(), Tier 2 via staging."""
         plan = EdgePlan(edges=[
-            PlannedEdge("doc-a", "doc-b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
-            PlannedEdge("doc-c", "doc-d", EdgeType.COVERS, 2, "filename_code_match", "test"),
+            PlannedEdge("aaaaaaaa_doc_a", "bbbbbbbb_doc_b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
+            PlannedEdge("cccccccc_doc_c", "dddddddd_doc_d", EdgeType.COVERS, 2, "filename_code_match", "test"),
         ])
 
         class MockGraphOps:
@@ -840,8 +842,8 @@ class TestTwoPhaseOrchestration:
     async def test_ei_028_failed_ingestion_drops_edges(self):
         """Edges involving failed ingestions are dropped."""
         plan = EdgePlan(edges=[
-            PlannedEdge("/path/to/failed.docx", "doc-b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
-            PlannedEdge("doc-a", "doc-b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
+            PlannedEdge("/path/to/failed.docx", "bbbbbbbb_doc_b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
+            PlannedEdge("aaaaaaaa_doc_a", "bbbbbbbb_doc_b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
         ])
         # Only doc-a and doc-b resolved; /path/to/failed.docx not in map
         path_to_id = {}
@@ -868,8 +870,10 @@ class TestTwoPhaseOrchestration:
     @pytest.mark.asyncio
     async def test_ei_031_supersedes_transitions_target_to_archived(self):
         """Supersedes edge transitions target document to 'archived'."""
+        DOC_V2 = "aaaaaaa2_doc_v2"
+        DOC_V1 = "aaaaaaa1_doc_v1"
         plan = EdgePlan(edges=[
-            PlannedEdge("doc-v2", "doc-v1", EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
         ])
 
         class MockGraphOps:
@@ -883,7 +887,7 @@ class TestTwoPhaseOrchestration:
                 self.staged = []
                 self.updated = []
                 self._docs = {
-                    "doc-v1": {"lifecycle_status": "active"},
+                    DOC_V1: {"lifecycle_status": "active"},
                 }
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
@@ -907,15 +911,17 @@ class TestTwoPhaseOrchestration:
         # Target document must have been transitioned to "archived"
         assert len(mock_store.updated) == 1
         updated_id, updates = mock_store.updated[0]
-        assert updated_id == "doc-v1"
+        assert updated_id == DOC_V1
         assert updates["lifecycle_status"] == "archived"
         assert "updated_at" in updates
 
     @pytest.mark.asyncio
     async def test_ei_032_supersedes_skips_non_active_target(self):
         """Supersedes lifecycle transition skipped when target not active."""
+        DOC_V3 = "aaaaaaa3_doc_v3"
+        DOC_V2 = "aaaaaaa2_doc_v2"
         plan = EdgePlan(edges=[
-            PlannedEdge("doc-v3", "doc-v2", EdgeType.SUPERSEDES, 1, "version_chain", "v3 > v2"),
+            PlannedEdge(DOC_V3, DOC_V2, EdgeType.SUPERSEDES, 1, "version_chain", "v3 > v2"),
         ])
 
         class MockGraphOps:
@@ -929,7 +935,7 @@ class TestTwoPhaseOrchestration:
                 self.staged = []
                 self.updated = []
                 self._docs = {
-                    "doc-v2": {"lifecycle_status": "archived"},
+                    DOC_V2: {"lifecycle_status": "archived"},
                 }
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)

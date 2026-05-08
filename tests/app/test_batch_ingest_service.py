@@ -84,7 +84,7 @@ def _make_services(
     async def _ingest(request):
         nonlocal call_count
         call_count += 1
-        doc_id = f"doc-{call_count}"
+        doc_id = f"aaaaaaaa_doc_{call_count}"
         return _make_ingest_result(doc_id, title=request.source)
 
     services.ingestion_service.ingest = AsyncMock(side_effect=_ingest)
@@ -233,7 +233,7 @@ class TestEdgePlanConstruction:
     async def test_bis_005_edge_plan_from_scan_and_existing(self):
         """Edge plan built from scan items and existing vault docs."""
         existing_doc = _make_document(
-            "existing-v5",
+            "bbbbbbbb_existing_v5",
             title="Claim-Set",
             version_label="v5",
             doc_type="patent_draft",
@@ -659,7 +659,7 @@ class TestCallerIntegration:
             call_idx += 1
             if call_idx == 3:
                 raise RuntimeError("corrupt file")
-            return _make_ingest_result(f"doc-{call_idx}")
+            return _make_ingest_result(f"aaaaaaaa_doc_{call_idx}")
 
         services.ingestion_service.ingest = AsyncMock(side_effect=mixed_ingest)
         svc = BatchIngestService()
@@ -862,7 +862,7 @@ def _make_chain_services(
     async def _ingest(request):
         nonlocal call_count
         call_count += 1
-        new_id = f"doc-new-{call_count}"
+        new_id = f"eeeeeeee_doc_new_{call_count}"
         new_doc = _make_document(
             new_id,
             title=request.metadata.get("title", "Untitled") if request.metadata else "Untitled",
@@ -892,18 +892,20 @@ class TestChainRepair:
     @pytest.mark.asyncio
     async def test_cr_001_intermediate_arrival_repairs_chain(self):
         """v2 arriving after v1/v3 fixes the chain to v1<-v2<-v3."""
+        V1_ID = "cccccccc_v1"
+        V3_ID = "cccccccc_v3"
         v1 = _make_document(
-            "v1", title="Claim-Set", project="PIM",
+            V1_ID, title="Claim-Set", project="PIM",
             doc_type="patent_draft", version_label="v1",
             tags=["PV06"], lifecycle_status="archived",
         )
         v3 = _make_document(
-            "v3", title="Claim-Set", project="PIM",
+            V3_ID, title="Claim-Set", project="PIM",
             doc_type="patent_draft", version_label="v3",
             tags=["PV06"], lifecycle_status="active",
         )
         existing_edge = _make_edge(
-            "e-v3-v1", "v3", "v1",
+            "e-v3-v1", V3_ID, V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
         )
         services, state = _make_chain_services([v1, v3], [existing_edge])
@@ -924,14 +926,14 @@ class TestChainRepair:
         # Surviving edges form the correct chain
         adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}
         v2_id = next(d.id for d in state.docs.values() if d.version_label == "v2")
-        assert ("v3", v2_id) in adjacency
-        assert (v2_id, "v1") in adjacency
-        assert ("v3", "v1") not in adjacency
+        assert (V3_ID, v2_id) in adjacency
+        assert (v2_id, V1_ID) in adjacency
+        assert (V3_ID, V1_ID) not in adjacency
 
         # Lifecycle: v1 still archived, v2 archived, v3 active
-        assert state.docs["v1"].lifecycle_status == "archived"
+        assert state.docs[V1_ID].lifecycle_status == "archived"
         assert state.docs[v2_id].lifecycle_status == "archived"
-        assert state.docs["v3"].lifecycle_status == "active"
+        assert state.docs[V3_ID].lifecycle_status == "active"
 
     @pytest.mark.asyncio
     async def test_cr_002_provenance_gate_stages_when_removed_edge_is_manual(self):
@@ -1005,27 +1007,30 @@ class TestChainRepair:
     @pytest.mark.asyncio
     async def test_cr_004_new_head_arrival_no_removals(self):
         """v4 onto v1<-v2<-v3 chain adds v3<-v4 with no edge removals."""
+        V1_ID = "cccccccc_v1"
+        V2_ID = "cccccccc_v2"
+        V3_ID = "cccccccc_v3"
         v1 = _make_document(
-            "v1", title="Claim-Set", project="PIM",
+            V1_ID, title="Claim-Set", project="PIM",
             doc_type="patent_draft", version_label="v1",
             tags=["PV06"], lifecycle_status="archived",
         )
         v2 = _make_document(
-            "v2", title="Claim-Set", project="PIM",
+            V2_ID, title="Claim-Set", project="PIM",
             doc_type="patent_draft", version_label="v2",
             tags=["PV06"], lifecycle_status="archived",
         )
         v3 = _make_document(
-            "v3", title="Claim-Set", project="PIM",
+            V3_ID, title="Claim-Set", project="PIM",
             doc_type="patent_draft", version_label="v3",
             tags=["PV06"], lifecycle_status="active",
         )
         e1 = _make_edge(
-            "e-v2-v1", "v2", "v1",
+            "e-v2-v1", V2_ID, V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v2 supersedes v1 (title: Claim-Set)",
         )
         e2 = _make_edge(
-            "e-v3-v2", "v3", "v2",
+            "e-v3-v2", V3_ID, V2_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v2 (title: Claim-Set)",
         )
         services, state = _make_chain_services([v1, v2, v3], [e1, e2])
@@ -1045,8 +1050,8 @@ class TestChainRepair:
         # New head linked
         v4_id = next(d.id for d in state.docs.values() if d.version_label == "v4")
         adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}
-        assert (v4_id, "v3") in adjacency
-        assert state.docs["v3"].lifecycle_status == "archived"
+        assert (v4_id, V3_ID) in adjacency
+        assert state.docs[V3_ID].lifecycle_status == "archived"
         assert state.docs[v4_id].lifecycle_status == "active"
 
     @pytest.mark.asyncio
