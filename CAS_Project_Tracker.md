@@ -1,6 +1,6 @@
 # CAS Project Tracker
 
-**Version:** v95
+**Version:** v96
 **Last updated:** 2026-05-08
 
 ---
@@ -9,7 +9,7 @@
 
 | # | Artifact | Current Version | Status | Next Version |
 |---|----------|----------------|--------|--------------|
-| 1 | CAS Overview | v1.3 | Development | — |
+| 1 | CAS Overview | v2.0 | Development | — |
 | 2 | SAGE Architecture Reference | v2.0 | Development | — |
 | 3 | ROOT Harness Architecture Reference | v1.0 | Development | — |
 | 4 | Deployment Model | v2.0 | Development | — |
@@ -33,11 +33,12 @@
 
 ## Pending Work by Artifact
 
-### 1. CAS Overview (v1.3)
+### 1. CAS Overview (v2.0)
 
 - Promoted to v1.0 on 2026-03-25. Added CAS Application to System Components. Updated introduction to reference three core components. All sections have complete coverage with no known gaps.
 - v1.1 delivered 2026-03-26. CAS ADR disambiguation: replaced bare "ADR" references with "CAS ADR" and "CAS-ADR-NNN" throughout.
 - v1.3 delivered 2026-03-30. Instantiation deliverable format flexibility. Updated Domain Instantiations subsection (Section 4.5) to acknowledge that deliverables may be YAML configuration directories rather than Word documents, following the format-follows-access-pattern principle.
+- v2.0 delivered 2026-05-08. Comprehensive rewrite to reflect the matured CAS portfolio and to apply the standards established for the reference-doc refresh: self-contained narrative, no historical framing in the body, citation discipline (REF docs are authoritative; CLAUDE.md is reserved for steering Claude and is not cited; specific document versions are not cited inline because they go stale), scope discipline (CAS describes CAS; the developer's choice of MCP client, browser, or developer tools is out of scope), and the no-ADR-Index-appendix convention. Section 3 Design Principles extended from eight to eleven: added Single source of truth, Pointer direction, and Architectural-vs-deployment distinction. These principles have been operating across the SAGE Architecture Reference, Deployment Model, and CAS Application Spec rewrites of this round; promoting them to the canonical list makes them durable for future REF revisions. Section 4.4 CAS Application reframed from "HTML5 web application" to the as-built React single-page application served as static assets by the same uvicorn process that hosts the SAGE Core API and the CAS Application backend, with integrated FastMCP SSE transport; two-API consumption framing replaced with three API surfaces (SAGE Core API directly, CAS Application backend at /app/*, ROOT Harness Orchestration API forward-looking). Section 5 CAS ADR store entry rewritten: the prescriptive statement that "documents carry an ADR index appendix" replaced with the current convention that the cas_adr_store.json is the authoritative, machine-consumable, never-stale index; reference documents cite ADRs inline by ID where load-bearing without enumerating them in an appendix. CAS-ADR-022 (proposed) forward-looking note added describing the trajectory toward maintaining CAS reference documentation as a SAGE vault. Section 6 Document Portfolio table updated: Formal Substrate, Test Plan, and PIM Health Instance status cells changed from Planned to Development; CAS Application Spec and Formatting Standards rows added; reading-order paragraph extended. Appendix A (CAS ADR Index) removed entirely per the no-ADR-Index convention; the seven ADRs it enumerated continue to appear inline in the body where load-bearing. Appendix B (Revision History) renamed to Appendix to reflect the single-appendix structure. Promoted to v2.0: all sections have complete coverage with no known gaps. The v1.3 file remains as the predecessor in the eventual supersedes chain when the cas vault is provisioned per CAS-ADR-022.
 - No further pending corrections or revisions identified.
 
 ### 2. SAGE Architecture Reference (v2.0)
