@@ -22,6 +22,6 @@ python3 -c "import yaml, jsonschema, json; jsonschema.validate(yaml.safe_load(op
 
 ## Source Authority
 
-- SAGE schemas: developed against SAGE Architecture Reference (docs/ref/).
-- ROOT Harness schemas: developed against ROOT Harness Architecture Reference (docs/ref/).
+- SAGE schemas: developed against the SAGE Architecture Reference, maintained in the CAS SAGE vault. See ../ref/README.md for vault access.
+- ROOT Harness schemas: developed against the ROOT Harness Architecture Reference, maintained in the CAS SAGE vault.
 - Changes to architecture documents or schemas should trigger a conformance check in the other direction.

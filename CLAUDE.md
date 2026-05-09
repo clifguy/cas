@@ -14,7 +14,6 @@ docs/
     manifest.json  # Schema inventory and version tracking
     sage/          # SAGE config schemas + Core API OpenAPI
     root_harness/  # ROOT Harness config schemas + Orchestration API OpenAPI
-  ref/             # Architecture reference documents (.docx)
 domains/
   pim_health/      # PIM Health ROOT Harness configs (agents, pipeline, policies, workflows)
 sage/              # SAGE source code (Core API, adapters, storage layer)
@@ -32,7 +31,7 @@ Do not memorize these; read them when you need current project state:
 - **Project status:** `CAS_Project_Tracker.md` (root directory) — artifact versions, pending work, sequence, open considerations.
 - **Architectural decisions:** `docs/cas_adr_store.json` — all CAS ADRs with full rationale. Single source of truth for design decisions.
 - **Schema inventory:** `docs/fs/manifest.json` — what schemas exist, their versions, and roles.
-- **Architecture documents:** `docs/ref/*.docx` — read with `pandoc -t plain` when you need architectural detail. These are Word files; do not attempt to edit them in Claude Code.
+- **Architecture documents:** Ingested into a dedicated SAGE vault for CAS portfolio documentation. Use SAGE MCP tools (`sage_discover`, `sage_get_document`, `sage_read_section`, `sage_traverse`) to read or query them. Source `.docx` files are no longer in the repo; see `docs/ref/README.md` for vault id and access details.
 
 ## Standing Architectural Principles
 
@@ -67,7 +66,7 @@ This is a single-developer Mac setup, not a portable Linux service. Adapt comman
 
 - **Platform.** macOS 26.4.1 (Darwin 25.4) on Apple Silicon (Mac16,11), 14 cores, 64 GB unified memory. Homebrew at `/opt/homebrew`. No `apt`/`yum`/`/proc`. Use `pbcopy`/`pbpaste`, `sysctl`, `launchctl`. Default shell is zsh.
 - **Python.** 3.14.3 via Homebrew. **Always use the project venv at `.venv/`** — invoke as `.venv/bin/python` or activate it; never the system Python. The CAS package is installed editable (`__editable__.cas-0.1.0.pth`), so edits under `sage/`, `root_harness/`, `app/` take effect without reinstall. Re-run `pip install -e ".[test,mlx]"` only after changing `pyproject.toml` or adding new top-level packages.
-- **MCP setup.** The SAGE MCP server is configured in `~/.claude/settings.json` and runs from `.venv/bin/python -m sage.mcp_server` against the `test` and `pim_health` vaults. **Edits to SAGE MCP server code require a Claude Code restart** to take effect — the running server holds the old import.
+- **MCP setup.** The SAGE MCP server is configured in `~/.claude/settings.json` and runs from `.venv/bin/python -m sage.mcp_server`, auto-discovering vaults under `~/sage_vaults/` (the `test` vault is used by the SAGE test suite). **Edits to SAGE MCP server code require a Claude Code restart** to take effect — the running server holds the old import.
 - **RAM budget.** With Qwen3-30B loaded via MLX and in active use, the full Python process (model, LanceDB, SQLite, uvicorn) runs around 38 GB. The 64 GB total leaves roughly 26 GB for the rest of the system — macOS, browser, IDE, MCP servers, other tools. Workable but not generous. **Flag any suggestion that would spin up a second concurrent model, hold two model contexts simultaneously, or move to a significantly larger model** — there is no budget for it.
 - **Stale-state pitfalls.**
   - LanceDB and SQLite stores live **outside** the repo (paths in `sage/config.yaml`). `git reset`/`git clean` will not touch them; stale graph/vector state persists across branch switches.

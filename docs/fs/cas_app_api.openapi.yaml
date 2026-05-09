@@ -5,7 +5,8 @@
 # Formal Substrate artifact for CAS (Clif's Agentic System).
 # Target path: ~/repos/cas/docs/fs/cas_app_api.openapi.yaml
 #
-# Source authority: CAS Application Spec (docs/ref/2026-04-08_CAS_REF_App-Spec_v0_4.docx).
+# Source authority: CAS Application Spec, maintained in the CAS SAGE vault
+# (see docs/ref/README.md for vault access).
 #
 # This specification defines the HTTP surface of the CAS Application
 # backend. Routes are mounted under the /app prefix to keep the CAS

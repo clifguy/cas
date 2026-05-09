@@ -1590,6 +1590,170 @@
         "Future expansion of chain inheritance beyond the type-shaped trio inherits this ADR's rationale: the field must be one whose authoritative value is recoverable from chain context (graph state SAGE owns) rather than derived from caller-defined patterns or version-specific by nature. tags would require a separate decision on inheritance semantics (union, replace, skip) before being added; pattern-derived and version-specific fields remain caller-side concerns.",
         "All CAS documentation is currently stale and will be updated as part of post-beta consolidation. The canonical documents named in 'affects' (SAGE Architecture Reference, Formal Substrate) will be revised at that time. Until consolidation, this ADR is the authoritative record of the decision and its rationale."
       ]
+    },
+    {
+      "id": "ADR-022",
+      "title": "Documentation maintained as a SAGE vault with supersedes-edge version history",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-05-09",
+      "created_by": "Clif + Claude session",
+      "scope": "cross_cutting",
+      "tags": [
+        "documentation",
+        "sage-vault",
+        "version-control",
+        "dogfooding"
+      ],
+      "affects": [
+        "CAS Overview",
+        "SAGE Architecture Reference",
+        "ROOT Harness Architecture Reference",
+        "Deployment Model",
+        "CAS Application Spec",
+        "Formatting Standards",
+        "Project Tracker"
+      ],
+      "context": "The CAS portfolio includes a set of reference documents (CAS Overview, SAGE Architecture Reference, ROOT Harness Architecture Reference, Deployment Model, CAS Application Spec, Formatting Standards) and operational artifacts (Project Tracker, ADR Store). The reference documents have been maintained as .docx files in the repository's docs/ref/ directory. Version history was carried by a versioned-filename convention (e.g., _v1_4_2.docx) plus git history. This pattern works at the scale of a single developer reading and editing the documents directly. It creates frictions at scale or with agent participation: (1) cross-document retrieval (e.g., finding which reference documents discuss the abstraction model) requires manual search rather than SAGE's existing retrieval surface; (2) document lineage between versions is implicit in filenames rather than queryable graph relationships; (3) the documents are not available to agents through the same MCP tools that agents use to consult the working corpus; (4) the version-bump-and-rename workflow is manual, with format and naming inconsistencies accruing. SAGE is a knowledge infrastructure system designed for exactly this kind of structured document state with version lineage. Using SAGE for CAS's own documentation aligns with the principle that the system should manage what it is good at managing.",
+      "options_considered": [
+        {
+          "option": "Status quo",
+          "summary": "Continue with .docx files in docs/ref/ and versioned-filename conventions.",
+          "pros": [
+            "No migration work",
+            "No new infrastructure"
+          ],
+          "cons": [
+            "The frictions above persist",
+            "The documents remain unavailable to agents through SAGE",
+            "Cross-document retrieval requires external tooling"
+          ]
+        },
+        {
+          "option": "External documentation system",
+          "summary": "Move CAS reference documents to Obsidian, Confluence, or another documentation platform.",
+          "pros": [
+            "Mature tooling for documentation workflows"
+          ],
+          "cons": [
+            "Introduces a parallel knowledge substrate alongside SAGE",
+            "Documents are not available to agents through SAGE's MCP surface",
+            "Cross-system synchronization is its own ongoing burden"
+          ]
+        },
+        {
+          "option": "Documentation as content within a SAGE vault (chosen)",
+          "summary": "Provision a SAGE vault dedicated to the CAS portfolio. Reference documents become documents in the vault, with supersedes edges expressing version lineage.",
+          "pros": [
+            "Existing infrastructure",
+            "CAS reference documents are retrievable through SAGE's standard surface",
+            "Agents can consult them via MCP",
+            "The system uses what it specifies"
+          ],
+          "cons": [
+            "New vault provisioning work",
+            "Migration of existing .docx files into the vault",
+            "Alignment of the file-naming convention with vault ingestion"
+          ]
+        },
+        {
+          "option": "Hybrid",
+          "summary": "Continue maintaining .docx files in the repository and additionally ingest them into a SAGE vault.",
+          "pros": [
+            "Preserves existing workflow while adding SAGE retrieval"
+          ],
+          "cons": [
+            "Two sources of truth that can drift",
+            "Ingestion is not the canonical representation",
+            "Reverse changes from vault back to repo files are awkward"
+          ]
+        }
+      ],
+      "decision": "CAS reference documents are maintained as content within a SAGE vault dedicated to the CAS portfolio. Each document's version history is captured via supersedes edges in the vault's graph store rather than via filename versioning plus git history. New revisions produce new files with bumped version labels; ingest creates a supersedes edge from the new version's document record to the prior version's record. The vault is provisioned at ~/sage_vaults/cas/ with a vault_config.yaml declaring the relevant doc_types (reference_document, specification, adr, steering_document, misc). The vault is configured for intentional ingest, with caller-authoritative metadata via needs_review=false (per CAS-ADR-021); revisions are committed via explicit ingest invocations rather than file-watcher detection. The CAS Project Tracker, which is updated near-continuously, may also live in the vault as a tracked document with a long supersedes chain. The CAS ADR Store (docs/cas_adr_store.json) remains in the git repository because it is structured data consumed by code (validators, ADR-lookup tooling) rather than narrative content for human or agent reading. The Formal Substrate (docs/fs/) likewise remains in the repository as operational artifact consumed by code.",
+      "rationale": "SAGE is purpose-built for graph-structured document state with version lineage. The CAS reference document set is exactly the kind of corpus that SAGE manages well: typed documents with version chains, cross-document references, and the need for both retrieval and structural queries. Storing the documents in SAGE practices what the architecture specifies and exercises the system on its own canonical content. The format-follows-access-pattern principle informs the boundary. Reference documents are narrative content read by humans and agents and benefit from SAGE's retrieval, abstract-boost, and traversal capabilities. The ADR store is structured data consumed by validators and tooling and benefits from JSON Schema validation and direct programmatic access; ingestion into SAGE would not improve those access patterns. The Formal Substrate (schemas, OpenAPI specs) is similarly operational artifact for code consumption. The decision aligns with two earlier architectural choices. CAS-ADR-008 separates the Formal Substrate from the architecture documents because they have different access patterns (code-consumed vs. human-read). The same reasoning applied here separates narrative documentation (vault-resident) from structured data (repository-resident). CAS-ADR-005 establishes that PIM Health domain instantiation is a separate document; the same modularity applies to CAS portfolio documentation, which lives in its own vault rather than alongside SAGE source code.",
+      "consequences": [
+        "A new SAGE vault for CAS portfolio documentation is provisioned at ~/sage_vaults/cas/ with a vault_config.yaml declaring CAS-portfolio doc_types (reference_document, specification, adr, steering_document, misc) and the standard SAGE document lifecycle.",
+        "The CAS reference documents are ingested into the vault. Migration creates supersedes chains for documents with multiple existing versions (e.g., SAGE Architecture Reference v1.4.2 → v2.0; CAS Overview v1.0 → v1.1 → v1.3 → v2.0).",
+        "The docs/ref/ directory in the repository no longer holds canonical document copies. A README.md in docs/ref/ points readers to the vault.",
+        "Each future document refresh produces a new .docx file with a bumped version label and is ingested via sage_ingest with the predecessor's document_id supplied as supersedes_document_id.",
+        "The CAS Project Tracker may become a vault-resident document with frequent supersedes chain entries. Agents and humans consult it via MCP retrieval rather than git checkout.",
+        "The CAS ADR Store remains at docs/cas_adr_store.json in the repository. The Formal Substrate remains at docs/fs/. Both are operational artifacts consumed by code.",
+        "Cross-document retrieval across CAS reference documents becomes a SAGE query. Agent-side reasoning about CAS architecture can consult the documents through MCP rather than requiring out-of-band file access.",
+        "The vault's MCP exposure makes CAS portfolio documentation accessible to any AI client connected to the SAGE MCP server, alongside the working PIM Health vault and any other vaults.",
+        "A formatting-standards entry in the new vault declares the conventions that future document refreshes should observe."
+      ]
+    },
+    {
+      "id": "ADR-023",
+      "title": "Linear supersedes chain",
+      "status": "accepted",
+      "superseded_by": null,
+      "date": "2026-05-09",
+      "created_by": "Clif + Claude session",
+      "scope": "sage",
+      "tags": [
+        "graph",
+        "supersedes",
+        "version-chain",
+        "edge-inference"
+      ],
+      "affects": [
+        "SAGE Architecture Reference",
+        "CAS Application Spec",
+        "Test Plan"
+      ],
+      "context": "The supersedes edge type expresses version lineage. When a document is superseded by a newer version, an edge is created from the new version to the prior version. SAGE creates supersedes edges in two paths: manual ingestion (caller supplies supersedes_document_id on IngestRequest) and bulk-ingest auto-inference (version-detection from filename version codes, per CAS-ADR-019). For a document that has gone through multiple versions (v1, v2, v3, ...), there are two architecturally meaningful chain shapes the supersedes graph could take. Linear chain: each version supersedes only its immediate actual predecessor. v3 supersedes v2; v2 supersedes v1; no edge from v3 directly to v1. The chain is a single path from the head (current version) to the tail (oldest version) through supersedes edges. Exhaustive chain: each version supersedes all prior versions. v3 supersedes v2 and v1; v2 supersedes v1. The chain is a complete graph among all version members. Both shapes are valid graph topologies. The choice has implications for: (1) edge count growth as chains lengthen; (2) chain-walk algorithms for version-history retrieval; (3) the resolver's transitive lookup for chain-scoped edge resolution per CAS-ADR-017. The behavior of chain-scoped edge resolution depends on the supersedes structure. The resolver walks supersedes lineage to identify chain membership for transitive resolution. A linear chain is straightforward to walk: each version has at most one predecessor and one successor. An exhaustive chain has multiple incoming and outgoing supersedes edges per version, complicating the lineage walk.",
+      "options_considered": [
+        {
+          "option": "Linear chain (chosen)",
+          "summary": "Each version supersedes only its immediate actual predecessor.",
+          "pros": [
+            "Edge count scales linearly (N edges for a chain of length N+1)",
+            "Resolver lineage walk is simple",
+            "Matches the natural mental model of version evolution"
+          ],
+          "cons": [
+            "Querying 'all prior versions of v3' requires a recursive walk rather than a direct query"
+          ]
+        },
+        {
+          "option": "Exhaustive chain",
+          "summary": "Each version supersedes all prior versions.",
+          "pros": [
+            "Querying 'all prior versions of v3' is a single-hop query (return all targets of v3's outbound supersedes edges)"
+          ],
+          "cons": [
+            "Edge count scales quadratically (N(N+1)/2 edges for a chain of length N+1)",
+            "The resolver's lineage walk has to choose among multiple successors",
+            "Chain-repair operations are more complex",
+            "Mental model is awkward (does v3 supersede v1 directly, or transitively through v2?)"
+          ]
+        },
+        {
+          "option": "Configurable per-vault",
+          "summary": "Vaults choose linear or exhaustive based on their workload.",
+          "pros": [
+            "Flexibility"
+          ],
+          "cons": [
+            "Graph semantics should be consistent across vaults",
+            "Cross-vault tooling (chain-walk operations, chain-repair logic, the resolver itself) would have to handle both shapes",
+            "The choice between shapes is not actually domain-dependent"
+          ]
+        }
+      ],
+      "decision": "The supersedes chain is linear by construction. Each version supersedes only its immediate actual predecessor. v3 supersedes v2; v2 supersedes v1; there is no edge from v3 directly to v1. This applies uniformly across all SAGE vaults; it is not a vault-configurable property. Both creation paths uphold the linear-chain invariant. The bulk-ingest auto-inference engine (per CAS-ADR-019) emits one supersedes edge per chain-adjacent version pair. Manual ingestion via IngestRequest.supersedes_document_id accepts a single predecessor id; callers wishing to express that a new version replaces multiple prior versions do so by creating the chain link to the immediate predecessor and walking the chain to identify all prior versions. The dedicated chain operation provides a single API call that walks a linear supersedes chain to both ends from any starting position. Its return shape includes an is_linear boolean as a sanity check on the chain's topology.",
+      "rationale": "Linear chain has three reinforcing benefits. First, edge count scales linearly with chain length. For a vault with hundreds of documents and chains reaching v10 or beyond, the difference between linear (N edges) and exhaustive (N(N+1)/2 edges) is substantial. A vault with many long chains under exhaustive semantics has a quadratically growing edge count, which affects storage, traversal cost, and the resolver's working set. Second, the linear chain matches the natural mental model of version evolution. When a reviewer thinks about 'v3 supersedes v2,' the meaning is that v3 replaced v2 directly. The exhaustive shape requires the reviewer to mentally decide whether v3 also 'supersedes' v1, which is logically true but semantically redundant. Third, the resolver's transitive lookup for chain-scoped edge resolution (per CAS-ADR-017) walks supersedes edges to identify chain membership. A linear chain is simpler to walk and easier to reason about: each version has at most one predecessor and one successor through supersedes. An exhaustive shape would require the resolver to deduplicate or special-case multi-edge cases, complicating the implementation and the reasoning about its correctness. The cost is that querying 'all prior versions of document v3' requires a recursive walk rather than a single-hop query. This is acceptable for three reasons: (1) version-history queries are an occasional operation, not a hot path; (2) the recursive walk is supported natively by SQLite's recursive CTE, the same mechanism used for traverse and chain; (3) the dedicated chain operation centralizes the walk in a single Core API endpoint with is_linear as a sanity-check field, so callers do not have to implement chain-walking logic themselves. Per-vault configuration was considered and rejected. Graph semantics should be consistent across vaults to enable cross-vault tooling. The edge-type registry lives in SAGE core (per CAS-ADR-017) for the same reason; the supersedes-chain shape is a similarly substrate-level invariant that benefits from being uniform.",
+      "consequences": [
+        "Auto-inferred supersedes chains during bulk ingest are linear: each new versioned document supersedes only its immediate predecessor.",
+        "Chain-repair operations preserve the linear invariant: when a chain is repaired (out-of-order arrival shifts the desired chain shape, per CAS-ADR-019), the result is a linear chain. The repair removes any edges that would produce a non-linear shape.",
+        "The chain operation walks the linear chain in both directions and returns is_linear: true for well-formed chains. A return of is_linear: false indicates a malformed graph requiring chain-repair.",
+        "Querying 'all versions of document X' walks the chain via recursive CTE. The cost is logarithmic in chain length for a single forward or backward walk and linear for a full chain traversal; the cost is acceptable for occasional version-history queries.",
+        "The IngestRequest.supersedes_document_id validator accepts a single predecessor id. Multi-predecessor supersession is not supported by direct API; callers needing it use chain-repair tooling.",
+        "The CAS Application's edge-review surface expects linear chains; non-linear chains surface as anomalies for reviewer attention.",
+        "Cross-vault tooling (chain walks, chain-repair, the resolver itself) can rely on the linear-chain invariant being uniform across vaults.",
+        "Test coverage: chain-shape tests in tests/sage/test_traverse_anchors.py and tests/app/test_batch_ingest_service.py cover linear-chain behavior under chain repair, out-of-order arrival, and the is_linear sanity check."
+      ]
     }
   ]
 }
