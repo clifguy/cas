@@ -39,11 +39,11 @@ from datetime import datetime, timedelta, timezone
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.vault_management import _config_path_for_vault
+from sage.vault_management import config_path_for_vault
 
 
 async def restore_doc_type(vault_id: str, *, execute: bool) -> int:
-    config_path = _config_path_for_vault(vault_id)
+    config_path = config_path_for_vault(vault_id)
     if not config_path.exists():
         print(f"vault config not found: {config_path}", file=sys.stderr)
         return 2

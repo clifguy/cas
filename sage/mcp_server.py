@@ -24,12 +24,28 @@ from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.sage_api_tools import register_sage_tools
+from sage.services.vault_registry import VaultRegistryService
 
 # ---------------------------------------------------------------------------
 # Vault registry
 # ---------------------------------------------------------------------------
 
 _vaults: dict[str, SAGEServices] = {}
+
+# Cross-vault registry service singleton.  Constructed once at module import
+# against the `_vaults` dict so both the MCP transport (here) and the FastAPI
+# transport (sage/app.py reaches into us via get_vault_registry_service())
+# share the same instance, which wraps the same registry dict.  See CAS-ADR-013
+# for the registry-dict aliasing rationale.
+_vault_registry_service: VaultRegistryService = VaultRegistryService(
+    registry=_vaults,
+    initialize_services=initialize_services,
+)
+
+
+def get_vault_registry_service() -> VaultRegistryService:
+    """Return the module-level VaultRegistryService singleton."""
+    return _vault_registry_service
 
 
 class VaultNotFoundError(ValueError):
@@ -176,7 +192,9 @@ async def sage_reload_vault(vault_id: str) -> dict:
     }
 
 
-_sage_tools = register_sage_tools(mcp, _get_vault, _serialize, _error_response, _vaults)
+_sage_tools = register_sage_tools(
+    mcp, _get_vault, _serialize, _error_response, _vaults, _vault_registry_service
+)
 _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 
 # ---------------------------------------------------------------------------

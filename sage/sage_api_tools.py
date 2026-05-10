@@ -7,38 +7,30 @@ staging edges, pending metadata).
 """
 
 from collections.abc import Callable
-from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
-    DestructiveConfigChangeError,
     EdgeNotFoundError,
     SAGEError,
-    VaultAlreadyExistsError,
     VaultConfigValidationError,
-    VaultNotFoundError,
 )
-from sage.mcp_init import SAGEServices, initialize_services, reload_vault_in_registry
-from sage.vault_management import (
-    _ALL_SECTIONS,
-    _check_destructive_changes,
-    _config_path_for_vault,
-    _get_default_config,
-    _validate_config,
-    _write_config_yaml,
-)
+from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
     ChainRequest,
+    CreateVaultRequest,
     DiscoverRequest,
+    HashCheckRequest,
     IngestRequest,
     LinkRequest,
     RetrievalFilters,
     SetLifecycleRequest,
     TraverseRequest,
     UpdateMetadataRequest,
+    UpdateVaultConfigRequest,
 )
 from sage.models.enums import SourceType
+from sage.services.vault_registry import VaultRegistryService
 
 
 def register_sage_tools(
@@ -47,6 +39,7 @@ def register_sage_tools(
     serialize: Callable[[object], dict],
     error_response: Callable[[SAGEError | ValueError], dict],
     vaults: dict[str, SAGEServices],
+    vault_registry_service: VaultRegistryService,
 ) -> dict[str, Callable]:
     """Register all SAGE protocol and API tools on the MCP server.
 
@@ -685,18 +678,22 @@ def register_sage_tools(
         """Enumerate all configured vaults. No vault_id parameter -- operates
         across all registered vaults.
         """
-        summaries = []
-        for vid, svc in vaults.items():
-            summaries.append({
-                "id": vid,
-                "name": svc.config.vault.name,
-                "description": getattr(svc.config.vault, "description", None),
-                "storage_root": svc.config.vault.storage_root,
-            })
-        return {
-            "vaults": summaries,
-            "count": len(summaries),
-        }
+        try:
+            summaries = await vault_registry_service.list_vaults()
+            return {
+                "vaults": [
+                    {
+                        "id": s.id,
+                        "name": s.name,
+                        "description": s.description,
+                        "storage_root": s.storage_root,
+                    }
+                    for s in summaries
+                ],
+                "count": len(summaries),
+            }
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
 
     @mcp.tool()
     async def sage_create_vault(
@@ -742,36 +739,19 @@ def register_sage_tools(
                     raise VaultConfigValidationError(
                         ["vault_id, name, and owner are all required when config is not provided"]
                     )
-                config_dict = _get_default_config(vault_id, name, owner)
+                config_dict = VaultRegistryService.get_default_config(
+                    vault_id, name, owner
+                )
             else:
                 config_dict = config
 
-            validated = _validate_config(config_dict)
-            vid = validated.vault.id
-
-            if vid in vaults:
-                raise VaultAlreadyExistsError(vid)
-
-            config_path = _config_path_for_vault(vid)
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            Path(validated.vault.storage_root).expanduser().mkdir(
-                parents=True, exist_ok=True
+            summary = await vault_registry_service.create_vault(
+                CreateVaultRequest(config=config_dict)
             )
-            Path(validated.vault.brain_root).expanduser().mkdir(
-                parents=True, exist_ok=True
-            )
-
-            _write_config_yaml(config_path, config_dict)
-
-            services = await initialize_services(validated)
-            vaults[vid] = services
-
-            await services.user_service.bootstrap_owner()
-
             return {
-                "vault_id": vid,
-                "name": validated.vault.name,
-                "storage_root": validated.vault.storage_root,
+                "vault_id": summary.id,
+                "name": summary.name,
+                "storage_root": summary.storage_root,
                 "config": config_dict,
             }
         except (SAGEError, ValueError) as e:
@@ -785,8 +765,8 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
-            v = get_vault(vault_id)
-            return v.config.model_dump()
+            services = get_vault(vault_id)
+            return services.vault_config_service.get_config()
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -825,43 +805,17 @@ def register_sage_tools(
                 existing documents. Default False.
         """
         try:
-            if vault_id not in vaults:
-                raise VaultNotFoundError(vault_id)
-
-            services = vaults[vault_id]
-            old_config = services.config
-
-            merged = old_config.model_dump()
-            for section_name, section_value in sections.items():
-                if section_name not in _ALL_SECTIONS:
+            services = get_vault(vault_id)
+            valid_sections = set(UpdateVaultConfigRequest.model_fields.keys())
+            for section_name in sections:
+                if section_name not in valid_sections:
                     raise VaultConfigValidationError(
                         [f"Unknown config section: {section_name}"]
                     )
-                merged[section_name] = section_value
-
-            if "vault" in sections and sections["vault"].get("id") != vault_id:
-                raise VaultConfigValidationError(
-                    ["vault.id cannot be changed; create a new vault instead"]
-                )
-
-            new_config = _validate_config(merged)
-
-            warnings = await _check_destructive_changes(
-                old_config, new_config, services.graph_store
+            body = UpdateVaultConfigRequest(**sections)
+            return await services.vault_config_service.update_config(
+                vault_id, body, force
             )
-            if warnings and not force:
-                raise DestructiveConfigChangeError(warnings)
-
-            config_path = _config_path_for_vault(vault_id)
-            _write_config_yaml(config_path, merged)
-
-            await reload_vault_in_registry(vaults, vault_id, new_config)
-
-            return {
-                "status": "updated",
-                "vault_id": vault_id,
-                "warnings": warnings,
-            }
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -873,61 +827,9 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
-            v = get_vault(vault_id)
-            gs = v.graph_store
-
-            total_docs = len(await gs.list_all_documents())
-            by_lifecycle = await gs.get_document_counts_by_field("lifecycle_status")
-            by_doc_type = await gs.get_document_counts_by_field("doc_type")
-            by_adapter = await gs.get_document_counts_by_field("source_type")
-            by_pipeline = await gs.get_document_counts_by_field("pipeline_status")
-
-            total_edges = await gs.get_total_edge_count()
-            by_edge_type = await gs.get_edge_counts_by_type()
-
-            staging_count = await gs.count_staging_edges()
-            pending_meta = len(await gs.list_pending_metadata_documents())
-
-            deferred = by_pipeline.get("abstraction_skipped", 0)
-            failed = by_pipeline.get("failed", 0)
-            last_ingestion = await gs.get_last_ingestion_at()
-
-            # Storage sizes
-            brain_root = Path(v.config.vault.brain_root).expanduser()
-            sqlite_path = brain_root / "graph.db"
-            sqlite_size = sum(
-                p.stat().st_size
-                for suffix in ("", "-wal", "-shm")
-                if (p := sqlite_path.with_name(sqlite_path.name + suffix)).exists()
-            )
-            lancedb_dir = brain_root / "lancedb"
-            lancedb_size = (
-                sum(f.stat().st_size for f in lancedb_dir.rglob("*") if f.is_file())
-                if lancedb_dir.exists()
-                else 0
-            )
-            lancedb_chunk_count = await v.content_store.count_chunks()
-
-            result = {
-                "total_documents": total_docs,
-                "by_lifecycle_state": by_lifecycle,
-                "by_doc_type": by_doc_type,
-                "by_source_adapter": by_adapter,
-                "total_edges": total_edges,
-                "by_edge_type": by_edge_type,
-                "staging_edge_count": staging_count,
-                "lancedb_size_bytes": lancedb_size,
-                "lancedb_chunk_count": lancedb_chunk_count,
-                "sqlite_size_bytes": sqlite_size,
-                "last_ingestion_at": last_ingestion,
-                "health": {
-                    "pending_metadata_count": pending_meta,
-                    "pending_edge_count": staging_count,
-                    "deferred_abstract_count": deferred if v.config.abstraction.enabled else None,
-                    "failed_ingestion_count": failed,
-                },
-            }
-            return result
+            services = get_vault(vault_id)
+            stats = await services.vault_config_service.get_stats()
+            return serialize(stats)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -940,15 +842,17 @@ def register_sage_tools(
             hashes: List of content hash strings (e.g. "sha256:abc...").
         """
         try:
-            v = get_vault(vault_id)
-            matches = await v.graph_store.find_documents_by_hashes(hashes)
-            result = {}
-            for h in hashes:
-                if h in matches:
-                    result[h] = {"exists": True, "document_id": matches[h]}
-                else:
-                    result[h] = {"exists": False}
-            return result
+            services = get_vault(vault_id)
+            # Skip Sha256Str validation: the MCP transport historically
+            # accepts bare-hex hashes (the form sage_ingest emits in its
+            # response) in addition to the prefixed form the REST request
+            # schema requires. Normalizing the two storage formats is a
+            # separate concern from T-0009.
+            body = HashCheckRequest.model_construct(hashes=hashes)
+            matches = await services.vault_config_service.hash_check(body)
+            return {
+                h: m.model_dump(exclude_none=True) for h, m in matches.items()
+            }
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

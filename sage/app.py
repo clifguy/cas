@@ -79,20 +79,20 @@ class _GracefulSSEMiddleware:
 
 
 def _ensure_registry_service(app: FastAPI) -> VaultRegistryService:
-    """Construct the singleton VaultRegistryService if not already present.
+    """Attach the canonical VaultRegistryService singleton to app.state.
 
-    The lifespan path constructs it inline; legacy test fixtures that bypass
-    the lifespan and call _initialize_services directly need this defensive
-    construction so app.state.vault_registry_service is always populated
-    before any request reaches a handler that depends on it.
+    The singleton is owned by sage.mcp_server (it wraps the same `_vaults`
+    dict aliased onto app.state.vault_registry per CAS-ADR-013), so the
+    MCP and REST transports operate against the same instance.  This
+    function exists to populate app.state for legacy test fixtures that
+    bypass the lifespan and call ``_initialize_services`` directly.
     """
+    from sage.mcp_server import _vaults, get_vault_registry_service
+
     if not hasattr(app.state, "vault_registry"):
-        app.state.vault_registry = {}
+        app.state.vault_registry = _vaults
     if not hasattr(app.state, "vault_registry_service"):
-        app.state.vault_registry_service = VaultRegistryService(
-            registry=app.state.vault_registry,
-            initialize_services=initialize_services,
-        )
+        app.state.vault_registry_service = get_vault_registry_service()
     return app.state.vault_registry_service
 
 

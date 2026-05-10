@@ -1,8 +1,8 @@
-"""Shared helpers for vault-config validation, persistence, and defaults.
+"""Shared helpers for vault-config validation and persistence.
 
-Consumed by both the REST router (sage/api/routers/vaults.py) and the MCP
-tools (sage/sage_api_tools.py) so vault creation and update behavior is
-defined in one place.
+Consumed by the vault registry and per-vault config services (under
+sage/services/) so vault creation and update behavior is defined in one
+place. Default-config generation lives on VaultRegistryService.
 """
 
 import tempfile
@@ -88,78 +88,6 @@ async def _check_destructive_changes(
     return warnings
 
 
-def _get_default_config(vault_id: str, name: str, owner: str) -> dict:
-    """Generate a minimal valid config dict for a new vault."""
-    return {
-        "vault": {
-            "id": vault_id,
-            "name": name,
-            "owner": owner,
-            "storage_root": str(_VAULTS_ROOT / vault_id / "sources"),
-            "brain_root": str(_VAULTS_ROOT / vault_id / "brain"),
-            "visibility": "personal",
-        },
-        "document_types": {
-            "doc_types": [
-                {
-                    "value": "document",
-                    "label": "Document",
-                    "description": "General-purpose document type.",
-                },
-                {
-                    "value": "reference",
-                    "label": "Reference",
-                    "description": "Reference material and supporting documents.",
-                },
-            ],
-        },
-        "lifecycle": {
-            "base_states_required": True,
-            "states": [
-                {"value": "active", "label": "Active"},
-                {"value": "completed", "label": "Completed"},
-                {"value": "archived", "label": "Archived", "is_terminal": True},
-            ],
-            "transitions": [
-                {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {
-                    "from_state": "active",
-                    "action": "supersede",
-                    "to_state": "archived",
-                    "creates_edge": "supersedes",
-                },
-                {"from_state": "active", "action": "complete", "to_state": "completed"},
-                {"from_state": "active", "action": "archive", "to_state": "archived"},
-                {"from_state": "completed", "action": "archive", "to_state": "archived"},
-                {"from_state": "archived", "action": "reactivate", "to_state": "active"},
-            ],
-        },
-        "source_adapters": {
-            "adapters": [
-                {"source_type": "markdown", "enabled": True},
-                {"source_type": "docx", "enabled": True},
-                {"source_type": "xlsx", "enabled": True},
-                {"source_type": "pdf", "enabled": True},
-            ],
-        },
-        "metadata_extraction": {
-            "filename_extraction": {
-                "separator": "_",
-            },
-        },
-        "edge_inference": {
-            "tier_assignments": [
-                {
-                    "edge_type": "supersedes",
-                    "tier": 1,
-                    "inference_rules": [{"method": "version_chain"}],
-                },
-            ],
-        },
-        "abstraction": {"enabled": False},
-    }
-
-
-def _config_path_for_vault(vault_id: str) -> Path:
+def config_path_for_vault(vault_id: str) -> Path:
     """Return the canonical config file path for a vault."""
     return _VAULTS_ROOT / vault_id / "vault_config.yaml"

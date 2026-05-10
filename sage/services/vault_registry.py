@@ -26,13 +26,16 @@ from sage.models.schemas import (
     VaultSummary,
 )
 from sage.vault_management import (
-    _config_path_for_vault,
+    config_path_for_vault,
     _validate_config,
     _write_config_yaml,
 )
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
+
+
+_VAULTS_ROOT = Path("~/sage_vaults").expanduser()
 
 
 class VaultRegistryService:
@@ -43,6 +46,83 @@ class VaultRegistryService:
     ) -> None:
         self._registry = registry
         self._initialize_services = initialize_services
+
+    @staticmethod
+    def get_default_config(vault_id: str, name: str, owner: str) -> dict:
+        """Build a minimal valid default config dict for a new vault.
+
+        Used by the MCP `sage_create_vault` convenience mode, which accepts
+        ``vault_id``/``name``/``owner`` instead of a full config dict. The
+        REST endpoint stays full-config-only.
+        """
+        return {
+            "vault": {
+                "id": vault_id,
+                "name": name,
+                "owner": owner,
+                "storage_root": str(_VAULTS_ROOT / vault_id / "sources"),
+                "brain_root": str(_VAULTS_ROOT / vault_id / "brain"),
+                "visibility": "personal",
+            },
+            "document_types": {
+                "doc_types": [
+                    {
+                        "value": "document",
+                        "label": "Document",
+                        "description": "General-purpose document type.",
+                    },
+                    {
+                        "value": "reference",
+                        "label": "Reference",
+                        "description": "Reference material and supporting documents.",
+                    },
+                ],
+            },
+            "lifecycle": {
+                "base_states_required": True,
+                "states": [
+                    {"value": "active", "label": "Active"},
+                    {"value": "completed", "label": "Completed"},
+                    {"value": "archived", "label": "Archived", "is_terminal": True},
+                ],
+                "transitions": [
+                    {"from_state": "(new)", "action": "ingest", "to_state": "active"},
+                    {
+                        "from_state": "active",
+                        "action": "supersede",
+                        "to_state": "archived",
+                        "creates_edge": "supersedes",
+                    },
+                    {"from_state": "active", "action": "complete", "to_state": "completed"},
+                    {"from_state": "active", "action": "archive", "to_state": "archived"},
+                    {"from_state": "completed", "action": "archive", "to_state": "archived"},
+                    {"from_state": "archived", "action": "reactivate", "to_state": "active"},
+                ],
+            },
+            "source_adapters": {
+                "adapters": [
+                    {"source_type": "markdown", "enabled": True},
+                    {"source_type": "docx", "enabled": True},
+                    {"source_type": "xlsx", "enabled": True},
+                    {"source_type": "pdf", "enabled": True},
+                ],
+            },
+            "metadata_extraction": {
+                "filename_extraction": {
+                    "separator": "_",
+                },
+            },
+            "edge_inference": {
+                "tier_assignments": [
+                    {
+                        "edge_type": "supersedes",
+                        "tier": 1,
+                        "inference_rules": [{"method": "version_chain"}],
+                    },
+                ],
+            },
+            "abstraction": {"enabled": False},
+        }
 
     async def list_vaults(self) -> list[VaultSummary]:
         """Return all vaults registered with the running SAGE instance."""
@@ -67,7 +147,7 @@ class VaultRegistryService:
         if vault_id in self._registry:
             raise VaultAlreadyExistsError(vault_id)
 
-        config_path = _config_path_for_vault(vault_id)
+        config_path = config_path_for_vault(vault_id)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         Path(config.vault.storage_root).expanduser().mkdir(parents=True, exist_ok=True)
         Path(config.vault.brain_root).expanduser().mkdir(parents=True, exist_ok=True)

@@ -45,7 +45,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
-from sage.vault_management import _config_path_for_vault
+from sage.vault_management import config_path_for_vault
 
 
 SOURCE_TYPE_TO_VERSION: dict[str, str] = {
@@ -72,7 +72,7 @@ async def rechunk_vault(
     script never invokes abstraction; the stub is just a placeholder
     initialize_services requires.
     """
-    config_path = _config_path_for_vault(vault_id)
+    config_path = config_path_for_vault(vault_id)
     if not config_path.exists():
         print(f"vault config not found: {config_path}", file=sys.stderr)
         return 2

@@ -35,7 +35,7 @@ from sage.storage.graph_store import GraphStore
 from sage.vault_management import (
     _ALL_SECTIONS,
     _check_destructive_changes,
-    _config_path_for_vault,
+    config_path_for_vault,
     _validate_config,
     _write_config_yaml,
 )
@@ -174,7 +174,7 @@ class VaultConfigService:
         if warnings and not force:
             raise DestructiveConfigChangeError(warnings)
 
-        config_path = _config_path_for_vault(vault_id)
+        config_path = config_path_for_vault(vault_id)
         _write_config_yaml(config_path, merged)
 
         await self._registry_service.reload(vault_id, new_config)

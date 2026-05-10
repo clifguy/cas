@@ -12,7 +12,7 @@ import pytest
 import yaml
 from httpx import ASGITransport, AsyncClient
 
-from sage.vault_management import _get_default_config
+from sage.services.vault_registry import VaultRegistryService
 from sage.app import create_app, _initialize_services
 from sage.config import VaultConfig
 
@@ -268,7 +268,7 @@ async def test_update_config_preserves_other_sections(client):
 
 async def test_create_vault_201(client, tmp_path):
     """Create a new vault with default config."""
-    config = _get_default_config("new_vault", "New Vault", "testuser")
+    config = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")
     # Override paths to use tmp_path
     config["vault"]["storage_root"] = str(tmp_path / "new_vault" / "sources")
     config["vault"]["brain_root"] = str(tmp_path / "new_vault" / "brain")
@@ -287,7 +287,7 @@ async def test_create_vault_201(client, tmp_path):
 
 async def test_create_vault_409_exists(client, tmp_path):
     """Duplicate vault_id returns 409."""
-    config = _get_default_config("test_vault", "Dup", "testuser")
+    config = VaultRegistryService.get_default_config("test_vault", "Dup", "testuser")
     config["vault"]["storage_root"] = str(tmp_path / "dup" / "sources")
     config["vault"]["brain_root"] = str(tmp_path / "dup" / "brain")
 
@@ -312,7 +312,7 @@ async def test_create_vault_400_invalid(client):
 
 def test_default_config_validates():
     """The generated default config passes VaultConfig validation."""
-    config_dict = _get_default_config("test_default", "Test Default", "testuser")
+    config_dict = VaultRegistryService.get_default_config("test_default", "Test Default", "testuser")
     config = VaultConfig.model_validate(config_dict)
     assert config.vault.id == "test_default"
     assert len(config.document_types.doc_types) == 2
