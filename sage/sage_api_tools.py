@@ -6,9 +6,7 @@ discover, export, refresh) and API query tools (vault stats, hash check,
 staging edges, pending metadata).
 """
 
-import uuid as _uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -17,7 +15,6 @@ from sage.api.errors import (
     DestructiveConfigChangeError,
     EdgeNotFoundError,
     SAGEError,
-    StagingEdgeNotFoundError,
     VaultAlreadyExistsError,
     VaultConfigValidationError,
     VaultNotFoundError,
@@ -34,7 +31,6 @@ from sage.vault_management import (
 from sage.models.schemas import (
     ChainRequest,
     DiscoverRequest,
-    Edge,
     IngestRequest,
     LinkRequest,
     RetrievalFilters,
@@ -965,7 +961,7 @@ def register_sage_tools(
         """
         try:
             v = get_vault(vault_id)
-            edges = await v.graph_store.list_staging_edges()
+            edges = await v.staging_edges_service.list_staging_edges()
             items = [e.model_dump(mode="json") for e in edges]
             return {
                 "items": items,
@@ -986,27 +982,7 @@ def register_sage_tools(
         """
         try:
             v = get_vault(vault_id)
-            gs = v.graph_store
-            staging = await gs.get_staging_edge(edge_id)
-            if staging is None:
-                raise StagingEdgeNotFoundError(edge_id)
-
-            production = Edge(
-                id=str(_uuid.uuid4()),
-                source_id=staging.source_id,
-                target_id=staging.target_id,
-                edge_type=staging.edge_type,
-                created_at=datetime.now(timezone.utc),
-                notes=f"Confirmed from staging edge {edge_id}",
-                rationale=staging.inference_evidence,
-            )
-            await gs.insert_edge(production)
-            await gs.delete_staging_edge(edge_id)
-            return serialize({
-                "confirmed": True,
-                "staging_edge_id": edge_id,
-                "production_edge_id": production.id,
-            })
+            return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -1020,12 +996,7 @@ def register_sage_tools(
         """
         try:
             v = get_vault(vault_id)
-            gs = v.graph_store
-            staging = await gs.get_staging_edge(edge_id)
-            if staging is None:
-                raise StagingEdgeNotFoundError(edge_id)
-            await gs.delete_staging_edge(edge_id)
-            return serialize({"dismissed": True, "staging_edge_id": edge_id})
+            return serialize(await v.staging_edges_service.dismiss_staging_edge(edge_id))
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

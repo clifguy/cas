@@ -21,6 +21,7 @@ from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
+from sage.services.staging_edges import StagingEdgesService
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.docx_adapter import DocxAdapter
@@ -47,6 +48,7 @@ class SAGEServices:
     graph_ops_service: GraphOpsService
     retrieval_service: RetrievalService
     utilities_service: UtilitiesService
+    staging_edges_service: StagingEdgesService
     config_path: Path | None = None
 
 
@@ -138,6 +140,7 @@ async def initialize_services(
         embedding_provider=embedding_provider,
         config=config,
     )
+    staging_edges_service = StagingEdgesService(graph_store)
 
     # Bootstrap vault owner
     await user_service.bootstrap_owner()
@@ -155,6 +158,7 @@ async def initialize_services(
         graph_ops_service=graph_ops_service,
         retrieval_service=retrieval_service,
         utilities_service=utilities_service,
+        staging_edges_service=staging_edges_service,
         config_path=config_path,
     )
 

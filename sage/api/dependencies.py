@@ -17,6 +17,7 @@ from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
+from sage.services.staging_edges import StagingEdgesService
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.storage.graph_store import GraphStore
@@ -75,6 +76,13 @@ async def get_documents_service(
     vault_id: str = Depends(get_vault_id),
 ) -> DocumentsService:
     return _get_services(request, vault_id).documents_service
+
+
+async def get_staging_edges_service(
+    request: Request,
+    vault_id: str = Depends(get_vault_id),
+) -> StagingEdgesService:
+    return _get_services(request, vault_id).staging_edges_service
 
 
 async def get_user_service(

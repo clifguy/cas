@@ -62,7 +62,6 @@ source_modules = ["sage.api.routers"]
 forbidden_modules = ["sage.storage"]
 allow_indirect_imports = "true"
 ignore_imports = [
-    "sage.api.routers.staging_edges -> sage.storage.graph_store",
     "sage.api.routers.vaults -> sage.storage.graph_store",
 ]
 

@@ -69,7 +69,6 @@ VIOLATION_VAULT_ID = "vault-id-dependency"
 VIOLATION_SERVICE_LOAD_BEARING = "service-as-load-bearer"
 
 KNOWN_VIOLATIONS: dict[str, frozenset[str]] = {
-    "staging_edges":    frozenset({VIOLATION_SERVICE_LOAD_BEARING}),  # TODO: remediate (T-0006)
     "vaults":           frozenset({VIOLATION_SERVICE_LOAD_BEARING}),  # TODO: remediate (T-0008)
 }
 
