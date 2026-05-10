@@ -11,6 +11,7 @@ from fastapi import Depends, Path, Request
 from sage.api.errors import VaultNotFoundError
 from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
+from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
@@ -67,6 +68,13 @@ async def get_metadata_service(
     vault_id: str = Depends(get_vault_id),
 ) -> MetadataService:
     return _get_services(request, vault_id).metadata_service
+
+
+async def get_documents_service(
+    request: Request,
+    vault_id: str = Depends(get_vault_id),
+) -> DocumentsService:
+    return _get_services(request, vault_id).documents_service
 
 
 async def get_user_service(

@@ -14,9 +14,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
-    ContentDeliveryConflictError,
     DestructiveConfigChangeError,
-    DocumentNotFoundError,
     EdgeNotFoundError,
     SAGEError,
     StagingEdgeNotFoundError,
@@ -24,7 +22,6 @@ from sage.api.errors import (
     VaultConfigValidationError,
     VaultNotFoundError,
 )
-from sage.api.routers.documents import attach_inline_content, deliver_to_path
 from sage.mcp_init import SAGEServices, initialize_services, reload_vault_in_registry
 from sage.vault_management import (
     _ALL_SECTIONS,
@@ -37,7 +34,6 @@ from sage.vault_management import (
 from sage.models.schemas import (
     ChainRequest,
     DiscoverRequest,
-    DocumentWithContent,
     Edge,
     IngestRequest,
     LinkRequest,
@@ -235,23 +231,9 @@ def register_sage_tools(
         """
         try:
             v = get_vault(vault_id)
-            if include_content and write_to_path:
-                raise ContentDeliveryConflictError()
-
-            doc = await v.graph_store.get_document(document_id)
-            if doc is None:
-                raise DocumentNotFoundError(document_id)
-
-            response = DocumentWithContent(**doc.model_dump())
-            storage_root = (
-                Path(v.config.vault.storage_root).expanduser().resolve()
+            response = await v.documents_service.get_document_with_content(
+                document_id, include_content, write_to_path
             )
-
-            if include_content:
-                attach_inline_content(response, doc, storage_root)
-            elif write_to_path:
-                deliver_to_path(response, doc, storage_root, write_to_path)
-
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
