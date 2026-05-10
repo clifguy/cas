@@ -30,6 +30,7 @@ Do not memorize these; read them when you need current project state:
 
 - **Project status:** `CAS_Project_Tracker.md` (root directory) — artifact versions, pending work, sequence, open considerations.
 - **Architectural decisions:** cas SAGE vault, `doc_type=adr` (24 ADRs). Use `sage_discover` with `filters={"doc_type": "adr"}` and `sage_get_document` to read full rationale. Cross-references between ADRs are graph edges (`supersedes`, `references`); follow with `sage_traverse`. Single source of truth for CAS architecture decisions per CAS-ADR-024.
+- **Work tickets:** cas SAGE vault, `doc_type=ticket`. Use `sage_discover` with `filters={"doc_type": "ticket", "lifecycle_status": "active"}` to list open tickets. Conventions (frontmatter shape, write discipline, naming, granularity) live in the *CAS Ticket Conventions* steering document in the same vault. Vault-resident; no filesystem source. Replaces the legacy project-tracker workflow.
 - **Schema inventory:** `docs/fs/manifest.json` — what schemas exist, their versions, and roles.
 - **Architecture documents:** Ingested into a dedicated SAGE vault for CAS portfolio documentation. Use SAGE MCP tools (`sage_discover`, `sage_get_document`, `sage_read_section`, `sage_traverse`) to read or query them. Source `.docx` files are no longer in the repo; see `docs/ref/README.md` for vault id and access details.
 
