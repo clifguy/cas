@@ -29,7 +29,7 @@ SAGE vault configurations live outside the repository at `~/sage_vaults/{vault_i
 Do not memorize these; read them when you need current project state:
 
 - **Project status:** `CAS_Project_Tracker.md` (root directory) — artifact versions, pending work, sequence, open considerations.
-- **Architectural decisions:** `docs/cas_adr_store.json` — all CAS ADRs with full rationale. Single source of truth for design decisions.
+- **Architectural decisions:** cas SAGE vault, `doc_type=adr` (24 ADRs). Use `sage_discover` with `filters={"doc_type": "adr"}` and `sage_get_document` to read full rationale. Cross-references between ADRs are graph edges (`supersedes`, `references`); follow with `sage_traverse`. Single source of truth for CAS architecture decisions per CAS-ADR-024.
 - **Schema inventory:** `docs/fs/manifest.json` — what schemas exist, their versions, and roles.
 - **Architecture documents:** Ingested into a dedicated SAGE vault for CAS portfolio documentation. Use SAGE MCP tools (`sage_discover`, `sage_get_document`, `sage_read_section`, `sage_traverse`) to read or query them. Source `.docx` files are no longer in the repo; see `docs/ref/README.md` for vault id and access details.
 
