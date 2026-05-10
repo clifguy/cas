@@ -30,6 +30,7 @@ test = [
     "pyyaml>=6.0",
     "reportlab>=4.0",
     "Pillow>=10.0",
+    "import-linter>=2.0",
 ]
 mlx = [
     "mlx-lm>=0.20",
@@ -44,6 +45,15 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+
+[tool.importlinter]
+root_packages = ["sage"]
+
+[[tool.importlinter.contracts]]
+name = "Services do not import from routers"
+type = "forbidden"
+source_modules = ["sage.services"]
+forbidden_modules = ["sage.api.routers"]
 
 [build-system]
 requires = ["setuptools>=75.0"]

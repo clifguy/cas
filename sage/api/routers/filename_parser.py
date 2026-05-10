@@ -10,7 +10,7 @@ metadata.
 
 from fastapi import APIRouter, Depends
 
-from sage.api.dependencies import get_ingestion_service
+from sage.api.dependencies import get_ingestion_service, get_vault_id
 from sage.models.schemas import ParseFilenameRequest, ParseFilenameResponse
 from sage.services.ingestion import IngestionService
 
@@ -20,6 +20,7 @@ router = APIRouter(tags=["Utilities"])
 @router.post("/parse-filename", response_model=ParseFilenameResponse)
 async def parse_filename(
     request: ParseFilenameRequest,
+    vault_id: str = Depends(get_vault_id),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
 ) -> ParseFilenameResponse:
     return ingestion_service.parse_filename(request.filename, request.adapter)
