@@ -55,6 +55,50 @@ type = "forbidden"
 source_modules = ["sage.services"]
 forbidden_modules = ["sage.api.routers"]
 
+[[tool.importlinter.contracts]]
+name = "Routers do not import from storage directly"
+type = "forbidden"
+source_modules = ["sage.api.routers"]
+forbidden_modules = ["sage.storage"]
+allow_indirect_imports = "true"
+ignore_imports = [
+    "sage.api.routers.documents -> sage.storage.graph_store",
+    "sage.api.routers.pending_metadata -> sage.storage.graph_store",
+    "sage.api.routers.staging_edges -> sage.storage.graph_store",
+    "sage.api.routers.vaults -> sage.storage.graph_store",
+]
+
+[[tool.importlinter.contracts]]
+name = "Models are a leaf layer"
+type = "forbidden"
+source_modules = ["sage.models"]
+forbidden_modules = [
+    "sage.api",
+    "sage.services",
+    "sage.storage",
+    "sage.adapters",
+    "sage.source_adapters",
+    "sage.mcp_init",
+    "sage.mcp_server",
+    "sage.vault_management",
+]
+
+[[tool.importlinter.contracts]]
+name = "Storage and adapters do not import from upstream layers"
+type = "forbidden"
+source_modules = [
+    "sage.storage",
+    "sage.adapters",
+    "sage.source_adapters",
+]
+forbidden_modules = [
+    "sage.api",
+    "sage.services",
+    "sage.mcp_init",
+    "sage.mcp_server",
+    "sage.vault_management",
+]
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
