@@ -28,7 +28,6 @@ SAGE vault configurations live outside the repository at `~/sage_vaults/{vault_i
 
 Do not memorize these; read them when you need current project state:
 
-- **Project status:** `CAS_Project_Tracker.md` (root directory) — artifact versions, pending work, sequence, open considerations.
 - **Architectural decisions:** cas SAGE vault, `doc_type=adr` (24 ADRs). Use `sage_discover` with `filters={"doc_type": "adr"}` and `sage_get_document` to read full rationale. Cross-references between ADRs are graph edges (`supersedes`, `references`); follow with `sage_traverse`. Single source of truth for CAS architecture decisions per CAS-ADR-024.
 - **Work tickets:** cas SAGE vault, `doc_type=ticket`. Use `sage_discover` with `filters={"doc_type": "ticket", "lifecycle_status": "active"}` to list open tickets. Conventions (frontmatter shape, write discipline, naming, granularity) live in the *CAS Ticket Conventions* steering document in the same vault. Vault-resident; no filesystem source. Replaces the legacy project-tracker workflow.
 - **Schema inventory:** `docs/fs/manifest.json` — what schemas exist, their versions, and roles.
@@ -86,5 +85,5 @@ This is a single-developer Mac setup, not a portable Linux service. Adapt comman
 
 - **Proposal-then-approval.** Present what you plan to do; wait for `;;yp` before executing.
 - **Downstream impact identification.** When changing a schema, API contract, or architectural element, identify all affected files across the repo.
-- **ADR capture.** When a design decision resolves an open question or establishes a new architectural constraint, flag it with `;;flag` for ADR capture.
-- **Structured handoffs.** If a task spans multiple sessions, update the project tracker before ending.
+- **ADR capture.** When a design decision resolves an open question or establishes a new architectural constraint, flag it with `;;flag` for ADR capture as a `doc_type=adr` document in the cas vault.
+- **Multi-session work.** If a task spans more than one session, capture it as a ticket (`doc_type=ticket`) in the cas vault. See the *CAS Ticket Conventions* steering document for write discipline.
