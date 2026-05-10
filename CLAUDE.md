@@ -28,7 +28,7 @@ SAGE vault configurations live outside the repository at `~/sage_vaults/{vault_i
 
 Do not memorize these; read them when you need current project state:
 
-- **Architectural decisions:** cas SAGE vault, `doc_type=adr` (24 ADRs). Use `sage_discover` with `filters={"doc_type": "adr"}` and `sage_get_document` to read full rationale. Cross-references between ADRs are graph edges (`supersedes`, `references`); follow with `sage_traverse`. Single source of truth for CAS architecture decisions per CAS-ADR-024.
+- **Architectural decisions:** cas SAGE vault, `doc_type=adr` (24 ADRs). Use `sage_discover` with `filters={"doc_type": "adr"}` and `sage_get_document` to read full rationale. Cross-references between ADRs are graph edges (`supersedes`, `references`); follow with `sage_traverse`. Single source of truth for CAS architecture decisions per CAS-ADR-024. Authoring scope (CAS-only, not generic methodology) is governed by the *CAS ADR Authoring Conventions* steering document (`doc_type=steering_document`) — read it before proposing an ADR.
 - **Work tickets:** cas SAGE vault, `doc_type=ticket`. Conventions (metadata shape including the `id:T-NNNN` / `type:` / `priority:` tag grammar, write discipline, naming, granularity) and the canonical query patterns (open tickets, by-priority, by-id, dependencies) live in the *CAS Ticket Conventions* steering document in the same vault — read it before authoring or querying tickets. Vault-resident; no filesystem source. Replaces the legacy project-tracker workflow.
 - **Failure log:** cas SAGE vault, `doc_type=failure_record`. Schema, write discipline, and the canonical query patterns (open failures, by-class, by-severity, by-id, baselines) live in the *CAS Failure Record Conventions* steering document — read it before authoring or querying failure records. Per-commit measurement; failure-introduction rate and gate-catch rate are the two headline metrics. Seed entries F1–F5 derive from the *AI-First SDLC Tooling Survey* (`doc_type=reference_document`) and are linked to it via `references` edges.
 - **Schema inventory:** `docs/fs/manifest.json` — what schemas exist, their versions, and roles.
@@ -49,17 +49,7 @@ These govern all implementation decisions:
 
 ## Technology Stack
 
-- **Python 3.12+**, venv, pip
-- **FastAPI** + uvicorn for both SAGE Core API and ROOT Harness Orchestration API
-- **LangGraph** for workflow orchestration (checkpoint-and-resume with separate SQLite store)
-- **LanceDB** (embedded) for vector/full-text content store
-- **SQLite** for SAGE graph store and ROOT Harness checkpoint store
-- **nomic-embed-text** via sentence-transformers (768-dimensional embeddings, local)
-- **Qwen3-30B-A3B-Instruct-2507** via MLX for semantic abstract generation (local)
-- **JSON Schema draft 2020-12** for all schemas
-- **OpenAPI 3.1.0** for API specifications
-- **Pydantic v2** for runtime models (derived from schemas)
-- **pytest** for testing
+Python (venv, pip) with FastAPI + uvicorn for both SAGE Core API and ROOT Harness Orchestration API; LangGraph for workflow orchestration; LanceDB for vector/full-text content; SQLite for SAGE graph store and ROOT Harness checkpoint store; nomic-embed-text (local) for embeddings; Qwen3 via MLX (local) for semantic abstract generation; JSON Schema for schemas, OpenAPI for API specs, Pydantic v2 for runtime models, pytest for testing. Specific versions live in `pyproject.toml` and `docs/fs/manifest.json`.
 
 ## Local Environment
 
@@ -69,10 +59,7 @@ This is a single-developer Mac setup, not a portable Linux service. Adapt comman
 - **Python.** 3.14.3 via Homebrew. **Always use the project venv at `.venv/`** — invoke as `.venv/bin/python` or activate it; never the system Python. The CAS package is installed editable (`__editable__.cas-0.1.0.pth`), so edits under `sage/`, `root_harness/`, `app/` take effect without reinstall. Re-run `pip install -e ".[test,mlx]"` only after changing `pyproject.toml` or adding new top-level packages.
 - **MCP setup.** The SAGE MCP server is configured in `~/.claude/settings.json` and runs from `.venv/bin/python -m sage.mcp_server`, auto-discovering vaults under `~/sage_vaults/` (the `test` vault is used by the SAGE test suite). **Edits to SAGE MCP server code require a Claude Code restart** to take effect — the running server holds the old import.
 - **RAM budget.** With Qwen3-30B loaded via MLX and in active use, the full Python process (model, LanceDB, SQLite, uvicorn) runs around 38 GB. The 64 GB total leaves roughly 26 GB for the rest of the system — macOS, browser, IDE, MCP servers, other tools. Workable but not generous. **Flag any suggestion that would spin up a second concurrent model, hold two model contexts simultaneously, or move to a significantly larger model** — there is no budget for it.
-- **Stale-state pitfalls.**
-  - LanceDB and SQLite stores live **outside** the repo (paths in `sage/config.yaml`). `git reset`/`git clean` will not touch them; stale graph/vector state persists across branch switches.
-  - SAGE vault configs at `~/sage_vaults/{vault_id}/vault_config.yaml` are outside the repo and outside cloud sync — they survive everything except manual deletion.
-  - Once the SAGE Core API runs under uvicorn (or ROOT Harness comes online), long-running processes will hold imports in memory; restart the server after touching anything in its import path. *(Add a bullet for ROOT Harness / LangGraph state stores when those exist.)*
+- **Stale-state pitfalls.** LanceDB and SQLite stores live outside the repo (paths in `sage/config.yaml`); `git reset`/`git clean` won't touch them. SAGE vault configs at `~/sage_vaults/{vault_id}/vault_config.yaml` are outside both the repo and cloud sync. Long-running uvicorn (and eventually ROOT Harness) processes hold imports in memory — restart after touching anything in their import path.
 
 ## Coding Conventions
 
@@ -85,6 +72,8 @@ This is a single-developer Mac setup, not a portable Linux service. Adapt comman
 ## Workflow
 
 - **Proposal-then-approval.** Present what you plan to do; wait for `;;yp` before executing.
+- **Test specs before code.** Write test specifications before implementation. Sequence: schemas/contracts → test specs → implementation.
+- **Claude edits, user directs.** The user does not edit content directly; Claude does. Optimize CAS workflows for MCP-call ergonomics, not editor ergonomics. Prefer vault-resident content over file-then-ingest where the access pattern is Claude-mediated.
 - **Downstream impact identification.** When changing a schema, API contract, or architectural element, identify all affected files across the repo.
 - **ADR capture.** When a design decision resolves an open question or establishes a new architectural constraint, flag it with `;;flag` for ADR capture as a `doc_type=adr` document in the cas vault.
 - **Multi-session work.** If a task spans more than one session, capture it as a ticket (`doc_type=ticket`) in the cas vault. See the *CAS Ticket Conventions* steering document for write discipline.
