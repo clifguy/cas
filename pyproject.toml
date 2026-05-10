@@ -61,9 +61,6 @@ type = "forbidden"
 source_modules = ["sage.api.routers"]
 forbidden_modules = ["sage.storage"]
 allow_indirect_imports = "true"
-ignore_imports = [
-    "sage.api.routers.vaults -> sage.storage.graph_store",
-]
 
 [[tool.importlinter.contracts]]
 name = "Models are a leaf layer"

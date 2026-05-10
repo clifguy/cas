@@ -515,6 +515,28 @@ class HashCheckMatch(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Vault config endpoints (PUT /sage_vaults/{vault_id}/config, POST /sage_vaults)
+# ---------------------------------------------------------------------------
+
+class UpdateVaultConfigRequest(BaseModel):
+    """Section-level config update.  Only provided sections are replaced."""
+    vault: dict | None = None
+    document_types: dict | None = None
+    lifecycle: dict | None = None
+    source_adapters: dict | None = None
+    metadata_extraction: dict | None = None
+    edge_inference: dict | None = None
+    abstraction: dict | None = None
+    access_control_defaults: dict | None = None
+    retrieval_health: dict | None = None
+
+
+class CreateVaultRequest(BaseModel):
+    """Full config dict for new vault creation."""
+    config: dict
+
+
+# ---------------------------------------------------------------------------
 # Staging edges (BE-010 through BE-013)
 # ---------------------------------------------------------------------------
 

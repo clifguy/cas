@@ -31,6 +31,7 @@ from sage.api.routers import (
 from app.backend.router import router as app_backend_router
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
+from sage.services.vault_registry import VaultRegistryService
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,24 @@ class _GracefulSSEMiddleware:
             logger.debug("Suppressed SSE shutdown RuntimeError: %s", exc)
 
 
+def _ensure_registry_service(app: FastAPI) -> VaultRegistryService:
+    """Construct the singleton VaultRegistryService if not already present.
+
+    The lifespan path constructs it inline; legacy test fixtures that bypass
+    the lifespan and call _initialize_services directly need this defensive
+    construction so app.state.vault_registry_service is always populated
+    before any request reaches a handler that depends on it.
+    """
+    if not hasattr(app.state, "vault_registry"):
+        app.state.vault_registry = {}
+    if not hasattr(app.state, "vault_registry_service"):
+        app.state.vault_registry_service = VaultRegistryService(
+            registry=app.state.vault_registry,
+            initialize_services=initialize_services,
+        )
+    return app.state.vault_registry_service
+
+
 async def _initialize_vault(
     app: FastAPI, config: VaultConfig, **overrides
 ) -> None:
@@ -85,7 +104,10 @@ async def _initialize_vault(
     Schema migrations are no longer applied here. Run ``python -m sage.migrate``
     out of band before starting the server when a vault's schema has advanced.
     """
-    services = await initialize_services(config, **overrides)
+    registry_service = _ensure_registry_service(app)
+    services = await initialize_services(
+        config, registry_service=registry_service, **overrides
+    )
     app.state.vault_registry[config.vault.id] = services
 
 
@@ -99,10 +121,10 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     Keyword arguments are forwarded to initialize_services() to allow
     provider overrides (content_store, embedding_provider, abstraction_provider).
     """
-    if not hasattr(app.state, "vault_registry"):
-        app.state.vault_registry = {}
-
-    services = await initialize_services(config, **overrides)
+    registry_service = _ensure_registry_service(app)
+    services = await initialize_services(
+        config, registry_service=registry_service, **overrides
+    )
     app.state.vault_registry[config.vault.id] = services
 
     # Legacy single-vault attributes (used by existing tests)
@@ -149,6 +171,9 @@ def create_app(
         from sage.vault_discovery import discover_vault_configs
 
         app.state.vault_registry = _vaults
+        # Construct the registry service against the aliased dict so per-vault
+        # VaultConfigService instances pick up the same singleton.
+        _ensure_registry_service(app)
 
         if vault_root is not None:
             for cp in discover_vault_configs(vault_root):

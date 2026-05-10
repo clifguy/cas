@@ -156,14 +156,17 @@ async def multi_vault_app(tmp_path):
 
     # Manually initialize (lifespan not triggered by ASGITransport)
     app.state.vault_registry = {}
+    from sage.app import _ensure_registry_service
     from sage.mcp_init import initialize_services
 
+    registry_service = _ensure_registry_service(app)
     for cfg in [config1, config2]:
         services = await initialize_services(
             cfg,
             content_store=StubContentStore(),
             embedding_provider=StubEmbeddingProvider(),
             abstraction_provider=StubAbstractionProvider(),
+            registry_service=registry_service,
         )
         app.state.vault_registry[cfg.vault.id] = services
 
@@ -178,6 +181,8 @@ async def empty_vault_app(tmp_path):
     """App with no vaults configured."""
     app = create_app()
     app.state.vault_registry = {}
+    from sage.app import _ensure_registry_service
+    _ensure_registry_service(app)
     yield app
 
 

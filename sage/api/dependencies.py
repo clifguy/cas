@@ -20,6 +20,8 @@ from sage.services.retrieval import RetrievalService
 from sage.services.staging_edges import StagingEdgesService
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
+from sage.services.vault_config import VaultConfigService
+from sage.services.vault_registry import VaultRegistryService
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -125,3 +127,14 @@ async def get_config(
     vault_id: str = Depends(get_vault_id),
 ) -> VaultConfig:
     return _get_services(request, vault_id).config
+
+
+async def get_vault_registry_service(request: Request) -> VaultRegistryService:
+    return request.app.state.vault_registry_service
+
+
+async def get_vault_config_service(
+    request: Request,
+    vault_id: str = Depends(get_vault_id),
+) -> VaultConfigService:
+    return _get_services(request, vault_id).vault_config_service
