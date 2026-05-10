@@ -6,7 +6,20 @@ version: 0.1.0
 
 # cas-code-review
 
-A repo-resident review pass keyed to the five failure modes documented in the AI-First SDLC Tooling Survey §3 (vault: cas, doc_type=reference_document, title "AI-First SDLC Tooling Survey"). Each section below covers one mode and is structured the same way:
+A repo-resident review pass keyed to the five failure modes documented in the AI-First SDLC Tooling Survey §3 (vault: cas, doc_type=reference_document, title "AI-First SDLC Tooling Survey").
+
+## Portability notes (forward-looking, not architectural)
+
+This skill is currently single-tier: every section lives in this file. If a second repo someday needs its own code-review skill, the natural extraction split is:
+
+- **Likely portable to a future universal layer.** F2 (tests-as-chronicle) and F4 (remediation-pass scope gap) are discipline failures whose abstract form should generalize to any tech stack. The CAS-specific elaborations they carry today (test-directory enumeration, the `_id(name)` helper reference) are anchoring examples, not the substance.
+- **CAS-specific in form.** F1 (service-as-load-bearer router pattern), F3 (typed-alias convention with `DocumentIdStr` and friends), and F5 (`Depends(get_vault_id)` pattern) embed stack details (FastAPI, Pydantic v2, the SAGE multi-vault architecture) that do not generalize as written.
+
+Generalization is a hypothesis until observed in a second repo. Do not extract universal sections from this file pre-emptively. When repo #2 needs its own skill, that's the trigger to author the universal layer with two data points and refactor this file to elaborate-on rather than restate.
+
+## Section structure
+
+Each F1-F5 section below is structured the same way:
 
 1. **What this catches.** One-sentence framing.
 2. **Already gated deterministically.** What CI catches without the skill — the skill must not duplicate this work.
