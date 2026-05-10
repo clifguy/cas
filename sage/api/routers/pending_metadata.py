@@ -4,70 +4,19 @@ GET /sage_vaults/{vault_id}/pending-metadata -- documents awaiting metadata
     confirmation (BE-014, BE-015).
 """
 
-import re
-
 from fastapi import APIRouter, Depends
 
-from sage.api.dependencies import get_graph_store, get_vault_id
-from sage.models.schemas import ExtractedField, PendingMetadataItem
-from sage.storage.graph_store import GraphStore
+from sage.api.dependencies import get_metadata_service, get_vault_id
+from sage.models.schemas import PendingMetadataItem
+from sage.services.metadata import MetadataService
 
 router = APIRouter(tags=["pending_metadata"])
-
-
-def _build_extracted_fields(doc) -> dict[str, ExtractedField]:
-    """Build extracted field annotations for a document.
-
-    Source annotations indicate how each metadata field was derived:
-    - "filename": extracted from the source file path
-    - "content": extracted from document content (headings, body)
-    - "default": vault default or system-assigned value
-    """
-    fields: dict[str, ExtractedField] = {}
-
-    # Title: derived from first heading (content) or filename
-    fields["title"] = ExtractedField(
-        value=doc.title,
-        source="content",
-        alt_value=doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path,
-        alt_source="filename",
-    )
-
-    # doc_type: default unless explicitly set
-    if doc.doc_type:
-        fields["doc_type"] = ExtractedField(value=doc.doc_type, source="default")
-
-    # project: if present
-    if doc.project:
-        fields["project"] = ExtractedField(value=doc.project, source="default")
-
-    # tags: if present
-    if doc.tags:
-        fields["tags"] = ExtractedField(
-            value=",".join(doc.tags), source="content"
-        )
-
-    # document_date: filename if date pattern in source_path, otherwise default (BE-036)
-    if doc.document_date:
-        filename = doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path
-        source = "filename" if re.search(r"\d{4}-\d{2}-\d{2}", filename) else "default"
-        fields["document_date"] = ExtractedField(value=doc.document_date, source=source)
-
-    return fields
 
 
 @router.get("/pending-metadata", response_model=list[PendingMetadataItem])
 async def list_pending_metadata(
     vault_id: str = Depends(get_vault_id),
-    graph_store: GraphStore = Depends(get_graph_store),
+    service: MetadataService = Depends(get_metadata_service),
 ) -> list[PendingMetadataItem]:
     """Return documents whose extracted metadata has not been confirmed."""
-    docs = await graph_store.list_pending_metadata_documents()
-
-    return [
-        PendingMetadataItem(
-            document=doc,
-            extracted_fields=_build_extracted_fields(doc),
-        )
-        for doc in docs
-    ]
+    return await service.list_pending_metadata()

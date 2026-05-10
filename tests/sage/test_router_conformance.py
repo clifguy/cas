@@ -71,7 +71,6 @@ VIOLATION_SERVICE_LOAD_BEARING = "service-as-load-bearer"
 KNOWN_VIOLATIONS: dict[str, frozenset[str]] = {
     "documents":        frozenset({VIOLATION_SERVICE_LOAD_BEARING}),  # TODO: remediate
     "staging_edges":    frozenset({VIOLATION_SERVICE_LOAD_BEARING}),  # TODO: remediate
-    "pending_metadata": frozenset({VIOLATION_SERVICE_LOAD_BEARING}),  # TODO: remediate
     "vaults":           frozenset({VIOLATION_SERVICE_LOAD_BEARING}),  # TODO: remediate
 }
 

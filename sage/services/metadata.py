@@ -1,11 +1,17 @@
 """Metadata update logic for the update_metadata endpoint (BH-005, BH-006)."""
 
+import re
 from datetime import datetime, timezone
 
 from sage.adapters.interfaces import ContentStore
 from sage.api.errors import DocumentNotFoundError, InvalidDocTypeError
 from sage.config import VaultConfig
-from sage.models.schemas import Document, UpdateMetadataRequest
+from sage.models.schemas import (
+    Document,
+    ExtractedField,
+    PendingMetadataItem,
+    UpdateMetadataRequest,
+)
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -75,3 +81,55 @@ class MetadataService:
                 )
 
             return doc
+
+    async def list_pending_metadata(self) -> list[PendingMetadataItem]:
+        """Documents whose extracted metadata has not been confirmed (BE-014, BE-015)."""
+        docs = await self._store.list_pending_metadata_documents()
+        return [
+            PendingMetadataItem(
+                document=doc,
+                extracted_fields=self._build_extracted_fields(doc),
+            )
+            for doc in docs
+        ]
+
+    @staticmethod
+    def _build_extracted_fields(doc: Document) -> dict[str, ExtractedField]:
+        """Build extracted field annotations for a document.
+
+        Source annotations indicate how each metadata field was derived:
+        - "filename": extracted from the source file path
+        - "content": extracted from document content (headings, body)
+        - "default": vault default or system-assigned value
+        """
+        fields: dict[str, ExtractedField] = {}
+
+        # Title: derived from first heading (content) or filename
+        fields["title"] = ExtractedField(
+            value=doc.title,
+            source="content",
+            alt_value=doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path,
+            alt_source="filename",
+        )
+
+        # doc_type: default unless explicitly set
+        if doc.doc_type:
+            fields["doc_type"] = ExtractedField(value=doc.doc_type, source="default")
+
+        # project: if present
+        if doc.project:
+            fields["project"] = ExtractedField(value=doc.project, source="default")
+
+        # tags: if present
+        if doc.tags:
+            fields["tags"] = ExtractedField(
+                value=",".join(doc.tags), source="content"
+            )
+
+        # document_date: filename if date pattern in source_path, otherwise default (BE-036)
+        if doc.document_date:
+            filename = doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path
+            source = "filename" if re.search(r"\d{4}-\d{2}-\d{2}", filename) else "default"
+            fields["document_date"] = ExtractedField(value=doc.document_date, source=source)
+
+        return fields
