@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -101,9 +102,19 @@ async def initialize_services(
     if content_store is None:
         content_store = LanceDBContentStore(brain_root, migrate=migrate)
 
-    # Embedding provider: injected or production Nomic
+    # Embedding provider: injected or production Nomic. CI sets
+    # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
+    # services via this path don't each load the ~270MB nomic model
+    # into a 7 GB Linux runner (T-0018). Tests that exercise the real
+    # adapter (@requires_embedding in test_adapters.py) construct
+    # NomicEmbeddingProvider directly and are unaffected.
     if embedding_provider is None:
-        embedding_provider = NomicEmbeddingProvider()
+        if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
+            from sage.adapters.stubs import StubEmbeddingProvider
+
+            embedding_provider = StubEmbeddingProvider()
+        else:
+            embedding_provider = NomicEmbeddingProvider()
 
     # Abstraction provider: injected, or Qwen3/stub from config
     if abstraction_provider is None:

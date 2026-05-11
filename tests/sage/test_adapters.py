@@ -34,6 +34,8 @@ except ImportError:
     _HAS_LANCEDB = False
 
 try:
+    import mlx_lm  # noqa: F401  # gate fires on missing runtime dep, not just module shape
+
     from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 
     _HAS_QWEN3 = True
@@ -45,7 +47,13 @@ requires_embedding = pytest.mark.skipif(
     not _HAS_EMBEDDING, reason="sentence-transformers or nomic model not available"
 )
 requires_lancedb = pytest.mark.skipif(not _HAS_LANCEDB, reason="lancedb not available")
-requires_qwen3 = pytest.mark.skipif(not _HAS_QWEN3, reason="mlx-lm or Qwen3 model not available")
+requires_qwen3 = pytest.mark.skipif(
+    not _HAS_QWEN3,
+    reason=(
+        "Qwen3 abstraction tests require mlx-lm (Apple Silicon only); "
+        "skipped on Linux CI runners by design"
+    ),
+)
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
