@@ -235,7 +235,7 @@ async def test_bh_035_archived_does_not_satisfy(graph_store, graph_ops_service):
 # BH-036: check_preconditions -- filed does not satisfy (domain-specific)
 # ---------------------------------------------------------------------------
 
-async def test_bh_036_filed_does_not_satisfy(graph_store, pim_graph_ops_service):
+async def test_bh_036_filed_does_not_satisfy(graph_store, extended_graph_ops_service):
     doc_function = _make_doc("doc_function")
     doc_dep = _make_doc("doc_dep", lifecycle_status="filed")
     await graph_store.insert_document(doc_function)
@@ -250,7 +250,7 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, pim_graph_ops_service)
     )
     await graph_store.insert_edge(edge)
 
-    result = await pim_graph_ops_service.check_preconditions("doc_function")
+    result = await extended_graph_ops_service.check_preconditions("doc_function")
     assert result.satisfied is False
     assert result.checks[0].actual == "filed"
 

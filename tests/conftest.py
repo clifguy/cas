@@ -12,8 +12,6 @@ from tests.helpers.schema_validation import SchemaValidator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PIM_HEALTH_DIR = PROJECT_ROOT / "domains" / "pim_health"
-SAGE_VAULTS_DIR = Path.home() / "sage_vaults"
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"
 
 
@@ -29,46 +27,24 @@ def project_root() -> Path:
     return PROJECT_ROOT
 
 
-@pytest.fixture(scope="session")
-def pim_health_dir() -> Path:
-    """Path to the PIM Health domain config directory."""
-    return PIM_HEALTH_DIR
+@pytest.fixture(autouse=True)
+def _isolated_vault_registry():
+    """Per-test isolation of sage.mcp_server._vaults.
 
-
-def _load_yaml(path: Path) -> Any:
-    """Load a YAML file and return its contents."""
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
-@pytest.fixture(scope="session")
-def pim_health_config() -> dict[str, Any]:
-    """Load PIM Health vault_config.yaml from the vault root."""
-    return _load_yaml(SAGE_VAULTS_DIR / "pim_health" / "vault_config.yaml")
-
-
-@pytest.fixture(scope="session")
-def pim_health_pipeline() -> dict[str, Any]:
-    """Load PIM Health pipeline.yaml."""
-    return _load_yaml(PIM_HEALTH_DIR / "pipeline.yaml")
-
-
-@pytest.fixture(scope="session")
-def pim_health_agents() -> dict[str, Any]:
-    """Load PIM Health agents.yaml."""
-    return _load_yaml(PIM_HEALTH_DIR / "agents.yaml")
-
-
-@pytest.fixture(scope="session")
-def pim_health_policies() -> dict[str, Any]:
-    """Load PIM Health policies.yaml."""
-    return _load_yaml(PIM_HEALTH_DIR / "policies.yaml")
-
-
-@pytest.fixture(scope="session")
-def pim_health_workflows() -> dict[str, Any]:
-    """Load PIM Health workflows.yaml."""
-    return _load_yaml(PIM_HEALTH_DIR / "workflows.yaml")
+    Production route handlers and MCP tools both resolve vaults through the
+    singleton VaultRegistryService, which is bound at module import to the
+    global `_vaults` dict in sage.mcp_server. Fixtures that bypass the
+    FastAPI lifespan write into that dict directly (via _initialize_services
+    or by setting `_vaults[id] = services`), and not every fixture cleans
+    up its entries. Without isolation, a test's view of the registry is the
+    union of every prior test's leftover state. This fixture clears the
+    dict before each test (autouse runs first within scope) and again on
+    teardown so the next test starts clean.
+    """
+    import sage.mcp_server as _mcp
+    _mcp._vaults.clear()
+    yield
+    _mcp._vaults.clear()
 
 
 def load_invalid_fixture(component: str, filename: str) -> Any:
@@ -79,4 +55,5 @@ def load_invalid_fixture(component: str, filename: str) -> Any:
         filename: YAML filename within the component's invalid fixtures dir
     """
     path = INVALID_FIXTURES_DIR / component / filename
-    return _load_yaml(path)
+    with open(path) as f:
+        return yaml.safe_load(f)

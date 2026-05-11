@@ -173,12 +173,16 @@ class TestModuleLevelImports:
         """sage.mcp_server imports without circular import errors."""
         import importlib
         import sage.mcp_server as mod
+        # importlib.reload re-executes the module body, which rebinds both
+        # `_vaults` and `_vault_registry_service`. Other modules and the
+        # registry service singleton both hold references to the originals,
+        # so the new bindings must be replaced with the originals after
+        # reload to keep the registry dict and its wrapping service paired.
         original_vaults = mod._vaults
+        original_service = mod._vault_registry_service
         importlib.reload(mod)
-        # Restore the original _vaults dict so that other test modules
-        # which imported it via `from sage.mcp_server import _vaults`
-        # still share the same object as _get_vault() reads.
         mod._vaults = original_vaults
+        mod._vault_registry_service = original_service
         # If we get here, no ImportError occurred
 
     def test_cln_003_error_classes_at_module_level(self):

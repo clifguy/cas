@@ -82,15 +82,15 @@ async def test_bh_012_invalid_transition_returns_409(graph_store, lifecycle_serv
 # BH-013: valid_actions reflects domain-specific transitions
 # ---------------------------------------------------------------------------
 
-async def test_bh_013_domain_specific_valid_actions(graph_store, pim_lifecycle_service):
-    """PIM Health vault: 'file' action is valid from active state."""
-    doc = _make_doc("doc_pim_active")
+async def test_bh_013_domain_specific_valid_actions(graph_store, extended_lifecycle_service):
+    """Extended vault: a domain-defined 'file' action is valid from active."""
+    doc = _make_doc("doc_active")
     await graph_store.insert_document(doc)
 
     # Try an action that is invalid from active
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
-        await pim_lifecycle_service.set_lifecycle(
-            "doc_pim_active",
+        await extended_lifecycle_service.set_lifecycle(
+            "doc_active",
             SetLifecycleRequest(action="reactivate"),
         )
 
@@ -99,7 +99,7 @@ async def test_bh_013_domain_specific_valid_actions(graph_store, pim_lifecycle_s
     assert "supersede" in valid
     assert "complete" in valid
     assert "archive" in valid
-    # Domain-specific (PIM Health)
+    # Domain-specific extension
     assert "file" in valid
 
 

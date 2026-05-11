@@ -145,7 +145,7 @@ def _make_staging_edge(
 
 @pytest.fixture
 async def multi_vault_app(tmp_path):
-    """App with two vaults (pim_health, personal_notes)."""
+    """App with two vaults registered in the canonical registry."""
     config1 = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
     )
@@ -154,8 +154,6 @@ async def multi_vault_app(tmp_path):
     )
     app = create_app(configs=[config1, config2])
 
-    # Manually initialize (lifespan not triggered by ASGITransport)
-    app.state.vault_registry = {}
     from sage.app import _ensure_registry_service
     from sage.mcp_init import initialize_services
 
@@ -180,7 +178,6 @@ async def multi_vault_app(tmp_path):
 async def empty_vault_app(tmp_path):
     """App with no vaults configured."""
     app = create_app()
-    app.state.vault_registry = {}
     from sage.app import _ensure_registry_service
     _ensure_registry_service(app)
     yield app

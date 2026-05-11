@@ -100,19 +100,28 @@ def minimal_config(minimal_vault_config_dict):
 
 
 @pytest.fixture
-def pim_health_vault_config_dict(pim_health_config, tmp_vault_dir):
-    """PIM Health config with test-safe paths."""
+def extended_vault_config_dict(minimal_vault_config_dict):
+    """Minimal config extended with a domain-specific lifecycle state and action.
+
+    Exercises the engine's handling of custom lifecycle extensions: adds
+    a `filed` state (non-terminal) and a `file` action from `active` to
+    `filed`, on top of the base states/transitions in
+    `minimal_vault_config_dict`. Used by tests that verify domain-specific
+    states/actions are surfaced by lifecycle and graph-ops services.
+    """
     import copy
-    config = copy.deepcopy(pim_health_config)
-    config["vault"]["storage_root"] = str(tmp_vault_dir / "sources")
-    config["vault"]["brain_root"] = str(tmp_vault_dir / "brain")
+    config = copy.deepcopy(minimal_vault_config_dict)
+    config["lifecycle"]["states"].append({"value": "filed", "label": "Filed"})
+    config["lifecycle"]["transitions"].append(
+        {"from_state": "active", "action": "file", "to_state": "filed"}
+    )
     return config
 
 
 @pytest.fixture
-def pim_health_config_obj(pim_health_vault_config_dict):
-    """Parsed VaultConfig from PIM Health dict."""
-    return VaultConfig.model_validate(pim_health_vault_config_dict)
+def extended_config(extended_vault_config_dict):
+    """Parsed VaultConfig from the extended dict."""
+    return VaultConfig.model_validate(extended_vault_config_dict)
 
 
 @pytest.fixture
@@ -160,8 +169,8 @@ def lifecycle_service(graph_store, lock_manager, minimal_config):
 
 
 @pytest.fixture
-def pim_lifecycle_service(graph_store, lock_manager, pim_health_config_obj):
-    return LifecycleService(graph_store, lock_manager, pim_health_config_obj)
+def extended_lifecycle_service(graph_store, lock_manager, extended_config):
+    return LifecycleService(graph_store, lock_manager, extended_config)
 
 
 @pytest.fixture
@@ -175,8 +184,8 @@ def graph_ops_service(graph_store, minimal_config):
 
 
 @pytest.fixture
-def pim_graph_ops_service(graph_store, pim_health_config_obj):
-    return GraphOpsService(graph_store, pim_health_config_obj)
+def extended_graph_ops_service(graph_store, extended_config):
+    return GraphOpsService(graph_store, extended_config)
 
 
 @pytest.fixture
