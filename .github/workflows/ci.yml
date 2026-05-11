@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       PYTHONUNBUFFERED: "1"
     steps:
@@ -36,20 +36,27 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-v1
+          key: hf-${{ runner.os }}-nomic-embed-text-v1.5-rev1
+          restore-keys: |
+            hf-${{ runner.os }}-nomic-embed-text-v1.5-
 
       - name: Install dependencies
         run: |
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
           .venv/bin/pip install -e ".[test]"
 
-      - name: Run pytest (smoke subset)
+      - name: Pre-cache nomic-embed-text model
         run: |
-          .venv/bin/pytest -v --tb=short \
-            tests/sage/test_router_conformance.py \
-            tests/sage/test_openapi_conformance.py \
-            tests/sage/test_import_linter_contracts.py
+          .venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('nomic-ai/nomic-embed-text-v1.5')"
+
+      - name: Run pytest (full suite)
+        env:
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: |
+          .venv/bin/pytest -v --tb=short tests/
 
   gitleaks:
     runs-on: ubuntu-latest
