@@ -47,9 +47,7 @@ _ADAPTER_TAG_PREFIXES = ["template:"]
 _W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 # Default Word heading styles mapped to heading levels
-_DEFAULT_STYLE_MAP: dict[str, int] = {
-    f"Heading {i}": i for i in range(1, 10)
-}
+_DEFAULT_STYLE_MAP: dict[str, int] = {f"Heading {i}": i for i in range(1, 10)}
 
 
 class _NumberingEngine:
@@ -167,9 +165,19 @@ def _format_number(value: int, num_fmt: str) -> str:
 def _to_roman(n: int) -> str:
     """Convert integer to Roman numeral string."""
     vals = [
-        (1000, "M"), (900, "CM"), (500, "D"), (400, "CD"),
-        (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
-        (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"),
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
     ]
     result = ""
     for val, numeral in vals:
@@ -210,6 +218,7 @@ def _extract_key_terms(text: str) -> str:
     Used as a last-resort title when no Title style or filename is available.
     """
     import re
+
     words = re.findall(r"[A-Za-z0-9]+(?:'[a-z]+)?", text)
     terms = [w for w in words if w.lower() not in _STOP_WORDS and len(w) > 1]
     return " ".join(terms[:_MAX_KEY_TERMS]) if terms else "Untitled"
@@ -231,7 +240,9 @@ def _extract_paragraph_text(p_elem) -> str:
         if tag == "r":
             # Regular run: collect w:t, skip w:instrText
             for run_child in child:
-                rc_tag = etree.QName(run_child.tag).localname if isinstance(run_child.tag, str) else ""
+                rc_tag = (
+                    etree.QName(run_child.tag).localname if isinstance(run_child.tag, str) else ""
+                )
                 if rc_tag == "t" and run_child.text:
                     parts.append(run_child.text)
         elif tag == "fldSimple":
@@ -255,9 +266,7 @@ class DocxAdapter(SourceAdapter):
     VERSION = "0.4.0"
     EXTENSIONS = [".docx", ".dotx"]
 
-    async def project(
-        self, source_path: Path, config: dict | None = None
-    ) -> ProjectionResult:
+    async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
@@ -270,7 +279,7 @@ class DocxAdapter(SourceAdapter):
         numbering_part = None
         try:
             numbering_part = doc.part.numbering_part
-        except Exception:
+        except Exception:  # noqa: S110 -- optional docx feature; absence is expected
             pass
         engine = _NumberingEngine(numbering_part)
 
@@ -342,17 +351,15 @@ class DocxAdapter(SourceAdapter):
 
         # Flush final heading content
         if current_heading_idx >= 0:
-            headings[current_heading_idx].content = "\n".join(
-                current_content_lines
-            ).strip()
+            headings[current_heading_idx].content = "\n".join(current_content_lines).strip()
 
         title = self._extract_title(
-            title_style_text, first_body_para, source_path,
+            title_style_text,
+            first_body_para,
+            source_path,
         )
 
-        source_mtime = datetime.fromtimestamp(
-            source_path.stat().st_mtime, tz=timezone.utc
-        )
+        source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
         metadata: dict = {"source_modified_at": source_mtime.isoformat()}
 
@@ -404,8 +411,7 @@ class DocxAdapter(SourceAdapter):
         """
         custom = [e for e in inventory if e.get("is_custom")]
         builtin_with_numbering = [
-            e for e in inventory
-            if not e.get("is_custom") and e.get("has_numbering")
+            e for e in inventory if not e.get("is_custom") and e.get("has_numbering")
         ]
 
         lines: list[str] = [
@@ -436,10 +442,7 @@ class DocxAdapter(SourceAdapter):
         if builtin_with_numbering:
             names = ", ".join(e["name"] for e in builtin_with_numbering)
             lines.append("")
-            lines.append(
-                "Built-in styles carrying template-local auto-numbering: "
-                f"{names}."
-            )
+            lines.append(f"Built-in styles carrying template-local auto-numbering: {names}.")
 
         return "\n".join(lines)
 
@@ -522,21 +525,26 @@ class DocxAdapter(SourceAdapter):
                 if num_id_val != 0 and num_id_val in active_num_ids:
                     has_numbering = True
                     numbering_detail = self._resolve_numbering(
-                        num_id_val, ilvl_val, num_map, abstract_defs,
+                        num_id_val,
+                        ilvl_val,
+                        num_map,
+                        abstract_defs,
                         num_overrides,
                     )
 
             is_custom = style.element.get(qn("w:customStyle")) == "1"
 
-            inventory.append({
-                "id": style.style_id,
-                "name": style.name,
-                "type": style_type,
-                "based_on": based_on,
-                "has_numbering": has_numbering,
-                "is_custom": is_custom,
-                "numbering_detail": numbering_detail,
-            })
+            inventory.append(
+                {
+                    "id": style.style_id,
+                    "name": style.name,
+                    "type": style_type,
+                    "based_on": based_on,
+                    "has_numbering": has_numbering,
+                    "is_custom": is_custom,
+                    "numbering_detail": numbering_detail,
+                }
+            )
 
         return inventory
 
@@ -587,14 +595,8 @@ class DocxAdapter(SourceAdapter):
                 fmt_elem = lvl.find(qn("w:numFmt"))
                 text_elem = lvl.find(qn("w:lvlText"))
                 levels[ilvl] = {
-                    "num_fmt": (
-                        fmt_elem.get(qn("w:val"))
-                        if fmt_elem is not None else "decimal"
-                    ),
-                    "lvl_text": (
-                        text_elem.get(qn("w:val"))
-                        if text_elem is not None else ""
-                    ),
+                    "num_fmt": (fmt_elem.get(qn("w:val")) if fmt_elem is not None else "decimal"),
+                    "lvl_text": (text_elem.get(qn("w:val")) if text_elem is not None else ""),
                 }
             abstract_defs[abs_id] = levels
 

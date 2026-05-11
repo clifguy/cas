@@ -10,6 +10,7 @@ Usage:
     python scripts/cleanup_orphan_imports.py --execute        # delete orphans
     python scripts/cleanup_orphan_imports.py --vault OTHER_ID # different vault
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,9 +40,7 @@ def get_db_source_paths(brain_root: Path) -> set[str]:
         conn.close()
 
 
-def find_orphans(
-    storage_root: Path, db_paths: set[str]
-) -> list[Path]:
+def find_orphans(storage_root: Path, db_paths: set[str]) -> list[Path]:
     imports_dir = storage_root / "imports"
     if not imports_dir.exists():
         return []
@@ -57,9 +56,7 @@ def find_orphans(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Remove orphaned vault imports")
-    parser.add_argument(
-        "--vault", default="pim_health", help="Vault ID (default: pim_health)"
-    )
+    parser.add_argument("--vault", default="pim_health", help="Vault ID (default: pim_health)")
     parser.add_argument(
         "--execute", action="store_true", help="Actually delete orphans (default: dry-run)"
     )

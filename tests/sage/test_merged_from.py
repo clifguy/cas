@@ -67,14 +67,16 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
     now = datetime.now(timezone.utc)
     for i in range(1, len(chain)):
         newer, older = chain[i], chain[i - 1]
-        await graph_store.insert_edge(Edge(
-            id=f"sup_{newer}_{older}",
-            source_id=newer,
-            target_id=older,
-            edge_type=EdgeType.SUPERSEDES,
-            resolution_policy=ResolutionPolicy.NONE,
-            created_at=now + timedelta(seconds=i),
-        ))
+        await graph_store.insert_edge(
+            Edge(
+                id=f"sup_{newer}_{older}",
+                source_id=newer,
+                target_id=older,
+                edge_type=EdgeType.SUPERSEDES,
+                resolution_policy=ResolutionPolicy.NONE,
+                created_at=now + timedelta(seconds=i),
+            )
+        )
 
 
 async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
@@ -87,13 +89,15 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(LinkRequest(
-        source_id=_id("a3"),
-        target_id=_id("b2"),
-        edge_type=EdgeType.COVERS,
-        source_valid_from_version=_id("a3"),
-        target_valid_from_version=_id("b2"),
-    ))
+    covers = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("a3"),
+            target_id=_id("b2"),
+            edge_type=EdgeType.COVERS,
+            source_valid_from_version=_id("a3"),
+            target_valid_from_version=_id("b2"),
+        )
+    )
     return covers.id
 
 
@@ -101,17 +105,20 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
 # CR-029: valid merged_from (chain-first successor, chain-head predecessor)
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_029_merged_from_accepts_chain_first_and_chain_head(
     graph_store, graph_ops_service
 ):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
 
-    edge = await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("a8"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    edge = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("a8"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
 
     assert edge.edge_type == EdgeType.MERGED_FROM
     assert edge.resolution_policy == ResolutionPolicy.NONE
@@ -129,18 +136,19 @@ async def test_cr_029_merged_from_accepts_chain_first_and_chain_head(
 # CR-030: non-terminal predecessor rejected
 # ---------------------------------------------------------------------------
 
-async def test_cr_030_merged_from_rejects_non_terminal_predecessor(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_030_merged_from_rejects_non_terminal_predecessor(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
 
     with pytest.raises(MergedFromValidationError) as excinfo:
-        await graph_ops_service.link(LinkRequest(
-            source_id=_id("c1"),
-            target_id=_id("a5"),
-            edge_type=EdgeType.MERGED_FROM,
-        ))
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("c1"),
+                target_id=_id("a5"),
+                edge_type=EdgeType.MERGED_FROM,
+            )
+        )
 
     err = excinfo.value
     assert err.status_code == 400
@@ -153,20 +161,21 @@ async def test_cr_030_merged_from_rejects_non_terminal_predecessor(
 # CR-031: non-first successor rejected
 # ---------------------------------------------------------------------------
 
-async def test_cr_031_merged_from_rejects_non_first_successor(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_031_merged_from_rejects_non_first_successor(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     # Build a Chain C with c1 <- c2 so c2 has an outbound supersedes edge.
     await _seed_docs(graph_store, _id("c1"), _id("c2"))
     await _seed_supersedes_chain(graph_store, [_id("c1"), _id("c2")])
 
     with pytest.raises(MergedFromValidationError) as excinfo:
-        await graph_ops_service.link(LinkRequest(
-            source_id=_id("c2"),
-            target_id=_id("a8"),
-            edge_type=EdgeType.MERGED_FROM,
-        ))
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("c2"),
+                target_id=_id("a8"),
+                edge_type=EdgeType.MERGED_FROM,
+            )
+        )
 
     err = excinfo.value
     assert err.status_code == 400
@@ -179,9 +188,8 @@ async def test_cr_031_merged_from_rejects_non_first_successor(
 # CR-032: merged_from atomically tombstones predecessor-chain edges
 # ---------------------------------------------------------------------------
 
-async def test_cr_032_merged_from_tombstones_atomically(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_032_merged_from_tombstones_atomically(graph_store, graph_ops_service):
     covers_id = await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
 
@@ -194,11 +202,13 @@ async def test_cr_032_merged_from_tombstones_atomically(
     sup_edge_before = await graph_store.get_edge(sup_edge_id)
     assert sup_edge_before.valid_until_version is None
 
-    merged = await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("a8"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    merged = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("a8"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
 
     # The covers edge now carries valid_until_version = a8.
     covers_after = await graph_store.get_edge(covers_id)
@@ -218,25 +228,28 @@ async def test_cr_032_merged_from_tombstones_atomically(
 # CR-033: after merge, query from c2 does NOT inherit the covers edge
 # ---------------------------------------------------------------------------
 
-async def test_cr_033_query_from_successor_does_not_inherit(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_033_query_from_successor_does_not_inherit(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"), _id("c2"))
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("a8"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("a8"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
     # c2 supersedes c1 AFTER the merge.
     await _seed_supersedes_chain(graph_store, [_id("c1"), _id("c2")])
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("c2"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=3,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("c2"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=3,
+        )
+    )
     assert out.nodes == []
 
 
@@ -244,23 +257,26 @@ async def test_cr_033_query_from_successor_does_not_inherit(
 # CR-034: historical query at the merge boundary still surfaces the edge
 # ---------------------------------------------------------------------------
 
-async def test_cr_034_query_at_merge_boundary_surfaces(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_034_query_at_merge_boundary_surfaces(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("a8"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("a8"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a8"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a8"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     # a8 == valid_until_version: tombstone marks the BOUNDARY, not suppress.
     assert [n.document.id for n in out.nodes] == [_id("b2")]
 
@@ -269,23 +285,26 @@ async def test_cr_034_query_at_merge_boundary_surfaces(
 # CR-035: time-travel query at pre-merge version still surfaces the edge
 # ---------------------------------------------------------------------------
 
-async def test_cr_035_time_travel_query_pre_merge_surfaces(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_035_time_travel_query_pre_merge_surfaces(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("a8"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("a8"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a5"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a5"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     # valid_until_version=a8 is NOT in lineage(a5)={a5,a4,a3,a2,a1}: kept.
     assert [n.document.id for n in out.nodes] == [_id("b2")]
 
@@ -294,19 +313,20 @@ async def test_cr_035_time_travel_query_pre_merge_surfaces(
 # CR-036: merged_from with any anchor field -> EDGE_ANCHOR_POLICY_VIOLATION
 # ---------------------------------------------------------------------------
 
-async def test_cr_036_merged_from_rejects_anchor_fields(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_036_merged_from_rejects_anchor_fields(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as excinfo:
-        await graph_ops_service.link(LinkRequest(
-            source_id=_id("c1"),
-            target_id=_id("a8"),
-            edge_type=EdgeType.MERGED_FROM,
-            source_valid_from_version=_id("c1"),
-        ))
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("c1"),
+                target_id=_id("a8"),
+                edge_type=EdgeType.MERGED_FROM,
+                source_valid_from_version=_id("c1"),
+            )
+        )
 
     err = excinfo.value
     assert err.status_code == 400
@@ -326,27 +346,30 @@ async def test_cr_036_merged_from_rejects_anchor_fields(
 # where someone still appended to the merged-away chain").
 # ---------------------------------------------------------------------------
 
-async def test_tombstone_suppresses_strict_downstream_version(
-    graph_store, graph_ops_service
-):
+
+async def test_tombstone_suppresses_strict_downstream_version(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("a8"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("a8"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
 
     # After-the-fact a9 superseding a8 (e.g., operator repair scenario).
     await _seed_docs(graph_store, _id("a9"))
     await _seed_supersedes_chain(graph_store, [_id("a8"), _id("a9")])
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a9"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=3,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a9"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=3,
+        )
+    )
     # a9's lineage = {a9,a8,...,a1}. valid_until_version=a8 is a STRICT
     # ancestor of a9 -> suppress.
     assert out.nodes == []

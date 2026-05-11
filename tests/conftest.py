@@ -10,7 +10,6 @@ import yaml
 
 from tests.helpers.schema_validation import SchemaValidator
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"
 
@@ -42,6 +41,7 @@ def _isolated_vault_registry():
     teardown so the next test starts clean.
     """
     import sage.mcp_server as _mcp
+
     _mcp._vaults.clear()
     yield
     _mcp._vaults.clear()

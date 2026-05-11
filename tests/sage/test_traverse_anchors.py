@@ -15,8 +15,6 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
@@ -76,14 +74,16 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
     now = datetime.now(timezone.utc)
     for i in range(1, len(chain)):
         newer, older = chain[i], chain[i - 1]
-        await graph_store.insert_edge(Edge(
-            id=str(uuid.uuid4()),
-            source_id=newer,
-            target_id=older,
-            edge_type=EdgeType.SUPERSEDES,
-            resolution_policy=ResolutionPolicy.NONE,
-            created_at=now + timedelta(seconds=i),
-        ))
+        await graph_store.insert_edge(
+            Edge(
+                id=str(uuid.uuid4()),
+                source_id=newer,
+                target_id=older,
+                edge_type=EdgeType.SUPERSEDES,
+                resolution_policy=ResolutionPolicy.NONE,
+                created_at=now + timedelta(seconds=i),
+            )
+        )
 
 
 async def _seed_ab_worked_example(graph_store, graph_ops_service):
@@ -93,38 +93,43 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service):
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("a3"),
-        target_id=_id("b2"),
-        edge_type=EdgeType.COVERS,
-        source_valid_from_version=_id("a3"),
-        target_valid_from_version=_id("b2"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("a3"),
+            target_id=_id("b2"),
+            edge_type=EdgeType.COVERS,
+            source_valid_from_version=_id("a3"),
+            target_valid_from_version=_id("b2"),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
 # CR-013: query from (a5, b3) surfaces the covers edge
 # ---------------------------------------------------------------------------
 
-async def test_cr_013_covers_surfaces_from_chain_heads(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_013_covers_surfaces_from_chain_heads(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a5"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a5"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("b2")]
 
-    inbound = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("b3"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.INBOUND,
-        depth=2,
-    ))
+    inbound = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("b3"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.INBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in inbound.nodes] == [_id("a3")]
 
 
@@ -132,17 +137,20 @@ async def test_cr_013_covers_surfaces_from_chain_heads(
 # CR-014: query from (a2, b3) suppresses the covers edge (a3 not in a2's lineage)
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_014_covers_suppressed_when_source_anchor_ahead_of_start(
     graph_store, graph_ops_service
 ):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a2"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a2"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert out.nodes == []
 
 
@@ -150,17 +158,20 @@ async def test_cr_014_covers_suppressed_when_source_anchor_ahead_of_start(
 # CR-015: query from (_, b1) suppresses the covers edge (b2 not in b1's lineage)
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_015_covers_suppressed_when_target_anchor_ahead_of_start(
     graph_store, graph_ops_service
 ):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
-    inbound = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("b1"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.INBOUND,
-        depth=2,
-    ))
+    inbound = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("b1"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.INBOUND,
+            depth=2,
+        )
+    )
     assert inbound.nodes == []
 
 
@@ -168,17 +179,18 @@ async def test_cr_015_covers_suppressed_when_target_anchor_ahead_of_start(
 # CR-016: anchors exactly match start — inclusive hit
 # ---------------------------------------------------------------------------
 
-async def test_cr_016_anchors_exactly_match_start(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_016_anchors_exactly_match_start(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a3"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a3"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("b2")]
 
 
@@ -186,17 +198,18 @@ async def test_cr_016_anchors_exactly_match_start(
 # CR-017: policy=none (supersedes) traverses without anchor filtering
 # ---------------------------------------------------------------------------
 
-async def test_cr_017_supersedes_ignores_anchor_logic(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_017_supersedes_ignores_anchor_logic(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a5"),
-        edge_type=EdgeType.SUPERSEDES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=5,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a5"),
+            edge_type=EdgeType.SUPERSEDES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=5,
+        )
+    )
     assert {n.document.id for n in out.nodes} == {_id("a1"), _id("a2"), _id("a3"), _id("a4")}
 
 
@@ -204,13 +217,16 @@ async def test_cr_017_supersedes_ignores_anchor_logic(
 # CR-018: transitive_source — source anchor in lineage — surfaces
 # ---------------------------------------------------------------------------
 
-async def test_cr_018_transitive_source_source_anchor_in_lineage(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_018_transitive_source_source_anchor_in_lineage(graph_store, graph_ops_service):
     await _seed_docs(
         graph_store,
-        _id("patent_v1"), _id("patent_v2"), _id("patent_v3"), _id("patent_v4"),
-        _id("uspto_template_v1"), _id("uspto_template_v2"),
+        _id("patent_v1"),
+        _id("patent_v2"),
+        _id("patent_v3"),
+        _id("patent_v4"),
+        _id("uspto_template_v1"),
+        _id("uspto_template_v2"),
     )
     await _seed_supersedes_chain(
         graph_store,
@@ -220,19 +236,23 @@ async def test_cr_018_transitive_source_source_anchor_in_lineage(
         graph_store,
         [_id("uspto_template_v1"), _id("uspto_template_v2")],
     )
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("patent_v3"),
-        target_id=_id("uspto_template_v2"),
-        edge_type=EdgeType.DERIVED_FROM,
-        source_valid_from_version=_id("patent_v3"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("patent_v3"),
+            target_id=_id("uspto_template_v2"),
+            edge_type=EdgeType.DERIVED_FROM,
+            source_valid_from_version=_id("patent_v3"),
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("patent_v4"),
-        edge_type=EdgeType.DERIVED_FROM,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("patent_v4"),
+            edge_type=EdgeType.DERIVED_FROM,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("uspto_template_v2")]
 
 
@@ -241,13 +261,19 @@ async def test_cr_018_transitive_source_source_anchor_in_lineage(
 # frozen target.
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_019_transitive_source_target_frozen_after_target_chain_advances(
     graph_store, graph_ops_service
 ):
     await _seed_docs(
         graph_store,
-        _id("patent_v1"), _id("patent_v2"), _id("patent_v3"), _id("patent_v4"),
-        _id("uspto_template_v1"), _id("uspto_template_v2"), _id("uspto_template_v3"),
+        _id("patent_v1"),
+        _id("patent_v2"),
+        _id("patent_v3"),
+        _id("patent_v4"),
+        _id("uspto_template_v1"),
+        _id("uspto_template_v2"),
+        _id("uspto_template_v3"),
     )
     await _seed_supersedes_chain(
         graph_store,
@@ -257,19 +283,23 @@ async def test_cr_019_transitive_source_target_frozen_after_target_chain_advance
         graph_store,
         [_id("uspto_template_v1"), _id("uspto_template_v2"), _id("uspto_template_v3")],
     )
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("patent_v3"),
-        target_id=_id("uspto_template_v2"),
-        edge_type=EdgeType.DERIVED_FROM,
-        source_valid_from_version=_id("patent_v3"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("patent_v3"),
+            target_id=_id("uspto_template_v2"),
+            edge_type=EdgeType.DERIVED_FROM,
+            source_valid_from_version=_id("patent_v3"),
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("patent_v4"),
-        edge_type=EdgeType.DERIVED_FROM,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("patent_v4"),
+            edge_type=EdgeType.DERIVED_FROM,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
     assert len(out.nodes) == 1
     node = out.nodes[0]
     assert node.document.id == _id("uspto_template_v2")
@@ -280,16 +310,17 @@ async def test_cr_019_transitive_source_target_frozen_after_target_chain_advance
 # CR-020: mixed traverse without edge_type filter honors per-edge policy
 # ---------------------------------------------------------------------------
 
-async def test_cr_020_mixed_traverse_per_edge_policy(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_020_mixed_traverse_per_edge_policy(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a2"),
-        direction=TraversalDirection.OUTBOUND,
-        depth=3,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a2"),
+            direction=TraversalDirection.OUTBOUND,
+            depth=3,
+        )
+    )
     # supersedes surfaces (policy none); covers does NOT (anchor a3 > a2).
     found = {n.document.id for n in out.nodes}
     assert _id("a1") in found  # reached via supersedes a2->a1
@@ -299,6 +330,7 @@ async def test_cr_020_mixed_traverse_per_edge_policy(
 # ---------------------------------------------------------------------------
 # CR-021: anchor document purged — conservative suppress + WARN log
 # ---------------------------------------------------------------------------
+
 
 async def test_cr_021_anchor_document_missing_suppresses_with_warn(
     graph_store, graph_ops_service, caplog
@@ -320,18 +352,18 @@ async def test_cr_021_anchor_document_missing_suppresses_with_warn(
     await graph_store._run(_purge, _id("a3"))
 
     with caplog.at_level(logging.WARNING, logger="sage.services.graph_ops"):
-        out = await graph_ops_service.traverse(TraverseRequest(
-            start_id=_id("a5"),
-            edge_type=EdgeType.COVERS,
-            direction=TraversalDirection.OUTBOUND,
-            depth=2,
-        ))
+        out = await graph_ops_service.traverse(
+            TraverseRequest(
+                start_id=_id("a5"),
+                edge_type=EdgeType.COVERS,
+                direction=TraversalDirection.OUTBOUND,
+                depth=2,
+            )
+        )
 
     assert out.nodes == []
     assert any(
-        _id("a3") in rec.getMessage()
-        for rec in caplog.records
-        if rec.levelno == logging.WARNING
+        _id("a3") in rec.getMessage() for rec in caplog.records if rec.levelno == logging.WARNING
     )
 
 
@@ -339,9 +371,8 @@ async def test_cr_021_anchor_document_missing_suppresses_with_warn(
 # CR-022: per-request lineage cache coalesces repeated lookups
 # ---------------------------------------------------------------------------
 
-async def test_cr_022_per_request_lineage_cache_coalesces_lookups(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_022_per_request_lineage_cache_coalesces_lookups(graph_store, graph_ops_service):
     """Wrap get_supersedes_lineage to count invocations across a traverse.
 
     With 5 covers edges all anchored on Chain A's existing members, the
@@ -354,16 +385,21 @@ async def test_cr_022_per_request_lineage_cache_coalesces_lookups(
     await _seed_supersedes_chain(graph_store, chain_b)
     # Five covers edges anchored at various points on both chains.
     for src, tgt in [
-        (_id("a2"), _id("b1")), (_id("a3"), _id("b1")), (_id("a3"), _id("b2")),
-        (_id("a4"), _id("b2")), (_id("a4"), _id("b3")),
+        (_id("a2"), _id("b1")),
+        (_id("a3"), _id("b1")),
+        (_id("a3"), _id("b2")),
+        (_id("a4"), _id("b2")),
+        (_id("a4"), _id("b3")),
     ]:
-        await graph_ops_service.link(LinkRequest(
-            source_id=src,
-            target_id=tgt,
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=src,
-            target_valid_from_version=tgt,
-        ))
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=src,
+                target_id=tgt,
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=src,
+                target_valid_from_version=tgt,
+            )
+        )
 
     call_count = {"n": 0}
     original = graph_store.get_supersedes_lineage
@@ -374,12 +410,14 @@ async def test_cr_022_per_request_lineage_cache_coalesces_lookups(
 
     graph_store.get_supersedes_lineage = counting
     try:
-        await graph_ops_service.traverse(TraverseRequest(
-            start_id=_id("a5"),
-            edge_type=EdgeType.COVERS,
-            direction=TraversalDirection.OUTBOUND,
-            depth=2,
-        ))
+        await graph_ops_service.traverse(
+            TraverseRequest(
+                start_id=_id("a5"),
+                edge_type=EdgeType.COVERS,
+                direction=TraversalDirection.OUTBOUND,
+                depth=2,
+            )
+        )
     finally:
         graph_store.get_supersedes_lineage = original
 
@@ -406,19 +444,21 @@ from sage.services.graph_ops import GraphOpsService  # noqa: E402
 
 
 def _tt_registry() -> EdgeTypeRegistry:
-    return EdgeTypeRegistry({
-        EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
-        EdgeType.RETRACTS: ResolutionPolicy.NONE,
-        EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
-        EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
-        EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
-        EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
-    })
+    return EdgeTypeRegistry(
+        {
+            EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
+            EdgeType.RETRACTS: ResolutionPolicy.NONE,
+            EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
+            EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
+            EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
+            EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
+        }
+    )
 
 
 async def _seed_transitive_target_example(graph_store, service) -> None:
@@ -427,47 +467,61 @@ async def _seed_transitive_target_example(graph_store, service) -> None:
     Edge: source=a3, target=b2, target_anchor=b2, policy=transitive_target.
     """
     await _seed_docs(
-        graph_store, _id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5"),
-        _id("b1"), _id("b2"), _id("b3"),
+        graph_store,
+        _id("a1"),
+        _id("a2"),
+        _id("a3"),
+        _id("a4"),
+        _id("a5"),
+        _id("b1"),
+        _id("b2"),
+        _id("b3"),
     )
-    await _seed_supersedes_chain(graph_store, [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5")])
+    await _seed_supersedes_chain(
+        graph_store, [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5")]
+    )
     await _seed_supersedes_chain(graph_store, [_id("b1"), _id("b2"), _id("b3")])
-    await service.link(LinkRequest(
-        source_id=_id("a3"),
-        target_id=_id("b2"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        target_valid_from_version=_id("b2"),
-    ))
+    await service.link(
+        LinkRequest(
+            source_id=_id("a3"),
+            target_id=_id("b2"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            target_valid_from_version=_id("b2"),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
 # CR-050: transitive_target — target anchor in lineage — surfaces (both dirs)
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_050_transitive_target_target_anchor_in_lineage_surfaces(
     graph_store, minimal_config
 ):
-    service = GraphOpsService(
-        graph_store, minimal_config, edge_type_registry=_tt_registry()
-    )
+    service = GraphOpsService(graph_store, minimal_config, edge_type_registry=_tt_registry())
     await _seed_transitive_target_example(graph_store, service)
 
     # Outbound from the frozen source a3: seeds = [a3].
-    out = await service.traverse(TraverseRequest(
-        start_id=_id("a3"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await service.traverse(
+        TraverseRequest(
+            start_id=_id("a3"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("b2")]
 
     # Inbound from b3 (downstream of anchor b2): seeds = b3 lineage.
-    inbound = await service.traverse(TraverseRequest(
-        start_id=_id("b3"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.INBOUND,
-        depth=2,
-    ))
+    inbound = await service.traverse(
+        TraverseRequest(
+            start_id=_id("b3"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.INBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in inbound.nodes] == [_id("a3")]
 
 
@@ -475,21 +529,22 @@ async def test_cr_050_transitive_target_target_anchor_in_lineage_surfaces(
 # CR-051: transitive_target — target anchor not in lineage — suppressed
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_051_transitive_target_target_anchor_not_in_lineage_suppressed(
     graph_store, minimal_config
 ):
-    service = GraphOpsService(
-        graph_store, minimal_config, edge_type_registry=_tt_registry()
-    )
+    service = GraphOpsService(graph_store, minimal_config, edge_type_registry=_tt_registry())
     await _seed_transitive_target_example(graph_store, service)
 
     # b1 is upstream of the anchor b2: anchor check fails.
-    out = await service.traverse(TraverseRequest(
-        start_id=_id("b1"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.INBOUND,
-        depth=2,
-    ))
+    out = await service.traverse(
+        TraverseRequest(
+            start_id=_id("b1"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.INBOUND,
+            depth=2,
+        )
+    )
     assert out.nodes == []
 
 
@@ -498,33 +553,36 @@ async def test_cr_051_transitive_target_target_anchor_not_in_lineage_suppressed(
 # (source endpoint is frozen at derivation).
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_052_transitive_target_source_frozen_not_seed_expanded(
     graph_store, minimal_config
 ):
-    service = GraphOpsService(
-        graph_store, minimal_config, edge_type_registry=_tt_registry()
-    )
+    service = GraphOpsService(graph_store, minimal_config, edge_type_registry=_tt_registry())
     await _seed_transitive_target_example(graph_store, service)
 
     # a2 is an ancestor of a3 (the frozen source) on the source chain.
     # Because the source endpoint is frozen, outbound seeds from a2 are
     # exactly [a2], and no edge has source_id a2.
-    out = await service.traverse(TraverseRequest(
-        start_id=_id("a2"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await service.traverse(
+        TraverseRequest(
+            start_id=_id("a2"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert out.nodes == []
 
     # a4 is downstream of a3 on the source chain. Also must not surface:
     # source is frozen at a3, not live-tracking.
-    out4 = await service.traverse(TraverseRequest(
-        start_id=_id("a4"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out4 = await service.traverse(
+        TraverseRequest(
+            start_id=_id("a4"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert out4.nodes == []
 
 
@@ -543,89 +601,99 @@ async def test_cr_052_transitive_target_source_frozen_not_seed_expanded(
 # filtering will apply automatically.
 
 
-async def test_legacy_references_edge_surfaces_without_anchors(
-    graph_store, graph_ops_service
-):
+async def test_legacy_references_edge_surfaces_without_anchors(graph_store, graph_ops_service):
     """A legacy references edge (no policy, no anchors) must be visible."""
     now = datetime.now(timezone.utc)
     await _seed_docs(graph_store, _id("x"), _id("y"))
-    await graph_store.insert_edge(Edge(
-        id="legacy_ref_xy",
-        source_id=_id("x"),
-        target_id=_id("y"),
-        edge_type=EdgeType.REFERENCES,
-        created_at=now,
-    ))
+    await graph_store.insert_edge(
+        Edge(
+            id="legacy_ref_xy",
+            source_id=_id("x"),
+            target_id=_id("y"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=now,
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("x"),
-        edge_type=EdgeType.REFERENCES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("x"),
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("y")]
 
-    inbound = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("y"),
-        edge_type=EdgeType.REFERENCES,
-        direction=TraversalDirection.INBOUND,
-        depth=1,
-    ))
+    inbound = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("y"),
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.INBOUND,
+            depth=1,
+        )
+    )
     assert [n.document.id for n in inbound.nodes] == [_id("x")]
 
 
-async def test_legacy_covers_edge_surfaces_without_anchors(
-    graph_store, graph_ops_service
-):
+async def test_legacy_covers_edge_surfaces_without_anchors(graph_store, graph_ops_service):
     """A legacy covers edge (no policy, no anchors) must be visible."""
     now = datetime.now(timezone.utc)
     await _seed_docs(graph_store, _id("p"), _id("q"))
-    await graph_store.insert_edge(Edge(
-        id="legacy_cov_pq",
-        source_id=_id("p"),
-        target_id=_id("q"),
-        edge_type=EdgeType.COVERS,
-        created_at=now,
-    ))
+    await graph_store.insert_edge(
+        Edge(
+            id="legacy_cov_pq",
+            source_id=_id("p"),
+            target_id=_id("q"),
+            edge_type=EdgeType.COVERS,
+            created_at=now,
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("p"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("p"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("q")]
 
 
-async def test_legacy_and_anchored_edges_coexist_in_traverse(
-    graph_store, graph_ops_service
-):
+async def test_legacy_and_anchored_edges_coexist_in_traverse(graph_store, graph_ops_service):
     """Mixed query: legacy edges plus new anchored edges both surface."""
     now = datetime.now(timezone.utc)
     await _seed_docs(graph_store, _id("s"), _id("t1"), _id("t2"))
     # Legacy: no policy, no anchors
-    await graph_store.insert_edge(Edge(
-        id="legacy_ref_s_t1",
-        source_id=_id("s"),
-        target_id=_id("t1"),
-        edge_type=EdgeType.REFERENCES,
-        created_at=now,
-    ))
+    await graph_store.insert_edge(
+        Edge(
+            id="legacy_ref_s_t1",
+            source_id=_id("s"),
+            target_id=_id("t1"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=now,
+        )
+    )
     # Modern: anchored, written via link()
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("s"),
-        target_id=_id("t2"),
-        edge_type=EdgeType.REFERENCES,
-        source_valid_from_version=_id("s"),
-        target_valid_from_version=_id("t2"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("s"),
+            target_id=_id("t2"),
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version=_id("s"),
+            target_valid_from_version=_id("t2"),
+        )
+    )
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("s"),
-        edge_type=EdgeType.REFERENCES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("s"),
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
     assert sorted(n.document.id for n in out.nodes) == sorted([_id("t1"), _id("t2")])
 
 
@@ -662,56 +730,60 @@ async def _seed_simple_ref_pair(graph_store, target_doc_date: str | None):
     tgt = _make_doc_with_date(_id("tgt"), document_date=target_doc_date)
     await graph_store.insert_document(src)
     await graph_store.insert_document(tgt)
-    await graph_store.insert_edge(Edge(
-        id="ref_src_tgt",
-        source_id=_id("src"),
-        target_id=_id("tgt"),
-        edge_type=EdgeType.REFERENCES,
-        created_at=datetime.now(timezone.utc),
-    ))
+    await graph_store.insert_edge(
+        Edge(
+            id="ref_src_tgt",
+            source_id=_id("src"),
+            target_id=_id("tgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
 
 
 async def test_traverse_document_date_yyyy_mm_dd(graph_store, graph_ops_service):
     """Contract-shape document_date round-trips as midnight UTC."""
     await _seed_simple_ref_pair(graph_store, "2026-05-05")
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("src"),
-        edge_type=EdgeType.REFERENCES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
-    assert [n.document.id for n in out.nodes] == [_id("tgt")]
-    assert out.nodes[0].document.document_date == datetime(
-        2026, 5, 5, tzinfo=timezone.utc
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("src"),
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
     )
+    assert [n.document.id for n in out.nodes] == [_id("tgt")]
+    assert out.nodes[0].document.document_date == datetime(2026, 5, 5, tzinfo=timezone.utc)
 
 
 async def test_traverse_document_date_iso_with_z(graph_store, graph_ops_service):
     """Bug repro: ISO-with-Z document_date must not crash traverse."""
     await _seed_simple_ref_pair(graph_store, "2026-05-05T00:00:00Z")
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("src"),
-        edge_type=EdgeType.REFERENCES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
-    assert [n.document.id for n in out.nodes] == [_id("tgt")]
-    assert out.nodes[0].document.document_date == datetime(
-        2026, 5, 5, tzinfo=timezone.utc
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("src"),
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
     )
+    assert [n.document.id for n in out.nodes] == [_id("tgt")]
+    assert out.nodes[0].document.document_date == datetime(2026, 5, 5, tzinfo=timezone.utc)
 
 
 async def test_traverse_document_date_malformed(graph_store, graph_ops_service):
     """Defensive: an unparseable document_date renders as None rather than raising."""
     await _seed_simple_ref_pair(graph_store, "not a date")
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("src"),
-        edge_type=EdgeType.REFERENCES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=1,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("src"),
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("tgt")]
     assert out.nodes[0].document.document_date is None

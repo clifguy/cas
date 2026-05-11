@@ -12,7 +12,6 @@ later chunk.
 
 from sage.models.enums import EdgeType, ResolutionPolicy
 
-
 _DEFAULT_POLICIES: dict[EdgeType, ResolutionPolicy] = {
     EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
     EdgeType.RETRACTS: ResolutionPolicy.NONE,

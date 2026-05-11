@@ -29,6 +29,7 @@ Usage::
     .venv/bin/python -m scripts.rechunk_with_empty_heading_chunks \\
         VAULT_ID --execute --batch-size 32
 """
+
 from __future__ import annotations
 
 import argparse
@@ -47,7 +48,6 @@ from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.vault_management import config_path_for_vault
 
-
 SOURCE_TYPE_TO_VERSION: dict[str, str] = {
     SourceType.DOCX.value: DocxAdapter.VERSION,
     SourceType.MARKDOWN.value: MarkdownAdapter.VERSION,
@@ -62,9 +62,7 @@ def _truncate(s: str | None, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-async def rechunk_vault(
-    vault_id: str, *, execute: bool, batch_size: int
-) -> int:
+async def rechunk_vault(vault_id: str, *, execute: bool, batch_size: int) -> int:
     """Re-project + re-chunk + re-embed every eligible doc. Returns 0 on success.
 
     Constructs services with a stub abstraction provider so the script
@@ -154,17 +152,13 @@ async def rechunk_vault(
                 source_path = storage_root / doc.source_path
                 adapter = adapters.get(SourceType(doc.source_type))
                 if adapter is None:
-                    print(
-                        f"[{i:4d}/{len(plan)}]  {doc.id}  no adapter; skipped"
-                    )
+                    print(f"[{i:4d}/{len(plan)}]  {doc.id}  no adapter; skipped")
                     n_failed += 1
                     continue
 
                 # Stage 1: re-project the source. Use the merged vault adapter
                 # config so heading_style_map (USPTO Section etc.) applies.
-                merged = ingestion._merge_adapter_config(
-                    SourceType(doc.source_type), None
-                )
+                merged = ingestion._merge_adapter_config(SourceType(doc.source_type), None)
                 projection = await adapter.project(source_path, merged)
 
                 # Build chunks using the new chunking logic (one chunk per
@@ -184,9 +178,7 @@ async def rechunk_vault(
                     for start in range(0, len(chunks), batch_size):
                         batch = chunks[start : start + batch_size]
                         texts = [
-                            f"{c.heading_path}\n\n{c.content}"
-                            if c.heading_path
-                            else c.content
+                            f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content
                             for c in batch
                         ]
                         embeddings = await embedder.embed(texts)
@@ -214,10 +206,7 @@ async def rechunk_vault(
                 )
 
         elapsed = datetime.now(timezone.utc) - started
-        print(
-            f"\nDone. {n_done} re-chunked, {n_failed} failed, in "
-            f"{elapsed.total_seconds():.1f}s."
-        )
+        print(f"\nDone. {n_done} re-chunked, {n_failed} failed, in {elapsed.total_seconds():.1f}s.")
 
         # Compact LanceDB fragments and prune old version metadata.
         # Each index_chunks call writes a new fragment AND triggers
@@ -250,11 +239,7 @@ def main() -> None:
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--batch-size", type=int, default=64)
     args = parser.parse_args()
-    rc = asyncio.run(
-        rechunk_vault(
-            args.vault_id, execute=args.execute, batch_size=args.batch_size
-        )
-    )
+    rc = asyncio.run(rechunk_vault(args.vault_id, execute=args.execute, batch_size=args.batch_size))
     raise SystemExit(rc)
 
 

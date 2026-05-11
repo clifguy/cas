@@ -5,9 +5,9 @@ pipeline warnings during transitions, and supersede with edge creation.
 """
 
 import hashlib
+from datetime import datetime, timezone
 
 import pytest
-from datetime import datetime, timezone
 
 from sage.api.errors import (
     DocumentNotFoundError,
@@ -58,6 +58,7 @@ def _make_doc(
 # BH-012: Invalid transition returns 409 with valid_actions
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_012_invalid_transition_returns_409(graph_store, lifecycle_service):
     doc = _make_doc("doc_archived", lifecycle_status="archived")
     await graph_store.insert_document(doc)
@@ -81,6 +82,7 @@ async def test_bh_012_invalid_transition_returns_409(graph_store, lifecycle_serv
 # ---------------------------------------------------------------------------
 # BH-013: valid_actions reflects domain-specific transitions
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_013_domain_specific_valid_actions(graph_store, extended_lifecycle_service):
     """Extended vault: a domain-defined 'file' action is valid from active."""
@@ -107,6 +109,7 @@ async def test_bh_013_domain_specific_valid_actions(graph_store, extended_lifecy
 # BH-014: Lifecycle transition allowed during pipeline, with warning
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_014_transition_with_pipeline_warning(graph_store, lifecycle_service):
     doc = _make_doc("doc_indexing", pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
     await graph_store.insert_document(doc)
@@ -129,6 +132,7 @@ async def test_bh_014_transition_with_pipeline_warning(graph_store, lifecycle_se
 # BH-015: Lifecycle transition with no pipeline warning when terminal
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_service):
     doc = _make_doc("doc_complete_pipeline", pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE)
     await graph_store.insert_document(doc)
@@ -145,6 +149,7 @@ async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_s
 # ---------------------------------------------------------------------------
 # BH-016: Supersede requires existing new_version_id
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_016_supersede_requires_existing_version(graph_store, lifecycle_service):
     doc_old = _make_doc("doc_old")
@@ -176,6 +181,7 @@ async def test_bh_016_supersede_requires_new_version_id_field(graph_store, lifec
 # BH-017: Supersede creates supersedes edge
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
     doc_old = _make_doc(_id("doc_to_supersede"))
     doc_new = _make_doc(_id("doc_replacement"))
@@ -202,6 +208,7 @@ async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
 # Additional: Unknown action returns 400 (not 409)
 # ---------------------------------------------------------------------------
 
+
 async def test_unknown_action_returns_400(graph_store, lifecycle_service):
     doc = _make_doc("doc_unknown_action")
     await graph_store.insert_document(doc)
@@ -219,9 +226,8 @@ async def test_unknown_action_returns_400(graph_store, lifecycle_service):
 # InvalidLifecycleTransitionError includes pipeline_status
 # ---------------------------------------------------------------------------
 
-async def test_invalid_transition_includes_pipeline_status(
-    graph_store, lifecycle_service
-):
+
+async def test_invalid_transition_includes_pipeline_status(graph_store, lifecycle_service):
     """InvalidLifecycleTransitionError detail includes pipeline_status."""
     doc = _make_doc(
         "doc_pipe_check",
@@ -229,9 +235,7 @@ async def test_invalid_transition_includes_pipeline_status(
         pipeline_status=PipelineStatus.INDEXING_COMPLETE,
     )
     await graph_store.insert_document(doc)
-    await graph_store.update_document(
-        "doc_pipe_check", {"lifecycle_status": "archived"}
-    )
+    await graph_store.update_document("doc_pipe_check", {"lifecycle_status": "archived"})
 
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
         await lifecycle_service.set_lifecycle(

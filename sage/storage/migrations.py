@@ -60,6 +60,7 @@ def pending_migrations(
             pending.append(m)
     return pending
 
+
 DOCUMENTS_TABLE = """\
 CREATE TABLE IF NOT EXISTS documents (
     id TEXT PRIMARY KEY,
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS edges (
     source_id TEXT NOT NULL,
     target_id TEXT,                   -- nullable on `retracts` edges (CAS-ADR-017)
     edge_type TEXT NOT NULL,
-    resolution_policy TEXT,           -- frozen policy (CAS-ADR-017), populated by write-time validator
+    resolution_policy TEXT,           -- frozen policy, set at write time (CAS-ADR-017)
     source_valid_from_version TEXT,   -- source-chain anchor (CAS-ADR-017)
     target_valid_from_version TEXT,   -- target-chain anchor (CAS-ADR-017)
     valid_until_version TEXT,         -- tombstone from merged_from termination (CAS-ADR-017)
@@ -147,27 +148,37 @@ INDEXES = [
 
 MIGRATION_PLAN: list[Migration] = [
     # v1 -> v2: source file provenance (BH-049)
-    Migration("documents", "source_modified_at",
-              "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;"),
+    Migration(
+        "documents",
+        "source_modified_at",
+        "ALTER TABLE documents ADD COLUMN source_modified_at TEXT;",
+    ),
     # v2 -> v3: metadata confirmation tracking (BE-014)
-    Migration("documents", "metadata_confirmed",
-              "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;"),
+    Migration(
+        "documents",
+        "metadata_confirmed",
+        "ALTER TABLE documents ADD COLUMN metadata_confirmed INTEGER NOT NULL DEFAULT 0;",
+    ),
     # v3 -> v4: document date metadata (BH-062)
-    Migration("documents", "document_date",
-              "ALTER TABLE documents ADD COLUMN document_date TEXT;"),
+    Migration("documents", "document_date", "ALTER TABLE documents ADD COLUMN document_date TEXT;"),
     # Chain-scoped edge resolution anchors and retracts target (CAS-ADR-017).
     # All nullable; FKs enforced at the application layer since SQLite
     # ALTER TABLE cannot add FK constraints.
-    Migration("edges", "resolution_policy",
-              "ALTER TABLE edges ADD COLUMN resolution_policy TEXT;"),
-    Migration("edges", "source_valid_from_version",
-              "ALTER TABLE edges ADD COLUMN source_valid_from_version TEXT;"),
-    Migration("edges", "target_valid_from_version",
-              "ALTER TABLE edges ADD COLUMN target_valid_from_version TEXT;"),
-    Migration("edges", "valid_until_version",
-              "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;"),
-    Migration("edges", "retracted_edge_id",
-              "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;"),
+    Migration("edges", "resolution_policy", "ALTER TABLE edges ADD COLUMN resolution_policy TEXT;"),
+    Migration(
+        "edges",
+        "source_valid_from_version",
+        "ALTER TABLE edges ADD COLUMN source_valid_from_version TEXT;",
+    ),
+    Migration(
+        "edges",
+        "target_valid_from_version",
+        "ALTER TABLE edges ADD COLUMN target_valid_from_version TEXT;",
+    ),
+    Migration(
+        "edges", "valid_until_version", "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;"
+    ),
+    Migration("edges", "retracted_edge_id", "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;"),
 ]
 
 # Backwards-compatible string-of-DDL view for callers that just want the

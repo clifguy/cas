@@ -12,11 +12,8 @@ records are not touched.
 
 from datetime import datetime, timezone
 
-import pytest
-
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
-
 from scripts.repair_document_date import repair_with_services
 
 

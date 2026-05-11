@@ -12,14 +12,13 @@ import asyncio
 import sqlite3
 import sys
 from pathlib import Path
-from textwrap import indent
 
 from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
-from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.abstraction_utils import (
     compute_max_tokens,
     trim_to_sentence_boundary,
 )
+from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.config import AbstractionConfig
 
 VAULT_BRAIN = Path.home() / "sage_vaults" / "theology" / "brain"
@@ -31,13 +30,10 @@ DOC_IDS = [
     ("5e66ecd3_genre_guidelines_pastoral", "Pastoral"),
     ("e380e172_genre_guidelines_blog_devotional", "Blog / Devotional"),
     ("0d7f99ba_genre_guidelines_public_writing", "Public Writing"),
-    ("4d803965_genre_guidelines_church_leadership_executive",
-     "Church Leadership / Executive"),
+    ("4d803965_genre_guidelines_church_leadership_executive", "Church Leadership / Executive"),
     ("322c51df_genre_guidelines_academic_theology", "Academic Theology"),
-    ("fbd68861_editorial_guidelines_for_ai_amanuenses",
-     "Editorial Guidelines (master)"),
-    ("da751867_genre_guidelines_social_media",
-     "Social Media (control: was clean)"),
+    ("fbd68861_editorial_guidelines_for_ai_amanuenses", "Editorial Guidelines (master)"),
+    ("da751867_genre_guidelines_social_media", "Social Media (control: was clean)"),
 ]
 
 ABSTRACTION_CONFIG = AbstractionConfig(
@@ -51,8 +47,7 @@ ABSTRACTION_CONFIG = AbstractionConfig(
 
 def fetch_doc_record(conn: sqlite3.Connection, doc_id: str) -> dict:
     cur = conn.execute(
-        "SELECT id, title, doc_type, semantic_abstract FROM documents "
-        "WHERE id = ?",
+        "SELECT id, title, doc_type, semantic_abstract FROM documents WHERE id = ?",
         (doc_id,),
     )
     row = cur.fetchone()
@@ -100,28 +95,20 @@ async def main() -> int:
             file=sys.stderr,
         )
 
-        raw_new = await provider.generate_abstract(
-            projection_text, max_tokens, rec["doc_type"]
-        )
+        raw_new = await provider.generate_abstract(projection_text, max_tokens, rec["doc_type"])
         new_abstract = trim_to_sentence_boundary(raw_new)
 
         out_lines.append(f"\n---\n\n## {label}\n")
         out_lines.append(f"- **Title:** {rec['title']}")
         out_lines.append(f"- **doc_type:** `{rec['doc_type']}`")
         out_lines.append(f"- **Document id:** `{doc_id}`")
-        out_lines.append(
-            f"- **Source words:** {word_count}  |  "
-            f"**max_tokens:** {max_tokens}\n"
-        )
+        out_lines.append(f"- **Source words:** {word_count}  |  **max_tokens:** {max_tokens}\n")
         out_lines.append("### OLD (stored) abstract\n")
         out_lines.append("> " + rec["old_abstract"].replace("\n", "\n> "))
         out_lines.append("\n### NEW abstract (descriptive, doc_type-aware)\n")
         out_lines.append("> " + new_abstract.replace("\n", "\n> "))
 
-    report_path = (
-        Path(__file__).parent.parent
-        / "ab_editorial_guidelines_report.md"
-    )
+    report_path = Path(__file__).parent.parent / "ab_editorial_guidelines_report.md"
     report_path.write_text("\n".join(out_lines) + "\n")
     print(f"\nReport written to {report_path}", file=sys.stderr)
     return 0

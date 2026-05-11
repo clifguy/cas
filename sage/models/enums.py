@@ -88,8 +88,10 @@ class TraversalDirection(StrEnum):
 
 
 # Terminal pipeline statuses: pipeline has finished processing.
-TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset({
-    PipelineStatus.ABSTRACTION_COMPLETE,
-    PipelineStatus.ABSTRACTION_SKIPPED,
-    PipelineStatus.FAILED,
-})
+TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
+    {
+        PipelineStatus.ABSTRACTION_COMPLETE,
+        PipelineStatus.ABSTRACTION_SKIPPED,
+        PipelineStatus.FAILED,
+    }
+)

@@ -11,19 +11,11 @@ Covers:
 
 import asyncio
 import json
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from sage.services.filename_parser import (
-    FilenameParser,
-    ParsedMetadata,
-    format_version,
-    normalize_version,
-)
 from app.backend.edge_inference import (
     EdgeInferenceEngine,
     EdgePlan,
@@ -36,11 +28,15 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.app import create_app, _initialize_services
+from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
-from sage.models.enums import EdgeType, PipelineStatus, SourceType
-from sage.models.schemas import Document
-
+from sage.models.enums import EdgeType
+from sage.services.filename_parser import (
+    FilenameParser,
+    ParsedMetadata,
+    format_version,
+    normalize_version,
+)
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -75,8 +71,16 @@ def _pim_metadata_extraction():
             ],
             "code_to_doc_type": [
                 {"code": "REF", "title_contains": "Glossary", "doc_type": "glossary"},
-                {"code": "REF", "title_contains": "FormattingStandards", "doc_type": "formatting_standards"},
-                {"code": "REF", "title_contains": "IntegrationCatalog", "doc_type": "integration_catalog"},
+                {
+                    "code": "REF",
+                    "title_contains": "FormattingStandards",
+                    "doc_type": "formatting_standards",
+                },
+                {
+                    "code": "REF",
+                    "title_contains": "IntegrationCatalog",
+                    "doc_type": "integration_catalog",
+                },
                 {"code": "REF", "doc_type": "reference_document"},
                 {"code": "PVMaster", "doc_type": "patent_draft"},
                 {"code": "PV", "doc_type": "patent_draft"},
@@ -125,7 +129,12 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {"from_state": "active", "action": "supersede", "to_state": "archived", "creates_edge": "supersedes"},
+                {
+                    "from_state": "active",
+                    "action": "supersede",
+                    "to_state": "archived",
+                    "creates_edge": "supersedes",
+                },
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
@@ -162,7 +171,6 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
 
 
 class TestFilenameParserSegments:
-
     def _parser(self):
         return FilenameParser(_pim_metadata_extraction())
 
@@ -256,7 +264,6 @@ class TestFilenameParserSegments:
 
 
 class TestFilenameParserDocType:
-
     def _parser(self):
         return FilenameParser(_pim_metadata_extraction())
 
@@ -523,7 +530,6 @@ class TestFilenameParserPreSplit:
 
 
 class TestVersionChain:
-
     def test_ei_013_version_normalization(self):
         """Version normalization to (major, minor, patch) tuple."""
         assert normalize_version("v7") == (7, 0, 0)
@@ -565,9 +571,21 @@ class TestVersionChain:
         """Linear chain: each version supersedes immediate predecessor."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("f1", False, ParsedMetadata("Claim-Set", codes=["PV06"], version="v1", doc_type="patent_draft")),
-            InferenceItem("f3", False, ParsedMetadata("Claim-Set", codes=["PV06"], version="v3", doc_type="patent_draft")),
-            InferenceItem("f7", False, ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft")),
+            InferenceItem(
+                "f1",
+                False,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v1", doc_type="patent_draft"),
+            ),
+            InferenceItem(
+                "f3",
+                False,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v3", doc_type="patent_draft"),
+            ),
+            InferenceItem(
+                "f7",
+                False,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft"),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
@@ -583,10 +601,22 @@ class TestVersionChain:
         """Version chains scoped to documents sharing title, project, and doc_type."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("a1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")),
-            InferenceItem("a2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="patent_draft")),
-            InferenceItem("b1", False, ParsedMetadata("Neural-Analysis", version="v1", doc_type="technical_disclosure")),
-            InferenceItem("b2", False, ParsedMetadata("Neural-Analysis", version="v2", doc_type="technical_disclosure")),
+            InferenceItem(
+                "a1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "a2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "b1",
+                False,
+                ParsedMetadata("Neural-Analysis", version="v1", doc_type="technical_disclosure"),
+            ),
+            InferenceItem(
+                "b2",
+                False,
+                ParsedMetadata("Neural-Analysis", version="v2", doc_type="technical_disclosure"),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
@@ -598,9 +628,15 @@ class TestVersionChain:
         """Version chain does not cross doc_type boundary."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("p1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")),
-            InferenceItem("w2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="work_plan")),
-            InferenceItem("p3", False, ParsedMetadata("Claim-Set", version="v3", doc_type="patent_draft")),
+            InferenceItem(
+                "p1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "w2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="work_plan")
+            ),
+            InferenceItem(
+                "p3", False, ParsedMetadata("Claim-Set", version="v3", doc_type="patent_draft")
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
@@ -615,11 +651,19 @@ class TestVersionChain:
         """Version chain includes existing vault documents."""
         engine = EdgeInferenceEngine()
         scan_items = [
-            InferenceItem("f6", False, ParsedMetadata("Claim-Set", version="v6", doc_type="patent_draft")),
-            InferenceItem("f7", False, ParsedMetadata("Claim-Set", version="v7", doc_type="patent_draft")),
+            InferenceItem(
+                "f6", False, ParsedMetadata("Claim-Set", version="v6", doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "f7", False, ParsedMetadata("Claim-Set", version="v7", doc_type="patent_draft")
+            ),
         ]
         existing = [
-            InferenceItem("existing-v5", True, ParsedMetadata("Claim-Set", version="v5", doc_type="patent_draft")),
+            InferenceItem(
+                "existing-v5",
+                True,
+                ParsedMetadata("Claim-Set", version="v5", doc_type="patent_draft"),
+            ),
         ]
         plan = engine.build_edge_plan(scan_items, existing)
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
@@ -631,7 +675,9 @@ class TestVersionChain:
         """Single version produces no supersedes edge."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("f1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")),
+            InferenceItem(
+                "f1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
@@ -641,9 +687,21 @@ class TestVersionChain:
         """Versionless file treated as original, sorts before all versions."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("f0", False, ParsedMetadata("Neural-Analysis", version=None, doc_type="technical_disclosure")),
-            InferenceItem("f1", False, ParsedMetadata("Neural-Analysis", version="v1", doc_type="technical_disclosure")),
-            InferenceItem("f2", False, ParsedMetadata("Neural-Analysis", version="v2", doc_type="technical_disclosure")),
+            InferenceItem(
+                "f0",
+                False,
+                ParsedMetadata("Neural-Analysis", version=None, doc_type="technical_disclosure"),
+            ),
+            InferenceItem(
+                "f1",
+                False,
+                ParsedMetadata("Neural-Analysis", version="v1", doc_type="technical_disclosure"),
+            ),
+            InferenceItem(
+                "f2",
+                False,
+                ParsedMetadata("Neural-Analysis", version="v2", doc_type="technical_disclosure"),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
@@ -669,13 +727,20 @@ class TestVersionChain:
 
 
 class TestFilenameCodeMatch:
-
     def test_ei_019_workflow_covers_content(self):
         """Workflow artifact covers content artifact sharing a code."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("chk", False, ParsedMetadata("Checklist", codes=["PV06"], version="v3", doc_type="checklist")),
-            InferenceItem("pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft")),
+            InferenceItem(
+                "chk",
+                False,
+                ParsedMetadata("Checklist", codes=["PV06"], version="v3", doc_type="checklist"),
+            ),
+            InferenceItem(
+                "pat",
+                False,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft"),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
@@ -687,8 +752,12 @@ class TestFilenameCodeMatch:
         """Direction: workflow is source, content is target."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")),
-            InferenceItem("chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")),
+            InferenceItem(
+                "pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
@@ -701,8 +770,12 @@ class TestFilenameCodeMatch:
         """Workflow-to-workflow pairs get no automatic edge."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")),
-            InferenceItem("wp", False, ParsedMetadata("Work-Plan", codes=["PV06"], doc_type="work_plan")),
+            InferenceItem(
+                "chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")
+            ),
+            InferenceItem(
+                "wp", False, ParsedMetadata("Work-Plan", codes=["PV06"], doc_type="work_plan")
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
@@ -712,8 +785,14 @@ class TestFilenameCodeMatch:
         """Content-to-content pairs get no automatic edge."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("p1", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")),
-            InferenceItem("p2", False, ParsedMetadata("Specification", codes=["PV06"], doc_type="patent_draft")),
+            InferenceItem(
+                "p1", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "p2",
+                False,
+                ParsedMetadata("Specification", codes=["PV06"], doc_type="patent_draft"),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
@@ -723,10 +802,16 @@ class TestFilenameCodeMatch:
         """Code match across new files and existing vault documents."""
         engine = EdgeInferenceEngine()
         scan_items = [
-            InferenceItem("chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")),
+            InferenceItem(
+                "chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")
+            ),
         ]
         existing = [
-            InferenceItem("existing-patent", True, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")),
+            InferenceItem(
+                "existing-patent",
+                True,
+                ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft"),
+            ),
         ]
         plan = engine.build_edge_plan(scan_items, existing)
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
@@ -738,9 +823,21 @@ class TestFilenameCodeMatch:
         """Multiple codes produce multiple edges."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("chk", False, ParsedMetadata("Checklist", codes=["PV06", "CF-1"], doc_type="checklist")),
-            InferenceItem("pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")),
-            InferenceItem("ic", False, ParsedMetadata("Integration-Catalog", codes=["CF-1"], doc_type="integration_catalog")),
+            InferenceItem(
+                "chk",
+                False,
+                ParsedMetadata("Checklist", codes=["PV06", "CF-1"], doc_type="checklist"),
+            ),
+            InferenceItem(
+                "pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")
+            ),
+            InferenceItem(
+                "ic",
+                False,
+                ParsedMetadata(
+                    "Integration-Catalog", codes=["CF-1"], doc_type="integration_catalog"
+                ),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
@@ -755,17 +852,32 @@ class TestFilenameCodeMatch:
 
 
 class TestTwoPhaseOrchestration:
-
     def test_ei_025_pre_ingest_edge_plan(self):
         """Pre-ingest analysis builds edge plan from file manifest."""
         engine = EdgeInferenceEngine()
         scan_items = [
-            InferenceItem("f_v6", False, ParsedMetadata("Claim-Set", codes=["PV06"], version="v6", doc_type="patent_draft")),
-            InferenceItem("f_v7", False, ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft")),
-            InferenceItem("f_chk", False, ParsedMetadata("Checklist", codes=["PV06"], version="v3", doc_type="checklist")),
+            InferenceItem(
+                "f_v6",
+                False,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v6", doc_type="patent_draft"),
+            ),
+            InferenceItem(
+                "f_v7",
+                False,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft"),
+            ),
+            InferenceItem(
+                "f_chk",
+                False,
+                ParsedMetadata("Checklist", codes=["PV06"], version="v3", doc_type="checklist"),
+            ),
         ]
         existing = [
-            InferenceItem("existing-v5", True, ParsedMetadata("Claim-Set", codes=["PV06"], version="v5", doc_type="patent_draft")),
+            InferenceItem(
+                "existing-v5",
+                True,
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v5", doc_type="patent_draft"),
+            ),
         ]
         plan = engine.build_edge_plan(scan_items, existing)
 
@@ -782,21 +894,25 @@ class TestTwoPhaseOrchestration:
         """Post-ingest creation resolves file paths to document IDs."""
         DOC_V7 = "aaaaaaa7_doc_v7"
         DOC_V6 = "aaaaaaa6_doc_v6"
-        plan = EdgePlan(edges=[
-            PlannedEdge("f_v7", "f_v6", EdgeType.SUPERSEDES, 1, "version_chain", "v7 > v6"),
-        ])
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge("f_v7", "f_v6", EdgeType.SUPERSEDES, 1, "version_chain", "v7 > v6"),
+            ]
+        )
         path_to_id = {"f_v7": DOC_V7, "f_v6": DOC_V6}
 
         # Use mock objects for graph_store and graph_ops_service
         class MockGraphOps:
             def __init__(self):
                 self.linked = []
+
             async def link(self, request):
                 self.linked.append(request)
 
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
+
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
 
@@ -812,20 +928,38 @@ class TestTwoPhaseOrchestration:
     @pytest.mark.asyncio
     async def test_ei_027_tier_routing(self):
         """Tier 1 via link(), Tier 2 via staging."""
-        plan = EdgePlan(edges=[
-            PlannedEdge("aaaaaaaa_doc_a", "bbbbbbbb_doc_b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
-            PlannedEdge("cccccccc_doc_c", "dddddddd_doc_d", EdgeType.COVERS, 2, "filename_code_match", "test"),
-        ])
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(
+                    "aaaaaaaa_doc_a",
+                    "bbbbbbbb_doc_b",
+                    EdgeType.SUPERSEDES,
+                    1,
+                    "version_chain",
+                    "test",
+                ),
+                PlannedEdge(
+                    "cccccccc_doc_c",
+                    "dddddddd_doc_d",
+                    EdgeType.COVERS,
+                    2,
+                    "filename_code_match",
+                    "test",
+                ),
+            ]
+        )
 
         class MockGraphOps:
             def __init__(self):
                 self.linked = []
+
             async def link(self, request):
                 self.linked.append(request)
 
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
+
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
 
@@ -841,22 +975,40 @@ class TestTwoPhaseOrchestration:
     @pytest.mark.asyncio
     async def test_ei_028_failed_ingestion_drops_edges(self):
         """Edges involving failed ingestions are dropped."""
-        plan = EdgePlan(edges=[
-            PlannedEdge("/path/to/failed.docx", "bbbbbbbb_doc_b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
-            PlannedEdge("aaaaaaaa_doc_a", "bbbbbbbb_doc_b", EdgeType.SUPERSEDES, 1, "version_chain", "test"),
-        ])
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(
+                    "/path/to/failed.docx",
+                    "bbbbbbbb_doc_b",
+                    EdgeType.SUPERSEDES,
+                    1,
+                    "version_chain",
+                    "test",
+                ),
+                PlannedEdge(
+                    "aaaaaaaa_doc_a",
+                    "bbbbbbbb_doc_b",
+                    EdgeType.SUPERSEDES,
+                    1,
+                    "version_chain",
+                    "test",
+                ),
+            ]
+        )
         # Only doc-a and doc-b resolved; /path/to/failed.docx not in map
         path_to_id = {}
 
         class MockGraphOps:
             def __init__(self):
                 self.linked = []
+
             async def link(self, request):
                 self.linked.append(request)
 
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
+
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
 
@@ -872,13 +1024,16 @@ class TestTwoPhaseOrchestration:
         """Supersedes edge transitions target document to 'archived'."""
         DOC_V2 = "aaaaaaa2_doc_v2"
         DOC_V1 = "aaaaaaa1_doc_v1"
-        plan = EdgePlan(edges=[
-            PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
-        ])
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V2, DOC_V1, EdgeType.SUPERSEDES, 1, "version_chain", "v2 > v1"),
+            ]
+        )
 
         class MockGraphOps:
             def __init__(self):
                 self.linked = []
+
             async def link(self, request):
                 self.linked.append(request)
 
@@ -889,16 +1044,20 @@ class TestTwoPhaseOrchestration:
                 self._docs = {
                     DOC_V1: {"lifecycle_status": "active"},
                 }
+
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
+
             async def get_document(self, doc_id):
                 from unittest.mock import MagicMock
+
                 info = self._docs.get(doc_id)
                 if info is None:
                     return None
                 mock_doc = MagicMock()
                 mock_doc.lifecycle_status = info["lifecycle_status"]
                 return mock_doc
+
             async def update_document(self, doc_id, updates):
                 self.updated.append((doc_id, updates))
                 return None
@@ -920,13 +1079,16 @@ class TestTwoPhaseOrchestration:
         """Supersedes lifecycle transition skipped when target not active."""
         DOC_V3 = "aaaaaaa3_doc_v3"
         DOC_V2 = "aaaaaaa2_doc_v2"
-        plan = EdgePlan(edges=[
-            PlannedEdge(DOC_V3, DOC_V2, EdgeType.SUPERSEDES, 1, "version_chain", "v3 > v2"),
-        ])
+        plan = EdgePlan(
+            edges=[
+                PlannedEdge(DOC_V3, DOC_V2, EdgeType.SUPERSEDES, 1, "version_chain", "v3 > v2"),
+            ]
+        )
 
         class MockGraphOps:
             def __init__(self):
                 self.linked = []
+
             async def link(self, request):
                 self.linked.append(request)
 
@@ -937,16 +1099,20 @@ class TestTwoPhaseOrchestration:
                 self._docs = {
                     DOC_V2: {"lifecycle_status": "archived"},
                 }
+
             async def insert_staging_edge(self, edge):
                 self.staged.append(edge)
+
             async def get_document(self, doc_id):
                 from unittest.mock import MagicMock
+
                 info = self._docs.get(doc_id)
                 if info is None:
                     return None
                 mock_doc = MagicMock()
                 mock_doc.lifecycle_status = info["lifecycle_status"]
                 return mock_doc
+
             async def update_document(self, doc_id, updates):
                 self.updated.append((doc_id, updates))
                 return None
@@ -969,7 +1135,13 @@ class TestTwoPhaseOrchestration:
         """Single file with no matches produces empty edge plan."""
         engine = EdgeInferenceEngine()
         items = [
-            InferenceItem("f1", False, ParsedMetadata("Neural-Analysis", codes=["TD"], version="v1", doc_type="technical_disclosure")),
+            InferenceItem(
+                "f1",
+                False,
+                ParsedMetadata(
+                    "Neural-Analysis", codes=["TD"], version="v1", doc_type="technical_disclosure"
+                ),
+            ),
         ]
         plan = engine.build_edge_plan(items, [])
         assert plan.edges == []
@@ -988,7 +1160,8 @@ async def scan_app(tmp_path):
     )
     app = create_app(config=config)
     await _initialize_services(
-        app, config,
+        app,
+        config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
@@ -1010,14 +1183,16 @@ async def scan_client(scan_app):
 
 
 class TestScanEndpoint:
-
     async def test_be_017_validates_directory(self, scan_client):
         """POST /app/scan validates directory existence."""
         client, config = scan_client
-        resp = await client.post("/app/scan", json={
-            "vault_id": "pim_health",
-            "directory": "/nonexistent/path",
-        })
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "pim_health",
+                "directory": "/nonexistent/path",
+            },
+        )
         assert resp.status_code == 400
         assert "Directory not found" in resp.json()["detail"]
 
@@ -1031,10 +1206,13 @@ class TestScanEndpoint:
         (scan_dir / "2026-03-09_PIM_PV06_Claim-Set_v7.md").write_text("# Claim Set v7")
         (scan_dir / "notes.txt").write_text("Just notes")  # no adapter
 
-        resp = await client.post("/app/scan", json={
-            "vault_id": "pim_health",
-            "directory": str(scan_dir),
-        })
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "pim_health",
+                "directory": str(scan_dir),
+            },
+        )
         assert resp.status_code == 200
         body = resp.json()
         files = body["files"]
@@ -1068,11 +1246,14 @@ class TestScanEndpoint:
         (sub / "nested.md").write_text("# Nested")
 
         # max_depth=0 should only return files in directory itself
-        resp = await client.post("/app/scan", json={
-            "vault_id": "pim_health",
-            "directory": str(scan_dir),
-            "max_depth": 0,
-        })
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "pim_health",
+                "directory": str(scan_dir),
+                "max_depth": 0,
+            },
+        )
         assert resp.status_code == 200
         files = resp.json()["files"]
         paths = [f["file_path"] for f in files]
@@ -1087,10 +1268,13 @@ class TestScanEndpoint:
         scan_dir.mkdir()
         (scan_dir / "doc.md").write_text("# Hash Test")
 
-        resp = await client.post("/app/scan", json={
-            "vault_id": "pim_health",
-            "directory": str(scan_dir),
-        })
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "pim_health",
+                "directory": str(scan_dir),
+            },
+        )
         files = resp.json()["files"]
         md_file = [f for f in files if f["file_path"].endswith(".md")][0]
         assert md_file["file_hash"].startswith("sha256:")
@@ -1104,10 +1288,13 @@ class TestScanEndpoint:
         (scan_dir / "readable.md").write_text("# OK")
 
         # The warnings array should exist even if empty
-        resp = await client.post("/app/scan", json={
-            "vault_id": "pim_health",
-            "directory": str(scan_dir),
-        })
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "pim_health",
+                "directory": str(scan_dir),
+            },
+        )
         assert resp.status_code == 200
         assert "warnings" in resp.json()
         assert isinstance(resp.json()["warnings"], list)
@@ -1126,7 +1313,8 @@ async def ingest_app(tmp_path):
     )
     app = create_app(config=config)
     await _initialize_services(
-        app, config,
+        app,
+        config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
@@ -1148,7 +1336,6 @@ async def ingest_client(ingest_app):
 
 
 class TestBatchIngest:
-
     async def test_be_022_sse_content_type(self, ingest_client, tmp_path):
         """POST /app/ingest returns text/event-stream."""
         client, config = ingest_client
@@ -1156,10 +1343,13 @@ class TestBatchIngest:
         doc = sources / "test.md"
         doc.write_text("# Test\n\nContent.")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [{"file_path": str(doc), "adapter": "markdown"}],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+            },
+        )
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
 
@@ -1170,10 +1360,13 @@ class TestBatchIngest:
         doc = sources / "event_test.md"
         doc.write_text("# Event Test\n\nContent.")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [{"file_path": str(doc), "adapter": "markdown"}],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+            },
+        )
         text = resp.text
         events = [
             json.loads(line.replace("data: ", ""))
@@ -1199,10 +1392,13 @@ class TestBatchIngest:
         doc = sources / "summary_test.md"
         doc.write_text("# Summary Test\n\nContent.")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [{"file_path": str(doc), "adapter": "markdown"}],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+            },
+        )
         events = [
             json.loads(line.replace("data: ", ""))
             for line in resp.text.strip().split("\n")
@@ -1223,20 +1419,25 @@ class TestBatchIngest:
         doc = sources / "meta_test.md"
         doc.write_text("# Meta Test\n\nContent.")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [{
-                "file_path": str(doc),
-                "adapter": "markdown",
-                "parsed_metadata": {
-                    "title": "Meta Test",
-                    "project": "PIM",
-                    "codes": ["PV06"],
-                    "version": "v1",
-                    "doc_type": "patent_draft",
-                },
-            }],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [
+                    {
+                        "file_path": str(doc),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Meta Test",
+                            "project": "PIM",
+                            "codes": ["PV06"],
+                            "version": "v1",
+                            "doc_type": "patent_draft",
+                        },
+                    }
+                ],
+            },
+        )
         events = [
             json.loads(line.replace("data: ", ""))
             for line in resp.text.strip().split("\n")
@@ -1254,13 +1455,16 @@ class TestBatchIngest:
         good = sources / "good.md"
         good.write_text("# Good\n\nContent.")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [
-                {"file_path": str(good), "adapter": "markdown"},
-                {"file_path": "/nonexistent/bad.md", "adapter": "markdown"},
-            ],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [
+                    {"file_path": str(good), "adapter": "markdown"},
+                    {"file_path": "/nonexistent/bad.md", "adapter": "markdown"},
+                ],
+            },
+        )
         events = [
             json.loads(line.replace("data: ", ""))
             for line in resp.text.strip().split("\n")
@@ -1278,10 +1482,13 @@ class TestBatchIngest:
     async def test_be_028_empty_file_list_rejected(self, ingest_client):
         """Empty file list returns 400."""
         client, config = ingest_client
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [],
+            },
+        )
         assert resp.status_code == 400
 
     async def test_be_032_two_phase_edge_inference(self, ingest_client, tmp_path):
@@ -1295,21 +1502,34 @@ class TestBatchIngest:
         v2 = sources / "2026-03-09_PIM_PV06_Claim-Set_v2.md"
         v2.write_text("# Claim Set v2\n\nSecond version.")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [
-                {
-                    "file_path": str(v1),
-                    "adapter": "markdown",
-                    "parsed_metadata": {"title": "Claim-Set", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"},
-                },
-                {
-                    "file_path": str(v2),
-                    "adapter": "markdown",
-                    "parsed_metadata": {"title": "Claim-Set", "codes": ["PV06"], "version": "v2", "doc_type": "patent_draft"},
-                },
-            ],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [
+                    {
+                        "file_path": str(v1),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Claim-Set",
+                            "codes": ["PV06"],
+                            "version": "v1",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                    {
+                        "file_path": str(v2),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Claim-Set",
+                            "codes": ["PV06"],
+                            "version": "v2",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                ],
+            },
+        )
         events = [
             json.loads(line.replace("data: ", ""))
             for line in resp.text.strip().split("\n")
@@ -1332,17 +1552,43 @@ class TestBatchIngest:
         chk = sources / "checklist.md"
         chk.write_text("# Checklist")
 
-        resp = await client.post("/app/ingest", json={
-            "vault_id": "pim_health",
-            "files": [
-                {"file_path": str(v1), "adapter": "markdown",
-                 "parsed_metadata": {"title": "Patent", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}},
-                {"file_path": str(v2), "adapter": "markdown",
-                 "parsed_metadata": {"title": "Patent", "codes": ["PV06"], "version": "v2", "doc_type": "patent_draft"}},
-                {"file_path": str(chk), "adapter": "markdown",
-                 "parsed_metadata": {"title": "Checklist", "codes": ["PV06"], "doc_type": "checklist"}},
-            ],
-        })
+        resp = await client.post(
+            "/app/ingest",
+            json={
+                "vault_id": "pim_health",
+                "files": [
+                    {
+                        "file_path": str(v1),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Patent",
+                            "codes": ["PV06"],
+                            "version": "v1",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                    {
+                        "file_path": str(v2),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Patent",
+                            "codes": ["PV06"],
+                            "version": "v2",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                    {
+                        "file_path": str(chk),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Checklist",
+                            "codes": ["PV06"],
+                            "doc_type": "checklist",
+                        },
+                    },
+                ],
+            },
+        )
         events = [
             json.loads(line.replace("data: ", ""))
             for line in resp.text.strip().split("\n")

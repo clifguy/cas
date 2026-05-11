@@ -33,6 +33,7 @@ router = APIRouter(prefix="/app", tags=["app"])
 # Request / response models
 # ---------------------------------------------------------------------------
 
+
 class ScanRequest(BaseModel):
     vault_id: str
     directory: str
@@ -65,6 +66,7 @@ class IngestFileItem(BaseModel):
 
 class IngestRequest_(BaseModel):
     """Ingest request body (underscore to avoid collision with SAGE IngestRequest)."""
+
     vault_id: str
     files: list[IngestFileItem]
     infer_edges: bool = True
@@ -74,9 +76,11 @@ class IngestRequest_(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_services(request: Request, vault_id: str):
     """Look up SAGEServices by vault_id from the app registry."""
     from sage.mcp_init import SAGEServices
+
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
     if vault_id not in registry:
         raise VaultNotFoundError(vault_id)
@@ -131,6 +135,7 @@ def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.post("/scan", response_model=dict)
 async def scan_endpoint(body: ScanRequest, request: Request) -> dict:
     """Scan a directory and return files with status and parsed metadata."""
@@ -170,41 +175,53 @@ async def ingest_endpoint(body: IngestRequest_, request: Request):
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
         async def on_file_start(index: int, total_files: int, filename: str) -> None:
-            await queue.put({
-                "event_type": "progress",
-                "file_index": index,
-                "total_files": total_files,
-                "filename": filename,
-                "stage": "projection",
-                "status": "started",
-            })
+            await queue.put(
+                {
+                    "event_type": "progress",
+                    "file_index": index,
+                    "total_files": total_files,
+                    "filename": filename,
+                    "stage": "projection",
+                    "status": "started",
+                }
+            )
 
         async def on_file_done(
-            index: int, total_files: int, filename: str, document_id: str,
+            index: int,
+            total_files: int,
+            filename: str,
+            document_id: str,
         ) -> None:
-            await queue.put({
-                "event_type": "progress",
-                "file_index": index,
-                "total_files": total_files,
-                "filename": filename,
-                "stage": "projection",
-                "status": "completed",
-                "document_id": document_id,
-            })
+            await queue.put(
+                {
+                    "event_type": "progress",
+                    "file_index": index,
+                    "total_files": total_files,
+                    "filename": filename,
+                    "stage": "projection",
+                    "status": "completed",
+                    "document_id": document_id,
+                }
+            )
 
         async def on_file_error(
-            index: int, total_files: int, filename: str, error_message: str,
+            index: int,
+            total_files: int,
+            filename: str,
+            error_message: str,
         ) -> None:
             logger.error("Failed to ingest %s: %s", filename, error_message)
-            await queue.put({
-                "event_type": "progress",
-                "file_index": index,
-                "total_files": total_files,
-                "filename": filename,
-                "stage": "projection",
-                "status": "failed",
-                "error": error_message,
-            })
+            await queue.put(
+                {
+                    "event_type": "progress",
+                    "file_index": index,
+                    "total_files": total_files,
+                    "filename": filename,
+                    "stage": "projection",
+                    "status": "failed",
+                    "error": error_message,
+                }
+            )
 
         async def run_service() -> None:
             descriptors = [_to_file_descriptor(f) for f in body.files]

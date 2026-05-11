@@ -6,15 +6,13 @@ test_api_integration.py.
 """
 
 import asyncio
-from pathlib import Path
 
 import pytest
-import yaml
 from httpx import ASGITransport, AsyncClient
 
-from sage.services.vault_registry import VaultRegistryService
-from sage.app import create_app, _initialize_services
+from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
+from sage.services.vault_registry import VaultRegistryService
 
 
 @pytest.fixture
@@ -41,13 +39,20 @@ async def client(app):
 # GET /sage_vaults/{vault_id}/config
 # ---------------------------------------------------------------------------
 
+
 async def test_get_config_200(client):
     """GET returns full config with all required sections."""
     resp = await client.get("/sage_vaults/test_vault/config")
     assert resp.status_code == 200
     body = resp.json()
-    for section in ("vault", "document_types", "lifecycle",
-                    "source_adapters", "metadata_extraction", "edge_inference"):
+    for section in (
+        "vault",
+        "document_types",
+        "lifecycle",
+        "source_adapters",
+        "metadata_extraction",
+        "edge_inference",
+    ):
         assert section in body, f"Missing section: {section}"
     assert body["vault"]["id"] == "test_vault"
 
@@ -63,18 +68,21 @@ async def test_get_config_404_unknown_vault(client):
 # PUT /sage_vaults/{vault_id}/config
 # ---------------------------------------------------------------------------
 
+
 async def test_update_config_identity_200(client):
     """Update vault name via identity section."""
     resp = await client.put(
         "/sage_vaults/test_vault/config",
-        json={"vault": {
-            "id": "test_vault",
-            "name": "Renamed Vault",
-            "owner": "testuser",
-            "storage_root": "/tmp/unused",
-            "brain_root": "/tmp/unused",
-            "visibility": "personal",
-        }},
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Renamed Vault",
+                "owner": "testuser",
+                "storage_root": "/tmp/unused",
+                "brain_root": "/tmp/unused",
+                "visibility": "personal",
+            }
+        },
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -90,13 +98,15 @@ async def test_update_config_doc_types_200(client):
     """Add a new doc_type to the existing list."""
     resp = await client.put(
         "/sage_vaults/test_vault/config",
-        json={"document_types": {
-            "doc_types": [
-                {"value": "note", "label": "Note"},
-                {"value": "memo", "label": "Memo"},
-                {"value": "report", "label": "Report"},
-            ],
-        }},
+        json={
+            "document_types": {
+                "doc_types": [
+                    {"value": "note", "label": "Note"},
+                    {"value": "memo", "label": "Memo"},
+                    {"value": "report", "label": "Report"},
+                ],
+            }
+        },
     )
     assert resp.status_code == 200
 
@@ -120,18 +130,22 @@ async def test_update_config_400_id_change_rejected(client):
     """Changing vault.id returns 400."""
     resp = await client.put(
         "/sage_vaults/test_vault/config",
-        json={"vault": {
-            "id": "different_id",
-            "name": "Test",
-            "owner": "testuser",
-            "storage_root": "/tmp/x",
-            "brain_root": "/tmp/x",
-            "visibility": "personal",
-        }},
+        json={
+            "vault": {
+                "id": "different_id",
+                "name": "Test",
+                "owner": "testuser",
+                "storage_root": "/tmp/x",
+                "brain_root": "/tmp/x",
+                "visibility": "personal",
+            }
+        },
     )
     assert resp.status_code == 400
-    assert "vault.id" in resp.json()["detail"]["errors"][0].lower() or \
-           "vault_config_validation_error" == resp.json()["code"]
+    assert (
+        "vault.id" in resp.json()["detail"]["errors"][0].lower()
+        or "vault_config_validation_error" == resp.json()["code"]
+    )
 
 
 async def _ingest_note_doc(client, tmp_vault_dir):
@@ -152,19 +166,19 @@ async def _ingest_note_doc(client, tmp_vault_dir):
 
 
 # TEST-SAGE-VM-REST-001
-async def test_update_config_destructive_without_force_returns_409(
-    client, tmp_vault_dir
-):
+async def test_update_config_destructive_without_force_returns_409(client, tmp_vault_dir):
     """Removing an in-use doc_type without force returns 409 + error."""
     await _ingest_note_doc(client, tmp_vault_dir)
 
     resp = await client.put(
         "/sage_vaults/test_vault/config",
-        json={"document_types": {
-            "doc_types": [
-                {"value": "memo", "label": "Memo"},
-            ],
-        }},
+        json={
+            "document_types": {
+                "doc_types": [
+                    {"value": "memo", "label": "Memo"},
+                ],
+            }
+        },
     )
     assert resp.status_code == 409
     body = resp.json()
@@ -179,19 +193,19 @@ async def test_update_config_destructive_without_force_returns_409(
 
 
 # TEST-SAGE-VM-REST-002
-async def test_update_config_destructive_with_force_returns_200(
-    client, tmp_vault_dir
-):
+async def test_update_config_destructive_with_force_returns_200(client, tmp_vault_dir):
     """force=true allows the destructive update; warnings returned."""
     await _ingest_note_doc(client, tmp_vault_dir)
 
     resp = await client.put(
         "/sage_vaults/test_vault/config?force=true",
-        json={"document_types": {
-            "doc_types": [
-                {"value": "memo", "label": "Memo"},
-            ],
-        }},
+        json={
+            "document_types": {
+                "doc_types": [
+                    {"value": "memo", "label": "Memo"},
+                ],
+            }
+        },
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -210,14 +224,16 @@ async def test_update_config_non_destructive_ignores_force(client):
     # Without force
     resp1 = await client.put(
         "/sage_vaults/test_vault/config",
-        json={"vault": {
-            "id": "test_vault",
-            "name": "Renamed Once",
-            "owner": "testuser",
-            "storage_root": "/tmp/unused",
-            "brain_root": "/tmp/unused",
-            "visibility": "personal",
-        }},
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Renamed Once",
+                "owner": "testuser",
+                "storage_root": "/tmp/unused",
+                "brain_root": "/tmp/unused",
+                "visibility": "personal",
+            }
+        },
     )
     assert resp1.status_code == 200
     assert resp1.json()["warnings"] == []
@@ -225,14 +241,16 @@ async def test_update_config_non_destructive_ignores_force(client):
     # With force=true
     resp2 = await client.put(
         "/sage_vaults/test_vault/config?force=true",
-        json={"vault": {
-            "id": "test_vault",
-            "name": "Renamed Twice",
-            "owner": "testuser",
-            "storage_root": "/tmp/unused",
-            "brain_root": "/tmp/unused",
-            "visibility": "personal",
-        }},
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Renamed Twice",
+                "owner": "testuser",
+                "storage_root": "/tmp/unused",
+                "brain_root": "/tmp/unused",
+                "visibility": "personal",
+            }
+        },
     )
     assert resp2.status_code == 200
     assert resp2.json()["warnings"] == []
@@ -246,13 +264,15 @@ async def test_update_config_preserves_other_sections(client):
     # Update only document_types
     await client.put(
         "/sage_vaults/test_vault/config",
-        json={"document_types": {
-            "doc_types": [
-                {"value": "note", "label": "Note"},
-                {"value": "memo", "label": "Memo"},
-                {"value": "extra", "label": "Extra"},
-            ],
-        }},
+        json={
+            "document_types": {
+                "doc_types": [
+                    {"value": "note", "label": "Note"},
+                    {"value": "memo", "label": "Memo"},
+                    {"value": "extra", "label": "Extra"},
+                ],
+            }
+        },
     )
 
     updated = (await client.get("/sage_vaults/test_vault/config")).json()
@@ -265,6 +285,7 @@ async def test_update_config_preserves_other_sections(client):
 # ---------------------------------------------------------------------------
 # POST /sage_vaults (create)
 # ---------------------------------------------------------------------------
+
 
 async def test_create_vault_201(client, tmp_path):
     """Create a new vault with default config."""
@@ -310,9 +331,12 @@ async def test_create_vault_400_invalid(client):
 # Default config validation
 # ---------------------------------------------------------------------------
 
+
 def test_default_config_validates():
     """The generated default config passes VaultConfig validation."""
-    config_dict = VaultRegistryService.get_default_config("test_default", "Test Default", "testuser")
+    config_dict = VaultRegistryService.get_default_config(
+        "test_default", "Test Default", "testuser"
+    )
     config = VaultConfig.model_validate(config_dict)
     assert config.vault.id == "test_default"
     assert len(config.document_types.doc_types) == 2

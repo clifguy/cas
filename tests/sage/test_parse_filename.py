@@ -27,9 +27,7 @@ from sage.adapters.stubs import (
 )
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
-
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -135,12 +133,8 @@ async def test_ad021_011_parse_is_side_effect_free(pim_client, pim_app):
     documents_after = await graph_store.list_all_documents()
     pending_after = await graph_store.list_pending_metadata_documents()
 
-    assert documents_after == [], (
-        "parse-filename must not create document records"
-    )
-    assert pending_after == [], (
-        "parse-filename must not enqueue pending_metadata entries"
-    )
+    assert documents_after == [], "parse-filename must not create document records"
+    assert pending_after == [], "parse-filename must not enqueue pending_metadata entries"
 
 
 # ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ source_valid_from_version, target_valid_from_version, valid_until_version,
 retracted_edge_id) across every edge. Blunt dev-only tool; does not
 distinguish backfilled rows from validator-written rows.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -79,9 +80,7 @@ def load_vault_config(vault_id: str) -> dict:
         return yaml.safe_load(f)
 
 
-def build_backfill_plan(
-    conn: sqlite3.Connection, registry: EdgeTypeRegistry
-) -> BackfillPlan:
+def build_backfill_plan(conn: sqlite3.Connection, registry: EdgeTypeRegistry) -> BackfillPlan:
     """Scan edges with NULL resolution_policy and classify by policy."""
     plan = BackfillPlan(
         none_edge_ids=[],
@@ -92,8 +91,7 @@ def build_backfill_plan(
         unknown_edges=[],
     )
     rows = conn.execute(
-        "SELECT id, source_id, target_id, edge_type FROM edges "
-        "WHERE resolution_policy IS NULL"
+        "SELECT id, source_id, target_id, edge_type FROM edges WHERE resolution_policy IS NULL"
     ).fetchall()
     for edge_id, source_id, target_id, edge_type_str in rows:
         try:
@@ -138,9 +136,7 @@ def apply_backfill(conn: sqlite3.Connection, plan: BackfillPlan) -> None:
         # (null-means-not-applicable). Target version specificity is
         # already carried by target_id; target_valid_from_version stays null.
         conn.execute(
-            "UPDATE edges SET resolution_policy = ?, "
-            "source_valid_from_version = ? "
-            "WHERE id = ?",
+            "UPDATE edges SET resolution_policy = ?, source_valid_from_version = ? WHERE id = ?",
             (
                 ResolutionPolicy.TRANSITIVE_SOURCE.value,
                 source_id,
@@ -150,9 +146,7 @@ def apply_backfill(conn: sqlite3.Connection, plan: BackfillPlan) -> None:
     for edge_id, _source_id, target_id in plan.transitive_target_edge_ids:
         # Mirror of transitive_source: source anchor is not applicable.
         conn.execute(
-            "UPDATE edges SET resolution_policy = ?, "
-            "target_valid_from_version = ? "
-            "WHERE id = ?",
+            "UPDATE edges SET resolution_policy = ?, target_valid_from_version = ? WHERE id = ?",
             (
                 ResolutionPolicy.TRANSITIVE_TARGET.value,
                 target_id,
@@ -251,8 +245,7 @@ def run_backfill(
             return 2
         if not execute:
             print(
-                f"\nDry run. Use --execute to apply backfill "
-                f"to {plan.total_applicable} edges.",
+                f"\nDry run. Use --execute to apply backfill to {plan.total_applicable} edges.",
                 file=out,
             )
             return 0
@@ -322,8 +315,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Vault:      {args.vault}")
     print(f"Brain root: {brain_root}")
     print(f"DB:         {db_path}")
-    print(f"Mode:       {'REVERSE' if args.reverse else 'FORWARD'} "
-          f"({'EXECUTE' if args.execute else 'DRY-RUN'})")
+    print(
+        f"Mode:       {'REVERSE' if args.reverse else 'FORWARD'} "
+        f"({'EXECUTE' if args.execute else 'DRY-RUN'})"
+    )
     print()
 
     if args.reverse:

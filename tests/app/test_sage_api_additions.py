@@ -10,7 +10,6 @@ Covers TEST-APP-BE-001 through TEST-APP-BE-016:
 """
 
 import asyncio
-import copy
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,11 +22,10 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.app import create_app, _initialize_services
+from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,6 +177,7 @@ async def empty_vault_app(tmp_path):
     """App with no vaults configured."""
     app = create_app()
     from sage.app import _ensure_registry_service
+
     _ensure_registry_service(app)
     yield app
 
@@ -191,7 +190,8 @@ async def single_vault_app(tmp_path):
     )
     app = create_app(config=config)
     await _initialize_services(
-        app, config,
+        app,
+        config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
@@ -265,9 +265,7 @@ class TestVaultListing:
 
 
 class TestVaultStatistics:
-    async def test_be_003_stats_returns_all_fields(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_003_stats_returns_all_fields(self, multi_vault_app, multi_client):
         """GET /sage_vaults/{vault_id}/stats returns all ten statistics."""
         # Insert test data
         services = multi_vault_app.state.vault_registry["pim_health"]
@@ -313,9 +311,7 @@ class TestVaultStatistics:
         assert isinstance(body["sqlite_size_bytes"], int)
         assert body["last_ingestion_at"] is not None
 
-    async def test_be_004_stats_includes_health_indicators(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_004_stats_includes_health_indicators(self, multi_vault_app, multi_client):
         """Stats response includes health indicator counts."""
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -380,9 +376,7 @@ class TestVaultStatistics:
 
 
 class TestHashCheck:
-    async def test_be_007_hash_check_returns_matches(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_007_hash_check_returns_matches(self, multi_vault_app, multi_client):
         """POST hash-check returns matches with document IDs."""
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -442,9 +436,7 @@ class TestHashCheck:
 
 
 class TestStagingEdges:
-    async def test_be_010_list_staging_edges(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_010_list_staging_edges(self, multi_vault_app, multi_client):
         """GET staging-edges lists Tier 2 staging edges."""
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -478,9 +470,7 @@ class TestStagingEdges:
         assert "confidence_tier" in edge
         assert "created_at" in edge
 
-    async def test_be_011_confirm_staging_edge(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_011_confirm_staging_edge(self, multi_vault_app, multi_client):
         """POST confirm moves staging edge to production."""
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -493,9 +483,7 @@ class TestStagingEdges:
         stg = _make_staging_edge("staging-001", "doc-c1", "doc-c2")
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.post(
-            "/sage_vaults/pim_health/staging-edges/staging-001/confirm"
-        )
+        resp = await multi_client.post("/sage_vaults/pim_health/staging-edges/staging-001/confirm")
         assert resp.status_code == 200
 
         # Staging edge should be gone
@@ -509,9 +497,7 @@ class TestStagingEdges:
         assert prod_edges[0].source_id == "doc-c1"
         assert prod_edges[0].target_id == "doc-c2"
 
-    async def test_be_012_dismiss_staging_edge(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_012_dismiss_staging_edge(self, multi_vault_app, multi_client):
         """POST dismiss deletes staging edge without creating production edge."""
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -524,9 +510,7 @@ class TestStagingEdges:
         stg = _make_staging_edge("staging-002", "doc-d1", "doc-d2")
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.post(
-            "/sage_vaults/pim_health/staging-edges/staging-002/dismiss"
-        )
+        resp = await multi_client.post("/sage_vaults/pim_health/staging-edges/staging-002/dismiss")
         assert resp.status_code == 200
 
         # Staging edge should be gone
@@ -540,9 +524,7 @@ class TestStagingEdges:
 
     async def test_be_013_confirm_nonexistent_staging_edge(self, multi_client):
         """Confirm non-existent staging edge returns 404."""
-        resp = await multi_client.post(
-            "/sage_vaults/pim_health/staging-edges/gone-001/confirm"
-        )
+        resp = await multi_client.post("/sage_vaults/pim_health/staging-edges/gone-001/confirm")
         assert resp.status_code == 404
 
 
@@ -552,9 +534,7 @@ class TestStagingEdges:
 
 
 class TestPendingMetadata:
-    async def test_be_014_pending_metadata_returns_documents(
-        self, multi_vault_app, multi_client
-    ):
+    async def test_be_014_pending_metadata_returns_documents(self, multi_vault_app, multi_client):
         """GET pending-metadata returns documents with extracted fields."""
         services = multi_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -660,9 +640,7 @@ class TestPendingMetadata:
 
 
 class TestPipelineStatusFilter:
-    async def test_be_016_discover_pipeline_status_filter(
-        self, single_vault_app, client
-    ):
+    async def test_be_016_discover_pipeline_status_filter(self, single_vault_app, client):
         """Discover endpoint accepts pipeline_status filter."""
         services = single_vault_app.state.vault_registry["pim_health"]
         gs = services.graph_store
@@ -688,9 +666,7 @@ class TestPipelineStatusFilter:
             await gs.insert_document(d)
 
         # Index minimal content for retrieval (using stub content store)
-        from sage.adapters.interfaces import SearchResult
 
-        cs = services.ingestion_service._content_store
         # For stub content store, we need to insert directly
         # Use deterministic mode with pipeline_status filter instead
 

@@ -36,33 +36,27 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             # Force CPU to avoid MPS memory contention on Apple Silicon
             # unified memory. MPS attention tensors scale quadratically
             # with sequence length and can exhaust the shared memory pool.
-            self._model = SentenceTransformer(
-                model_name, trust_remote_code=True, device="cpu"
-            )
+            self._model = SentenceTransformer(model_name, trust_remote_code=True, device="cpu")
             # Cap sequence length to 2048 (nomic's primary training context).
             # The default 8192 produces attention matrices 16x larger.
             # Texts beyond 2048 tokens are truncated; the leading content
             # (title, headings, opening paragraphs) is preserved.
             self._model.max_seq_length = 2048
         except Exception as exc:
-            raise RuntimeError(
-                f"Failed to load embedding model '{model_name}': {exc}"
-            ) from exc
+            raise RuntimeError(f"Failed to load embedding model '{model_name}': {exc}") from exc
 
         # Validate dimensions with a probe (AD-001)
-        probe = self._model.encode(
-            ["dimension probe"], normalize_embeddings=True
-        )
+        probe = self._model.encode(["dimension probe"], normalize_embeddings=True)
         actual_dim = probe.shape[1]
         if actual_dim != EXPECTED_DIMENSIONS:
             raise RuntimeError(
-                f"Expected {EXPECTED_DIMENSIONS} dimensions from {model_name}, "
-                f"got {actual_dim}"
+                f"Expected {EXPECTED_DIMENSIONS} dimensions from {model_name}, got {actual_dim}"
             )
         self._dimensions = EXPECTED_DIMENSIONS
         logger.info(
             "Embedding model loaded: %s (%d dimensions)",
-            model_name, self._dimensions,
+            model_name,
+            self._dimensions,
         )
 
     @property
@@ -82,7 +76,5 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         # since it releases the GIL during model inference.
         # batch_size=8 bounds per-batch memory for long sequences
         # (attention scales quadratically with sequence length).
-        embeddings = self._model.encode(
-            texts, normalize_embeddings=True, batch_size=8
-        )
+        embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
         return [vec.tolist() for vec in embeddings]

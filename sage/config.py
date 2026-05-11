@@ -101,9 +101,7 @@ class TransitionTable:
             self._table.setdefault(t.from_state, []).append(t)
             self._all_actions.add(t.action)
 
-    def validate_transition(
-        self, current_state: str, action: str
-    ) -> tuple[str, str | None] | None:
+    def validate_transition(self, current_state: str, action: str) -> tuple[str, str | None] | None:
         """Return (to_state, creates_edge) if valid, None if invalid."""
         for t in self._table.get(current_state, []):
             if t.action == action:

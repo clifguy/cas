@@ -30,9 +30,7 @@ class XlsxAdapter(SourceAdapter):
     VERSION = "0.3.0"
     EXTENSIONS = [".xlsx"]
 
-    async def project(
-        self, source_path: Path, config: dict | None = None
-    ) -> ProjectionResult:
+    async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         config = config or {}
         preview_rows = config.get("preview_rows", _DEFAULT_PREVIEW_ROWS)
         max_sheets = config.get("max_sheets", None)
@@ -71,9 +69,7 @@ class XlsxAdapter(SourceAdapter):
                     header_row = rows[0]
                     header_cells = [str(c) if c is not None else "" for c in header_row]
                     content_lines.append("| " + " | ".join(header_cells) + " |")
-                    content_lines.append(
-                        "| " + " | ".join("---" for _ in header_cells) + " |"
-                    )
+                    content_lines.append("| " + " | ".join("---" for _ in header_cells) + " |")
 
                     # Preview data rows
                     data_rows = rows[1 : 1 + preview_rows]
@@ -107,9 +103,7 @@ class XlsxAdapter(SourceAdapter):
             else:
                 title = source_path.stem
 
-            source_mtime = datetime.fromtimestamp(
-                source_path.stat().st_mtime, tz=timezone.utc
-            )
+            source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
             metadata = {
                 "source_modified_at": source_mtime.isoformat(),

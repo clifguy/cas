@@ -50,9 +50,7 @@ def parse_report(text: str) -> list[tuple[str, str]]:
     sections = re.split(r"^---\s*$", text, flags=re.MULTILINE)
     out: list[tuple[str, str]] = []
     for section in sections:
-        m_id = re.search(
-            r"\*\*Document id:\*\*\s+`([^`]+)`", section
-        )
+        m_id = re.search(r"\*\*Document id:\*\*\s+`([^`]+)`", section)
         if not m_id:
             continue
         doc_id = m_id.group(1)
@@ -104,7 +102,7 @@ def main() -> int:
     try:
         # Verify all seven exist before writing any
         cur = conn.execute(
-            "SELECT id, length(semantic_abstract) FROM documents "
+            "SELECT id, length(semantic_abstract) FROM documents "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
             f"WHERE id IN ({','.join('?' * len(pairs))})",
             [p[0] for p in pairs],
         )
@@ -126,17 +124,14 @@ def main() -> int:
 
         # Verify
         cur = conn.execute(
-            "SELECT id, length(semantic_abstract), pipeline_status, "
+            "SELECT id, length(semantic_abstract), pipeline_status, "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
             "updated_at FROM documents "
             f"WHERE id IN ({','.join('?' * len(pairs))})",
             [p[0] for p in pairs],
         )
         print("Post-update verification:")
         for row in cur.fetchall():
-            print(
-                f"  {row[0]}: len={row[1]:4d}  status={row[2]}  "
-                f"updated_at={row[3]}"
-            )
+            print(f"  {row[0]}: len={row[1]:4d}  status={row[2]}  updated_at={row[3]}")
     finally:
         conn.close()
 

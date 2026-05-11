@@ -11,11 +11,11 @@ from collections.abc import Callable
 from mcp.server.fastmcp import FastMCP
 
 from sage.api.errors import (
-    EdgeNotFoundError,
     SAGEError,
     VaultConfigValidationError,
 )
 from sage.mcp_init import SAGEServices
+from sage.models.enums import SourceType
 from sage.models.schemas import (
     ChainRequest,
     CreateVaultRequest,
@@ -29,7 +29,6 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
     UpdateVaultConfigRequest,
 )
-from sage.models.enums import SourceType
 from sage.services.vault_registry import VaultRegistryService
 
 
@@ -144,9 +143,7 @@ def register_sage_tools(
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP
             # client timeout (BH-130). Callers poll sage_get_document
             # for terminal pipeline_status.
-            result = await v.ingestion_service.ingest(
-                request, wait_for_pipeline=False
-            )
+            result = await v.ingestion_service.ingest(request, wait_for_pipeline=False)
             return serialize(result.document)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -179,9 +176,7 @@ def register_sage_tools(
         try:
             v = get_vault(vault_id)
             adapter_enum = SourceType(adapter)
-            response = v.ingestion_service.parse_filename(
-                filename, adapter_enum
-            )
+            response = v.ingestion_service.parse_filename(filename, adapter_enum)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -620,9 +615,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_read_section(
-        vault_id: str, document_id: str, heading_path: str
-    ) -> dict:
+    async def sage_read_section(vault_id: str, document_id: str, heading_path: str) -> dict:
         """Read a section of a document by heading path.
 
         Returns clean readable text for a heading subtree without loading
@@ -643,13 +636,12 @@ def register_sage_tools(
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier.
-            heading_path: Heading path prefix (e.g. "Technical Description > Composite Claim Binding").
+            heading_path: Heading path prefix
+                (e.g. "Technical Description > Composite Claim Binding").
         """
         try:
             v = get_vault(vault_id)
-            response = await v.utilities_service.read_section(
-                document_id, heading_path
-            )
+            response = await v.utilities_service.read_section(document_id, heading_path)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -739,9 +731,7 @@ def register_sage_tools(
                     raise VaultConfigValidationError(
                         ["vault_id, name, and owner are all required when config is not provided"]
                     )
-                config_dict = VaultRegistryService.get_default_config(
-                    vault_id, name, owner
-                )
+                config_dict = VaultRegistryService.get_default_config(vault_id, name, owner)
             else:
                 config_dict = config
 
@@ -809,13 +799,9 @@ def register_sage_tools(
             valid_sections = set(UpdateVaultConfigRequest.model_fields.keys())
             for section_name in sections:
                 if section_name not in valid_sections:
-                    raise VaultConfigValidationError(
-                        [f"Unknown config section: {section_name}"]
-                    )
+                    raise VaultConfigValidationError([f"Unknown config section: {section_name}"])
             body = UpdateVaultConfigRequest(**sections)
-            return await services.vault_config_service.update_config(
-                vault_id, body, force
-            )
+            return await services.vault_config_service.update_config(vault_id, body, force)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -850,9 +836,7 @@ def register_sage_tools(
             # separate concern from T-0009.
             body = HashCheckRequest.model_construct(hashes=hashes)
             matches = await services.vault_config_service.hash_check(body)
-            return {
-                h: m.model_dump(exclude_none=True) for h, m in matches.items()
-            }
+            return {h: m.model_dump(exclude_none=True) for h, m in matches.items()}
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -916,10 +900,12 @@ def register_sage_tools(
             docs = await v.graph_store.list_pending_metadata_documents()
             items = []
             for doc in docs:
-                items.append({
-                    "document": serialize(doc),
-                    "extracted_fields": {},
-                })
+                items.append(
+                    {
+                        "document": serialize(doc),
+                        "extracted_fields": {},
+                    }
+                )
             return {
                 "items": items,
                 "count": len(items),

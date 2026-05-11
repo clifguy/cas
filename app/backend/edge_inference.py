@@ -18,18 +18,23 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.models.enums import EdgeType
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
+from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.services.graph_ops import GraphOpsService
 from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 
 # Doc types classified as workflow artifacts (EI-021)
-WORKFLOW_DOC_TYPES = frozenset({
-    "checklist", "work_plan", "session_context", "template",
-})
+WORKFLOW_DOC_TYPES = frozenset(
+    {
+        "checklist",
+        "work_plan",
+        "session_context",
+        "template",
+    }
+)
 
 # Rationale prefix marks edges authored by version_chain inference.
 # Provenance check: a chain-repair removal targeting a non-prefixed edge
@@ -38,15 +43,13 @@ VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
 
 
 def _is_version_chain_edge(edge: Edge) -> bool:
-    return (
-        edge.rationale is not None
-        and edge.rationale.startswith(VERSION_CHAIN_RATIONALE_PREFIX)
-    )
+    return edge.rationale is not None and edge.rationale.startswith(VERSION_CHAIN_RATIONALE_PREFIX)
 
 
 @dataclass
 class InferenceItem:
     """Unified view of a file (new or existing) for inference."""
+
     ref: str  # file_path for new files, document_id for existing
     is_existing: bool
     parsed: ParsedMetadata
@@ -175,9 +178,11 @@ class EdgeInferenceEngine:
 
             sorted_group = sorted(
                 group,
-                key=lambda it: normalize_version(it.parsed.version)
-                if it.parsed.version is not None
-                else (0, 0, 0),
+                key=lambda it: (
+                    normalize_version(it.parsed.version)
+                    if it.parsed.version is not None
+                    else (0, 0, 0)
+                ),
             )
 
             # Desired chain: each version supersedes its immediate predecessor.
@@ -192,25 +197,27 @@ class EdgeInferenceEngine:
             # Existing edges restricted to this group's members
             group_member_ids = {it.ref for it in group if it.is_existing}
             group_existing_edges = [
-                e for e in existing_edges
-                if e.source_id in group_member_ids
-                and e.target_id in group_member_ids
+                e
+                for e in existing_edges
+                if e.source_id in group_member_ids and e.target_id in group_member_ids
             ]
 
             # Diff
             group_removals: list[PlannedEdgeRemoval] = []
             for e in group_existing_edges:
                 if (e.source_id, e.target_id) not in desired_pairs:
-                    group_removals.append(PlannedEdgeRemoval(
-                        edge_id=e.id,
-                        source_id=e.source_id,
-                        target_id=e.target_id,
-                        edge_type=e.edge_type,
-                        reason=(
-                            f"chain_repair: {e.source_id} -> {e.target_id} "
-                            "no longer in desired chain"
-                        ),
-                    ))
+                    group_removals.append(
+                        PlannedEdgeRemoval(
+                            edge_id=e.id,
+                            source_id=e.source_id,
+                            target_id=e.target_id,
+                            edge_type=e.edge_type,
+                            reason=(
+                                f"chain_repair: {e.source_id} -> {e.target_id} "
+                                "no longer in desired chain"
+                            ),
+                        )
+                    )
 
             group_adds: list[PlannedEdge] = []
             for newer, older in desired_edge_specs:
@@ -221,19 +228,21 @@ class EdgeInferenceEngine:
                     pass
                 newer_label = newer.parsed.version or "(original)"
                 older_label = older.parsed.version or "(original)"
-                group_adds.append(PlannedEdge(
-                    source_ref=newer.ref,
-                    target_ref=older.ref,
-                    edge_type=EdgeType.SUPERSEDES,
-                    tier=1,
-                    method="version_chain",
-                    evidence=(
-                        f"{VERSION_CHAIN_RATIONALE_PREFIX} "
-                        f"{newer_label} supersedes "
-                        f"{older_label} "
-                        f"(title: {newer.parsed.title})"
-                    ),
-                ))
+                group_adds.append(
+                    PlannedEdge(
+                        source_ref=newer.ref,
+                        target_ref=older.ref,
+                        edge_type=EdgeType.SUPERSEDES,
+                        tier=1,
+                        method="version_chain",
+                        evidence=(
+                            f"{VERSION_CHAIN_RATIONALE_PREFIX} "
+                            f"{newer_label} supersedes "
+                            f"{older_label} "
+                            f"(title: {newer.parsed.title})"
+                        ),
+                    )
+                )
 
             # Provenance gate: if any to-be-removed edge isn't version_chain,
             # downgrade the entire group's plan (adds + removals) to Tier 2.
@@ -253,9 +262,7 @@ class EdgeInferenceEngine:
 
         return added, removed
 
-    def _filename_code_match(
-        self, items: list[InferenceItem]
-    ) -> list[PlannedEdge]:
+    def _filename_code_match(self, items: list[InferenceItem]) -> list[PlannedEdge]:
         """Filename code match inference (Tier 2, covers).
 
         Fires between workflow artifacts and content artifacts sharing
@@ -285,17 +292,19 @@ class EdgeInferenceEngine:
                     if pair in seen:
                         continue
                     seen.add(pair)
-                    edges.append(PlannedEdge(
-                        source_ref=wf_item.ref,
-                        target_ref=ct_item.ref,
-                        edge_type=EdgeType.COVERS,
-                        tier=2,
-                        method="filename_code_match",
-                        evidence=(
-                            f"Workflow '{wf_item.parsed.title}' shares code "
-                            f"{code} with '{ct_item.parsed.title}'"
-                        ),
-                    ))
+                    edges.append(
+                        PlannedEdge(
+                            source_ref=wf_item.ref,
+                            target_ref=ct_item.ref,
+                            edge_type=EdgeType.COVERS,
+                            tier=2,
+                            method="filename_code_match",
+                            evidence=(
+                                f"Workflow '{wf_item.parsed.title}' shares code "
+                                f"{code} with '{ct_item.parsed.title}'"
+                            ),
+                        )
+                    )
 
         return edges
 
@@ -329,15 +338,19 @@ async def resolve_and_execute(
         except Exception as exc:
             logger.exception(
                 "Failed to remove edge %s (%s -> %s)",
-                removal.edge_id, removal.source_id, removal.target_id,
+                removal.edge_id,
+                removal.source_id,
+                removal.target_id,
             )
-            result.warnings.append({
-                "source": removal.source_id,
-                "target": removal.target_id,
-                "edge_type": removal.edge_type.value,
-                "reason": "edge_removal_failed",
-                "detail": str(exc),
-            })
+            result.warnings.append(
+                {
+                    "source": removal.source_id,
+                    "target": removal.target_id,
+                    "edge_type": removal.edge_type.value,
+                    "reason": "edge_removal_failed",
+                    "detail": str(exc),
+                }
+            )
 
     for planned in edge_plan.edges:
         source_id = path_to_id.get(planned.source_ref, planned.source_ref)
@@ -346,33 +359,39 @@ async def resolve_and_execute(
         # If either ref is still a file path (not resolved), it failed ingestion
         if source_id == planned.source_ref and "/" in planned.source_ref:
             result.edges_dropped += 1
-            result.warnings.append({
-                "source": planned.source_ref,
-                "target": planned.target_ref,
-                "edge_type": planned.edge_type.value,
-                "reason": "ingestion_failed",
-                "detail": f"Source file failed ingestion: {planned.source_ref}",
-            })
+            result.warnings.append(
+                {
+                    "source": planned.source_ref,
+                    "target": planned.target_ref,
+                    "edge_type": planned.edge_type.value,
+                    "reason": "ingestion_failed",
+                    "detail": f"Source file failed ingestion: {planned.source_ref}",
+                }
+            )
             continue
         if target_id == planned.target_ref and "/" in planned.target_ref:
             result.edges_dropped += 1
-            result.warnings.append({
-                "source": planned.source_ref,
-                "target": planned.target_ref,
-                "edge_type": planned.edge_type.value,
-                "reason": "ingestion_failed",
-                "detail": f"Target file failed ingestion: {planned.target_ref}",
-            })
+            result.warnings.append(
+                {
+                    "source": planned.source_ref,
+                    "target": planned.target_ref,
+                    "edge_type": planned.edge_type.value,
+                    "reason": "ingestion_failed",
+                    "detail": f"Target file failed ingestion: {planned.target_ref}",
+                }
+            )
             continue
 
         try:
             if planned.tier == 1:
-                await graph_ops_service.link(LinkRequest(
-                    source_id=source_id,
-                    target_id=target_id,
-                    edge_type=planned.edge_type,
-                    rationale=planned.evidence,
-                ))
+                await graph_ops_service.link(
+                    LinkRequest(
+                        source_id=source_id,
+                        target_id=target_id,
+                        edge_type=planned.edge_type,
+                        rationale=planned.evidence,
+                    )
+                )
                 key = planned.edge_type.value
                 result.edges_created[key] = result.edges_created.get(key, 0) + 1
             else:
@@ -391,16 +410,20 @@ async def resolve_and_execute(
         except Exception as exc:
             logger.exception(
                 "Failed to create edge %s -> %s (%s)",
-                source_id, target_id, planned.edge_type.value,
+                source_id,
+                target_id,
+                planned.edge_type.value,
             )
             result.edges_dropped += 1
-            result.warnings.append({
-                "source": source_id,
-                "target": target_id,
-                "edge_type": planned.edge_type.value,
-                "reason": "edge_creation_failed",
-                "detail": str(exc),
-            })
+            result.warnings.append(
+                {
+                    "source": source_id,
+                    "target": target_id,
+                    "edge_type": planned.edge_type.value,
+                    "reason": "edge_creation_failed",
+                    "detail": str(exc),
+                }
+            )
             continue
 
         # Lifecycle side effect: transition target to "archived"
@@ -415,16 +438,17 @@ async def resolve_and_execute(
                     )
             except Exception as exc:
                 logger.warning(
-                    "Supersedes edge created but failed to transition "
-                    "target %s to archived",
+                    "Supersedes edge created but failed to transition target %s to archived",
                     target_id,
                 )
-                result.warnings.append({
-                    "source": source_id,
-                    "target": target_id,
-                    "edge_type": planned.edge_type.value,
-                    "reason": "lifecycle_transition_failed",
-                    "detail": str(exc),
-                })
+                result.warnings.append(
+                    {
+                        "source": source_id,
+                        "target": target_id,
+                        "edge_type": planned.edge_type.value,
+                        "reason": "lifecycle_transition_failed",
+                        "detail": str(exc),
+                    }
+                )
 
     return result

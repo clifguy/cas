@@ -11,8 +11,6 @@ Usage:
     python -m sage.mcp_server <config1.yaml> [config2.yaml ...]
 """
 
-import json
-import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -62,9 +60,7 @@ def _get_vault(vault_id: str) -> SAGEServices:
     """Look up services for a vault. Raises VaultNotFoundError if unknown."""
     if vault_id not in _vaults:
         available = ", ".join(sorted(_vaults.keys())) or "(none)"
-        raise VaultNotFoundError(
-            f"Unknown vault_id: {vault_id}. Available vaults: {available}"
-        )
+        raise VaultNotFoundError(f"Unknown vault_id: {vault_id}. Available vaults: {available}")
     return _vaults[vault_id]
 
 
@@ -114,9 +110,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         for config_path in discover_vault_configs(_vault_root):
             try:
                 config = load_vault_config(config_path)
-                services = await initialize_services(
-                    config, config_path=config_path
-                )
+                services = await initialize_services(config, config_path=config_path)
                 _vaults[config.vault.id] = services
             except Exception as exc:
                 import logging
@@ -259,8 +253,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="python -m sage.mcp_server",
         description=(
-            "Run the SAGE MCP server over stdio. Vaults are auto-discovered "
-            "from the vault root."
+            "Run the SAGE MCP server over stdio. Vaults are auto-discovered from the vault root."
         ),
     )
     parser.add_argument(

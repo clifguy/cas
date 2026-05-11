@@ -13,14 +13,10 @@ fixtures rather than the full production initialization path. Verifies:
 - Dry-run mode does not mutate state.
 """
 
-import pytest
-
 from sage.adapters.interfaces import Chunk
-from sage.adapters.stubs import StubContentStore
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.source_adapters.docx_adapter import DocxAdapter
-
 from scripts.reindex_chunks_with_heading_context import reindex_with_services
 
 
@@ -113,9 +109,7 @@ async def test_reindex_replaces_embeddings_with_heading_context_combined_text(
     assert doc_after.adapter_version == DocxAdapter.VERSION
 
 
-async def test_reindex_skips_documents_already_at_current_version(
-    graph_store, stub_content_store
-):
+async def test_reindex_skips_documents_already_at_current_version(graph_store, stub_content_store):
     """Documents whose adapter_version equals the current VERSION are
     skipped — no embedder calls, no chunk rewrites."""
     doc = _make_doc(doc_id="doc_current", adapter_version=DocxAdapter.VERSION)
@@ -174,9 +168,7 @@ async def test_reindex_dry_run_does_not_mutate(graph_store, stub_content_store):
     assert chunks_after[0].embedding == [0.7] * 768  # unchanged
 
 
-async def test_reindex_skips_documents_with_no_chunks(
-    graph_store, stub_content_store
-):
+async def test_reindex_skips_documents_with_no_chunks(graph_store, stub_content_store):
     """A document with no stored chunks is silently skipped (no version bump,
     no embedder call). This avoids redundant work for projection-only docs."""
     doc = _make_doc(doc_id="doc_empty", adapter_version="0.1.0")
@@ -199,9 +191,7 @@ async def test_reindex_skips_documents_with_no_chunks(
     assert doc_after.adapter_version == "0.1.0"
 
 
-async def test_reindex_preserves_chunk_doc_type(
-    graph_store, stub_content_store
-):
+async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store):
     """Re-index must preserve ``chunk.doc_type``. A read→re-embed→write
     cycle that drops doc_type wipes the column for every chunk and breaks
     ``filters={"doc_type": ...}`` queries vault-wide. Regression guard for

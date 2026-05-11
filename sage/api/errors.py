@@ -352,10 +352,7 @@ class ContentFileMissingError(SAGEError):
     def __init__(self, document_id: str, source_path: str) -> None:
         super().__init__(
             "content_file_missing",
-            (
-                f"Document {document_id} file is missing at vault-relative "
-                f"path {source_path}"
-            ),
+            (f"Document {document_id} file is missing at vault-relative path {source_path}"),
             404,
             {"document_id": document_id, "source_path": source_path},
         )

@@ -17,7 +17,7 @@ import importlib
 import inspect
 import pkgutil
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 import pytest
 from fastapi.params import Depends as DependsParam
@@ -82,11 +82,7 @@ def _routers_dir() -> Path:
 
 def _discover_router_module_names() -> set[str]:
     """Return the stem of every router module file (excluding __init__)."""
-    return {
-        name
-        for _, name, ispkg in pkgutil.iter_modules([str(_routers_dir())])
-        if not ispkg
-    }
+    return {name for _, name, ispkg in pkgutil.iter_modules([str(_routers_dir())]) if not ispkg}
 
 
 def _service_dependency_callables() -> set[Callable]:

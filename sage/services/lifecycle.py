@@ -16,7 +16,7 @@ from sage.api.errors import (
     MissingFieldError,
 )
 from sage.config import TransitionTable, VaultConfig, build_transition_table
-from sage.models.enums import EdgeType, ResolutionPolicy, TERMINAL_PIPELINE_STATUSES
+from sage.models.enums import TERMINAL_PIPELINE_STATUSES, EdgeType, ResolutionPolicy
 from sage.models.schemas import Document, Edge, SetLifecycleRequest, SetLifecycleResponse
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
@@ -72,18 +72,14 @@ class LifecycleService:
                 raise InvalidActionError(request.action)
 
             # Validate transition from current state
-            result = self._table.validate_transition(
-                doc.lifecycle_status, request.action
-            )
+            result = self._table.validate_transition(doc.lifecycle_status, request.action)
             if result is None:
                 valid = self._table.get_valid_actions(doc.lifecycle_status)
                 raise InvalidLifecycleTransitionError(
                     doc.lifecycle_status,
                     request.action,
                     valid,
-                    pipeline_status=doc.pipeline_status.value
-                    if doc.pipeline_status
-                    else None,
+                    pipeline_status=doc.pipeline_status.value if doc.pipeline_status else None,
                 )
 
             to_state, creates_edge = result
@@ -95,9 +91,7 @@ class LifecycleService:
             # edge (BH-135).
             if request.action == "supersede":
                 if not request.new_version_id:
-                    raise MissingFieldError(
-                        "new_version_id", "supersede requires new_version_id"
-                    )
+                    raise MissingFieldError("new_version_id", "supersede requires new_version_id")
                 new_doc = await self._store.get_document(request.new_version_id)
                 if new_doc is None:
                     raise DocumentNotFoundError(request.new_version_id)
@@ -151,9 +145,7 @@ class LifecycleService:
         loaded and that the calling context holds whatever lock is
         appropriate.
         """
-        result = self._table.validate_transition(
-            predecessor.lifecycle_status, "supersede"
-        )
+        result = self._table.validate_transition(predecessor.lifecycle_status, "supersede")
         if result is None:
             valid = self._table.get_valid_actions(predecessor.lifecycle_status)
             raise InvalidLifecycleTransitionError(
@@ -178,6 +170,4 @@ class LifecycleService:
             resolution_policy=ResolutionPolicy.NONE,
             created_at=now,
         )
-        return SupersedeTransition(
-            predecessor_updates=predecessor_updates, edge=edge
-        )
+        return SupersedeTransition(predecessor_updates=predecessor_updates, edge=edge)

@@ -9,23 +9,19 @@ from __future__ import annotations
 import importlib
 import inspect
 
-import pytest
-
-from sage.services.filename_parser import ParsedMetadata
-from app.backend.ingest_service import FileDescriptor, ParsedMetadataInput
 from app.backend.router import (
     IngestFileItem,
     ParsedMetadataResponse,
-    ScanResultResponse,
     _scan_result_to_response,
     _to_file_descriptor,
 )
 from app.backend.scan import ScanResult
-
+from sage.services.filename_parser import ParsedMetadata
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 def _full_parsed_metadata() -> ParsedMetadata:
     """ParsedMetadata with all fields populated."""
@@ -86,9 +82,7 @@ class TestImportHygiene:
             if line.strip().startswith(("import ", "from "))
         ]
         for line in import_lines:
-            assert "Document" not in line, (
-                f"Unused 'Document' found in import: {line}"
-            )
+            assert "Document" not in line, f"Unused 'Document' found in import: {line}"
 
     def test_cl_002_scan_no_os_import(self) -> None:
         """CL-002: scan module should not import os."""
@@ -100,9 +94,7 @@ class TestImportHygiene:
             if line.strip().startswith(("import ", "from "))
         ]
         for line in import_lines:
-            assert line != "import os", (
-                f"Vestigial 'import os' found in scan module: {line}"
-            )
+            assert line != "import os", f"Vestigial 'import os' found in scan module: {line}"
 
     def test_cl_003_router_httpexception_module_level(self) -> None:
         """CL-003: router should import HTTPException at module level."""

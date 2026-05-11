@@ -74,7 +74,9 @@ class ContentStore(ABC):
 
     @abstractmethod
     async def update_chunk_metadata(
-        self, document_id: str, metadata: dict[str, str | None],
+        self,
+        document_id: str,
+        metadata: dict[str, str | None],
     ) -> None:
         """Update metadata columns on all chunks for a document.
 
@@ -136,9 +138,7 @@ class AbstractionProvider(ABC):
     """Interface for semantic abstract generation (MLX/Qwen3 in production)."""
 
     @abstractmethod
-    async def generate_abstract(
-        self, text: str, max_tokens: int, doc_type: str | None
-    ) -> str:
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         """Generate a density-proportional semantic abstract.
 
         doc_type is surfaced to the model so it can pick the right

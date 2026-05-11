@@ -26,9 +26,9 @@ from sage.models.schemas import (
     VaultSummary,
 )
 from sage.vault_management import (
-    config_path_for_vault,
     _validate_config,
     _write_config_yaml,
+    config_path_for_vault,
 )
 
 if TYPE_CHECKING:
@@ -161,9 +161,7 @@ class VaultRegistryService:
 
         return self._build_vault_summary(config, services)
 
-    async def reload(
-        self, vault_id: str, new_config: VaultConfig
-    ) -> "SAGEServices":
+    async def reload(self, vault_id: str, new_config: VaultConfig) -> "SAGEServices":
         """Close old services for a vault and reinitialize from a new config.
 
         Delegates to mcp_init.reload_vault_in_registry; the registry-service
@@ -171,6 +169,7 @@ class VaultRegistryService:
         the new VaultConfigService is wired correctly after the reload.
         """
         from sage.mcp_init import reload_vault_in_registry
+
         return await reload_vault_in_registry(
             self._registry, vault_id, new_config, registry_service=self
         )
@@ -188,9 +187,7 @@ class VaultRegistryService:
             for dt in config.document_types.doc_types
         ]
         lifecycle_states = [
-            VaultLifecycleState(
-                value=s.value, label=s.label, is_terminal=s.is_terminal
-            )
+            VaultLifecycleState(value=s.value, label=s.label, is_terminal=s.is_terminal)
             for s in config.lifecycle.states
         ]
         adapters = [

@@ -35,9 +35,9 @@ from sage.storage.graph_store import GraphStore
 from sage.vault_management import (
     _ALL_SECTIONS,
     _check_destructive_changes,
-    config_path_for_vault,
     _validate_config,
     _write_config_yaml,
+    config_path_for_vault,
 )
 
 if TYPE_CHECKING:
@@ -71,9 +71,7 @@ class VaultConfigService:
         last_ingestion = await self._store.get_last_ingestion_at()
 
         failed_count = await self._store.count_documents_by_pipeline_status("failed")
-        deferred_count = await self._store.count_documents_by_pipeline_status(
-            "abstraction_skipped"
-        )
+        deferred_count = await self._store.count_documents_by_pipeline_status("abstraction_skipped")
         pending_metadata_docs = await self._store.list_pending_metadata_documents()
         pending_metadata_count = len(pending_metadata_docs)
 
@@ -110,9 +108,7 @@ class VaultConfigService:
             ),
         )
 
-    async def hash_check(
-        self, body: HashCheckRequest
-    ) -> dict[str, HashCheckMatch]:
+    async def hash_check(self, body: HashCheckRequest) -> dict[str, HashCheckMatch]:
         """Bulk hash existence check against the graph store."""
         if not body.hashes:
             return {}
@@ -168,9 +164,7 @@ class VaultConfigService:
 
         new_config = _validate_config(merged)
 
-        warnings = await _check_destructive_changes(
-            old_config, new_config, self._store
-        )
+        warnings = await _check_destructive_changes(old_config, new_config, self._store)
         if warnings and not force:
             raise DestructiveConfigChangeError(warnings)
 

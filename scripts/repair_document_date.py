@@ -26,6 +26,7 @@ Usage::
     .venv/bin/python -m scripts.repair_document_date VAULT_ID
     .venv/bin/python -m scripts.repair_document_date VAULT_ID --execute
 """
+
 from __future__ import annotations
 
 import argparse
@@ -73,9 +74,7 @@ def _normalize(value: str) -> str | None:
     return parsed.date().isoformat()
 
 
-async def repair_with_services(
-    *, graph: GraphStore, execute: bool
-) -> RepairResult:
+async def repair_with_services(*, graph: GraphStore, execute: bool) -> RepairResult:
     """Service-level entry point. Tests call this directly with a graph fixture."""
     result = RepairResult()
     documents = await graph.list_all_documents()
@@ -86,23 +85,25 @@ async def repair_with_services(
             continue
         normalized = _normalize(value)
         if normalized is None:
-            result.skipped.append(RepairSkipped(
-                doc_id=doc.id,
-                value=value,
-                reason="not parseable as ISO-8601 datetime",
-            ))
+            result.skipped.append(
+                RepairSkipped(
+                    doc_id=doc.id,
+                    value=value,
+                    reason="not parseable as ISO-8601 datetime",
+                )
+            )
             continue
-        result.targets.append(RepairTarget(
-            doc_id=doc.id,
-            old_value=value,
-            new_value=normalized,
-        ))
+        result.targets.append(
+            RepairTarget(
+                doc_id=doc.id,
+                old_value=value,
+                new_value=normalized,
+            )
+        )
 
     if execute:
         for target in result.targets:
-            await graph.update_document(
-                target.doc_id, {"document_date": target.new_value}
-            )
+            await graph.update_document(target.doc_id, {"document_date": target.new_value})
             result.rewrites_applied += 1
 
     return result
@@ -122,9 +123,7 @@ async def repair_vault(vault_id: str, *, execute: bool) -> int:
     )
 
     try:
-        result = await repair_with_services(
-            graph=services.graph_store, execute=execute
-        )
+        result = await repair_with_services(graph=services.graph_store, execute=execute)
 
         print(f"Vault: {vault_id}")
         print(f"Targets (parseable malformed): {len(result.targets)}")

@@ -22,14 +22,16 @@ VECTOR_DIMENSIONS = 768
 
 CHUNKS_TABLE = "chunks"
 
-CHUNKS_SCHEMA = pa.schema([
-    pa.field("document_id", pa.utf8()),
-    pa.field("heading_path", pa.utf8()),
-    pa.field("content", pa.utf8()),
-    pa.field("chunk_index", pa.int32()),
-    pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
-    pa.field("doc_type", pa.utf8(), nullable=True),
-])
+CHUNKS_SCHEMA = pa.schema(
+    [
+        pa.field("document_id", pa.utf8()),
+        pa.field("heading_path", pa.utf8()),
+        pa.field("content", pa.utf8()),
+        pa.field("chunk_index", pa.int32()),
+        pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
+        pa.field("doc_type", pa.utf8(), nullable=True),
+    ]
+)
 
 # Columns that can be pre-filtered at query time.
 _FILTERABLE_COLUMNS = {"doc_type", "document_id"}
@@ -124,7 +126,9 @@ class LanceDBContentStore(ContentStore):
         row_count = arrow_table.num_rows
         logger.info(
             "Migrating chunks table at %s: adding %s, %d rows to rewrite",
-            self._brain_root, sorted(missing), row_count,
+            self._brain_root,
+            sorted(missing),
+            row_count,
         )
         if row_count == 0:
             self._db.drop_table(CHUNKS_TABLE)
@@ -141,7 +145,9 @@ class LanceDBContentStore(ContentStore):
             self._db.drop_table(CHUNKS_TABLE)
             self._table_exists = False
             new_table = self._db.create_table(
-                CHUNKS_TABLE, data=rows, schema=CHUNKS_SCHEMA,
+                CHUNKS_TABLE,
+                data=rows,
+                schema=CHUNKS_SCHEMA,
             )
             self._table_exists = True
             self._rebuild_fts(new_table)
@@ -202,7 +208,7 @@ class LanceDBContentStore(ContentStore):
         # Remove existing chunks for this document first (AD-025)
         try:
             table.delete(f"document_id = '{_escape_sql(document_id)}'")
-        except Exception:
+        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
             pass  # Table might be empty or document might not exist
 
         if not chunks:
@@ -213,14 +219,16 @@ class LanceDBContentStore(ContentStore):
         rows = []
         for chunk in chunks:
             embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
-            rows.append({
-                "document_id": chunk.document_id,
-                "heading_path": chunk.heading_path,
-                "content": chunk.content,
-                "chunk_index": chunk.chunk_index,
-                "vector": embedding,
-                "doc_type": chunk.doc_type,
-            })
+            rows.append(
+                {
+                    "document_id": chunk.document_id,
+                    "heading_path": chunk.heading_path,
+                    "content": chunk.content,
+                    "chunk_index": chunk.chunk_index,
+                    "vector": embedding,
+                    "doc_type": chunk.doc_type,
+                }
+            )
 
         table.add(rows)
         self._rebuild_fts(table)
@@ -246,13 +254,15 @@ class LanceDBContentStore(ContentStore):
 
         try:
             table.delete(f"document_id = '{_escape_sql(document_id)}'")
-        except Exception:
+        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
             pass  # No rows to delete is fine
 
         self._rebuild_fts(table)
 
     async def update_chunk_metadata(
-        self, document_id: str, metadata: dict[str, str | None],
+        self,
+        document_id: str,
+        metadata: dict[str, str | None],
     ) -> None:
         """Update metadata columns on all chunks for a document."""
         table = self._get_table()
@@ -287,10 +297,7 @@ class LanceDBContentStore(ContentStore):
             return []
 
         try:
-            query = (
-                table.search(query_embedding, vector_column_name="vector")
-                .metric("cosine")
-            )
+            query = table.search(query_embedding, vector_column_name="vector").metric("cosine")
             if filters:
                 where = self._build_where(filters)
                 if where:
@@ -448,11 +455,7 @@ class LanceDBContentStore(ContentStore):
         escaped_doc = _escape_sql(document_id)
 
         try:
-            results = (
-                table.search()
-                .where(f"document_id = '{escaped_doc}'")
-                .to_list()
-            )
+            results = table.search().where(f"document_id = '{escaped_doc}'").to_list()
         except Exception as exc:
             logger.warning("get_all_chunks failed: %s", exc)
             return []

@@ -12,7 +12,6 @@ first, then content store, then abstraction provider, then markdown adapter.
 """
 
 import math
-import shutil
 
 import pytest
 
@@ -22,18 +21,21 @@ from sage.adapters.interfaces import Chunk
 
 try:
     from sage.adapters.embedding_nomic import NomicEmbeddingProvider
+
     _HAS_EMBEDDING = True
 except (ImportError, RuntimeError):
     _HAS_EMBEDDING = False
 
 try:
     from sage.adapters.content_store_lancedb import LanceDBContentStore
+
     _HAS_LANCEDB = True
 except ImportError:
     _HAS_LANCEDB = False
 
 try:
     from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+
     _HAS_QWEN3 = True
 except (ImportError, RuntimeError):
     _HAS_QWEN3 = False
@@ -42,12 +44,8 @@ except (ImportError, RuntimeError):
 requires_embedding = pytest.mark.skipif(
     not _HAS_EMBEDDING, reason="sentence-transformers or nomic model not available"
 )
-requires_lancedb = pytest.mark.skipif(
-    not _HAS_LANCEDB, reason="lancedb not available"
-)
-requires_qwen3 = pytest.mark.skipif(
-    not _HAS_QWEN3, reason="mlx-lm or Qwen3 model not available"
-)
+requires_lancedb = pytest.mark.skipif(not _HAS_LANCEDB, reason="lancedb not available")
+requires_qwen3 = pytest.mark.skipif(not _HAS_QWEN3, reason="mlx-lm or Qwen3 model not available")
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
@@ -76,16 +74,39 @@ async def populated_store(content_store, embedding_provider):
     """Content store pre-populated with chunks from 3 topically distinct documents."""
     docs = {
         "doc_a": [
-            ("Introduction", "The document describes a method for synchronizing health records across distributed hospital systems."),
-            ("Methods", "Medical record synchronization uses a two-phase commit protocol to ensure data consistency."),
+            (
+                "Introduction",
+                "The document describes a method for synchronizing health records "
+                "across distributed hospital systems.",
+            ),
+            (
+                "Methods",
+                "Medical record synchronization uses a two-phase commit protocol "
+                "to ensure data consistency.",
+            ),
         ],
         "doc_b": [
-            ("Overview", "Healthcare data management requires robust systems for keeping patient information up to date."),
-            ("Architecture", "The data management platform integrates with existing electronic health record systems."),
+            (
+                "Overview",
+                "Healthcare data management requires robust systems for keeping "
+                "patient information up to date.",
+            ),
+            (
+                "Architecture",
+                "The data management platform integrates with existing electronic "
+                "health record systems.",
+            ),
         ],
         "doc_c": [
-            ("Summary", "The basketball team scored 47 points in the first half of the championship game."),
-            ("Statistics", "Player shooting percentages and rebound statistics for the season are presented below."),
+            (
+                "Summary",
+                "The basketball team scored 47 points in the first half of the championship game.",
+            ),
+            (
+                "Statistics",
+                "Player shooting percentages and rebound statistics for the "
+                "season are presented below.",
+            ),
         ],
     }
 
@@ -146,9 +167,7 @@ class TestNomicEmbeddingProvider:
         result1 = await embedding_provider.embed(text)
         result2 = await embedding_provider.embed(text)
 
-        diff = sum(
-            (a - b) ** 2 for a, b in zip(result1[0], result2[0])
-        )
+        diff = sum((a - b) ** 2 for a, b in zip(result1[0], result2[0]))
         assert diff < 1e-6
 
     async def test_ad_004_l2_normalized(self, embedding_provider):
@@ -240,9 +259,7 @@ class TestLanceDBContentStore:
         assert semantic_results == []
         assert bm25_results == []
 
-    async def test_ad_011_index_and_retrieve_roundtrip(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_011_index_and_retrieve_roundtrip(self, content_store, embedding_provider):
         """AD-011: Chunks stored via index_chunks are faithfully retrievable."""
         texts = ["First paragraph.", "Second paragraph.", "Third paragraph."]
         headings = ["Introduction", "Introduction > Background", "Methods"]
@@ -270,25 +287,26 @@ class TestLanceDBContentStore:
             assert chunk.chunk_index == i
             # Embedding roundtrip (within float tolerance)
             assert chunk.embedding is not None
-            diff = sum(
-                (a - b) ** 2
-                for a, b in zip(chunk.embedding, embeddings[i])
-            )
+            diff = sum((a - b) ** 2 for a, b in zip(chunk.embedding, embeddings[i]))
             assert diff < 1e-6, f"Embedding mismatch at chunk {i}"
 
-    async def test_ad_012_document_isolation(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_012_document_isolation(self, content_store, embedding_provider):
         """AD-012: get_all_chunks returns only chunks for the requested document."""
         vec1 = (await embedding_provider.embed(["content one"]))[0]
         vec2 = (await embedding_provider.embed(["content two"]))[0]
 
-        await content_store.index_chunks("doc_001", [
-            Chunk("doc_001", "H1", "content one", vec1, 0),
-        ])
-        await content_store.index_chunks("doc_002", [
-            Chunk("doc_002", "H1", "content two", vec2, 0),
-        ])
+        await content_store.index_chunks(
+            "doc_001",
+            [
+                Chunk("doc_001", "H1", "content one", vec1, 0),
+            ],
+        )
+        await content_store.index_chunks(
+            "doc_002",
+            [
+                Chunk("doc_002", "H1", "content two", vec2, 0),
+            ],
+        )
 
         result = await content_store.get_all_chunks("doc_001")
         assert len(result) == 1
@@ -299,21 +317,19 @@ class TestLanceDBContentStore:
         result = await content_store.get_all_chunks("nonexistent_doc_999")
         assert result == []
 
-    async def test_ad_014_remove_document(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_014_remove_document(self, content_store, embedding_provider):
         """AD-014: remove_document clears all chunks for a document."""
         texts_1 = ["chunk a", "chunk b", "chunk c"]
         texts_2 = ["other x", "other y"]
         emb_1 = await embedding_provider.embed(texts_1)
         emb_2 = await embedding_provider.embed(texts_2)
 
-        await content_store.index_chunks("doc_001", [
-            Chunk("doc_001", "H", texts_1[i], emb_1[i], i) for i in range(3)
-        ])
-        await content_store.index_chunks("doc_002", [
-            Chunk("doc_002", "H", texts_2[i], emb_2[i], i) for i in range(2)
-        ])
+        await content_store.index_chunks(
+            "doc_001", [Chunk("doc_001", "H", texts_1[i], emb_1[i], i) for i in range(3)]
+        )
+        await content_store.index_chunks(
+            "doc_002", [Chunk("doc_002", "H", texts_2[i], emb_2[i], i) for i in range(2)]
+        )
 
         await content_store.remove_document("doc_001")
 
@@ -330,15 +346,13 @@ class TestLanceDBContentStore:
         await content_store.remove_document("nonexistent_doc")
         # No exception raised
 
-    async def test_ad_098_has_chunks_true(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_098_has_chunks_true(self, content_store, embedding_provider):
         """AD-098: has_chunks returns True for a document with indexed chunks."""
         texts = ["chunk a", "chunk b"]
         embeddings = await embedding_provider.embed(texts)
-        await content_store.index_chunks("doc_hc", [
-            Chunk("doc_hc", "H", texts[i], embeddings[i], i) for i in range(2)
-        ])
+        await content_store.index_chunks(
+            "doc_hc", [Chunk("doc_hc", "H", texts[i], embeddings[i], i) for i in range(2)]
+        )
         assert await content_store.has_chunks("doc_hc") is True
 
     async def test_ad_099_has_chunks_false(self, content_store):
@@ -349,9 +363,7 @@ class TestLanceDBContentStore:
         """AD-100: count_chunks returns 0 when the chunks table does not yet exist."""
         assert await content_store.count_chunks() == 0
 
-    async def test_ad_101_count_chunks_reflects_total_rows(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_101_count_chunks_reflects_total_rows(self, content_store, embedding_provider):
         """AD-101: count_chunks returns the total chunk row count across all documents,
         and updates correctly after index_chunks and remove_document."""
         texts_a = ["alpha one", "alpha two", "alpha three"]
@@ -359,28 +371,29 @@ class TestLanceDBContentStore:
         emb_a = await embedding_provider.embed(texts_a)
         emb_b = await embedding_provider.embed(texts_b)
 
-        await content_store.index_chunks("doc_a", [
-            Chunk("doc_a", "H", texts_a[i], emb_a[i], i) for i in range(3)
-        ])
+        await content_store.index_chunks(
+            "doc_a", [Chunk("doc_a", "H", texts_a[i], emb_a[i], i) for i in range(3)]
+        )
         assert await content_store.count_chunks() == 3
 
-        await content_store.index_chunks("doc_b", [
-            Chunk("doc_b", "H", texts_b[i], emb_b[i], i) for i in range(2)
-        ])
+        await content_store.index_chunks(
+            "doc_b", [Chunk("doc_b", "H", texts_b[i], emb_b[i], i) for i in range(2)]
+        )
         assert await content_store.count_chunks() == 5
 
         # Re-indexing the same document_id replaces existing rows (AD-025)
-        await content_store.index_chunks("doc_a", [
-            Chunk("doc_a", "H", "alpha solo", emb_a[0], 0),
-        ])
+        await content_store.index_chunks(
+            "doc_a",
+            [
+                Chunk("doc_a", "H", "alpha solo", emb_a[0], 0),
+            ],
+        )
         assert await content_store.count_chunks() == 3  # 1 (doc_a) + 2 (doc_b)
 
         await content_store.remove_document("doc_a")
         assert await content_store.count_chunks() == 2
 
-    async def test_ad_016_semantic_search_ranking(
-        self, populated_store, embedding_provider
-    ):
+    async def test_ad_016_semantic_search_ranking(self, populated_store, embedding_provider):
         """AD-016: Semantic search returns results ranked by cosine similarity."""
         query_vec = (await embedding_provider.embed(["health data sync"]))[0]
         results = await populated_store.search_semantic(query_vec, limit=10)
@@ -394,17 +407,13 @@ class TestLanceDBContentStore:
         top_doc_ids = [r.document_id for r in results[:4]]
         assert "doc_c" not in top_doc_ids or top_doc_ids.index("doc_c") >= 2
 
-    async def test_ad_017_semantic_search_limit(
-        self, populated_store, embedding_provider
-    ):
+    async def test_ad_017_semantic_search_limit(self, populated_store, embedding_provider):
         """AD-017: Semantic search respects limit parameter."""
         query_vec = (await embedding_provider.embed(["test"]))[0]
         results = await populated_store.search_semantic(query_vec, limit=3)
         assert len(results) <= 3
 
-    async def test_ad_018_bm25_keyword_search(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_018_bm25_keyword_search(self, content_store, embedding_provider):
         """AD-018: BM25 search matches on content keywords."""
         texts = [
             "The synchronization protocol ensures data consistency across nodes.",
@@ -430,26 +439,23 @@ class TestLanceDBContentStore:
         for i in range(len(results) - 1):
             assert results[i].score >= results[i + 1].score
 
-    async def test_ad_019_fts_reflects_mutations(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_019_fts_reflects_mutations(self, content_store, embedding_provider):
         """AD-019: BM25 search reflects mutations after FTS index rebuild."""
         # Step 1: No results for unique keyword
-        results1 = await content_store.search_bm25(
-            "unique_keyword_xyz", limit=10
-        )
+        results1 = await content_store.search_bm25("unique_keyword_xyz", limit=10)
         assert results1 == []
 
         # Step 2: Index a chunk containing the keyword
         vec = (await embedding_provider.embed(["unique_keyword_xyz in text"]))[0]
-        await content_store.index_chunks("doc_002", [
-            Chunk("doc_002", "H", "unique_keyword_xyz in text", vec, 0),
-        ])
+        await content_store.index_chunks(
+            "doc_002",
+            [
+                Chunk("doc_002", "H", "unique_keyword_xyz in text", vec, 0),
+            ],
+        )
 
         # Step 3: Should now find it
-        results2 = await content_store.search_bm25(
-            "unique_keyword_xyz", limit=10
-        )
+        results2 = await content_store.search_bm25("unique_keyword_xyz", limit=10)
         assert len(results2) > 0
         assert results2[0].document_id == "doc_002"
 
@@ -457,9 +463,7 @@ class TestLanceDBContentStore:
         await content_store.remove_document("doc_002")
 
         # Step 5: Should be gone
-        results3 = await content_store.search_bm25(
-            "unique_keyword_xyz", limit=10
-        )
+        results3 = await content_store.search_bm25("unique_keyword_xyz", limit=10)
         assert results3 == []
 
     async def test_ad_102_bm25_finds_chunk_by_heading_text_only(
@@ -470,19 +474,20 @@ class TestLanceDBContentStore:
         captures the agent-search-by-section-name use case (the equivalent
         of Word's Find on a heading).
         """
-        body_only = (
-            "Cryptographic seal verification gates each accumulator commit."
-        )
+        body_only = "Cryptographic seal verification gates each accumulator commit."
         vec = (await embedding_provider.embed([body_only]))[0]
-        await content_store.index_chunks("doc_pv", [
-            Chunk(
-                document_id="doc_pv",
-                heading_path="Technical Description > Exemplary Embodiment Walkthrough",
-                content=body_only,
-                embedding=vec,
-                chunk_index=0,
-            ),
-        ])
+        await content_store.index_chunks(
+            "doc_pv",
+            [
+                Chunk(
+                    document_id="doc_pv",
+                    heading_path="Technical Description > Exemplary Embodiment Walkthrough",
+                    content=body_only,
+                    embedding=vec,
+                    chunk_index=0,
+                ),
+            ],
+        )
 
         # Query term "exemplary" appears ONLY in heading_path, not in body.
         # No morphological variants in body either ("method" is absent).
@@ -494,16 +499,17 @@ class TestLanceDBContentStore:
         )
         assert results[0].document_id == "doc_pv"
 
-    async def test_ad_103_bm25_still_finds_by_body_content(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_103_bm25_still_finds_by_body_content(self, content_store, embedding_provider):
         """AD-103 (regression): BM25 keyword search on body-text terms still
         works after adding heading_path FTS index."""
         body = "Cryptographic seal verification gates each accumulator commit."
         vec = (await embedding_provider.embed([body]))[0]
-        await content_store.index_chunks("doc_a", [
-            Chunk("doc_a", "Section X > Subsection Y", body, vec, 0),
-        ])
+        await content_store.index_chunks(
+            "doc_a",
+            [
+                Chunk("doc_a", "Section X > Subsection Y", body, vec, 0),
+            ],
+        )
 
         results = await content_store.search_bm25("cryptographic seal", limit=10)
         assert len(results) > 0
@@ -520,9 +526,12 @@ class TestLanceDBContentStore:
         body = "A method, comprising: receiving, by a processing unit, a record."
         heading = "Technical Description > Exemplary Methods"
         vec = (await embedding_provider.embed([body]))[0]
-        await content_store.index_chunks("doc_clean", [
-            Chunk("doc_clean", heading, body, vec, 0),
-        ])
+        await content_store.index_chunks(
+            "doc_clean",
+            [
+                Chunk("doc_clean", heading, body, vec, 0),
+            ],
+        )
 
         chunks = await content_store.get_all_chunks("doc_clean")
         assert len(chunks) == 1
@@ -562,23 +571,16 @@ class TestLanceDBContentStore:
         chunks_after = await content_store.get_all_chunks("doc_with_type")
         assert chunks_after[0].doc_type == "patent_draft"
 
-    async def test_ad_020_heading_prefix_exact_and_child(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_020_heading_prefix_exact_and_child(self, content_store, embedding_provider):
         """AD-020: Heading prefix retrieval returns exact match and children."""
         texts = ["methods content", "sampling content", "results content"]
         headings = ["Methods", "Methods > Sampling", "Results"]
         embs = await embedding_provider.embed(texts)
 
-        chunks = [
-            Chunk("doc_001", headings[i], texts[i], embs[i], i)
-            for i in range(3)
-        ]
+        chunks = [Chunk("doc_001", headings[i], texts[i], embs[i], i) for i in range(3)]
         await content_store.index_chunks("doc_001", chunks)
 
-        result = await content_store.get_chunks_by_heading_prefix(
-            "doc_001", "Methods"
-        )
+        result = await content_store.get_chunks_by_heading_prefix("doc_001", "Methods")
         assert len(result) == 2
         paths = [c.heading_path for c in result]
         assert "Methods" in paths
@@ -587,43 +589,33 @@ class TestLanceDBContentStore:
         # Document order
         assert result[0].chunk_index < result[1].chunk_index
 
-    async def test_ad_021_heading_prefix_no_match(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_021_heading_prefix_no_match(self, content_store, embedding_provider):
         """AD-021: No matching heading prefix returns empty list."""
         vec = (await embedding_provider.embed(["content"]))[0]
-        await content_store.index_chunks("doc_001", [
-            Chunk("doc_001", "Introduction", "content", vec, 0),
-        ])
-
-        result = await content_store.get_chunks_by_heading_prefix(
-            "doc_001", "Nonexistent Section"
+        await content_store.index_chunks(
+            "doc_001",
+            [
+                Chunk("doc_001", "Introduction", "content", vec, 0),
+            ],
         )
+
+        result = await content_store.get_chunks_by_heading_prefix("doc_001", "Nonexistent Section")
         assert result == []
 
-    async def test_ad_022_heading_prefix_no_partial_match(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_022_heading_prefix_no_partial_match(self, content_store, embedding_provider):
         """AD-022: Prefix matching is structural, not substring."""
         texts = ["a", "b", "c", "d"]
         headings = ["Method", "Methods", "Methods > Sampling", "Methodology"]
         embs = await embedding_provider.embed(texts)
 
-        chunks = [
-            Chunk("doc_001", headings[i], texts[i], embs[i], i)
-            for i in range(4)
-        ]
+        chunks = [Chunk("doc_001", headings[i], texts[i], embs[i], i) for i in range(4)]
         await content_store.index_chunks("doc_001", chunks)
 
-        result = await content_store.get_chunks_by_heading_prefix(
-            "doc_001", "Method"
-        )
+        result = await content_store.get_chunks_by_heading_prefix("doc_001", "Method")
         assert len(result) == 1
         assert result[0].heading_path == "Method"
 
-    async def test_ad_023_persistence_across_reopen(
-        self, tmp_path, embedding_provider
-    ):
+    async def test_ad_023_persistence_across_reopen(self, tmp_path, embedding_provider):
         """AD-023: Data persists across close/reopen cycle."""
         brain = tmp_path / "brain_023"
         brain.mkdir()
@@ -631,9 +623,12 @@ class TestLanceDBContentStore:
         # Write with first instance
         store1 = LanceDBContentStore(brain)
         vec = (await embedding_provider.embed(["persistent content"]))[0]
-        await store1.index_chunks("doc_001", [
-            Chunk("doc_001", "H1", "persistent content", vec, 0),
-        ])
+        await store1.index_chunks(
+            "doc_001",
+            [
+                Chunk("doc_001", "H1", "persistent content", vec, 0),
+            ],
+        )
         del store1  # Release connection
 
         # Read with new instance
@@ -646,26 +641,23 @@ class TestLanceDBContentStore:
         diff = sum((a - b) ** 2 for a, b in zip(result[0].embedding, vec))
         assert diff < 1e-6
 
-    async def test_ad_024_special_characters_in_heading(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_024_special_characters_in_heading(self, content_store, embedding_provider):
         """AD-024: Special characters in heading_path are handled correctly."""
         heading = "Section 3.1 > Smith's Method (2024)"
         vec = (await embedding_provider.embed(["special chars"]))[0]
 
-        await content_store.index_chunks("doc_001", [
-            Chunk("doc_001", heading, "special chars", vec, 0),
-        ])
-
-        result = await content_store.get_chunks_by_heading_prefix(
-            "doc_001", heading
+        await content_store.index_chunks(
+            "doc_001",
+            [
+                Chunk("doc_001", heading, "special chars", vec, 0),
+            ],
         )
+
+        result = await content_store.get_chunks_by_heading_prefix("doc_001", heading)
         assert len(result) == 1
         assert result[0].heading_path == heading
 
-    async def test_ad_025_index_replaces_existing(
-        self, content_store, embedding_provider
-    ):
+    async def test_ad_025_index_replaces_existing(self, content_store, embedding_provider):
         """AD-025: index_chunks replaces existing chunks for same document."""
         old_texts = ["old a", "old b", "old c"]
         new_texts = ["new x", "new y"]
@@ -673,16 +665,14 @@ class TestLanceDBContentStore:
         new_embs = await embedding_provider.embed(new_texts)
 
         # Index 3 old chunks
-        await content_store.index_chunks("doc_001", [
-            Chunk("doc_001", "H", old_texts[i], old_embs[i], i)
-            for i in range(3)
-        ])
+        await content_store.index_chunks(
+            "doc_001", [Chunk("doc_001", "H", old_texts[i], old_embs[i], i) for i in range(3)]
+        )
 
         # Replace with 2 new chunks
-        await content_store.index_chunks("doc_001", [
-            Chunk("doc_001", "H", new_texts[i], new_embs[i], i)
-            for i in range(2)
-        ])
+        await content_store.index_chunks(
+            "doc_001", [Chunk("doc_001", "H", new_texts[i], new_embs[i], i) for i in range(2)]
+        )
 
         result = await content_store.get_all_chunks("doc_001")
         assert len(result) == 2
@@ -771,9 +761,7 @@ class TestQwen3AbstractionProvider:
 
         # Tokenize the result using the model's tokenizer
         tokens = qwen3_provider._tokenizer.encode(result)
-        assert len(tokens) <= 100, (
-            f"Abstract has {len(tokens)} tokens, expected at most 100"
-        )
+        assert len(tokens) <= 100, f"Abstract has {len(tokens)} tokens, expected at most 100"
 
     async def test_ad_029_deterministic(self, qwen3_provider):
         """AD-029: Same input produces identical output."""
@@ -799,9 +787,7 @@ class TestQwen3AbstractionProvider:
         assert isinstance(result, str)
         assert len(result.strip()) > 0
 
-    async def test_ad_032_semantic_quality(
-        self, qwen3_provider, embedding_provider
-    ):
+    async def test_ad_032_semantic_quality(self, qwen3_provider, embedding_provider):
         """AD-032: Abstract is semantically related to input."""
         abstract = await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
 
@@ -809,20 +795,17 @@ class TestQwen3AbstractionProvider:
         vecs = await embedding_provider.embed([SAMPLE_TEXT, abstract])
         similarity = _cosine_sim(vecs[0], vecs[1])
 
-        assert similarity > 0.5, (
-            f"cosine_similarity={similarity:.4f}, expected > 0.5"
-        )
+        assert similarity > 0.5, f"cosine_similarity={similarity:.4f}, expected > 0.5"
 
         # Keyword overlap: at least one key concept appears in the abstract
         key_terms = ["health", "record", "clinical", "CRDT", "synchron"]
         abstract_lower = abstract.lower()
         matches = [t for t in key_terms if t.lower() in abstract_lower]
-        assert len(matches) >= 1, (
-            f"No key terms found in abstract. Terms checked: {key_terms}"
-        )
+        assert len(matches) >= 1, f"No key terms found in abstract. Terms checked: {key_terms}"
 
     async def test_ad_033_error_propagation(self, qwen3_provider, monkeypatch):
         """AD-033: LLM runtime error propagates as exception."""
+
         def failing_generate(*args, **kwargs):
             raise RuntimeError("Simulated MLX inference failure")
 
@@ -870,11 +853,16 @@ class TestQwen3LazyLoading:
 
 # ── Markdown Adapter: Source Provenance ────────────────────────────
 
-import os
-from datetime import datetime, timezone
-from pathlib import Path
+import os  # noqa: E402 -- grouped with the markdown-adapter test section below
+from datetime import (  # noqa: E402 -- grouped with the markdown-adapter test section below
+    datetime,
+    timezone,
+)
+from pathlib import Path  # noqa: E402 -- grouped with the markdown-adapter test section below
 
-from sage.source_adapters.markdown_adapter import MarkdownAdapter
+from sage.source_adapters.markdown_adapter import (  # noqa: E402 -- grouped with the markdown-adapter test section below
+    MarkdownAdapter,
+)
 
 
 class TestMarkdownAdapterProvenance:
@@ -901,11 +889,10 @@ class TestMarkdownAdapterProvenance:
 
 # ── Docx Adapter ────────────────────────────────────────────────────
 
-import hashlib
+import hashlib  # noqa: E402 -- grouped with the docx-adapter test section below
 
 try:
     import docx
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml.ns import qn
     from lxml import etree
 
@@ -913,9 +900,7 @@ try:
 except ImportError:
     _HAS_DOCX = False
 
-requires_docx = pytest.mark.skipif(
-    not _HAS_DOCX, reason="python-docx not available"
-)
+requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not available")
 
 
 def _make_docx(tmp_path: Path, filename: str = "test.docx") -> Path:
@@ -980,7 +965,6 @@ def _inject_cross_ref_field(paragraph, instruction: str, display_text: str) -> N
     cached display value.
     """
     p_elem = paragraph._element
-    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
     # Begin
     r_begin = etree.SubElement(p_elem, qn("w:r"))
@@ -1555,6 +1539,7 @@ def _convert_docx_to_dotx(docx_path: Path, dotx_path: Path) -> None:
     applies, so this fixture exercises the real format path.
     """
     import zipfile as _zipfile
+
     with _zipfile.ZipFile(docx_path, "r") as z_in:
         with _zipfile.ZipFile(dotx_path, "w", _zipfile.ZIP_DEFLATED) as z_out:
             for item in z_in.namelist():
@@ -1595,12 +1580,18 @@ def _build_template_fixture(tmp_path: Path, filename: str) -> Path:
 
     _add_custom_style(doc, "AppendixHeading", "Appendix Heading", "paragraph")
     _add_custom_style(
-        doc, "DefinitionsHeader", "Definitions Header",
-        "paragraph", num_id=100,
+        doc,
+        "DefinitionsHeader",
+        "Definitions Header",
+        "paragraph",
+        num_id=100,
     )
     _add_custom_style(
-        doc, "AnnotationChar", "Annotation Char",
-        "character", based_on="Normal",
+        doc,
+        "AnnotationChar",
+        "Annotation Char",
+        "character",
+        based_on="Normal",
     )
     _attach_numbering_to_builtin_style(doc, "Heading 1", num_id=101)
 
@@ -1619,12 +1610,14 @@ class TestDocxAdapterDotxSupport:
     async def test_ad_068_extensions_includes_dotx(self):
         """AD-068: DocxAdapter.EXTENSIONS contains both .docx and .dotx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         assert ".docx" in DocxAdapter.EXTENSIONS
         assert ".dotx" in DocxAdapter.EXTENSIONS
 
     async def test_ad_069_dotx_loads_without_error(self, tmp_path):
         """AD-069: A .dotx file is parsed successfully despite template content type."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "fixture.dotx")
 
@@ -1635,14 +1628,12 @@ class TestDocxAdapterDotxSupport:
         assert len(result.content_hash) == 64
         assert len(result.headings) >= 1
         # content_hash is over raw .dotx bytes, not the shadow copy
-        assert (
-            result.content_hash
-            == hashlib.sha256(dotx_path.read_bytes()).hexdigest()
-        )
+        assert result.content_hash == hashlib.sha256(dotx_path.read_bytes()).hexdigest()
 
     async def test_ad_070_dotx_has_inventory_docx_does_not(self, tmp_path):
         """AD-070: template_style_inventory is .dotx-only; absent on .docx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "t.dotx")
 
@@ -1666,6 +1657,7 @@ class TestDocxAdapterDotxSupport:
     async def test_ad_071_inventory_entries_have_required_shape(self, tmp_path):
         """AD-071: Every inventory entry carries exactly the six required fields."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "shape.dotx")
 
@@ -1673,7 +1665,12 @@ class TestDocxAdapterDotxSupport:
         inventory = result.metadata["template_style_inventory"]
 
         required_keys = {
-            "id", "name", "type", "based_on", "has_numbering", "is_custom",
+            "id",
+            "name",
+            "type",
+            "based_on",
+            "has_numbering",
+            "is_custom",
             "numbering_detail",
         }
         allowed_types = {"paragraph", "character", "table", "numbering"}
@@ -1712,6 +1709,7 @@ class TestDocxAdapterDotxSupport:
     async def test_ad_072_has_numbering_reflects_active_reference(self, tmp_path):
         """AD-072: has_numbering is True only for styles with an active numPr."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "numbering.dotx")
 
@@ -1737,6 +1735,7 @@ class TestDocxAdapterDotxSupport:
     async def test_ad_073_dotx_emits_tags_docx_does_not(self, tmp_path):
         """AD-073: .dotx emits adapter_tags with prescribed namespacing; .docx does not."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "tags.dotx")
 
@@ -1777,6 +1776,7 @@ class TestDocxAdapterDotxSupport:
     async def test_ad_074_dotx_synthesizes_non_empty_text(self, tmp_path):
         """AD-074: .dotx projection produces non-empty style-surface text."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "surface.dotx")
 
@@ -1901,7 +1901,12 @@ class TestDocxAdapterDotxSupport:
         assert dec["has_numbering"] is True
         detail = dec["numbering_detail"]
         assert set(detail.keys()) == {
-            "num_id", "abstract_num_id", "ilvl", "num_fmt", "lvl_text", "suppressed",
+            "num_id",
+            "abstract_num_id",
+            "ilvl",
+            "num_fmt",
+            "lvl_text",
+            "suppressed",
         }
         assert detail["num_id"] == 300
         assert detail["abstract_num_id"] == 300
@@ -1938,6 +1943,7 @@ class TestDocxAdapterDotxSupport:
     async def test_ad_074_docx_projection_unchanged(self, tmp_path):
         """AD-074 (negative): .docx projection does not receive synthesized text."""
         from sage.source_adapters.docx_adapter import DocxAdapter
+
         adapter = DocxAdapter()
 
         doc = docx.Document()
@@ -1964,9 +1970,7 @@ try:
 except ImportError:
     _HAS_OPENPYXL = False
 
-requires_openpyxl = pytest.mark.skipif(
-    not _HAS_OPENPYXL, reason="openpyxl not available"
-)
+requires_openpyxl = pytest.mark.skipif(not _HAS_OPENPYXL, reason="openpyxl not available")
 
 
 def _make_xlsx(tmp_path: Path, filename: str = "test.xlsx") -> Path:
@@ -2087,9 +2091,7 @@ class TestXlsxAdapter:
 
         adapter = XlsxAdapter()
         rows = [["ID", "Value"]] + [[i, f"val_{i}"] for i in range(1, 9)]
-        path = _make_multisheet_xlsx(
-            tmp_path, {"Data": rows}, filename="preview.xlsx"
-        )
+        path = _make_multisheet_xlsx(tmp_path, {"Data": rows}, filename="preview.xlsx")
 
         result = await adapter.project(path)
         content = result.headings[0].content
@@ -2107,9 +2109,7 @@ class TestXlsxAdapter:
 
         adapter = XlsxAdapter()
         rows = [["ID", "Value"]] + [[i, f"val_{i}"] for i in range(1, 9)]
-        path = _make_multisheet_xlsx(
-            tmp_path, {"Data": rows}, filename="limited.xlsx"
-        )
+        path = _make_multisheet_xlsx(tmp_path, {"Data": rows}, filename="limited.xlsx")
 
         result = await adapter.project(path, config={"preview_rows": 2})
         content = result.headings[0].content
@@ -2124,9 +2124,7 @@ class TestXlsxAdapter:
 
         adapter = XlsxAdapter()
         rows = [["A", "B", "C"]] + [[1, 2, 3]] * 20
-        path = _make_multisheet_xlsx(
-            tmp_path, {"Big": rows}, filename="dims.xlsx"
-        )
+        path = _make_multisheet_xlsx(tmp_path, {"Big": rows}, filename="dims.xlsx")
 
         result = await adapter.project(path)
         content = result.headings[0].content
@@ -2319,8 +2317,8 @@ def _make_pdf_with_pages(
     pages: [[line1, line2, ...], [line1, line2, ...], ...]
     Each inner list is the lines of one page.
     """
-    from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
 
     c = canvas.Canvas(str(path), pagesize=letter)
     # reportlab defaults /Info /Title to "untitled" if not set; explicitly
@@ -2344,8 +2342,8 @@ def _make_pdf_with_outline(
     outline: list of (level_1_indexed, title, page_index_0_indexed).
     pages: text lines per page.
     """
-    from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
 
     c = canvas.Canvas(str(path), pagesize=letter)
     # reportlab defaults /Info /Title to "untitled" if not set; explicitly
@@ -2383,9 +2381,9 @@ def _make_scanned_pdf(path: Path, image_caption: str = "scanned text") -> Path:
     No text drawing operations are performed, so pdfplumber extracts an
     empty (or near-empty) text layer.
     """
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.pagesizes import letter
     from PIL import Image, ImageDraw
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
 
     img_path = path.with_suffix(".png")
     img = Image.new("RGB", (400, 100), color="white")
@@ -2402,13 +2400,11 @@ def _make_scanned_pdf(path: Path, image_caption: str = "scanned text") -> Path:
     return path
 
 
-def _make_encrypted_pdf(
-    path: Path, body_text: str = "encrypted content"
-) -> Path:
+def _make_encrypted_pdf(path: Path, body_text: str = "encrypted content") -> Path:
     """Create a PDF and encrypt it with an owner password."""
     import pypdf
-    from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
 
     plain_path = path.with_suffix(".plain.pdf")
     c = canvas.Canvas(str(plain_path), pagesize=letter)
@@ -2481,8 +2477,9 @@ class TestPdfAdapter:
 
     def test_ad_076_extension_registration(self):
         """AD-076: PdfAdapter registers .pdf as a supported extension."""
-        from sage.source_adapters.pdf_adapter import PdfAdapter
         import re
+
+        from sage.source_adapters.pdf_adapter import PdfAdapter
 
         assert PdfAdapter.EXTENSIONS == [".pdf"]
         assert isinstance(PdfAdapter.VERSION, str)
@@ -2507,12 +2504,11 @@ class TestPdfAdapter:
 
     async def test_ad_078_content_hash_is_sha256_of_bytes(self, tmp_path):
         """AD-078: content_hash is SHA-256 hex of raw source bytes."""
-        from sage.source_adapters.pdf_adapter import PdfAdapter
         import hashlib
 
-        path = _make_pdf_with_pages(
-            tmp_path / "hash.pdf", pages=[["hash test body"]]
-        )
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(tmp_path / "hash.pdf", pages=[["hash test body"]])
         adapter = PdfAdapter()
         result = await adapter.project(path)
 
@@ -2525,13 +2521,12 @@ class TestPdfAdapter:
 
     async def test_ad_079_source_modified_at_from_mtime(self, tmp_path):
         """AD-079: source_modified_at extracted from file mtime."""
-        from sage.source_adapters.pdf_adapter import PdfAdapter
         import os
         from datetime import datetime, timezone
 
-        path = _make_pdf_with_pages(
-            tmp_path / "mtime.pdf", pages=[["mtime test"]]
-        )
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(tmp_path / "mtime.pdf", pages=[["mtime test"]])
         # Set a known mtime
         target_ts = datetime(2025, 6, 15, 12, 30, 0, tzinfo=timezone.utc).timestamp()
         os.utime(path, (target_ts, target_ts))
@@ -2542,7 +2537,9 @@ class TestPdfAdapter:
         assert isinstance(result.metadata["source_modified_at"], str)
         parsed = datetime.fromisoformat(result.metadata["source_modified_at"])
         assert parsed.tzinfo is not None
-        assert abs((parsed - datetime.fromtimestamp(target_ts, tz=timezone.utc)).total_seconds()) < 1
+        assert (
+            abs((parsed - datetime.fromtimestamp(target_ts, tz=timezone.utc)).total_seconds()) < 1
+        )
 
     async def test_ad_080_page_count_metadata(self, tmp_path):
         """AD-080: page_count metadata reflects actual page count."""
@@ -2748,8 +2745,9 @@ class TestPdfAdapter:
 
     async def test_ad_090_encrypted_pdf_raises(self, tmp_path):
         """AD-090: Encrypted PDF raises ValueError."""
-        from sage.source_adapters.pdf_adapter import PdfAdapter
         import re
+
+        from sage.source_adapters.pdf_adapter import PdfAdapter
 
         path = _make_encrypted_pdf(tmp_path / "encrypted.pdf")
         adapter = PdfAdapter()
@@ -2773,9 +2771,10 @@ class TestPdfAdapter:
 
     async def test_ad_092_malformed_pdf_no_stderr_leakage(self, tmp_path):
         """AD-092: Malformed-but-readable PDF projects successfully without stderr leakage."""
-        from sage.source_adapters.pdf_adapter import PdfAdapter
         import contextlib
         import io
+
+        from sage.source_adapters.pdf_adapter import PdfAdapter
 
         path = _make_malformed_xref_pdf(tmp_path / "malformed.pdf")
         adapter = PdfAdapter()
@@ -2807,7 +2806,8 @@ class TestPdfAdapter:
     # ── Section 8.7 — Configuration ──────────────────────────────
 
     async def test_ad_094_max_pages_truncation(self, tmp_path):
-        """AD-094: max_pages truncates; pages_extracted and pdf:truncated tag distinguish source vs. projection."""
+        """AD-094: max_pages truncates; pages_extracted and pdf:truncated tag
+        distinguish source vs. projection."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
         path = _make_pdf_with_pages(

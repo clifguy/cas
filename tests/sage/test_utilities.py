@@ -5,24 +5,26 @@ eval_retrieval (retrieval health assertions from YAML).
 """
 
 import asyncio
-from pathlib import Path
 
 import pytest
 import yaml
 
-from sage.adapters.stubs import SeededEmbeddingProvider, StubContentStore
+from sage.adapters.stubs import (
+    SeededEmbeddingProvider,
+    StubAbstractionProvider,
+    StubContentStore,
+)
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
+from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.adapters.stubs import StubAbstractionProvider, StubEmbeddingProvider
-from sage.models.schemas import IngestRequest
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def utilities_service(graph_store, stub_content_store, stub_embedding_provider, minimal_config):
@@ -36,8 +38,13 @@ def utilities_service(graph_store, stub_content_store, stub_embedding_provider, 
 
 @pytest.fixture
 async def ingested_doc(
-    graph_store, lock_manager, stub_content_store, stub_embedding_provider,
-    stub_abstraction_provider, minimal_config, tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_config,
+    tmp_vault_dir,
 ):
     """Ingest a test document and wait for pipeline to complete."""
     # Create test source file
@@ -70,14 +77,13 @@ async def ingested_doc(
 # BH-038: export_projection enforces path containment
 # ---------------------------------------------------------------------------
 
+
 async def test_bh038_path_traversal_denied(utilities_service, ingested_doc):
     """Relative path with ../ that escapes storage_root is rejected."""
     from sage.api.errors import PathTraversalDeniedError
 
     with pytest.raises(PathTraversalDeniedError) as exc_info:
-        await utilities_service.export_projection(
-            ingested_doc.id, "../../etc/passwd"
-        )
+        await utilities_service.export_projection(ingested_doc.id, "../../etc/passwd")
 
     assert exc_info.value.code == "path_traversal_denied"
     assert exc_info.value.status_code == 400
@@ -87,11 +93,10 @@ async def test_bh038_path_traversal_denied(utilities_service, ingested_doc):
 # BH-039: export_projection allows valid relative paths
 # ---------------------------------------------------------------------------
 
+
 async def test_bh039_valid_relative_path(utilities_service, ingested_doc, tmp_vault_dir):
     """Relative path within storage_root succeeds and writes file."""
-    result = await utilities_service.export_projection(
-        ingested_doc.id, "exports/doc_a.md"
-    )
+    result = await utilities_service.export_projection(ingested_doc.id, "exports/doc_a.md")
 
     assert result.document_id == ingested_doc.id
     expected_path = tmp_vault_dir / "sources" / "exports" / "doc_a.md"
@@ -106,14 +111,13 @@ async def test_bh039_valid_relative_path(utilities_service, ingested_doc, tmp_va
 # BH-040: export_projection rejects absolute paths outside vault
 # ---------------------------------------------------------------------------
 
+
 async def test_bh040_absolute_path_outside_vault(utilities_service, ingested_doc):
     """Absolute path that doesn't start with storage_root is rejected."""
     from sage.api.errors import PathTraversalDeniedError
 
     with pytest.raises(PathTraversalDeniedError) as exc_info:
-        await utilities_service.export_projection(
-            ingested_doc.id, "/home/user/outside.md"
-        )
+        await utilities_service.export_projection(ingested_doc.id, "/home/user/outside.md")
 
     assert exc_info.value.code == "path_traversal_denied"
     assert exc_info.value.status_code == 400
@@ -148,9 +152,10 @@ async def test_read_projection_document_not_found(utilities_service):
 
 async def test_read_projection_no_projection(utilities_service, graph_store):
     """read_projection raises NoProjectionError when no chunks exist."""
+    from datetime import datetime, timezone
+
     from sage.api.errors import NoProjectionError
     from sage.models.schemas import Document
-    from datetime import datetime, timezone
 
     # Insert a document directly into the graph store without indexing chunks
     doc = Document(
@@ -177,8 +182,11 @@ async def test_read_projection_no_projection(utilities_service, graph_store):
 # BH-041: Retrieval assertions loaded from separate YAML file
 # ---------------------------------------------------------------------------
 
+
 async def test_bh041_retrieval_assertions_from_yaml(
-    graph_store, lock_manager, tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    tmp_vault_dir,
 ):
     """Assertions are loaded from YAML, results contain pass/fail per assertion."""
     # Use seeded embedding provider for meaningful search results
@@ -287,8 +295,12 @@ async def test_bh041_retrieval_assertions_from_yaml(
 # BH-042: Missing assertions file returns error
 # ---------------------------------------------------------------------------
 
+
 async def test_bh042_missing_assertions_file(
-    graph_store, stub_content_store, stub_embedding_provider, tmp_vault_dir,
+    graph_store,
+    stub_content_store,
+    stub_embedding_provider,
+    tmp_vault_dir,
 ):
     """Missing assertions file produces clear error."""
     from sage.api.errors import AssertionsFileNotFoundError
@@ -337,7 +349,10 @@ async def test_bh042_missing_assertions_file(
 
 
 async def test_bh042_malformed_assertions_file(
-    graph_store, stub_content_store, stub_embedding_provider, tmp_vault_dir,
+    graph_store,
+    stub_content_store,
+    stub_embedding_provider,
+    tmp_vault_dir,
 ):
     """Malformed assertions file produces clear error."""
     from sage.api.errors import AssertionsFileInvalidError
@@ -390,7 +405,10 @@ async def test_bh042_malformed_assertions_file(
 
 
 async def test_no_assertions_configured(
-    graph_store, stub_content_store, stub_embedding_provider, minimal_config,
+    graph_store,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_config,
 ):
     """No assertions_file in vault config returns error."""
     from sage.api.errors import AssertionsNotConfiguredError
@@ -411,6 +429,7 @@ async def test_no_assertions_configured(
 # ---------------------------------------------------------------------------
 # Additional export_projection edge cases
 # ---------------------------------------------------------------------------
+
 
 async def test_export_nonexistent_document(utilities_service):
     """Export for nonexistent document returns 404."""

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from sage.api.errors import InvalidLifecycleTransitionError
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
 
@@ -89,9 +88,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     def failing_exec_insert_edge(conn, edge):
         raise RuntimeError("simulated lock contention on edges table")
 
-    monkeypatch.setattr(
-        graph_store, "_exec_insert_edge", failing_exec_insert_edge
-    )
+    monkeypatch.setattr(graph_store, "_exec_insert_edge", failing_exec_insert_edge)
 
     with pytest.raises(RuntimeError, match="simulated lock contention"):
         await lifecycle_service.set_lifecycle(
@@ -109,9 +106,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     assert await _supersedes_edges(graph_store, succ.id, pred.id) == []
 
     # Restore and retry: the same call should now succeed cleanly.
-    monkeypatch.setattr(
-        graph_store, "_exec_insert_edge", original_exec_insert_edge
-    )
+    monkeypatch.setattr(graph_store, "_exec_insert_edge", original_exec_insert_edge)
     response = await lifecycle_service.set_lifecycle(
         pred.id,
         SetLifecycleRequest(action="supersede", new_version_id=succ.id),
@@ -149,9 +144,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
     async def failing_atomic(*args, **kwargs):
         raise RuntimeError("simulated mid-transaction failure")
 
-    monkeypatch.setattr(
-        graph_store, "insert_with_supersede_atomic", failing_atomic
-    )
+    monkeypatch.setattr(graph_store, "insert_with_supersede_atomic", failing_atomic)
 
     with pytest.raises(RuntimeError, match="simulated mid-transaction failure"):
         await ingestion_service.ingest(
@@ -175,9 +168,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
     assert [e for e in edges if e.edge_type == "supersedes"] == []
 
     # Restore and retry: the same ingest should now succeed cleanly.
-    monkeypatch.setattr(
-        graph_store, "insert_with_supersede_atomic", original_atomic
-    )
+    monkeypatch.setattr(graph_store, "insert_with_supersede_atomic", original_atomic)
     v2 = await ingestion_service.ingest(
         IngestRequest(
             source="bh136_v2.md",

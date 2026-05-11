@@ -1,7 +1,6 @@
 """POST /sage_vaults/{vault_id}/users -- register_user (BH-011)."""
 
 from fastapi import APIRouter, Depends
-from starlette.responses import JSONResponse
 
 from sage.api.dependencies import get_user_service, get_vault_id
 from sage.models.schemas import RegisterUserRequest, User

@@ -62,41 +62,54 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
     now = datetime.now(timezone.utc)
     for i in range(1, len(chain)):
         newer, older = chain[i], chain[i - 1]
-        await graph_store.insert_edge(Edge(
-            id=str(uuid.uuid4()),
-            source_id=newer,
-            target_id=older,
-            edge_type=EdgeType.SUPERSEDES,
-            resolution_policy=ResolutionPolicy.NONE,
-            created_at=now + timedelta(seconds=i),
-        ))
+        await graph_store.insert_edge(
+            Edge(
+                id=str(uuid.uuid4()),
+                source_id=newer,
+                target_id=older,
+                edge_type=EdgeType.SUPERSEDES,
+                resolution_policy=ResolutionPolicy.NONE,
+                created_at=now + timedelta(seconds=i),
+            )
+        )
 
 
-async def _seed_retract_setup(
-    graph_store, graph_ops_service, retract_anchor: str | None = None
-):
+async def _seed_retract_setup(graph_store, graph_ops_service, retract_anchor: str | None = None):
     if retract_anchor is None:
         retract_anchor = _id("a7")
     """Canonical example plus a retracts edge anchored at `retract_anchor`."""
-    chain_a = [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5"), _id("a6"), _id("a7"), _id("a8")]
+    chain_a = [
+        _id("a1"),
+        _id("a2"),
+        _id("a3"),
+        _id("a4"),
+        _id("a5"),
+        _id("a6"),
+        _id("a7"),
+        _id("a8"),
+    ]
     chain_b = [_id("b1"), _id("b2"), _id("b3")]
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(LinkRequest(
-        source_id=_id("a3"),
-        target_id=_id("b2"),
-        edge_type=EdgeType.COVERS,
-        source_valid_from_version=_id("a3"),
-        target_valid_from_version=_id("b2"),
-    ))
-    retracts_edge = await graph_ops_service.link(LinkRequest(
-        source_id=retract_anchor,
-        target_id=None,
-        edge_type=EdgeType.RETRACTS,
-        retracted_edge_id=covers.id,
-        source_valid_from_version=retract_anchor,
-    ))
+    covers = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("a3"),
+            target_id=_id("b2"),
+            edge_type=EdgeType.COVERS,
+            source_valid_from_version=_id("a3"),
+            target_valid_from_version=_id("b2"),
+        )
+    )
+    retracts_edge = await graph_ops_service.link(
+        LinkRequest(
+            source_id=retract_anchor,
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            retracted_edge_id=covers.id,
+            source_valid_from_version=retract_anchor,
+        )
+    )
     return covers, retracts_edge
 
 
@@ -104,17 +117,18 @@ async def _seed_retract_setup(
 # CR-023: retracts at a7 suppresses covers at query (a8, *)
 # ---------------------------------------------------------------------------
 
-async def test_cr_023_retracts_suppresses_downstream_of_anchor(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_023_retracts_suppresses_downstream_of_anchor(graph_store, graph_ops_service):
     await _seed_retract_setup(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a8"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a8"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert out.nodes == []
 
 
@@ -122,17 +136,18 @@ async def test_cr_023_retracts_suppresses_downstream_of_anchor(
 # CR-024: retracts at a7 does not suppress covers at query (a6, *)
 # ---------------------------------------------------------------------------
 
-async def test_cr_024_retracts_does_not_suppress_upstream_of_anchor(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_024_retracts_does_not_suppress_upstream_of_anchor(graph_store, graph_ops_service):
     await _seed_retract_setup(graph_store, graph_ops_service)
 
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a6"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a6"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in out.nodes] == [_id("b2")]
 
 
@@ -140,17 +155,18 @@ async def test_cr_024_retracts_does_not_suppress_upstream_of_anchor(
 # CR-025: retracts does not affect queries from the counterpart chain
 # ---------------------------------------------------------------------------
 
-async def test_cr_025_retracts_is_one_sided(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_025_retracts_is_one_sided(graph_store, graph_ops_service):
     await _seed_retract_setup(graph_store, graph_ops_service)
 
-    inbound = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("b3"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.INBOUND,
-        depth=2,
-    ))
+    inbound = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("b3"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.INBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in inbound.nodes] == [_id("a3")]
 
 
@@ -158,44 +174,51 @@ async def test_cr_025_retracts_is_one_sided(
 # CR-026: multiple retracts of the same edge — first in lineage wins
 # ---------------------------------------------------------------------------
 
-async def test_cr_026_multiple_retracts_any_in_lineage_suppresses(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_026_multiple_retracts_any_in_lineage_suppresses(graph_store, graph_ops_service):
     covers, _ = await _seed_retract_setup(graph_store, graph_ops_service)
     # Add a second retracts anchored at a5.
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("a5"),
-        target_id=None,
-        edge_type=EdgeType.RETRACTS,
-        retracted_edge_id=covers.id,
-        source_valid_from_version=_id("a5"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("a5"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            retracted_edge_id=covers.id,
+            source_valid_from_version=_id("a5"),
+        )
+    )
 
     # a8 has both a5 and a7 in its lineage -> suppressed.
-    out_a8 = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a8"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out_a8 = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a8"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert out_a8.nodes == []
 
     # a6 has a5 in lineage but not a7 -> suppressed by the a5 retract.
-    out_a6 = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a6"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out_a6 = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a6"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert out_a6.nodes == []
 
     # a4 has neither a5 nor a7 in lineage -> surfaces.
-    out_a4 = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a4"),
-        edge_type=EdgeType.COVERS,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    out_a4 = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a4"),
+            edge_type=EdgeType.COVERS,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in out_a4.nodes] == [_id("b2")]
 
 
@@ -203,9 +226,8 @@ async def test_cr_026_multiple_retracts_any_in_lineage_suppresses(
 # CR-027: retracts edge itself is traversable (policy none)
 # ---------------------------------------------------------------------------
 
-async def test_cr_027_retracts_edge_itself_traversable(
-    graph_store, graph_ops_service
-):
+
+async def test_cr_027_retracts_edge_itself_traversable(graph_store, graph_ops_service):
     _, retracts_edge = await _seed_retract_setup(graph_store, graph_ops_service)
 
     # Outbound traverse from a7 for edge_type=retracts. The retracts edge
@@ -226,6 +248,7 @@ async def test_cr_027_retracts_edge_itself_traversable(
 # CR-028: retracts of a policy=none edge - permitted, lineage fact only
 # ---------------------------------------------------------------------------
 
+
 async def test_cr_028_retracts_of_supersedes_edge_does_not_affect_chain(
     graph_store, graph_ops_service
 ):
@@ -234,30 +257,30 @@ async def test_cr_028_retracts_of_supersedes_edge_does_not_affect_chain(
     await _seed_supersedes_chain(graph_store, chain_a)
 
     # Identify a supersedes edge (a3 -> a2) and retract it from a4.
-    a3_supersedes = await graph_store.get_edges_by_source(
-        _id("a3"), edge_type="supersedes"
-    )
-    supersedes_edge = next(
-        e for e in a3_supersedes if e.target_id == _id("a2")
-    )
+    a3_supersedes = await graph_store.get_edges_by_source(_id("a3"), edge_type="supersedes")
+    supersedes_edge = next(e for e in a3_supersedes if e.target_id == _id("a2"))
     assert supersedes_edge is not None
 
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("a4"),
-        target_id=None,
-        edge_type=EdgeType.RETRACTS,
-        retracted_edge_id=supersedes_edge.id,
-        source_valid_from_version=_id("a4"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("a4"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            retracted_edge_id=supersedes_edge.id,
+            source_valid_from_version=_id("a4"),
+        )
+    )
 
     # Supersedes traversal from a5 should still reach the full chain. The
     # retracts primitive does not veto policy=none edges.
-    out = await graph_ops_service.traverse(TraverseRequest(
-        start_id=_id("a5"),
-        edge_type=EdgeType.SUPERSEDES,
-        direction=TraversalDirection.OUTBOUND,
-        depth=5,
-    ))
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=_id("a5"),
+            edge_type=EdgeType.SUPERSEDES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=5,
+        )
+    )
     assert {n.document.id for n in out.nodes} == {_id("a1"), _id("a2"), _id("a3"), _id("a4")}
 
 
@@ -269,9 +292,7 @@ from sage.models.edge_registry import EdgeTypeRegistry  # noqa: E402
 from sage.services.graph_ops import GraphOpsService  # noqa: E402
 
 
-async def test_cr_053_retracts_suppresses_transitive_target_edge(
-    graph_store, minimal_config
-):
+async def test_cr_053_retracts_suppresses_transitive_target_edge(graph_store, minimal_config):
     """Retracts must suppress transitive_target edges the same way it
     suppresses transitive_source / transitive_both: when the retract
     anchor is in the query start's supersedes lineage.
@@ -281,57 +302,65 @@ async def test_cr_053_retracts_suppresses_transitive_target_edge(
     retract, outbound from a3 surfaces b2. With the retract in force,
     outbound from a3 is empty.
     """
-    registry = EdgeTypeRegistry({
-        EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
-        EdgeType.RETRACTS: ResolutionPolicy.NONE,
-        EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
-        EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
-        EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
-        EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
-        EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
-    })
-    service = GraphOpsService(
-        graph_store, minimal_config, edge_type_registry=registry
+    registry = EdgeTypeRegistry(
+        {
+            EdgeType.SUPERSEDES: ResolutionPolicy.NONE,
+            EdgeType.RETRACTS: ResolutionPolicy.NONE,
+            EdgeType.MERGED_FROM: ResolutionPolicy.NONE,
+            EdgeType.DERIVED_FROM: ResolutionPolicy.TRANSITIVE_SOURCE,
+            EdgeType.INSTANTIATED_FROM: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.REFERENCES: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.COVERS: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.BUNDLES_WITH: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.DEPENDS_ON: ResolutionPolicy.TRANSITIVE_BOTH,
+            EdgeType.AUTHORITATIVE_FOR: ResolutionPolicy.TRANSITIVE_TARGET,
+            EdgeType.SYNC_TARGET: ResolutionPolicy.TBD,
+        }
     )
+    service = GraphOpsService(graph_store, minimal_config, edge_type_registry=registry)
 
     await _seed_docs(graph_store, _id("a3"), _id("b1"), _id("b2"))
     await _seed_supersedes_chain(graph_store, [_id("b1"), _id("b2")])
 
-    auth = await service.link(LinkRequest(
-        source_id=_id("a3"),
-        target_id=_id("b2"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        target_valid_from_version=_id("b2"),
-    ))
+    auth = await service.link(
+        LinkRequest(
+            source_id=_id("a3"),
+            target_id=_id("b2"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            target_valid_from_version=_id("b2"),
+        )
+    )
 
     # Baseline: without a retract, the edge surfaces outbound from a3.
-    baseline = await service.traverse(TraverseRequest(
-        start_id=_id("a3"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    baseline = await service.traverse(
+        TraverseRequest(
+            start_id=_id("a3"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert [n.document.id for n in baseline.nodes] == [_id("b2")]
 
     # Retract anchored at a3: retract.source_valid_from_version=a3 sits
     # in the lineage of query start a3.
-    await service.link(LinkRequest(
-        source_id=_id("a3"),
-        target_id=None,
-        edge_type=EdgeType.RETRACTS,
-        retracted_edge_id=auth.id,
-        source_valid_from_version=_id("a3"),
-    ))
+    await service.link(
+        LinkRequest(
+            source_id=_id("a3"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            retracted_edge_id=auth.id,
+            source_valid_from_version=_id("a3"),
+        )
+    )
 
     # Suppression fires: the transitive_target edge is filtered out.
-    suppressed = await service.traverse(TraverseRequest(
-        start_id=_id("a3"),
-        edge_type=EdgeType.AUTHORITATIVE_FOR,
-        direction=TraversalDirection.OUTBOUND,
-        depth=2,
-    ))
+    suppressed = await service.traverse(
+        TraverseRequest(
+            start_id=_id("a3"),
+            edge_type=EdgeType.AUTHORITATIVE_FOR,
+            direction=TraversalDirection.OUTBOUND,
+            depth=2,
+        )
+    )
     assert suppressed.nodes == []

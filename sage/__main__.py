@@ -2,7 +2,6 @@
 
 import argparse
 import os
-import sys
 from pathlib import Path
 
 import uvicorn
@@ -10,9 +9,7 @@ import uvicorn
 from sage.app import create_app
 
 
-def _resolve_vault_root(
-    args: argparse.Namespace, env: dict[str, str] | None = None
-) -> Path:
+def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = None) -> Path:
     """Resolve the vault root directory.
 
     Resolution order: ``args.vault_root`` (from the ``--vault-root`` flag) →
@@ -41,6 +38,7 @@ def _resolve_vault_root(
 
     return Path.home() / "sage_vaults"
 
+
 # Uvicorn's default log_config with a timestamp prefix added, matching the
 # `[MM/DD/YY HH:MM:SS]` style RichHandler installs for the rest of the
 # process. `propagate=False` keeps these records out of the root logger so
@@ -57,7 +55,7 @@ UVICORN_LOG_CONFIG: dict = {
         },
         "access": {
             "()": "uvicorn.logging.AccessFormatter",
-            "fmt": '[%(asctime)s] %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+            "fmt": '[%(asctime)s] %(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',  # noqa: E501 -- uvicorn log format string; breaking harms readability
             "datefmt": "%m/%d/%y %H:%M:%S",
         },
     },
@@ -106,9 +104,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--host", default="127.0.0.1", help="Uvicorn bind host (default: 127.0.0.1)."
     )
-    parser.add_argument(
-        "--port", type=int, default=8000, help="Uvicorn port (default: 8000)."
-    )
+    parser.add_argument("--port", type=int, default=8000, help="Uvicorn port (default: 8000).")
     return parser
 
 

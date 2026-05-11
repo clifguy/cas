@@ -14,7 +14,7 @@ from sage.adapters.interfaces import (
     EmbeddingProvider,
 )
 from sage.adapters.stubs import StubAbstractionProvider
-from sage.config import VaultConfig, load_vault_config
+from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
@@ -109,6 +109,7 @@ async def initialize_services(
     if abstraction_provider is None:
         if config.abstraction.enabled and config.abstraction.model:
             from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+
             abstraction_provider = Qwen3AbstractionProvider(
                 model_id=config.abstraction.model,
             )
@@ -152,9 +153,7 @@ async def initialize_services(
         config=config,
     )
     staging_edges_service = StagingEdgesService(graph_store)
-    vault_config_service = VaultConfigService(
-        graph_store, content_store, config, registry_service
-    )
+    vault_config_service = VaultConfigService(graph_store, content_store, config, registry_service)
 
     # Bootstrap vault owner
     await user_service.bootstrap_owner()

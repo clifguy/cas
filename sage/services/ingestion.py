@@ -20,11 +20,11 @@ import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
-from sage.adapters.interfaces import AbstractionProvider, ContentStore, Chunk, EmbeddingProvider
+from sage.adapters.interfaces import AbstractionProvider, Chunk, ContentStore, EmbeddingProvider
 from sage.api.errors import (
     AdapterNotFoundError,
     DocumentNotFoundError,
@@ -99,9 +99,12 @@ def _macos_libc() -> ctypes.CDLL | None:
     #                  void *value, size_t size,
     #                  u_int32_t position, int options);
     libc.getxattr.argtypes = [
-        ctypes.c_char_p, ctypes.c_char_p,
-        ctypes.c_void_p, ctypes.c_size_t,
-        ctypes.c_uint32, ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
     ]
     libc.getxattr.restype = ctypes.c_ssize_t
 
@@ -109,15 +112,20 @@ def _macos_libc() -> ctypes.CDLL | None:
     #              void *value, size_t size,
     #              u_int32_t position, int options);
     libc.setxattr.argtypes = [
-        ctypes.c_char_p, ctypes.c_char_p,
-        ctypes.c_void_p, ctypes.c_size_t,
-        ctypes.c_uint32, ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
     ]
     libc.setxattr.restype = ctypes.c_int
 
     # int removexattr(const char *path, const char *name, int options);
     libc.removexattr.argtypes = [
-        ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_int,
     ]
     libc.removexattr.restype = ctypes.c_int
 
@@ -136,8 +144,10 @@ def _read_finder_info(path: Path) -> bytes | None:
     rc = _LIBC.getxattr(
         str(path).encode("utf-8"),
         _FINDER_INFO_NAME,
-        buf, _FINDER_INFO_LEN,
-        0, _XATTR_NOFOLLOW,
+        buf,
+        _FINDER_INFO_LEN,
+        0,
+        _XATTR_NOFOLLOW,
     )
     if rc < 0:
         return None
@@ -152,8 +162,10 @@ def _write_finder_info(path: Path, data: bytes) -> bool:
     rc = _LIBC.setxattr(
         str(path).encode("utf-8"),
         _FINDER_INFO_NAME,
-        buf, len(data),
-        0, _XATTR_NOFOLLOW,
+        buf,
+        len(data),
+        0,
+        _XATTR_NOFOLLOW,
     )
     return rc == 0
 
@@ -221,6 +233,7 @@ def _strip_ui_invisibility(path: Path) -> None:
 @dataclass
 class IngestResult:
     """Result of an ingestion operation."""
+
     document: Document
     is_new: bool
 
@@ -233,11 +246,7 @@ def _deep_merge_dicts(base: dict, override: dict) -> dict:
     """
     result = dict(base)
     for key, value in override.items():
-        if (
-            key in result
-            and isinstance(result[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge_dicts(result[key], value)
         else:
             result[key] = value
@@ -321,9 +330,7 @@ class IngestionService:
             return dict(vault_config)
         return _deep_merge_dicts(vault_config, request_config)
 
-    def _ensure_vault_local(
-        self, source_path: Path, storage_root: Path
-    ) -> str:
+    def _ensure_vault_local(self, source_path: Path, storage_root: Path) -> str:
         """Return a vault-relative path to the source file, copying it
         into ``{storage_root}/imports/`` if it lives outside the vault.
 
@@ -363,7 +370,9 @@ class IngestionService:
         return str(dest.relative_to(storage_root))
 
     async def ingest(
-        self, request: IngestRequest, wait_for_pipeline: bool = True,
+        self,
+        request: IngestRequest,
+        wait_for_pipeline: bool = True,
     ) -> IngestResult:
         """Execute Stage 1 synchronously and run Stages 2-3 sync or async.
 
@@ -408,9 +417,7 @@ class IngestionService:
         # post-projection, once the new file's hash is known.
         predecessor: Document | None = None
         if request.supersedes_document_id:
-            predecessor = await self._store.get_document(
-                request.supersedes_document_id
-            )
+            predecessor = await self._store.get_document(request.supersedes_document_id)
             if predecessor is None:
                 raise DocumentNotFoundError(request.supersedes_document_id)
             if predecessor.lifecycle_status != "active":
@@ -440,12 +447,8 @@ class IngestionService:
         # on collision. The vault's source_adapters[].config is the authority
         # for adapter behavior across all ingests; the request override is a
         # per-call escape hatch.
-        merged_config = self._merge_adapter_config(
-            request.adapter, request.config
-        )
-        projection = await adapter.project(
-            storage_root / vault_relative, merged_config
-        )
+        merged_config = self._merge_adapter_config(request.adapter, request.config)
+        projection = await adapter.project(storage_root / vault_relative, merged_config)
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
         # opts in to review (CAS-ADR-021). Default ingests are caller-
@@ -464,13 +467,9 @@ class IngestionService:
         # candidate and loses to filename-parsed title when the vault has
         # declared a filename convention (ME-003). When no filename pattern
         # is configured, the adapter title is preserved (ME-004).
-        caller_title = (
-            (request.metadata or {}).get("title") if request.metadata else None
-        )
+        caller_title = (request.metadata or {}).get("title") if request.metadata else None
         resolved_title = (
-            caller_title
-            or (parsed.title if parsed and parsed.title else None)
-            or projection.title
+            caller_title or (parsed.title if parsed and parsed.title else None) or projection.title
         )
 
         # Supersede identical-content check (BH-123). Fires before the
@@ -478,25 +477,17 @@ class IngestionService:
         # error code signalling "no-op edit" rather than "already ingested
         # somewhere in the vault". Only applies when a supersede target
         # was provided and its hash matches the new file's hash.
-        if predecessor is not None and (
-            predecessor.source_content_hash == projection.content_hash
-        ):
-            raise IdenticalContentSupersedeError(
-                predecessor.id, projection.content_hash
-            )
+        if predecessor is not None and (predecessor.source_content_hash == projection.content_hash):
+            raise IdenticalContentSupersedeError(predecessor.id, projection.content_hash)
 
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
-        hash_matches = await self._store.find_documents_by_hashes(
-            [projection.content_hash]
-        )
+        hash_matches = await self._store.find_documents_by_hashes([projection.content_hash])
 
         now = datetime.now(timezone.utc)
 
         source_modified_at_str = projection.metadata.get("source_modified_at")
         source_modified_at = (
-            datetime.fromisoformat(source_modified_at_str)
-            if source_modified_at_str
-            else None
+            datetime.fromisoformat(source_modified_at_str) if source_modified_at_str else None
         )
 
         if hash_matches and not request.force:
@@ -543,9 +534,7 @@ class IngestionService:
             # but the predecessor was never archived. Without a
             # predecessor it is a single-row insert.
             created_by = request.created_by or self._config.vault.owner
-            doc_id = generate_document_id(
-                vault_relative, now.isoformat(), resolved_title
-            )
+            doc_id = generate_document_id(vault_relative, now.isoformat(), resolved_title)
             doc = Document(
                 id=doc_id,
                 title=resolved_title,
@@ -570,9 +559,7 @@ class IngestionService:
                 fresh_pred = await self._store.get_document(predecessor.id)
                 if fresh_pred is None:
                     raise DocumentNotFoundError(predecessor.id)
-                transition = self._lifecycle_service.prepare_supersede(
-                    fresh_pred, doc.id
-                )
+                transition = self._lifecycle_service.prepare_supersede(fresh_pred, doc.id)
                 doc, _updated_pred = await self._store.insert_with_supersede_atomic(
                     doc,
                     fresh_pred.id,
@@ -615,16 +602,10 @@ class IngestionService:
             for field in ("doc_type", "project", "authority_scope"):
                 pred_value = getattr(predecessor, field, None)
                 doc_value = getattr(doc, field, None)
-                if (
-                    pred_value is not None
-                    and doc_value is None
-                    and field not in caller_keys
-                ):
+                if pred_value is not None and doc_value is None and field not in caller_keys:
                     inheritance_updates[field] = pred_value
             if inheritance_updates:
-                doc = await self._store.update_document(
-                    doc.id, inheritance_updates
-                )
+                doc = await self._store.update_document(doc.id, inheritance_updates)
 
         # Merge adapter-emitted tags into document.tags (BH-131, BH-132).
         # The adapter declares owned namespace prefixes so force re-ingest
@@ -632,14 +613,13 @@ class IngestionService:
         # without disturbing caller- or filename-contributed tags in other
         # namespaces.
         adapter_tags = list(projection.metadata.get("adapter_tags") or [])
-        adapter_tag_prefixes = list(
-            projection.metadata.get("adapter_tag_prefixes") or []
-        )
+        adapter_tag_prefixes = list(projection.metadata.get("adapter_tag_prefixes") or [])
         if adapter_tags or adapter_tag_prefixes:
             current_tags = list(doc.tags or [])
             if adapter_tag_prefixes:
                 current_tags = [
-                    t for t in current_tags
+                    t
+                    for t in current_tags
                     if not any(t.startswith(p) for p in adapter_tag_prefixes)
                 ]
             merged = list(dict.fromkeys([*adapter_tags, *current_tags]))
@@ -653,9 +633,7 @@ class IngestionService:
         # update_metadata is called.
         confirm = not request.needs_review
         if doc.metadata_confirmed != confirm:
-            doc = await self._store.update_document(
-                doc.id, {"metadata_confirmed": confirm}
-            )
+            doc = await self._store.update_document(doc.id, {"metadata_confirmed": confirm})
 
         # Ensure every document has a doc_type for content-store pre-filtering.
         # Defaults to "misc" only when neither filename parse, caller metadata,
@@ -670,9 +648,12 @@ class IngestionService:
         if not doc.document_date and source_modified_at:
             local_tz = ZoneInfo(self._config.vault.timezone)
             local_date = source_modified_at.astimezone(local_tz).date()
-            doc = await self._store.update_document(doc.id, {
-                "document_date": local_date.isoformat(),
-            })
+            doc = await self._store.update_document(
+                doc.id,
+                {
+                    "document_date": local_date.isoformat(),
+                },
+            )
 
         # The supersede lifecycle transition was bundled into the same
         # SQLite transaction as the new-document insert above (BH-129,
@@ -692,9 +673,7 @@ class IngestionService:
             await self._run_background_pipeline(doc.id, projection, doc.doc_type)
             doc = await self._store.get_document(doc.id) or doc
         else:
-            asyncio.create_task(
-                self._run_background_pipeline(doc.id, projection, doc.doc_type)
-            )
+            asyncio.create_task(self._run_background_pipeline(doc.id, projection, doc.doc_type))
 
         return IngestResult(document=doc, is_new=is_new)
 
@@ -715,10 +694,13 @@ class IngestionService:
             if not self._config.abstraction.enabled:
                 # BH-025: abstraction_skipped
                 async with self._locks.lock(document_id):
-                    await self._store.update_document(document_id, {
-                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    })
+                    await self._store.update_document(
+                        document_id,
+                        {
+                            "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
                 return
 
             # BH-134: empty projection text (e.g., Word template with no body)
@@ -728,35 +710,40 @@ class IngestionService:
             # are already persisted by Stage 2.
             if not projection.text.strip():
                 async with self._locks.lock(document_id):
-                    await self._store.update_document(document_id, {
-                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    })
+                    await self._store.update_document(
+                        document_id,
+                        {
+                            "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
                 return
 
             await self._stage3_abstraction(document_id, projection, doc_type)
         except Exception as exc:
-            logger.exception(
-                "Pipeline failed for document %s", document_id
-            )
+            logger.exception("Pipeline failed for document %s", document_id)
             async with self._locks.lock(document_id):
-                await self._store.update_document(document_id, {
-                    "pipeline_status": PipelineStatus.FAILED.value,
-                    "pipeline_error": str(exc),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                })
+                await self._store.update_document(
+                    document_id,
+                    {
+                        "pipeline_status": PipelineStatus.FAILED.value,
+                        "pipeline_error": str(exc),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
 
-    async def _stage2_indexing(
-        self, document_id: str, projection: ProjectionResult
-    ) -> None:
+    async def _stage2_indexing(self, document_id: str, projection: ProjectionResult) -> None:
         """Stage 2: Chunk projection, embed, store in content store.
         Sets indexed_at on completion (BH-008).
         """
         async with self._locks.lock(document_id):
-            await self._store.update_document(document_id, {
-                "pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            })
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
         # Build search preamble from document metadata (BH-058)
         doc = await self._store.get_document(document_id)
@@ -776,8 +763,7 @@ class IngestionService:
         # is unchanged — heading_path travels with the embedder input only.
         if chunks:
             texts = [
-                f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content
-                for c in chunks
+                f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content for c in chunks
             ]
             embeddings = await self._embedding.embed(texts)
             for chunk, embedding in zip(chunks, embeddings):
@@ -789,15 +775,16 @@ class IngestionService:
         # Mark indexing complete (BH-008)
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
-            await self._store.update_document(document_id, {
-                "pipeline_status": PipelineStatus.INDEXING_COMPLETE.value,
-                "indexed_at": now.isoformat(),
-                "updated_at": now.isoformat(),
-            })
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.INDEXING_COMPLETE.value,
+                    "indexed_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                },
+            )
 
-    async def _generate_abstract_text(
-        self, text: str, doc_type: str | None
-    ) -> str:
+    async def _generate_abstract_text(self, text: str, doc_type: str | None) -> str:
         """Generate a semantic abstract from document text.
 
         Shared core for both initial ingestion (stage 3) and reabstract.
@@ -816,9 +803,7 @@ class IngestionService:
         """
         word_count = len(text.split())
         max_tokens = compute_max_tokens(word_count, self._config.abstraction)
-        raw_abstract = await self._abstraction.generate_abstract(
-            text, max_tokens, doc_type
-        )
+        raw_abstract = await self._abstraction.generate_abstract(text, max_tokens, doc_type)
         return trim_to_sentence_boundary(raw_abstract)
 
     async def _stage3_abstraction(
@@ -829,20 +814,26 @@ class IngestionService:
     ) -> None:
         """Stage 3: Generate semantic abstract via LLM (BH-024, BH-025)."""
         async with self._locks.lock(document_id):
-            await self._store.update_document(document_id, {
-                "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            })
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
         abstract = await self._generate_abstract_text(projection.text, doc_type)
 
         now = datetime.now(timezone.utc)
         async with self._locks.lock(document_id):
-            await self._store.update_document(document_id, {
-                "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-                "semantic_abstract": abstract,
-                "updated_at": now.isoformat(),
-            })
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
+                    "semantic_abstract": abstract,
+                    "updated_at": now.isoformat(),
+                },
+            )
 
     async def reabstract(self, document_id: str) -> dict:
         """Re-run abstraction on an existing document (fire-and-forget).
@@ -875,28 +866,25 @@ class IngestionService:
 
         # Mark in-progress before dispatching background work
         async with self._locks.lock(document_id):
-            await self._store.update_document(document_id, {
-                "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            })
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
 
-        asyncio.create_task(
-            self._reabstract_background(document_id, doc.doc_type)
-        )
+        asyncio.create_task(self._reabstract_background(document_id, doc.doc_type))
 
         now = datetime.now(timezone.utc)
-        logger.info(
-            "reabstract dispatched for %s at %s", document_id, now.isoformat()
-        )
+        logger.info("reabstract dispatched for %s at %s", document_id, now.isoformat())
         return {
             "status": "reabstract_started",
             "document_id": document_id,
             "dispatched_at": now.isoformat(),
         }
 
-    async def _reabstract_background(
-        self, document_id: str, doc_type: str | None
-    ) -> None:
+    async def _reabstract_background(self, document_id: str, doc_type: str | None) -> None:
         """Background worker for reabstract. Loads chunks, generates
         abstract, and updates the document. Sets pipeline_status to
         FAILED on error.
@@ -910,26 +898,28 @@ class IngestionService:
         await asyncio.sleep(0.1)
         try:
             chunks = await self._content_store.get_all_chunks(document_id)
-            projection_text = "\n\n".join(
-                chunk.content for chunk in chunks
-            )
+            projection_text = "\n\n".join(chunk.content for chunk in chunks)
             abstract = await self._generate_abstract_text(projection_text, doc_type)
             now = datetime.now(timezone.utc)
             async with self._locks.lock(document_id):
-                await self._store.update_document(document_id, {
-                    "semantic_abstract": abstract,
-                    "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-                    "updated_at": now.isoformat(),
-                })
+                await self._store.update_document(
+                    document_id,
+                    {
+                        "semantic_abstract": abstract,
+                        "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
+                        "updated_at": now.isoformat(),
+                    },
+                )
         except Exception:
-            logger.exception(
-                "Background reabstract failed for document %s", document_id
-            )
+            logger.exception("Background reabstract failed for document %s", document_id)
             async with self._locks.lock(document_id):
-                await self._store.update_document(document_id, {
-                    "pipeline_status": PipelineStatus.FAILED.value,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                })
+                await self._store.update_document(
+                    document_id,
+                    {
+                        "pipeline_status": PipelineStatus.FAILED.value,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
 
     @staticmethod
     def _build_metadata_updates(metadata: dict[str, str | list[str]]) -> dict:
@@ -939,8 +929,12 @@ class IngestionService:
         stored but have no schema-enforced semantics.
         """
         KNOWN_FIELDS = {
-            "title", "version_label", "project", "doc_type",
-            "authority_scope", "document_date",
+            "title",
+            "version_label",
+            "project",
+            "doc_type",
+            "authority_scope",
+            "document_date",
         }
         updates: dict = {}
         for key, value in metadata.items():
@@ -956,13 +950,9 @@ class IngestionService:
                 updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
             elif key == "tags":
                 if isinstance(value, list):
-                    updates["tags"] = [
-                        str(t).strip() for t in value if str(t).strip()
-                    ]
+                    updates["tags"] = [str(t).strip() for t in value if str(t).strip()]
                 else:
-                    updates["tags"] = [
-                        t.strip() for t in str(value).split(",") if t.strip()
-                    ]
+                    updates["tags"] = [t.strip() for t in str(value).split(",") if t.strip()]
         return updates
 
     def _parse_source_filename(
@@ -980,14 +970,10 @@ class IngestionService:
         """
         if self._filename_parser is None:
             return None
-        adapter_value = (
-            adapter.value if isinstance(adapter, SourceType) else str(adapter)
-        )
+        adapter_value = adapter.value if isinstance(adapter, SourceType) else str(adapter)
         return self._filename_parser.parse(source_path.stem, adapter=adapter_value)
 
-    def parse_filename(
-        self, filename: str, adapter: SourceType | str
-    ) -> ParseFilenameResponse:
+    def parse_filename(self, filename: str, adapter: SourceType | str) -> ParseFilenameResponse:
         """Side-effect-free filename parse for the parse-filename endpoint.
 
         Wraps the per-vault FilenameParser without performing an ingest.
@@ -998,9 +984,7 @@ class IngestionService:
         """
         if self._filename_parser is None:
             return ParseFilenameResponse()
-        adapter_value = (
-            adapter.value if isinstance(adapter, SourceType) else str(adapter)
-        )
+        adapter_value = adapter.value if isinstance(adapter, SourceType) else str(adapter)
         stem = Path(filename).stem
         parsed = self._filename_parser.parse(stem, adapter=adapter_value)
         return ParseFilenameResponse(
@@ -1034,7 +1018,9 @@ class IngestionService:
         return updates
 
     def _chunk_projection(
-        self, document_id: str, projection: ProjectionResult,
+        self,
+        document_id: str,
+        projection: ProjectionResult,
         search_preamble: str = "",
     ) -> list[Chunk]:
         """Split projection into chunks by heading.

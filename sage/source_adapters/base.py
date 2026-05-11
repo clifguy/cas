@@ -53,7 +53,5 @@ class SourceAdapter(ABC):
     EXTENSIONS: list[str] = []
 
     @abstractmethod
-    async def project(
-        self, source_path: Path, config: dict | None = None
-    ) -> ProjectionResult:
+    async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         """Read source file and produce structured projection."""

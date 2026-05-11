@@ -7,9 +7,9 @@ extensions like 'filed' that aren't in the base enum.
 import re
 import uuid
 from datetime import datetime
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
-from typing import Annotated, Literal
 
 from sage.models.enums import (
     CatalogSortBy,
@@ -24,7 +24,6 @@ from sage.models.enums import (
     TraversalDirection,
     UserType,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shape-bearing primitive aliases.
@@ -41,9 +40,7 @@ _DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
 def _validate_document_id(v: str) -> str:
     if not _DOCUMENT_ID_RE.match(v):
-        raise ValueError(
-            f"document id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})"
-        )
+        raise ValueError(f"document id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})")
     return v
 
 
@@ -66,9 +63,7 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 def _validate_sha256(v: str) -> str:
     if not _SHA256_RE.match(v):
-        raise ValueError(
-            f"hash must match {_SHA256_RE.pattern!r} (got {v!r})"
-        )
+        raise ValueError(f"hash must match {_SHA256_RE.pattern!r} (got {v!r})")
     return v
 
 
@@ -78,6 +73,7 @@ Sha256Str = Annotated[str, AfterValidator(_validate_sha256)]
 # ---------------------------------------------------------------------------
 # Core entities
 # ---------------------------------------------------------------------------
+
 
 class Document(BaseModel):
     id: str
@@ -147,6 +143,7 @@ class User(BaseModel):
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
 
 class IngestRequest(BaseModel):
     source: str
@@ -235,9 +232,7 @@ def _validate_document_date(v: str | None) -> str | None:
     if v is None:
         return v
     if not _DOCUMENT_DATE_RE.match(v):
-        raise ValueError(
-            f"document_date must be YYYY-MM-DD (got {v!r})"
-        )
+        raise ValueError(f"document_date must be YYYY-MM-DD (got {v!r})")
     return v
 
 
@@ -276,13 +271,9 @@ class LinkRequest(BaseModel):
 
 
 class ResolutionPathEntry(BaseModel):
-    event_type: Literal[
-        "anchor_hit", "anchor_miss", "retracts_applied", "tombstone_applied"
-    ]
+    event_type: Literal["anchor_hit", "anchor_miss", "retracts_applied", "tombstone_applied"]
     edge_id: str
-    anchor_field: Literal[
-        "source_valid_from_version", "target_valid_from_version"
-    ] | None = None
+    anchor_field: Literal["source_valid_from_version", "target_valid_from_version"] | None = None
     anchor_version: str | None = None
     retracted_edge_id: str | None = None
     tombstone_version: str | None = None
@@ -353,6 +344,7 @@ class PreconditionResult(BaseModel):
 # Discover (retrieval) models
 # ---------------------------------------------------------------------------
 
+
 class RetrievalFilters(BaseModel):
     doc_type: str | None = None
     project: str | None = None
@@ -398,6 +390,7 @@ class DiscoverResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Utility models
 # ---------------------------------------------------------------------------
+
 
 class ExportProjectionRequest(BaseModel):
     output_path: str
@@ -450,6 +443,7 @@ class EvalRetrievalResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Vault listing and statistics (BE-001 through BE-006)
 # ---------------------------------------------------------------------------
+
 
 class VaultDocTypeEntry(BaseModel):
     value: str
@@ -505,6 +499,7 @@ class VaultStatsResponse(BaseModel):
 # Hash check (BE-007 through BE-009)
 # ---------------------------------------------------------------------------
 
+
 class HashCheckRequest(BaseModel):
     hashes: list[Sha256Str]
 
@@ -518,8 +513,10 @@ class HashCheckMatch(BaseModel):
 # Vault config endpoints (PUT /sage_vaults/{vault_id}/config, POST /sage_vaults)
 # ---------------------------------------------------------------------------
 
+
 class UpdateVaultConfigRequest(BaseModel):
     """Section-level config update.  Only provided sections are replaced."""
+
     vault: dict | None = None
     document_types: dict | None = None
     lifecycle: dict | None = None
@@ -533,12 +530,14 @@ class UpdateVaultConfigRequest(BaseModel):
 
 class CreateVaultRequest(BaseModel):
     """Full config dict for new vault creation."""
+
     config: dict
 
 
 # ---------------------------------------------------------------------------
 # Staging edges (BE-010 through BE-013)
 # ---------------------------------------------------------------------------
+
 
 class StagingEdge(BaseModel):
     id: str
@@ -553,6 +552,7 @@ class StagingEdge(BaseModel):
 # ---------------------------------------------------------------------------
 # Pending metadata (BE-014 through BE-015)
 # ---------------------------------------------------------------------------
+
 
 class ExtractedField(BaseModel):
     value: str | None = None
@@ -569,6 +569,7 @@ class PendingMetadataItem(BaseModel):
 # ---------------------------------------------------------------------------
 # Error response
 # ---------------------------------------------------------------------------
+
 
 class ErrorResponse(BaseModel):
     code: str

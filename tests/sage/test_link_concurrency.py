@@ -15,10 +15,8 @@ import hashlib
 import time
 from datetime import datetime, timezone
 
-import pytest
-
-from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
-from sage.models.schemas import Document, Edge, LinkRequest
+from sage.models.enums import EdgeType, PipelineStatus, SourceType
+from sage.models.schemas import Document, LinkRequest
 
 
 def _id(name: str) -> str:
@@ -55,6 +53,7 @@ def _make_doc(doc_id: str) -> Document:
 # Fan-out: single link call issues a bounded number of executor submissions
 # ---------------------------------------------------------------------------
 
+
 async def test_link_transitive_both_bounded_executor_submissions(
     graph_store, graph_ops_service, monkeypatch
 ):
@@ -76,13 +75,15 @@ async def test_link_transitive_both_bounded_executor_submissions(
 
     monkeypatch.setattr(graph_store, "_run", counting_run)
 
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("doc_a"),
-        target_id=_id("doc_b"),
-        edge_type=EdgeType.REFERENCES,  # transitive_both per default registry
-        source_valid_from_version=_id("doc_a"),
-        target_valid_from_version=_id("doc_b"),
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.REFERENCES,  # transitive_both per default registry
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+        )
+    )
 
     assert counter["count"] <= 2, (
         f"expected ≤ 2 executor submissions per link, got {counter['count']}"
@@ -111,15 +112,16 @@ async def test_link_merged_from_bounded_executor_submissions(
 
     monkeypatch.setattr(graph_store, "_run", counting_run)
 
-    await graph_ops_service.link(LinkRequest(
-        source_id=_id("c1"),
-        target_id=_id("p1"),
-        edge_type=EdgeType.MERGED_FROM,
-    ))
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("c1"),
+            target_id=_id("p1"),
+            edge_type=EdgeType.MERGED_FROM,
+        )
+    )
 
     assert counter["count"] <= 2, (
-        f"expected ≤ 2 executor submissions per merged_from link, "
-        f"got {counter['count']}"
+        f"expected ≤ 2 executor submissions per merged_from link, got {counter['count']}"
     )
 
 
@@ -127,9 +129,8 @@ async def test_link_merged_from_bounded_executor_submissions(
 # Serialization: the asyncio.Lock gates concurrent link calls
 # ---------------------------------------------------------------------------
 
-async def test_link_serializes_concurrent_calls(
-    graph_store, graph_ops_service, monkeypatch
-):
+
+async def test_link_serializes_concurrent_calls(graph_store, graph_ops_service, monkeypatch):
     """Concurrent link calls must not overlap inside the store.
 
     We wrap graph_store._run to count simultaneous calls. With the
@@ -157,13 +158,15 @@ async def test_link_serializes_concurrent_calls(
 
     # Four concurrent link calls on disjoint document pairs.
     async def do_link(src, tgt):
-        return await graph_ops_service.link(LinkRequest(
-            source_id=src,
-            target_id=tgt,
-            edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=src,
-            target_valid_from_version=tgt,
-        ))
+        return await graph_ops_service.link(
+            LinkRequest(
+                source_id=src,
+                target_id=tgt,
+                edge_type=EdgeType.REFERENCES,
+                source_valid_from_version=src,
+                target_valid_from_version=tgt,
+            )
+        )
 
     results = await asyncio.gather(
         do_link(_id("doc_a"), _id("doc_b")),
@@ -184,9 +187,8 @@ async def test_link_serializes_concurrent_calls(
 # Cancellation bound: cancelled link calls do not leak executor work
 # ---------------------------------------------------------------------------
 
-async def test_cancelled_parallel_link_calls_drain_quickly(
-    graph_store, graph_ops_service
-):
+
+async def test_cancelled_parallel_link_calls_drain_quickly(graph_store, graph_ops_service):
     """Spawning many link tasks and cancelling them must drain fast.
 
     Before the fix, each in-flight link fanned out 7+ executor tasks
@@ -206,13 +208,17 @@ async def test_cancelled_parallel_link_calls_drain_quickly(
     # Spawn many concurrent link tasks, then cancel all after letting
     # the scheduler tick once so they can enter the lock queue.
     tasks = [
-        asyncio.create_task(graph_ops_service.link(LinkRequest(
-            source_id=_id(f"d{i}"),
-            target_id=_id(f"d{(i + 1) % 20}"),
-            edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=_id(f"d{i}"),
-            target_valid_from_version=_id(f"d{(i + 1) % 20}"),
-        )))
+        asyncio.create_task(
+            graph_ops_service.link(
+                LinkRequest(
+                    source_id=_id(f"d{i}"),
+                    target_id=_id(f"d{(i + 1) % 20}"),
+                    edge_type=EdgeType.REFERENCES,
+                    source_valid_from_version=_id(f"d{i}"),
+                    target_valid_from_version=_id(f"d{(i + 1) % 20}"),
+                )
+            )
+        )
         for i in range(20)
     ]
 

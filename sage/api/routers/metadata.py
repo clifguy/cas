@@ -20,6 +20,4 @@ async def update_metadata(
     metadata_service: MetadataService = Depends(get_metadata_service),
 ) -> Document:
     # In Phase 1, use vault owner as modifier. In production, extract from auth.
-    return await metadata_service.update_metadata(
-        document_id, request, modified_by="system"
-    )
+    return await metadata_service.update_metadata(document_id, request, modified_by="system")

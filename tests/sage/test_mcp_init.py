@@ -7,13 +7,6 @@ production providers (NomicEmbeddingProvider ~270 MB, Qwen3 ~16-20 GB).
 Test IDs follow the pattern DI-NNN (Dependency Injection).
 """
 
-import pytest
-
-from sage.adapters.interfaces import (
-    AbstractionProvider,
-    ContentStore,
-    EmbeddingProvider,
-)
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -22,15 +15,12 @@ from sage.adapters.stubs import (
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 
-
 # ---------------------------------------------------------------------------
 # DI-001: Injected embedding_provider is used by all services
 # ---------------------------------------------------------------------------
 
 
-async def test_di_001_injected_embedding_provider(
-    minimal_vault_config_dict, tmp_vault_dir
-):
+async def test_di_001_injected_embedding_provider(minimal_vault_config_dict, tmp_vault_dir):
     """When embedding_provider is passed, initialize_services uses it
     instead of constructing a NomicEmbeddingProvider."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -55,9 +45,7 @@ async def test_di_001_injected_embedding_provider(
 # ---------------------------------------------------------------------------
 
 
-async def test_di_002_injected_abstraction_provider(
-    minimal_vault_config_dict, tmp_vault_dir
-):
+async def test_di_002_injected_abstraction_provider(minimal_vault_config_dict, tmp_vault_dir):
     """When abstraction_provider is passed, initialize_services uses it
     instead of constructing one from config."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -79,9 +67,7 @@ async def test_di_002_injected_abstraction_provider(
 # ---------------------------------------------------------------------------
 
 
-async def test_di_003_injected_content_store(
-    minimal_vault_config_dict, tmp_vault_dir
-):
+async def test_di_003_injected_content_store(minimal_vault_config_dict, tmp_vault_dir):
     """When content_store is passed, initialize_services uses it
     instead of constructing a LanceDBContentStore."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -149,8 +135,8 @@ async def test_di_005_no_overrides_constructs_real_providers(
     services = await initialize_services(config)
 
     try:
-        from sage.adapters.embedding_nomic import NomicEmbeddingProvider
         from sage.adapters.content_store_lancedb import LanceDBContentStore
+        from sage.adapters.embedding_nomic import NomicEmbeddingProvider
 
         embed = services.ingestion_service._embedding
         cs = services.ingestion_service._content_store
@@ -169,9 +155,7 @@ async def test_di_005_no_overrides_constructs_real_providers(
 # ---------------------------------------------------------------------------
 
 
-async def test_di_006_services_functional_with_stubs(
-    minimal_vault_config_dict, tmp_vault_dir
-):
+async def test_di_006_services_functional_with_stubs(minimal_vault_config_dict, tmp_vault_dir):
     """Services initialized with all stubs can perform basic operations
     without errors (smoke test)."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -185,9 +169,7 @@ async def test_di_006_services_functional_with_stubs(
 
     try:
         # Bootstrap owner should have run during init
-        owner = await services.graph_store.get_user_by_display_name(
-            config.vault.owner
-        )
+        owner = await services.graph_store.get_user_by_display_name(config.vault.owner)
         assert owner is not None
         assert owner.display_name == config.vault.owner
     finally:

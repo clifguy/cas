@@ -10,6 +10,7 @@ missing a column from CHUNKS_SCHEMA) and verify that:
 * The --migrate path applies the migration and preserves data.
 * Owner bootstrap remains always-on (data init, not schema).
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,24 +35,23 @@ from sage.storage.migrations import (
     pending_migrations,
 )
 
-
 # ── LanceDB skip guard ───────────────────────────────────────────────
 
 try:
     import lancedb  # noqa: F401
     import pyarrow as pa
+
     from sage.adapters.content_store_lancedb import (
         CHUNKS_TABLE,
         VECTOR_DIMENSIONS,
         LanceDBContentStore,
     )
+
     _HAS_LANCEDB = True
 except ImportError:
     _HAS_LANCEDB = False
 
-requires_lancedb = pytest.mark.skipif(
-    not _HAS_LANCEDB, reason="lancedb not available"
-)
+requires_lancedb = pytest.mark.skipif(not _HAS_LANCEDB, reason="lancedb not available")
 
 
 # ── Legacy-shape helpers ────────────────────────────────────────────
@@ -179,8 +179,9 @@ def test_mig_001_pending_migrations_is_readonly(tmp_path):
     finally:
         conn.close()
 
-    assert len(pending) == len(MIGRATION_PLAN), \
+    assert len(pending) == len(MIGRATION_PLAN), (
         "every migration column should be detected as pending"
+    )
     detected = {(m.table, m.column) for m in pending}
     expected = {(m.table, m.column) for m in MIGRATION_PLAN}
     assert detected == expected
@@ -246,7 +247,8 @@ async def test_mig_003_graphstore_applies_with_flag(tmp_path):
         conn = sqlite3.connect(str(db_path))
         try:
             idx = {
-                r[0] for r in conn.execute(
+                r[0]
+                for r in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='index'"
                 ).fetchall()
             }
@@ -282,13 +284,15 @@ async def test_mig_004_graphstore_current_schema_no_op(tmp_path):
 
 
 if _HAS_LANCEDB:
-    _LEGACY_CHUNKS_SCHEMA = pa.schema([
-        pa.field("document_id", pa.utf8()),
-        pa.field("heading_path", pa.utf8()),
-        pa.field("content", pa.utf8()),
-        pa.field("chunk_index", pa.int32()),
-        pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
-    ])
+    _LEGACY_CHUNKS_SCHEMA = pa.schema(
+        [
+            pa.field("document_id", pa.utf8()),
+            pa.field("heading_path", pa.utf8()),
+            pa.field("content", pa.utf8()),
+            pa.field("chunk_index", pa.int32()),
+            pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
+        ]
+    )
 
     def _build_legacy_lancedb(brain_root: Path, *, n_rows: int = 1) -> None:
         """Create a LanceDB chunks table with the pre-doc_type schema."""
@@ -427,35 +431,37 @@ def _minimal_config(tmp_path: Path) -> VaultConfig:
     sources = tmp_path / "sources"
     brain.mkdir()
     sources.mkdir()
-    return VaultConfig.model_validate({
-        "vault": {
-            "id": "test_vault",
-            "name": "Test Vault",
-            "owner": "tester",
-            "storage_root": str(sources),
-            "brain_root": str(brain),
-            "visibility": "personal",
-        },
-        "document_types": {
-            "doc_types": [{"value": "note", "label": "Note"}],
-        },
-        "lifecycle": {
-            "base_states_required": True,
-            "states": [
-                {"value": "active", "label": "Active"},
-                {"value": "archived", "label": "Archived", "is_terminal": True},
-            ],
-            "transitions": [
-                {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {"from_state": "active", "action": "archive", "to_state": "archived"},
-            ],
-        },
-        "source_adapters": {
-            "adapters": [{"source_type": "markdown", "enabled": True}],
-        },
-        "metadata_extraction": {},
-        "edge_inference": {"tier_assignments": []},
-    })
+    return VaultConfig.model_validate(
+        {
+            "vault": {
+                "id": "test_vault",
+                "name": "Test Vault",
+                "owner": "tester",
+                "storage_root": str(sources),
+                "brain_root": str(brain),
+                "visibility": "personal",
+            },
+            "document_types": {
+                "doc_types": [{"value": "note", "label": "Note"}],
+            },
+            "lifecycle": {
+                "base_states_required": True,
+                "states": [
+                    {"value": "active", "label": "Active"},
+                    {"value": "archived", "label": "Archived", "is_terminal": True},
+                ],
+                "transitions": [
+                    {"from_state": "(new)", "action": "ingest", "to_state": "active"},
+                    {"from_state": "active", "action": "archive", "to_state": "archived"},
+                ],
+            },
+            "source_adapters": {
+                "adapters": [{"source_type": "markdown", "enabled": True}],
+            },
+            "metadata_extraction": {},
+            "edge_inference": {"tier_assignments": []},
+        }
+    )
 
 
 async def test_mig_010_initialize_services_propagates_flag(tmp_path):
@@ -513,9 +519,7 @@ async def test_mig_013_owner_bootstrap_always_runs(tmp_path):
         abstraction_provider=StubAbstractionProvider(),
     )
     try:
-        owner = await services.graph_store.get_user_by_display_name(
-            config.vault.owner
-        )
+        owner = await services.graph_store.get_user_by_display_name(config.vault.owner)
         assert owner is not None
         assert owner.display_name == config.vault.owner
     finally:

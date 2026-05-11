@@ -14,7 +14,6 @@ import pytest
 
 from sage.__main__ import _build_parser, _resolve_vault_root
 
-
 # ---------------------------------------------------------------------------
 # Surface 3a: parser shape
 # ---------------------------------------------------------------------------
@@ -76,9 +75,7 @@ def test_resolve_default_when_no_flag_no_env():
 
 def test_resolve_uses_env_var(tmp_path):
     """#16: SAGE_VAULT_ROOT env var is honored when no flag given."""
-    result = _resolve_vault_root(
-        _Args(vault_root=None), env={"SAGE_VAULT_ROOT": str(tmp_path)}
-    )
+    result = _resolve_vault_root(_Args(vault_root=None), env={"SAGE_VAULT_ROOT": str(tmp_path)})
 
     assert result == tmp_path
 

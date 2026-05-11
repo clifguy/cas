@@ -8,15 +8,13 @@ trim_to_sentence_boundary: trims LLM output back to the last complete
 sentence to prevent mid-sentence truncation.
 """
 
-import pytest
-
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.config import AbstractionConfig
-
 
 # ---------------------------------------------------------------------------
 # compute_max_tokens
 # ---------------------------------------------------------------------------
+
 
 class TestComputeMaxTokens:
     """Tests for density-proportional token budget computation."""
@@ -104,6 +102,7 @@ class TestComputeMaxTokens:
 # ---------------------------------------------------------------------------
 # trim_to_sentence_boundary
 # ---------------------------------------------------------------------------
+
 
 class TestTrimToSentenceBoundary:
     """Tests for sentence-boundary trimming of LLM output."""

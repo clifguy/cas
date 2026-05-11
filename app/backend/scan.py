@@ -13,9 +13,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
+from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.source_adapters.base import SourceAdapter
 from sage.storage.graph_store import GraphStore
 
@@ -68,9 +68,7 @@ def _detect_adapter(path: Path, extension_map: dict[str, str]) -> str | None:
     return extension_map.get(path.suffix.lower())
 
 
-def _walk_directory(
-    directory: Path, max_depth: int | None
-) -> tuple[list[Path], list[str]]:
+def _walk_directory(directory: Path, max_depth: int | None) -> tuple[list[Path], list[str]]:
     """Walk directory with optional depth limit. Returns (files, warnings)."""
     files: list[Path] = []
     warnings: list[str] = []
@@ -152,9 +150,7 @@ async def scan_directory(
 
     # Also check by source path for "modified" detection
     # A file is "modified" if its path matches an existing doc but hash differs
-    all_source_paths = [
-        str(p) for p, _h, a, en, _m in file_infos if en
-    ]
+    all_source_paths = [str(p) for p, _h, a, en, _m in file_infos if en]
     path_to_existing: dict[str, str] = {}
     for sp in all_source_paths:
         docs = await graph_store.find_by_source_path(sp)
@@ -177,13 +173,15 @@ async def scan_directory(
         else:
             status = "new"
 
-        results.append(ScanResult(
-            file_path=str(path),
-            file_hash=file_hash,
-            source_modified_at=mtime,
-            adapter=adapter,
-            parsed_metadata=parsed,
-            sage_status=status,
-        ))
+        results.append(
+            ScanResult(
+                file_path=str(path),
+                file_hash=file_hash,
+                source_modified_at=mtime,
+                adapter=adapter,
+                parsed_metadata=parsed,
+                sage_status=status,
+            )
+        )
 
     return results, warnings

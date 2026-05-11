@@ -123,8 +123,7 @@ class RetrievalService:
         # also intersect against doc-level filter rules (none here, so
         # passthrough).
         has_doc_constraints = bool(
-            f.lifecycle_status or f.project or f.tags
-            or f.pipeline_status or f.document_ids
+            f.lifecycle_status or f.project or f.tags or f.pipeline_status or f.document_ids
         )
         if has_doc_constraints:
             target_ids = set(f.document_ids or [])
@@ -201,9 +200,9 @@ class RetrievalService:
         # Unscored results (catalog, deterministic) are always kept.
         if request.min_relevance is not None:
             response.results = [
-                h for h in response.results
-                if h.relevance_score is None
-                or h.relevance_score >= request.min_relevance
+                h
+                for h in response.results
+                if h.relevance_score is None or h.relevance_score >= request.min_relevance
             ]
             response.total_available = len(response.results)
 
@@ -300,9 +299,7 @@ class RetrievalService:
             # Short-circuit when document-level filters resolved to zero
             # matching docs — skip the search entirely. Surface hints so
             # the caller sees the active filters that culled the result.
-            if has_doc_constraints and not (
-                content_filters and content_filters.get("document_id")
-            ):
+            if has_doc_constraints and not (content_filters and content_filters.get("document_id")):
                 return DiscoverResponse(
                     mode=RetrievalMode.KEYWORD,
                     results=[],
@@ -310,7 +307,9 @@ class RetrievalService:
                     hints=self._build_hints(0, request),
                 )
             results = await self._content.search_bm25(
-                request.query, fetch_limit, filters=content_filters,
+                request.query,
+                fetch_limit,
+                filters=content_filters,
             )
             raw_count = len(results)
             hits = await self._results_to_hits(results, request)
@@ -318,7 +317,7 @@ class RetrievalService:
             hits = await self._boost_abstract_matches(hits, request)
             hits = await self._rerank_salience(hits)
 
-        final = hits[:request.limit]
+        final = hits[: request.limit]
         return DiscoverResponse(
             mode=RetrievalMode.KEYWORD,
             results=final,
@@ -354,12 +353,14 @@ class RetrievalService:
                 source_modified_at=doc.source_modified_at,
                 semantic_abstract=doc.semantic_abstract,
             )
-            hits.append(DiscoverHit(
-                document=summary,
-                chunk_content=None,
-                heading_path=None,
-                relevance_score=None,
-            ))
+            hits.append(
+                DiscoverHit(
+                    document=summary,
+                    chunk_content=None,
+                    heading_path=None,
+                    relevance_score=None,
+                )
+            )
 
         return hits
 
@@ -383,9 +384,7 @@ class RetrievalService:
         # Short-circuit when document-level filters resolved to zero
         # matching docs — skip the search entirely. Surface hints so the
         # caller sees the active filters that culled the result.
-        if has_doc_constraints and not (
-            content_filters and content_filters.get("document_id")
-        ):
+        if has_doc_constraints and not (content_filters and content_filters.get("document_id")):
             return DiscoverResponse(
                 mode=RetrievalMode.SEMANTIC,
                 results=[],
@@ -396,13 +395,17 @@ class RetrievalService:
         if request.use_hybrid:
             # Hybrid: RRF fusion of vector + BM25 (BH-027)
             results = await self._hybrid_rrf(
-                query_embedding, request.query, fetch_limit,
+                query_embedding,
+                request.query,
+                fetch_limit,
                 filters=content_filters,
             )
         else:
             # Pure vector (BH-028)
             results = await self._content.search_semantic(
-                query_embedding, fetch_limit, filters=content_filters,
+                query_embedding,
+                fetch_limit,
+                filters=content_filters,
             )
 
         # Filter results: exclude failed-pipeline documents (BH-020)
@@ -412,7 +415,7 @@ class RetrievalService:
         hits = await self._boost_abstract_matches(hits, request)
         hits = await self._rerank_salience(hits)
 
-        final = hits[:request.limit]
+        final = hits[: request.limit]
         return DiscoverResponse(
             mode=RetrievalMode.SEMANTIC,
             results=final,
@@ -435,10 +438,14 @@ class RetrievalService:
         fetch_limit = limit * 3
 
         vector_results = await self._content.search_semantic(
-            query_embedding, fetch_limit, filters=filters,
+            query_embedding,
+            fetch_limit,
+            filters=filters,
         )
         bm25_results = await self._content.search_bm25(
-            query_text, fetch_limit, filters=filters,
+            query_text,
+            fetch_limit,
+            filters=filters,
         )
 
         # Build RRF scores keyed by (document_id, heading_path)
@@ -462,12 +469,14 @@ class RetrievalService:
         results = []
         for key in ranked_keys[:limit]:
             original = result_map[key]
-            results.append(SearchResult(
-                document_id=original.document_id,
-                heading_path=original.heading_path,
-                content=original.content,
-                score=rrf_scores[key],
-            ))
+            results.append(
+                SearchResult(
+                    document_id=original.document_id,
+                    heading_path=original.heading_path,
+                    content=original.content,
+                    score=rrf_scores[key],
+                )
+            )
 
         return results
 
@@ -495,9 +504,7 @@ class RetrievalService:
 
             # Cache document lookups
             if result.document_id not in doc_cache:
-                doc_cache[result.document_id] = await self._graph.get_document(
-                    result.document_id
-                )
+                doc_cache[result.document_id] = await self._graph.get_document(result.document_id)
             doc = doc_cache[result.document_id]
             if doc is None:
                 continue
@@ -562,7 +569,8 @@ class RetrievalService:
             return hits
 
         metadata_docs = await self._graph.search_metadata(
-            request.query, limit=100,
+            request.query,
+            limit=100,
         )
         if not metadata_docs:
             return hits
@@ -602,12 +610,14 @@ class RetrievalService:
                     source_modified_at=doc.source_modified_at,
                     semantic_abstract=doc.semantic_abstract,
                 )
-                boosted.append(DiscoverHit(
-                    document=summary,
-                    chunk_content=None,
-                    heading_path=None,
-                    relevance_score=boost_score,
-                ))
+                boosted.append(
+                    DiscoverHit(
+                        document=summary,
+                        chunk_content=None,
+                        heading_path=None,
+                        relevance_score=boost_score,
+                    )
+                )
 
         # Re-sort existing hits so promoted ones float to the top
         hits.sort(key=lambda h: h.relevance_score or 0.0, reverse=True)
@@ -643,7 +653,8 @@ class RetrievalService:
 
         # Query the graph store for documents whose abstract matches
         abstract_docs = await self._graph.search_abstracts(
-            request.query, limit=100,
+            request.query,
+            limit=100,
         )
         abstract_doc_ids = {doc.id for doc in abstract_docs}
 
@@ -700,9 +711,7 @@ class RetrievalService:
             ref_date = self._resolve_document_date(hit.document, now)
             if ref_date is not None:
                 age_days = max((now - ref_date).total_seconds() / 86400.0, 0.0)
-                decay = math.exp(
-                    -age_days * math.log(2) / self._RECENCY_HALF_LIFE_DAYS
-                )
+                decay = math.exp(-age_days * math.log(2) / self._RECENCY_HALF_LIFE_DAYS)
                 score *= 1.0 + self._RECENCY_MAX_BOOST * decay
 
             hit.relevance_score = score
@@ -719,7 +728,8 @@ class RetrievalService:
 
     @staticmethod
     def _resolve_document_date(
-        summary: DocumentSummary, now: datetime,
+        summary: DocumentSummary,
+        now: datetime,
     ) -> datetime | None:
         """Pick the best available date for recency scoring.
 
@@ -778,9 +788,7 @@ class RetrievalService:
 
     async def _deterministic(self, request: DiscoverRequest) -> DiscoverResponse:
         if not request.document_id:
-            raise MissingFieldError(
-                "document_id", "document_id is required for deterministic mode"
-            )
+            raise MissingFieldError("document_id", "document_id is required for deterministic mode")
         if not request.heading_path:
             raise MissingFieldError(
                 "heading_path", "heading_path is required for deterministic mode"
@@ -803,9 +811,7 @@ class RetrievalService:
         # BH-030: no matching headings = 404, with available headings for guidance
         if not chunks:
             available = await self._content.get_heading_paths(request.document_id)
-            raise HeadingNotFoundError(
-                request.heading_path, request.document_id, available
-            )
+            raise HeadingNotFoundError(request.heading_path, request.document_id, available)
 
         summary = DocumentSummary(
             id=doc.id,

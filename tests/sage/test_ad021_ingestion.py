@@ -19,8 +19,6 @@ needs_review=True is regressioned by tests/sage/test_ingestion_metadata_extracti
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from sage.adapters.stubs import (
@@ -34,13 +32,10 @@ from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-
 from tests.sage.test_ingestion_metadata_extraction import (
-    _pim_metadata_extraction,
     _pim_vault_config_dict,
     _write_md,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -78,9 +73,7 @@ def pim_ingestion_service(pim_config, graph_store, lock_manager):
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_001_default_skips_filename_inference(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_001_default_skips_filename_inference(tmp_vault_dir, pim_ingestion_service):
     # Filename matches the vault's pattern -- under the legacy ME path
     # this would populate project="PIM", document_date="2026-03-09",
     # version_label="v6.0", tags=["PV06"], doc_type="patent_draft".
@@ -160,9 +153,7 @@ async def test_ad021_002_needs_review_true_runs_filename_inference(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_004_chain_inheritance_fills_full_trio(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_004_chain_inheritance_fills_full_trio(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "v1.md", body="# V1\n\nOriginal.")
     _write_md(tmp_vault_dir, "v2.md", body="# V2\n\nRevised.")
 
@@ -280,9 +271,7 @@ async def test_ad021_006_caller_supplies_all_three_no_inheritance(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_007_no_predecessor_no_inheritance(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_007_no_predecessor_no_inheritance(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "v1.md", body="# V1\n\nOriginal.")
     _write_md(tmp_vault_dir, "standalone.md", body="# Standalone\n\nBody.")
 
@@ -318,9 +307,7 @@ async def test_ad021_007_no_predecessor_no_inheritance(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_008_predecessor_none_does_not_propagate(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_008_predecessor_none_does_not_propagate(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "v1.md", body="# V1\n\nOriginal.")
     _write_md(tmp_vault_dir, "v2.md", body="# V2\n\nRevised.")
 
@@ -410,9 +397,7 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_010_caller_tags_list_form(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_010_caller_tags_list_form(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
 
     result = await pim_ingestion_service.ingest(
@@ -431,9 +416,7 @@ async def test_ad021_010_caller_tags_list_form(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_011_caller_tags_comma_separated_string(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_011_caller_tags_comma_separated_string(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
 
     result = await pim_ingestion_service.ingest(
@@ -452,9 +435,7 @@ async def test_ad021_011_caller_tags_comma_separated_string(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_012_caller_tags_single_token_string(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_012_caller_tags_single_token_string(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
 
     result = await pim_ingestion_service.ingest(
@@ -474,9 +455,7 @@ async def test_ad021_012_caller_tags_single_token_string(
 # ---------------------------------------------------------------------------
 
 
-async def test_ad021_013_caller_tags_empty_string(
-    tmp_vault_dir, pim_ingestion_service
-):
+async def test_ad021_013_caller_tags_empty_string(tmp_vault_dir, pim_ingestion_service):
     _write_md(tmp_vault_dir, "doc.md", body="# Doc\n\nBody.\n")
 
     result = await pim_ingestion_service.ingest(

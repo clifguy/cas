@@ -22,7 +22,6 @@ from fastapi import FastAPI
 from sage.app import create_app
 from sage.vault_discovery import discover_vault_configs
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
@@ -96,9 +95,7 @@ def test_missing_root_returns_empty_list(tmp_path):
     assert discover_vault_configs(nonexistent) == []
 
 
-def test_subdirectory_without_config_is_skipped(
-    vault_root, minimal_vault_config_dict
-):
+def test_subdirectory_without_config_is_skipped(vault_root, minimal_vault_config_dict):
     """#4: Directories that don't contain vault_config.yaml are ignored."""
     _materialize_vault(vault_root, "real_vault", minimal_vault_config_dict)
     junk = vault_root / "notes"
@@ -220,9 +217,7 @@ async def test_lifespan_isolates_malformed_vault_config(
 ):
     """#10: A malformed vault_config.yaml is logged and skipped; healthy vaults load."""
     _materialize_vault(vault_root, "good_vault", minimal_vault_config_dict)
-    _materialize_vault(
-        vault_root, "broken_vault", minimal_vault_config_dict, malformed=True
-    )
+    _materialize_vault(vault_root, "broken_vault", minimal_vault_config_dict, malformed=True)
     calls = _patch_initialize_vault(monkeypatch)
 
     app = create_app(vault_root=vault_root)
@@ -233,8 +228,7 @@ async def test_lifespan_isolates_malformed_vault_config(
 
     assert "good_vault" in calls
     assert "broken_vault" not in calls
-    assert any("broken_vault" in r.message or "broken" in r.message.lower()
-               for r in caplog.records)
+    assert any("broken_vault" in r.message or "broken" in r.message.lower() for r in caplog.records)
 
 
 async def test_lifespan_isolates_failed_service_init(
@@ -256,9 +250,7 @@ async def test_lifespan_isolates_failed_service_init(
     assert any("broken_vault" in r.message for r in caplog.records)
 
 
-async def test_create_app_with_in_memory_config_still_works(
-    minimal_config, monkeypatch
-):
+async def test_create_app_with_in_memory_config_still_works(minimal_config, monkeypatch):
     """#12: Single in-memory config injection (test path) is preserved."""
     _patch_initialize_vault(monkeypatch)
 

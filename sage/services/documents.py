@@ -26,7 +26,6 @@ from sage.config import VaultConfig
 from sage.models.schemas import Document, DocumentWithContent
 from sage.storage.graph_store import GraphStore
 
-
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
 
 
@@ -79,17 +78,11 @@ def _deliver_to_path(
 
     parent = target.parent
     if not parent.exists():
-        raise WritePathInvalidError(
-            write_to_path, f"parent directory does not exist: {parent}"
-        )
+        raise WritePathInvalidError(write_to_path, f"parent directory does not exist: {parent}")
     if not parent.is_dir():
-        raise WritePathInvalidError(
-            write_to_path, f"parent is not a directory: {parent}"
-        )
+        raise WritePathInvalidError(write_to_path, f"parent is not a directory: {parent}")
     if not os.access(parent, os.W_OK):
-        raise WritePathInvalidError(
-            write_to_path, f"parent directory is not writable: {parent}"
-        )
+        raise WritePathInvalidError(write_to_path, f"parent directory is not writable: {parent}")
 
     source_file = storage_root / doc.source_path
     if not source_file.exists():
@@ -126,13 +119,13 @@ class DocumentsService:
 
         platform = sys.platform
         if platform == "darwin":
-            subprocess.Popen(["open", str(file_path)])
+            subprocess.Popen(["open", str(file_path)])  # noqa: S603,S607 -- hardcoded macOS opener; file_path is registry-validated
         elif platform.startswith("linux"):
-            subprocess.Popen(["xdg-open", str(file_path)])
+            subprocess.Popen(["xdg-open", str(file_path)])  # noqa: S603,S607 -- hardcoded XDG opener; file_path is registry-validated
         elif platform == "win32":
-            os.startfile(str(file_path))  # type: ignore[attr-defined]
+            os.startfile(str(file_path))  # type: ignore[attr-defined]  # noqa: S606 -- Windows shell-execute equivalent of the POSIX openers above
         else:
-            subprocess.Popen(["xdg-open", str(file_path)])
+            subprocess.Popen(["xdg-open", str(file_path)])  # noqa: S603,S607 -- hardcoded XDG opener fallback; file_path is registry-validated
 
         return {"opened": True, "path": str(file_path)}
 

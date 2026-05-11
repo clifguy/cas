@@ -9,8 +9,9 @@ title indexing in chunks, semantic abstract surfacing on DocumentSummary,
 and two-pass abstract-boosted retrieval.
 """
 
-import pytest
 from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import SeededEmbeddingProvider, StubContentStore
@@ -21,12 +22,10 @@ from sage.api.errors import (
     PipelineIncompleteError,
 )
 from sage.models.enums import (
-    CatalogSortBy,
     PipelineStatus,
     ResponseLevel,
     RetrievalMode,
     RetrievalScope,
-    SortOrder,
     SourceType,
 )
 from sage.models.schemas import (
@@ -104,13 +103,15 @@ async def _index_doc_chunks(
     """
     chunks = []
     for i, (heading_path, content) in enumerate(chunks_data):
-        chunks.append(Chunk(
-            document_id=document_id,
-            heading_path=heading_path,
-            content=content,
-            chunk_index=i,
-            doc_type=doc_type,
-        ))
+        chunks.append(
+            Chunk(
+                document_id=document_id,
+                heading_path=heading_path,
+                content=content,
+                chunk_index=i,
+                doc_type=doc_type,
+            )
+        )
 
     # Embed chunks
     texts = [c.content for c in chunks]
@@ -125,6 +126,7 @@ async def _index_doc_chunks(
 # BH-020: Failed pipeline quarantines document from semantic retrieval
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_020_failed_pipeline_excluded_from_semantic(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -138,11 +140,15 @@ async def test_bh_020_failed_pipeline_excluded_from_semantic(
 
     # Index chunks for both
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_ok",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_ok",
         [("Section 1", "This document discusses patent claims and prior art.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_failed",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_failed",
         [("Section 1", "This document discusses patent claims and prior art.")],
     )
 
@@ -157,6 +163,7 @@ async def test_bh_020_failed_pipeline_excluded_from_semantic(
 # ---------------------------------------------------------------------------
 # BH-021: Failed document excluded from deterministic retrieval
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_021_failed_doc_excluded_from_deterministic(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -181,6 +188,7 @@ async def test_bh_021_failed_doc_excluded_from_deterministic(
 # BH-027: Hybrid retrieval uses Reciprocal Rank Fusion
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_027_hybrid_rrf(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -200,17 +208,23 @@ async def test_bh_027_hybrid_rrf(
     # Index chunks with content designed to produce different ranking per mode.
     # doc_vector gets content with same semantic embedding direction as query
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_vector",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_vector",
         [("Section 1", "neural network architecture deep learning models")],
     )
     # doc_bm25 gets content with exact keyword matches
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_bm25",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_bm25",
         [("Section 1", "patent claims prior art novelty claims")],
     )
     # doc_both gets content matching both
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_both",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_both",
         [("Section 1", "patent claims prior art neural network deep learning")],
     )
 
@@ -238,6 +252,7 @@ async def test_bh_027_hybrid_rrf(
 # BH-028: Non-hybrid retrieval uses pure vector scores
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_028_pure_vector_semantic(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -249,11 +264,15 @@ async def test_bh_028_pure_vector_semantic(
 
     # Index with distinct content
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_a",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_a",
         [("Section 1", "machine learning classification algorithms")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_b",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_b",
         [("Section 1", "gardening tips for spring planting season")],
     )
 
@@ -280,6 +299,7 @@ async def test_bh_028_pure_vector_semantic(
 # BH-029: Deterministic retrieval uses prefix match on heading_path
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_029_deterministic_prefix_match(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -289,7 +309,9 @@ async def test_bh_029_deterministic_prefix_match(
 
     # Index chunks with heading hierarchy
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_structured",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_structured",
         [
             ("Section 3 > Definitions", "Top-level definitions content."),
             ("Section 3 > Definitions > Normalization", "Normalization overview."),
@@ -335,6 +357,7 @@ async def test_bh_029_deterministic_prefix_match(
 # BH-030: Deterministic retrieval with non-existent heading returns 404
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_030_deterministic_heading_not_found(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -343,7 +366,9 @@ async def test_bh_030_deterministic_heading_not_found(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_headings",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_headings",
         [("Section 1", "Some content.")],
     )
 
@@ -366,7 +391,9 @@ async def test_deterministic_heading_not_found_lists_available(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_avail",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_avail",
         [
             ("ABSTRACT", "Abstract text."),
             ("CLAIMS -- Remove Before Filing", "Claim 1 content."),
@@ -397,12 +424,15 @@ async def test_deterministic_heading_not_found_lists_available(
 # Content store: get_heading_paths
 # ---------------------------------------------------------------------------
 
+
 async def test_get_heading_paths_returns_distinct_ordered(
     stub_content_store, seeded_embedding_provider
 ):
     """get_heading_paths returns distinct heading paths in document order."""
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_hp",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_hp",
         [
             ("Overview", "Intro."),
             ("Overview", "More intro."),  # duplicate heading, two chunks
@@ -431,6 +461,7 @@ async def test_get_heading_paths_empty_document(stub_content_store):
 # Additional: semantic mode requires query
 # ---------------------------------------------------------------------------
 
+
 async def test_semantic_requires_query(retrieval_service):
     """Semantic mode without query raises 400."""
     request = DiscoverRequest(mode=RetrievalMode.SEMANTIC)
@@ -441,6 +472,7 @@ async def test_semantic_requires_query(retrieval_service):
 # ---------------------------------------------------------------------------
 # Additional: deterministic mode requires document_id and heading_path
 # ---------------------------------------------------------------------------
+
 
 async def test_deterministic_requires_document_id(retrieval_service):
     request = DiscoverRequest(
@@ -460,9 +492,7 @@ async def test_deterministic_requires_heading_path(retrieval_service):
         await retrieval_service.discover(request)
 
 
-async def test_deterministic_nonexistent_document(
-    graph_store, retrieval_service
-):
+async def test_deterministic_nonexistent_document(graph_store, retrieval_service):
     request = DiscoverRequest(
         mode=RetrievalMode.DETERMINISTIC,
         document_id="nonexistent",
@@ -476,6 +506,7 @@ async def test_deterministic_nonexistent_document(
 # Additional: scope gating
 # ---------------------------------------------------------------------------
 
+
 async def test_authoritative_scope_filters(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -486,11 +517,15 @@ async def test_authoritative_scope_filters(
     await graph_store.insert_document(doc_plain)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_auth",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_auth",
         [("Section 1", "Authoritative patent content.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_plain",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_plain",
         [("Section 1", "Non-authoritative patent content.")],
     )
 
@@ -516,11 +551,15 @@ async def test_filter_by_project(
     await graph_store.insert_document(doc_other)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_pim",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_pim",
         [("Section 1", "Patent filing process documentation.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_other",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_other",
         [("Section 1", "Patent filing process documentation.")],
     )
 
@@ -540,6 +579,7 @@ async def test_filter_by_project(
 # BH-058: Document title is indexed in chunk content for search
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_058_document_identity_indexed_in_chunks(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -558,12 +598,18 @@ async def test_bh_058_document_identity_indexed_in_chunks(
     # Index a chunk with search preamble from source filename
     # (simulating what _stage2_indexing now produces)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_pv07",
-        [("Section 1",
-          "Title: ClinicalNormalization\n"
-          "Source: PIM_PV07_ClinicalNormalization_v1_0\n"
-          "Tags: PV07\n\n"
-          "This document discusses patent claims.")],
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_pv07",
+        [
+            (
+                "Section 1",
+                "Title: ClinicalNormalization\n"
+                "Source: PIM_PV07_ClinicalNormalization_v1_0\n"
+                "Tags: PV07\n\n"
+                "This document discusses patent claims.",
+            )
+        ],
     )
 
     # BM25 search for "PV07" should find it via the source filename in preamble
@@ -582,6 +628,7 @@ async def test_bh_058_document_identity_indexed_in_chunks(
 # BH-059: Keyword-only retrieval mode uses BM25 without embedding
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_059_keyword_mode_bm25_only(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -592,11 +639,15 @@ async def test_bh_059_keyword_mode_bm25_only(
     await graph_store.insert_document(doc_nomatch)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_match",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_match",
         [("Section 1", "Title: PV07_Report\n\nDetailed analysis of PV07 claims.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_nomatch",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_nomatch",
         [("Section 1", "Title: Gardening_Guide\n\nTips for spring planting.")],
     )
 
@@ -616,6 +667,7 @@ async def test_bh_059_keyword_mode_bm25_only(
 # BH-060: Keyword mode requires query field
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_060_keyword_requires_query(retrieval_service):
     """Keyword mode without query raises MissingFieldError."""
     request = DiscoverRequest(mode=RetrievalMode.KEYWORD)
@@ -626,6 +678,7 @@ async def test_bh_060_keyword_requires_query(retrieval_service):
 # ---------------------------------------------------------------------------
 # BH-061: Keyword mode excludes failed-pipeline documents
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_061_keyword_excludes_failed_pipeline(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -638,11 +691,15 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
     await graph_store.insert_document(doc_failed)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_ok_kw",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_ok_kw",
         [("Section 1", "Patent claims analysis for PV07.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_failed_kw",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_failed_kw",
         [("Section 1", "Patent claims analysis for PV07.")],
     )
 
@@ -660,6 +717,7 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
 # ---------------------------------------------------------------------------
 # BH-069: Active lifecycle tier sort -- active always ranks above non-active
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_069_active_lifecycle_ranks_higher(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -680,15 +738,21 @@ async def test_bh_069_active_lifecycle_ranks_higher(
     archived_content = "Patent filing process for clinical normalization review."
     completed_content = "Patent filing process for clinical normalization."
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_active",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_active",
         [("Section 1", active_content)],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_archived",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_archived",
         [("Section 1", archived_content)],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_completed",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_completed",
         [("Section 1", completed_content)],
     )
 
@@ -727,7 +791,9 @@ async def test_bh_069_active_boost_applies_to_keyword_mode(
     identical_content = "Detailed analysis of PV07 claims and prior art."
     for doc_id in ["doc_kw_active", "doc_kw_archived"]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
         )
 
@@ -751,7 +817,9 @@ async def test_bh_069_deterministic_mode_unaffected(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_det",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_det",
         [("Section 1", "Some content."), ("Section 2", "More content.")],
     )
 
@@ -770,6 +838,7 @@ async def test_bh_069_deterministic_mode_unaffected(
 # ---------------------------------------------------------------------------
 # BH-070: Recent documents rank above older documents in semantic search
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_070_recent_documents_rank_higher(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -794,7 +863,9 @@ async def test_bh_070_recent_documents_rank_higher(
     identical_content = "Patent filing process for clinical normalization."
     for doc_id in ["doc_recent", "doc_old"]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
         )
 
@@ -833,7 +904,9 @@ async def test_bh_070_recency_uses_source_modified_at_fallback(
     identical_content = "Patent filing process for clinical normalization."
     for doc_id in ["doc_recent_fb", "doc_old_fb"]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
         )
 
@@ -863,7 +936,9 @@ async def test_bh_070_no_date_documents_not_penalized(
     identical_content = "Patent filing process for clinical normalization."
     for doc_id in ["doc_dated", "doc_undated"]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
         )
 
@@ -885,15 +960,20 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
     """Active + recent beats active + old, which beats archived + recent.
     Both boosts work together additively.
     """
-    now = datetime.now(timezone.utc)
     doc_active_recent = _make_doc(
-        "doc_ar", lifecycle_status="active", document_date="2026-04-01",
+        "doc_ar",
+        lifecycle_status="active",
+        document_date="2026-04-01",
     )
     doc_active_old = _make_doc(
-        "doc_ao", lifecycle_status="active", document_date="2023-01-01",
+        "doc_ao",
+        lifecycle_status="active",
+        document_date="2023-01-01",
     )
     doc_archived_recent = _make_doc(
-        "doc_sr", lifecycle_status="archived", document_date="2026-04-01",
+        "doc_sr",
+        lifecycle_status="archived",
+        document_date="2026-04-01",
     )
     await graph_store.insert_document(doc_active_recent)
     await graph_store.insert_document(doc_active_old)
@@ -902,7 +982,9 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
     identical_content = "Patent filing process for clinical normalization."
     for doc_id in ["doc_ar", "doc_ao", "doc_sr"]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
         )
 
@@ -925,6 +1007,7 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
 # ---------------------------------------------------------------------------
 # Pre-filter: doc_type filtering at content store level
 # ---------------------------------------------------------------------------
+
 
 async def test_prefilter_doc_type_semantic(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -951,7 +1034,9 @@ async def test_prefilter_doc_type_semantic(
         ("doc_ref", "reference_document"),
     ]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
             doc_type=doc_type,
         )
@@ -985,7 +1070,9 @@ async def test_prefilter_doc_type_keyword(
         ("doc_report_kw", "report"),
     ]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
             doc_type=doc_type,
         )
@@ -1017,7 +1104,9 @@ async def test_prefilter_doc_type_hybrid(
         ("doc_report_hyb", "report"),
     ]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
             doc_type=doc_type,
         )
@@ -1050,7 +1139,9 @@ async def test_prefilter_no_filter_returns_all_doc_types(
         ("doc_report_all", "report"),
     ]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
             doc_type=doc_type,
         )
@@ -1084,7 +1175,9 @@ async def test_postfilter_project_still_applies_with_prefilter(
         ("doc_wrong_type", "report"),
     ]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
             doc_type=doc_type,
         )
@@ -1116,13 +1209,17 @@ async def test_prefilter_doc_type_null_chunks_excluded(
     identical_content = "Patent filing process for clinical normalization."
     # doc_typed has doc_type on its chunks
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_typed",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_typed",
         [("Section 1", identical_content)],
         doc_type="patent_draft",
     )
     # doc_untyped has no doc_type on chunks (simulates pre-migration data)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_untyped",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_untyped",
         [("Section 1", identical_content)],
         doc_type=None,
     )
@@ -1144,8 +1241,11 @@ async def test_prefilter_doc_type_null_chunks_excluded(
 
 
 async def test_metadata_doc_type_change_syncs_to_content_store(
-    graph_store, stub_content_store, seeded_embedding_provider,
-    retrieval_service, metadata_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+    metadata_service,
 ):
     """Changing doc_type via MetadataService updates content store chunks,
     so subsequent filtered searches reflect the new type.
@@ -1153,7 +1253,9 @@ async def test_metadata_doc_type_change_syncs_to_content_store(
     doc = _make_doc("doc_retyped", doc_type="note")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_retyped",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_retyped",
         [("Section 1", "Clinical pathway integration process.")],
         doc_type="note",
     )
@@ -1195,7 +1297,9 @@ async def test_bh_070_document_date_in_summary(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_date_summary",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_date_summary",
         [("Section 1", "Patent filing process documentation.")],
     )
 
@@ -1221,7 +1325,9 @@ async def test_source_modified_at_in_summary(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_sma_summary",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_sma_summary",
         [("Section 1", "Patent filing process documentation.")],
     )
 
@@ -1264,7 +1370,9 @@ async def test_rerank_salience_no_extra_queries(
     identical_content = "Patent filing process for clinical normalization."
     for doc_id in ["doc_nq_recent", "doc_nq_old"]:
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", identical_content)],
         )
 
@@ -1318,7 +1426,9 @@ async def _seed_catalog_docs(graph_store):
         "doc_b": _make_doc("doc_b", doc_type="patent_draft", tags=["PV08"]),
         "doc_c": _make_doc("doc_c", doc_type="glossary", tags=["PV07"]),
         "doc_d": _make_doc(
-            "doc_d", doc_type="patent_draft", tags=["PV07"],
+            "doc_d",
+            doc_type="patent_draft",
+            tags=["PV07"],
             lifecycle_status="archived",
         ),
         "doc_e": _make_doc("doc_e", doc_type="checklist", tags=["PV07"]),
@@ -1329,7 +1439,8 @@ async def _seed_catalog_docs(graph_store):
 
 
 async def test_bh_072_catalog_returns_filtered_documents(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode returns all documents matching doc_type filter."""
     await _seed_catalog_docs(graph_store)
@@ -1348,7 +1459,8 @@ async def test_bh_072_catalog_returns_filtered_documents(
 
 
 async def test_bh_073_catalog_pagination(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode supports limit + offset pagination."""
     await _seed_catalog_docs(graph_store)
@@ -1381,7 +1493,8 @@ async def test_bh_073_catalog_pagination(
 
 
 async def test_bh_074_catalog_tag_filtering_deterministic(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode tag filtering returns exactly matching documents."""
     await _seed_catalog_docs(graph_store)
@@ -1399,7 +1512,8 @@ async def test_bh_074_catalog_tag_filtering_deterministic(
 
 
 async def test_bh_075_catalog_no_chunk_content_or_scores(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode returns no chunk content or relevance scores."""
     await _seed_catalog_docs(graph_store)
@@ -1419,12 +1533,14 @@ async def test_bh_075_catalog_no_chunk_content_or_scores(
 
 
 async def test_bh_076_catalog_excludes_failed_pipeline(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode excludes failed pipeline documents."""
     doc_ok = _make_doc("doc_ok")
     doc_fail = _make_doc(
-        "doc_fail", pipeline_status=PipelineStatus.FAILED,
+        "doc_fail",
+        pipeline_status=PipelineStatus.FAILED,
     )
     await graph_store.insert_document(doc_ok)
     await graph_store.insert_document(doc_fail)
@@ -1439,7 +1555,8 @@ async def test_bh_076_catalog_excludes_failed_pipeline(
 
 
 async def test_bh_077_catalog_no_filters_returns_all(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode with no filters returns all non-failed documents."""
     await _seed_catalog_docs(graph_store)
@@ -1455,7 +1572,8 @@ async def test_bh_077_catalog_no_filters_returns_all(
 
 
 async def test_bh_078_catalog_total_available_independent_of_page(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode total_available is full count, not page size."""
     # Insert 10 documents
@@ -1471,7 +1589,8 @@ async def test_bh_078_catalog_total_available_independent_of_page(
 
 
 async def test_bh_079_catalog_combined_filters(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode with multiple filters uses AND semantics."""
     await _seed_catalog_docs(graph_store)
@@ -1501,24 +1620,34 @@ async def _seed_catalog_sort_docs(graph_store):
     """Seed documents with varying lifecycle and dates for sort tests."""
     docs = {
         "sort_a": _make_doc(
-            "sort_a", lifecycle_status="active",
-            document_date="2026-03-15", doc_type="patent_draft",
+            "sort_a",
+            lifecycle_status="active",
+            document_date="2026-03-15",
+            doc_type="patent_draft",
         ),
         "sort_b": _make_doc(
-            "sort_b", lifecycle_status="archived",
-            document_date="2026-04-01", doc_type="patent_draft",
+            "sort_b",
+            lifecycle_status="archived",
+            document_date="2026-04-01",
+            doc_type="patent_draft",
         ),
         "sort_c": _make_doc(
-            "sort_c", lifecycle_status="active",
-            document_date="2026-02-10", doc_type="patent_draft",
+            "sort_c",
+            lifecycle_status="active",
+            document_date="2026-02-10",
+            doc_type="patent_draft",
         ),
         "sort_d": _make_doc(
-            "sort_d", lifecycle_status="archived",
-            document_date="2026-04-10", doc_type="patent_draft",
+            "sort_d",
+            lifecycle_status="archived",
+            document_date="2026-04-10",
+            doc_type="patent_draft",
         ),
         "sort_e": _make_doc(
-            "sort_e", lifecycle_status="active",
-            document_date=None, doc_type="patent_draft",
+            "sort_e",
+            lifecycle_status="active",
+            document_date=None,
+            doc_type="patent_draft",
         ),
     }
     for doc in docs.values():
@@ -1527,7 +1656,8 @@ async def _seed_catalog_sort_docs(graph_store):
 
 
 async def test_bh_080_catalog_default_sort_lifecycle_then_date(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Default catalog sort: active lifecycle first, then document_date desc."""
     await _seed_catalog_sort_docs(graph_store)
@@ -1544,7 +1674,8 @@ async def test_bh_080_catalog_default_sort_lifecycle_then_date(
 
 
 async def test_bh_081_catalog_sort_by_title(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog sort by title ascending."""
     await _seed_catalog_sort_docs(graph_store)
@@ -1562,7 +1693,8 @@ async def test_bh_081_catalog_sort_by_title(
 
 
 async def test_bh_082_catalog_sort_by_document_date_desc(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog sort by document_date descending. Nulls sort last."""
     await _seed_catalog_sort_docs(graph_store)
@@ -1581,14 +1713,19 @@ async def test_bh_082_catalog_sort_by_document_date_desc(
 
 
 async def test_bh_083_catalog_sort_ignored_by_other_modes(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """sort_by and sort_order are silently ignored for non-catalog modes."""
     await _seed_catalog_sort_docs(graph_store)
 
     # Index at least one doc so keyword mode has content to search
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "sort_a",
+        stub_content_store,
+        seeded_embedding_provider,
+        "sort_a",
         [("Intro", "Test text about patents")],
     )
 
@@ -1615,19 +1752,26 @@ async def _seed_response_level_docs(graph_store, content_store, embedding_provid
         doc = _make_doc(doc_id, doc_type="patent_draft")
         await graph_store.insert_document(doc)
         await _index_doc_chunks(
-            content_store, embedding_provider, doc_id,
+            content_store,
+            embedding_provider,
+            doc_id,
             [("Section 1", f"Integration testing for {doc_id} document.")],
             doc_type="patent_draft",
         )
 
 
 async def test_bh_084_semantic_response_level_documents(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Semantic search with response_level=documents omits chunk content but
     preserves heading_path and matched_chunk_count."""
     await _seed_response_level_docs(
-        graph_store, stub_content_store, seeded_embedding_provider,
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
     )
 
     request = DiscoverRequest(
@@ -1652,12 +1796,17 @@ async def test_bh_084_semantic_response_level_documents(
 
 
 async def test_bh_085_keyword_response_level_documents(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Keyword search with response_level=documents omits chunk content but
     preserves heading_path and matched_chunk_count."""
     await _seed_response_level_docs(
-        graph_store, stub_content_store, seeded_embedding_provider,
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
     )
 
     request = DiscoverRequest(
@@ -1680,12 +1829,17 @@ async def test_bh_085_keyword_response_level_documents(
 
 
 async def test_bh_086_response_level_documents_preserves_scores_and_order(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """response_level=documents produces the same scores, order, heading paths,
     and matched_chunk_counts as chunks mode."""
     await _seed_response_level_docs(
-        graph_store, stub_content_store, seeded_embedding_provider,
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
     )
 
     chunks_request = DiscoverRequest(
@@ -1730,14 +1884,19 @@ async def test_bh_086_response_level_documents_preserves_scores_and_order(
 
 
 async def test_bh_084_multi_chunk_matched_chunk_count(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """matched_chunk_count reflects multiple matching chunks per document."""
     doc = _make_doc("multi_chunk", doc_type="patent_draft")
     await graph_store.insert_document(doc)
     # Index 3 chunks for the same document
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "multi_chunk",
+        stub_content_store,
+        seeded_embedding_provider,
+        "multi_chunk",
         [
             ("Section 1", "Integration testing for claims."),
             ("Section 2", "Integration of prior art references."),
@@ -1762,7 +1921,10 @@ async def test_bh_084_multi_chunk_matched_chunk_count(
 
 
 async def test_matched_chunk_count_content_only_not_metadata(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """matched_chunk_count reflects content matches only, not metadata matches.
 
@@ -1776,7 +1938,9 @@ async def test_matched_chunk_count_content_only_not_metadata(
     await graph_store.insert_document(doc)
     # Index exactly 2 chunks
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "dual_match",
+        stub_content_store,
+        seeded_embedding_provider,
+        "dual_match",
         [
             ("Section 1", "Integration testing for claims."),
             ("Section 2", "Integration of prior art references."),
@@ -1799,7 +1963,10 @@ async def test_matched_chunk_count_content_only_not_metadata(
 
 
 async def test_metadata_boost_promotes_existing_low_score_hit(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Metadata match promotes a document already in content results.
 
@@ -1814,7 +1981,9 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
     target.source_path = "patents/PV13_AuthoritativeAccumulator.docx"
     await graph_store.insert_document(target)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "target_pv13",
+        stub_content_store,
+        seeded_embedding_provider,
+        "target_pv13",
         [("Section 1", "Clinical normalization of respiratory signals.")],
         doc_type="patent_draft",
     )
@@ -1824,7 +1993,9 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
     distractor.source_path = "patents/PV99_Unrelated.docx"
     await graph_store.insert_document(distractor)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "distractor",
+        stub_content_store,
+        seeded_embedding_provider,
+        "distractor",
         [("Section 1", "PV13 is referenced in the prior art analysis.")],
         doc_type="patent_draft",
     )
@@ -1853,11 +2024,16 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
 
 
 async def test_bh_087_response_level_chunks_default(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Default response_level (omitted) preserves current chunk behavior."""
     await _seed_response_level_docs(
-        graph_store, stub_content_store, seeded_embedding_provider,
+        graph_store,
+        stub_content_store,
+        seeded_embedding_provider,
     )
 
     # No response_level specified -- should default to chunks
@@ -1880,7 +2056,8 @@ async def test_bh_087_response_level_chunks_default(
 
 
 async def test_bh_088_response_level_ignored_by_catalog(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode ignores response_level; always returns document-level."""
     for doc_id in ("cat_a", "cat_b"):
@@ -1911,7 +2088,10 @@ async def test_bh_088_response_level_ignored_by_catalog(
 
 # BH-101: Semantic discover returns semantic_abstract on DocumentSummary
 async def test_bh_101_semantic_discover_returns_abstract(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """DocumentSummary in semantic discover results includes semantic_abstract."""
     abstract_text = "This document analyzes patent claim structures for PIM Health."
@@ -1919,12 +2099,16 @@ async def test_bh_101_semantic_discover_returns_abstract(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "abs_doc",
+        stub_content_store,
+        seeded_embedding_provider,
+        "abs_doc",
         [("Section 1", "Patent claim structures and prior art analysis.")],
     )
 
     request = DiscoverRequest(
-        mode=RetrievalMode.SEMANTIC, query="patent claims", include_abstracts=True,
+        mode=RetrievalMode.SEMANTIC,
+        query="patent claims",
+        include_abstracts=True,
     )
     response = await retrieval_service.discover(request)
 
@@ -1935,7 +2119,10 @@ async def test_bh_101_semantic_discover_returns_abstract(
 
 # BH-102: Discover returns None abstract for abstraction-skipped documents
 async def test_bh_102_discover_returns_none_abstract_when_skipped(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Documents with abstraction_skipped have semantic_abstract=None in results."""
     doc = _make_doc(
@@ -1946,7 +2133,9 @@ async def test_bh_102_discover_returns_none_abstract_when_skipped(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "no_abs_doc",
+        stub_content_store,
+        seeded_embedding_provider,
+        "no_abs_doc",
         [("Section 1", "Regulatory compliance framework for medical devices.")],
     )
 
@@ -1960,7 +2149,8 @@ async def test_bh_102_discover_returns_none_abstract_when_skipped(
 
 # BH-103: Catalog mode returns semantic_abstract on DocumentSummary
 async def test_bh_103_catalog_returns_abstract(
-    graph_store, retrieval_service,
+    graph_store,
+    retrieval_service,
 ):
     """Catalog mode includes semantic_abstract on DocumentSummary for all documents."""
     doc_with = _make_doc(
@@ -1993,7 +2183,10 @@ async def test_bh_103_catalog_returns_abstract(
 
 # BH-104: Document-level response mode preserves semantic_abstract
 async def test_bh_104_response_level_documents_preserves_abstract(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """response_level=documents suppresses chunk_content but preserves semantic_abstract."""
     abstract_text = "Overview of insulin pump safety requirements."
@@ -2001,7 +2194,9 @@ async def test_bh_104_response_level_documents_preserves_abstract(
     await graph_store.insert_document(doc)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "rl_doc",
+        stub_content_store,
+        seeded_embedding_provider,
+        "rl_doc",
         [("Section 1", "Insulin pump safety and regulatory requirements.")],
     )
 
@@ -2029,7 +2224,10 @@ async def test_bh_104_response_level_documents_preserves_abstract(
 
 # BH-105: Abstract prefilter boosts documents whose abstract matches query
 async def test_bh_105_abstract_prefilter_boosts_matching_abstract(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Documents whose abstract matches the query rank above those whose abstract does not.
 
@@ -2048,17 +2246,23 @@ async def test_bh_105_abstract_prefilter_boosts_matching_abstract(
     )
     await graph_store.insert_document(doc_b)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "abs_nomatch",
+        stub_content_store,
+        seeded_embedding_provider,
+        "abs_nomatch",
         [("Section 1", shared_content)],
     )
 
     doc_a = _make_doc(
         "abs_match",
-        semantic_abstract="Comprehensive review of glucose monitoring technologies and sensor calibration.",
+        semantic_abstract=(
+            "Comprehensive review of glucose monitoring technologies and sensor calibration."
+        ),
     )
     await graph_store.insert_document(doc_a)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "abs_match",
+        stub_content_store,
+        seeded_embedding_provider,
+        "abs_match",
         [("Section 1", shared_content)],
     )
 
@@ -2076,7 +2280,10 @@ async def test_bh_105_abstract_prefilter_boosts_matching_abstract(
 
 # BH-106: Abstract prefilter does not exclude documents without abstracts
 async def test_bh_106_abstract_prefilter_does_not_exclude_abstractless_docs(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Documents with no abstract still appear in results from chunk search."""
     doc_with = _make_doc(
@@ -2094,7 +2301,9 @@ async def test_bh_106_abstract_prefilter_does_not_exclude_abstractless_docs(
     shared_content = "Metabolic biomarker detection and claim drafting."
     for doc_id in ("has_abs", "no_abs"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", shared_content)],
         )
 
@@ -2111,7 +2320,10 @@ async def test_bh_106_abstract_prefilter_does_not_exclude_abstractless_docs(
 
 # BH-107: Abstract prefilter respects scope gating
 async def test_bh_107_abstract_prefilter_respects_scope(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Abstract-matched documents failing scope gating are excluded."""
     doc_auth = _make_doc(
@@ -2130,7 +2342,9 @@ async def test_bh_107_abstract_prefilter_respects_scope(
     shared_content = "Insulin pump delivery mechanisms and safety margins."
     for doc_id in ("auth_abs", "noauth_abs"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", shared_content)],
         )
 
@@ -2148,7 +2362,10 @@ async def test_bh_107_abstract_prefilter_respects_scope(
 
 # BH-108: use_abstract_prefilter=False disables abstract boost
 async def test_bh_108_abstract_prefilter_disabled(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """With use_abstract_prefilter=False, no abstract-derived boost is applied."""
     shared_content = "Continuous glucose monitor calibration procedures."
@@ -2166,7 +2383,9 @@ async def test_bh_108_abstract_prefilter_disabled(
 
     for doc_id in ("boost_a", "boost_b"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", shared_content)],
         )
 
@@ -2191,7 +2410,10 @@ async def test_bh_108_abstract_prefilter_disabled(
 
 # BH-109: Keyword mode benefits from abstract prefilter
 async def test_bh_109_keyword_mode_abstract_prefilter(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Abstract prefilter boosts keyword (BM25) results the same as semantic.
 
@@ -2210,7 +2432,9 @@ async def test_bh_109_keyword_mode_abstract_prefilter(
     )
     await graph_store.insert_document(doc_b)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "kw_abs_nomatch",
+        stub_content_store,
+        seeded_embedding_provider,
+        "kw_abs_nomatch",
         [("Section 1", shared_content)],
     )
 
@@ -2220,7 +2444,9 @@ async def test_bh_109_keyword_mode_abstract_prefilter(
     )
     await graph_store.insert_document(doc_a)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "kw_abs_match",
+        stub_content_store,
+        seeded_embedding_provider,
+        "kw_abs_match",
         [("Section 1", shared_content)],
     )
 
@@ -2238,7 +2464,10 @@ async def test_bh_109_keyword_mode_abstract_prefilter(
 
 # BH-110: Abstract prefilter integrates with hybrid RRF
 async def test_bh_110_abstract_prefilter_with_hybrid_rrf(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Abstract boost applied after RRF fusion composes with fused scores.
 
@@ -2256,7 +2485,9 @@ async def test_bh_110_abstract_prefilter_with_hybrid_rrf(
     )
     await graph_store.insert_document(doc_b)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "rrf_abs_nomatch",
+        stub_content_store,
+        seeded_embedding_provider,
+        "rrf_abs_nomatch",
         [("Section 1", shared_content)],
     )
 
@@ -2266,7 +2497,9 @@ async def test_bh_110_abstract_prefilter_with_hybrid_rrf(
     )
     await graph_store.insert_document(doc_a)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "rrf_abs_match",
+        stub_content_store,
+        seeded_embedding_provider,
+        "rrf_abs_match",
         [("Section 1", shared_content)],
     )
 
@@ -2285,7 +2518,10 @@ async def test_bh_110_abstract_prefilter_with_hybrid_rrf(
 
 # BH-111: Abstract boost composes with lifecycle tier sort
 async def test_bh_111_abstract_boost_composes_with_lifecycle_tier(
-    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service,
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
 ):
     """Lifecycle tier sort (BH-069) places active above draft even when both
     receive the abstract boost."""
@@ -2307,7 +2543,9 @@ async def test_bh_111_abstract_boost_composes_with_lifecycle_tier(
 
     for doc_id in ("sal_active", "sal_draft"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", shared_content)],
         )
 
@@ -2328,6 +2566,7 @@ async def test_bh_111_abstract_boost_composes_with_lifecycle_tier(
 # BH-112: document_ids filter constrains keyword search to specified documents
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_112_document_ids_filter_keyword_prefilter(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2347,16 +2586,21 @@ async def test_bh_112_document_ids_filter_keyword_prefilter(
     # Doc A: target term buried among many unrelated chunks
     chunks_a = [("Section 1", "Introduction to clinical normalization.")]
     for i in range(20):
-        chunks_a.append((f"Section {i+2}", f"Unrelated content block {i}."))
+        chunks_a.append((f"Section {i + 2}", f"Unrelated content block {i}."))
     chunks_a.append(("Section 22", "The MLPAO orchestrator handles adjudication."))
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "kw_filter_a", chunks_a,
+        stub_content_store,
+        seeded_embedding_provider,
+        "kw_filter_a",
+        chunks_a,
     )
 
     # Docs B and C: term appears in every chunk (high term frequency)
     for doc_id in ("kw_filter_b", "kw_filter_c"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [(f"S{i}", f"MLPAO MLPAO MLPAO analysis {i}") for i in range(5)],
         )
 
@@ -2377,6 +2621,7 @@ async def test_bh_112_document_ids_filter_keyword_prefilter(
 # BH-113: document_ids filter constrains semantic search to specified documents
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_113_document_ids_filter_semantic_prefilter(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2389,15 +2634,21 @@ async def test_bh_113_document_ids_filter_semantic_prefilter(
     await graph_store.insert_document(doc_c)
 
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "sem_filter_a",
+        stub_content_store,
+        seeded_embedding_provider,
+        "sem_filter_a",
         [("Section 1", "Clinical normalization with MLPAO orchestrator.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "sem_filter_b",
+        stub_content_store,
+        seeded_embedding_provider,
+        "sem_filter_b",
         [("Section 1", "Clinical normalization with MLPAO orchestrator.")],
     )
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "sem_filter_c",
+        stub_content_store,
+        seeded_embedding_provider,
+        "sem_filter_c",
         [("Section 1", "Gardening tips for spring planting.")],
     )
 
@@ -2418,6 +2669,7 @@ async def test_bh_113_document_ids_filter_semantic_prefilter(
 # BH-114: document_ids filter works with scope ALL (post-filter)
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_114_document_ids_filter_scope_all(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2429,7 +2681,9 @@ async def test_bh_114_document_ids_filter_scope_all(
 
     for doc_id in ("scope_all_a", "scope_all_b"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", "Patent claims analysis for PV07.")],
         )
 
@@ -2450,6 +2704,7 @@ async def test_bh_114_document_ids_filter_scope_all(
 # BH-115: document_ids filter with multiple IDs returns all matching documents
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_115_document_ids_filter_multiple_ids(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2463,7 +2718,9 @@ async def test_bh_115_document_ids_filter_multiple_ids(
 
     for doc_id in ("multi_a", "multi_b", "multi_c"):
         await _index_doc_chunks(
-            stub_content_store, seeded_embedding_provider, doc_id,
+            stub_content_store,
+            seeded_embedding_provider,
+            doc_id,
             [("Section 1", "Patent claims analysis for PV07.")],
         )
 
@@ -2483,6 +2740,7 @@ async def test_bh_115_document_ids_filter_multiple_ids(
 # ---------------------------------------------------------------------------
 # Empty-result hints: semantic mode
 # ---------------------------------------------------------------------------
+
 
 async def test_semantic_empty_results_no_hints_when_no_raw_matches(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
@@ -2508,7 +2766,9 @@ async def test_semantic_empty_results_with_hints_when_filtered_out(
     doc = _make_doc("doc_filtered_sem", project="alpha")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_filtered_sem",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_filtered_sem",
         [("Section 1", "Interesting patent content about claims.")],
     )
 
@@ -2535,6 +2795,7 @@ async def test_semantic_empty_results_with_hints_when_filtered_out(
 # Empty-result hints: keyword mode
 # ---------------------------------------------------------------------------
 
+
 async def test_keyword_empty_results_with_hints_when_filtered_out(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2542,7 +2803,9 @@ async def test_keyword_empty_results_with_hints_when_filtered_out(
     doc = _make_doc("doc_filtered_kw", project="beta")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_filtered_kw",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_filtered_kw",
         [("Section 1", "Specific keyword content for testing.")],
     )
 
@@ -2567,7 +2830,9 @@ async def test_keyword_nonempty_results_no_hints(
     doc = _make_doc("doc_has_results")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_has_results",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_has_results",
         [("Section 1", "Matching content for keyword search.")],
     )
 
@@ -2584,6 +2849,7 @@ async def test_keyword_nonempty_results_no_hints(
 # Default mode: semantic
 # ---------------------------------------------------------------------------
 
+
 async def test_discover_defaults_to_semantic_mode(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2591,7 +2857,9 @@ async def test_discover_defaults_to_semantic_mode(
     doc = _make_doc("doc_default_mode")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_default_mode",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_default_mode",
         [("Section 1", "Content for default mode testing.")],
     )
 
@@ -2605,6 +2873,7 @@ async def test_discover_defaults_to_semantic_mode(
 # include_abstracts: default False suppresses abstracts in search results
 # ---------------------------------------------------------------------------
 
+
 async def test_include_abstracts_false_suppresses_in_semantic(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2615,7 +2884,9 @@ async def test_include_abstracts_false_suppresses_in_semantic(
     )
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_no_abs",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_no_abs",
         [("Section 1", "Content for abstract suppression test.")],
     )
 
@@ -2633,7 +2904,9 @@ async def test_include_abstracts_true_preserves_in_semantic(
     doc = _make_doc("doc_yes_abs", semantic_abstract=abstract_text)
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_yes_abs",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_yes_abs",
         [("Section 1", "Content for abstract preservation test.")],
     )
 
@@ -2643,9 +2916,7 @@ async def test_include_abstracts_true_preserves_in_semantic(
     assert response.results[0].document.semantic_abstract == abstract_text
 
 
-async def test_include_abstracts_false_suppresses_in_catalog(
-    graph_store, retrieval_service
-):
+async def test_include_abstracts_false_suppresses_in_catalog(graph_store, retrieval_service):
     """Catalog mode with default include_abstracts=False suppresses abstracts."""
     doc = _make_doc(
         "doc_cat_no_abs",
@@ -2664,9 +2935,7 @@ async def test_include_abstracts_false_suppresses_in_catalog(
     assert hits_by_id["doc_cat_no_abs"].document.semantic_abstract is None
 
 
-async def test_include_abstracts_true_preserves_in_catalog(
-    graph_store, retrieval_service
-):
+async def test_include_abstracts_true_preserves_in_catalog(graph_store, retrieval_service):
     """Catalog mode with include_abstracts=True preserves abstracts."""
     abstract_text = "Catalog abstract should be preserved."
     doc = _make_doc(
@@ -2697,7 +2966,9 @@ async def test_include_abstracts_false_suppresses_in_keyword(
     )
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_kw_no_abs",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_kw_no_abs",
         [("Section 1", "Keyword mode abstract suppression content.")],
     )
 
@@ -2714,6 +2985,7 @@ async def test_include_abstracts_false_suppresses_in_keyword(
 # min_relevance: relevance threshold filtering
 # ---------------------------------------------------------------------------
 
+
 async def test_min_relevance_filters_low_scoring_results(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
@@ -2721,7 +2993,9 @@ async def test_min_relevance_filters_low_scoring_results(
     doc = _make_doc("doc_threshold")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_threshold",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_threshold",
         [("Section 1", "Glucose monitoring calibration data.")],
     )
 
@@ -2748,7 +3022,9 @@ async def test_min_relevance_keeps_high_scoring_results(
     doc = _make_doc("doc_above")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_above",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_above",
         [("Section 1", "Patent claim analysis for biosensor calibration.")],
     )
 
@@ -2769,7 +3045,9 @@ async def test_min_relevance_none_disables_filtering(
     doc = _make_doc("doc_no_thresh")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
-        stub_content_store, seeded_embedding_provider, "doc_no_thresh",
+        stub_content_store,
+        seeded_embedding_provider,
+        "doc_no_thresh",
         [("Section 1", "Content for threshold default test.")],
     )
 
@@ -2778,9 +3056,7 @@ async def test_min_relevance_none_disables_filtering(
     assert len(response.results) > 0
 
 
-async def test_min_relevance_does_not_apply_to_catalog(
-    graph_store, retrieval_service
-):
+async def test_min_relevance_does_not_apply_to_catalog(graph_store, retrieval_service):
     """Catalog mode has no relevance scores, so min_relevance has no effect."""
     doc = _make_doc("doc_cat_thresh", doc_type="note")
     await graph_store.insert_document(doc)

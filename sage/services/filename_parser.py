@@ -35,9 +35,7 @@ class ParsedMetadata:
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[_ ](.*)")
 # Trailing version: v-prefix with optional sub-components separated by _ or .
 # Anchored at $ so it captures the entire trailing version span (e.g. v2_3_1).
-_TRAILING_VERSION_RE = re.compile(
-    r"(?:^|[_ ])(v\d+(?:[._]\d+)*)$", re.IGNORECASE
-)
+_TRAILING_VERSION_RE = re.compile(r"(?:^|[_ ])(v\d+(?:[._]\d+)*)$", re.IGNORECASE)
 # Post-split date: a segment that is exactly YYYY-MM-DD. Catches dates
 # that appear after a project prefix (e.g. PIM_2026-01-06_Title).
 _SEGMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -152,9 +150,7 @@ class FilenameParser:
 
         segments = stem.split(self._separator) if stem else []
         if not segments:
-            return ParsedMetadata(
-                title=filename_stem, date=date, version=version
-            )
+            return ParsedMetadata(title=filename_stem, date=date, version=version)
 
         remaining = list(segments)
         project: str | None = None
@@ -166,8 +162,7 @@ class FilenameParser:
         # Otherwise fall back to the original heuristic (first short
         # uppercase segment that is not a code).
         if remaining and len(remaining[0]) <= 5 and remaining[0].isupper():
-            if (self._project_id
-                    and remaining[0].upper() == self._project_id.upper()):
+            if self._project_id and remaining[0].upper() == self._project_id.upper():
                 project = remaining[0]
             elif self._is_code(remaining[0]):
                 codes.append(remaining[0])
@@ -268,10 +263,7 @@ class FilenameParser:
             # PV07, etc.  Exact-match rules (REF, PVMaster) naturally
             # work because startswith covers equality.  Order in the
             # config controls precedence (PVMaster before PV).
-            matching_codes = [
-                c for c in codes
-                if c.upper().startswith(rule_code.upper())
-            ]
+            matching_codes = [c for c in codes if c.upper().startswith(rule_code.upper())]
             if not matching_codes:
                 continue
 

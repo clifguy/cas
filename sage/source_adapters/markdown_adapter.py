@@ -19,9 +19,7 @@ class MarkdownAdapter(SourceAdapter):
     VERSION = "0.3.0"
     EXTENSIONS = [".md", ".markdown"]
 
-    async def project(
-        self, source_path: Path, config: dict | None = None
-    ) -> ProjectionResult:
+    async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
         text = raw_bytes.decode("utf-8")
@@ -29,9 +27,7 @@ class MarkdownAdapter(SourceAdapter):
         headings = self._parse_headings(text)
         title = self._extract_title(headings, source_path)
 
-        source_mtime = datetime.fromtimestamp(
-            source_path.stat().st_mtime, tz=timezone.utc
-        )
+        source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
         return ProjectionResult(
             text=text,
@@ -58,9 +54,7 @@ class MarkdownAdapter(SourceAdapter):
             if match:
                 # Flush content to previous heading
                 if current_heading_idx >= 0:
-                    headings[current_heading_idx].content = "\n".join(
-                        current_content_lines
-                    ).strip()
+                    headings[current_heading_idx].content = "\n".join(current_content_lines).strip()
                 current_content_lines = []
 
                 level = len(match.group(1))
@@ -87,15 +81,11 @@ class MarkdownAdapter(SourceAdapter):
 
         # Flush final heading content
         if current_heading_idx >= 0:
-            headings[current_heading_idx].content = "\n".join(
-                current_content_lines
-            ).strip()
+            headings[current_heading_idx].content = "\n".join(current_content_lines).strip()
 
         return headings
 
-    def _extract_title(
-        self, headings: list[HeadingNode], source_path: Path
-    ) -> str:
+    def _extract_title(self, headings: list[HeadingNode], source_path: Path) -> str:
         """Extract title from first H1, falling back to filename."""
         for h in headings:
             if h.level == 1:

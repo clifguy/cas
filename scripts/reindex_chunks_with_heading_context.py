@@ -34,6 +34,7 @@ The script is safe to run while the SAGE MCP server is running. Each
 document's chunks are replaced atomically via ``index_chunks``'s existing
 delete-then-insert path, and the FTS index is rebuilt incrementally.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,7 +50,6 @@ from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.vault_management import config_path_for_vault
-
 
 # Source-type to current adapter VERSION. Documents with adapter_version
 # below this for their source_type are candidates for re-indexing.
@@ -135,9 +135,7 @@ async def reindex_with_services(
         chunks = await store.get_all_chunks(doc.id)
         if not chunks:
             # Could happen if chunks were removed between plan and apply.
-            await graph.update_document(
-                doc.id, {"adapter_version": target_version}
-            )
+            await graph.update_document(doc.id, {"adapter_version": target_version})
             print(
                 f"[{i:4d}/{len(plan)}]  {doc.id}  "
                 f"{_truncate(doc.title, 40):40s}  "
@@ -149,19 +147,14 @@ async def reindex_with_services(
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
             texts = [
-                f"{c.heading_path}\n\n{c.content}"
-                if c.heading_path
-                else c.content
-                for c in batch
+                f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content for c in batch
             ]
             new_embeddings = await embedder.embed(texts)
             for c, emb in zip(batch, new_embeddings):
                 c.embedding = emb
 
         await store.index_chunks(doc.id, chunks)
-        await graph.update_document(
-            doc.id, {"adapter_version": target_version}
-        )
+        await graph.update_document(doc.id, {"adapter_version": target_version})
         n_done += 1
         print(
             f"[{i:4d}/{len(plan)}]  {doc.id}  "
@@ -170,10 +163,7 @@ async def reindex_with_services(
         )
 
     elapsed = datetime.now(timezone.utc) - started
-    print(
-        f"\nDone. {n_done} document(s) re-indexed in "
-        f"{elapsed.total_seconds():.1f}s."
-    )
+    print(f"\nDone. {n_done} document(s) re-indexed in {elapsed.total_seconds():.1f}s.")
 
     # Compact LanceDB fragments and prune old version metadata.
     # ``cleanup_older_than=timedelta(0)`` removes every version except
@@ -195,9 +185,7 @@ async def reindex_with_services(
     return 0
 
 
-async def reindex_vault(
-    vault_id: str, *, execute: bool, batch_size: int
-) -> int:
+async def reindex_vault(vault_id: str, *, execute: bool, batch_size: int) -> int:
     """Plan and (optionally) apply re-indexing for a vault. Production entry.
 
     Constructs services with a stub abstraction provider so this script
@@ -254,11 +242,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    rc = asyncio.run(
-        reindex_vault(
-            args.vault_id, execute=args.execute, batch_size=args.batch_size
-        )
-    )
+    rc = asyncio.run(reindex_vault(args.vault_id, execute=args.execute, batch_size=args.batch_size))
     raise SystemExit(rc)
 
 

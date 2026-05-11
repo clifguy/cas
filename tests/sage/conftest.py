@@ -6,17 +6,14 @@ fresh SQLite database via pytest's tmp_path fixture.
 """
 
 import pytest
-import yaml
-from pathlib import Path
 
 from sage.adapters.stubs import (
     FailingAbstractionProvider,
-    SeededEmbeddingProvider,
     StubAbstractionProvider,
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.config import VaultConfig, build_transition_table
+from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
@@ -110,6 +107,7 @@ def extended_vault_config_dict(minimal_vault_config_dict):
     states/actions are surfaced by lifecycle and graph-ops services.
     """
     import copy
+
     config = copy.deepcopy(minimal_vault_config_dict)
     config["lifecycle"]["states"].append({"value": "filed", "label": "Filed"})
     config["lifecycle"]["transitions"].append(

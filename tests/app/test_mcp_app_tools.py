@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import sage.mcp_server as _mcp
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -19,24 +20,21 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-import sage.mcp_server as _mcp
-
 from sage.mcp_server import (
-    sage_list_vaults,
-    sage_vault_stats,
-    sage_hash_check,
-    sage_list_staging_edges,
-    sage_confirm_staging_edge,
-    sage_dismiss_staging_edge,
-    sage_pending_metadata,
-    sage_discover,
-    app_scan_directory,
     app_batch_ingest,
+    app_scan_directory,
+    sage_confirm_staging_edge,
+    sage_discover,
+    sage_dismiss_staging_edge,
+    sage_hash_check,
     sage_ingest,
+    sage_list_staging_edges,
+    sage_list_vaults,
+    sage_pending_metadata,
+    sage_vault_stats,
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -74,7 +72,12 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {"from_state": "active", "action": "supersede", "to_state": "archived", "creates_edge": "supersedes"},
+                {
+                    "from_state": "active",
+                    "action": "supersede",
+                    "to_state": "archived",
+                    "creates_edge": "supersedes",
+                },
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
@@ -98,8 +101,16 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
         },
         "edge_inference": {
             "tier_assignments": [
-                {"edge_type": "supersedes", "tier": 1, "inference_rules": [{"method": "version_chain"}]},
-                {"edge_type": "covers", "tier": 2, "inference_rules": [{"method": "filename_code_match"}]},
+                {
+                    "edge_type": "supersedes",
+                    "tier": 1,
+                    "inference_rules": [{"method": "version_chain"}],
+                },
+                {
+                    "edge_type": "covers",
+                    "tier": 2,
+                    "inference_rules": [{"method": "filename_code_match"}],
+                },
             ],
         },
     }
@@ -114,9 +125,7 @@ def _parse(result: str | dict) -> object:
 @pytest.fixture
 async def two_vaults(tmp_path):
     """Register two vaults in the MCP vault registry."""
-    c1 = VaultConfig.model_validate(
-        _make_vault_config_dict(tmp_path, "test_vault", "Test Vault")
-    )
+    c1 = VaultConfig.model_validate(_make_vault_config_dict(tmp_path, "test_vault", "Test Vault"))
     c2 = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "second_vault", "Second Vault")
     )
@@ -185,7 +194,6 @@ async def empty_registry():
 
 
 class TestSageListVaults:
-
     async def test_mcp_001_returns_all_vaults(self, two_vaults):
         """sage_list_vaults returns all registered vaults in envelope."""
         result = _parse(await sage_list_vaults())
@@ -211,7 +219,6 @@ class TestSageListVaults:
 
 
 class TestSageVaultStats:
-
     async def test_mcp_003_returns_stats_and_health(self, single_vault):
         """sage_vault_stats returns statistics and health indicators."""
         services, config = single_vault
@@ -289,7 +296,6 @@ class TestSageVaultStats:
 
 
 class TestSageHashCheck:
-
     async def test_mcp_006_returns_matches(self, single_vault):
         """sage_hash_check returns match results."""
         services, config = single_vault
@@ -315,7 +321,6 @@ class TestSageHashCheck:
 
 
 class TestSageListStagingEdges:
-
     async def test_mcp_008_returns_staging_edges(self, single_vault):
         """sage_list_staging_edges returns Tier 2 edges in envelope."""
         services, config = single_vault
@@ -356,7 +361,6 @@ class TestSageListStagingEdges:
 
 
 class TestStagingEdgeActions:
-
     async def _setup_staging(self, services):
         """Ingest docs and create a staging edge, return IDs."""
         r1 = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
@@ -410,7 +414,6 @@ class TestStagingEdgeActions:
 
 
 class TestSagePendingMetadata:
-
     async def test_mcp_013_returns_pending(self, tmp_path):
         """sage_pending_metadata returns documents awaiting confirmation in envelope.
 
@@ -422,9 +425,7 @@ class TestSagePendingMetadata:
         sage_pending_metadata's behavior, decoupled from how a document
         comes to be unconfirmed.
         """
-        cfg_dict = _make_vault_config_dict(
-            tmp_path, "review_vault", "Review Required Vault"
-        )
+        cfg_dict = _make_vault_config_dict(tmp_path, "review_vault", "Review Required Vault")
         config = VaultConfig.model_validate(cfg_dict)
         services = await initialize_services(
             config,
@@ -478,7 +479,6 @@ class TestSagePendingMetadata:
 
 
 class TestAppScanDirectory:
-
     async def test_mcp_015_returns_files_with_parsed_metadata(self, single_vault, tmp_path):
         """app_scan_directory returns files with parsed metadata."""
         services, config = single_vault
@@ -537,7 +537,6 @@ class TestAppScanDirectory:
 
 
 class TestAppBatchIngest:
-
     async def test_mcp_019_returns_summary_with_edges(self, single_vault):
         """app_batch_ingest processes files and returns summary with edge counts."""
         services, config = single_vault
@@ -547,12 +546,33 @@ class TestAppBatchIngest:
         v2 = sources / "patent_v2.md"
         v2.write_text("# Patent v2\n\nSecond.")
 
-        result = _parse(await app_batch_ingest("test_vault", [
-            {"file_path": str(v1), "adapter": "markdown",
-             "parsed_metadata": {"title": "Patent", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}},
-            {"file_path": str(v2), "adapter": "markdown",
-             "parsed_metadata": {"title": "Patent", "codes": ["PV06"], "version": "v2", "doc_type": "patent_draft"}},
-        ]))
+        result = _parse(
+            await app_batch_ingest(
+                "test_vault",
+                [
+                    {
+                        "file_path": str(v1),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Patent",
+                            "codes": ["PV06"],
+                            "version": "v1",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                    {
+                        "file_path": str(v2),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Patent",
+                            "codes": ["PV06"],
+                            "version": "v2",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                ],
+            )
+        )
         assert "documents_created" in result
         assert result["documents_created"]["new"] == 2
         assert "edges_created" in result
@@ -569,10 +589,15 @@ class TestAppBatchIngest:
         good = sources / "good_file.md"
         good.write_text("# Good\n\nContent.")
 
-        result = _parse(await app_batch_ingest("test_vault", [
-            {"file_path": str(good), "adapter": "markdown"},
-            {"file_path": "/nonexistent/bad.md", "adapter": "markdown"},
-        ]))
+        result = _parse(
+            await app_batch_ingest(
+                "test_vault",
+                [
+                    {"file_path": str(good), "adapter": "markdown"},
+                    {"file_path": "/nonexistent/bad.md", "adapter": "markdown"},
+                ],
+            )
+        )
         assert result["error_count"] == 1
         assert result["documents_created"]["new"] >= 1
         assert len(result["errors"]) == 1
@@ -591,7 +616,6 @@ class TestAppBatchIngest:
 
 
 class TestMCPConventions:
-
     async def test_mcp_023_all_return_serializable_dicts(self, single_vault, tmp_path):
         """All tools return dicts that are JSON-serializable."""
         services, config = single_vault
@@ -607,9 +631,12 @@ class TestMCPConventions:
             await sage_list_staging_edges("test_vault"),
             await sage_pending_metadata("test_vault"),
             await app_scan_directory("test_vault", str(scan_dir)),
-            await app_batch_ingest("test_vault", [
-                {"file_path": str(sources / "sample.md"), "adapter": "markdown"},
-            ]),
+            await app_batch_ingest(
+                "test_vault",
+                [
+                    {"file_path": str(sources / "sample.md"), "adapter": "markdown"},
+                ],
+            ),
         ]
         for r in results:
             assert isinstance(r, dict)
@@ -622,12 +649,15 @@ class TestMCPConventions:
 
     async def test_mcp_025_tool_naming_convention(self):
         """Tool naming follows sage_*/app_* prefix convention."""
-        from sage.mcp_server import mcp as mcp_server
         # The tool functions we imported all follow the convention
         sage_tools = [
-            "sage_list_vaults", "sage_vault_stats", "sage_hash_check",
-            "sage_list_staging_edges", "sage_confirm_staging_edge",
-            "sage_dismiss_staging_edge", "sage_pending_metadata",
+            "sage_list_vaults",
+            "sage_vault_stats",
+            "sage_hash_check",
+            "sage_list_staging_edges",
+            "sage_confirm_staging_edge",
+            "sage_dismiss_staging_edge",
+            "sage_pending_metadata",
         ]
         app_tools = ["app_scan_directory", "app_batch_ingest"]
 
@@ -643,10 +673,10 @@ class TestMCPConventions:
 
 
 class TestSageDiscoverCatalog:
-
     async def _seed_docs(self, services):
         """Insert 5 documents for catalog mode tests."""
         from sage.models.schemas import Document
+
         gs = services.graph_store
         now = datetime.now(timezone.utc)
 
@@ -678,12 +708,14 @@ class TestSageDiscoverCatalog:
         services, config = single_vault
         await self._seed_docs(services)
 
-        result = _parse(await sage_discover(
-            vault_id="test_vault",
-            mode="catalog",
-            scope="filtered",
-            filters={"tags": ["PV07"]},
-        ))
+        result = _parse(
+            await sage_discover(
+                vault_id="test_vault",
+                mode="catalog",
+                scope="filtered",
+                filters={"tags": ["PV07"]},
+            )
+        )
 
         assert result["mode"] == "catalog"
         assert result["total_available"] == 2
@@ -700,12 +732,22 @@ class TestSageDiscoverCatalog:
         services, config = single_vault
         await self._seed_docs(services)
 
-        resp1 = _parse(await sage_discover(
-            vault_id="test_vault", mode="catalog", limit=2, offset=0,
-        ))
-        resp2 = _parse(await sage_discover(
-            vault_id="test_vault", mode="catalog", limit=2, offset=2,
-        ))
+        resp1 = _parse(
+            await sage_discover(
+                vault_id="test_vault",
+                mode="catalog",
+                limit=2,
+                offset=0,
+            )
+        )
+        resp2 = _parse(
+            await sage_discover(
+                vault_id="test_vault",
+                mode="catalog",
+                limit=2,
+                offset=2,
+            )
+        )
 
         assert resp1["total_available"] == 3
         assert len(resp1["results"]) == 2

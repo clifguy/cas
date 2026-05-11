@@ -11,10 +11,10 @@ tests services directly rather than through HTTP.
 
 import asyncio
 import json
-from pathlib import Path
 
 import pytest
 
+import sage.mcp_server as _mcp
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -22,8 +22,6 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-import sage.mcp_server as _mcp
-
 from sage.mcp_server import (
     sage_check_preconditions,
     sage_discover,
@@ -32,8 +30,8 @@ from sage.mcp_server import (
     sage_ingest,
     sage_link,
     sage_parse_filename,
-    sage_read_projection,
     sage_reabstract,
+    sage_read_projection,
     sage_refresh_views,
     sage_register_user,
     sage_reload_vault,
@@ -42,7 +40,6 @@ from sage.mcp_server import (
     sage_update_metadata,
     sage_vault_stats,
 )
-
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 
 
@@ -142,9 +139,7 @@ async def test_ingest_duplicate_returns_error(vault_services):
 async def test_ingest_force_bypasses_duplicate(vault_services):
     await sage_ingest("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.1)
-    result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown", force=True)
-    )
+    result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown", force=True))
     assert "id" in result
     assert "error" not in result
 
@@ -236,12 +231,8 @@ async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
 
     documents_after = await graph_store.list_all_documents()
     pending_after = await graph_store.list_pending_metadata_documents()
-    assert documents_after == [], (
-        "sage_parse_filename must not create document records"
-    )
-    assert pending_after == [], (
-        "sage_parse_filename must not enqueue pending_metadata entries"
-    )
+    assert documents_after == [], "sage_parse_filename must not create document records"
+    assert pending_after == [], "sage_parse_filename must not enqueue pending_metadata entries"
 
 
 # ---------------------------------------------------------------------------
@@ -250,9 +241,7 @@ async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
 
 
 async def test_get_document_returns_full_record(vault_services):
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(await sage_get_document("test_vault", doc_id))
@@ -271,9 +260,7 @@ async def test_get_document_not_found(vault_services):
 
 
 async def test_update_metadata_partial(vault_services):
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(
@@ -296,9 +283,7 @@ async def test_update_metadata_sets_document_date(vault_services):
     fault where a parameter is declared on the MCP tool but not threaded
     into UpdateMetadataRequest.
     """
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     updated = _parse(
@@ -315,14 +300,10 @@ async def test_update_metadata_sets_document_date(vault_services):
 
 
 async def test_update_metadata_invalid_doc_type(vault_services):
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(
-        await sage_update_metadata("test_vault", doc_id, doc_type="invalid_type")
-    )
+    result = _parse(await sage_update_metadata("test_vault", doc_id, doc_type="invalid_type"))
     assert result["error"] == "invalid_doc_type"
 
 
@@ -332,9 +313,7 @@ async def test_update_metadata_invalid_doc_type(vault_services):
 
 
 async def test_set_lifecycle_archive(vault_services):
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(await sage_set_lifecycle("test_vault", doc_id, "archive"))
@@ -342,9 +321,7 @@ async def test_set_lifecycle_archive(vault_services):
 
 
 async def test_set_lifecycle_invalid_transition(vault_services):
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(await sage_set_lifecycle("test_vault", doc_id, "reactivate"))
@@ -353,9 +330,7 @@ async def test_set_lifecycle_invalid_transition(vault_services):
 
 
 async def test_set_lifecycle_unknown_action(vault_services):
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode"))
@@ -368,9 +343,7 @@ async def test_set_lifecycle_unknown_action(vault_services):
 
 
 async def test_register_user(vault_services):
-    result = _parse(
-        await sage_register_user("test_vault", "test_agent", "agent")
-    )
+    result = _parse(await sage_register_user("test_vault", "test_agent", "agent"))
     assert result["display_name"] == "test_agent"
     assert result["type"] == "agent"
     assert "id" in result
@@ -405,9 +378,7 @@ async def test_link_self_referential_error(vault_services):
     doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.3)
 
-    result = _parse(
-        await sage_link("test_vault", doc["id"], doc["id"], "references")
-    )
+    result = _parse(await sage_link("test_vault", doc["id"], doc["id"], "references"))
     assert result["error"] == "self_referential_edge"
 
 
@@ -464,9 +435,7 @@ async def test_link_transitive_both_requires_anchors(vault_services):
     await asyncio.sleep(0.3)
 
     # No anchor fields -> edge_anchor_policy_violation
-    result = _parse(
-        await sage_link("test_vault", doc_a["id"], doc_b["id"], "covers")
-    )
+    result = _parse(await sage_link("test_vault", doc_a["id"], doc_b["id"], "covers"))
     assert result["error"] == "edge_anchor_policy_violation"
     assert result["detail"]["resolution_policy"] == "transitive_both"
 
@@ -513,6 +482,7 @@ async def test_link_retracts_round_trip(vault_services):
     # malformed-shape value would short-circuit at LinkRequest validation
     # and yield a generic ValidationError instead.
     import uuid as _uuid
+
     bad = _parse(
         await sage_link(
             "test_vault",
@@ -559,17 +529,11 @@ async def test_traverse_debug_populates_resolution_path(vault_services):
         target_valid_from_version=doc_b["id"],
     )
 
-    off = _parse(
-        await sage_traverse("test_vault", doc_a["id"], edge_type="covers")
-    )
+    off = _parse(await sage_traverse("test_vault", doc_a["id"], edge_type="covers"))
     # debug defaults to False -> resolution_path is absent (exclude_none)
     assert off.get("resolution_path") is None
 
-    on = _parse(
-        await sage_traverse(
-            "test_vault", doc_a["id"], edge_type="covers", debug=True
-        )
-    )
+    on = _parse(await sage_traverse("test_vault", doc_a["id"], edge_type="covers", debug=True))
     path = on.get("resolution_path") or []
     assert any(e["event_type"] == "anchor_hit" for e in path)
 
@@ -583,9 +547,7 @@ async def test_discover_semantic(vault_services):
     await sage_ingest("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.5)
 
-    result = _parse(
-        await sage_discover("test_vault", "semantic", query="sample content")
-    )
+    result = _parse(await sage_discover("test_vault", "semantic", query="sample content"))
     assert result["mode"] == "semantic"
     assert isinstance(result["results"], list)
 
@@ -620,9 +582,7 @@ async def test_export_projection(vault_services):
     doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
 
-    result = _parse(
-        await sage_export_projection("test_vault", doc["id"], "exports/out.md")
-    )
+    result = _parse(await sage_export_projection("test_vault", doc["id"], "exports/out.md"))
     assert result["document_id"] == doc["id"]
     assert "exports/out.md" in result["output_path"]
 
@@ -631,9 +591,7 @@ async def test_export_projection_path_traversal(vault_services):
     doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
 
-    result = _parse(
-        await sage_export_projection("test_vault", doc["id"], "../../etc/passwd")
-    )
+    result = _parse(await sage_export_projection("test_vault", doc["id"], "../../etc/passwd"))
     assert result["error"] == "path_traversal_denied"
 
 
@@ -769,9 +727,7 @@ async def test_reload_vault_sees_external_changes(vault_services):
     assert stats_after["total_documents"] == 2
 
 
-async def test_reload_vault_picks_up_yaml_edits(
-    minimal_vault_config_dict, tmp_vault_dir, tmp_path
-):
+async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_vault_dir, tmp_path):
     """Reload re-reads vault_config.yaml from disk and reflects edits.
 
     Documents the contract: when a vault was loaded from a YAML file and
@@ -779,6 +735,7 @@ async def test_reload_vault_picks_up_yaml_edits(
     values, not silently reuse the in-memory config.
     """
     import yaml as _yaml
+
     from sage.config import load_vault_config
 
     config_path = tmp_path / "vault_config.yaml"
@@ -809,9 +766,9 @@ async def test_reload_vault_picks_up_yaml_edits(
         assert result["reloaded"] is True
 
         # In-memory config now reflects the edit
-        assert (
-            _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is False
-        ), "sage_reload_vault did not re-read the YAML from disk"
+        assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is False, (
+            "sage_reload_vault did not re-read the YAML from disk"
+        )
     finally:
         await _mcp._vaults["yaml_reload_vault"].graph_store.close()
         _mcp._vaults.pop("yaml_reload_vault", None)
@@ -819,6 +776,7 @@ async def test_reload_vault_picks_up_yaml_edits(
 
 def _copy_dict(d: dict) -> dict:
     import copy as _copy
+
     return _copy.deepcopy(d)
 
 
@@ -831,9 +789,7 @@ async def test_reabstract_returns_started_status(vault_services):
     """BH-122: sage_reabstract should return a JSON response with
     status='reabstract_started' and the document_id, not the full
     document (fire-and-forget pattern)."""
-    ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown")
-    )
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     # sage_ingest dispatches Stages 2-3 in the background (BH-130).

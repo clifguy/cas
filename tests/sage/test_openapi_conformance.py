@@ -28,7 +28,6 @@ from fastapi.routing import APIRoute
 
 from sage.app import create_app
 
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
 CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
@@ -134,7 +133,8 @@ def app_operations() -> set[tuple[str, str]]:
 
 @pytest.fixture(scope="module")
 def all_spec_operations(
-    sage_core_spec: dict | None, cas_app_spec: dict | None,
+    sage_core_spec: dict | None,
+    cas_app_spec: dict | None,
 ) -> set[tuple[str, str]]:
     """Union of operations documented across both specs."""
     return _operations(sage_core_spec) | _operations(cas_app_spec)
@@ -182,11 +182,10 @@ def test_spec_covers_all_app_operations(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "spec_fixture", ["sage_core_spec", "cas_app_spec"]
-)
+@pytest.mark.parametrize("spec_fixture", ["sage_core_spec", "cas_app_spec"])
 def test_every_documented_operation_has_response_schema(
-    spec_fixture: str, request: pytest.FixtureRequest,
+    spec_fixture: str,
+    request: pytest.FixtureRequest,
 ):
     """Every documented (path, method) defines at least one success-class
     response, and that response either has a JSON schema reference /
@@ -207,9 +206,7 @@ def test_every_documented_operation_has_response_schema(
             responses = operation.get("responses") or {}
             success_statuses = [s for s in responses if s in _SUCCESS_STATUSES]
             if not success_statuses:
-                issues.append(
-                    f"{method.upper():6s} {path}: no success-class response"
-                )
+                issues.append(f"{method.upper():6s} {path}: no success-class response")
                 continue
             for status in success_statuses:
                 if status == "204":
@@ -218,9 +215,7 @@ def test_every_documented_operation_has_response_schema(
                 content = response.get("content") or {}
                 # Accept any content-type with a schema (application/json,
                 # text/event-stream for SSE, etc.).
-                has_schema = any(
-                    (entry or {}).get("schema") for entry in content.values()
-                )
+                has_schema = any((entry or {}).get("schema") for entry in content.values())
                 if not has_schema:
                     issues.append(
                         f"{method.upper():6s} {path}: {status} response has no schema "
@@ -228,8 +223,7 @@ def test_every_documented_operation_has_response_schema(
                     )
 
     assert not issues, (
-        f"{spec_fixture}: documented operations missing response schemas:\n"
-        + "\n".join(issues)
+        f"{spec_fixture}: documented operations missing response schemas:\n" + "\n".join(issues)
     )
 
 
@@ -238,11 +232,10 @@ def test_every_documented_operation_has_response_schema(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "spec_fixture", ["sage_core_spec", "cas_app_spec"]
-)
+@pytest.mark.parametrize("spec_fixture", ["sage_core_spec", "cas_app_spec"])
 def test_spec_is_valid_openapi_31(
-    spec_fixture: str, request: pytest.FixtureRequest,
+    spec_fixture: str,
+    request: pytest.FixtureRequest,
 ):
     """The yaml file parses as YAML and has the top-level structure
     expected of an OpenAPI 3.1 document. Cheap regression guard.
@@ -275,9 +268,7 @@ def test_vault_stats_response_documents_lancedb_chunk_count(
     assert sage_core_spec is not None, "sage_core_api spec is missing"
 
     schemas = sage_core_spec["components"]["schemas"]
-    assert "VaultStatsResponse" in schemas, (
-        "components.schemas.VaultStatsResponse is not defined"
-    )
+    assert "VaultStatsResponse" in schemas, "components.schemas.VaultStatsResponse is not defined"
     vault_stats = schemas["VaultStatsResponse"]
 
     properties = vault_stats.get("properties") or {}
@@ -302,7 +293,8 @@ def test_vault_stats_response_documents_lancedb_chunk_count(
 
 
 def test_specs_respect_url_prefix_boundaries(
-    sage_core_spec: dict | None, cas_app_spec: dict | None,
+    sage_core_spec: dict | None,
+    cas_app_spec: dict | None,
 ):
     """sage_core_api.openapi.yaml documents only /sage_vaults/* paths.
     cas_app_api.openapi.yaml documents only /app/* paths. No path
@@ -312,12 +304,8 @@ def test_specs_respect_url_prefix_boundaries(
     (graph/document operations) and the CAS Application API (UI-facing
     workflow tools).
     """
-    assert sage_core_spec is not None, (
-        f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
-    )
-    assert cas_app_spec is not None, (
-        f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
-    )
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
 
     sage_paths = set((sage_core_spec.get("paths") or {}).keys())
     app_paths = set((cas_app_spec.get("paths") or {}).keys())
@@ -326,17 +314,13 @@ def test_specs_respect_url_prefix_boundaries(
 
     sage_misplaced = [p for p in sage_paths if not p.startswith("/sage_vaults")]
     if sage_misplaced:
-        issues.append(
-            "sage_core_api.openapi.yaml contains paths outside /sage_vaults/*:"
-        )
+        issues.append("sage_core_api.openapi.yaml contains paths outside /sage_vaults/*:")
         for p in sorted(sage_misplaced):
             issues.append(f"  {p}")
 
     app_misplaced = [p for p in app_paths if not p.startswith("/app")]
     if app_misplaced:
-        issues.append(
-            "cas_app_api.openapi.yaml contains paths outside /app/*:"
-        )
+        issues.append("cas_app_api.openapi.yaml contains paths outside /app/*:")
         for p in sorted(app_misplaced):
             issues.append(f"  {p}")
 

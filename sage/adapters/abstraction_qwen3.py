@@ -14,8 +14,8 @@ SYSTEM_PROMPT_TEMPLATE = (
     "You are producing a relevance-triage card for an autonomous agent that "
     "has discovered this document via search. The agent will read this card "
     "to decide whether to fetch the full document. Write a description of "
-    "the document in third person (\"This document...\", \"The guideline...\", "
-    "\"The text...\"). Cover what the document is about, what it claims or "
+    'the document in third person ("This document...", "The guideline...", '
+    '"The text..."). Cover what the document is about, what it claims or '
     "prescribes, what topics it covers, and where relevant what it does not "
     "cover.\n"
     "\n"
@@ -33,10 +33,11 @@ SYSTEM_PROMPT_TEMPLATE = (
 def _format_system_prompt(doc_type: str | None) -> str:
     """Render the system prompt with optional doc_type substitution."""
     if doc_type:
-        clause = f", type (\"{doc_type}\")"
+        clause = f', type ("{doc_type}")'
     else:
         clause = ""
     return SYSTEM_PROMPT_TEMPLATE.format(doc_type_clause=clause)
+
 
 DEFAULT_CONTEXT_WINDOW = 32768
 
@@ -79,12 +80,11 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             return
 
         try:
-            from mlx_lm import load, generate
+            from mlx_lm import generate, load
             from mlx_lm.sample_utils import make_sampler
         except ImportError as exc:
             raise ImportError(
-                "mlx-lm is required for Qwen3AbstractionProvider. "
-                "Install with: pip install mlx-lm"
+                "mlx-lm is required for Qwen3AbstractionProvider. Install with: pip install mlx-lm"
             ) from exc
 
         self._generate_fn = generate
@@ -152,9 +152,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             enable_thinking=False,
         )
 
-    def _truncate_for_context(
-        self, text: str, max_tokens: int, doc_type: str | None
-    ) -> str:
+    def _truncate_for_context(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         """Truncate document text to fit within context window (AD-031).
 
         Preserves leading content (title, abstract, introduction) by
@@ -174,17 +172,17 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             return text
 
         logger.info(
-            "Truncating input from %d to %d tokens (context_window=%d, "
-            "max_tokens=%d, overhead=%d)",
-            len(text_tokens), available, self._context_window,
-            max_tokens, overhead_tokens,
+            "Truncating input from %d to %d tokens (context_window=%d, max_tokens=%d, overhead=%d)",
+            len(text_tokens),
+            available,
+            self._context_window,
+            max_tokens,
+            overhead_tokens,
         )
         truncated_tokens = text_tokens[:available]
         return self._tokenizer.decode(truncated_tokens)
 
-    async def generate_abstract(
-        self, text: str, max_tokens: int, doc_type: str | None
-    ) -> str:
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         """Generate a semantic abstract from document text.
 
         On first call, loads the MLX model and validates with a probe
@@ -206,9 +204,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         """
         # Edge guard (AD-027, AD-030)
         if not text or not text.strip():
-            raise RuntimeError(
-                "Cannot generate abstract from empty document text"
-            )
+            raise RuntimeError("Cannot generate abstract from empty document text")
 
         # Lazy model load (AD-026 revised, AD-035)
         self._ensure_loaded()
@@ -232,8 +228,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         abstract = result.strip() if result else ""
         if not abstract:
             raise RuntimeError(
-                "Abstraction model returned empty output for "
-                f"{len(text)} chars of input"
+                f"Abstraction model returned empty output for {len(text)} chars of input"
             )
 
         return abstract

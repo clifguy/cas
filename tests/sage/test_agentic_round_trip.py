@@ -7,7 +7,7 @@ re-ingest as a new version via `ingest(supersedes_document_id=...)`.
 
 import asyncio
 import base64
-import os
+import hashlib
 import time
 from pathlib import Path
 
@@ -20,22 +20,18 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.models.enums import PipelineStatus
-from sage.services.ingestion import IngestionService
-from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.api.errors import (
-    ContentFileMissingError,
-    ContentTooLargeError,
     DocumentNotFoundError,
     IdenticalContentSupersedeError,
     SupersedeTargetNotActiveError,
 )
-import hashlib
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
-from sage.models.enums import SourceType
+from sage.models.enums import PipelineStatus, SourceType
 from sage.models.enums import SourceType as _SourceType  # alias for fixture
 from sage.models.schemas import IngestRequest, SetLifecycleRequest
+from sage.services.ingestion import IngestionService
+from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
 
 def _id(name: str) -> str:
@@ -65,9 +61,7 @@ class _SlowStubAbstractionProvider(AbstractionProvider):
     def __init__(self, delay_s: float = 3.0) -> None:
         self._delay_s = delay_s
 
-    async def generate_abstract(
-        self, text: str, max_tokens: int, doc_type: str | None
-    ) -> str:
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         await asyncio.sleep(self._delay_s)
         return f"Slow stub abstract ({self._delay_s}s delay)"
 
@@ -127,7 +121,8 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     app = create_app(config=config)
     await _initialize_services(
-        app, config,
+        app,
+        config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
@@ -148,9 +143,7 @@ async def _ingest_via_api(client, source: str, body_extra: dict | None = None) -
     payload = {"source": source, "adapter": "markdown"}
     if body_extra:
         payload.update(body_extra)
-    resp = await client.post(
-        "/sage_vaults/test_vault/documents", json=payload
-    )
+    resp = await client.post("/sage_vaults/test_vault/documents", json=payload)
     assert resp.status_code == 201, resp.text
     return resp.json()["document"]
 
@@ -160,15 +153,11 @@ async def _ingest_via_api(client, source: str, body_extra: dict | None = None) -
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_116_get_document_without_include_content_omits_content(
-    client, tmp_vault_dir
-):
+async def test_bh_116_get_document_without_include_content_omits_content(client, tmp_vault_dir):
     _seed_file(tmp_vault_dir, "bh116.md", "# Hello\n\nBody.")
     doc = await _ingest_via_api(client, "bh116.md")
 
-    resp = await client.get(
-        f"/sage_vaults/test_vault/documents/{doc['id']}"
-    )
+    resp = await client.get(f"/sage_vaults/test_vault/documents/{doc['id']}")
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == doc["id"]
@@ -191,9 +180,7 @@ async def test_bh_116_get_document_without_include_content_omits_content(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_117_get_document_with_include_content(
-    client, tmp_vault_dir
-):
+async def test_bh_117_get_document_with_include_content(client, tmp_vault_dir):
     original = "# BH-117\n\nExact byte sequence for round-trip verification.\n"
     _seed_file(tmp_vault_dir, "bh117.md", original)
     doc = await _ingest_via_api(client, "bh117.md")
@@ -216,9 +203,7 @@ async def test_bh_117_get_document_with_include_content(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_118_include_content_rejects_oversize(
-    client, tmp_vault_dir, monkeypatch
-):
+async def test_bh_118_include_content_rejects_oversize(client, tmp_vault_dir, monkeypatch):
     # Seed a file of ~2 KB and set the ceiling to 512 bytes.
     large_body = "# BH-118\n\n" + ("X" * 2000)
     _seed_file(tmp_vault_dir, "bh118.md", large_body)
@@ -239,9 +224,7 @@ async def test_bh_118_include_content_rejects_oversize(
     assert detail["size_bytes"] > 512
 
     # Metadata-only response still works.
-    resp2 = await client.get(
-        f"/sage_vaults/test_vault/documents/{doc['id']}"
-    )
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc['id']}")
     assert resp2.status_code == 200
 
 
@@ -250,9 +233,7 @@ async def test_bh_118_include_content_rejects_oversize(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_119_include_content_missing_file_404(
-    client, tmp_vault_dir
-):
+async def test_bh_119_include_content_missing_file_404(client, tmp_vault_dir):
     _seed_file(tmp_vault_dir, "bh119.md", "# BH-119\n\nBody.")
     doc = await _ingest_via_api(client, "bh119.md")
 
@@ -272,9 +253,7 @@ async def test_bh_119_include_content_missing_file_404(
     assert body["detail"]["source_path"] == doc["source_path"]
 
     # Metadata-only response still succeeds (the record is intact).
-    resp2 = await client.get(
-        f"/sage_vaults/test_vault/documents/{doc['id']}"
-    )
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc['id']}")
     assert resp2.status_code == 200
 
 
@@ -283,9 +262,7 @@ async def test_bh_119_include_content_missing_file_404(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_125_write_to_path_happy_path(
-    client, tmp_vault_dir, tmp_path
-):
+async def test_bh_125_write_to_path_happy_path(client, tmp_vault_dir, tmp_path):
     body = "# BH-125\n\nExact byte sequence for on-disk delivery.\n"
     _seed_file(tmp_vault_dir, "bh125.md", body)
     doc = await _ingest_via_api(client, "bh125.md")
@@ -304,9 +281,7 @@ async def test_bh_125_write_to_path_happy_path(
     assert payload["id"] == doc["id"]
     assert payload["written_to"] == str(target)
     assert payload["content_size"] == len(body.encode("utf-8"))
-    assert payload["content_hash"] == hashlib.sha256(
-        body.encode("utf-8")
-    ).hexdigest()
+    assert payload["content_hash"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
     # No inline content in write_to_path mode.
     assert payload.get("content") is None
 
@@ -320,9 +295,7 @@ async def test_bh_125_write_to_path_happy_path(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_126_write_to_path_refuses_existing_target(
-    client, tmp_vault_dir, tmp_path
-):
+async def test_bh_126_write_to_path_refuses_existing_target(client, tmp_vault_dir, tmp_path):
     _seed_file(tmp_vault_dir, "bh126.md", "# BH-126\n\nBody.")
     doc = await _ingest_via_api(client, "bh126.md")
 
@@ -348,9 +321,7 @@ async def test_bh_126_write_to_path_refuses_existing_target(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_127_write_to_path_missing_parent(
-    client, tmp_vault_dir, tmp_path
-):
+async def test_bh_127_write_to_path_missing_parent(client, tmp_vault_dir, tmp_path):
     _seed_file(tmp_vault_dir, "bh127a.md", "# BH-127\n\nBody.")
     doc = await _ingest_via_api(client, "bh127a.md")
 
@@ -367,9 +338,7 @@ async def test_bh_127_write_to_path_missing_parent(
     assert not missing_target.exists()
 
 
-async def test_bh_127_write_to_path_unwritable_parent(
-    client, tmp_vault_dir, tmp_path
-):
+async def test_bh_127_write_to_path_unwritable_parent(client, tmp_vault_dir, tmp_path):
     _seed_file(tmp_vault_dir, "bh127b.md", "# BH-127\n\nBody.")
     doc = await _ingest_via_api(client, "bh127b.md")
 
@@ -398,9 +367,7 @@ async def test_bh_127_write_to_path_unwritable_parent(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_128_mutual_exclusion(
-    client, tmp_vault_dir, tmp_path
-):
+async def test_bh_128_mutual_exclusion(client, tmp_vault_dir, tmp_path):
     _seed_file(tmp_vault_dir, "bh128.md", "# BH-128\n\nBody.")
     doc = await _ingest_via_api(client, "bh128.md")
 
@@ -447,8 +414,7 @@ async def test_bh_129_supersede_atomic_with_ingest_response(
 
     edges = await graph_store.get_edges_by_source(v2.document.id)
     supersedes_edges = [
-        e for e in edges
-        if e.edge_type == "supersedes" and e.target_id == v1.document.id
+        e for e in edges if e.edge_type == "supersedes" and e.target_id == v1.document.id
     ]
     assert len(supersedes_edges) == 1
 
@@ -463,8 +429,7 @@ async def test_bh_129_supersede_atomic_with_ingest_response(
     # Supersedes edge and archival are unchanged by pipeline completion.
     edges_after = await graph_store.get_edges_by_source(v2.document.id)
     supersedes_after = [
-        e for e in edges_after
-        if e.edge_type == "supersedes" and e.target_id == v1.document.id
+        e for e in edges_after if e.edge_type == "supersedes" and e.target_id == v1.document.id
     ]
     assert [e.id for e in supersedes_after] == [e.id for e in supersedes_edges]
     predecessor_after = await graph_store.get_document(v1.document.id)
@@ -516,9 +481,7 @@ async def test_bh_130_fire_and_forget_returns_fast(
     # Must return well before the 3s artificial abstraction delay.
     assert elapsed < 2.0, f"fire-and-forget ingest took {elapsed:.2f}s"
     # Background task will finish the pipeline eventually.
-    terminal = await await_pipeline_terminal(
-        graph_store, result.document.id, timeout_s=10.0
-    )
+    terminal = await await_pipeline_terminal(graph_store, result.document.id, timeout_s=10.0)
     assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 
@@ -570,8 +533,7 @@ async def test_bh_120_supersedes_document_id_happy_path(
     # Verify the supersedes edge exists: new -> old.
     edges = await graph_store.get_edges_by_source(v2.document.id)
     supersedes_edges = [
-        e for e in edges
-        if e.edge_type == "supersedes" and e.target_id == v1.document.id
+        e for e in edges if e.edge_type == "supersedes" and e.target_id == v1.document.id
     ]
     assert len(supersedes_edges) == 1
 
@@ -616,9 +578,7 @@ async def test_bh_122_supersedes_non_active_predecessor(
         IngestRequest(source="bh122_v1.md", adapter=SourceType.MARKDOWN)
     )
     # Archive the predecessor directly (simulating a non-active target).
-    await lifecycle_service.set_lifecycle(
-        v1.document.id, SetLifecycleRequest(action="archive")
-    )
+    await lifecycle_service.set_lifecycle(v1.document.id, SetLifecycleRequest(action="archive"))
 
     with pytest.raises(SupersedeTargetNotActiveError) as exc_info:
         await ingestion_service.ingest(
@@ -649,9 +609,7 @@ async def test_bh_122_supersedes_non_active_predecessor(
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_123_supersedes_identical_content(
-    tmp_vault_dir, graph_store, ingestion_service
-):
+async def test_bh_123_supersedes_identical_content(tmp_vault_dir, graph_store, ingestion_service):
     body = "# Identical\n\nSame bytes in both versions.\n"
     _seed_file(tmp_vault_dir, "bh123_a.md", body)
     _seed_file(tmp_vault_dir, "bh123_b.md", body)
@@ -710,9 +668,7 @@ async def test_bh_124_validation_before_projection(
     pred = await ingestion_service.ingest(
         IngestRequest(source="bh124_pred.md", adapter=SourceType.MARKDOWN)
     )
-    await lifecycle_service.set_lifecycle(
-        pred.document.id, SetLifecycleRequest(action="archive")
-    )
+    await lifecycle_service.set_lifecycle(pred.document.id, SetLifecycleRequest(action="archive"))
 
     with pytest.raises(SupersedeTargetNotActiveError):
         await ingestion_service.ingest(

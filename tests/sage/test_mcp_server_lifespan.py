@@ -22,7 +22,6 @@ import yaml
 import sage.mcp_server as mcp_server
 from sage.config import VaultConfig
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -99,9 +98,7 @@ def _patch_initialize_services(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-async def test_mounted_mode_does_not_touch_registry(
-    isolate_module_state, monkeypatch
-):
+async def test_mounted_mode_does_not_touch_registry(isolate_module_state, monkeypatch):
     """#23: When _vault_root is None, the lifespan must leave _vaults alone."""
     sentinel = object()
     monkeypatch.setattr(mcp_server, "_vault_root", None)
@@ -143,9 +140,7 @@ async def test_standalone_mode_isolates_bad_vault(
 ):
     """#25: A vault whose config fails to parse is logged and skipped."""
     _materialize_vault(vault_root, "good_vault", minimal_vault_config_dict)
-    _materialize_vault(
-        vault_root, "broken_vault", minimal_vault_config_dict, malformed=True
-    )
+    _materialize_vault(vault_root, "broken_vault", minimal_vault_config_dict, malformed=True)
     monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
     mcp_server._vaults.clear()
     _patch_initialize_services(monkeypatch)
@@ -155,10 +150,7 @@ async def test_standalone_mode_isolates_bad_vault(
             assert "good_vault" in mcp_server._vaults
             assert "broken_vault" not in mcp_server._vaults
 
-    assert any(
-        "broken_vault" in r.message or "broken" in r.message.lower()
-        for r in caplog.records
-    )
+    assert any("broken_vault" in r.message or "broken" in r.message.lower() for r in caplog.records)
 
 
 async def test_standalone_teardown_clears_registry(

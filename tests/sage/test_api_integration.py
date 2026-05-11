@@ -15,7 +15,7 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.app import create_app, _initialize_services
+from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 
 
@@ -27,7 +27,8 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
 
     # Manually initialize services (lifespan not triggered by ASGITransport)
     await _initialize_services(
-        app, config,
+        app,
+        config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
@@ -57,6 +58,7 @@ async def client(app):
 # User registration
 # ---------------------------------------------------------------------------
 
+
 async def test_register_user_201(client):
     resp = await client.post(
         "/sage_vaults/test_vault/users",
@@ -72,6 +74,7 @@ async def test_register_user_201(client):
 # ---------------------------------------------------------------------------
 # Ingestion
 # ---------------------------------------------------------------------------
+
 
 async def test_ingest_201(client):
     resp = await client.post(
@@ -109,6 +112,7 @@ async def test_ingest_duplicate_409(client):
 # Get document
 # ---------------------------------------------------------------------------
 
+
 async def test_get_document_200(client):
     # Ingest first
     resp = await client.post(
@@ -131,6 +135,7 @@ async def test_get_document_404(client):
 # ---------------------------------------------------------------------------
 # Lifecycle transition
 # ---------------------------------------------------------------------------
+
 
 async def test_lifecycle_transition_200(client):
     # Ingest
@@ -172,6 +177,7 @@ async def test_lifecycle_409_invalid_transition(client):
 # Vault scoping
 # ---------------------------------------------------------------------------
 
+
 async def test_wrong_vault_404(client):
     resp = await client.get("/sage_vaults/wrong_vault/documents/anything")
     assert resp.status_code == 404
@@ -181,6 +187,7 @@ async def test_wrong_vault_404(client):
 # ---------------------------------------------------------------------------
 # Graph operations (Slice 2)
 # ---------------------------------------------------------------------------
+
 
 async def test_link_201(app, client):
     """POST /edges creates an edge and returns 201."""
@@ -192,12 +199,9 @@ async def test_link_201(app, client):
     doc_id_a = resp1.json()["document"]["id"]
 
     # Create a second source file for a distinct document
-    from pathlib import Path
 
     storage_root = Path(app.state.config.vault.storage_root).expanduser()
-    (storage_root / "test" / "sample2.md").write_text(
-        "# Second Document\n\nDifferent content."
-    )
+    (storage_root / "test" / "sample2.md").write_text("# Second Document\n\nDifferent content.")
 
     resp2 = await client.post(
         "/sage_vaults/test_vault/documents",
@@ -253,9 +257,7 @@ async def test_check_preconditions_200(client):
     )
     doc_id = resp1.json()["document"]["id"]
 
-    resp2 = await client.get(
-        f"/sage_vaults/test_vault/preconditions/{doc_id}"
-    )
+    resp2 = await client.get(f"/sage_vaults/test_vault/preconditions/{doc_id}")
     assert resp2.status_code == 200
     body = resp2.json()
     assert body["function_id"] == doc_id
@@ -284,6 +286,7 @@ async def test_traverse_200(client):
 # ---------------------------------------------------------------------------
 # Retrieval (Slice 3)
 # ---------------------------------------------------------------------------
+
 
 async def test_discover_semantic_200(client):
     """POST /discover with semantic mode returns 200."""
@@ -346,6 +349,7 @@ async def test_discover_semantic_missing_query_422(client):
 # ---------------------------------------------------------------------------
 # Utilities (Slice 4)
 # ---------------------------------------------------------------------------
+
 
 async def test_export_projection_200(app, client):
     """POST /documents/{id}/export writes projection and returns 200."""
@@ -424,14 +428,17 @@ async def test_read_projection_404(client):
 # Open-with-local-app
 # ---------------------------------------------------------------------------
 
+
 async def test_open_document_200(client, monkeypatch, tmp_vault_dir):
     """POST /documents/{id}/open invokes the OS opener and returns 200."""
     calls = []
 
     def fake_popen(args, *a, **kw):
         calls.append(args)
+
         class _Dummy:
             pass
+
         return _Dummy()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
@@ -464,8 +471,10 @@ async def test_open_document_uses_xdg_open_on_linux(client, monkeypatch):
 
     def fake_popen(args, *a, **kw):
         calls.append(args)
+
         class _Dummy:
             pass
+
         return _Dummy()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)

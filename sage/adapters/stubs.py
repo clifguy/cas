@@ -93,7 +93,9 @@ class StubContentStore(ContentStore):
         ]
 
     async def update_chunk_metadata(
-        self, document_id: str, metadata: dict[str, str | None],
+        self,
+        document_id: str,
+        metadata: dict[str, str | None],
     ) -> None:
         """Update metadata on stored chunks for a document."""
         chunks = self._store.get(document_id, [])
@@ -107,9 +109,9 @@ class StubContentStore(ContentStore):
         """Return chunks whose heading_path starts with the given prefix."""
         chunks = self._store.get(document_id, [])
         matched = [
-            c for c in chunks
-            if c.heading_path == heading_prefix
-            or c.heading_path.startswith(heading_prefix + " > ")
+            c
+            for c in chunks
+            if c.heading_path == heading_prefix or c.heading_path.startswith(heading_prefix + " > ")
         ]
         matched.sort(key=lambda c: c.chunk_index)
         return matched
@@ -140,7 +142,8 @@ class StubContentStore(ContentStore):
 
 
 def _chunk_matches_filters(
-    chunk: Chunk, filters: dict[str, str | list[str]] | None,
+    chunk: Chunk,
+    filters: dict[str, str | list[str]] | None,
 ) -> bool:
     """Check whether a chunk matches all filter predicates."""
     if not filters:
@@ -188,6 +191,7 @@ class SeededEmbeddingProvider(EmbeddingProvider):
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         import hashlib
+
         results = []
         for text in texts:
             h = hashlib.sha256(text.encode()).digest()
@@ -202,16 +206,12 @@ class SeededEmbeddingProvider(EmbeddingProvider):
 class StubAbstractionProvider(AbstractionProvider):
     """Returns deterministic abstract text for testing."""
 
-    async def generate_abstract(
-        self, text: str, max_tokens: int, doc_type: str | None
-    ) -> str:
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         return f"Stub abstract for {len(text)} chars of input."
 
 
 class FailingAbstractionProvider(AbstractionProvider):
     """Always fails -- for testing BH-024 (LLM failure = failed status)."""
 
-    async def generate_abstract(
-        self, text: str, max_tokens: int, doc_type: str | None
-    ) -> str:
+    async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         raise RuntimeError("LLM unavailable (simulated failure)")

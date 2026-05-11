@@ -10,27 +10,22 @@ Covers:
   - Caller integration (BIS-018, BIS-019)
 """
 
-import asyncio
-import json
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.backend.edge_inference import EdgePlan, InferenceItem, PlannedEdge
-from sage.services.filename_parser import ParsedMetadata
+from app.backend.edge_inference import EdgePlan
 from app.backend.ingest_service import (
     BatchIngestService,
     FileDescriptor,
     IngestSummary,
     ParsedMetadataInput,
 )
-from sage.models.enums import EdgeType, PipelineStatus, SourceType
+from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.services.ingestion import IngestResult
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -73,9 +68,7 @@ def _make_services(
     services.config.abstraction.enabled = abstraction_enabled
 
     # Graph store
-    services.graph_store.list_all_documents = AsyncMock(
-        return_value=existing_docs or []
-    )
+    services.graph_store.list_all_documents = AsyncMock(return_value=existing_docs or [])
     services.graph_store.get_edges_by_source = AsyncMock(return_value=[])
 
     # Ingestion service -- default: succeed and return new doc
@@ -129,7 +122,6 @@ def _fd(
 
 
 class TestServiceInterface:
-
     @pytest.mark.asyncio
     async def test_bis_001_returns_ingest_summary(self):
         """BatchIngestService returns IngestSummary with correct fields."""
@@ -169,7 +161,6 @@ class TestServiceInterface:
 
 
 class TestFileDescriptorNormalization:
-
     @pytest.mark.asyncio
     async def test_bis_003_file_descriptor_with_metadata(self):
         """Service accepts FileDescriptor with full metadata."""
@@ -177,15 +168,17 @@ class TestFileDescriptorNormalization:
         svc = BatchIngestService()
 
         result = await svc.run(
-            files=[_fd(
-                "/tmp/test.md",
-                title="Claim-Set",
-                date="2026-03-09",
-                project="PIM",
-                codes=["PV06"],
-                version="v7",
-                doc_type="patent_draft",
-            )],
+            files=[
+                _fd(
+                    "/tmp/test.md",
+                    title="Claim-Set",
+                    date="2026-03-09",
+                    project="PIM",
+                    codes=["PV06"],
+                    version="v7",
+                    doc_type="patent_draft",
+                )
+            ],
             vault_services=services,
             infer_edges=False,
         )
@@ -228,7 +221,6 @@ class TestFileDescriptorNormalization:
 
 
 class TestEdgePlanConstruction:
-
     @pytest.mark.asyncio
     async def test_bis_005_edge_plan_from_scan_and_existing(self):
         """Edge plan built from scan items and existing vault docs."""
@@ -245,8 +237,22 @@ class TestEdgePlanConstruction:
 
         result = await svc.run(
             files=[
-                _fd("/tmp/v6.md", title="Claim-Set", version="v6", doc_type="patent_draft", codes=["PV06"], project="PIM"),
-                _fd("/tmp/v7.md", title="Claim-Set", version="v7", doc_type="patent_draft", codes=["PV06"], project="PIM"),
+                _fd(
+                    "/tmp/v6.md",
+                    title="Claim-Set",
+                    version="v6",
+                    doc_type="patent_draft",
+                    codes=["PV06"],
+                    project="PIM",
+                ),
+                _fd(
+                    "/tmp/v7.md",
+                    title="Claim-Set",
+                    version="v7",
+                    doc_type="patent_draft",
+                    codes=["PV06"],
+                    project="PIM",
+                ),
             ],
             vault_services=services,
             infer_edges=True,
@@ -321,7 +327,6 @@ class TestEdgePlanConstruction:
 
 
 class TestPerFileIngestion:
-
     @pytest.mark.asyncio
     async def test_bis_008_sequential_ingestion(self):
         """Files ingested sequentially in order."""
@@ -356,15 +361,17 @@ class TestPerFileIngestion:
         svc = BatchIngestService()
 
         await svc.run(
-            files=[_fd(
-                "/tmp/test.md",
-                title="Claim-Set",
-                date="2026-03-09",
-                project="PIM",
-                codes=["PV06", "CF-1"],
-                version="v7",
-                doc_type="patent_draft",
-            )],
+            files=[
+                _fd(
+                    "/tmp/test.md",
+                    title="Claim-Set",
+                    date="2026-03-09",
+                    project="PIM",
+                    codes=["PV06", "CF-1"],
+                    version="v7",
+                    doc_type="patent_draft",
+                )
+            ],
             vault_services=services,
             infer_edges=False,
         )
@@ -441,7 +448,6 @@ class TestPerFileIngestion:
 
 
 class TestEdgeExecution:
-
     @pytest.mark.asyncio
     async def test_bis_012_edge_plan_executed_after_ingestion(self):
         """Edge plan resolved and executed after all files ingested."""
@@ -498,7 +504,6 @@ class TestEdgeExecution:
 
 
 class TestProgressCallbacks:
-
     @pytest.mark.asyncio
     async def test_bis_014_on_file_start_called(self):
         """on_file_start callback invoked before each file."""
@@ -623,7 +628,6 @@ class TestProgressCallbacks:
 
 
 class TestCallerIntegration:
-
     @pytest.mark.asyncio
     async def test_bis_018_summary_dict_structure(self):
         """IngestSummary.to_dict() produces the JSON structure both callers need."""
@@ -692,9 +696,7 @@ class TestCallerIntegration:
             nonlocal call_idx
             call_idx += 1
             confirmed = call_idx == 2  # second doc auto-confirmed
-            return _make_ingest_result(
-                f"doc-{call_idx}", metadata_confirmed=confirmed
-            )
+            return _make_ingest_result(f"doc-{call_idx}", metadata_confirmed=confirmed)
 
         services.ingestion_service.ingest = AsyncMock(side_effect=mixed_confirm)
         svc = BatchIngestService()
@@ -725,8 +727,10 @@ class TestCallerIntegration:
 # version_chain inference; otherwise the entire group's repair is staged.
 
 
-from sage.models.schemas import Edge, LinkRequest
-
+from sage.models.schemas import (  # noqa: E402 -- grouped with the version-chain test section below
+    Edge,
+    LinkRequest,
+)
 
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
 
@@ -771,22 +775,18 @@ class _MockGraphState:
     async def list_all_documents(self) -> list[Document]:
         return list(self.docs.values())
 
-    async def get_edges_by_source(
-        self, source_id: str, edge_type: str | None = None
-    ) -> list[Edge]:
+    async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
         return [
-            e for e in self.edges.values()
-            if e.source_id == source_id
-            and (edge_type is None or e.edge_type.value == edge_type)
+            e
+            for e in self.edges.values()
+            if e.source_id == source_id and (edge_type is None or e.edge_type.value == edge_type)
         ]
 
-    async def get_edges_by_target(
-        self, target_id: str, edge_type: str | None = None
-    ) -> list[Edge]:
+    async def get_edges_by_target(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
         return [
-            e for e in self.edges.values()
-            if e.target_id == target_id
-            and (edge_type is None or e.edge_type.value == edge_type)
+            e
+            for e in self.edges.values()
+            if e.target_id == target_id and (edge_type is None or e.edge_type.value == edge_type)
         ]
 
     async def get_edge(self, edge_id: str) -> Edge | None:
@@ -836,23 +836,13 @@ def _make_chain_services(
     state = _MockGraphState(docs, edges)
     services = MagicMock()
     services.config.abstraction.enabled = abstraction_enabled
-    services.graph_store.list_all_documents = AsyncMock(
-        side_effect=state.list_all_documents
-    )
-    services.graph_store.get_edges_by_source = AsyncMock(
-        side_effect=state.get_edges_by_source
-    )
-    services.graph_store.get_edges_by_target = AsyncMock(
-        side_effect=state.get_edges_by_target
-    )
+    services.graph_store.list_all_documents = AsyncMock(side_effect=state.list_all_documents)
+    services.graph_store.get_edges_by_source = AsyncMock(side_effect=state.get_edges_by_source)
+    services.graph_store.get_edges_by_target = AsyncMock(side_effect=state.get_edges_by_target)
     services.graph_store.get_edge = AsyncMock(side_effect=state.get_edge)
     services.graph_store.get_document = AsyncMock(side_effect=state.get_document)
-    services.graph_store.update_document = AsyncMock(
-        side_effect=state.update_document
-    )
-    services.graph_store.insert_staging_edge = AsyncMock(
-        side_effect=state.insert_staging_edge
-    )
+    services.graph_store.update_document = AsyncMock(side_effect=state.update_document)
+    services.graph_store.insert_staging_edge = AsyncMock(side_effect=state.insert_staging_edge)
     services.graph_ops_service.link = AsyncMock(side_effect=state.link)
     services.graph_ops_service.unlink = AsyncMock(side_effect=state.unlink)
 
@@ -869,7 +859,11 @@ def _make_chain_services(
             project=request.metadata.get("project") if request.metadata else None,
             doc_type=request.metadata.get("doc_type") if request.metadata else None,
             version_label=request.metadata.get("version_label") if request.metadata else None,
-            tags=(request.metadata.get("codes", "").split(",") if request.metadata and request.metadata.get("codes") else []),
+            tags=(
+                request.metadata.get("codes", "").split(",")
+                if request.metadata and request.metadata.get("codes")
+                else []
+            ),
         )
         state.docs[new_id] = new_doc
         return IngestResult(document=new_doc, is_new=True)
@@ -895,17 +889,27 @@ class TestChainRepair:
         V1_ID = "cccccccc_v1"
         V3_ID = "cccccccc_v3"
         v1 = _make_document(
-            V1_ID, title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v1",
-            tags=["PV06"], lifecycle_status="archived",
+            V1_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v1",
+            tags=["PV06"],
+            lifecycle_status="archived",
         )
         v3 = _make_document(
-            V3_ID, title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v3",
-            tags=["PV06"], lifecycle_status="active",
+            V3_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
         )
         existing_edge = _make_edge(
-            "e-v3-v1", V3_ID, V1_ID,
+            "e-v3-v1",
+            V3_ID,
+            V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
         )
         services, state = _make_chain_services([v1, v3], [existing_edge])
@@ -939,18 +943,28 @@ class TestChainRepair:
     async def test_cr_002_provenance_gate_stages_when_removed_edge_is_manual(self):
         """Hand-curated v3->v1 edge is preserved; repair goes to staging."""
         v1 = _make_document(
-            "v1", title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v1",
-            tags=["PV06"], lifecycle_status="archived",
+            "v1",
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v1",
+            tags=["PV06"],
+            lifecycle_status="archived",
         )
         v3 = _make_document(
-            "v3", title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v3",
-            tags=["PV06"], lifecycle_status="active",
+            "v3",
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
         )
         # Non-version_chain rationale -> manual edge
         existing_edge = _make_edge(
-            "e-v3-v1", "v3", "v1",
+            "e-v3-v1",
+            "v3",
+            "v1",
             rationale="Manually curated by Clif: v3 directly supersedes v1.",
         )
         services, state = _make_chain_services([v1, v3], [existing_edge])
@@ -1011,26 +1025,42 @@ class TestChainRepair:
         V2_ID = "cccccccc_v2"
         V3_ID = "cccccccc_v3"
         v1 = _make_document(
-            V1_ID, title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v1",
-            tags=["PV06"], lifecycle_status="archived",
+            V1_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v1",
+            tags=["PV06"],
+            lifecycle_status="archived",
         )
         v2 = _make_document(
-            V2_ID, title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v2",
-            tags=["PV06"], lifecycle_status="archived",
+            V2_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v2",
+            tags=["PV06"],
+            lifecycle_status="archived",
         )
         v3 = _make_document(
-            V3_ID, title="Claim-Set", project="PIM",
-            doc_type="patent_draft", version_label="v3",
-            tags=["PV06"], lifecycle_status="active",
+            V3_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
         )
         e1 = _make_edge(
-            "e-v2-v1", V2_ID, V1_ID,
+            "e-v2-v1",
+            V2_ID,
+            V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v2 supersedes v1 (title: Claim-Set)",
         )
         e2 = _make_edge(
-            "e-v3-v2", V3_ID, V2_ID,
+            "e-v3-v2",
+            V3_ID,
+            V2_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v2 (title: Claim-Set)",
         )
         services, state = _make_chain_services([v1, v2, v3], [e1, e2])

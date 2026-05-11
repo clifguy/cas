@@ -28,6 +28,7 @@ Usage::
     # Apply
     .venv/bin/python -m scripts.restore_chunk_doc_type VAULT_ID --execute
 """
+
 from __future__ import annotations
 
 import argparse
@@ -116,10 +117,7 @@ async def restore_doc_type(vault_id: str, *, execute: bool) -> int:
                 print(f"  [{i:4d}/{len(targets)}]  {doc_id}  {doc_type}")
 
         elapsed = datetime.now(timezone.utc) - started
-        print(
-            f"\nDone. {len(targets)} document(s) patched in "
-            f"{elapsed.total_seconds():.1f}s."
-        )
+        print(f"\nDone. {len(targets)} document(s) patched in {elapsed.total_seconds():.1f}s.")
 
         # Compact LanceDB fragments and prune old version metadata.
         # ``cleanup_older_than=timedelta(0)`` removes every version

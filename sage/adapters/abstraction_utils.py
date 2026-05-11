@@ -34,7 +34,7 @@ def compute_max_tokens(word_count: int, config: AbstractionConfig) -> int:
 # (quotes, parens, brackets), then whitespace or end-of-string.
 _SENTENCE_END = re.compile(
     r'[.!?]["\'\)\]\u201d]*'  # terminal punctuation + optional closers
-    r'(?=\s|$)'               # followed by whitespace or end-of-string
+    r"(?=\s|$)"  # followed by whitespace or end-of-string
 )
 
 
@@ -71,4 +71,4 @@ def trim_to_sentence_boundary(text: str) -> str:
         return stripped
 
     # Trim to end of last complete sentence
-    return stripped[:last_match.end()]
+    return stripped[: last_match.end()]

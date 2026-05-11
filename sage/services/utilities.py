@@ -36,7 +36,6 @@ from sage.api.errors import (
     PathTraversalDeniedError,
 )
 from sage.config import VaultConfig
-from sage.models.enums import PipelineStatus
 from sage.models.schemas import (
     AssertionFailure,
     Document,
@@ -55,7 +54,8 @@ _MAX_CANDIDATE_MATCHES = 10
 
 
 def _rank_candidate_matches(
-    query: str, available: list[str] | None,
+    query: str,
+    available: list[str] | None,
 ) -> list[str]:
     """Rank ``available`` heading paths by how directly they match ``query``.
 
@@ -216,9 +216,7 @@ class UtilitiesService:
     # read_section
     # ------------------------------------------------------------------
 
-    async def read_section(
-        self, document_id: str, heading_path: str
-    ) -> ReadSectionResponse:
+    async def read_section(self, document_id: str, heading_path: str) -> ReadSectionResponse:
         """Read a section's text by heading path with minimal metadata.
 
         Returns the joined text of all chunks matching the heading prefix,
@@ -227,7 +225,8 @@ class UtilitiesService:
 
         Args:
             document_id: Document to read from.
-            heading_path: Heading path prefix (e.g. "Technical Description > Composite Claim Binding").
+            heading_path: Heading path prefix
+                (e.g. "Technical Description > Composite Claim Binding").
 
         Returns:
             ReadSectionResponse with section text and metadata.
@@ -241,9 +240,7 @@ class UtilitiesService:
 
         doc, _ = await self._get_projection_text(document_id)
 
-        chunks = await self._content.get_chunks_by_heading_prefix(
-            document_id, heading_path
-        )
+        chunks = await self._content.get_chunks_by_heading_prefix(document_id, heading_path)
         if not chunks:
             available = await self._content.get_heading_paths(document_id)
             candidates = _rank_candidate_matches(heading_path, available)
@@ -301,15 +298,11 @@ class UtilitiesService:
             raise AssertionsFileInvalidError(assertions_path, str(exc))
 
         if not isinstance(raw, dict) or "assertions" not in raw:
-            raise AssertionsFileInvalidError(
-                assertions_path, "Expected top-level 'assertions' key"
-            )
+            raise AssertionsFileInvalidError(assertions_path, "Expected top-level 'assertions' key")
 
         assertions = raw["assertions"]
         if not isinstance(assertions, list):
-            raise AssertionsFileInvalidError(
-                assertions_path, "'assertions' must be a list"
-            )
+            raise AssertionsFileInvalidError(assertions_path, "'assertions' must be a list")
 
         # Run each assertion
         failures: list[AssertionFailure] = []
@@ -345,13 +338,15 @@ class UtilitiesService:
                         actual_rank = rank + 1
                         break
 
-                failures.append(AssertionFailure(
-                    query=query,
-                    expected_document_id=expected_id,
-                    top_k_checked=top_k,
-                    found=False,
-                    actual_rank=actual_rank,
-                ))
+                failures.append(
+                    AssertionFailure(
+                        query=query,
+                        expected_document_id=expected_id,
+                        top_k_checked=top_k,
+                        found=False,
+                        actual_rank=actual_rank,
+                    )
+                )
 
         return EvalRetrievalResult(
             vault_id=self._config.vault.id,
@@ -424,9 +419,7 @@ class UtilitiesService:
         )
 
     @staticmethod
-    def _create_source_symlink(
-        storage_root: Path, link_dir: Path, source_path: str
-    ) -> None:
+    def _create_source_symlink(storage_root: Path, link_dir: Path, source_path: str) -> None:
         """Create a relative symlink from link_dir to the source file.
 
         Symlink name is the original filename. If a name collision occurs

@@ -15,10 +15,13 @@ from sage.api.errors import VaultConfigValidationError
 from sage.config import VaultConfig
 from sage.storage.graph_store import GraphStore
 
-
 _REQUIRED_SECTIONS = (
-    "vault", "document_types", "lifecycle",
-    "source_adapters", "metadata_extraction", "edge_inference",
+    "vault",
+    "document_types",
+    "lifecycle",
+    "source_adapters",
+    "metadata_extraction",
+    "edge_inference",
 )
 _OPTIONAL_SECTIONS = ("abstraction", "access_control_defaults", "retrieval_health")
 _ALL_SECTIONS = _REQUIRED_SECTIONS + _OPTIONAL_SECTIONS
@@ -31,19 +34,14 @@ def _validate_config(config_dict: dict) -> VaultConfig:
     try:
         return VaultConfig.model_validate(config_dict)
     except ValidationError as exc:
-        errors = [
-            f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
-            for e in exc.errors()
-        ]
+        errors = [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
         raise VaultConfigValidationError(errors) from exc
 
 
 def _write_config_yaml(config_path: Path, config_dict: dict) -> None:
     """Atomically write a config dict to YAML (temp file + rename)."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(config_path.parent), suffix=".yaml.tmp"
-    )
+    fd, tmp_path = tempfile.mkstemp(dir=str(config_path.parent), suffix=".yaml.tmp")
     try:
         with open(fd, "w") as f:
             yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
@@ -69,9 +67,7 @@ async def _check_destructive_changes(
         for dt in sorted(removed_doc_types):
             n = counts.get(dt, 0)
             if n > 0:
-                warnings.append(
-                    f"Removing doc_type '{dt}' would affect {n} document(s)"
-                )
+                warnings.append(f"Removing doc_type '{dt}' would affect {n} document(s)")
 
     old_states = {s.value for s in old_config.lifecycle.states}
     new_states = {s.value for s in new_config.lifecycle.states}
@@ -81,9 +77,7 @@ async def _check_destructive_changes(
         for st in sorted(removed_states):
             n = counts.get(st, 0)
             if n > 0:
-                warnings.append(
-                    f"Removing lifecycle state '{st}' would affect {n} document(s)"
-                )
+                warnings.append(f"Removing lifecycle state '{st}' would affect {n} document(s)")
 
     return warnings
 

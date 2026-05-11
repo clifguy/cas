@@ -57,9 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_vault_root(
-    args: argparse.Namespace, env: dict[str, str] | None = None
-) -> Path:
+def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = None) -> Path:
     """Resolve the vault root: --vault-root → SAGE_VAULT_ROOT → ~/sage_vaults."""
     if env is None:
         env = os.environ
@@ -78,9 +76,7 @@ async def _migrate_vault(config: VaultConfig, config_path: Path) -> None:
     closes them. Raises on any underlying storage error so the caller
     can decide whether to halt or continue.
     """
-    services = await initialize_services(
-        config, migrate=True, config_path=config_path
-    )
+    services = await initialize_services(config, migrate=True, config_path=config_path)
     await services.graph_store.close()
 
 
@@ -103,9 +99,7 @@ async def _run(args: argparse.Namespace) -> int:
             return 1
         candidates.append((cfg.vault.id, cfg, cp))
 
-    requested: set[str] | None = (
-        set(args.vault) if args.vault is not None else None
-    )
+    requested: set[str] | None = set(args.vault) if args.vault is not None else None
     if requested is not None:
         available = {vid for vid, _, _ in candidates}
         unknown = requested - available
@@ -124,8 +118,7 @@ async def _run(args: argparse.Namespace) -> int:
             await _migrate_vault(cfg, cp)
         except Exception as exc:
             logger.error(
-                "Migration failed for vault %s at %s: %s. "
-                "Halting; remaining vaults not attempted.",
+                "Migration failed for vault %s at %s: %s. Halting; remaining vaults not attempted.",
                 vault_id,
                 cp,
                 exc,

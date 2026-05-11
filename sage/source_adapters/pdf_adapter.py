@@ -101,9 +101,7 @@ def _build_outline_headings(
     comes first). Entries whose start_page is beyond pages_extracted are
     dropped.
     """
-    in_range = [
-        (lvl, text, sp) for (lvl, text, sp) in entries if sp < pages_extracted
-    ]
+    in_range = [(lvl, text, sp) for (lvl, text, sp) in entries if sp < pages_extracted]
     headings: list[HeadingNode] = []
     ancestor_stack: list[tuple[int, str]] = []
 
@@ -123,9 +121,7 @@ def _build_outline_headings(
             for p in range(start_page, end_page)
             if 0 <= p < len(page_texts) and page_texts[p].strip()
         )
-        headings.append(
-            HeadingNode(level=level, text=text, path=path, content=content)
-        )
+        headings.append(HeadingNode(level=level, text=text, path=path, content=content))
         ancestor_stack.append((level, text))
 
     return headings
@@ -179,17 +175,13 @@ class PdfAdapter(SourceAdapter):
     VERSION = "0.3.0"
     EXTENSIONS = [".pdf"]
 
-    async def project(
-        self, source_path: Path, config: dict | None = None
-    ) -> ProjectionResult:
+    async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         config = config or {}
         max_pages = config.get("max_pages", _DEFAULT_MAX_PAGES)
 
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
-        source_mtime = datetime.fromtimestamp(
-            source_path.stat().st_mtime, tz=timezone.utc
-        )
+        source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
         with _suppress_pdf_noise():
             try:
@@ -198,16 +190,12 @@ class PdfAdapter(SourceAdapter):
                 raise ValueError(f"Failed to open PDF {source_path}: {e}") from e
 
             if reader.is_encrypted:
-                raise ValueError(
-                    f"PDF is encrypted and cannot be projected: {source_path}"
-                )
+                raise ValueError(f"PDF is encrypted and cannot be projected: {source_path}")
 
             try:
                 actual_page_count = len(reader.pages)
             except Exception as e:
-                raise ValueError(
-                    f"Failed to read pages from PDF {source_path}: {e}"
-                ) from e
+                raise ValueError(f"Failed to read pages from PDF {source_path}: {e}") from e
 
             info_title = _extract_info_title(reader)
 
@@ -215,9 +203,7 @@ class PdfAdapter(SourceAdapter):
                 raw_outline = reader.outline
             except Exception:
                 raw_outline = []
-            outline_entries = _flatten_outline(
-                raw_outline or [], reader, _OUTLINE_MAX_DEPTH
-            )
+            outline_entries = _flatten_outline(raw_outline or [], reader, _OUTLINE_MAX_DEPTH)
 
             pages_extracted = min(actual_page_count, max_pages)
 
@@ -232,9 +218,7 @@ class PdfAdapter(SourceAdapter):
                                 pt = ""
                             page_texts.append(pt)
                 except Exception as e:
-                    raise ValueError(
-                        f"Failed to extract text from PDF {source_path}: {e}"
-                    ) from e
+                    raise ValueError(f"Failed to extract text from PDF {source_path}: {e}") from e
 
         truncated = pages_extracted < actual_page_count
         total_chars = sum(len(p.strip()) for p in page_texts)
@@ -252,9 +236,7 @@ class PdfAdapter(SourceAdapter):
         else:
             full_text = "\n\n".join(p.strip() for p in page_texts if p.strip())
             if outline_entries:
-                headings = _build_outline_headings(
-                    outline_entries, page_texts, pages_extracted
-                )
+                headings = _build_outline_headings(outline_entries, page_texts, pages_extracted)
                 adapter_tags.append("pdf:has_outline")
             else:
                 title_for_heading = _resolve_title(

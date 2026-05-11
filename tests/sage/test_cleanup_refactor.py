@@ -10,14 +10,12 @@ from pathlib import Path
 
 import pytest
 
+import sage.mcp_server as _mcp
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-import sage.mcp_server as _mcp
-
-from sage.mcp_server import app_batch_ingest, sage_ingest
-from sage.models.schemas import IngestRequest
+from sage.mcp_server import app_batch_ingest
 from sage.models.enums import SourceType
-
+from sage.models.schemas import IngestRequest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -55,7 +53,12 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
-                {"from_state": "active", "action": "supersede", "to_state": "archived", "creates_edge": "supersedes"},
+                {
+                    "from_state": "active",
+                    "action": "supersede",
+                    "to_state": "archived",
+                    "creates_edge": "supersedes",
+                },
                 {"from_state": "active", "action": "complete", "to_state": "completed"},
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
             ],
@@ -75,8 +78,16 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
         },
         "edge_inference": {
             "tier_assignments": [
-                {"edge_type": "supersedes", "tier": 1, "inference_rules": [{"method": "version_chain"}]},
-                {"edge_type": "covers", "tier": 2, "inference_rules": [{"method": "filename_code_match"}]},
+                {
+                    "edge_type": "supersedes",
+                    "tier": 1,
+                    "inference_rules": [{"method": "version_chain"}],
+                },
+                {
+                    "edge_type": "covers",
+                    "tier": 2,
+                    "inference_rules": [{"method": "filename_code_match"}],
+                },
             ],
         },
     }
@@ -121,9 +132,15 @@ class TestEdgeResultTypeConsistency:
         services, config = vault
         sources = Path(config.vault.storage_root)
 
-        result = _parse(await app_batch_ingest("test_vault", [
-            {"file_path": str(sources / "simple.md"), "adapter": "markdown"},
-        ], infer_edges=False))
+        result = _parse(
+            await app_batch_ingest(
+                "test_vault",
+                [
+                    {"file_path": str(sources / "simple.md"), "adapter": "markdown"},
+                ],
+                infer_edges=False,
+            )
+        )
 
         assert isinstance(result["edges_created"], dict)
         assert isinstance(result["edges_staged"], dict)
@@ -135,10 +152,19 @@ class TestEdgeResultTypeConsistency:
         services, config = vault
         sources = Path(config.vault.storage_root)
 
-        result = _parse(await app_batch_ingest("test_vault", [
-            {"file_path": str(sources / "simple.md"), "adapter": "markdown",
-             "parsed_metadata": {"title": "Simple", "doc_type": "note"}},
-        ], infer_edges=True))
+        result = _parse(
+            await app_batch_ingest(
+                "test_vault",
+                [
+                    {
+                        "file_path": str(sources / "simple.md"),
+                        "adapter": "markdown",
+                        "parsed_metadata": {"title": "Simple", "doc_type": "note"},
+                    },
+                ],
+                infer_edges=True,
+            )
+        )
 
         assert isinstance(result["edges_created"], dict)
         assert isinstance(result["edges_staged"], dict)
@@ -148,12 +174,34 @@ class TestEdgeResultTypeConsistency:
         services, config = vault
         sources = Path(config.vault.storage_root)
 
-        result = _parse(await app_batch_ingest("test_vault", [
-            {"file_path": str(sources / "patent_v1.md"), "adapter": "markdown",
-             "parsed_metadata": {"title": "Patent", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}},
-            {"file_path": str(sources / "patent_v2.md"), "adapter": "markdown",
-             "parsed_metadata": {"title": "Patent", "codes": ["PV06"], "version": "v2", "doc_type": "patent_draft"}},
-        ], infer_edges=True))
+        result = _parse(
+            await app_batch_ingest(
+                "test_vault",
+                [
+                    {
+                        "file_path": str(sources / "patent_v1.md"),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Patent",
+                            "codes": ["PV06"],
+                            "version": "v1",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                    {
+                        "file_path": str(sources / "patent_v2.md"),
+                        "adapter": "markdown",
+                        "parsed_metadata": {
+                            "title": "Patent",
+                            "codes": ["PV06"],
+                            "version": "v2",
+                            "doc_type": "patent_draft",
+                        },
+                    },
+                ],
+                infer_edges=True,
+            )
+        )
 
         assert isinstance(result["edges_created"], dict)
         assert isinstance(result["edges_staged"], dict)
@@ -172,7 +220,9 @@ class TestModuleLevelImports:
     def test_cln_003_import_succeeds(self):
         """sage.mcp_server imports without circular import errors."""
         import importlib
+
         import sage.mcp_server as mod
+
         # importlib.reload re-executes the module body, which rebinds both
         # `_vaults` and `_vault_registry_service`. Other modules and the
         # registry service singleton both hold references to the originals,
@@ -187,10 +237,12 @@ class TestModuleLevelImports:
 
     def test_cln_003_error_classes_at_module_level(self):
         """Error classes are importable from sage.mcp_server's namespace."""
-        import sage.mcp_server as m
         # These should be in the module's import section, not local
         # We verify by checking the module's source for local imports
         import inspect
+
+        import sage.mcp_server as m
+
         source = inspect.getsource(m.sage_get_document)
         assert "from sage.api.errors import" not in source
 
@@ -206,7 +258,9 @@ class TestTypeAnnotations:
     def test_cln_009_passes_scope_doc_annotated(self):
         """_passes_scope has type annotation on doc parameter."""
         import inspect
+
         from sage.services.retrieval import RetrievalService
+
         sig = inspect.signature(RetrievalService._passes_scope)
         params = sig.parameters
         assert params["doc"].annotation is not inspect.Parameter.empty
@@ -224,8 +278,10 @@ class TestTraversalNaming:
         """Traversal produces correct results after rename (regression)."""
         # This is a regression test -- actual logic tested in test_graph_ops.py
         # We just verify the rename didn't break anything by importing
-        from sage.storage.graph_store import GraphStore
         import inspect
+
+        from sage.storage.graph_store import GraphStore
+
         source = inspect.getsource(GraphStore._traverse_sync)
         assert "match_col" in source
         assert "follow_col" in source
@@ -246,6 +302,7 @@ class TestIngestResult:
         """New document ingest returns IngestResult with is_new=True."""
         services, config = vault
         from sage.services.ingestion import IngestResult
+
         request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN)
         result = await services.ingestion_service.ingest(request)
 
@@ -258,6 +315,7 @@ class TestIngestResult:
         """Force re-ingestion returns IngestResult with is_new=False."""
         services, config = vault
         from sage.services.ingestion import IngestResult
+
         request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN)
         # First ingest
         await services.ingestion_service.ingest(request)

@@ -12,7 +12,7 @@ serialization or SSE streaming -- via optional progress callbacks.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,9 +23,9 @@ from app.backend.edge_inference import (
     InferenceItem,
     resolve_and_execute,
 )
-from sage.services.filename_parser import ParsedMetadata
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
+from sage.services.filename_parser import ParsedMetadata
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ParsedMetadataInput:
     """Neutral metadata representation accepted from any caller."""
+
     title: str
     date: str | None = None
     project: str | None = None
@@ -52,6 +53,7 @@ class ParsedMetadataInput:
 @dataclass
 class FileDescriptor:
     """Neutral file descriptor accepted from any caller."""
+
     file_path: str
     adapter: str
     parsed_metadata: ParsedMetadataInput | None = None
@@ -60,6 +62,7 @@ class FileDescriptor:
 @dataclass
 class IngestSummary:
     """Result of a batch ingestion run."""
+
     docs_new: int = 0
     docs_version: int = 0
     metadata_pending: int = 0
@@ -183,10 +186,12 @@ class BatchIngestService:
 
             except Exception as exc:
                 summary.error_count += 1
-                summary.errors.append({
-                    "filename": filename,
-                    "message": str(exc),
-                })
+                summary.errors.append(
+                    {
+                        "filename": filename,
+                        "message": str(exc),
+                    }
+                )
                 if on_file_error is not None:
                     await on_file_error(i, total, filename, str(exc))
 
@@ -234,11 +239,13 @@ class BatchIngestService:
                 )
             else:
                 parsed = ParsedMetadata(title=Path(fd.file_path).stem)
-            scan_items.append(InferenceItem(
-                ref=fd.file_path,
-                is_existing=False,
-                parsed=parsed,
-            ))
+            scan_items.append(
+                InferenceItem(
+                    ref=fd.file_path,
+                    is_existing=False,
+                    parsed=parsed,
+                )
+            )
 
         # Chain identities present in this batch (only versioned items
         # participate in chain repair).
@@ -262,17 +269,19 @@ class BatchIngestService:
             )
             in_repair_scope = doc_chain_key in scan_chain_keys
             if doc.lifecycle_status == "active" or in_repair_scope:
-                existing_items.append(InferenceItem(
-                    ref=doc.id,
-                    is_existing=True,
-                    parsed=ParsedMetadata(
-                        title=doc.title,
-                        project=doc.project,
-                        codes=doc.tags,
-                        version=doc.version_label,
-                        doc_type=doc.doc_type,
-                    ),
-                ))
+                existing_items.append(
+                    InferenceItem(
+                        ref=doc.id,
+                        is_existing=True,
+                        parsed=ParsedMetadata(
+                            title=doc.title,
+                            project=doc.project,
+                            codes=doc.tags,
+                            version=doc.version_label,
+                            doc_type=doc.doc_type,
+                        ),
+                    )
+                )
                 if in_repair_scope:
                     existing_chain_doc_ids.append(doc.id)
 
@@ -282,9 +291,7 @@ class BatchIngestService:
         seen_edge_ids: set[str] = set()
         chain_id_set = set(existing_chain_doc_ids)
         for doc_id in existing_chain_doc_ids:
-            edges = await vault_services.graph_store.get_edges_by_source(
-                doc_id, "supersedes"
-            )
+            edges = await vault_services.graph_store.get_edges_by_source(doc_id, "supersedes")
             for e in edges:
                 if e.id in seen_edge_ids:
                     continue

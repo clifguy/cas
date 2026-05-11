@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.backend.router import router as app_backend_router
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import (
     documents,
@@ -28,9 +29,8 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
-from app.backend.router import router as app_backend_router
 from sage.config import VaultConfig, load_vault_config
-from sage.mcp_init import SAGEServices, initialize_services
+from sage.mcp_init import initialize_services
 from sage.services.vault_registry import VaultRegistryService
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # ASGI middleware: suppress double-response errors during shutdown
 # ---------------------------------------------------------------------------
+
 
 class _GracefulSSEMiddleware:
     """Catch the double ``http.response.start`` that occurs when uvicorn
@@ -96,18 +97,14 @@ def _ensure_registry_service(app: FastAPI) -> VaultRegistryService:
     return app.state.vault_registry_service
 
 
-async def _initialize_vault(
-    app: FastAPI, config: VaultConfig, **overrides
-) -> None:
+async def _initialize_vault(app: FastAPI, config: VaultConfig, **overrides) -> None:
     """Initialize services for one vault and add to the registry.
 
     Schema migrations are no longer applied here. Run ``python -m sage.migrate``
     out of band before starting the server when a vault's schema has advanced.
     """
     registry_service = _ensure_registry_service(app)
-    services = await initialize_services(
-        config, registry_service=registry_service, **overrides
-    )
+    services = await initialize_services(config, registry_service=registry_service, **overrides)
     app.state.vault_registry[config.vault.id] = services
 
 
@@ -122,9 +119,7 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     provider overrides (content_store, embedding_provider, abstraction_provider).
     """
     registry_service = _ensure_registry_service(app)
-    services = await initialize_services(
-        config, registry_service=registry_service, **overrides
-    )
+    services = await initialize_services(config, registry_service=registry_service, **overrides)
     app.state.vault_registry[config.vault.id] = services
 
     # Legacy single-vault attributes (used by existing tests)
@@ -181,9 +176,7 @@ def create_app(
                     vc = load_vault_config(cp)
                     await _initialize_vault(app, vc)
                 except Exception as exc:
-                    logger.error(
-                        "Skipping vault at %s: failed to load (%s)", cp, exc
-                    )
+                    logger.error("Skipping vault at %s: failed to load (%s)", cp, exc)
         elif configs is not None:
             for vc in configs:
                 await _initialize_vault(app, vc)
@@ -233,8 +226,8 @@ def create_app(
     # _GracefulSSEMiddleware is added to the Starlette app's own middleware
     # stack rather than wrapping it externally, which would obscure the
     # app type and interfere with MCP session initialization.
-    from starlette.middleware import Middleware
     from sage.mcp_server import mcp
+
     sse_app = mcp.sse_app()
     sse_app.add_middleware(_GracefulSSEMiddleware)
     app.mount("/mcp", sse_app)

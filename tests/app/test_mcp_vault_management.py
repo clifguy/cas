@@ -15,24 +15,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sage.adapters.stubs import (
-    StubAbstractionProvider,
-    StubContentStore,
-    StubEmbeddingProvider,
-)
-from sage.config import VaultConfig
-from sage.mcp_init import initialize_services
 import sage.mcp_server as _mcp
-
+from sage.config import VaultConfig
 from sage.mcp_server import (
     sage_create_vault,
     sage_get_vault_config,
-    sage_update_vault_config,
-    sage_list_vaults,
     sage_ingest,
+    sage_list_vaults,
     sage_update_metadata,
+    sage_update_vault_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -64,7 +56,7 @@ async def empty_registry():
     for services in list(_mcp._vaults.values()):
         try:
             await services.graph_store.close()
-        except Exception:
+        except Exception:  # noqa: S110 -- teardown cleanup; close errors must not fail the test
             pass
     _mcp._vaults.clear()
     _mcp._vaults.update(saved)
@@ -141,16 +133,13 @@ async def registered_vault(vaults_root, empty_registry, tmp_path):
 
 
 class TestSageCreateVault:
-
     # TEST-APP-MCP-030
     async def test_mcp_030_convenience_mode_creates_vault_with_default_config(
         self, vaults_root, empty_registry
     ):
         """Convenience mode: vault_id + name + owner produces default config."""
         result = _parse(
-            await sage_create_vault(
-                vault_id="new_vault", name="New Vault", owner="testuser"
-            )
+            await sage_create_vault(vault_id="new_vault", name="New Vault", owner="testuser")
         )
 
         assert result["vault_id"] == "new_vault"
@@ -174,16 +163,10 @@ class TestSageCreateVault:
         assert on_disk["vault"]["name"] == "New Vault"
 
     # TEST-APP-MCP-031
-    async def test_mcp_031_convenience_rejects_duplicate(
-        self, vaults_root, empty_registry
-    ):
+    async def test_mcp_031_convenience_rejects_duplicate(self, vaults_root, empty_registry):
         """Creating an already-registered vault id returns vault_already_exists."""
-        await sage_create_vault(
-            vault_id="existing", name="Existing", owner="testuser"
-        )
-        result = _parse(
-            await sage_create_vault(vault_id="existing", name="x", owner="x")
-        )
+        await sage_create_vault(vault_id="existing", name="Existing", owner="testuser")
+        result = _parse(await sage_create_vault(vault_id="existing", name="x", owner="x"))
         assert result.get("error") == "vault_already_exists"
 
     # TEST-APP-MCP-032
@@ -191,9 +174,7 @@ class TestSageCreateVault:
         """Passing both config and convenience args returns validation error."""
         cfg = _make_full_config_dict(vaults_root, "mixed", "Mixed", "testuser")
         result = _parse(
-            await sage_create_vault(
-                vault_id="mixed", name="Mixed", owner="testuser", config=cfg
-            )
+            await sage_create_vault(vault_id="mixed", name="Mixed", owner="testuser", config=cfg)
         )
         assert "error" in result
         # Not strict on exact code -- just that it's a validation-style error,
@@ -205,9 +186,7 @@ class TestSageCreateVault:
         assert "mixed" not in ids
 
     # TEST-APP-MCP-033
-    async def test_mcp_033_full_config_mode_creates_vault(
-        self, vaults_root, empty_registry
-    ):
+    async def test_mcp_033_full_config_mode_creates_vault(self, vaults_root, empty_registry):
         """Full-config mode accepts a complete dict."""
         cfg = _make_full_config_dict(vaults_root, "full_cfg", "Full Cfg", "testuser")
         result = _parse(await sage_create_vault(config=cfg))
@@ -218,13 +197,9 @@ class TestSageCreateVault:
         assert "full_cfg" in {v["id"] for v in vaults_list["vaults"]}
 
     # TEST-APP-MCP-034
-    async def test_mcp_034_full_config_rejects_invalid(
-        self, vaults_root, empty_registry
-    ):
+    async def test_mcp_034_full_config_rejects_invalid(self, vaults_root, empty_registry):
         """Invalid config dict returns vault_config_validation_error."""
-        result = _parse(
-            await sage_create_vault(config={"vault": {"id": "bad"}})
-        )
+        result = _parse(await sage_create_vault(config={"vault": {"id": "bad"}}))
         assert result.get("error") == "vault_config_validation_error"
         assert "errors" in result.get("detail", {})
         assert len(result["detail"]["errors"]) > 0
@@ -238,11 +213,8 @@ class TestSageCreateVault:
 
 
 class TestSageGetVaultConfig:
-
     # TEST-APP-MCP-035
-    async def test_mcp_035_returns_full_config_and_errors_on_unknown(
-        self, registered_vault
-    ):
+    async def test_mcp_035_returns_full_config_and_errors_on_unknown(self, registered_vault):
         """Returns full config for known vault; error for unknown."""
         result = _parse(await sage_get_vault_config("test_vault"))
         for section in (
@@ -266,7 +238,6 @@ class TestSageGetVaultConfig:
 
 
 class TestSageUpdateVaultConfig:
-
     # TEST-APP-MCP-036
     async def test_mcp_036_updates_section_preserves_others(self, registered_vault):
         """Section replacement leaves other sections byte-equal."""
@@ -298,9 +269,7 @@ class TestSageUpdateVaultConfig:
             assert updated[section] == original[section]
 
     # TEST-APP-MCP-037
-    async def test_mcp_037_blocks_destructive_change_without_force(
-        self, registered_vault
-    ):
+    async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):
         """Removing an in-use doc_type without force returns destructive_config_change."""
         # Ingest a document and set doc_type='note' via update_metadata
         sources = Path(registered_vault["vault"]["storage_root"])
@@ -308,9 +277,7 @@ class TestSageUpdateVaultConfig:
         (sources / "sample.md").write_text("# Sample\n\nContent.")
         ingest_result = await sage_ingest("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.2)
-        await sage_update_metadata(
-            "test_vault", ingest_result["id"], doc_type="note"
-        )
+        await sage_update_metadata("test_vault", ingest_result["id"], doc_type="note")
 
         # Attempt destructive update
         result = _parse(
@@ -340,9 +307,7 @@ class TestSageUpdateVaultConfig:
         (sources / "sample.md").write_text("# Sample\n\nContent.")
         ingest_result = await sage_ingest("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.2)
-        await sage_update_metadata(
-            "test_vault", ingest_result["id"], doc_type="note"
-        )
+        await sage_update_metadata("test_vault", ingest_result["id"], doc_type="note")
 
         result = _parse(
             await sage_update_vault_config(
@@ -365,9 +330,7 @@ class TestSageUpdateVaultConfig:
         assert "memo" in dt_values
 
     # TEST-APP-MCP-039
-    async def test_mcp_039_rejects_vault_id_change_even_with_force(
-        self, registered_vault
-    ):
+    async def test_mcp_039_rejects_vault_id_change_even_with_force(self, registered_vault):
         """Changing vault.id is never allowed, regardless of force."""
         result = _parse(
             await sage_update_vault_config(

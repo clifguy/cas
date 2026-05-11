@@ -117,11 +117,13 @@ def register_app_tools(
                         version=pm.get("version"),
                         doc_type=pm.get("doc_type"),
                     )
-                descriptors.append(FileDescriptor(
-                    file_path=f["file_path"],
-                    adapter=f["adapter"],
-                    parsed_metadata=parsed,
-                ))
+                descriptors.append(
+                    FileDescriptor(
+                        file_path=f["file_path"],
+                        adapter=f["adapter"],
+                        parsed_metadata=parsed,
+                    )
+                )
 
             svc = BatchIngestService()
             result = await svc.run(

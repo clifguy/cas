@@ -76,43 +76,43 @@ class _ResolutionPathRecorder:
     def __init__(self) -> None:
         self.entries: list[ResolutionPathEntry] = []
 
-    def anchor_hit(
-        self, edge_id: str, anchor_field: str, anchor_version: str
-    ) -> None:
-        self.entries.append(ResolutionPathEntry(
-            event_type="anchor_hit",
-            edge_id=edge_id,
-            anchor_field=anchor_field,
-            anchor_version=anchor_version,
-        ))
+    def anchor_hit(self, edge_id: str, anchor_field: str, anchor_version: str) -> None:
+        self.entries.append(
+            ResolutionPathEntry(
+                event_type="anchor_hit",
+                edge_id=edge_id,
+                anchor_field=anchor_field,
+                anchor_version=anchor_version,
+            )
+        )
 
-    def anchor_miss(
-        self, edge_id: str, anchor_field: str, anchor_version: str | None
-    ) -> None:
-        self.entries.append(ResolutionPathEntry(
-            event_type="anchor_miss",
-            edge_id=edge_id,
-            anchor_field=anchor_field,
-            anchor_version=anchor_version,
-        ))
+    def anchor_miss(self, edge_id: str, anchor_field: str, anchor_version: str | None) -> None:
+        self.entries.append(
+            ResolutionPathEntry(
+                event_type="anchor_miss",
+                edge_id=edge_id,
+                anchor_field=anchor_field,
+                anchor_version=anchor_version,
+            )
+        )
 
-    def retracts_applied(
-        self, edge_id: str, retracting_edge_id: str
-    ) -> None:
-        self.entries.append(ResolutionPathEntry(
-            event_type="retracts_applied",
-            edge_id=edge_id,
-            retracted_edge_id=retracting_edge_id,
-        ))
+    def retracts_applied(self, edge_id: str, retracting_edge_id: str) -> None:
+        self.entries.append(
+            ResolutionPathEntry(
+                event_type="retracts_applied",
+                edge_id=edge_id,
+                retracted_edge_id=retracting_edge_id,
+            )
+        )
 
-    def tombstone_applied(
-        self, edge_id: str, tombstone_version: str
-    ) -> None:
-        self.entries.append(ResolutionPathEntry(
-            event_type="tombstone_applied",
-            edge_id=edge_id,
-            tombstone_version=tombstone_version,
-        ))
+    def tombstone_applied(self, edge_id: str, tombstone_version: str) -> None:
+        self.entries.append(
+            ResolutionPathEntry(
+                event_type="tombstone_applied",
+                edge_id=edge_id,
+                tombstone_version=tombstone_version,
+            )
+        )
 
 
 class _LineageCache:
@@ -133,6 +133,7 @@ class _LineageCache:
             self._cache[doc_id] = frozenset(lineage)
             self.fetches += 1
         return self._cache[doc_id]
+
 
 # Lifecycle states that satisfy depends_on preconditions (BH-033, BH-034).
 # Domain-specific states like 'filed' are excluded (BH-036).
@@ -183,10 +184,7 @@ class GraphOpsService:
                 raise DocumentNotFoundError(request.source_id)
 
             if request.edge_type != EdgeType.RETRACTS:
-                if (
-                    request.target_id is not None
-                    and request.source_id == request.target_id
-                ):
+                if request.target_id is not None and request.source_id == request.target_id:
                     raise SelfReferentialEdgeError(request.source_id)
                 if request.target_id is not None and not ctx.target_exists:
                     raise DocumentNotFoundError(request.target_id)
@@ -243,9 +241,7 @@ class GraphOpsService:
             await self._store.insert_edge(edge)
             return edge
 
-    def _validate_link_request_shape(
-        self, request: LinkRequest, policy: ResolutionPolicy
-    ) -> None:
+    def _validate_link_request_shape(self, request: LinkRequest, policy: ResolutionPolicy) -> None:
         """Enforce the policy-keyed field-shape invariant.
 
         Does not verify anchor-in-lineage membership; that check lands
@@ -412,7 +408,8 @@ class GraphOpsService:
             )
 
         if (
-            policy in (
+            policy
+            in (
                 ResolutionPolicy.TRANSITIVE_TARGET,
                 ResolutionPolicy.TRANSITIVE_BOTH,
             )
@@ -450,10 +447,7 @@ class GraphOpsService:
             raise EdgeAnchorPolicyViolationError(
                 edge_type,
                 policy,
-                (
-                    f"{field}={anchor_id!r} is not in the supersedes lineage "
-                    f"of {endpoint_id!r}"
-                ),
+                (f"{field}={anchor_id!r} is not in the supersedes lineage of {endpoint_id!r}"),
                 [field],
             )
 
@@ -487,31 +481,37 @@ class GraphOpsService:
         for edge in depends_on_edges:
             target = await self._store.get_document(edge.target_id)
             if target is None:
-                checks.append(PreconditionCheck(
-                    target_id=edge.target_id,
-                    required="active or completed",
-                    actual="not found",
-                    satisfied=False,
-                ))
+                checks.append(
+                    PreconditionCheck(
+                        target_id=edge.target_id,
+                        required="active or completed",
+                        actual="not found",
+                        satisfied=False,
+                    )
+                )
                 continue
 
             # Pipeline failure overrides lifecycle check (BH-023)
             if target.pipeline_status == PipelineStatus.FAILED:
-                checks.append(PreconditionCheck(
-                    target_id=edge.target_id,
-                    required="active or completed",
-                    actual="failed (pipeline_incomplete)",
-                    satisfied=False,
-                ))
+                checks.append(
+                    PreconditionCheck(
+                        target_id=edge.target_id,
+                        required="active or completed",
+                        actual="failed (pipeline_incomplete)",
+                        satisfied=False,
+                    )
+                )
                 continue
 
             satisfied = target.lifecycle_status in _SATISFYING_STATUSES
-            checks.append(PreconditionCheck(
-                target_id=edge.target_id,
-                required="active or completed",
-                actual=target.lifecycle_status,
-                satisfied=satisfied,
-            ))
+            checks.append(
+                PreconditionCheck(
+                    target_id=edge.target_id,
+                    required="active or completed",
+                    actual=target.lifecycle_status,
+                    satisfied=satisfied,
+                )
+            )
 
         return PreconditionResult(
             function_id=function_id,
@@ -552,17 +552,13 @@ class GraphOpsService:
         # CAS-ADR-017 Chunk 5: retracts short-circuit. Only chain-resolved
         # edges (transitive_source, transitive_both) are suppressible; the
         # retracts primitive does not veto policy=none edges indiscriminately.
-        filtered = await self._apply_retracts(
-            filtered, request.start_id, cache, recorder
-        )
+        filtered = await self._apply_retracts(filtered, request.start_id, cache, recorder)
 
         # CAS-ADR-017 Chunk 6: tombstone suppression. Edges whose
         # `valid_until_version` sits strictly as an ancestor of the query
         # start_id are dropped. Equal-to-start is kept (CR-034: historical
         # query at the merge point still surfaces the edge).
-        filtered = await self._apply_tombstones(
-            filtered, request.start_id, cache, recorder
-        )
+        filtered = await self._apply_tombstones(filtered, request.start_id, cache, recorder)
 
         # Deduplicate: group by doc_id, pick most recent edge, min depth
         grouped: dict[str, list[dict]] = {}
@@ -615,12 +611,14 @@ class GraphOpsService:
                 seen_edges.setdefault(et, set()).add(r["edge_id"])
             counts = {et: len(ids) for et, ids in seen_edges.items()}
 
-            nodes.append(TraversalNode(
-                document=doc_summary,
-                edge=edge,
-                depth=min_depth,
-                edge_counts=counts,
-            ))
+            nodes.append(
+                TraversalNode(
+                    document=doc_summary,
+                    edge=edge,
+                    depth=min_depth,
+                    edge_counts=counts,
+                )
+            )
 
         return TraverseResponse(
             start_id=request.start_id,
@@ -683,7 +681,8 @@ class GraphOpsService:
                 continue
             suppressing = next(
                 (
-                    r for r in retracts
+                    r
+                    for r in retracts
                     if r.source_valid_from_version is not None
                     and r.source_valid_from_version in start_lineage
                 ),
@@ -776,15 +775,11 @@ class GraphOpsService:
         else:
             phases = [request.direction]
 
-        edge_type_filter = (
-            request.edge_type.value if request.edge_type else None
-        )
+        edge_type_filter = request.edge_type.value if request.edge_type else None
 
         raw_by_edge: dict[str, dict] = {}
         for phase in phases:
-            seeds = await self._determine_seeds(
-                request.start_id, request.edge_type, phase, cache
-            )
+            seeds = await self._determine_seeds(request.start_id, request.edge_type, phase, cache)
             for seed in seeds:
                 rows = await self._store.traverse(
                     start_id=seed,
@@ -898,39 +893,27 @@ class GraphOpsService:
         if policy == ResolutionPolicy.TRANSITIVE_SOURCE:
             if source_anchor is None:
                 if recorder is not None:
-                    recorder.anchor_miss(
-                        edge_id, "source_valid_from_version", None
-                    )
+                    recorder.anchor_miss(edge_id, "source_valid_from_version", None)
                 return False
             hit = await self._anchor_in_lineage(source_anchor, source_id, cache)
             if recorder is not None:
                 if hit:
-                    recorder.anchor_hit(
-                        edge_id, "source_valid_from_version", source_anchor
-                    )
+                    recorder.anchor_hit(edge_id, "source_valid_from_version", source_anchor)
                 else:
-                    recorder.anchor_miss(
-                        edge_id, "source_valid_from_version", source_anchor
-                    )
+                    recorder.anchor_miss(edge_id, "source_valid_from_version", source_anchor)
             return hit
 
         if policy == ResolutionPolicy.TRANSITIVE_TARGET:
             if target_anchor is None or target_id is None:
                 if recorder is not None:
-                    recorder.anchor_miss(
-                        edge_id, "target_valid_from_version", target_anchor
-                    )
+                    recorder.anchor_miss(edge_id, "target_valid_from_version", target_anchor)
                 return False
             hit = await self._anchor_in_lineage(target_anchor, target_id, cache)
             if recorder is not None:
                 if hit:
-                    recorder.anchor_hit(
-                        edge_id, "target_valid_from_version", target_anchor
-                    )
+                    recorder.anchor_hit(edge_id, "target_valid_from_version", target_anchor)
                 else:
-                    recorder.anchor_miss(
-                        edge_id, "target_valid_from_version", target_anchor
-                    )
+                    recorder.anchor_miss(edge_id, "target_valid_from_version", target_anchor)
             return hit
 
         if policy == ResolutionPolicy.TRANSITIVE_BOTH:
@@ -948,36 +931,22 @@ class GraphOpsService:
                     )
                     recorder.anchor_miss(edge_id, missing_field, missing_value)
                 return False
-            source_hit = await self._anchor_in_lineage(
-                source_anchor, source_id, cache
-            )
+            source_hit = await self._anchor_in_lineage(source_anchor, source_id, cache)
             if not source_hit:
                 if recorder is not None:
-                    recorder.anchor_miss(
-                        edge_id, "source_valid_from_version", source_anchor
-                    )
+                    recorder.anchor_miss(edge_id, "source_valid_from_version", source_anchor)
                 return False
-            target_hit = await self._anchor_in_lineage(
-                target_anchor, target_id, cache
-            )
+            target_hit = await self._anchor_in_lineage(target_anchor, target_id, cache)
             if not target_hit:
                 if recorder is not None:
                     # Source check passed; record both outcomes so the
                     # trace shows which side dropped the edge.
-                    recorder.anchor_hit(
-                        edge_id, "source_valid_from_version", source_anchor
-                    )
-                    recorder.anchor_miss(
-                        edge_id, "target_valid_from_version", target_anchor
-                    )
+                    recorder.anchor_hit(edge_id, "source_valid_from_version", source_anchor)
+                    recorder.anchor_miss(edge_id, "target_valid_from_version", target_anchor)
                 return False
             if recorder is not None:
-                recorder.anchor_hit(
-                    edge_id, "source_valid_from_version", source_anchor
-                )
-                recorder.anchor_hit(
-                    edge_id, "target_valid_from_version", target_anchor
-                )
+                recorder.anchor_hit(edge_id, "source_valid_from_version", source_anchor)
+                recorder.anchor_hit(edge_id, "target_valid_from_version", target_anchor)
             return True
 
         return True
@@ -1035,10 +1004,7 @@ class GraphOpsService:
             predecessors.setdefault(e["target_id"], set()).add(e["source_id"])
 
         # Detect linearity: every node has at most 1 predecessor and 1 successor
-        is_linear = all(
-            len(successors[d]) <= 1 and len(predecessors[d]) <= 1
-            for d in doc_map
-        )
+        is_linear = all(len(successors[d]) <= 1 and len(predecessors[d]) <= 1 for d in doc_map)
 
         # Topological sort: find roots (no inbound edges = no predecessors)
         # and walk forward through successors, then reverse so position 0
@@ -1085,14 +1051,16 @@ class GraphOpsService:
             d = doc_map[doc_id]
             if doc_id == request.document_id:
                 query_position = i
-            chain_entries.append(ChainEntry(
-                id=doc_id,
-                title=d["title"],
-                version_label=d["version_label"],
-                lifecycle_status=d["lifecycle_status"],
-                document_date=d["document_date"],
-                position=i,
-            ))
+            chain_entries.append(
+                ChainEntry(
+                    id=doc_id,
+                    title=d["title"],
+                    version_label=d["version_label"],
+                    lifecycle_status=d["lifecycle_status"],
+                    document_date=d["document_date"],
+                    position=i,
+                )
+            )
 
         # tail = position 0 (oldest), head = position N (newest)
         tail_id = ordered[0] if ordered else request.document_id
@@ -1110,9 +1078,9 @@ class GraphOpsService:
         # Apply slice if limit is specified
         total_length = len(chain_entries)
         if request.limit is not None:
-            chain_entries = chain_entries[request.offset:request.offset + request.limit]
+            chain_entries = chain_entries[request.offset : request.offset + request.limit]
         elif request.offset > 0:
-            chain_entries = chain_entries[request.offset:]
+            chain_entries = chain_entries[request.offset :]
 
         return ChainResponse(
             chain=chain_entries,

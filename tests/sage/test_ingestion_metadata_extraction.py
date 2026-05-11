@@ -13,24 +13,16 @@ filename).
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 
 import pytest
 
-from sage.adapters.stubs import (
-    StubAbstractionProvider,
-    StubContentStore,
-    StubEmbeddingProvider,
-)
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.graph_store import GraphStore
-from sage.storage.locks import DocumentLockManager
 
 try:
     import docx as _docx_pkg
@@ -39,9 +31,7 @@ try:
 except ImportError:
     _HAS_DOCX = False
 
-requires_docx = pytest.mark.skipif(
-    not _HAS_DOCX, reason="python-docx not available"
-)
+requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not available")
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +205,7 @@ def _write_docx(tmp_vault_dir: Path, relative_path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-async def test_me_001_filename_parse_populates_record(
-    tmp_vault_dir, pim_style_ingestion_service
-):
+async def test_me_001_filename_parse_populates_record(tmp_vault_dir, pim_style_ingestion_service):
     _write_md(
         tmp_vault_dir,
         "patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",

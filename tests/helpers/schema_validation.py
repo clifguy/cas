@@ -14,7 +14,6 @@ import jsonschema
 import referencing
 import referencing.jsonschema
 
-
 # Project root: two levels up from tests/helpers/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 FORMAL_SUBSTRATE_DIR = PROJECT_ROOT / "docs" / "fs"
@@ -77,7 +76,9 @@ class SchemaValidator:
         validator = self._make_validator(schema)
         return validator.is_valid(instance)
 
-    def validation_errors(self, schema_path: str | Path, instance: Any) -> list[jsonschema.ValidationError]:
+    def validation_errors(
+        self, schema_path: str | Path, instance: Any
+    ) -> list[jsonschema.ValidationError]:
         """Return all validation errors for instance against schema."""
         schema = self._get_schema(schema_path)
         validator = self._make_validator(schema)

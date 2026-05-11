@@ -4,6 +4,7 @@ Operates on a bare SQLite database built from the real DDL, seeding
 legacy-shaped edge rows (NULL policy, NULL anchors) via direct INSERT.
 This is what a pre-Chunk-2 vault looks like before backfill.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -16,13 +17,10 @@ from sage.models.enums import EdgeType, ResolutionPolicy
 from sage.storage.migrations import INDEXES, MIGRATIONS, TABLES
 from scripts.migrate_edge_anchors import (
     apply_backfill,
-    apply_reverse,
     build_backfill_plan,
-    build_reverse_plan,
     run_backfill,
     run_reverse,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -95,20 +93,12 @@ def _seeded_db(tmp_path: Path) -> Path:
         for doc_id in ("a1", "a2", "b1", "b2", "c1", "c2", "d1", "d2"):
             _insert_doc(conn, doc_id)
         # policy=none
-        _insert_legacy_edge(
-            conn, "edge-sup", "a2", "a1", EdgeType.SUPERSEDES.value
-        )
+        _insert_legacy_edge(conn, "edge-sup", "a2", "a1", EdgeType.SUPERSEDES.value)
         # policy=transitive_source
-        _insert_legacy_edge(
-            conn, "edge-der", "b1", "b2", EdgeType.DERIVED_FROM.value
-        )
+        _insert_legacy_edge(conn, "edge-der", "b1", "b2", EdgeType.DERIVED_FROM.value)
         # policy=transitive_both
-        _insert_legacy_edge(
-            conn, "edge-ref", "c1", "c2", EdgeType.REFERENCES.value
-        )
-        _insert_legacy_edge(
-            conn, "edge-cov", "d1", "d2", EdgeType.COVERS.value
-        )
+        _insert_legacy_edge(conn, "edge-ref", "c1", "c2", EdgeType.REFERENCES.value)
+        _insert_legacy_edge(conn, "edge-cov", "d1", "d2", EdgeType.COVERS.value)
         conn.commit()
     finally:
         conn.close()
@@ -182,9 +172,7 @@ def test_tbd_edge_halts_run_without_mutation(tmp_path, capsys):
     try:
         _insert_doc(conn, "e1")
         _insert_doc(conn, "e2")
-        _insert_legacy_edge(
-            conn, "edge-auth", "e1", "e2", EdgeType.AUTHORITATIVE_FOR.value
-        )
+        _insert_legacy_edge(conn, "edge-auth", "e1", "e2", EdgeType.AUTHORITATIVE_FOR.value)
         conn.commit()
     finally:
         conn.close()
@@ -215,9 +203,7 @@ def test_apply_backfill_refuses_tbd(tmp_path):
     try:
         _insert_doc(conn, "x1")
         _insert_doc(conn, "x2")
-        _insert_legacy_edge(
-            conn, "edge-tbd", "x1", "x2", EdgeType.AUTHORITATIVE_FOR.value
-        )
+        _insert_legacy_edge(conn, "edge-tbd", "x1", "x2", EdgeType.AUTHORITATIVE_FOR.value)
         conn.commit()
 
         from sage.models.edge_registry import EdgeTypeRegistry
@@ -291,9 +277,7 @@ def test_mixed_prepopulated_and_legacy_rows(tmp_path):
         _insert_doc(conn, "q1")
         _insert_doc(conn, "q2")
         # Legacy (NULL policy)
-        _insert_legacy_edge(
-            conn, "edge-legacy", "p1", "p2", EdgeType.REFERENCES.value
-        )
+        _insert_legacy_edge(conn, "edge-legacy", "p1", "p2", EdgeType.REFERENCES.value)
         # Pre-populated (written by validator-like path). Intentionally
         # different anchors to prove backfill did not overwrite.
         now = datetime.now(timezone.utc).isoformat()

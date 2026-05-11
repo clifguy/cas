@@ -26,8 +26,8 @@ from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 from sage.storage.migrations import (
     MIGRATION_PLAN,
     POST_MIGRATION_DDL,
-    SchemaMigrationRequired,
     TABLES,
+    SchemaMigrationRequired,
     pending_migrations,
 )
 
@@ -196,9 +196,7 @@ class GraphStore:
 
     def _get_document_sync(self, doc_id: str) -> Document | None:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM documents WHERE id = ?", (doc_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
         if row is None:
             return None
         return self._row_to_document(row)
@@ -214,9 +212,7 @@ class GraphStore:
         conn.commit()
         return self._get_document_sync(doc_id)
 
-    def _exec_update_document(
-        self, conn: sqlite3.Connection, doc_id: str, updates: dict
-    ) -> None:
+    def _exec_update_document(self, conn: sqlite3.Connection, doc_id: str, updates: dict) -> None:
         """Issue the UPDATE for a document on the given connection without
         committing. Caller is responsible for commit/rollback. Mutates the
         `updates` dict in place to JSON-serialize collection fields.
@@ -235,7 +231,7 @@ class GraphStore:
         values = list(updates.values())
         values.append(doc_id)
         conn.execute(
-            f"UPDATE documents SET {set_clause} WHERE id = ?",
+            f"UPDATE documents SET {set_clause} WHERE id = ?",  # noqa: S608 -- set_clause is built from trusted dict keys; all values pass through ? placeholders
             values,
         )
 
@@ -249,9 +245,14 @@ class GraphStore:
         return [self._row_to_document(r) for r in rows]
 
     # Columns safe to use in ORDER BY (prevent SQL injection).
-    _SORTABLE_COLUMNS: frozenset[str] = frozenset({
-        "title", "doc_type", "document_date", "lifecycle_status",
-    })
+    _SORTABLE_COLUMNS: frozenset[str] = frozenset(
+        {
+            "title",
+            "doc_type",
+            "document_date",
+            "lifecycle_status",
+        }
+    )
 
     async def query_documents(
         self,
@@ -274,8 +275,12 @@ class GraphStore:
         then document_date descending.
         """
         return await self._run(
-            self._query_documents_sync, filters, limit, offset,
-            sort_by, sort_order,
+            self._query_documents_sync,
+            filters,
+            limit,
+            offset,
+            sort_by,
+            sort_order,
         )
 
     def _query_documents_sync(
@@ -314,16 +319,15 @@ class GraphStore:
                 params.extend(filters["document_ids"])
             if "tags" in filters and filters["tags"]:
                 for tag in filters["tags"]:
-                    where_clauses.append(
-                        "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)"
-                    )
+                    where_clauses.append("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)")
                     params.append(tag)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
         # Get total count
         count_row = conn.execute(
-            f"SELECT COUNT(*) FROM documents WHERE {where_sql}", params
+            f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- where_sql built from trusted internal builder; values are ? placeholders
+            params,
         ).fetchone()
         total_count = count_row[0]
 
@@ -332,7 +336,7 @@ class GraphStore:
 
         # Get paged results
         rows = conn.execute(
-            f"SELECT * FROM documents WHERE {where_sql} {order_sql} LIMIT ? OFFSET ?",
+            f"SELECT * FROM documents WHERE {where_sql} {order_sql} LIMIT ? OFFSET ?",  # noqa: S608 -- where_sql/order_sql built from trusted internal builders; values are ? placeholders
             [*params, limit, offset],
         ).fetchall()
         return [self._row_to_document(r) for r in rows], total_count
@@ -359,7 +363,8 @@ class GraphStore:
         direction = "DESC" if sort_order == "desc" else "ASC"
         nulls_last = (
             "CASE WHEN document_date IS NULL THEN 1 ELSE 0 END, "
-            if sort_by == "document_date" else ""
+            if sort_by == "document_date"
+            else ""
         )
         return f"ORDER BY {nulls_last}{sort_by} {direction}"
 
@@ -423,9 +428,7 @@ class GraphStore:
         conn = self._get_connection()
         pattern = f"%{query}%"
         rows = conn.execute(
-            "SELECT * FROM documents "
-            "WHERE semantic_abstract LIKE ? COLLATE NOCASE "
-            "LIMIT ?",
+            "SELECT * FROM documents WHERE semantic_abstract LIKE ? COLLATE NOCASE LIMIT ?",
             (pattern, limit),
         ).fetchall()
         return [self._row_to_document(r) for r in rows]
@@ -547,16 +550,10 @@ class GraphStore:
         updated_pred = self._get_document_sync(predecessor_id)
         return inserted, updated_pred
 
-    async def get_edges_by_source(
-        self, source_id: str, edge_type: str | None = None
-    ) -> list[Edge]:
-        return await self._run(
-            self._get_edges_by_source_sync, source_id, edge_type
-        )
+    async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
+        return await self._run(self._get_edges_by_source_sync, source_id, edge_type)
 
-    def _get_edges_by_source_sync(
-        self, source_id: str, edge_type: str | None = None
-    ) -> list[Edge]:
+    def _get_edges_by_source_sync(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
         conn = self._get_connection()
         if edge_type:
             rows = conn.execute(
@@ -564,21 +561,13 @@ class GraphStore:
                 (source_id, edge_type),
             ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM edges WHERE source_id = ?", (source_id,)
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM edges WHERE source_id = ?", (source_id,)).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
-    async def get_edges_by_target(
-        self, target_id: str, edge_type: str | None = None
-    ) -> list[Edge]:
-        return await self._run(
-            self._get_edges_by_target_sync, target_id, edge_type
-        )
+    async def get_edges_by_target(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
+        return await self._run(self._get_edges_by_target_sync, target_id, edge_type)
 
-    def _get_edges_by_target_sync(
-        self, target_id: str, edge_type: str | None = None
-    ) -> list[Edge]:
+    def _get_edges_by_target_sync(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
         conn = self._get_connection()
         if edge_type:
             rows = conn.execute(
@@ -586,9 +575,7 @@ class GraphStore:
                 (target_id, edge_type),
             ).fetchall()
         else:
-            rows = conn.execute(
-                "SELECT * FROM edges WHERE target_id = ?", (target_id,)
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM edges WHERE target_id = ?", (target_id,)).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
     async def get_supersedes_lineage(self, doc_id: str) -> list[str]:
@@ -603,9 +590,7 @@ class GraphStore:
 
     def _get_supersedes_lineage_sync(self, doc_id: str) -> list[str]:
         conn = self._get_connection()
-        exists = conn.execute(
-            "SELECT 1 FROM documents WHERE id = ?", (doc_id,)
-        ).fetchone()
+        exists = conn.execute("SELECT 1 FROM documents WHERE id = ?", (doc_id,)).fetchone()
         if exists is None:
             return []
         # UNION (not UNION ALL) so the recursive CTE terminates on
@@ -659,9 +644,7 @@ class GraphStore:
         ).fetchone()
         return row is not None
 
-    async def find_tombstone_candidates(
-        self, lineage_ids: list[str]
-    ) -> list[str]:
+    async def find_tombstone_candidates(self, lineage_ids: list[str]) -> list[str]:
         """Return edge_ids that should be tombstoned when a chain terminates.
 
         Selects non-policy-none edges whose source_id or target_id sits
@@ -672,9 +655,7 @@ class GraphStore:
         """
         return await self._run(self._find_tombstone_candidates_sync, lineage_ids)
 
-    def _find_tombstone_candidates_sync(
-        self, lineage_ids: list[str]
-    ) -> list[str]:
+    def _find_tombstone_candidates_sync(self, lineage_ids: list[str]) -> list[str]:
         if not lineage_ids:
             return []
         conn = self._get_connection()
@@ -682,7 +663,7 @@ class GraphStore:
         # Policy-none edges (supersedes, retracts, merged_from) are
         # exempt: lineage and meta-facts must remain navigable.
         sql = (
-            f"SELECT id FROM edges "
+            f"SELECT id FROM edges "  # noqa: S608 -- ResolutionPolicy.NONE.value is an enum constant; placeholders are ? markers
             f"WHERE valid_until_version IS NULL "
             f"AND (resolution_policy IS NULL "
             f"     OR resolution_policy != '{ResolutionPolicy.NONE.value}') "
@@ -720,7 +701,7 @@ class GraphStore:
             if tombstone_edge_ids:
                 placeholders = ",".join("?" for _ in tombstone_edge_ids)
                 conn.execute(
-                    f"UPDATE edges SET valid_until_version = ? "
+                    f"UPDATE edges SET valid_until_version = ? "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
                     f"WHERE id IN ({placeholders})",
                     [tombstone_version, *tombstone_edge_ids],
                 )
@@ -752,22 +733,23 @@ class GraphStore:
     ) -> LinkReadContext:
         conn = self._get_connection()
 
-        source_exists = conn.execute(
-            "SELECT 1 FROM documents WHERE id = ?", (request.source_id,)
-        ).fetchone() is not None
+        source_exists = (
+            conn.execute("SELECT 1 FROM documents WHERE id = ?", (request.source_id,)).fetchone()
+            is not None
+        )
 
         if request.target_id is None:
             target_exists = True
         else:
-            target_exists = conn.execute(
-                "SELECT 1 FROM documents WHERE id = ?", (request.target_id,)
-            ).fetchone() is not None
+            target_exists = (
+                conn.execute(
+                    "SELECT 1 FROM documents WHERE id = ?", (request.target_id,)
+                ).fetchone()
+                is not None
+            )
 
         retracted_edge: Edge | None = None
-        if (
-            request.edge_type == EdgeType.RETRACTS
-            and request.retracted_edge_id is not None
-        ):
+        if request.edge_type == EdgeType.RETRACTS and request.retracted_edge_id is not None:
             row = conn.execute(
                 "SELECT * FROM edges WHERE id = ?", (request.retracted_edge_id,)
             ).fetchone()
@@ -776,32 +758,37 @@ class GraphStore:
 
         source_anchor_exists = True
         if request.source_valid_from_version is not None:
-            source_anchor_exists = conn.execute(
-                "SELECT 1 FROM documents WHERE id = ?",
-                (request.source_valid_from_version,),
-            ).fetchone() is not None
+            source_anchor_exists = (
+                conn.execute(
+                    "SELECT 1 FROM documents WHERE id = ?",
+                    (request.source_valid_from_version,),
+                ).fetchone()
+                is not None
+            )
 
         target_anchor_exists = True
         if request.target_valid_from_version is not None:
-            target_anchor_exists = conn.execute(
-                "SELECT 1 FROM documents WHERE id = ?",
-                (request.target_valid_from_version,),
-            ).fetchone() is not None
+            target_anchor_exists = (
+                conn.execute(
+                    "SELECT 1 FROM documents WHERE id = ?",
+                    (request.target_valid_from_version,),
+                ).fetchone()
+                is not None
+            )
 
         # Source lineage: needed whenever a source-side anchor is present
         # (transitive_source / transitive_both / retracts).
         source_lineage: frozenset[str] = frozenset()
         if source_exists and request.source_valid_from_version is not None:
-            source_lineage = frozenset(
-                self._get_supersedes_lineage_sync(request.source_id)
-            )
+            source_lineage = frozenset(self._get_supersedes_lineage_sync(request.source_id))
 
         # Target lineage: needed for anchor validation of transitive_target /
         # transitive_both, and also for merged_from tombstone scanning.
         target_lineage: frozenset[str] = frozenset()
         need_target_lineage = False
         if (
-            policy in (
+            policy
+            in (
                 ResolutionPolicy.TRANSITIVE_TARGET,
                 ResolutionPolicy.TRANSITIVE_BOTH,
             )
@@ -809,29 +796,30 @@ class GraphStore:
             and request.target_id is not None
         ):
             need_target_lineage = True
-        if (
-            request.edge_type == EdgeType.MERGED_FROM
-            and request.target_id is not None
-        ):
+        if request.edge_type == EdgeType.MERGED_FROM and request.target_id is not None:
             need_target_lineage = True
         if need_target_lineage and target_exists:
-            target_lineage = frozenset(
-                self._get_supersedes_lineage_sync(request.target_id)
-            )
+            target_lineage = frozenset(self._get_supersedes_lineage_sync(request.target_id))
 
         has_sup_predecessor = False
         has_sup_successor = False
         tombstone_candidates: tuple[str, ...] = ()
         if request.edge_type == EdgeType.MERGED_FROM:
-            has_sup_predecessor = conn.execute(
-                "SELECT 1 FROM edges WHERE edge_type = ? AND source_id = ? LIMIT 1",
-                (EdgeType.SUPERSEDES.value, request.source_id),
-            ).fetchone() is not None
+            has_sup_predecessor = (
+                conn.execute(
+                    "SELECT 1 FROM edges WHERE edge_type = ? AND source_id = ? LIMIT 1",
+                    (EdgeType.SUPERSEDES.value, request.source_id),
+                ).fetchone()
+                is not None
+            )
             if request.target_id is not None:
-                has_sup_successor = conn.execute(
-                    "SELECT 1 FROM edges WHERE edge_type = ? AND target_id = ? LIMIT 1",
-                    (EdgeType.SUPERSEDES.value, request.target_id),
-                ).fetchone() is not None
+                has_sup_successor = (
+                    conn.execute(
+                        "SELECT 1 FROM edges WHERE edge_type = ? AND target_id = ? LIMIT 1",
+                        (EdgeType.SUPERSEDES.value, request.target_id),
+                    ).fetchone()
+                    is not None
+                )
             if target_lineage:
                 tombstone_candidates = tuple(
                     self._find_tombstone_candidates_sync(list(target_lineage))
@@ -850,9 +838,7 @@ class GraphStore:
             tombstone_candidates=tombstone_candidates,
         )
 
-    async def get_retracts_for_edges(
-        self, edge_ids: list[str]
-    ) -> dict[str, list[Edge]]:
+    async def get_retracts_for_edges(self, edge_ids: list[str]) -> dict[str, list[Edge]]:
         """Return {retracted_edge_id: [retracts_edge, ...]} for the given ids.
 
         Batch lookup used by the resolver to decide whether candidate
@@ -862,15 +848,13 @@ class GraphStore:
         """
         return await self._run(self._get_retracts_for_edges_sync, edge_ids)
 
-    def _get_retracts_for_edges_sync(
-        self, edge_ids: list[str]
-    ) -> dict[str, list[Edge]]:
+    def _get_retracts_for_edges_sync(self, edge_ids: list[str]) -> dict[str, list[Edge]]:
         if not edge_ids:
             return {}
         conn = self._get_connection()
         placeholders = ",".join("?" for _ in edge_ids)
         rows = conn.execute(
-            f"SELECT * FROM edges "
+            f"SELECT * FROM edges "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
             f"WHERE edge_type = ? AND retracted_edge_id IN ({placeholders})",
             [EdgeType.RETRACTS.value, *edge_ids],
         ).fetchall()
@@ -886,9 +870,7 @@ class GraphStore:
 
     def _get_edge_sync(self, edge_id: str) -> Edge | None:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM edges WHERE id = ?", (edge_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM edges WHERE id = ?", (edge_id,)).fetchone()
         return self._row_to_edge(row) if row else None
 
     async def delete_edge(self, edge_id: str) -> bool:
@@ -897,9 +879,7 @@ class GraphStore:
 
     def _delete_edge_sync(self, edge_id: str) -> bool:
         conn = self._get_connection()
-        cursor = conn.execute(
-            "DELETE FROM edges WHERE id = ?", (edge_id,)
-        )
+        cursor = conn.execute("DELETE FROM edges WHERE id = ?", (edge_id,))
         conn.commit()
         return cursor.rowcount > 0
 
@@ -907,9 +887,7 @@ class GraphStore:
     # Hash check (BE-007)
     # ------------------------------------------------------------------
 
-    async def find_documents_by_hashes(
-        self, hashes: list[str]
-    ) -> dict[str, str]:
+    async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
         """Return {hash: document_id} for hashes that exist in the store."""
         return await self._run(self._find_documents_by_hashes_sync, hashes)
 
@@ -919,7 +897,7 @@ class GraphStore:
         conn = self._get_connection()
         placeholders = ",".join("?" for _ in hashes)
         rows = conn.execute(
-            f"SELECT source_content_hash, id FROM documents "
+            f"SELECT source_content_hash, id FROM documents "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
             f"WHERE source_content_hash IN ({placeholders})",
             hashes,
         ).fetchall()
@@ -934,9 +912,7 @@ class GraphStore:
 
     def _list_staging_edges_sync(self) -> list[StagingEdge]:
         conn = self._get_connection()
-        rows = conn.execute(
-            "SELECT * FROM staging_edges ORDER BY created_at"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM staging_edges ORDER BY created_at").fetchall()
         return [self._row_to_staging_edge(r) for r in rows]
 
     async def get_staging_edge(self, edge_id: str) -> StagingEdge | None:
@@ -944,9 +920,7 @@ class GraphStore:
 
     def _get_staging_edge_sync(self, edge_id: str) -> StagingEdge | None:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM staging_edges WHERE id = ?", (edge_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM staging_edges WHERE id = ?", (edge_id,)).fetchone()
         if row is None:
             return None
         return self._row_to_staging_edge(row)
@@ -979,9 +953,7 @@ class GraphStore:
 
     def _delete_staging_edge_sync(self, edge_id: str) -> bool:
         conn = self._get_connection()
-        cursor = conn.execute(
-            "DELETE FROM staging_edges WHERE id = ?", (edge_id,)
-        )
+        cursor = conn.execute("DELETE FROM staging_edges WHERE id = ?", (edge_id,))
         conn.commit()
         return cursor.rowcount > 0
 
@@ -997,9 +969,7 @@ class GraphStore:
     # Statistics (BE-003 through BE-005)
     # ------------------------------------------------------------------
 
-    async def get_document_counts_by_field(
-        self, field: str
-    ) -> dict[str, int]:
+    async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
         """Return {value: count} for a given document column."""
         return await self._run(self._get_document_counts_by_field_sync, field)
 
@@ -1010,7 +980,7 @@ class GraphStore:
             return {}
         conn = self._get_connection()
         rows = conn.execute(
-            f"SELECT {field}, COUNT(*) as cnt FROM documents "
+            f"SELECT {field}, COUNT(*) as cnt FROM documents "  # noqa: S608 -- field is checked against the trusted `allowed` whitelist above
             f"WHERE {field} IS NOT NULL GROUP BY {field}"
         ).fetchall()
         return {row[0]: row[1] for row in rows}
@@ -1044,19 +1014,13 @@ class GraphStore:
 
     def _get_last_ingestion_at_sync(self) -> datetime | None:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT MAX(created_at) FROM documents"
-        ).fetchone()
+        row = conn.execute("SELECT MAX(created_at) FROM documents").fetchone()
         if row[0] is None:
             return None
         return datetime.fromisoformat(row[0])
 
-    async def count_documents_by_pipeline_status(
-        self, status: str
-    ) -> int:
-        return await self._run(
-            self._count_documents_by_pipeline_status_sync, status
-        )
+    async def count_documents_by_pipeline_status(self, status: str) -> int:
+        return await self._run(self._count_documents_by_pipeline_status_sync, status)
 
     def _count_documents_by_pipeline_status_sync(self, status: str) -> int:
         conn = self._get_connection()
@@ -1075,9 +1039,7 @@ class GraphStore:
 
     def _list_pending_metadata_documents_sync(self) -> list[Document]:
         conn = self._get_connection()
-        rows = conn.execute(
-            "SELECT * FROM documents WHERE metadata_confirmed = 0"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM documents WHERE metadata_confirmed = 0").fetchall()
         return [self._row_to_document(r) for r in rows]
 
     # ------------------------------------------------------------------
@@ -1092,9 +1054,7 @@ class GraphStore:
         depth: int,
     ) -> list[dict]:
         """Recursive CTE traversal returning raw dicts for service-layer dedup."""
-        return await self._run(
-            self._traverse_sync, start_id, edge_type, direction, depth
-        )
+        return await self._run(self._traverse_sync, start_id, edge_type, direction, depth)
 
     def _traverse_sync(
         self,
@@ -1118,7 +1078,7 @@ class GraphStore:
             """
             type_filter = " AND e.edge_type = ?" if edge_type else ""
             return (
-                f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "
+                f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "  # noqa: S608 -- match_col/follow_col are trusted internal column-name literals passed by the caller
                 f"e.edge_type, e.created_at AS edge_created_at, "
                 f"e.notes, e.rationale, e.source_id, e.target_id, "
                 f"e.resolution_policy, e.source_valid_from_version, "
@@ -1131,7 +1091,7 @@ class GraphStore:
         def _recursive_step(match_col: str, follow_col: str) -> str:
             type_filter = " AND e.edge_type = ?" if edge_type else ""
             return (
-                f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "
+                f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "  # noqa: S608 -- match_col/follow_col are trusted internal column-name literals passed by the caller
                 f"e.edge_type, e.created_at AS edge_created_at, "
                 f"e.notes, e.rationale, e.source_id, e.target_id, "
                 f"e.resolution_policy, e.source_valid_from_version, "
@@ -1184,31 +1144,33 @@ class GraphStore:
         rows = conn.execute(sql, params).fetchall()
         results = []
         for row in rows:
-            results.append({
-                "edge_id": row["edge_id"],
-                "doc_id": row["doc_id"],
-                "edge_type": row["edge_type"],
-                "edge_created_at": row["edge_created_at"],
-                "notes": row["notes"],
-                "rationale": row["rationale"],
-                "source_id": row["source_id"],
-                "target_id": row["target_id"],
-                "resolution_policy": row["resolution_policy"],
-                "source_valid_from_version": row["source_valid_from_version"],
-                "target_valid_from_version": row["target_valid_from_version"],
-                "valid_until_version": row["valid_until_version"],
-                "depth": row["depth"],
-                "d_title": row["title"],
-                "d_lifecycle_status": row["lifecycle_status"],
-                "d_source_type": row["source_type"],
-                "d_source_path": row["source_path"],
-                "d_version_label": row["version_label"],
-                "d_project": row["project"],
-                "d_doc_type": row["doc_type"],
-                "d_tags": row["tags"],
-                "d_document_date": row["d_document_date"],
-                "d_source_modified_at": row["d_source_modified_at"],
-            })
+            results.append(
+                {
+                    "edge_id": row["edge_id"],
+                    "doc_id": row["doc_id"],
+                    "edge_type": row["edge_type"],
+                    "edge_created_at": row["edge_created_at"],
+                    "notes": row["notes"],
+                    "rationale": row["rationale"],
+                    "source_id": row["source_id"],
+                    "target_id": row["target_id"],
+                    "resolution_policy": row["resolution_policy"],
+                    "source_valid_from_version": row["source_valid_from_version"],
+                    "target_valid_from_version": row["target_valid_from_version"],
+                    "valid_until_version": row["valid_until_version"],
+                    "depth": row["depth"],
+                    "d_title": row["title"],
+                    "d_lifecycle_status": row["lifecycle_status"],
+                    "d_source_type": row["source_type"],
+                    "d_source_path": row["source_path"],
+                    "d_version_label": row["version_label"],
+                    "d_project": row["project"],
+                    "d_doc_type": row["doc_type"],
+                    "d_tags": row["tags"],
+                    "d_document_date": row["d_document_date"],
+                    "d_source_modified_at": row["d_source_modified_at"],
+                }
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -1290,7 +1252,7 @@ class GraphStore:
 
         placeholders = ",".join("?" * len(doc_ids))
         edge_sql = (
-            f"SELECT source_id, target_id FROM edges "
+            f"SELECT source_id, target_id FROM edges "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
             f"WHERE edge_type = ? "
             f"AND source_id IN ({placeholders}) "
             f"AND target_id IN ({placeholders})"
@@ -1299,8 +1261,7 @@ class GraphStore:
         edge_rows = conn.execute(edge_sql, edge_params).fetchall()
 
         edges = [
-            {"source_id": row["source_id"], "target_id": row["target_id"]}
-            for row in edge_rows
+            {"source_id": row["source_id"], "target_id": row["target_id"]} for row in edge_rows
         ]
 
         return {"documents": documents, "edges": edges}
@@ -1325,23 +1286,17 @@ class GraphStore:
 
     def _get_user_sync(self, user_id: str) -> User | None:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         if row is None:
             return None
         return self._row_to_user(row)
 
     async def get_user_by_display_name(self, display_name: str) -> User | None:
-        return await self._run(
-            self._get_user_by_display_name_sync, display_name
-        )
+        return await self._run(self._get_user_by_display_name_sync, display_name)
 
     def _get_user_by_display_name_sync(self, display_name: str) -> User | None:
         conn = self._get_connection()
-        row = conn.execute(
-            "SELECT * FROM users WHERE display_name = ?", (display_name,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM users WHERE display_name = ?", (display_name,)).fetchone()
         if row is None:
             return None
         return self._row_to_user(row)
@@ -1390,15 +1345,9 @@ class GraphStore:
             last_modified_by=row["last_modified_by"],
             updated_at=datetime.fromisoformat(row["updated_at"]),
             projected_at=(
-                datetime.fromisoformat(row["projected_at"])
-                if row["projected_at"]
-                else None
+                datetime.fromisoformat(row["projected_at"]) if row["projected_at"] else None
             ),
-            indexed_at=(
-                datetime.fromisoformat(row["indexed_at"])
-                if row["indexed_at"]
-                else None
-            ),
+            indexed_at=(datetime.fromisoformat(row["indexed_at"]) if row["indexed_at"] else None),
             source_modified_at=(
                 datetime.fromisoformat(row["source_modified_at"])
                 if row["source_modified_at"]
@@ -1408,11 +1357,7 @@ class GraphStore:
             semantic_abstract=row["semantic_abstract"],
             pipeline_status=PipelineStatus(row["pipeline_status"]),
             pipeline_error=row["pipeline_error"],
-            tier3_metadata=(
-                json.loads(row["tier3_metadata"])
-                if row["tier3_metadata"]
-                else None
-            ),
+            tier3_metadata=(json.loads(row["tier3_metadata"]) if row["tier3_metadata"] else None),
             metadata_confirmed=bool(row["metadata_confirmed"]),
         )
 
@@ -1427,21 +1372,15 @@ class GraphStore:
             edge_type=EdgeType(row["edge_type"]),
             resolution_policy=ResolutionPolicy(policy_value) if policy_value else None,
             source_valid_from_version=(
-                row["source_valid_from_version"]
-                if "source_valid_from_version" in keys
-                else None
+                row["source_valid_from_version"] if "source_valid_from_version" in keys else None
             ),
             target_valid_from_version=(
-                row["target_valid_from_version"]
-                if "target_valid_from_version" in keys
-                else None
+                row["target_valid_from_version"] if "target_valid_from_version" in keys else None
             ),
             valid_until_version=(
                 row["valid_until_version"] if "valid_until_version" in keys else None
             ),
-            retracted_edge_id=(
-                row["retracted_edge_id"] if "retracted_edge_id" in keys else None
-            ),
+            retracted_edge_id=(row["retracted_edge_id"] if "retracted_edge_id" in keys else None),
             created_at=datetime.fromisoformat(row["created_at"]),
             notes=row["notes"],
             rationale=row["rationale"],

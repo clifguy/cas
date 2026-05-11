@@ -8,18 +8,14 @@ import asyncio
 import re
 from datetime import datetime, timezone
 
-import pytest
-
-from sage.models.enums import PipelineStatus, SourceType, UserType
-from sage.models.schemas import Document, User
+from sage.models.enums import PipelineStatus, SourceType
+from sage.models.schemas import Document
 from sage.services.identity import generate_document_id
-from sage.storage.graph_store import GraphStore
-from sage.storage.locks import DocumentLockManager
-
 
 # ---------------------------------------------------------------------------
 # BH-001: Document ID format
 # ---------------------------------------------------------------------------
+
 
 def test_bh_001_document_id_format():
     """Doc ID matches pattern ^[0-9a-f]{8}_[a-z0-9_]+$"""
@@ -37,6 +33,7 @@ def test_bh_001_document_id_format():
 # BH-002: Document ID uniqueness -- different paths, same timestamp
 # ---------------------------------------------------------------------------
 
+
 def test_bh_002_different_paths_different_ids():
     ts = "2026-03-09T10:00:00Z"
     id_a = generate_document_id("patents/doc_a.docx", ts, "Doc A")
@@ -47,6 +44,7 @@ def test_bh_002_different_paths_different_ids():
 # ---------------------------------------------------------------------------
 # BH-003: Document ID uniqueness -- same path, different timestamps
 # ---------------------------------------------------------------------------
+
 
 def test_bh_003_same_path_different_timestamps():
     path = "patents/doc_a.docx"
@@ -59,6 +57,7 @@ def test_bh_003_same_path_different_timestamps():
 # BH-004: SQLite WAL mode enabled at startup
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_004_wal_mode_enabled(graph_store):
     mode = await graph_store.get_journal_mode()
     assert mode == "wal"
@@ -67,6 +66,7 @@ async def test_bh_004_wal_mode_enabled(graph_store):
 # ---------------------------------------------------------------------------
 # BH-005: Concurrent writes to different documents succeed
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_005_concurrent_writes_different_docs(graph_store, lock_manager):
     """Both concurrent update_metadata calls complete without blocking."""
@@ -112,6 +112,7 @@ async def test_bh_005_concurrent_writes_different_docs(graph_store, lock_manager
 # BH-006: Concurrent writes to the same document serialize
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_006_concurrent_writes_same_doc(graph_store, lock_manager):
     """Two concurrent writes to the same doc serialize; no SQLITE_BUSY."""
     now = datetime.now(timezone.utc)
@@ -148,15 +149,18 @@ async def test_bh_006_concurrent_writes_same_doc(graph_store, lock_manager):
     assert all(r is None for r in results)
 
     # Verify serialization: one completes before the other starts
-    assert (
-        call_order == ["first_start", "first_end", "second_start", "second_end"]
-        or call_order == ["second_start", "second_end", "first_start", "first_end"]
-    )
+    assert call_order == [
+        "first_start",
+        "first_end",
+        "second_start",
+        "second_end",
+    ] or call_order == ["second_start", "second_end", "first_start", "first_end"]
 
 
 # ---------------------------------------------------------------------------
 # BH-007: indexed_at is null before indexing completes
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_007_indexed_at_null_before_indexing(graph_store):
     now = datetime.now(timezone.utc)
@@ -188,6 +192,7 @@ async def test_bh_007_indexed_at_null_before_indexing(graph_store):
 # BH-008: indexed_at populated after indexing completes
 # ---------------------------------------------------------------------------
 
+
 async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
     now = datetime.now(timezone.utc)
     doc = Document(
@@ -212,9 +217,12 @@ async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
     assert isinstance(fetched.indexed_at, datetime)
 
     # Advance to abstraction_complete; indexed_at should not change
-    await graph_store.update_document("doc_indexed", {
-        "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-    })
+    await graph_store.update_document(
+        "doc_indexed",
+        {
+            "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
+        },
+    )
     fetched2 = await graph_store.get_document("doc_indexed")
     assert fetched2.indexed_at == fetched.indexed_at
 
@@ -230,8 +238,12 @@ async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
 # source or target happens to touch such a shape loops forever in the
 # recursive CTE, consuming the executor thread past any client timeout.
 
-from sage.models.enums import EdgeType
-from sage.models.schemas import Edge
+from sage.models.enums import (  # noqa: E402 -- grouped with the lineage-recursion test section below
+    EdgeType,
+)
+from sage.models.schemas import (  # noqa: E402 -- grouped with the lineage-recursion test section below
+    Edge,
+)
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -253,13 +265,15 @@ def _make_doc(doc_id: str) -> Document:
 
 
 async def _make_supersedes_edge(graph_store, eid, newer, older):
-    await graph_store.insert_edge(Edge(
-        id=eid,
-        source_id=newer,
-        target_id=older,
-        edge_type=EdgeType.SUPERSEDES,
-        created_at=datetime.now(timezone.utc),
-    ))
+    await graph_store.insert_edge(
+        Edge(
+            id=eid,
+            source_id=newer,
+            target_id=older,
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
 
 
 async def test_get_supersedes_lineage_terminates_on_two_cycle(graph_store):
@@ -270,7 +284,8 @@ async def test_get_supersedes_lineage_terminates_on_two_cycle(graph_store):
     await _make_supersedes_edge(graph_store, "e_ba", "B", "A")
 
     result = await asyncio.wait_for(
-        graph_store.get_supersedes_lineage("A"), timeout=2.0,
+        graph_store.get_supersedes_lineage("A"),
+        timeout=2.0,
     )
     assert set(result) == {"A", "B"}
 
@@ -289,12 +304,11 @@ async def test_get_supersedes_lineage_dedupes_diamond(graph_store):
     await _make_supersedes_edge(graph_store, "e_cd", "C", "D")
 
     result = await asyncio.wait_for(
-        graph_store.get_supersedes_lineage("A"), timeout=2.0,
+        graph_store.get_supersedes_lineage("A"),
+        timeout=2.0,
     )
     assert sorted(result) == ["A", "B", "C", "D"]
-    assert len(result) == len(set(result)), (
-        f"lineage must not contain duplicates, got {result}"
-    )
+    assert len(result) == len(set(result)), f"lineage must not contain duplicates, got {result}"
 
 
 async def test_get_supersedes_lineage_linear_chain(graph_store):

@@ -19,16 +19,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sage.adapters.interfaces import Chunk
-from sage.adapters.stubs import StubAbstractionProvider, StubContentStore, StubEmbeddingProvider
 from sage.api.errors import DocumentNotFoundError, HeadingNotFoundError, NoProjectionError
-from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -65,8 +61,13 @@ Final remarks.
 
 @pytest.fixture
 def multi_section_service(
-    graph_store, lock_manager, stub_content_store, stub_embedding_provider,
-    stub_abstraction_provider, minimal_config, tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_config,
+    tmp_vault_dir,
 ):
     """Return (utilities_service, ingestion_service) for multi-section tests."""
     ingestion = IngestionService(
@@ -108,6 +109,7 @@ async def multi_section_doc(multi_section_service, tmp_vault_dir):
 # Happy path: top-level section
 # ---------------------------------------------------------------------------
 
+
 async def test_read_section_top_level(multi_section_service, multi_section_doc):
     """Reading a top-level heading returns its content and children."""
     utilities, _ = multi_section_service
@@ -123,16 +125,17 @@ async def test_read_section_top_level(multi_section_service, multi_section_doc):
 # Nested heading: parent returns entire subtree
 # ---------------------------------------------------------------------------
 
+
 async def test_read_section_subtree(multi_section_service, multi_section_doc):
     """Reading a parent heading returns all descendant chunks."""
     utilities, _ = multi_section_service
-    result = await utilities.read_section(
-        multi_section_doc.id, "Technical Description"
-    )
+    result = await utilities.read_section(multi_section_doc.id, "Technical Description")
 
     assert result.heading_path == "Technical Description"
     # Should include content from child headings
-    assert "Composite Claim Binding" in result.section_text or "Binding logic" in result.section_text
+    assert (
+        "Composite Claim Binding" in result.section_text or "Binding logic" in result.section_text
+    )
     assert "Data Flow" in result.section_text or "Data flows" in result.section_text
     assert result.chunk_count >= 3
 
@@ -140,6 +143,7 @@ async def test_read_section_subtree(multi_section_service, multi_section_doc):
 # ---------------------------------------------------------------------------
 # Deep heading path: exact path returns only that subtree
 # ---------------------------------------------------------------------------
+
 
 async def test_read_section_deep_path(multi_section_service, multi_section_doc):
     """Reading a deep heading path returns only that subtree."""
@@ -157,6 +161,7 @@ async def test_read_section_deep_path(multi_section_service, multi_section_doc):
 # ---------------------------------------------------------------------------
 # Metadata fields present
 # ---------------------------------------------------------------------------
+
 
 async def test_read_section_metadata(multi_section_service, multi_section_doc):
     """Response includes all expected metadata fields."""
@@ -176,6 +181,7 @@ async def test_read_section_metadata(multi_section_service, multi_section_doc):
 # Error: document not found
 # ---------------------------------------------------------------------------
 
+
 async def test_read_section_document_not_found(multi_section_service):
     """Nonexistent document_id raises DocumentNotFoundError."""
     utilities, _ = multi_section_service
@@ -190,14 +196,13 @@ async def test_read_section_document_not_found(multi_section_service):
 # Error: heading not found
 # ---------------------------------------------------------------------------
 
+
 async def test_read_section_heading_not_found(multi_section_service, multi_section_doc):
     """Valid document but nonexistent heading raises HeadingNotFoundError."""
     utilities, _ = multi_section_service
 
     with pytest.raises(HeadingNotFoundError) as exc_info:
-        await utilities.read_section(
-            multi_section_doc.id, "Nonexistent Section"
-        )
+        await utilities.read_section(multi_section_doc.id, "Nonexistent Section")
 
     assert exc_info.value.code == "heading_not_found"
 
@@ -209,9 +214,7 @@ async def test_read_section_heading_not_found_lists_available(
     utilities, _ = multi_section_service
 
     with pytest.raises(HeadingNotFoundError) as exc_info:
-        await utilities.read_section(
-            multi_section_doc.id, "CLAIMS"
-        )
+        await utilities.read_section(multi_section_doc.id, "CLAIMS")
 
     detail = exc_info.value.detail
     assert "available_headings" in detail
@@ -241,8 +244,7 @@ async def test_read_section_heading_not_found_surfaces_substring_candidates(
     # (each stored path begins with a top-level heading), so exact match fails.
     # But several stored paths contain "Composite" as a tail/middle segment.
     assert "candidate_matches" in detail, (
-        "Expected candidate_matches in heading_not_found detail; got: "
-        + str(detail)
+        "Expected candidate_matches in heading_not_found detail; got: " + str(detail)
     )
     candidates = detail["candidate_matches"]
     assert candidates, "candidate_matches should not be empty when substring hits exist"
@@ -275,7 +277,7 @@ def test_rank_candidate_matches_prefers_leaf_match_over_content_mention():
 
 def test_rank_candidate_matches_caps_at_max_candidates():
     """When many headings substring-match, return at most the cap (10)."""
-    from sage.services.utilities import _rank_candidate_matches, _MAX_CANDIDATE_MATCHES
+    from sage.services.utilities import _MAX_CANDIDATE_MATCHES, _rank_candidate_matches
 
     available = [f"Definitions > Term {i}: This entry mentions claims." for i in range(50)]
     candidates = _rank_candidate_matches("claims", available)
@@ -323,9 +325,7 @@ async def test_read_section_heading_not_found_no_candidates_when_no_substring_ma
     utilities, _ = multi_section_service
 
     with pytest.raises(HeadingNotFoundError) as exc_info:
-        await utilities.read_section(
-            multi_section_doc.id, "ZZZ_NoSuchPhrase_QQQ"
-        )
+        await utilities.read_section(multi_section_doc.id, "ZZZ_NoSuchPhrase_QQQ")
 
     detail = exc_info.value.detail
     assert "available_headings" in detail
@@ -335,6 +335,7 @@ async def test_read_section_heading_not_found_no_candidates_when_no_substring_ma
 # ---------------------------------------------------------------------------
 # Error: document exists but has no chunks
 # ---------------------------------------------------------------------------
+
 
 async def test_read_section_no_projection(multi_section_service, graph_store):
     """Document with no chunks raises NoProjectionError."""

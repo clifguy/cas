@@ -16,7 +16,6 @@ import yaml
 
 from sage import migrate as migrate_cli
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -71,9 +70,7 @@ def _patch_migrate_vault(monkeypatch, *, fail_for: set[str] | None = None):
 # ---------------------------------------------------------------------------
 
 
-def test_migrate_all_discovered_vaults(
-    vault_root, minimal_vault_config_dict, monkeypatch
-):
+def test_migrate_all_discovered_vaults(vault_root, minimal_vault_config_dict, monkeypatch):
     """#18: With no --vault flag, every discovered vault is migrated."""
     _materialize_vault(vault_root, "alpha", minimal_vault_config_dict)
     _materialize_vault(vault_root, "beta", minimal_vault_config_dict)
@@ -85,33 +82,25 @@ def test_migrate_all_discovered_vaults(
     assert set(calls) == {"alpha", "beta"}
 
 
-def test_vault_filter_limits_to_named_vault(
-    vault_root, minimal_vault_config_dict, monkeypatch
-):
+def test_vault_filter_limits_to_named_vault(vault_root, minimal_vault_config_dict, monkeypatch):
     """#19: --vault VAULT_ID restricts migration to that vault only."""
     _materialize_vault(vault_root, "alpha", minimal_vault_config_dict)
     _materialize_vault(vault_root, "beta", minimal_vault_config_dict)
     calls = _patch_migrate_vault(monkeypatch)
 
-    exit_code = migrate_cli.main(
-        ["--vault-root", str(vault_root), "--vault", "alpha"]
-    )
+    exit_code = migrate_cli.main(["--vault-root", str(vault_root), "--vault", "alpha"])
 
     assert exit_code == 0
     assert calls == ["alpha"]
 
 
-def test_unknown_vault_id_exits_nonzero(
-    vault_root, minimal_vault_config_dict, monkeypatch, caplog
-):
+def test_unknown_vault_id_exits_nonzero(vault_root, minimal_vault_config_dict, monkeypatch, caplog):
     """#20: --vault for an id not present is a clear error and migrates nothing."""
     _materialize_vault(vault_root, "alpha", minimal_vault_config_dict)
     calls = _patch_migrate_vault(monkeypatch)
 
     with caplog.at_level("ERROR"):
-        exit_code = migrate_cli.main(
-            ["--vault-root", str(vault_root), "--vault", "nonexistent"]
-        )
+        exit_code = migrate_cli.main(["--vault-root", str(vault_root), "--vault", "nonexistent"])
 
     assert exit_code != 0
     assert calls == []

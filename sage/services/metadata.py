@@ -108,7 +108,9 @@ class MetadataService:
         fields["title"] = ExtractedField(
             value=doc.title,
             source="content",
-            alt_value=doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path,
+            alt_value=doc.source_path.rsplit("/", 1)[-1]
+            if "/" in doc.source_path
+            else doc.source_path,
             alt_source="filename",
         )
 
@@ -122,13 +124,13 @@ class MetadataService:
 
         # tags: if present
         if doc.tags:
-            fields["tags"] = ExtractedField(
-                value=",".join(doc.tags), source="content"
-            )
+            fields["tags"] = ExtractedField(value=",".join(doc.tags), source="content")
 
         # document_date: filename if date pattern in source_path, otherwise default (BE-036)
         if doc.document_date:
-            filename = doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path
+            filename = (
+                doc.source_path.rsplit("/", 1)[-1] if "/" in doc.source_path else doc.source_path
+            )
             source = "filename" if re.search(r"\d{4}-\d{2}-\d{2}", filename) else "default"
             fields["document_date"] = ExtractedField(value=doc.document_date, source=source)
 

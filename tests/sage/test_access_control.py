@@ -4,15 +4,13 @@ Covers vault owner auto-registration, ROOT Harness agent registration
 (boundary test stub), and direct SAGE register_user with type agent.
 """
 
-import pytest
-
 from sage.models.enums import UserType
 from sage.models.schemas import RegisterUserRequest
-
 
 # ---------------------------------------------------------------------------
 # BH-009: Vault owner auto-registered at initialization
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_009_vault_owner_auto_registered(graph_store, user_service):
     """Vault init reads owner from config and auto-creates user record."""
@@ -45,6 +43,7 @@ async def test_bh_009_vault_owner_auto_registered(graph_store, user_service):
 # ---------------------------------------------------------------------------
 # BH-011: Direct SAGE register_user with type agent succeeds
 # ---------------------------------------------------------------------------
+
 
 async def test_bh_011_register_user_agent(user_service):
     """SAGE register_user accepts type=agent."""
