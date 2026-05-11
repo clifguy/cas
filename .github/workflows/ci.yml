@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     env:
       PYTHONUNBUFFERED: "1"
     steps:
@@ -55,17 +55,9 @@ jobs:
         env:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
+          SAGE_TEST_STUB_PROVIDERS: "1"
         run: |
-          set -o pipefail
-          .venv/bin/pytest -v --tb=short --durations=20 tests/ 2>&1 | tee pytest_output.log
-
-      - name: Upload pytest log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pytest-output
-          path: pytest_output.log
-          if-no-files-found: warn
+          .venv/bin/pytest -v --tb=short tests/
 
   gitleaks:
     runs-on: ubuntu-latest

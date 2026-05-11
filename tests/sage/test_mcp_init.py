@@ -123,13 +123,17 @@ async def test_di_004_all_overrides(minimal_vault_config_dict, tmp_vault_dir):
 
 
 async def test_di_005_no_overrides_constructs_real_providers(
-    minimal_vault_config_dict, tmp_vault_dir
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
 ):
     """When no overrides are passed, real production providers are created.
 
     We only check types here -- we do NOT want to verify model loading
     behavior, since that would defeat the purpose of this test suite.
     """
+    # Force production path: CI sets SAGE_TEST_STUB_PROVIDERS=1 globally to
+    # keep most tests off the real model (T-0018); this test specifically
+    # verifies the production default and must clear that override.
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
     config = VaultConfig.model_validate(minimal_vault_config_dict)
 
     services = await initialize_services(config)
