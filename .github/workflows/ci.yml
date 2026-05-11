@@ -47,9 +47,9 @@ jobs:
           .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
           .venv/bin/pip install -e ".[test]"
 
-      - name: Pre-cache nomic-embed-text model
+      - name: Pre-cache nomic-embed-text model (via runtime path)
         run: |
-          .venv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('nomic-ai/nomic-embed-text-v1.5')"
+          .venv/bin/python -c "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()"
 
       - name: Run pytest (full suite)
         env:

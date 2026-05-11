@@ -34,6 +34,8 @@ except ImportError:
     _HAS_LANCEDB = False
 
 try:
+    import mlx_lm  # noqa: F401  # gate fires on missing runtime dep, not just module shape
+
     from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 
     _HAS_QWEN3 = True
