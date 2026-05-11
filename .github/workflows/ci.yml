@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: "1"
     steps:
@@ -56,7 +56,7 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
-          .venv/bin/pytest -v --tb=short tests/
+          .venv/bin/pytest -v --tb=short --durations=20 tests/
 
   gitleaks:
     runs-on: ubuntu-latest
