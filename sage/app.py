@@ -9,7 +9,9 @@ correct services via the vault_id path parameter.
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import parse_qs
 
+from anyio import ClosedResourceError
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -41,15 +43,38 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _GracefulSSEMiddleware:
-    """Catch the double ``http.response.start`` that occurs when uvicorn
-    cancels an active SSE connection during shutdown.
+def _extract_session_id(scope: Scope) -> str | None:
+    """Best-effort pull of the SSE ``session_id`` query parameter from an ASGI scope."""
+    raw = scope.get("query_string", b"")
+    if not raw:
+        return None
+    try:
+        params = parse_qs(raw.decode("ascii"))
+    except UnicodeDecodeError:
+        return None
+    values = params.get("session_id")
+    if not values:
+        return None
+    return values[0]
 
-    The SSE transport has already sent response headers; the Starlette
-    exception-handling middleware then tries to send an error response,
-    producing a second ``http.response.start`` that uvicorn rejects
-    with a ``RuntimeError``.  This wrapper silently drops the redundant
-    start message so the shutdown traceback is avoided.
+
+class _GracefulSSEMiddleware:
+    """Quiet two SSE transport edge cases that surface as noisy tracebacks.
+
+    1. **Server shutdown.** When uvicorn cancels an active SSE connection,
+       the SSE transport has already sent response headers; the Starlette
+       exception-handling middleware then tries to send an error response,
+       producing a second ``http.response.start`` that uvicorn rejects with
+       a ``RuntimeError``. This wrapper silently drops the redundant start
+       message so the shutdown traceback is avoided.
+
+    2. **Client cancellation.** When an MCP client cancels a long-running
+       ``CallToolRequest`` (default 60s client timeout), the mcp SDK's SSE
+       writer raises ``anyio.ClosedResourceError`` from
+       ``mcp/server/sse.py`` when it tries to send the deferred response
+       to the now-closed memory stream. The cancellation is a normal
+       outcome, so we log one INFO line and swallow the exception rather
+       than emitting an ERROR-level ASGI traceback.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -73,6 +98,15 @@ class _GracefulSSEMiddleware:
 
         try:
             await self.app(scope, receive, _safe_send)
+        except ClosedResourceError:
+            session_id = _extract_session_id(scope)
+            if session_id:
+                logger.info(
+                    "SSE writer closed by client cancellation (session_id=%s)",
+                    session_id,
+                )
+            else:
+                logger.info("SSE writer closed by client cancellation")
         except RuntimeError as exc:
             if "http.response.start" not in str(exc):
                 raise
