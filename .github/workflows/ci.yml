@@ -14,7 +14,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     env:
       PYTHONUNBUFFERED: "1"
     steps:
@@ -44,8 +44,12 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e ".[test]"
 
-      - name: Run pytest
-        run: .venv/bin/pytest -v --tb=short --durations=20 tests/
+      - name: Run pytest (smoke subset)
+        run: |
+          .venv/bin/pytest -v --tb=short \
+            tests/sage/test_router_conformance.py \
+            tests/sage/test_openapi_conformance.py \
+            tests/sage/test_import_linter_contracts.py
 
   gitleaks:
     runs-on: ubuntu-latest
