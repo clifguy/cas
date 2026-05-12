@@ -1,0 +1,320 @@
+"""Conformance gate: typed-alias coverage on Pydantic BaseModel fields.
+
+Cites the CAS Typed-Alias Boundary Conventions steering document (cas
+SAGE vault, doc_type=steering_document). A typed alias is a
+``pydantic.Annotated[str, AfterValidator(...)]`` declared in
+``sage/models/schemas.py``. Every shape-bearing field on a ``BaseModel``
+subclass in that module must either carry one of those typed aliases or
+be pinned in ``KNOWN_VIOLATIONS`` below with a one-line reason.
+
+Allowlist contract (mirrors ``tests/sage/test_router_conformance.py``):
+
+- Adding a new bare-``str`` shape-bearing field without an allowlist
+  entry fails the suite.
+- Removing a ``KNOWN_VIOLATIONS`` entry without remediating (typing the
+  field) fails the suite.
+- Typing a previously-allowlisted field without removing the entry
+  fails the suite (stale-allowlist check).
+
+Scope — out of scope for this gate (acknowledged per F4 discipline):
+
+- ``app/backend/router.py`` defines its own request/response BaseModels
+  (e.g. ``ScanResultResponse.file_hash: str``) that are shape-bearing
+  but currently unchecked.
+- ``sage/config.py`` defines vault-config BaseModels (e.g.
+  ``VaultIdentity.id: str``) that are also shape-bearing.
+- ``root_harness/`` does not exist yet; future BaseModels there are
+  expected to follow the same convention.
+
+T-0028 extends this gate's scope to those locations.
+
+Drain plan: T-0026 types the 22 currently-allowlisted fields whose
+aliases already exist; T-0027 introduces ``UserIdStr`` / ``VaultIdStr``
+/ ``FunctionIdStr`` and types the remaining 5; T-0028 extends the gate
+to ``app/backend/`` and ``sage/config.py`` (and, when it exists,
+``root_harness/``).
+"""
+
+from __future__ import annotations
+
+import inspect
+import typing
+from types import UnionType
+from typing import Final
+
+import pytest
+from pydantic import AfterValidator, BaseModel
+
+from sage.models import schemas as schemas_mod
+from sage.models.schemas import (
+    DocumentDateStr,
+    DocumentIdStr,
+    EdgeIdStr,
+    Sha256Str,
+)
+
+# ---------------------------------------------------------------------------
+# Shape registry
+#
+# Specific-name keys (no leading ``*``) win over ``*_suffix`` patterns
+# at lookup time.
+# ---------------------------------------------------------------------------
+
+SHAPE_REGISTRY: Final[dict[str, type]] = {
+    "id": DocumentIdStr,  # exact match — Model.id default
+    "edge_id": EdgeIdStr,  # exact match — wins over *_id
+    "*_id": DocumentIdStr,
+    "*_hash": Sha256Str,
+    "*_date": DocumentDateStr,
+}
+
+
+# Validators that count as typed-alias coverage. A field whose Pydantic
+# metadata contains an ``AfterValidator`` whose ``.func`` is one of these
+# is considered shape-validated, regardless of which specific alias the
+# registry would have chosen. This relaxation lets ``Edge.id: EdgeIdStr``
+# pass the ``id`` registry entry (which defaults to ``DocumentIdStr``)
+# without a false positive.
+_TYPED_VALIDATORS: Final[frozenset] = frozenset(
+    {
+        schemas_mod._validate_document_id,
+        schemas_mod._validate_edge_id,
+        schemas_mod._validate_sha256,
+        schemas_mod._validate_document_date,
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# KNOWN_VIOLATIONS
+#
+# Keyed by (ClassName, field_name). Each value is a one-line reason; the
+# leading T-NNNN points at the remediation ticket where applicable.
+# ---------------------------------------------------------------------------
+
+KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
+    # DocumentIdStr expected — T-0026 typing follow-up.
+    ("Document", "id"): "T-0026 (response model)",
+    ("DocumentSummary", "id"): "T-0026 (response model)",
+    ("Edge", "source_id"): "T-0026",
+    ("Edge", "target_id"): "T-0026",
+    ("TraverseResponse", "start_id"): "T-0026 (response model)",
+    ("ChainEntry", "id"): "T-0026 (response model)",
+    ("ChainResponse", "head_id"): "T-0026 (response model)",
+    ("ChainResponse", "tail_id"): "T-0026 (response model)",
+    ("PreconditionCheck", "target_id"): "T-0026 (response model)",
+    ("DiscoverRequest", "document_id"): "T-0026 (request model)",
+    ("ExportProjectionResponse", "document_id"): "T-0026 (response model)",
+    ("ReadProjectionResponse", "document_id"): "T-0026 (response model)",
+    ("ReadSectionResponse", "document_id"): "T-0026 (response model)",
+    ("AssertionFailure", "expected_document_id"): "T-0026 (response model)",
+    ("HashCheckMatch", "document_id"): "T-0026 (response model)",
+    ("StagingEdge", "source_id"): "T-0026 (storage model)",
+    ("StagingEdge", "target_id"): "T-0026 (storage model)",
+    # Sha256Str expected — T-0026 typing follow-up.
+    ("Document", "source_content_hash"): "T-0026 (response model)",
+    ("DocumentWithContent", "content_hash"): "T-0026 (response model)",
+    # DocumentDateStr expected — T-0026 typing follow-up.
+    ("Document", "document_date"): "T-0026 (response model)",
+    ("ParseFilenameResponse", "document_date"): "T-0026 (response model)",
+    ("ChainEntry", "document_date"): "T-0026 (response model)",
+    # Aliases not yet defined — T-0027 introduces UserIdStr / VaultIdStr /
+    # FunctionIdStr.
+    ("User", "id"): "T-0027 — UserIdStr not defined; user id format differs from DocumentIdStr",
+    (
+        "PreconditionResult",
+        "function_id",
+    ): "T-0027 — FunctionIdStr not defined; pipeline-function id",
+    ("RefreshViewsResponse", "vault_id"): "T-0027 — VaultIdStr not defined",
+    ("EvalRetrievalResult", "vault_id"): "T-0027 — VaultIdStr not defined",
+    (
+        "VaultSummary",
+        "id",
+    ): "T-0027 — VaultIdStr not defined; field represents a vault, not a document",
+}
+
+
+# ---------------------------------------------------------------------------
+# Discovery helpers
+# ---------------------------------------------------------------------------
+
+
+def _discover_basemodels() -> list[type[BaseModel]]:
+    """Every ``BaseModel`` subclass declared in ``sage.models.schemas``.
+
+    Scope is restricted to that module; BaseModels in ``app/backend/`` and
+    ``sage/config.py`` are out of scope for this gate. T-0028 extends.
+    """
+    out: list[type[BaseModel]] = []
+    for _, obj in inspect.getmembers(schemas_mod, inspect.isclass):
+        if obj is BaseModel:
+            continue
+        if not issubclass(obj, BaseModel):
+            continue
+        if obj.__module__ != schemas_mod.__name__:
+            continue
+        out.append(obj)
+    return out
+
+
+def _expected_alias(field_name: str) -> type | None:
+    """Lookup the expected alias for ``field_name``.
+
+    Exact-name keys win; ``*_suffix`` patterns match only when no exact
+    entry exists.
+    """
+    if field_name in SHAPE_REGISTRY:
+        return SHAPE_REGISTRY[field_name]
+    for pattern, expected in SHAPE_REGISTRY.items():
+        if pattern.startswith("*_") and field_name.endswith(pattern[1:]):
+            return expected
+    return None
+
+
+def _walk_annotation(annotation) -> tuple[bool, bool]:
+    """Walk an annotation tree; return ``(has_str_arm, has_typed_validator)``.
+
+    Pydantic v2 stores typed aliases in two places depending on whether
+    the field is optional:
+
+    - Required ``DocumentIdStr``: ``field_info.annotation == str`` and the
+      ``AfterValidator`` lives in ``field_info.metadata``.
+    - ``DocumentIdStr | None``: the Union arm is the ``Annotated[str, ...]``
+      itself; ``field_info.metadata`` is empty.
+
+    This walker covers the second case (and is composed with a direct
+    metadata check elsewhere for the first). It also reports whether a
+    ``str`` arm exists at all, so callers can exclude e.g.
+    ``datetime | None`` fields whose names happen to match a registry
+    suffix.
+    """
+    has_str = False
+    has_typed = False
+    stack = [annotation]
+    while stack:
+        node = stack.pop()
+        if hasattr(node, "__metadata__"):
+            for m in node.__metadata__:
+                if isinstance(m, AfterValidator) and m.func in _TYPED_VALIDATORS:
+                    has_typed = True
+            stack.append(node.__origin__)
+            continue
+        origin = typing.get_origin(node)
+        if origin is typing.Union or origin is UnionType:
+            stack.extend(typing.get_args(node))
+            continue
+        if node is str:
+            has_str = True
+    return has_str, has_typed
+
+
+def _field_has_typed_alias(cls: type[BaseModel], name: str) -> bool:
+    """True iff the field carries a typed-alias validator anywhere in its annotation."""
+    field_info = cls.model_fields[name]
+    for m in field_info.metadata:
+        if isinstance(m, AfterValidator) and m.func in _TYPED_VALIDATORS:
+            return True
+    _, has_typed = _walk_annotation(field_info.annotation)
+    return has_typed
+
+
+def _alias_display_name(alias) -> str:
+    """Human-readable name for a typed alias (Annotated has no ``__name__``)."""
+    if alias is DocumentIdStr:
+        return "DocumentIdStr"
+    if alias is EdgeIdStr:
+        return "EdgeIdStr"
+    if alias is Sha256Str:
+        return "Sha256Str"
+    if alias is DocumentDateStr:
+        return "DocumentDateStr"
+    return str(alias)
+
+
+def _shape_bearing_fields() -> list[tuple[type[BaseModel], str, type]]:
+    """Yield (cls, field_name, expected_alias) for every own-field whose
+    name matches the shape registry *and* whose annotation carries a
+    ``str`` arm. Inherited fields are not re-walked; each class accounts
+    only for fields declared in its own body. Non-``str`` fields whose
+    names happen to match a suffix (e.g. ``DocumentSummary.document_date:
+    datetime | None``) are filtered out — bare ``datetime`` is acceptable
+    per the convention.
+    """
+    rows: list[tuple[type[BaseModel], str, type]] = []
+    for cls in _discover_basemodels():
+        own_annotations = inspect.get_annotations(cls)
+        for field_name in own_annotations:
+            if field_name not in cls.model_fields:
+                # ClassVar / Pydantic-skipped annotation
+                continue
+            expected = _expected_alias(field_name)
+            if expected is None:
+                continue
+            has_str, _ = _walk_annotation(cls.model_fields[field_name].annotation)
+            if not has_str:
+                continue
+            rows.append((cls, field_name, expected))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+def test_discovered_basemodels_are_nonempty():
+    """Sanity: discovery surfaces the expected schemas."""
+    classes = _discover_basemodels()
+    names = {cls.__name__ for cls in classes}
+    assert "Document" in names, "Discovery missed core Document model"
+    assert "Edge" in names, "Discovery missed core Edge model"
+    assert "LinkRequest" in names, "Discovery missed canonical LinkRequest model"
+    assert len(classes) >= 30, (
+        f"Discovery surfaced only {len(classes)} models; expected at least 30. "
+        "Did discovery filtering regress?"
+    )
+
+
+@pytest.mark.parametrize(
+    "cls,field_name,expected_alias",
+    [
+        pytest.param(cls, field, expected, id=f"{cls.__name__}.{field}")
+        for cls, field, expected in _shape_bearing_fields()
+    ],
+)
+def test_typed_alias_coverage(cls: type[BaseModel], field_name: str, expected_alias: type) -> None:
+    """Every shape-bearing field is typed or pinned in KNOWN_VIOLATIONS."""
+    key = (cls.__name__, field_name)
+    has_alias = _field_has_typed_alias(cls, field_name)
+    allowlisted = key in KNOWN_VIOLATIONS
+
+    if has_alias and allowlisted:
+        pytest.fail(
+            f"{cls.__name__}.{field_name} is typed (carries an AfterValidator "
+            f"from sage.models.schemas) AND is allowlisted in KNOWN_VIOLATIONS. "
+            f"Remove the stale entry ({KNOWN_VIOLATIONS[key]!r})."
+        )
+    if has_alias:
+        return
+    if allowlisted:
+        return
+
+    expected_name = _alias_display_name(expected_alias)
+    pytest.fail(
+        f"{cls.__name__}.{field_name} is shape-bearing (registry expects "
+        f"{expected_name}) but is bare `str`. Either annotate it with "
+        f'{expected_name} (preferred) or add ("{cls.__name__}", '
+        f'"{field_name}") to KNOWN_VIOLATIONS with a comment '
+        "explaining why."
+    )
+
+
+def test_known_violations_reference_real_fields():
+    """Every KNOWN_VIOLATIONS entry must correspond to a real shape-bearing field."""
+    shape_bearing = {(cls.__name__, name) for cls, name, _ in _shape_bearing_fields()}
+    stale = sorted(set(KNOWN_VIOLATIONS) - shape_bearing)
+    assert not stale, (
+        f"KNOWN_VIOLATIONS contains entries that do not correspond to any "
+        f"shape-bearing field in sage.models.schemas: {stale}. Did the field "
+        "get renamed or removed? Remove the stale entry."
+    )
