@@ -6,7 +6,7 @@ extensions like 'filed' that aren't in the base enum.
 
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
@@ -39,7 +39,7 @@ _DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
 
 def _validate_document_id(v: str) -> str:
-    if not _DOCUMENT_ID_RE.match(v):
+    if not _DOCUMENT_ID_RE.fullmatch(v):
         raise ValueError(f"document id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})")
     return v
 
@@ -49,10 +49,9 @@ DocumentIdStr = Annotated[str, AfterValidator(_validate_document_id)]
 
 def _validate_edge_id(v: str) -> str:
     try:
-        uuid.UUID(v)
+        return str(uuid.UUID(v))
     except ValueError as exc:
         raise ValueError(f"edge id must be a UUID (got {v!r})") from exc
-    return v
 
 
 EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id)]
@@ -62,7 +61,7 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _validate_sha256(v: str) -> str:
-    if not _SHA256_RE.match(v):
+    if not _SHA256_RE.fullmatch(v):
         raise ValueError(f"hash must match {_SHA256_RE.pattern!r} (got {v!r})")
     return v
 
@@ -220,19 +219,25 @@ _DOCUMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _validate_document_date(v: str | None) -> str | None:
-    """Reject values that are not the contract YYYY-MM-DD shape.
+    """Reject values that are not a YYYY-MM-DD calendar date.
 
     The substrate stores ``document_date`` as a calendar-date string and
     every internal write path (filename parser, source_modified_at
     fallback) produces YYYY-MM-DD by construction. Caller-supplied
     values flow through verbatim, so a strict regex check at the
     boundary stops datetime-ISO strings (``2026-05-05T00:00:00Z``) from
-    poisoning downstream readers that parse with ``strptime``.
+    poisoning downstream readers that parse with ``strptime``. The
+    follow-up calendar-validity check (``date.fromisoformat``) rejects
+    shape-valid-but-impossible strings like ``2026-02-30``.
     """
     if v is None:
         return v
-    if not _DOCUMENT_DATE_RE.match(v):
+    if not _DOCUMENT_DATE_RE.fullmatch(v):
         raise ValueError(f"document_date must be YYYY-MM-DD (got {v!r})")
+    try:
+        date.fromisoformat(v)
+    except ValueError as exc:
+        raise ValueError(f"document_date must be a valid calendar date (got {v!r})") from exc
     return v
 
 

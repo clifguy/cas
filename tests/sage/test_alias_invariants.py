@@ -1,18 +1,20 @@
 """Property-based tests for typed-alias regexes in sage/models/schemas.py.
 
-Companion ticket: T-0012. The example-based tests in test_request_validators.py
-cover hand-picked positive and negative cases. These property tests use
-Hypothesis to fuzz each alias's accepted and rejected language and lock in
-current behavior. If a validator is widened beyond its current behavior
-without updating the corresponding negative strategy, the affected negative
-test will start passing strings it was meant to reject, surfacing the
-regression.
+Companion tickets: T-0012 (initial property coverage) and T-0023 (closure of
+the three latent quirks documented in T-0012's plan). The example-based tests
+in test_request_validators.py cover hand-picked positive and negative cases.
+These property tests use Hypothesis to fuzz each alias's accepted and
+rejected language and lock in current behavior. If a validator is widened
+beyond its current behavior without updating the corresponding negative
+strategy, the affected negative test will start passing strings it was meant
+to reject, surfacing the regression.
 
-The latent quirks documented in T-0012's plan (re.match + $ trailing-newline
-acceptance, DocumentDateStr calendar-correctness gap, EdgeIdStr non-canonical
-UUID forms) are deliberately NOT exercised here as negatives. They are
-accepted today by design or by Python regex semantics; including them as
-negatives would fail tests against current behavior.
+The three latent quirks from T-0012 were resolved in T-0023 and are now
+exercised here: ``trailing_newline`` negatives lock in re.fullmatch (Quirk 1)
+across DocumentIdStr / Sha256Str / DocumentDateStr; ``calendar_invalid``
+negatives lock in the date.fromisoformat check on DocumentDateStr (Quirk 2);
+and ``test_edge_id_non_canonical_inputs_normalized_to_canonical`` exercises
+the EdgeIdStr normalize-on-validation behavior (Quirk 3).
 """
 
 from __future__ import annotations
@@ -92,17 +94,18 @@ DOC_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
     ).map(lambda t: f"{t[0]}_{t[1]}"),
     "leading_whitespace": DOC_ID_VALID.map(lambda s: f" {s}"),
     "trailing_whitespace": DOC_ID_VALID.map(lambda s: f"{s} "),
+    "trailing_newline": DOC_ID_VALID.map(lambda s: f"{s}\n"),
     "empty_string": st.just(""),
 }
 
 
 # ---------------------------------------------------------------------------
-# EdgeIdStr -- uuid.UUID() constructor (not a regex).
-#
-# uuid.UUID() strips hyphens, the urn:uuid: prefix, and surrounding braces
-# before parsing 32 hex digits. It accepts any UUID version. Valid strategies
-# cover the documented input forms; negatives target near-misses against
-# the post-strip 32-hex-digit requirement.
+# EdgeIdStr -- uuid.UUID() constructor with normalize-to-canonical (Quirk 3,
+# resolved in T-0023). The validator now returns str(uuid.UUID(v)), so any
+# RFC 4122 input form is accepted but rewritten to canonical hyphenated
+# lowercase. Canonical is the only form that satisfies validate(v) == v;
+# the other forms validate but mutate, exercised by
+# test_edge_id_non_canonical_inputs_normalized_to_canonical.
 # ---------------------------------------------------------------------------
 
 
@@ -129,12 +132,14 @@ def _is_not_uuid(s: str) -> bool:
     return False
 
 
-EDGE_ID_VALID = st.one_of(
-    st.uuids().map(str),
-    st.uuids().map(lambda u: u.hex),
-    st.uuids().map(lambda u: f"urn:uuid:{u}"),
-    st.uuids().map(lambda u: f"{{{u}}}"),
-)
+EDGE_ID_VALID = st.uuids().map(str)
+
+EDGE_ID_NORMALIZE_FROM: dict[str, st.SearchStrategy[str]] = {
+    "no_hyphens_hex": st.uuids().map(lambda u: u.hex),
+    "urn_prefixed": st.uuids().map(lambda u: f"urn:uuid:{u}"),
+    "brace_wrapped": st.uuids().map(lambda u: f"{{{u}}}"),
+    "mixed_case": st.uuids().map(lambda u: str(u).upper()),
+}
 
 EDGE_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
     "truncated_uuid": st.uuids().map(_strip_one_hex_char),
@@ -178,24 +183,26 @@ SHA256_INVALID: dict[str, st.SearchStrategy[str]] = {
     .map(lambda h: f"sha256:{h}"),
     "leading_whitespace": SHA256_VALID.map(lambda s: f" {s}"),
     "trailing_whitespace": SHA256_VALID.map(lambda s: f"{s} "),
+    "trailing_newline": SHA256_VALID.map(lambda s: f"{s}\n"),
     "empty_string": st.just(""),
 }
 
 
 # ---------------------------------------------------------------------------
-# DocumentDateStr -- regex ^\d{4}-\d{2}-\d{2}$ (shape only) or None.
+# DocumentDateStr -- regex ^\d{4}-\d{2}-\d{2}$ + date.fromisoformat, or None.
 #
-# The validator is regex-only by design (see _validate_document_date docstring
-# in sage/models/schemas.py). Calendar-invalid strings like "2026-02-30" pass
-# today and are intentionally NOT included as negatives.
+# Quirks 1 and 2 (re.match + $ trailing-newline acceptance, and
+# calendar-correctness gap) were closed in T-0023. The trailing_newline and
+# calendar_invalid negative strategies below lock in the tighter behavior.
 # ---------------------------------------------------------------------------
 
 _digit_pair = st.text(alphabet="0123456789", min_size=2, max_size=2)
 _digit_year = st.text(alphabet="0123456789", min_size=4, max_size=4)
 
-DOC_DATE_SHAPE_VALID = st.tuples(_digit_year, _digit_pair, _digit_pair).map(
-    lambda t: f"{t[0]}-{t[1]}-{t[2]}"
-)
+# Calendar-valid YYYY-MM-DD strings. date.isoformat zero-pads the year to four
+# digits, so every emitted string both matches _DOCUMENT_DATE_RE and round-trips
+# through date.fromisoformat — the two checks the validator now enforces.
+DOC_DATE_SHAPE_VALID = st.dates().map(lambda d: d.isoformat())
 
 DOC_DATE_VALID = st.one_of(st.none(), DOC_DATE_SHAPE_VALID)
 
@@ -229,6 +236,18 @@ DOC_DATE_INVALID: dict[str, st.SearchStrategy[str]] = {
             "yyyy-mm-dd",
             "abcd-ef-gh",
             "2026-Ma-y0",
+        ]
+    ),
+    "trailing_newline": DOC_DATE_SHAPE_VALID.map(lambda s: f"{s}\n"),
+    "calendar_invalid": st.sampled_from(
+        [
+            "2026-02-30",  # February 30
+            "2026-13-01",  # month 13
+            "2026-00-15",  # month 0
+            "2026-04-31",  # April has 30 days
+            "2025-02-29",  # not a leap year
+            "2026-12-32",  # day 32
+            "0000-99-99",  # everything wrong but shape-valid
         ]
     ),
     "empty_string": st.just(""),
@@ -292,6 +311,26 @@ def test_invalid_inputs_rejected(spec: AliasSpec, label: str) -> None:
     def inner(value: str) -> None:
         with pytest.raises(ValidationError):
             spec.adapter.validate_python(value)
+
+    inner()
+
+
+@pytest.mark.parametrize(
+    "label",
+    list(EDGE_ID_NORMALIZE_FROM.keys()),
+    ids=list(EDGE_ID_NORMALIZE_FROM.keys()),
+)
+def test_edge_id_non_canonical_inputs_normalized_to_canonical(label: str) -> None:
+    """Non-canonical UUID input forms validate, but the result is canonical."""
+    adapter = TypeAdapter(EdgeIdStr)
+    strategy = EDGE_ID_NORMALIZE_FROM[label]
+
+    @given(strategy)
+    @ALIAS_SETTINGS
+    def inner(value: str) -> None:
+        result = adapter.validate_python(value)
+        assert result == str(uuid.UUID(value))
+        assert adapter.validate_python(result) == result
 
     inner()
 
