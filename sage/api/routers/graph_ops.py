@@ -7,6 +7,7 @@ from sage.models.schemas import (
     ChainRequest,
     ChainResponse,
     Edge,
+    EdgeIdStr,
     LinkRequest,
     PreconditionResult,
     TraverseRequest,
@@ -28,7 +29,7 @@ async def link(
 
 @router.delete("/edges/{edge_id}")
 async def unlink(
-    edge_id: str,
+    edge_id: EdgeIdStr,
     vault_id: str = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> dict:

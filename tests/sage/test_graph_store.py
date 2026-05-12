@@ -6,6 +6,7 @@ and indexed_at nullable semantics.
 
 import asyncio
 import re
+import uuid
 from datetime import datetime, timezone
 
 from sage.models.enums import PipelineStatus, SourceType
@@ -264,10 +265,10 @@ def _make_doc(doc_id: str) -> Document:
     )
 
 
-async def _make_supersedes_edge(graph_store, eid, newer, older):
+async def _make_supersedes_edge(graph_store, newer, older):
     await graph_store.insert_edge(
         Edge(
-            id=eid,
+            id=str(uuid.uuid4()),
             source_id=newer,
             target_id=older,
             edge_type=EdgeType.SUPERSEDES,
@@ -280,8 +281,8 @@ async def test_get_supersedes_lineage_terminates_on_two_cycle(graph_store):
     """A supersedes B and B supersedes A — lineage walk must terminate."""
     await graph_store.insert_document(_make_doc("A"))
     await graph_store.insert_document(_make_doc("B"))
-    await _make_supersedes_edge(graph_store, "e_ab", "A", "B")
-    await _make_supersedes_edge(graph_store, "e_ba", "B", "A")
+    await _make_supersedes_edge(graph_store, "A", "B")
+    await _make_supersedes_edge(graph_store, "B", "A")
 
     result = await asyncio.wait_for(
         graph_store.get_supersedes_lineage("A"),
@@ -298,10 +299,10 @@ async def test_get_supersedes_lineage_dedupes_diamond(graph_store):
     """
     for d in ("A", "B", "C", "D"):
         await graph_store.insert_document(_make_doc(d))
-    await _make_supersedes_edge(graph_store, "e_ab", "A", "B")
-    await _make_supersedes_edge(graph_store, "e_ac", "A", "C")
-    await _make_supersedes_edge(graph_store, "e_bd", "B", "D")
-    await _make_supersedes_edge(graph_store, "e_cd", "C", "D")
+    await _make_supersedes_edge(graph_store, "A", "B")
+    await _make_supersedes_edge(graph_store, "A", "C")
+    await _make_supersedes_edge(graph_store, "B", "D")
+    await _make_supersedes_edge(graph_store, "C", "D")
 
     result = await asyncio.wait_for(
         graph_store.get_supersedes_lineage("A"),
@@ -316,9 +317,9 @@ async def test_get_supersedes_lineage_linear_chain(graph_store):
     for d in ("v1", "v2", "v3", "v4"):
         await graph_store.insert_document(_make_doc(d))
     # v4 supersedes v3 supersedes v2 supersedes v1
-    await _make_supersedes_edge(graph_store, "e_43", "v4", "v3")
-    await _make_supersedes_edge(graph_store, "e_32", "v3", "v2")
-    await _make_supersedes_edge(graph_store, "e_21", "v2", "v1")
+    await _make_supersedes_edge(graph_store, "v4", "v3")
+    await _make_supersedes_edge(graph_store, "v3", "v2")
+    await _make_supersedes_edge(graph_store, "v2", "v1")
 
     result = await graph_store.get_supersedes_lineage("v4")
     assert set(result) == {"v1", "v2", "v3", "v4"}

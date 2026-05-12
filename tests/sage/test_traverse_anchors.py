@@ -607,7 +607,7 @@ async def test_legacy_references_edge_surfaces_without_anchors(graph_store, grap
     await _seed_docs(graph_store, _id("x"), _id("y"))
     await graph_store.insert_edge(
         Edge(
-            id="legacy_ref_xy",
+            id=str(uuid.uuid4()),
             source_id=_id("x"),
             target_id=_id("y"),
             edge_type=EdgeType.REFERENCES,
@@ -642,7 +642,7 @@ async def test_legacy_covers_edge_surfaces_without_anchors(graph_store, graph_op
     await _seed_docs(graph_store, _id("p"), _id("q"))
     await graph_store.insert_edge(
         Edge(
-            id="legacy_cov_pq",
+            id=str(uuid.uuid4()),
             source_id=_id("p"),
             target_id=_id("q"),
             edge_type=EdgeType.COVERS,
@@ -668,7 +668,7 @@ async def test_legacy_and_anchored_edges_coexist_in_traverse(graph_store, graph_
     # Legacy: no policy, no anchors
     await graph_store.insert_edge(
         Edge(
-            id="legacy_ref_s_t1",
+            id=str(uuid.uuid4()),
             source_id=_id("s"),
             target_id=_id("t1"),
             edge_type=EdgeType.REFERENCES,
@@ -732,7 +732,7 @@ async def _seed_simple_ref_pair(graph_store, target_doc_date: str | None):
     await graph_store.insert_document(tgt)
     await graph_store.insert_edge(
         Edge(
-            id="ref_src_tgt",
+            id=str(uuid.uuid4()),
             source_id=_id("src"),
             target_id=_id("tgt"),
             edge_type=EdgeType.REFERENCES,

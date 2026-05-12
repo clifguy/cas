@@ -10,6 +10,7 @@ Covers:
   - Caller integration (BIS-018, BIS-019)
 """
 
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -735,6 +736,16 @@ from sage.models.schemas import (  # noqa: E402 -- grouped with the version-chai
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
 
 
+def _eid(name: str) -> str:
+    """Deterministic canonical-UUID edge id derived from a short test name."""
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"sage-test-edge:{name}"))
+
+
+_E_V3_V1 = _eid("e-v3-v1")
+_E_V2_V1 = _eid("e-v2-v1")
+_E_V3_V2 = _eid("e-v3-v2")
+
+
 def _make_edge(
     edge_id: str,
     source_id: str,
@@ -808,7 +819,7 @@ class _MockGraphState:
 
     async def link(self, request: LinkRequest) -> dict:
         self.added_link_requests.append(request)
-        edge_id = f"edge-new-{self._next_edge_seq}"
+        edge_id = _eid(f"edge-new-{self._next_edge_seq}")
         self._next_edge_seq += 1
         self.edges[edge_id] = _make_edge(
             edge_id,
@@ -907,7 +918,7 @@ class TestChainRepair:
             lifecycle_status="active",
         )
         existing_edge = _make_edge(
-            "e-v3-v1",
+            _E_V3_V1,
             V3_ID,
             V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
@@ -925,7 +936,7 @@ class TestChainRepair:
         assert result.edges_created.get("supersedes", 0) == 2
         # One removal: v3->v1
         assert result.edges_removed == 1
-        assert "e-v3-v1" in state.removed_edge_ids
+        assert _E_V3_V1 in state.removed_edge_ids
 
         # Surviving edges form the correct chain
         adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}
@@ -962,7 +973,7 @@ class TestChainRepair:
         )
         # Non-version_chain rationale -> manual edge
         existing_edge = _make_edge(
-            "e-v3-v1",
+            _E_V3_V1,
             "v3",
             "v1",
             rationale="Manually curated by Clif: v3 directly supersedes v1.",
@@ -982,7 +993,7 @@ class TestChainRepair:
         # Repair lands in staging instead
         assert result.edges_staged.get("supersedes", 0) >= 2
         # Existing manual edge untouched
-        assert "e-v3-v1" in state.edges
+        assert _E_V3_V1 in state.edges
         assert state.removed_edge_ids == []
         # Lifecycle untouched: v2 not auto-archived
         v2_id = next(d.id for d in state.docs.values() if d.version_label == "v2")
@@ -1052,13 +1063,13 @@ class TestChainRepair:
             lifecycle_status="active",
         )
         e1 = _make_edge(
-            "e-v2-v1",
+            _E_V2_V1,
             V2_ID,
             V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v2 supersedes v1 (title: Claim-Set)",
         )
         e2 = _make_edge(
-            "e-v3-v2",
+            _E_V3_V2,
             V3_ID,
             V2_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v2 (title: Claim-Set)",
@@ -1075,8 +1086,8 @@ class TestChainRepair:
         assert result.edges_created.get("supersedes", 0) == 1
         assert result.edges_removed == 0
         # Original chain edges intact
-        assert "e-v2-v1" in state.edges
-        assert "e-v3-v2" in state.edges
+        assert _E_V2_V1 in state.edges
+        assert _E_V3_V2 in state.edges
         # New head linked
         v4_id = next(d.id for d in state.docs.values() if d.version_label == "v4")
         adjacency = {(e.source_id, e.target_id) for e in state.edges.values()}

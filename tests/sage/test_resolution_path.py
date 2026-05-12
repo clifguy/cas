@@ -178,7 +178,7 @@ async def test_cr_039_debug_records_anchor_miss_on_suppressed_edge(graph_store, 
     # lineage(source_id='a3'). Bypass the write-time validator by
     # inserting the row directly.
     bad_edge = Edge(
-        id="bad_covers",
+        id=str(uuid.uuid4()),
         source_id=_id("a3"),
         target_id=_id("b2"),
         edge_type=EdgeType.COVERS,

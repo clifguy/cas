@@ -10,6 +10,7 @@ Chain C is added for the merge (c1, then optionally c2 supersedes c1).
 """
 
 import hashlib
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -38,6 +39,11 @@ def _id(name: str) -> str:
     instances. Deterministic — the same name always yields the same id.
     """
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
+
+def _eid(name: str) -> str:
+    """Deterministic canonical-UUID edge id derived from a short test name."""
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"sage-test-edge:{name}"))
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -69,7 +75,7 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
         newer, older = chain[i], chain[i - 1]
         await graph_store.insert_edge(
             Edge(
-                id=f"sup_{newer}_{older}",
+                id=_eid(f"sup_{newer}_{older}"),
                 source_id=newer,
                 target_id=older,
                 edge_type=EdgeType.SUPERSEDES,
@@ -198,7 +204,7 @@ async def test_cr_032_merged_from_tombstones_atomically(graph_store, graph_ops_s
     assert covers_before.valid_until_version is None
 
     # Supersedes edges on Chain A are policy=none and must NOT be tombstoned.
-    sup_edge_id = f"sup_{_id('a8')}_{_id('a7')}"
+    sup_edge_id = _eid(f"sup_{_id('a8')}_{_id('a7')}")
     sup_edge_before = await graph_store.get_edge(sup_edge_id)
     assert sup_edge_before.valid_until_version is None
 

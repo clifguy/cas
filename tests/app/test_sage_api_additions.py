@@ -122,6 +122,19 @@ def _make_document(
     )
 
 
+def _eid(name: str) -> str:
+    """Deterministic canonical-UUID edge id derived from a short test name."""
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"sage-test-edge:{name}"))
+
+
+_STG_1 = _eid("stg-1")
+_STG_H1 = _eid("stg-h1")
+_STG_010 = _eid("staging-010")
+_STG_001 = _eid("staging-001")
+_STG_002 = _eid("staging-002")
+_GONE_001 = _eid("gone-001")
+
+
 def _make_staging_edge(
     edge_id: str,
     source_id: str,
@@ -291,7 +304,7 @@ class TestVaultStatistics:
         )
         await gs.insert_edge(edge)
 
-        staging = _make_staging_edge("stg-1", "doc-1", "doc-2")
+        staging = _make_staging_edge(_STG_1, "doc-1", "doc-2")
         await gs.insert_staging_edge(staging)
 
         resp = await multi_client.get("/sage_vaults/pim_health/stats")
@@ -339,7 +352,7 @@ class TestVaultStatistics:
         for d in [doc_ok, doc_pending, doc_failed, doc_deferred]:
             await gs.insert_document(d)
 
-        staging = _make_staging_edge("stg-h1", "doc-ok", "doc-pending")
+        staging = _make_staging_edge(_STG_H1, "doc-ok", "doc-pending")
         await gs.insert_staging_edge(staging)
 
         resp = await multi_client.get("/sage_vaults/pim_health/stats")
@@ -447,7 +460,7 @@ class TestStagingEdges:
         await gs.insert_document(doc2)
 
         stg = _make_staging_edge(
-            "staging-010",
+            _STG_010,
             "doc-s1",
             "doc-s2",
             EdgeType.COVERS,
@@ -480,16 +493,16 @@ class TestStagingEdges:
         await gs.insert_document(doc1)
         await gs.insert_document(doc2)
 
-        stg = _make_staging_edge("staging-001", "doc-c1", "doc-c2")
+        stg = _make_staging_edge(_STG_001, "doc-c1", "doc-c2")
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.post("/sage_vaults/pim_health/staging-edges/staging-001/confirm")
+        resp = await multi_client.post(f"/sage_vaults/pim_health/staging-edges/{_STG_001}/confirm")
         assert resp.status_code == 200
 
         # Staging edge should be gone
         remaining = await gs.list_staging_edges()
         staging_ids = [e.id for e in remaining]
-        assert "staging-001" not in staging_ids
+        assert _STG_001 not in staging_ids
 
         # Production edge should exist
         prod_edges = await gs.get_edges_by_source("doc-c1")
@@ -507,16 +520,16 @@ class TestStagingEdges:
         await gs.insert_document(doc1)
         await gs.insert_document(doc2)
 
-        stg = _make_staging_edge("staging-002", "doc-d1", "doc-d2")
+        stg = _make_staging_edge(_STG_002, "doc-d1", "doc-d2")
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.post("/sage_vaults/pim_health/staging-edges/staging-002/dismiss")
+        resp = await multi_client.post(f"/sage_vaults/pim_health/staging-edges/{_STG_002}/dismiss")
         assert resp.status_code == 200
 
         # Staging edge should be gone
         remaining = await gs.list_staging_edges()
         staging_ids = [e.id for e in remaining]
-        assert "staging-002" not in staging_ids
+        assert _STG_002 not in staging_ids
 
         # No production edge created
         prod_edges = await gs.get_edges_by_source("doc-d1")
@@ -524,7 +537,7 @@ class TestStagingEdges:
 
     async def test_be_013_confirm_nonexistent_staging_edge(self, multi_client):
         """Confirm non-existent staging edge returns 404."""
-        resp = await multi_client.post("/sage_vaults/pim_health/staging-edges/gone-001/confirm")
+        resp = await multi_client.post(f"/sage_vaults/pim_health/staging-edges/{_GONE_001}/confirm")
         assert resp.status_code == 404
 
 

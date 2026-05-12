@@ -542,3 +542,28 @@ async def test_refresh_views_200(client):
     assert body["vault_id"] == "test_vault"
     assert isinstance(body["views_generated"], int)
     assert body["views_generated"] >= 1  # at least by_lifecycle/active
+
+
+# ---------------------------------------------------------------------------
+# T-0024: edge_id path-parameter validation on routes that take edge_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("DELETE", "/sage_vaults/test_vault/edges/{edge_id}"),
+        ("POST", "/sage_vaults/test_vault/staging-edges/{edge_id}/confirm"),
+        ("POST", "/sage_vaults/test_vault/staging-edges/{edge_id}/dismiss"),
+    ],
+    ids=["unlink", "confirm_staging_edge", "dismiss_staging_edge"],
+)
+@pytest.mark.parametrize(
+    "bad_input",
+    ["not-a-uuid", "12345", "deadbeef-dead-beef"],
+    ids=["random_text", "digits", "truncated_uuid"],
+)
+async def test_edge_id_route_rejects_non_uuid_422(client, method, path, bad_input):
+    """Non-UUID edge_id path params surface as 422 (Pydantic validation)."""
+    resp = await client.request(method, path.format(edge_id=bad_input))
+    assert resp.status_code == 422

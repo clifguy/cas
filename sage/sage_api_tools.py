@@ -9,6 +9,7 @@ staging edges, pending metadata).
 from collections.abc import Callable
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import TypeAdapter
 
 from sage.api.errors import (
     SAGEError,
@@ -20,6 +21,7 @@ from sage.models.schemas import (
     ChainRequest,
     CreateVaultRequest,
     DiscoverRequest,
+    EdgeIdStr,
     HashCheckRequest,
     IngestRequest,
     LinkRequest,
@@ -30,6 +32,8 @@ from sage.models.schemas import (
     UpdateVaultConfigRequest,
 )
 from sage.services.vault_registry import VaultRegistryService
+
+_EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 
 
 def register_sage_tools(
@@ -398,6 +402,7 @@ def register_sage_tools(
             edge_id: Production edge identifier.
         """
         try:
+            edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
             result = await v.graph_ops_service.unlink(edge_id)
             return serialize(result)
@@ -869,6 +874,7 @@ def register_sage_tools(
             edge_id: Staging edge identifier.
         """
         try:
+            edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
             return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
         except (SAGEError, ValueError) as e:
@@ -883,6 +889,7 @@ def register_sage_tools(
             edge_id: Staging edge identifier.
         """
         try:
+            edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
             return serialize(await v.staging_edges_service.dismiss_staging_edge(edge_id))
         except (SAGEError, ValueError) as e:
@@ -945,6 +952,7 @@ def register_sage_tools(
         "sage_set_lifecycle": sage_set_lifecycle,
         "sage_register_user": sage_register_user,
         "sage_link": sage_link,
+        "sage_unlink": sage_unlink,
         "sage_check_preconditions": sage_check_preconditions,
         "sage_traverse": sage_traverse,
         "sage_chain": sage_chain,

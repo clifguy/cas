@@ -8,7 +8,7 @@ POST /sage_vaults/{vault_id}/staging-edges/{edge_id}/dismiss -- delete (BE-012)
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_staging_edges_service, get_vault_id
-from sage.models.schemas import StagingEdge
+from sage.models.schemas import EdgeIdStr, StagingEdge
 from sage.services.staging_edges import StagingEdgesService
 
 router = APIRouter(tags=["staging_edges"])
@@ -25,7 +25,7 @@ async def list_staging_edges(
 
 @router.post("/staging-edges/{edge_id}/confirm")
 async def confirm_staging_edge(
-    edge_id: str,
+    edge_id: EdgeIdStr,
     vault_id: str = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
 ) -> dict:
@@ -35,7 +35,7 @@ async def confirm_staging_edge(
 
 @router.post("/staging-edges/{edge_id}/dismiss")
 async def dismiss_staging_edge(
-    edge_id: str,
+    edge_id: EdgeIdStr,
     vault_id: str = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
 ) -> dict:

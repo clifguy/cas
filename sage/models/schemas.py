@@ -118,7 +118,7 @@ class DocumentSummary(BaseModel):
 
 
 class Edge(BaseModel):
-    id: str
+    id: EdgeIdStr
     source_id: str
     target_id: str | None = None
     edge_type: EdgeType
@@ -126,7 +126,7 @@ class Edge(BaseModel):
     source_valid_from_version: str | None = None
     target_valid_from_version: str | None = None
     valid_until_version: str | None = None
-    retracted_edge_id: str | None = None
+    retracted_edge_id: EdgeIdStr | None = None
     created_at: datetime
     notes: str | None = None
     rationale: str | None = None
@@ -277,10 +277,10 @@ class LinkRequest(BaseModel):
 
 class ResolutionPathEntry(BaseModel):
     event_type: Literal["anchor_hit", "anchor_miss", "retracts_applied", "tombstone_applied"]
-    edge_id: str
+    edge_id: EdgeIdStr
     anchor_field: Literal["source_valid_from_version", "target_valid_from_version"] | None = None
     anchor_version: str | None = None
-    retracted_edge_id: str | None = None
+    retracted_edge_id: EdgeIdStr | None = None
     tombstone_version: str | None = None
 
 
@@ -545,7 +545,7 @@ class CreateVaultRequest(BaseModel):
 
 
 class StagingEdge(BaseModel):
-    id: str
+    id: EdgeIdStr
     source_id: str
     target_id: str
     edge_type: EdgeType

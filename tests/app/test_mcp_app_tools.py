@@ -7,6 +7,7 @@ MCP test pattern in tests/sage/test_mcp_server.py.
 
 import asyncio
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,10 +32,22 @@ from sage.mcp_server import (
     sage_list_staging_edges,
     sage_list_vaults,
     sage_pending_metadata,
+    sage_unlink,
     sage_vault_stats,
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+
+
+def _eid(name: str) -> str:
+    """Deterministic canonical-UUID edge id derived from a short test name."""
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"sage-test-edge:{name}"))
+
+
+_STG_001 = _eid("staging-001")
+_STG_TEST = _eid("staging-test")
+_GONE_001 = _eid("gone-001")
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -330,7 +343,7 @@ class TestSageListStagingEdges:
         await asyncio.sleep(0.1)
 
         staging = StagingEdge(
-            id="staging-001",
+            id=_STG_001,
             source_id=r1["id"],
             target_id=r2["id"],
             edge_type=EdgeType.COVERS,
@@ -343,7 +356,7 @@ class TestSageListStagingEdges:
         result = _parse(await sage_list_staging_edges("test_vault"))
         assert result["count"] == 1
         assert result["vault_id"] == "test_vault"
-        assert result["items"][0]["id"] == "staging-001"
+        assert result["items"][0]["id"] == _STG_001
         assert result["items"][0]["edge_type"] == "covers"
 
     async def test_mcp_009_empty_when_none(self, single_vault):
@@ -367,7 +380,7 @@ class TestStagingEdgeActions:
         r2 = _parse(await sage_ingest("test_vault", "second.md", "markdown"))
         await asyncio.sleep(0.1)
         staging = StagingEdge(
-            id="staging-test",
+            id=_STG_TEST,
             source_id=r1["id"],
             target_id=r2["id"],
             edge_type=EdgeType.COVERS,
@@ -383,7 +396,7 @@ class TestStagingEdgeActions:
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_confirm_staging_edge("test_vault", "staging-test"))
+        result = _parse(await sage_confirm_staging_edge("test_vault", _STG_TEST))
         assert result["confirmed"] is True
         assert "production_edge_id" in result
 
@@ -396,7 +409,7 @@ class TestStagingEdgeActions:
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_dismiss_staging_edge("test_vault", "staging-test"))
+        result = _parse(await sage_dismiss_staging_edge("test_vault", _STG_TEST))
         assert result["dismissed"] is True
 
         listing = _parse(await sage_list_staging_edges("test_vault"))
@@ -404,8 +417,71 @@ class TestStagingEdgeActions:
 
     async def test_mcp_012_nonexistent_returns_error(self, single_vault):
         """Confirm/dismiss non-existent staging edge returns error."""
-        result = _parse(await sage_confirm_staging_edge("test_vault", "gone-001"))
+        result = _parse(await sage_confirm_staging_edge("test_vault", _GONE_001))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# T-0024: edge_id validation across MCP tools that take edge_id directly
+# ---------------------------------------------------------------------------
+
+
+class TestEdgeIdValidation:
+    """Negative tests proving non-canonical / invalid edge_id input is normalized
+    or rejected at the MCP-tool boundary, not silently passed to storage where
+    a non-canonical UUID would miss the canonical-form lookup.
+    """
+
+    @pytest.mark.parametrize(
+        "tool",
+        [sage_unlink, sage_confirm_staging_edge, sage_dismiss_staging_edge],
+        ids=["sage_unlink", "sage_confirm_staging_edge", "sage_dismiss_staging_edge"],
+    )
+    @pytest.mark.parametrize(
+        "bad_input",
+        ["not-a-uuid", "", "12345", "deadbeef-dead-beef"],
+        ids=["random_text", "empty", "digits", "truncated_uuid"],
+    )
+    async def test_invalid_uuid_rejected(self, single_vault, tool, bad_input):
+        result = _parse(await tool("test_vault", bad_input))
+        assert "error" in result
+        assert "edge id must be a UUID" in result["message"]
+
+    @pytest.mark.parametrize(
+        "tool,setup_required",
+        [
+            (sage_confirm_staging_edge, True),
+            (sage_dismiss_staging_edge, True),
+        ],
+        ids=["sage_confirm_staging_edge", "sage_dismiss_staging_edge"],
+    )
+    async def test_non_canonical_uuid_normalized_to_lookup(
+        self, single_vault, tool, setup_required
+    ):
+        """A staging edge created with canonical id X is found by URN-prefixed lookup."""
+        services, _config = single_vault
+        # Set up the staging edge with the canonical id
+        r1 = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
+        r2 = _parse(await sage_ingest("test_vault", "second.md", "markdown"))
+        await asyncio.sleep(0.1)
+        canonical = _eid("normalize-target")
+        staging = StagingEdge(
+            id=canonical,
+            source_id=r1["id"],
+            target_id=r2["id"],
+            edge_type=EdgeType.COVERS,
+            inference_evidence="Test",
+            confidence_tier=2,
+            created_at=datetime.now(timezone.utc),
+        )
+        await services.graph_store.insert_staging_edge(staging)
+
+        # Call with URN-prefixed (non-canonical) input — should normalize and succeed
+        non_canonical = f"urn:uuid:{canonical}"
+        result = _parse(await tool("test_vault", non_canonical))
+        # Either confirmed=True or dismissed=True; the absence of "error" proves
+        # the non-canonical input was normalized before the storage lookup.
+        assert "error" not in result, f"non-canonical input not normalized: {result}"
 
 
 # ---------------------------------------------------------------------------
