@@ -113,6 +113,45 @@ class _GracefulSSEMiddleware:
             logger.debug("Suppressed SSE shutdown RuntimeError: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# Root-logger filter: suppress cosmetic notification-validation WARNING
+# emitted by mcp.shared.session when a client cancels a long tool call.
+# ---------------------------------------------------------------------------
+
+
+class _CancelledNotificationValidationFilter(logging.Filter):
+    """Suppress the cosmetic ``Failed to validate notification`` WARNING
+    emitted by ``mcp.shared.session`` when an MCP client cancels a long
+    ``CallToolRequest`` (T-0022).
+
+    The emission site (``mcp/shared/session.py:430``) uses
+    ``logging.warning(...)`` against the root logger, so the filter attaches
+    to the root logger rather than to a named ``mcp.shared.session`` logger.
+    Match is narrowed to records that begin with the validation prefix and
+    carry both a ``notifications/cancelled`` body and an ``McpError:``
+    reason. Unrelated notification-validation warnings pass through.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.WARNING:
+            return True
+        msg = record.getMessage()
+        if not msg.startswith("Failed to validate notification:"):
+            return True
+        return not ("notifications/cancelled" in msg and "McpError:" in msg)
+
+
+def _install_cancelled_notification_filter() -> None:
+    """Attach the T-0022 filter to the root logger if not already present."""
+    root = logging.getLogger()
+    if any(isinstance(f, _CancelledNotificationValidationFilter) for f in root.filters):
+        return
+    root.addFilter(_CancelledNotificationValidationFilter())
+
+
+_install_cancelled_notification_filter()
+
+
 def _ensure_registry_service(app: FastAPI) -> VaultRegistryService:
     """Attach the canonical VaultRegistryService singleton to app.state.
 

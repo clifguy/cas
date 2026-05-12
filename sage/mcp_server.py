@@ -17,6 +17,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+import sage.app  # noqa: F401 -- import side-effect: installs T-0022 root-logger filter
 from sage.api.errors import SAGEError
 from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
