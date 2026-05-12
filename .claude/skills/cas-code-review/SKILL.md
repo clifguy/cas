@@ -100,6 +100,8 @@ The handler body is one line: a service call. Anything richer than that is a loa
 
 **Already gated deterministically.** Pydantic enforces type. Nothing enforces that every shape-bearing field uses an explicit shape constraint; that lives in the convention.
 
+**Convention reference.** The *CAS Typed-Alias Boundary Conventions* steering document (vault: cas, `doc_type=steering_document`) codifies where typed aliases must apply (`BaseModel` fields, FastAPI route params, FastMCP entry points), where they need not (service-internal and storage-internal signatures, which receive already-validated input from the boundary), the three boundary patterns for non-Pydantic-body entry points, and the discipline for adding new aliases. The prompts below derive from that convention; cite the steering doc when surfacing a finding so the rationale is traceable rather than re-derived.
+
 **Review prompts.**
 - Does the diff add or modify any field on a class derived from `BaseModel` in `sage/models/schemas.py`, `root_harness/`, or any `*/models.py`/`*/schemas.py`?
 - For each new or modified field, does it carry a known shape (a date, an id, a hash, a version label, a path, a URL, a UUID, a vault id, a section heading)?
@@ -127,7 +129,7 @@ Every shape-bearing field carries its alias. `notes` and `rationale` are bare `s
 
 ## F4 — Remediation-pass scope gap (primary skill territory)
 
-**What this catches.** A discipline failure: a remediation that swept one directory tree believes itself complete because the code in scope is fixed, while parallel directory trees containing analogous code are silently missed. The May 5 typed-alias remediation (`98c03f9`) is the canonical case — eleven `tests/sage/` fixtures rewritten, twelve `tests/app/` fixtures missed.
+**What this catches.** A discipline failure: a remediation that swept one directory tree believes itself complete because the code in scope is fixed, while parallel directory trees containing analogous code are silently missed. Two documented cases: the May 5 typed-alias remediation (`98c03f9`, recorded as F4) rewrote eleven `tests/sage/` fixtures but missed twelve in `tests/app/`; the T-0023 alias introduction (`48b85f6`, recorded as F6) applied `EdgeIdStr` at one site but missed eight parallel `edge_id` sites that shared the same SQL-lookup hazard. The first instance was caught only after the test suite broke; the second was caught by this skill firing pre-fix during the T-0023 review pass.
 
 **Already gated deterministically.** Nothing. Discipline failures are not structural.
 
