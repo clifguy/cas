@@ -8,6 +8,7 @@ no supersedes edge was ever created.
 """
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,22 @@ def _id(name: str) -> str:
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _sha(name: str) -> str:
+    """Deterministic canonical Sha256 from a short test name.
+
+    The Sha256Str validator requires `^sha256:[0-9a-f]{64}$`. Test
+    fixtures historically used short readable strings like
+    f"hash_{doc_id}" or "sha256:abc"; this helper maps any such
+    name to a stable canonical Sha256. Idempotent.
+    """
+    if _SHA256_RE.fullmatch(name):
+        return name
+    return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
+
+
 def _make_doc(
     doc_id: str,
     lifecycle_status: str = "active",
@@ -41,7 +58,7 @@ def _make_doc(
         source_type=SourceType.MARKDOWN,
         source_path=f"test/{doc_id}.md",
         lifecycle_status=lifecycle_status,
-        source_content_hash=f"hash_{doc_id}",
+        source_content_hash=_sha(doc_id),
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,

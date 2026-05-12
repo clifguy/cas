@@ -32,6 +32,22 @@ def _id(name: str) -> str:
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _sha(name: str) -> str:
+    """Deterministic canonical Sha256 from a short test name.
+
+    The Sha256Str validator requires `^sha256:[0-9a-f]{64}$`. Test
+    fixtures historically used short readable strings like
+    f"hash_{doc_id}" or "sha256:abc"; this helper maps any such
+    name to a stable canonical Sha256. Idempotent.
+    """
+    if _SHA256_RE.fullmatch(name):
+        return name
+    return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # BH-001: Document ID format
 # ---------------------------------------------------------------------------
@@ -98,7 +114,7 @@ async def test_bh_005_concurrent_writes_different_docs(graph_store, lock_manager
             title=f"Doc {suffix.upper()}",
             source_type=SourceType.MARKDOWN,
             source_path=f"test/doc_{suffix}.md",
-            source_content_hash=f"hash_{suffix}",
+            source_content_hash=_sha(suffix),
             adapter_version="0.1.0",
             created_by="testuser",
             created_at=now,
@@ -141,7 +157,7 @@ async def test_bh_006_concurrent_writes_same_doc(graph_store, lock_manager):
         title="Shared",
         source_type=SourceType.MARKDOWN,
         source_path="test/shared.md",
-        source_content_hash="hash_shared",
+        source_content_hash=_sha("shared"),
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,
@@ -189,7 +205,7 @@ async def test_bh_007_indexed_at_null_before_indexing(graph_store):
         title="Unindexed",
         source_type=SourceType.MARKDOWN,
         source_path="test/unindexed.md",
-        source_content_hash="hash_unindexed",
+        source_content_hash=_sha("unindexed"),
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,
@@ -220,7 +236,7 @@ async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
         title="Indexed",
         source_type=SourceType.MARKDOWN,
         source_path="test/indexed.md",
-        source_content_hash="hash_indexed",
+        source_content_hash=_sha("indexed"),
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,
@@ -273,7 +289,7 @@ def _make_doc(doc_id: str) -> Document:
         title=f"Doc {doc_id}",
         source_type=SourceType.MARKDOWN,
         source_path=f"test/{doc_id}.md",
-        source_content_hash=f"hash_{doc_id}",
+        source_content_hash=_sha(doc_id),
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,

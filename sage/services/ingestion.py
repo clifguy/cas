@@ -472,16 +472,25 @@ class IngestionService:
             caller_title or (parsed.title if parsed and parsed.title else None) or projection.title
         )
 
+        # Canonicalize the adapter-computed content hash to the
+        # Document.source_content_hash shape (`sha256:` + 64 lowercase hex)
+        # before crossing the typed-alias boundary (T-0026). Adapters emit
+        # raw hex from hashlib.sha256(...).hexdigest(); the canonical-form
+        # validator requires the explicit `sha256:` algorithm prefix.
+        # Idempotent: an already-prefixed hash passes through unchanged.
+        raw_hash = projection.content_hash
+        canonical_hash = raw_hash if raw_hash.startswith("sha256:") else f"sha256:{raw_hash}"
+
         # Supersede identical-content check (BH-123). Fires before the
         # generic duplicate-detection path so the caller gets a distinct
         # error code signalling "no-op edit" rather than "already ingested
         # somewhere in the vault". Only applies when a supersede target
         # was provided and its hash matches the new file's hash.
-        if predecessor is not None and (predecessor.source_content_hash == projection.content_hash):
-            raise IdenticalContentSupersedeError(predecessor.id, projection.content_hash)
+        if predecessor is not None and (predecessor.source_content_hash == canonical_hash):
+            raise IdenticalContentSupersedeError(predecessor.id, canonical_hash)
 
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067)
-        hash_matches = await self._store.find_documents_by_hashes([projection.content_hash])
+        hash_matches = await self._store.find_documents_by_hashes([canonical_hash])
 
         now = datetime.now(timezone.utc)
 
@@ -493,7 +502,7 @@ class IngestionService:
         if hash_matches and not request.force:
             # Hash-only check: identical content already in vault (BH-066)
             existing_id = next(iter(hash_matches.values()))
-            raise DuplicateContentError(existing_id, projection.content_hash)
+            raise DuplicateContentError(existing_id, canonical_hash)
         elif hash_matches and request.force:
             # Force re-ingestion: reuse existing record (BH-019, BH-067)
             existing_id = next(iter(hash_matches.values()))
@@ -541,7 +550,7 @@ class IngestionService:
                 source_type=request.adapter,
                 source_path=vault_relative,
                 lifecycle_status="active",
-                source_content_hash=projection.content_hash,
+                source_content_hash=canonical_hash,
                 adapter_version=projection.adapter_version,
                 created_by=created_by,
                 created_at=now,

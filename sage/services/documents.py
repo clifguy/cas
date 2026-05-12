@@ -93,7 +93,9 @@ def _deliver_to_path(
 
     response.written_to = str(target)
     response.content_size = len(data)
-    response.content_hash = hashlib.sha256(data).hexdigest()
+    # Canonicalize to the Sha256Str shape (`sha256:` + 64 hex). Per T-0026,
+    # DocumentWithContent.content_hash is typed; hashlib emits raw hex.
+    response.content_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
 class DocumentsService:

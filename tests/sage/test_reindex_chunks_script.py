@@ -40,6 +40,22 @@ def _id(name: str) -> str:
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _sha(name: str) -> str:
+    """Deterministic canonical Sha256 from a short test name.
+
+    The Sha256Str validator requires `^sha256:[0-9a-f]{64}$`. Test
+    fixtures historically used short readable strings like
+    f"hash_{doc_id}" or "sha256:abc"; this helper maps any such
+    name to a stable canonical Sha256. Idempotent.
+    """
+    if _SHA256_RE.fullmatch(name):
+        return name
+    return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
+
+
 class _RecordingEmbedder:
     """Captures the texts passed to embed() and returns deterministic vectors."""
 
@@ -67,7 +83,7 @@ def _make_doc(
         title=f"doc {doc_id}",
         source_path=f"imports/{doc_id}.docx",
         source_type=source_type,
-        source_content_hash="sha256:test",
+        source_content_hash=_sha("test"),
         adapter_version=adapter_version,
         created_by="test",
         last_modified_by="test",

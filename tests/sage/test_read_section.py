@@ -46,6 +46,22 @@ def _id(name: str) -> str:
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _sha(name: str) -> str:
+    """Deterministic canonical Sha256 from a short test name.
+
+    The Sha256Str validator requires `^sha256:[0-9a-f]{64}$`. Test
+    fixtures historically used short readable strings like
+    f"hash_{doc_id}" or "sha256:abc"; this helper maps any such
+    name to a stable canonical Sha256. Idempotent.
+    """
+    if _SHA256_RE.fullmatch(name):
+        return name
+    return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -367,7 +383,7 @@ async def test_read_section_no_projection(multi_section_service, graph_store):
         title="Empty Doc",
         source_type="markdown",
         source_path="test/empty.md",
-        source_content_hash="sha256:fake",
+        source_content_hash=_sha("fake"),
         adapter_version="1.0",
         created_by="test",
         created_at=datetime.now(timezone.utc),

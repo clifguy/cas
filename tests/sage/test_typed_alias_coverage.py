@@ -93,9 +93,6 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
 # ---------------------------------------------------------------------------
 
 KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
-    # Sha256Str expected — T-0026 typing follow-up.
-    ("Document", "source_content_hash"): "T-0026 (response model)",
-    ("DocumentWithContent", "content_hash"): "T-0026 (response model)",
     # Aliases not yet defined — T-0027 introduces UserIdStr / VaultIdStr /
     # FunctionIdStr.
     ("User", "id"): "T-0027 — UserIdStr not defined; user id format differs from DocumentIdStr",

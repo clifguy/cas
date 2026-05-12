@@ -10,6 +10,7 @@ Chain C is added for the merge (c1, then optionally c2 supersedes c1).
 """
 
 import hashlib
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -46,6 +47,22 @@ def _eid(name: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_OID, f"sage-test-edge:{name}"))
 
 
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _sha(name: str) -> str:
+    """Deterministic canonical Sha256 from a short test name.
+
+    The Sha256Str validator requires `^sha256:[0-9a-f]{64}$`. Test
+    fixtures historically used short readable strings like
+    f"hash_{doc_id}" or "sha256:abc"; this helper maps any such
+    name to a stable canonical Sha256. Idempotent.
+    """
+    if _SHA256_RE.fullmatch(name):
+        return name
+    return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
+
+
 def _make_doc(doc_id: str) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -53,7 +70,7 @@ def _make_doc(doc_id: str) -> Document:
         title=f"Doc {doc_id}",
         source_type=SourceType.MARKDOWN,
         source_path=f"test/{doc_id}.md",
-        source_content_hash=f"hash_{doc_id}",
+        source_content_hash=_sha(doc_id),
         adapter_version="0.1.0",
         created_by="testuser",
         created_at=now,

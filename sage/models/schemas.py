@@ -114,7 +114,7 @@ class Document(BaseModel):
     tags: list[str] = Field(default_factory=list)
     authority_scope: str | None = None
     doc_type: str | None = None
-    source_content_hash: str
+    source_content_hash: Sha256Str
     adapter_version: str
     created_by: str
     created_at: datetime
@@ -221,7 +221,7 @@ class DocumentWithContent(Document):
 
     content: str | None = None
     content_size: int | None = None
-    content_hash: str | None = None
+    content_hash: Sha256Str | None = None
     written_to: str | None = None
 
 

@@ -281,7 +281,7 @@ async def test_bh_125_write_to_path_happy_path(client, tmp_vault_dir, tmp_path):
     assert payload["id"] == doc["id"]
     assert payload["written_to"] == str(target)
     assert payload["content_size"] == len(body.encode("utf-8"))
-    assert payload["content_hash"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
+    assert payload["content_hash"] == "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
     # No inline content in write_to_path mode.
     assert payload.get("content") is None
 
