@@ -707,8 +707,11 @@ async def test_legacy_and_anchored_edges_coexist_in_traverse(graph_store, graph_
 
 
 def _make_doc_with_date(doc_id: str, document_date: str | None) -> Document:
+    # model_construct is required: this helper deliberately seeds storage with
+    # malformed document_date values to exercise traverse's on-read tolerance,
+    # which the typed-alias validator would reject if construction ran through it.
     now = datetime.now(timezone.utc)
-    return Document(
+    return Document.model_construct(
         id=doc_id,
         title=f"Doc {doc_id}",
         source_type=SourceType.MARKDOWN,

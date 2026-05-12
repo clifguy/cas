@@ -18,8 +18,11 @@ from scripts.repair_document_date import repair_with_services
 
 
 def _make_doc(doc_id: str, document_date: str | None) -> Document:
+    # model_construct is required: this helper deliberately seeds storage with
+    # malformed document_date values to exercise the repair workflow, which
+    # the typed-alias validator would reject if construction ran through it.
     now = datetime.now(timezone.utc)
-    return Document(
+    return Document.model_construct(
         id=doc_id,
         title=f"Doc {doc_id}",
         source_type=SourceType.MARKDOWN,

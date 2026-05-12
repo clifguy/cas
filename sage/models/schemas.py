@@ -69,6 +69,35 @@ def _validate_sha256(v: str) -> str:
 Sha256Str = Annotated[str, AfterValidator(_validate_sha256)]
 
 
+_DOCUMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_document_date(v: str | None) -> str | None:
+    """Reject values that are not a YYYY-MM-DD calendar date.
+
+    The substrate stores ``document_date`` as a calendar-date string and
+    every internal write path (filename parser, source_modified_at
+    fallback) produces YYYY-MM-DD by construction. Caller-supplied
+    values flow through verbatim, so a strict regex check at the
+    boundary stops datetime-ISO strings (``2026-05-05T00:00:00Z``) from
+    poisoning downstream readers that parse with ``strptime``. The
+    follow-up calendar-validity check (``date.fromisoformat``) rejects
+    shape-valid-but-impossible strings like ``2026-02-30``.
+    """
+    if v is None:
+        return v
+    if not _DOCUMENT_DATE_RE.fullmatch(v):
+        raise ValueError(f"document_date must be YYYY-MM-DD (got {v!r})")
+    try:
+        date.fromisoformat(v)
+    except ValueError as exc:
+        raise ValueError(f"document_date must be a valid calendar date (got {v!r})") from exc
+    return v
+
+
+DocumentDateStr = Annotated[str | None, AfterValidator(_validate_document_date)]
+
+
 # ---------------------------------------------------------------------------
 # Core entities
 # ---------------------------------------------------------------------------
@@ -94,7 +123,7 @@ class Document(BaseModel):
     projected_at: datetime | None = None
     indexed_at: datetime | None = None
     source_modified_at: datetime | None = None
-    document_date: str | None = None
+    document_date: DocumentDateStr = None
     semantic_abstract: str | None = None
     pipeline_status: PipelineStatus = PipelineStatus.PROJECTION_COMPLETE
     pipeline_error: str | None = None
@@ -174,7 +203,7 @@ class ParseFilenameResponse(BaseModel):
     title: str | None = None
     project: str | None = None
     version_label: str | None = None
-    document_date: str | None = None
+    document_date: DocumentDateStr = None
     doc_type: str | None = None
     codes: list[str] | None = None
 
@@ -213,35 +242,6 @@ def _coerce_tags(v: str | list[str] | None) -> list[str] | None:
     if isinstance(v, str):
         return [t.strip() for t in v.split(",") if t.strip()]
     return v
-
-
-_DOCUMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _validate_document_date(v: str | None) -> str | None:
-    """Reject values that are not a YYYY-MM-DD calendar date.
-
-    The substrate stores ``document_date`` as a calendar-date string and
-    every internal write path (filename parser, source_modified_at
-    fallback) produces YYYY-MM-DD by construction. Caller-supplied
-    values flow through verbatim, so a strict regex check at the
-    boundary stops datetime-ISO strings (``2026-05-05T00:00:00Z``) from
-    poisoning downstream readers that parse with ``strptime``. The
-    follow-up calendar-validity check (``date.fromisoformat``) rejects
-    shape-valid-but-impossible strings like ``2026-02-30``.
-    """
-    if v is None:
-        return v
-    if not _DOCUMENT_DATE_RE.fullmatch(v):
-        raise ValueError(f"document_date must be YYYY-MM-DD (got {v!r})")
-    try:
-        date.fromisoformat(v)
-    except ValueError as exc:
-        raise ValueError(f"document_date must be a valid calendar date (got {v!r})") from exc
-    return v
-
-
-DocumentDateStr = Annotated[str | None, AfterValidator(_validate_document_date)]
 
 
 class UpdateMetadataRequest(BaseModel):
@@ -317,7 +317,7 @@ class ChainEntry(BaseModel):
     title: str
     version_label: str | None = None
     lifecycle_status: str
-    document_date: str | None = None
+    document_date: DocumentDateStr = None
     position: int
 
 

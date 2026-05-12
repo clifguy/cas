@@ -1327,7 +1327,12 @@ class GraphStore:
 
     @staticmethod
     def _row_to_document(row: sqlite3.Row) -> Document:
-        return Document(
+        # model_construct bypasses Pydantic validation: storage may carry legacy
+        # values (e.g. ISO-with-time document_date written before T-0026) that
+        # the request-side validators now reject, and the repair workflow must
+        # be able to read those records to fix them. Per the Typed-Alias
+        # Boundary Conventions, storage does not police shape on read.
+        return Document.model_construct(
             id=row["id"],
             title=row["title"],
             source_type=SourceType(row["source_type"]),
