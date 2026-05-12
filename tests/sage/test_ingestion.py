@@ -7,7 +7,9 @@ source file provenance (source_modified_at), and document date metadata
 (document_date).
 """
 
+import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,6 +20,23 @@ from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "test_doc"; this helper wraps them so the values still
+    construct valid Document instances. Idempotent: an already-canonical
+    id passes through unchanged so wrapping is safe to apply at every
+    call site.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 def _create_test_file(
@@ -592,7 +611,7 @@ def test_build_search_preamble(ingestion_service):
 
     now = datetime.now(timezone.utc)
     doc = Document(
-        id="test_doc",
+        id=_id("test_doc"),
         title="ClinicalNormalization",
         source_type=SourceType.MARKDOWN,
         source_path="imports/PIM_PV07_ClinicalNormalization_v1_0.md",

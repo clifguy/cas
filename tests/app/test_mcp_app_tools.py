@@ -6,7 +6,9 @@ MCP test pattern in tests/sage/test_mcp_server.py.
 """
 
 import asyncio
+import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +39,23 @@ from sage.mcp_server import (
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "pending-doc-1"; this helper wraps them so the values still
+    construct valid Document instances. Idempotent: an already-canonical
+    id passes through unchanged.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    slug = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "n"
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{slug}"
 
 
 def _eid(name: str) -> str:
@@ -513,7 +532,7 @@ class TestSagePendingMetadata:
         try:
             now = datetime.now(timezone.utc)
             pending_doc = Document(
-                id="pending-doc-1",
+                id=_id("pending-doc-1"),
                 title="Pending Sample",
                 source_type=SourceType.MARKDOWN,
                 source_path="sample.md",
@@ -758,7 +777,7 @@ class TestSageDiscoverCatalog:
 
         def _doc(doc_id, doc_type="patent_draft", tags=None, lifecycle="active"):
             return Document(
-                id=doc_id,
+                id=_id(doc_id),
                 title=f"Test {doc_id}",
                 source_type=SourceType.MARKDOWN,
                 source_path=f"test/{doc_id}.md",
@@ -797,7 +816,7 @@ class TestSageDiscoverCatalog:
         assert result["total_available"] == 2
         assert len(result["results"]) == 2
         result_ids = {r["document"]["id"] for r in result["results"]}
-        assert result_ids == {"doc_a", "doc_b"}
+        assert result_ids == {_id("doc_a"), _id("doc_b")}
         # No chunk content or relevance scores
         for r in result["results"]:
             assert r.get("chunk_content") is None

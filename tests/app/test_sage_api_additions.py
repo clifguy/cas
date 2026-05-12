@@ -10,6 +10,8 @@ Covers TEST-APP-BE-001 through TEST-APP-BE-016:
 """
 
 import asyncio
+import hashlib
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,24 @@ from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "doc-1"; this helper wraps them so the values still construct
+    valid Document instances. Idempotent: an already-canonical id
+    passes through unchanged.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    slug = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "n"
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{slug}"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -101,10 +121,16 @@ def _make_document(
     metadata_confirmed: bool = False,
     pipeline_error: str | None = None,
 ) -> Document:
-    """Create a Document model for testing."""
+    """Create a Document model for testing.
+
+    `doc_id` is wrapped with `_id()` so callers can pass short readable
+    names like "doc-1"; the helper returns a shape-conformant
+    DocumentIdStr.
+    """
     now = datetime.now(timezone.utc)
+    canonical_id = _id(doc_id)
     return Document(
-        id=doc_id,
+        id=canonical_id,
         title=title,
         source_type=SourceType.MARKDOWN,
         source_path=f"test/{doc_id}.md",
@@ -142,11 +168,15 @@ def _make_staging_edge(
     edge_type: EdgeType = EdgeType.COVERS,
     evidence: str = "Test inference evidence",
 ) -> StagingEdge:
-    """Create a StagingEdge model for testing."""
+    """Create a StagingEdge model for testing.
+
+    `source_id` and `target_id` are wrapped with `_id()` so callers can
+    pass the same short readable names they hand to `_make_document`.
+    """
     return StagingEdge(
         id=edge_id,
-        source_id=source_id,
-        target_id=target_id,
+        source_id=_id(source_id),
+        target_id=_id(target_id),
         edge_type=edge_type,
         inference_evidence=evidence,
         confidence_tier=2,
@@ -297,8 +327,8 @@ class TestVaultStatistics:
 
         edge = Edge(
             id=str(uuid.uuid4()),
-            source_id="doc-1",
-            target_id="doc-2",
+            source_id=_id("doc-1"),
+            target_id=_id("doc-2"),
             edge_type=EdgeType.REFERENCES,
             created_at=datetime.now(timezone.utc),
         )
@@ -505,10 +535,10 @@ class TestStagingEdges:
         assert _STG_001 not in staging_ids
 
         # Production edge should exist
-        prod_edges = await gs.get_edges_by_source("doc-c1")
+        prod_edges = await gs.get_edges_by_source(_id("doc-c1"))
         assert len(prod_edges) == 1
-        assert prod_edges[0].source_id == "doc-c1"
-        assert prod_edges[0].target_id == "doc-c2"
+        assert prod_edges[0].source_id == _id("doc-c1")
+        assert prod_edges[0].target_id == _id("doc-c2")
 
     async def test_be_012_dismiss_staging_edge(self, multi_vault_app, multi_client):
         """POST dismiss deletes staging edge without creating production edge."""
@@ -532,7 +562,7 @@ class TestStagingEdges:
         assert _STG_002 not in staging_ids
 
         # No production edge created
-        prod_edges = await gs.get_edges_by_source("doc-d1")
+        prod_edges = await gs.get_edges_by_source(_id("doc-d1"))
         assert len(prod_edges) == 0
 
     async def test_be_013_confirm_nonexistent_staging_edge(self, multi_client):
@@ -576,11 +606,11 @@ class TestPendingMetadata:
 
         # Only unconfirmed documents
         doc_ids = [item["document"]["id"] for item in body]
-        assert "doc-pm1" in doc_ids
-        assert "doc-pm2" not in doc_ids
+        assert _id("doc-pm1") in doc_ids
+        assert _id("doc-pm2") not in doc_ids
 
         # Check extracted_fields structure
-        item = next(i for i in body if i["document"]["id"] == "doc-pm1")
+        item = next(i for i in body if i["document"]["id"] == _id("doc-pm1"))
         assert "extracted_fields" in item
         fields = item["extracted_fields"]
         assert "title" in fields
@@ -619,14 +649,14 @@ class TestPendingMetadata:
         body = resp.json()
 
         # Filename-derived date
-        item_fn = next(i for i in body if i["document"]["id"] == "doc-date-fn")
+        item_fn = next(i for i in body if i["document"]["id"] == _id("doc-date-fn"))
         assert "document_date" in item_fn["extracted_fields"]
         dd_fn = item_fn["extracted_fields"]["document_date"]
         assert dd_fn["value"] == "2026-04-10"
         assert dd_fn["source"] == "filename"
 
         # Fallback date (no date in filename)
-        item_fb = next(i for i in body if i["document"]["id"] == "doc-date-fb")
+        item_fb = next(i for i in body if i["document"]["id"] == _id("doc-date-fb"))
         assert "document_date" in item_fb["extracted_fields"]
         dd_fb = item_fb["extracted_fields"]["document_date"]
         assert dd_fb["value"] == "2025-06-15"

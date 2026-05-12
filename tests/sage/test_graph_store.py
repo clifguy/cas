@@ -5,6 +5,7 @@ and indexed_at nullable semantics.
 """
 
 import asyncio
+import hashlib
 import re
 import uuid
 from datetime import datetime, timezone
@@ -12,6 +13,24 @@ from datetime import datetime, timezone
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.services.identity import generate_document_id
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "a1" or "doc_a"; this helper wraps them so the values still
+    construct valid Document / Edge instances. Idempotent: an
+    already-canonical id passes through unchanged so wrapping is safe
+    to apply at every call site.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
 
 # ---------------------------------------------------------------------------
 # BH-001: Document ID format
@@ -75,7 +94,7 @@ async def test_bh_005_concurrent_writes_different_docs(graph_store, lock_manager
     docs = []
     for suffix in ("a", "b"):
         doc = Document(
-            id=f"doc_{suffix}",
+            id=_id(f"doc_{suffix}"),
             title=f"Doc {suffix.upper()}",
             source_type=SourceType.MARKDOWN,
             source_path=f"test/doc_{suffix}.md",
@@ -97,14 +116,14 @@ async def test_bh_005_concurrent_writes_different_docs(graph_store, lock_manager
 
     # Both should complete concurrently
     results = await asyncio.gather(
-        update_doc("doc_a", "Updated A"),
-        update_doc("doc_b", "Updated B"),
+        update_doc(_id("doc_a"), "Updated A"),
+        update_doc(_id("doc_b"), "Updated B"),
         return_exceptions=True,
     )
     assert all(r is None for r in results)
 
-    doc_a = await graph_store.get_document("doc_a")
-    doc_b = await graph_store.get_document("doc_b")
+    doc_a = await graph_store.get_document(_id("doc_a"))
+    doc_b = await graph_store.get_document(_id("doc_b"))
     assert doc_a.title == "Updated A"
     assert doc_b.title == "Updated B"
 
@@ -118,7 +137,7 @@ async def test_bh_006_concurrent_writes_same_doc(graph_store, lock_manager):
     """Two concurrent writes to the same doc serialize; no SQLITE_BUSY."""
     now = datetime.now(timezone.utc)
     doc = Document(
-        id="doc_shared",
+        id=_id("doc_shared"),
         title="Shared",
         source_type=SourceType.MARKDOWN,
         source_path="test/shared.md",
@@ -136,9 +155,9 @@ async def test_bh_006_concurrent_writes_same_doc(graph_store, lock_manager):
     call_order = []
 
     async def update_with_tracking(label: str, new_title: str):
-        async with lock_manager.lock("doc_shared"):
+        async with lock_manager.lock(_id("doc_shared")):
             call_order.append(f"{label}_start")
-            await graph_store.update_document("doc_shared", {"title": new_title})
+            await graph_store.update_document(_id("doc_shared"), {"title": new_title})
             call_order.append(f"{label}_end")
 
     results = await asyncio.gather(
@@ -166,7 +185,7 @@ async def test_bh_006_concurrent_writes_same_doc(graph_store, lock_manager):
 async def test_bh_007_indexed_at_null_before_indexing(graph_store):
     now = datetime.now(timezone.utc)
     doc = Document(
-        id="doc_unindexed",
+        id=_id("doc_unindexed"),
         title="Unindexed",
         source_type=SourceType.MARKDOWN,
         source_path="test/unindexed.md",
@@ -181,7 +200,7 @@ async def test_bh_007_indexed_at_null_before_indexing(graph_store):
     )
     await graph_store.insert_document(doc)
 
-    fetched = await graph_store.get_document("doc_unindexed")
+    fetched = await graph_store.get_document(_id("doc_unindexed"))
     assert fetched.indexed_at is None
     assert fetched.pipeline_status in (
         PipelineStatus.PROJECTION_COMPLETE,
@@ -197,7 +216,7 @@ async def test_bh_007_indexed_at_null_before_indexing(graph_store):
 async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
     now = datetime.now(timezone.utc)
     doc = Document(
-        id="doc_indexed",
+        id=_id("doc_indexed"),
         title="Indexed",
         source_type=SourceType.MARKDOWN,
         source_path="test/indexed.md",
@@ -213,18 +232,18 @@ async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
     )
     await graph_store.insert_document(doc)
 
-    fetched = await graph_store.get_document("doc_indexed")
+    fetched = await graph_store.get_document(_id("doc_indexed"))
     assert fetched.indexed_at is not None
     assert isinstance(fetched.indexed_at, datetime)
 
     # Advance to abstraction_complete; indexed_at should not change
     await graph_store.update_document(
-        "doc_indexed",
+        _id("doc_indexed"),
         {
             "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
         },
     )
-    fetched2 = await graph_store.get_document("doc_indexed")
+    fetched2 = await graph_store.get_document(_id("doc_indexed"))
     assert fetched2.indexed_at == fetched.indexed_at
 
 
@@ -279,16 +298,16 @@ async def _make_supersedes_edge(graph_store, newer, older):
 
 async def test_get_supersedes_lineage_terminates_on_two_cycle(graph_store):
     """A supersedes B and B supersedes A — lineage walk must terminate."""
-    await graph_store.insert_document(_make_doc("A"))
-    await graph_store.insert_document(_make_doc("B"))
-    await _make_supersedes_edge(graph_store, "A", "B")
-    await _make_supersedes_edge(graph_store, "B", "A")
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+    await _make_supersedes_edge(graph_store, _id("doc_a"), _id("doc_b"))
+    await _make_supersedes_edge(graph_store, _id("doc_b"), _id("doc_a"))
 
     result = await asyncio.wait_for(
-        graph_store.get_supersedes_lineage("A"),
+        graph_store.get_supersedes_lineage(_id("doc_a")),
         timeout=2.0,
     )
-    assert set(result) == {"A", "B"}
+    assert set(result) == {_id("doc_a"), _id("doc_b")}
 
 
 async def test_get_supersedes_lineage_dedupes_diamond(graph_store):
@@ -297,29 +316,29 @@ async def test_get_supersedes_lineage_dedupes_diamond(graph_store):
     Under UNION ALL the walk generated both A->B->D and A->C->D paths,
     duplicating D (and multiplying combinatorially for wider diamonds).
     """
-    for d in ("A", "B", "C", "D"):
-        await graph_store.insert_document(_make_doc(d))
-    await _make_supersedes_edge(graph_store, "A", "B")
-    await _make_supersedes_edge(graph_store, "A", "C")
-    await _make_supersedes_edge(graph_store, "B", "D")
-    await _make_supersedes_edge(graph_store, "C", "D")
+    for d in ("doc_a", "doc_b", "doc_c", "doc_d"):
+        await graph_store.insert_document(_make_doc(_id(d)))
+    await _make_supersedes_edge(graph_store, _id("doc_a"), _id("doc_b"))
+    await _make_supersedes_edge(graph_store, _id("doc_a"), _id("doc_c"))
+    await _make_supersedes_edge(graph_store, _id("doc_b"), _id("doc_d"))
+    await _make_supersedes_edge(graph_store, _id("doc_c"), _id("doc_d"))
 
     result = await asyncio.wait_for(
-        graph_store.get_supersedes_lineage("A"),
+        graph_store.get_supersedes_lineage(_id("doc_a")),
         timeout=2.0,
     )
-    assert sorted(result) == ["A", "B", "C", "D"]
+    assert sorted(result) == sorted([_id("doc_a"), _id("doc_b"), _id("doc_c"), _id("doc_d")])
     assert len(result) == len(set(result)), f"lineage must not contain duplicates, got {result}"
 
 
 async def test_get_supersedes_lineage_linear_chain(graph_store):
     """Linear chain: unchanged behavior — all ancestors returned."""
     for d in ("v1", "v2", "v3", "v4"):
-        await graph_store.insert_document(_make_doc(d))
+        await graph_store.insert_document(_make_doc(_id(d)))
     # v4 supersedes v3 supersedes v2 supersedes v1
-    await _make_supersedes_edge(graph_store, "v4", "v3")
-    await _make_supersedes_edge(graph_store, "v3", "v2")
-    await _make_supersedes_edge(graph_store, "v2", "v1")
+    await _make_supersedes_edge(graph_store, _id("v4"), _id("v3"))
+    await _make_supersedes_edge(graph_store, _id("v3"), _id("v2"))
+    await _make_supersedes_edge(graph_store, _id("v2"), _id("v1"))
 
-    result = await graph_store.get_supersedes_lineage("v4")
-    assert set(result) == {"v1", "v2", "v3", "v4"}
+    result = await graph_store.get_supersedes_lineage(_id("v4"))
+    assert set(result) == {_id("v1"), _id("v2"), _id("v3"), _id("v4")}

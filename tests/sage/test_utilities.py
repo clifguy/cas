@@ -5,6 +5,8 @@ eval_retrieval (retrieval health assertions from YAML).
 """
 
 import asyncio
+import hashlib
+import re
 
 import pytest
 import yaml
@@ -20,6 +22,24 @@ from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "doc_no_chunks"; this helper wraps them so the values still
+    construct valid Document instances. Idempotent: an already-canonical
+    id passes through unchanged so wrapping is safe to apply at every
+    call site.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -159,7 +179,7 @@ async def test_read_projection_no_projection(utilities_service, graph_store):
 
     # Insert a document directly into the graph store without indexing chunks
     doc = Document(
-        id="doc_no_chunks",
+        id=_id("doc_no_chunks"),
         title="No Chunks",
         source_type="markdown",
         source_path="test/no_chunks.md",
@@ -173,7 +193,7 @@ async def test_read_projection_no_projection(utilities_service, graph_store):
     await graph_store.insert_document(doc)
 
     with pytest.raises(NoProjectionError) as exc_info:
-        await utilities_service.read_projection("doc_no_chunks")
+        await utilities_service.read_projection(_id("doc_no_chunks"))
 
     assert exc_info.value.code == "no_projection"
 

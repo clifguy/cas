@@ -93,24 +93,6 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
 # ---------------------------------------------------------------------------
 
 KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
-    # DocumentIdStr expected — T-0026 typing follow-up.
-    ("Document", "id"): "T-0026 (response model)",
-    ("DocumentSummary", "id"): "T-0026 (response model)",
-    ("Edge", "source_id"): "T-0026",
-    ("Edge", "target_id"): "T-0026",
-    ("TraverseResponse", "start_id"): "T-0026 (response model)",
-    ("ChainEntry", "id"): "T-0026 (response model)",
-    ("ChainResponse", "head_id"): "T-0026 (response model)",
-    ("ChainResponse", "tail_id"): "T-0026 (response model)",
-    ("PreconditionCheck", "target_id"): "T-0026 (response model)",
-    ("DiscoverRequest", "document_id"): "T-0026 (request model)",
-    ("ExportProjectionResponse", "document_id"): "T-0026 (response model)",
-    ("ReadProjectionResponse", "document_id"): "T-0026 (response model)",
-    ("ReadSectionResponse", "document_id"): "T-0026 (response model)",
-    ("AssertionFailure", "expected_document_id"): "T-0026 (response model)",
-    ("HashCheckMatch", "document_id"): "T-0026 (response model)",
-    ("StagingEdge", "source_id"): "T-0026 (storage model)",
-    ("StagingEdge", "target_id"): "T-0026 (storage model)",
     # Sha256Str expected — T-0026 typing follow-up.
     ("Document", "source_content_hash"): "T-0026 (response model)",
     ("DocumentWithContent", "content_hash"): "T-0026 (response model)",
@@ -314,3 +296,35 @@ def test_known_violations_reference_real_fields():
         f"shape-bearing field in sage.models.schemas: {stale}. Did the field "
         "get renamed or removed? Remove the stale entry."
     )
+
+
+# ---------------------------------------------------------------------------
+# Boundary-validation construction tests
+#
+# DiscoverRequest.document_id is the one request-side field T-0026 typed.
+# Property coverage in test_alias_invariants.py locks the validator; this
+# test confirms the alias is wired through at the model-construction
+# boundary so that bad caller input is rejected before reaching the
+# service layer (per the Typed-Alias Boundary Conventions).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "not-a-doc-id",  # no underscore, contains hyphens
+        "DEADBEEF_uppercase_prefix",  # uppercase hex
+        "deadbeef-no-underscore",  # hyphen instead of underscore
+        "1234abcd_",  # empty slug
+        "12345678_Trailing-Slash",  # slug has uppercase + hyphen
+        "",  # empty string
+    ],
+)
+def test_discover_request_document_id_rejects_non_canonical(bad_value: str) -> None:
+    """Non-canonical document_id values must be rejected at request construction."""
+    from pydantic import ValidationError
+
+    from sage.models.schemas import DiscoverRequest
+
+    with pytest.raises(ValidationError):
+        DiscoverRequest(document_id=bad_value)

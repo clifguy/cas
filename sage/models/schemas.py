@@ -104,7 +104,7 @@ DocumentDateStr = Annotated[str | None, AfterValidator(_validate_document_date)]
 
 
 class Document(BaseModel):
-    id: str
+    id: DocumentIdStr
     title: str
     source_type: SourceType
     source_path: str
@@ -132,7 +132,7 @@ class Document(BaseModel):
 
 
 class DocumentSummary(BaseModel):
-    id: str
+    id: DocumentIdStr
     title: str
     lifecycle_status: str
     source_type: SourceType
@@ -148,8 +148,8 @@ class DocumentSummary(BaseModel):
 
 class Edge(BaseModel):
     id: EdgeIdStr
-    source_id: str
-    target_id: str | None = None
+    source_id: DocumentIdStr
+    target_id: DocumentIdStr | None = None
     edge_type: EdgeType
     resolution_policy: ResolutionPolicy | None = None
     source_valid_from_version: str | None = None
@@ -300,7 +300,7 @@ class TraversalNode(BaseModel):
 
 
 class TraverseResponse(BaseModel):
-    start_id: str
+    start_id: DocumentIdStr
     nodes: list[TraversalNode]
     resolution_path: list[ResolutionPathEntry] | None = None
 
@@ -313,7 +313,7 @@ class ChainRequest(BaseModel):
 
 
 class ChainEntry(BaseModel):
-    id: str
+    id: DocumentIdStr
     title: str
     version_label: str | None = None
     lifecycle_status: str
@@ -323,8 +323,8 @@ class ChainEntry(BaseModel):
 
 class ChainResponse(BaseModel):
     chain: list[ChainEntry]
-    head_id: str
-    tail_id: str
+    head_id: DocumentIdStr
+    tail_id: DocumentIdStr
     query_position: int
     length: int
     total_length: int
@@ -333,7 +333,7 @@ class ChainResponse(BaseModel):
 
 
 class PreconditionCheck(BaseModel):
-    target_id: str
+    target_id: DocumentIdStr
     required: str
     actual: str
     satisfied: bool
@@ -364,7 +364,7 @@ class DiscoverRequest(BaseModel):
     query: str | None = None
     scope: RetrievalScope = RetrievalScope.ALL
     filters: RetrievalFilters | None = None
-    document_id: str | None = None
+    document_id: DocumentIdStr | None = None
     heading_path: str | None = None
     limit: int = Field(default=10, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
@@ -402,12 +402,12 @@ class ExportProjectionRequest(BaseModel):
 
 
 class ExportProjectionResponse(BaseModel):
-    document_id: str
+    document_id: DocumentIdStr
     output_path: str
 
 
 class ReadProjectionResponse(BaseModel):
-    document_id: str
+    document_id: DocumentIdStr
     title: str
     version_label: str | None = None
     lifecycle_status: str
@@ -417,7 +417,7 @@ class ReadProjectionResponse(BaseModel):
 
 
 class ReadSectionResponse(BaseModel):
-    document_id: str
+    document_id: DocumentIdStr
     title: str
     heading_path: str
     chunk_count: int
@@ -426,7 +426,7 @@ class ReadSectionResponse(BaseModel):
 
 class AssertionFailure(BaseModel):
     query: str
-    expected_document_id: str
+    expected_document_id: DocumentIdStr
     top_k_checked: int
     found: bool
     actual_rank: int | None = None
@@ -511,7 +511,7 @@ class HashCheckRequest(BaseModel):
 
 class HashCheckMatch(BaseModel):
     exists: bool
-    document_id: str | None = None
+    document_id: DocumentIdStr | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -546,8 +546,8 @@ class CreateVaultRequest(BaseModel):
 
 class StagingEdge(BaseModel):
     id: EdgeIdStr
-    source_id: str
-    target_id: str
+    source_id: DocumentIdStr
+    target_id: DocumentIdStr
     edge_type: EdgeType
     inference_evidence: str
     confidence_tier: int = 2

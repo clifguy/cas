@@ -10,6 +10,8 @@ Covers:
   - Caller integration (BIS-018, BIS-019)
 """
 
+import hashlib
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,16 +30,39 @@ from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.services.ingestion import IngestResult
 
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "doc-existing"; this helper wraps them so the values still
+    construct valid Document instances. Idempotent: an already-canonical
+    id passes through unchanged.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    slug = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "n"
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{slug}"
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
 
 def _make_document(doc_id: str, title: str = "Test", **kwargs) -> Document:
-    """Create a minimal Document for testing."""
+    """Create a minimal Document for testing.
+
+    `doc_id` is wrapped with `_id()` so callers can pass short readable
+    names like "doc-existing" or "v1"; the helper returns a
+    shape-conformant DocumentIdStr. Already-canonical ids pass through.
+    """
     now = datetime.now(timezone.utc)
     defaults = dict(
-        id=doc_id,
+        id=_id(doc_id),
         title=title,
         source_type=SourceType.MARKDOWN,
         source_path="test.md",
@@ -313,7 +338,7 @@ class TestEdgePlanConstruction:
 
             assert len(existing_items) == 1
             ei = existing_items[0]
-            assert ei.ref == "doc-existing"
+            assert ei.ref == _id("doc-existing")
             assert ei.is_existing is True
             assert ei.parsed.title == "Report"
             assert ei.parsed.codes == ["PV06", "CF-1"]
@@ -953,8 +978,10 @@ class TestChainRepair:
     @pytest.mark.asyncio
     async def test_cr_002_provenance_gate_stages_when_removed_edge_is_manual(self):
         """Hand-curated v3->v1 edge is preserved; repair goes to staging."""
+        V1_ID = "cccccccc_v1"
+        V3_ID = "cccccccc_v3"
         v1 = _make_document(
-            "v1",
+            V1_ID,
             title="Claim-Set",
             project="PIM",
             doc_type="patent_draft",
@@ -963,7 +990,7 @@ class TestChainRepair:
             lifecycle_status="archived",
         )
         v3 = _make_document(
-            "v3",
+            V3_ID,
             title="Claim-Set",
             project="PIM",
             doc_type="patent_draft",
@@ -974,8 +1001,8 @@ class TestChainRepair:
         # Non-version_chain rationale -> manual edge
         existing_edge = _make_edge(
             _E_V3_V1,
-            "v3",
-            "v1",
+            V3_ID,
+            V1_ID,
             rationale="Manually curated by Clif: v3 directly supersedes v1.",
         )
         services, state = _make_chain_services([v1, v3], [existing_edge])
@@ -998,7 +1025,7 @@ class TestChainRepair:
         # Lifecycle untouched: v2 not auto-archived
         v2_id = next(d.id for d in state.docs.values() if d.version_label == "v2")
         assert state.docs[v2_id].lifecycle_status == "active"
-        assert state.docs["v3"].lifecycle_status == "active"
+        assert state.docs[V3_ID].lifecycle_status == "active"
 
     @pytest.mark.asyncio
     async def test_cr_003_within_batch_out_of_order_still_correct(self):

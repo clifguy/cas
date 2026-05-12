@@ -3,7 +3,9 @@
 Tests for refresh_views symlink-based browsable folder views.
 """
 
+import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +15,24 @@ from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.services.utilities import UtilitiesService
 from sage.storage.graph_store import GraphStore
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "doc_a"; this helper wraps them so the values still construct
+    valid Document instances. Idempotent: an already-canonical id
+    passes through unchanged so wrapping is safe to apply at every
+    call site.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -91,7 +111,7 @@ async def test_bh043_both_view_dimensions_generated(
 
     await _insert_test_document(
         graph_store,
-        "doc_a",
+        _id("doc_a"),
         "Doc A",
         "patents/doc_a.md",
         lifecycle_status="active",
@@ -99,7 +119,7 @@ async def test_bh043_both_view_dimensions_generated(
     )
     await _insert_test_document(
         graph_store,
-        "doc_b",
+        _id("doc_b"),
         "Doc B",
         "patents/doc_b.md",
         lifecycle_status="archived",
@@ -107,7 +127,7 @@ async def test_bh043_both_view_dimensions_generated(
     )
     await _insert_test_document(
         graph_store,
-        "doc_c",
+        _id("doc_c"),
         "Doc C",
         "glossaries/doc_c.md",
         lifecycle_status="active",
@@ -162,7 +182,7 @@ async def test_bh044_symlinks_point_to_source_files(
     source_file = _create_source_file(storage_root, "patents/claim_set.md")
     await _insert_test_document(
         graph_store,
-        "doc_cs",
+        _id("doc_cs"),
         "Claim Set",
         "patents/claim_set.md",
         doc_type="patent",
@@ -202,7 +222,7 @@ async def test_bh045_full_regeneration(
 
     await _insert_test_document(
         graph_store,
-        "doc_a",
+        _id("doc_a"),
         "Doc A",
         "test/doc_a.md",
         lifecycle_status="active",
@@ -216,7 +236,7 @@ async def test_bh045_full_regeneration(
     assert len(list(active_dir.iterdir())) == 1
 
     # Simulate lifecycle change by updating the document directly
-    await graph_store.update_document("doc_a", {"lifecycle_status": "archived"})
+    await graph_store.update_document(_id("doc_a"), {"lifecycle_status": "archived"})
 
     # Second refresh: doc_a is now archived
     await utilities_service.refresh_views()
@@ -247,7 +267,7 @@ async def test_bh046_failed_pipeline_documents_in_views(
 
     await _insert_test_document(
         graph_store,
-        "doc_fail",
+        _id("doc_fail"),
         "Failed Doc",
         "test/failed.md",
         lifecycle_status="active",
@@ -283,7 +303,7 @@ async def test_bh047_empty_categories_no_directory(
 
     await _insert_test_document(
         graph_store,
-        "doc_only",
+        _id("doc_only"),
         "Only Doc",
         "test/only.md",
         lifecycle_status="active",
@@ -320,7 +340,7 @@ async def test_bh048_null_doc_type_excluded(
 
     await _insert_test_document(
         graph_store,
-        "doc_untyped",
+        _id("doc_untyped"),
         "Untyped Doc",
         "test/untyped.md",
         lifecycle_status="active",
@@ -385,7 +405,7 @@ async def test_filename_collision_handled(
 
     await _insert_test_document(
         graph_store,
-        "doc_v1",
+        _id("doc_v1"),
         "Spec V1",
         "v1/spec.md",
         lifecycle_status="active",
@@ -393,7 +413,7 @@ async def test_filename_collision_handled(
     )
     await _insert_test_document(
         graph_store,
-        "doc_v2",
+        _id("doc_v2"),
         "Spec V2",
         "v2/spec.md",
         lifecycle_status="active",

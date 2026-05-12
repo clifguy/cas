@@ -13,11 +13,31 @@ fixtures rather than the full production initialization path. Verifies:
 - Dry-run mode does not mutate state.
 """
 
+import hashlib
+import re
+
 from sage.adapters.interfaces import Chunk
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.source_adapters.docx_adapter import DocxAdapter
 from scripts.reindex_chunks_with_heading_context import reindex_with_services
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "doc_old"; this helper wraps them so the values still
+    construct valid Document instances. Idempotent: an already-canonical
+    id passes through unchanged so wrapping is safe to apply at every
+    call site.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
 class _RecordingEmbedder:
@@ -64,7 +84,7 @@ async def test_reindex_replaces_embeddings_with_heading_context_combined_text(
     """The embedder is called with ``heading_path + content``; chunks are
     rewritten with new embeddings; adapter_version is bumped."""
     # Set up an old-regime document with chunks indexed by content alone.
-    doc = _make_doc(doc_id="doc_old", adapter_version="0.1.0")
+    doc = _make_doc(doc_id=_id("doc_old"), adapter_version="0.1.0")
     await graph_store.insert_document(doc)
 
     body = "Cryptographic accumulator seals govern each commit."
@@ -112,7 +132,7 @@ async def test_reindex_replaces_embeddings_with_heading_context_combined_text(
 async def test_reindex_skips_documents_already_at_current_version(graph_store, stub_content_store):
     """Documents whose adapter_version equals the current VERSION are
     skipped — no embedder calls, no chunk rewrites."""
-    doc = _make_doc(doc_id="doc_current", adapter_version=DocxAdapter.VERSION)
+    doc = _make_doc(doc_id=_id("doc_current"), adapter_version=DocxAdapter.VERSION)
     await graph_store.insert_document(doc)
 
     chunk = Chunk(
@@ -138,7 +158,7 @@ async def test_reindex_skips_documents_already_at_current_version(graph_store, s
 
 async def test_reindex_dry_run_does_not_mutate(graph_store, stub_content_store):
     """Dry run mode prints the plan but writes nothing."""
-    doc = _make_doc(doc_id="doc_dry", adapter_version="0.1.0")
+    doc = _make_doc(doc_id=_id("doc_dry"), adapter_version="0.1.0")
     await graph_store.insert_document(doc)
 
     chunk = Chunk(
@@ -171,7 +191,7 @@ async def test_reindex_dry_run_does_not_mutate(graph_store, stub_content_store):
 async def test_reindex_skips_documents_with_no_chunks(graph_store, stub_content_store):
     """A document with no stored chunks is silently skipped (no version bump,
     no embedder call). This avoids redundant work for projection-only docs."""
-    doc = _make_doc(doc_id="doc_empty", adapter_version="0.1.0")
+    doc = _make_doc(doc_id=_id("doc_empty"), adapter_version="0.1.0")
     await graph_store.insert_document(doc)
     # Intentionally do not call index_chunks; doc has no chunks.
 
@@ -197,7 +217,7 @@ async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store)
     ``filters={"doc_type": ...}`` queries vault-wide. Regression guard for
     the live-data incident on 2026-05-04 (PIM Health).
     """
-    doc = _make_doc(doc_id="doc_dtype", adapter_version="0.1.0")
+    doc = _make_doc(doc_id=_id("doc_dtype"), adapter_version="0.1.0")
     await graph_store.insert_document(doc)
 
     chunk = Chunk(
@@ -236,7 +256,7 @@ async def test_reindex_handles_source_type_with_no_adapter_registered(
     SOURCE_TYPE_TO_VERSION are skipped (e.g. forward-declared types like
     email/onenote/teams_chat)."""
     doc = _make_doc(
-        doc_id="doc_email",
+        doc_id=_id("doc_email"),
         source_type=SourceType.EMAIL.value,
         adapter_version="0.1.0",
     )

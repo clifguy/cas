@@ -15,6 +15,8 @@ Test cases:
 """
 
 import asyncio
+import hashlib
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -25,6 +27,24 @@ from sage.models.schemas import Document, IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def _id(name: str) -> str:
+    """Translate a short test name to a shape-conformant document ID.
+
+    The ID validator in sage/models/schemas.py requires the pattern
+    ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
+    like "doc_empty"; this helper wraps them so the values still
+    construct valid Document instances. Idempotent: an already-canonical
+    id passes through unchanged so wrapping is safe to apply at every
+    call site.
+    """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -343,7 +363,7 @@ async def test_read_section_no_projection(multi_section_service, graph_store):
 
     # Insert a document directly without ingesting chunks
     doc = Document(
-        id="doc_empty",
+        id=_id("doc_empty"),
         title="Empty Doc",
         source_type="markdown",
         source_path="test/empty.md",
@@ -357,6 +377,6 @@ async def test_read_section_no_projection(multi_section_service, graph_store):
     await graph_store.insert_document(doc)
 
     with pytest.raises(NoProjectionError) as exc_info:
-        await utilities.read_section("doc_empty", "Overview")
+        await utilities.read_section(_id("doc_empty"), "Overview")
 
     assert exc_info.value.code == "no_projection"

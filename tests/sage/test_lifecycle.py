@@ -5,6 +5,7 @@ pipeline warnings during transitions, and supersede with edge creation.
 """
 
 import hashlib
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -18,6 +19,8 @@ from sage.api.errors import (
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, SetLifecycleRequest
 
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
 
 def _id(name: str) -> str:
     """Translate a short test name to a shape-conformant document ID.
@@ -25,9 +28,12 @@ def _id(name: str) -> str:
     The ID validator in sage/models/schemas.py requires the pattern
     ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
     like "a1" or "doc_a"; this helper wraps them so the values still
-    construct valid SetLifecycleRequest instances. Deterministic — the
-    same name always yields the same id.
+    construct valid SetLifecycleRequest instances. Idempotent: an
+    already-canonical id passes through unchanged so wrapping is safe
+    to apply at every call site.
     """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
@@ -60,14 +66,14 @@ def _make_doc(
 
 
 async def test_bh_012_invalid_transition_returns_409(graph_store, lifecycle_service):
-    doc = _make_doc("doc_archived", lifecycle_status="archived")
+    doc = _make_doc(_id("doc_archived"), lifecycle_status="archived")
     await graph_store.insert_document(doc)
     # Manually set to archived
-    await graph_store.update_document("doc_archived", {"lifecycle_status": "archived"})
+    await graph_store.update_document(_id("doc_archived"), {"lifecycle_status": "archived"})
 
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
         await lifecycle_service.set_lifecycle(
-            "doc_archived",
+            _id("doc_archived"),
             SetLifecycleRequest(action="complete"),
         )
 
@@ -86,13 +92,13 @@ async def test_bh_012_invalid_transition_returns_409(graph_store, lifecycle_serv
 
 async def test_bh_013_domain_specific_valid_actions(graph_store, extended_lifecycle_service):
     """Extended vault: a domain-defined 'file' action is valid from active."""
-    doc = _make_doc("doc_active")
+    doc = _make_doc(_id("doc_active"))
     await graph_store.insert_document(doc)
 
     # Try an action that is invalid from active
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
         await extended_lifecycle_service.set_lifecycle(
-            "doc_active",
+            _id("doc_active"),
             SetLifecycleRequest(action="reactivate"),
         )
 
@@ -111,11 +117,11 @@ async def test_bh_013_domain_specific_valid_actions(graph_store, extended_lifecy
 
 
 async def test_bh_014_transition_with_pipeline_warning(graph_store, lifecycle_service):
-    doc = _make_doc("doc_indexing", pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
+    doc = _make_doc(_id("doc_indexing"), pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
     await graph_store.insert_document(doc)
 
     response = await lifecycle_service.set_lifecycle(
-        "doc_indexing",
+        _id("doc_indexing"),
         SetLifecycleRequest(action="archive"),
     )
 
@@ -134,11 +140,13 @@ async def test_bh_014_transition_with_pipeline_warning(graph_store, lifecycle_se
 
 
 async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_service):
-    doc = _make_doc("doc_complete_pipeline", pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE)
+    doc = _make_doc(
+        _id("doc_complete_pipeline"), pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE
+    )
     await graph_store.insert_document(doc)
 
     response = await lifecycle_service.set_lifecycle(
-        "doc_complete_pipeline",
+        _id("doc_complete_pipeline"),
         SetLifecycleRequest(action="archive"),
     )
 
@@ -152,12 +160,12 @@ async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_s
 
 
 async def test_bh_016_supersede_requires_existing_version(graph_store, lifecycle_service):
-    doc_old = _make_doc("doc_old")
+    doc_old = _make_doc(_id("doc_old"))
     await graph_store.insert_document(doc_old)
 
     with pytest.raises(DocumentNotFoundError) as exc_info:
         await lifecycle_service.set_lifecycle(
-            "doc_old",
+            _id("doc_old"),
             SetLifecycleRequest(action="supersede", new_version_id=_id("nonexistent_id")),
         )
 
@@ -167,12 +175,12 @@ async def test_bh_016_supersede_requires_existing_version(graph_store, lifecycle
 
 async def test_bh_016_supersede_requires_new_version_id_field(graph_store, lifecycle_service):
     """Supersede without new_version_id raises 400."""
-    doc = _make_doc("doc_no_version")
+    doc = _make_doc(_id("doc_no_version"))
     await graph_store.insert_document(doc)
 
     with pytest.raises(MissingFieldError):
         await lifecycle_service.set_lifecycle(
-            "doc_no_version",
+            _id("doc_no_version"),
             SetLifecycleRequest(action="supersede"),
         )
 
@@ -210,12 +218,12 @@ async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
 
 
 async def test_unknown_action_returns_400(graph_store, lifecycle_service):
-    doc = _make_doc("doc_unknown_action")
+    doc = _make_doc(_id("doc_unknown_action"))
     await graph_store.insert_document(doc)
 
     with pytest.raises(InvalidActionError) as exc_info:
         await lifecycle_service.set_lifecycle(
-            "doc_unknown_action",
+            _id("doc_unknown_action"),
             SetLifecycleRequest(action="nonexistent_action"),
         )
 
@@ -230,16 +238,16 @@ async def test_unknown_action_returns_400(graph_store, lifecycle_service):
 async def test_invalid_transition_includes_pipeline_status(graph_store, lifecycle_service):
     """InvalidLifecycleTransitionError detail includes pipeline_status."""
     doc = _make_doc(
-        "doc_pipe_check",
+        _id("doc_pipe_check"),
         lifecycle_status="archived",
         pipeline_status=PipelineStatus.INDEXING_COMPLETE,
     )
     await graph_store.insert_document(doc)
-    await graph_store.update_document("doc_pipe_check", {"lifecycle_status": "archived"})
+    await graph_store.update_document(_id("doc_pipe_check"), {"lifecycle_status": "archived"})
 
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
         await lifecycle_service.set_lifecycle(
-            "doc_pipe_check",
+            _id("doc_pipe_check"),
             SetLifecycleRequest(action="complete"),
         )
 

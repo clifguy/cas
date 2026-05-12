@@ -5,6 +5,7 @@ traverse (graph walk with deduplication), and discover deterministic stub.
 """
 
 import hashlib
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,8 @@ from sage.api.errors import (
 from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import ChainRequest, Document, Edge, LinkRequest, TraverseRequest
 
+_DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
 
 def _id(name: str) -> str:
     """Translate a short test name to a shape-conformant document ID.
@@ -27,8 +30,11 @@ def _id(name: str) -> str:
     ^[0-9a-f]{8}_[a-z0-9_]+$. Test fixtures use short readable names
     like "a1" or "doc_a"; this helper wraps them so the values still
     construct valid LinkRequest / TraverseRequest / ChainRequest
-    instances. Deterministic — the same name always yields the same id.
+    instances. Idempotent: an already-canonical id passes through
+    unchanged so wrapping is safe to apply at every call site.
     """
+    if _DOC_ID_RE.fullmatch(name):
+        return name
     return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
 
 
@@ -72,12 +78,12 @@ def _make_doc(
 
 
 async def test_bh_021_failed_doc_excluded_from_deterministic(graph_store, graph_ops_service):
-    doc = _make_doc("doc_failed", pipeline_status=PipelineStatus.FAILED)
+    doc = _make_doc(_id("doc_failed"), pipeline_status=PipelineStatus.FAILED)
     doc.pipeline_error = "LLM unavailable"
     await graph_store.insert_document(doc)
 
     with pytest.raises(PipelineIncompleteError) as exc_info:
-        await graph_ops_service.check_pipeline_for_retrieval("doc_failed")
+        await graph_ops_service.check_pipeline_for_retrieval(_id("doc_failed"))
     assert exc_info.value.status_code == 422
     assert exc_info.value.code == "pipeline_incomplete"
 
@@ -88,8 +94,8 @@ async def test_bh_021_failed_doc_excluded_from_deterministic(graph_store, graph_
 
 
 async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, graph_ops_service):
-    doc_function = _make_doc("doc_function")
-    doc_dep = _make_doc("doc_dep", pipeline_status=PipelineStatus.FAILED)
+    doc_function = _make_doc(_id("doc_function"))
+    doc_dep = _make_doc(_id("doc_dep"), pipeline_status=PipelineStatus.FAILED)
     doc_dep.pipeline_error = "indexing failure"
     await graph_store.insert_document(doc_function)
     await graph_store.insert_document(doc_dep)
@@ -97,17 +103,17 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, gra
     # Create depends_on edge
     edge = Edge(
         id=_eid("edge_dep_001"),
-        source_id="doc_function",
-        target_id="doc_dep",
+        source_id=_id("doc_function"),
+        target_id=_id("doc_dep"),
         edge_type=EdgeType.DEPENDS_ON,
         created_at=datetime.now(timezone.utc),
     )
     await graph_store.insert_edge(edge)
 
-    result = await graph_ops_service.check_preconditions("doc_function")
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
     assert result.satisfied is False
     assert len(result.checks) == 1
-    assert result.checks[0].target_id == "doc_dep"
+    assert result.checks[0].target_id == _id("doc_dep")
     assert result.checks[0].satisfied is False
     assert "pipeline_incomplete" in result.checks[0].actual
 
@@ -183,21 +189,21 @@ async def test_bh_032_edge_auto_generated_id(graph_store, graph_ops_service):
 
 
 async def test_bh_033_active_satisfies_dependency(graph_store, graph_ops_service):
-    doc_function = _make_doc("doc_function")
-    doc_dep = _make_doc("doc_dep", lifecycle_status="active")
+    doc_function = _make_doc(_id("doc_function"))
+    doc_dep = _make_doc(_id("doc_dep"), lifecycle_status="active")
     await graph_store.insert_document(doc_function)
     await graph_store.insert_document(doc_dep)
 
     edge = Edge(
         id=_eid("edge_dep_active"),
-        source_id="doc_function",
-        target_id="doc_dep",
+        source_id=_id("doc_function"),
+        target_id=_id("doc_dep"),
         edge_type=EdgeType.DEPENDS_ON,
         created_at=datetime.now(timezone.utc),
     )
     await graph_store.insert_edge(edge)
 
-    result = await graph_ops_service.check_preconditions("doc_function")
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
     assert result.satisfied is True
     assert result.checks[0].satisfied is True
 
@@ -208,21 +214,21 @@ async def test_bh_033_active_satisfies_dependency(graph_store, graph_ops_service
 
 
 async def test_bh_034_completed_satisfies_dependency(graph_store, graph_ops_service):
-    doc_function = _make_doc("doc_function")
-    doc_dep = _make_doc("doc_dep", lifecycle_status="completed")
+    doc_function = _make_doc(_id("doc_function"))
+    doc_dep = _make_doc(_id("doc_dep"), lifecycle_status="completed")
     await graph_store.insert_document(doc_function)
     await graph_store.insert_document(doc_dep)
 
     edge = Edge(
         id=_eid("edge_dep_completed"),
-        source_id="doc_function",
-        target_id="doc_dep",
+        source_id=_id("doc_function"),
+        target_id=_id("doc_dep"),
         edge_type=EdgeType.DEPENDS_ON,
         created_at=datetime.now(timezone.utc),
     )
     await graph_store.insert_edge(edge)
 
-    result = await graph_ops_service.check_preconditions("doc_function")
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
     assert result.satisfied is True
 
 
@@ -232,21 +238,21 @@ async def test_bh_034_completed_satisfies_dependency(graph_store, graph_ops_serv
 
 
 async def test_bh_035_archived_does_not_satisfy(graph_store, graph_ops_service):
-    doc_function = _make_doc("doc_function")
-    doc_dep = _make_doc("doc_dep", lifecycle_status="archived")
+    doc_function = _make_doc(_id("doc_function"))
+    doc_dep = _make_doc(_id("doc_dep"), lifecycle_status="archived")
     await graph_store.insert_document(doc_function)
     await graph_store.insert_document(doc_dep)
 
     edge = Edge(
         id=_eid("edge_dep_archived"),
-        source_id="doc_function",
-        target_id="doc_dep",
+        source_id=_id("doc_function"),
+        target_id=_id("doc_dep"),
         edge_type=EdgeType.DEPENDS_ON,
         created_at=datetime.now(timezone.utc),
     )
     await graph_store.insert_edge(edge)
 
-    result = await graph_ops_service.check_preconditions("doc_function")
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
     assert result.satisfied is False
     assert result.checks[0].actual == "archived"
 
@@ -257,21 +263,21 @@ async def test_bh_035_archived_does_not_satisfy(graph_store, graph_ops_service):
 
 
 async def test_bh_036_filed_does_not_satisfy(graph_store, extended_graph_ops_service):
-    doc_function = _make_doc("doc_function")
-    doc_dep = _make_doc("doc_dep", lifecycle_status="filed")
+    doc_function = _make_doc(_id("doc_function"))
+    doc_dep = _make_doc(_id("doc_dep"), lifecycle_status="filed")
     await graph_store.insert_document(doc_function)
     await graph_store.insert_document(doc_dep)
 
     edge = Edge(
         id=_eid("edge_dep_filed"),
-        source_id="doc_function",
-        target_id="doc_dep",
+        source_id=_id("doc_function"),
+        target_id=_id("doc_dep"),
         edge_type=EdgeType.DEPENDS_ON,
         created_at=datetime.now(timezone.utc),
     )
     await graph_store.insert_edge(edge)
 
-    result = await extended_graph_ops_service.check_preconditions("doc_function")
+    result = await extended_graph_ops_service.check_preconditions(_id("doc_function"))
     assert result.satisfied is False
     assert result.checks[0].actual == "filed"
 
@@ -869,15 +875,15 @@ async def test_unlink_nonexistent_edge_raises_404(graph_store, graph_ops_service
 
 async def test_get_edge_returns_edge(graph_store):
     """get_edge returns the Edge when it exists."""
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     edge = Edge(
         id=_eid("edge_get_test"),
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
         created_at=datetime.now(timezone.utc),
     )
@@ -886,8 +892,8 @@ async def test_get_edge_returns_edge(graph_store):
     result = await graph_store.get_edge(_eid("edge_get_test"))
     assert result is not None
     assert result.id == _eid("edge_get_test")
-    assert result.source_id == "doc_a"
-    assert result.target_id == "doc_b"
+    assert result.source_id == _id("doc_a")
+    assert result.target_id == _id("doc_b")
 
 
 async def test_get_edge_returns_none_for_missing(graph_store):
@@ -898,15 +904,15 @@ async def test_get_edge_returns_none_for_missing(graph_store):
 
 async def test_delete_edge_returns_true(graph_store):
     """delete_edge returns True and removes the row."""
-    doc_a = _make_doc("doc_a")
-    doc_b = _make_doc("doc_b")
+    doc_a = _make_doc(_id("doc_a"))
+    doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     edge = Edge(
         id=_eid("edge_del_test"),
-        source_id="doc_a",
-        target_id="doc_b",
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
         edge_type=EdgeType.REFERENCES,
         created_at=datetime.now(timezone.utc),
     )
