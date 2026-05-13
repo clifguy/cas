@@ -178,3 +178,42 @@ async def test_di_006_services_functional_with_stubs(minimal_vault_config_dict, 
         assert owner.display_name == config.vault.owner
     finally:
         await services.graph_store.close()
+
+
+# ---------------------------------------------------------------------------
+# DI-007: SAGE_TEST_STUB_PROVIDERS=1 stubs the abstraction provider even
+# when the vault config would otherwise enable a real model (T-0029).
+# ---------------------------------------------------------------------------
+
+
+async def test_di_007_stub_env_var_overrides_qwen3_config(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """When SAGE_TEST_STUB_PROVIDERS=1 is set and the vault config enables
+    abstraction with a real model id, initialize_services must still
+    construct StubAbstractionProvider rather than loading Qwen3.
+
+    Regression guard for the T-0029 interim guardrail: the kernel-panic
+    failure profile in F-8 hinges on a second Qwen3 process loading
+    alongside the running MCP server. Tests must not be a path to that.
+    """
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    cfg = dict(minimal_vault_config_dict)
+    # Force the config branch that previously would have constructed
+    # Qwen3AbstractionProvider: enabled=True AND a non-null model id.
+    cfg_abstraction = dict(cfg.get("abstraction", {}))
+    cfg_abstraction["enabled"] = True
+    cfg_abstraction["model"] = "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit"
+    cfg["abstraction"] = cfg_abstraction
+    config = VaultConfig.model_validate(cfg)
+
+    services = await initialize_services(config)
+
+    try:
+        abstract = services.ingestion_service._abstraction
+        assert isinstance(abstract, StubAbstractionProvider), (
+            "SAGE_TEST_STUB_PROVIDERS=1 must override the config-driven "
+            "Qwen3 path; got %r" % type(abstract).__name__
+        )
+    finally:
+        await services.graph_store.close()

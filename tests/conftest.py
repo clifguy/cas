@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,14 @@ import pytest
 import yaml
 
 from tests.helpers.schema_validation import SchemaValidator
+
+# Default to stub providers on every pytest invocation. Stubs both the
+# embedding provider (T-0018: avoids accidental ~270 MB nomic loads) and the
+# abstraction provider (T-0029: prevents Qwen3 ~16GB MLX/Metal loads in tests
+# alongside a running MCP server, which is the trigger profile documented in
+# F-8). setdefault preserves explicit overrides, including per-test
+# monkeypatch.delenv calls (see test_di_005).
+os.environ.setdefault("SAGE_TEST_STUB_PROVIDERS", "1")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"

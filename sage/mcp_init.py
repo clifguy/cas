@@ -116,16 +116,23 @@ async def initialize_services(
         else:
             embedding_provider = NomicEmbeddingProvider()
 
-    # Abstraction provider: injected, or Qwen3/stub from config
+    # Abstraction provider: injected, or Qwen3/stub from config.
+    # SAGE_TEST_STUB_PROVIDERS=1 forces the stub regardless of config so that
+    # tests cannot accidentally load Qwen3 (~16GB MLX/Metal) alongside the
+    # running MCP server. The env var was originally added for nomic (T-0018)
+    # and is extended to abstraction here as the interim guardrail for T-0029
+    # against the kernel-panic-class failure documented in F-8.
     if abstraction_provider is None:
-        if config.abstraction.enabled and config.abstraction.model:
+        if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1" or not (
+            config.abstraction.enabled and config.abstraction.model
+        ):
+            abstraction_provider = StubAbstractionProvider()
+        else:
             from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 
             abstraction_provider = Qwen3AbstractionProvider(
                 model_id=config.abstraction.model,
             )
-        else:
-            abstraction_provider = StubAbstractionProvider()
 
     # Source adapters
     source_adapters = {
