@@ -105,13 +105,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/ScanResponse"
         "400":
-          description: Directory not found or not readable.
+          description: >-
+            `invalid_directory`: `directory` does not exist or is not
+            readable.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault with that id.
           content:
             application/json:
               schema:
@@ -176,13 +179,16 @@ paths:
                   See components.schemas.ProgressEvent and
                   components.schemas.SummaryEvent.
         "400":
-          description: No files selected for ingestion.
+          description: >-
+            `empty_file_list`: `files` was empty. Choose at least one
+            file or skip the call.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault with that id.
           content:
             application/json:
               schema:

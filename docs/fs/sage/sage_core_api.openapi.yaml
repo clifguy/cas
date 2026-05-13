@@ -117,21 +117,48 @@ paths:
       summary: Execute a lifecycle transition on a document.
       description: >-
         Transitions a document through the vault's lifecycle state machine.
-        Valid actions depend on the document's current state:
-
-        - active → supersede, complete, archive
-
-        - completed → archive
-
-        - archived → reactivate
 
 
-        Vaults may define additional domain-specific states and transitions
-        (e.g., PIM Health adds "filed").
+        **The action vocabulary is vault-config-defined**, not a fixed
+        SAGE-wide set. Read `lifecycle.transitions` in the vault config
+        (`GET /sage_vaults/{vault_id}/config`) for the authoritative list
+        of `(from_state, action, to_state, creates_edge)` tuples in the
+        target vault. Two examples seen in practice:
+
+        - `cas` vault: `ingest`, `supersede`, `complete`, `archive`,
+          `reactivate`.
+
+        - `pim_health` vault: `ingest`, `supersede`, `complete`,
+          `archive`, `reactivate`, `file`.
 
 
-        The supersede action requires new_version_id to create the supersedes
-        edge linking the replacement document to this one.
+        Neither vault defines `activate`; the action for
+        `archived → active` is `reactivate`.
+
+
+        **The `supersede` action is the canonical atomic form for
+        replacing one document with another.** It both transitions the
+        predecessor (`active → archived`) AND creates the `supersedes`
+        edge (new → old) in a single operation. The alternative two-step
+        pattern -- `POST /edges` with `edge_type=supersedes` followed by
+        `POST /documents/{id}/lifecycle` with `action=archive` -- ends in
+        the same state but is required only when patching up an
+        already-archived predecessor whose supersedes edge is missing.
+        `POST /edges` with `edge_type=supersedes` does **not**
+        auto-transition the predecessor's lifecycle. `creates_edge` in
+        the vault config reveals which actions wire edges atomically; in
+        all currently-shipped vault configs, only `supersede` does.
+
+
+        `supersede` is defined only as a transition out of `active`. To
+        supersede a predecessor in `completed`, `filed`, or any other
+        non-active state, run the archive → reactivate dance first, then
+        either set lifecycle with `action=supersede` against the
+        predecessor, or call `POST /documents` (ingest) with
+        `supersedes_document_id=<predecessor_id>` which applies the same
+        atomic transition synchronously with record insertion. A direct
+        call against a non-active predecessor returns
+        `supersede_target_not_active`.
       tags: [Document Lifecycle]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -150,7 +177,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/SetLifecycleResponse"
         "400":
-          description: Invalid action value.
+          description: >-
+            `invalid_action`: the `action` string is not in any
+            transition table for this vault.
           content:
             application/json:
               schema:
@@ -169,10 +198,27 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
-            Transition not valid from the document's current lifecycle state.
-            The request is well-formed, but the state machine rejects it.
-            Detail includes current_state, attempted_action, and valid_actions
-            (list of actions valid from the current state).
+            `invalid_lifecycle_transition`: action is known but not
+            valid from the document's current lifecycle state. Detail
+            includes `current_state`, `attempted_action`, and
+            `valid_actions` (the list of actions valid from the current
+            state).
+
+
+            `supersede_target_not_active`: `action=supersede` was
+            requested against a document not in `active`. Run the
+            archive → reactivate dance first.
+
+
+            `pipeline_incomplete`: emitted by some transitions (e.g.
+            `complete`) when the document's `pipeline_status` is not yet
+            terminal.
+
+
+            `identical_content_supersede`: `action=supersede` with
+            `new_version_id` whose content hash matches the
+            predecessor's; supersede chains require distinct content
+            per step.
           content:
             application/json:
               schema:
@@ -183,18 +229,35 @@ paths:
       operationId: update_metadata
       summary: Modify mutable metadata fields on a document.
       description: >-
-        Partial update of mutable metadata fields. Only the fields present
-        in the request body are modified; absent fields are unchanged.
+        Partial update of mutable metadata fields. Only the fields
+        present in the request body are modified; absent fields are
+        unchanged.
 
 
-        Mutable fields: title, tags, project, doc_type, authority_scope,
-        version_label.
+        Mutable fields: `title`, `tags`, `project`, `doc_type`,
+        `authority_scope`, `version_label`, `document_date`.
 
 
-        Immutable fields (id, source_type, source_path, created_by,
-        created_at, source_content_hash, adapter_version) cannot be modified
-        through this endpoint. System-managed fields (last_modified_by,
-        updated_at) are set automatically by the API.
+        Immutable fields (`id`, `source_type`, `source_path`,
+        `created_by`, `created_at`, `source_content_hash`,
+        `adapter_version`) cannot be modified through this endpoint.
+        System-managed fields (`last_modified_by`, `updated_at`) are
+        set automatically.
+
+
+        Per CAS-ADR-021, any successful call sets
+        `metadata_confirmed=true` on the document (the document leaves
+        the metadata-review queue if it was there), even when only one
+        field is updated. To inspect documents still awaiting
+        confirmation, use `GET /pending-metadata`.
+
+
+        The `tags` argument is a full-replacement list, not a delta;
+        pass the complete intended list. The `doc_type` value must be
+        one of the values defined under `document_types.doc_types` in
+        the vault config -- the set is vault-config-defined; query
+        `GET /sage_vaults/{vault_id}/config` for the authoritative
+        list.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -225,7 +288,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault or document not found.
+          description: >-
+            `document_not_found`: no document with that id; or vault
+            not found.
           content:
             application/json:
               schema:
@@ -278,6 +343,20 @@ paths:
 
 
         Records provenance: source_content_hash, adapter_version, created_by.
+
+
+        Per CAS-ADR-021, callers are authoritative for metadata. Pass
+        prepared values in the request body's metadata fields and leave
+        `needs_review` at its default `false`; the document is
+        committed with caller-supplied values authoritative and
+        `metadata_confirmed=true`. Set `needs_review=true` to defer to
+        the metadata-review queue: filename inference runs, parsed
+        values populate fields the caller did not supply (the specific
+        fields are vault-config-defined; see
+        `metadata_extraction.filename_extraction` in
+        `GET /sage_vaults/{vault_id}/config`), and the document is
+        held with `metadata_confirmed=false` until a reviewer confirms
+        via `PATCH /documents/{id}/metadata`.
       tags: [Ingestion]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -290,39 +369,56 @@ paths:
       responses:
         "201":
           description: >-
-            Document record created; ingestion pipeline in progress.
-            The pipeline_status field indicates current stage.
+            Document record created. For the REST surface, the pipeline
+            has reached a terminal `pipeline_status` value
+            (`abstraction_complete`, `abstraction_skipped`, or
+            `failed`) by the time this response returns.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
-          description: Invalid adapter or configuration.
+          description: >-
+            `adapter_not_found`: `adapter` is not an enabled adapter on
+            this vault. See `source_adapters.adapters` in the vault
+            config.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `source_file_not_found`: `source` does not resolve to a
+            readable file on disk; or vault not found.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
-            Duplicate content, or supersede target not active, or
-            supersede attempted with identical content. Detail includes
-            the relevant predecessor/existing document ID and the reason
-            code. For plain duplicate content, use `force: true` to
+            `duplicate_content`: a document with the same `source_path`
+            and content hash already exists. Use `force: true` to
             bypass detection and re-run the pipeline.
+
+
+            `supersede_target_not_active`: `supersedes_document_id` was
+            set but the predecessor is not in `active`. For completed,
+            filed, or otherwise non-active predecessors, run the
+            archive → reactivate dance via
+            `POST /documents/{id}/lifecycle` before retrying.
+
+
+            `identical_content_supersede`: the new file's content hash
+            matches the predecessor's; supersede chains require
+            distinct content per step.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "422":
           description: >-
-            Ingestion failure. The source adapter could not produce a valid
-            projection (file not found, unsupported format, corrupt content).
+            Ingestion failure. The source adapter could not produce a
+            valid projection (unsupported format, corrupt content).
           content:
             application/json:
               schema:
@@ -443,16 +539,51 @@ paths:
       operationId: link
       summary: Create a typed graph edge between two documents.
       description: >-
-        Creates a directed edge from source_id to target_id with the
-        specified edge type. Optional notes and rationale fields provide
-        human-readable context.
+        Creates a directed edge from `source_id` to `target_id` with the
+        specified edge type. Optional `notes` and `rationale` fields
+        provide human-readable context.
+
+
+        **For `supersedes` edges, prefer `POST /documents/{id}/lifecycle`
+        with `action=supersede`** (or `POST /documents` with
+        `supersedes_document_id=...` when the successor has not yet been
+        ingested). Those operations wire the edge AND archive the
+        predecessor atomically. `POST /edges` with `edge_type=supersedes`
+        creates the edge alone and does **not** transition the
+        predecessor's lifecycle; reach for it only when stitching a
+        missing edge into a chain whose lifecycle states are already
+        correct.
 
 
         Edge type semantics are defined in the Edge Type Taxonomy (SAGE
-        Architecture Reference Section 4.6). The edge is created directly
-        in the production edge table (not staged) regardless of the vault's
-        edge inference tier assignments, because this is an explicit
-        human-or-agent action, not an inference.
+        Architecture Reference Section 4.6). The edge is created
+        directly in the production edge table (not staged) regardless
+        of the vault's edge inference tier assignments, because this is
+        an explicit human-or-agent action, not an inference.
+
+
+        Per CAS-ADR-017, each edge type has a registry-declared
+        `resolution_policy` (see `edge_type_registry.schema.json`) that
+        dictates which anchor fields are required or forbidden:
+
+        - `none` (supersedes, retracts, merged_from): meta-edges; no
+          anchor fields. `retracts` additionally takes a one-sided
+          `source_valid_from_version` (anchor in the retracting chain)
+          and `retracted_edge_id` (the edge being retracted) instead of
+          a `target_id`.
+
+        - `transitive_source` (derived_from): requires
+          `source_valid_from_version`; no target anchor.
+
+        - `transitive_both` (covers, references, bundles_with,
+          depends_on, instantiated_from): requires both
+          `source_valid_from_version` and `target_valid_from_version`.
+
+
+        Anchor values are `documents.id` strings, not version labels --
+        passing a version label (e.g. `"v9.0"`) returns
+        `edge_anchor_policy_violation` with a "does not reference a
+        known document" detail.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -471,15 +602,29 @@ paths:
                 $ref: "#/components/schemas/Edge"
         "400":
           description: >-
-            Invalid edge type, self-referential edge, or chain-scoped
-            resolution contract violation (CAS-ADR-017). Error codes:
-            EDGE_ANCHOR_POLICY_VIOLATION (anchor fields missing,
-            forbidden, or not in lineage for the edge type's
-            resolution_policy); RETRACT_TARGET_NOT_EDGE
-            (retracted_edge_id does not identify an existing edge in
-            this vault); MERGED_FROM_VALIDATION (merged_from chain-head
-            / chain-terminal validation failed); TBD_POLICY_EDGE
-            (attempt to create an edge whose registry policy is TBD).
+            One of the following error codes:
+
+
+            `edge_anchor_policy_violation`: anchor field missing where
+            required, present where forbidden, or pointing at a
+            document not in the endpoint's supersedes lineage.
+
+
+            `retract_target_not_edge`: `retracted_edge_id` does not
+            identify an existing edge in this vault.
+
+
+            `merged_from_validation`: a `merged_from` edge violates the
+            merge-tombstone invariants (chain-head / chain-terminal
+            validation failed).
+
+
+            `tbd_policy_edge`: the requested `edge_type` has no shipped
+            resolution policy and cannot be created.
+
+
+            `self_referential_edge`: `source_id` and `target_id`
+            resolve to the same document.
           content:
             application/json:
               schema:
@@ -502,13 +647,36 @@ paths:
       operationId: traverse
       summary: Walk the graph from a starting document.
       description: >-
-        Traverses the graph from a starting document, following edges of
-        the specified type(s) in the given direction, up to the specified
-        depth. Uses recursive CTEs against the graph store.
-
-
+        Traverses the graph from a starting document, following edges
+        of the specified type(s) in the given direction, up to the
+        specified depth. Uses recursive CTEs against the graph store.
         Returns a tree of traversal nodes, each containing the document
         summary, the edge that led to it, and the traversal depth.
+
+
+        Traversal honors chain-scoped edge resolution per CAS-ADR-017:
+        anchor fields determine which edges are visible from the query
+        version's lineage; `retracts` edges can suppress downstream
+        edges; `merged_from` tombstones suppress predecessor-chain
+        edges downstream of the termination point.
+
+
+        **Outbound dedup on `transitive_both` edges.** For
+        `transitive_both` edge types (`covers`, `references`,
+        `bundles_with`, `depends_on`, `instantiated_from`), outbound
+        traversal deduplicates by target document: at most one
+        representative edge per (source-chain, target) pair is
+        returned, with chain-scoped resolution selecting the winner
+        from the query position's lineage. Distinct edges sourced from
+        different chain members but pointing at the same target are
+        masked. For comprehensive enumeration of every edge into a
+        target chain, traverse **inbound** from the target instead. The
+        `edge_counts.{edge_type}` field in the response reflects the
+        total visible edges from the query position, including those
+        masked by dedup; if `edge_counts > len(nodes)`, the result has
+        masked siblings. `supersedes` is point-to-point and not subject
+        to this dedup; the rule applies only to the five
+        `transitive_both` edge types.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -543,14 +711,28 @@ paths:
       operationId: chain
       summary: Walk an edge chain to both ends from any starting document.
       description: >-
-        Follows edges of a single type in both directions from the starting
-        document, collecting all reachable nodes into an ordered list. Returns
-        positional metadata (head, tail, query position) and a linearity flag.
+        Follows edges of a single type in both directions from the
+        starting document, collecting all reachable nodes into an
+        ordered list. Returns positional metadata (head, tail, query
+        position) and a `linearity` flag.
 
 
-        Designed for version history retrieval (supersedes chains) but works
-        with any edge type that forms a linear or near-linear chain. Uses a
-        single recursive CTE round-trip regardless of chain length.
+        Designed for version history retrieval (supersedes chains) but
+        works with any edge type that forms a linear or near-linear
+        chain. Uses a single recursive CTE round-trip regardless of
+        chain length.
+
+
+        The result is symmetric: any chain member returns the full
+        ordered chain with that member's position indicated. A document
+        with no edges of the requested type returns a single-entry
+        chain (the document itself as both head and tail).
+
+
+        `linearity` reports whether the chain is strictly linear,
+        branched (multiple successors), or forks somewhere in the
+        lineage -- relevant when chasing supersedes chains that have
+        not yet been merged.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -574,7 +756,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault or starting document not found.
+          description: >-
+            `document_not_found`: no document with that id; or vault
+            not found.
           content:
             application/json:
               schema:
@@ -585,20 +769,28 @@ paths:
       operationId: check_preconditions
       summary: Verify that all depends_on targets exist and are in valid state.
       description: >-
-        Checks all depends_on edges originating from the specified function
-        document. For each dependency, verifies that the target document
-        exists and is in a valid lifecycle state (active or completed, not
-        archived).
+        Iterates the document's outbound `depends_on` edges; for each
+        target, verifies lifecycle status is `active` or `completed`
+        (not `archived`) and that `pipeline_status` is terminal.
+        Returns a `satisfied` boolean plus a per-edge breakdown of
+        failing reasons (e.g. predecessor still in projection, target
+        archived) so the caller can act on the gap rather than
+        re-querying each dependency.
 
 
-        Returns an overall pass/fail and individual dependency results.
+        Despite the path parameter name `function_id`, this operation
+        works on any document with outbound `depends_on` edges, not
+        only documents typed as "function".
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
         - name: function_id
           in: path
           required: true
-          description: Document ID of the function whose preconditions to check.
+          description: >-
+            Document ID of the document whose preconditions to check.
+            Parameter is named `function_id` for historical reasons;
+            any document with outbound `depends_on` edges is valid.
           schema:
             type: string
       responses:
@@ -609,7 +801,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/PreconditionResult"
         "404":
-          description: Vault or function document not found.
+          description: >-
+            `document_not_found`: no document with that id; or vault
+            not found.
           content:
             application/json:
               schema:
@@ -624,9 +818,18 @@ paths:
       operationId: register_user
       summary: Register a user (human or agent) in the vault's user table.
       description: >-
-        Registers a new actor for provenance tracking and access control.
-        Both human users and agent identities are registered through this
-        endpoint. The user ID is assigned by SAGE at registration time.
+        Registers a new actor for provenance tracking and access
+        control. Both human users and agent identities are registered
+        through this endpoint. The user ID is assigned by SAGE at
+        registration time and is the canonical attribution source: it
+        can be used as the `created_by` value on subsequent ingest
+        calls and is recorded as the actor on lifecycle and edge
+        mutations. Ad-hoc strings in `created_by` are accepted but are
+        not linked to a registered user record.
+
+
+        The `type` field (`human` or `agent`) is informational
+        (attribution audit) and does not gate any operation's behavior.
       tags: [Access Control]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -661,11 +864,18 @@ paths:
       operationId: set_editors
       summary: Set the editor list for a document.
       description: >-
-        Replaces the full editor list for a document. Sending an empty
-        array restores default-open access (any registered user can
-        read and write). Sending one or more user IDs restricts write
-        access to that set; all other registered users become read-only
-        for this document.
+        Replaces the full editor list for a document wholesale (not a
+        delta). Sending an empty array restores default-open access
+        (any registered user can read and write). Sending one or more
+        user IDs restricts write access to that set; all other
+        registered users become read-only for this document.
+
+
+        Editors are referenced by their registered user IDs (see
+        `POST /sage_vaults/{vault_id}/users`). Vault-wide defaults for
+        the editor model live under `access_control_defaults` in the
+        vault config; this operation overrides the default at the
+        per-document level.
       tags: [Access Control]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -690,7 +900,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault or document not found.
+          description: >-
+            `document_not_found`: no document with that id; or vault
+            not found.
           content:
             application/json:
               schema:
@@ -700,9 +912,10 @@ paths:
       operationId: get_editors
       summary: Return the editor list for a document.
       description: >-
-        Returns the list of users registered as editors. An empty list
-        means the document is in default-open mode (any registered user
-        can write).
+        Returns the list of users registered as editors for this
+        document. An empty list means the document is in default-open
+        mode (any registered user can write). Read-only operation; no
+        side effects.
       tags: [Access Control]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -715,7 +928,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/EditorList"
         "404":
-          description: Vault or document not found.
+          description: >-
+            `document_not_found`: no document with that id; or vault
+            not found.
           content:
             application/json:
               schema:
@@ -730,10 +945,17 @@ paths:
       operationId: export_projection
       summary: Write stored projection to a Markdown file for inspection.
       description: >-
-        Exports the stored projection text for a document to a specified
-        file path. Used for debugging and manual inspection of the
-        adapter's output. The projection is the structured plain-text
-        rendering produced by the source adapter during ingestion.
+        Exports the stored projection text for a document to a
+        specified file path inside the vault's `storage_root`. Used for
+        debugging and manual inspection of the adapter's output. The
+        projection is the structured plain-text rendering produced by
+        the source adapter during ingestion.
+
+
+        `output_path` may be relative (resolved against `storage_root`)
+        or absolute, but it must resolve to a location inside the
+        vault's `storage_root`. Targets outside the vault tree are
+        refused with `path_traversal_denied`.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -758,8 +980,24 @@ paths:
                   output_path:
                     type: string
                     description: Absolute path of the written file.
+        "400":
+          description: >-
+            `path_traversal_denied`: `output_path` resolves outside the
+            vault's `storage_root`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault or document not found, or no projection stored.
+          description: >-
+            `document_not_found`: no document with that id.
+
+
+            `no_projection`: the document exists but has no stored
+            projection (e.g. ingestion failed mid-pipeline).
+
+
+            Or vault not found.
           content:
             application/json:
               schema:
@@ -770,10 +1008,23 @@ paths:
       operationId: eval_retrieval
       summary: Run retrieval health assertions against the vault.
       description: >-
-        Executes a suite of retrieval assertions configured for the vault
-        and returns a pass/fail health report. Each assertion tests whether
-        a known query returns expected documents within the top-k results.
-        Used as a smoke test after bulk ingestion or configuration changes.
+        Loads assertions from the YAML file referenced in
+        `retrieval_health.assertions_file` of the vault config, runs
+        each as a semantic search, and returns a pass/fail report.
+        Each assertion is a `(query, expected_document_id, top_k)`
+        triple: the assertion passes when the expected document
+        appears within the top-k results for the query. Failures
+        report the actual rank (out of `top_k * 5`) when the expected
+        document was found beyond top-k, or `null` when it was not
+        found at all. Used as a smoke test after bulk ingestion or
+        configuration changes.
+
+
+        The assertions YAML file is resolved relative to the vault's
+        `storage_root`. The file must have a top-level `assertions:`
+        key whose value is a list of objects; each object must include
+        `query` and `expected_document_id` and may include `top_k`
+        (default 10).
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -784,8 +1035,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EvalRetrievalResult"
+        "400":
+          description: >-
+            `assertions_file_invalid`: the referenced YAML is malformed
+            or has the wrong structure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `assertions_not_configured`: the vault config has no
+            `retrieval_health.assertions_file` entry.
+
+
+            `assertions_file_not_found`: the configured assertions
+            file does not exist under the vault's `storage_root`.
+
+
+            Or vault not found.
           content:
             application/json:
               schema:
@@ -796,10 +1064,16 @@ paths:
       operationId: refresh_views
       summary: Regenerate symlink-based browsable folder views.
       description: >-
-        Optional utility. Regenerates filesystem symlink directories
-        organized by doc_type or lifecycle status from the current graph
-        state. The human application and API are the primary interfaces;
-        symlink views are a convenience for filesystem-level browsing.
+        Drops and recreates the symlink trees under the vault's
+        `storage_root` (typically `by_doc_type/` and `by_lifecycle/`)
+        organized by the current graph state. Useful after bulk
+        metadata updates that moved documents between `doc_type` or
+        `lifecycle_status` buckets.
+
+
+        The symlink views exist for human navigation in Finder or a
+        file browser; no SAGE operation consumes them. The API is the
+        primary interface for programmatic access.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -859,14 +1133,11 @@ paths:
       summary: Create a new vault from a full configuration object.
       description: >-
         Validates the supplied configuration against the vault config
-        schema (docs/fs/sage/vault_config.schema.json), creates the
+        schema (`docs/fs/sage/vault_config.schema.json`), creates the
         vault directory hierarchy, writes the YAML config to disk,
         initializes services, registers the vault in the running
-        instance, and bootstraps the owner user.
-
-
-        Vault id collisions return 409. Validation failures return 400
-        with a list of failed schema constraints.
+        instance, and bootstraps the owner user. The new vault is
+        usable immediately; no server restart is required.
       tags: [Vault Management]
       requestBody:
         required: true
@@ -882,13 +1153,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/VaultSummary"
         "400":
-          description: Configuration failed validation.
+          description: >-
+            `vault_config_validation_error`: the supplied configuration
+            failed schema validation (detail includes the list of
+            failed constraints).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Vault id already exists in the registry.
+          description: >-
+            `vault_already_exists`: a vault with the requested `id` is
+            already registered.
           content:
             application/json:
               schema:
@@ -901,13 +1177,16 @@ paths:
       description: >-
         Aggregates document, edge, storage, and pipeline-status counts
         from the graph store and content store. Used by the CAS
-        Application Dashboard view.
+        Application Dashboard view. Inexpensive; safe to poll.
 
 
-        Storage figures: lancedb_size_bytes is computed by walking the
-        on-disk LanceDB directory; lancedb_chunk_count is the row count
-        from the chunks table. sqlite_size_bytes covers the graph.db
-        file (and WAL/SHM siblings when present in the MCP variant).
+        Response contents: total document count; counts per lifecycle
+        state; counts per `doc_type`; counts per `pipeline_status`;
+        storage figures (`lancedb_size_bytes` is computed by walking
+        the on-disk LanceDB directory, `lancedb_chunk_count` is the
+        row count from the chunks table, `sqlite_size_bytes` covers
+        the graph.db file and WAL/SHM siblings when present in the MCP
+        variant); and health indicators.
 
 
         Health indicators include pending metadata reviews, pending
@@ -936,10 +1215,41 @@ paths:
       summary: Return the full vault configuration.
       description: >-
         Returns the configuration as a JSON object conforming to
-        vault_config.schema.json (docs/fs/sage/). Section structure
-        follows the schema: vault, document_types, lifecycle,
-        source_adapters, metadata_extraction, edge_inference,
-        abstraction, access_control_defaults, retrieval_health.
+        `docs/fs/sage/vault_config.schema.json`. Section structure
+        follows the schema: `vault`, `document_types`, `lifecycle`,
+        `source_adapters`, `metadata_extraction`, `edge_inference`,
+        `abstraction`, `access_control_defaults`, `retrieval_health`.
+
+
+        **This is the authoritative source for vault-config-defined
+        vocabulary that other operations depend on.** Read this when
+        you need:
+
+        - The valid `action` vocabulary for
+          `POST /documents/{id}/lifecycle` (under
+          `lifecycle.transitions`; each entry includes `from_state`,
+          `action`, `to_state`, `creates_edge`).
+
+        - The valid `doc_type` values for
+          `PATCH /documents/{id}/metadata` or for filtering
+          `POST /discover` (under `document_types.doc_types`).
+
+        - The enabled source adapters for `POST /documents` (ingest)
+          and `POST /parse-filename` (under
+          `source_adapters.adapters`).
+
+        - The filename-parsing pattern and segment fields used by
+          `POST /parse-filename` (under
+          `metadata_extraction.filename_extraction`).
+
+        - The edge-inference tier assignments relevant to
+          `GET /staging-edges` (under
+          `edge_inference.tier_assignments`).
+
+
+        The returned dict is the live in-memory config; on-disk edits
+        to `vault_config.yaml` made outside the running server are not
+        reflected until the vault is reloaded.
       tags: [Vault Management]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -971,14 +1281,18 @@ paths:
         must supply the complete section.
 
 
-        After validation, the YAML file is rewritten and the vault is
-        reloaded in the registry (services reinitialized against the
-        new config).
+        After validation, the YAML file is rewritten and the running
+        config is updated in place. Subsequent calls see the new
+        vocabulary immediately; a separate vault reload is only
+        required when external processes edited `vault_config.yaml`
+        outside the running server.
 
 
-        Destructive changes (removing a doc_type or lifecycle state
-        that still has documents attached) are rejected with 409 and a
-        warnings list unless the caller passes ?force=true.
+        Destructive changes (removing a `doc_type` or lifecycle state
+        that still has documents attached) are rejected with 409 and
+        a warnings list unless the caller passes `?force=true`.
+        Changing `vault.id` is never permitted, even with `force`; use
+        `POST /sage_vaults` to create a new vault instead.
       tags: [Vault Management]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1006,7 +1320,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/UpdateVaultConfigResponse"
         "400":
-          description: vault.id mutation attempted, or merged config failed validation.
+          description: >-
+            `vault_config_validation_error`: the merged config failed
+            schema validation, an unknown section name was passed, or
+            the request attempts to change `vault.id`.
           content:
             application/json:
               schema:
@@ -1018,7 +1335,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Destructive change without force=true.
+          description: >-
+            `destructive_config_change`: the update would orphan
+            documents (removed `doc_type` or lifecycle state still has
+            documents attached). Pass `force=true` to proceed; the
+            warnings then appear in the success response.
           content:
             application/json:
               schema:
@@ -1030,10 +1351,19 @@ paths:
       summary: Bulk hash existence check against the graph store.
       description: >-
         For each supplied SHA-256 hash, returns whether it matches an
-        existing document and, if so, the document id. Used during the
-        directory scan flow to differentiate new files from
-        already-ingested ones before showing per-file ingestion
-        decisions to the user.
+        existing document and, if so, the matching document's `id` and
+        `source_path`. Used during the directory-scan flow to
+        differentiate new files from already-ingested ones before
+        showing per-file ingestion decisions to the user.
+
+
+        Response is a dict keyed by the input hash; missing hashes are
+        simply absent from the result. The canonical request form is
+        the prefixed `sha256:<hex>` (matching `ContentHashStr`). The
+        REST endpoint may also accept bare hex strings (the form
+        `POST /documents` emits in its response payload) without
+        rewriting them, so callers can round-trip ingest results
+        directly. Output document records carry the prefixed form.
       tags: [Vault Management]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1069,11 +1399,28 @@ paths:
       operationId: list_staging_edges
       summary: List Tier 2 inferred edges awaiting review.
       description: >-
-        Returns staging edges produced by post-ingest edge inference
-        (filename_code_match and other Tier 2 strategies). These are
-        proposed but not yet committed to the production edge table;
-        the user reviews them in the Edge Review queue and either
-        confirms (promote to production) or dismisses (delete).
+        SAGE's edge-inference subsystem runs edges through tiers
+        defined in `edge_inference.tier_assignments` of the vault
+        config:
+
+        - **Tier 1** (e.g. `supersedes` via version_chain,
+          `sync_target` via re_ingestion): high-confidence inferences.
+          Created directly as production edges; do not appear here.
+
+        - **Tier 2** (e.g. `references` via content_reference,
+          `covers` via filename_code_match): inferred edges that
+          require human review. Land in the staging-edge table;
+          surfaced by this operation until confirmed or dismissed.
+
+        - **Tier 3**: agent-supplied edges (`derived_from`,
+          `depends_on`); not inferred, so do not pass through staging.
+
+
+        Each staging edge carries the source/target ids, edge_type,
+        and the inference rule + evidence that produced it. The result
+        list groups by source document
+        (`staging_review_grouping=by_source_document`) so a reviewer
+        can sweep all candidate edges from one document together.
       tags: [Staging Edges]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1098,9 +1445,13 @@ paths:
       operationId: confirm_staging_edge
       summary: Confirm a staging edge by promoting it to a production edge.
       description: >-
-        Inserts a production Edge with a fresh id mirroring the staging
-        edge's source/target/edge_type, copies inference_evidence into
-        the new edge's rationale, then deletes the staging edge.
+        Inserts a production `Edge` with a fresh id mirroring the
+        staging edge's `source_id`, `target_id`, and `edge_type`,
+        copies `inference_evidence` into the new edge's `rationale`,
+        then deletes the staging edge. The returned response carries
+        the production `edge_id`, which is **distinct from the staging
+        id passed in** -- staging and production tables do not share
+        an id space.
       tags: [Staging Edges]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1118,7 +1469,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/StagingEdgeConfirmResponse"
         "404":
-          description: Staging edge or vault not found.
+          description: >-
+            `staging_edge_not_found`: the id is unknown (already
+            confirmed, already dismissed, or never existed); or vault
+            not found.
           content:
             application/json:
               schema:
@@ -1132,6 +1486,15 @@ paths:
         Deletes the staging edge from the staging table. No production
         edge is created. Used when the inferred edge is incorrect or
         not useful.
+
+
+        Dismissing the edge does not register a "do not re-stage"
+        decision: the underlying inference rule is not re-applied for
+        the same `(source_id, target_id, edge_type)` combination
+        during the current ingest cycle, but a future re-ingest that
+        re-triggers the same inference rule will re-stage the
+        candidate. To make a dismissal permanent, change the source
+        document's metadata so the rule no longer matches.
       tags: [Staging Edges]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1149,7 +1512,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/StagingEdgeDismissResponse"
         "404":
-          description: Staging edge or vault not found.
+          description: >-
+            `staging_edge_not_found`: the id is unknown (already
+            confirmed, already dismissed, or never existed); or vault
+            not found.
           content:
             application/json:
               schema:
@@ -1164,16 +1530,25 @@ paths:
       operationId: list_pending_metadata
       summary: List documents whose extracted metadata is unconfirmed.
       description: >-
-        Returns documents with metadata_confirmed=False. Each item
-        includes the full Document record plus a per-field
-        ExtractedField annotation (value + source: "filename",
-        "content", or "default"; optionally an alt_value/alt_source
-        for fields with a secondary candidate, e.g. title from content
-        with filename as alternative).
+        Returns documents with `metadata_confirmed=false`. Each item
+        includes the full `Document` record plus a per-field
+        `ExtractedField` annotation (`value` + `source`: `"filename"`,
+        `"content"`, or `"default"`; optionally an
+        `alt_value`/`alt_source` for fields with a secondary
+        candidate, e.g. title from content with filename as
+        alternative). Used by the Metadata Review queue to drive the
+        per-document review workflow.
 
 
-        Used by the Metadata Review queue to drive the per-document
-        review workflow.
+        Per CAS-ADR-021, a document is pending typically because it
+        was ingested with `needs_review=true`: the caller deferred
+        metadata to filename inference, which populated fields the
+        caller did not supply and held the document for review. The
+        pending state is cleared on any successful
+        `PATCH /documents/{id}/metadata` call against the document
+        (even a single-field update). The default ingest path
+        (`needs_review=false`) lands documents with
+        `metadata_confirmed=true`; those never appear here.
       tags: [Pending Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1198,14 +1573,25 @@ paths:
       operationId: parse_filename
       summary: Parse a filename without ingesting.
       description: >-
-        Side-effect-free wrapper over the vault's FilenameParser.
-        Returns the metadata fields the parser would extract from
-        the supplied filename under the named adapter. No document
-        is created; vault state is unchanged. Intended for callers
-        that want filename-based suggestions to populate a UI before
+        Side-effect-free wrapper over the vault's `FilenameParser`.
+        Returns the metadata fields the parser would extract from the
+        supplied filename under the named adapter. No document is
+        created; vault state is unchanged. Intended for callers that
+        want filename-based suggestions to populate a UI before
         submitting an ingest with caller-authoritative metadata
-        (CAS-ADR-021). When the vault has no filename_extraction
-        pattern configured, all parsed fields are returned as null.
+        (CAS-ADR-021).
+
+
+        **Which fields the parser extracts is vault-config-defined.**
+        See `metadata_extraction.filename_extraction.segment_fields`
+        in `GET /sage_vaults/{vault_id}/config` for the active
+        mapping. In the `cas` vault, the configured pattern is
+        `{date}_{project}_{code}_{title}_{version}`, so the parser
+        returns `doc_date`, `project`, `doc_code`, `title`, and
+        `version`. Other vaults may configure a different pattern and
+        emit a different field set. When the vault has no
+        `filename_extraction.pattern` configured, all parsed fields
+        are returned as null.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1222,6 +1608,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ParseFilenameResponse"
+        "400":
+          description: >-
+            `adapter_not_found`: `adapter` is not an enabled adapter
+            on this vault.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -1265,11 +1659,12 @@ paths:
       operationId: read_projection
       summary: Return a document's full projection text.
       description: >-
-        Reassembles the document projection (canonical text used during
-        ingestion) and returns it as a single string alongside a
-        metadata header. Equivalent to uploading the document into the
-        caller's context. Useful for agents that need the full document
-        in one read instead of stitching chunks from a discover call.
+        Reassembles the document projection (canonical text used
+        during ingestion) and returns it as a single string alongside
+        a metadata header. Equivalent to uploading the document into
+        the caller's context. Useful for agents that need the full
+        document in one read instead of stitching chunks from a
+        `POST /discover` call.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1282,7 +1677,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReadProjectionResponse"
         "404":
-          description: Document, vault, or projection not found.
+          description: >-
+            `document_not_found`: no document with that id.
+
+
+            `no_projection`: the document exists but has no stored
+            projection (e.g. ingestion failed mid-pipeline or the
+            document is awaiting reabstraction). Inspect
+            `pipeline_status` via `GET /documents/{id}`.
+
+
+            Or vault not found.
           content:
             application/json:
               schema:
@@ -1293,11 +1698,28 @@ paths:
       operationId: read_section
       summary: Return a document section by heading path prefix.
       description: >-
-        Returns the concatenated text of all chunks whose heading_path
-        matches the supplied prefix exactly or descends from it. The
-        heading_path uses " > " as a separator (URL-encoded) and is
+        Returns the concatenated text of all chunks whose
+        `heading_path` matches the supplied prefix exactly or descends
+        from it (structural prefix match from the document root). The
+        `heading_path` uses ` > ` as a separator (URL-encoded) and is
         captured as a path parameter, so nested heading paths with
         slashes are not supported.
+
+
+        Prefix matching is from the root: requesting "Technical
+        Description" returns that heading plus all children (e.g.
+        "Technical Description > Composite Claim Binding"). Bare-text
+        queries that match the *tail* of a stored path (e.g. "CLAIMS"
+        against a stored "CLAIMS -- Remove Before Filing") will not
+        match -- when this happens, the `heading_not_found` error
+        response includes a `candidate_matches` field listing stored
+        paths that contain the query as a substring, so callers can
+        retry with the exact path.
+
+
+        For free-text "find this section by name regardless of path
+        position," prefer `POST /discover` in semantic or keyword mode;
+        both index `heading_path` text alongside content.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1319,7 +1741,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReadSectionResponse"
         "404":
-          description: Document, vault, or matching section not found.
+          description: >-
+            `document_not_found`: no document with that id.
+
+
+            `heading_not_found`: no chunk's `heading_path` matches the
+            supplied prefix. The error detail includes
+            `candidate_matches`, a list of stored paths that contain
+            the query as a substring.
+
+
+            Or vault not found.
           content:
             application/json:
               schema:
@@ -1332,25 +1764,32 @@ paths:
   /sage_vaults/{vault_id}/edges/{edge_id}:
     delete:
       operationId: unlink
-      summary: Remove an edge from the graph.
+      summary: Remove a production edge from the graph.
       description: >-
-        Deletes the specified edge. Documents are never deleted (per
-        the no-delete invariant in SAGE Architecture Reference §6.4),
-        but edges may be deleted directly when the relationship they
-        record is no longer correct.
+        Deletes the specified production edge. Documents are never
+        deleted (per the no-delete invariant in SAGE Architecture
+        Reference §6.4), but edges may be deleted directly when the
+        relationship they record is no longer correct.
 
 
-        Idempotent in spirit: deleting a non-existent edge returns 404.
-        After deletion, traversal results no longer include the edge,
-        and dependent operations (chain walks, precondition checks)
-        proceed as if the edge had never existed.
+        **For staging-table edges (pre-confirmation), use
+        `POST /staging-edges/{edge_id}/dismiss` instead.** The two
+        tables are distinct and edge ids do not cross between them;
+        an id minted in staging is not valid here once promoted, and
+        vice versa.
+
+
+        Idempotent in spirit: deleting a non-existent edge returns
+        404. After deletion, traversal results no longer include the
+        edge, and dependent operations (chain walks, precondition
+        checks) proceed as if the edge had never existed.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
         - name: edge_id
           in: path
           required: true
-          description: Edge id to delete.
+          description: Production edge id to delete.
           schema:
             type: string
       responses:
@@ -1361,7 +1800,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/UnlinkResponse"
         "404":
-          description: Edge or vault not found.
+          description: >-
+            `edge_not_found`: no production edge with that id; or
+            vault not found.
           content:
             application/json:
               schema:
@@ -1990,14 +2431,22 @@ components:
         action:
           type: string
           description: >-
-            Lifecycle transition action. Base actions: supersede, complete,
-            archive, reactivate. Vaults may define additional actions.
+            Lifecycle transition action. The action vocabulary is
+            vault-config-defined; see `lifecycle.transitions` in the
+            vault config for the authoritative list. Examples seen in
+            practice: `supersede`, `complete`, `archive`, `reactivate`
+            (cas vault) plus `file` (pim_health vault). Neither vault
+            defines `activate`; the action for `archived → active` is
+            `reactivate`.
         new_version_id:
           type: string
           description: >-
             Document ID of the replacement version. Required when
-            action is "supersede". SAGE creates a supersedes edge from
-            the new version to this document.
+            `action="supersede"`; forbidden for all other actions. SAGE
+            creates a `supersedes` edge from the new version to this
+            document atomically with the lifecycle transition. The
+            successor document must already exist and be active; this
+            operation does not create it.
 
     UpdateMetadataRequest:
       type: object
@@ -2179,14 +2628,15 @@ components:
       type: object
       required: [source_id, edge_type]
       description: >-
-        Create an edge. target_id is required for all edge types except
-        `retracts` (which uses retracted_edge_id instead). Anchor fields
-        (source_valid_from_version, target_valid_from_version) are
-        required, optional, or forbidden depending on the edge type's
-        resolution_policy per CAS-ADR-017. Write-time validation enforces
-        the policy-keyed invariant and returns 400
-        EDGE_ANCHOR_POLICY_VIOLATION on violation. Creating an edge whose
-        registry policy is `TBD` returns 400 TBD_POLICY_EDGE.
+        Create an edge. `target_id` is required for all edge types
+        except `retracts` (which uses `retracted_edge_id` instead).
+        Anchor fields (`source_valid_from_version`,
+        `target_valid_from_version`) are required, optional, or
+        forbidden depending on the edge type's `resolution_policy` per
+        CAS-ADR-017. Write-time validation enforces the policy-keyed
+        invariant and returns 400 `edge_anchor_policy_violation` on
+        violation. Creating an edge whose registry policy is `TBD`
+        returns 400 `tbd_policy_edge`.
       properties:
         source_id:
           type: string
@@ -2395,8 +2845,14 @@ components:
     IngestResponse:
       type: object
       description: >-
-        Returned immediately after Stage 1 (projection). The document
-        record is created; indexing and abstraction continue asynchronously.
+        Returned by `POST /sage_vaults/{vault_id}/documents` after the
+        three-stage pipeline completes. The REST endpoint is
+        synchronous: `pipeline_status` is at a terminal value
+        (`abstraction_complete`, `abstraction_skipped`, or `failed`)
+        by the time this response is returned. The MCP `sage_ingest`
+        wrapper inverts this and returns early with a non-terminal
+        status; that behavior is MCP-specific and does not affect the
+        REST surface.
       required: [document, pipeline_status]
       properties:
         document:
