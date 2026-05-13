@@ -23,6 +23,7 @@ from app.backend.ingest_service import (
 )
 from app.backend.scan import ScanResult, build_extension_map, scan_directory
 from sage.api.errors import VaultNotFoundError
+from sage.models.schemas import Sha256Str, VaultIdStr
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ router = APIRouter(prefix="/app", tags=["app"])
 
 
 class ScanRequest(BaseModel):
-    vault_id: str
+    vault_id: VaultIdStr
     directory: str
     max_depth: int | None = None
 
@@ -51,7 +52,7 @@ class ParsedMetadataResponse(BaseModel):
 
 class ScanResultResponse(BaseModel):
     file_path: str
-    file_hash: str
+    file_hash: Sha256Str
     source_modified_at: str
     adapter: str | None = None
     parsed_metadata: ParsedMetadataResponse
@@ -67,7 +68,7 @@ class IngestFileItem(BaseModel):
 class IngestRequest_(BaseModel):
     """Ingest request body (underscore to avoid collision with SAGE IngestRequest)."""
 
-    vault_id: str
+    vault_id: VaultIdStr
     files: list[IngestFileItem]
     infer_edges: bool = True
 

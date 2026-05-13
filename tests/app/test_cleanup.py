@@ -43,7 +43,7 @@ def _sparse_parsed_metadata() -> ParsedMetadata:
 def _full_scan_result() -> ScanResult:
     return ScanResult(
         file_path="/tmp/2026-03-09_PIM_PV06_Claim-Set_v7.docx",
-        file_hash="sha256:abc123",
+        file_hash="sha256:" + "a" * 64,
         source_modified_at="2026-03-09T10:00:00+00:00",
         adapter="docx",
         parsed_metadata=_full_parsed_metadata(),
@@ -54,7 +54,7 @@ def _full_scan_result() -> ScanResult:
 def _sparse_scan_result() -> ScanResult:
     return ScanResult(
         file_path="/tmp/notes.md",
-        file_hash="sha256:def456",
+        file_hash="sha256:" + "b" * 64,
         source_modified_at="2026-04-01T12:00:00+00:00",
         adapter="markdown",
         parsed_metadata=_sparse_parsed_metadata(),

@@ -9,9 +9,11 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
+from sage.models.schemas import VaultIdStr
+
 
 class VaultIdentity(BaseModel):
-    id: str
+    id: VaultIdStr
     name: str
     description: str | None = None
     owner: str

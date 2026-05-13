@@ -4,8 +4,9 @@ Cites the CAS Typed-Alias Boundary Conventions steering document (cas
 SAGE vault, doc_type=steering_document). A typed alias is a
 ``pydantic.Annotated[str, AfterValidator(...)]`` declared in
 ``sage/models/schemas.py``. Every shape-bearing field on a ``BaseModel``
-subclass in that module must either carry one of those typed aliases or
-be pinned in ``KNOWN_VIOLATIONS`` below with a one-line reason.
+subclass in any module listed in ``_SCOPED_MODULES`` below must either
+carry one of those typed aliases or be pinned in ``KNOWN_VIOLATIONS``
+with a one-line reason.
 
 Allowlist contract (mirrors ``tests/sage/test_router_conformance.py``):
 
@@ -16,23 +17,35 @@ Allowlist contract (mirrors ``tests/sage/test_router_conformance.py``):
 - Typing a previously-allowlisted field without removing the entry
   fails the suite (stale-allowlist check).
 
-Scope — out of scope for this gate (acknowledged per F4 discipline):
+Scope — in scope (``_SCOPED_MODULES``):
 
-- ``app/backend/router.py`` defines its own request/response BaseModels
-  (e.g. ``ScanResultResponse.file_hash: str``) that are shape-bearing
-  but currently unchecked.
-- ``sage/config.py`` defines vault-config BaseModels (e.g.
-  ``VaultIdentity.id: str``) that are also shape-bearing.
+- ``sage.models.schemas`` — canonical Core API request/response shapes.
+- ``app.backend.router`` — CAS Application request/response shapes.
+- ``sage.config`` — vault-config shapes loaded from YAML.
+
+Scope — F4 scan, still-parallel BaseModel locations:
+
 - ``root_harness/`` does not exist yet; future BaseModels there are
-  expected to follow the same convention.
+  expected to follow the same convention and join ``_SCOPED_MODULES``.
+- A repo-wide ``class \\w+\\(BaseModel\\)`` grep at T-0028 commit
+  surfaced no additional BaseModel locations outside the three scoped
+  modules; coverage is complete for the current source tree.
 
-T-0028 extends this gate's scope to those locations.
+Scope — not yet typeable (no alias exists):
 
-Drain plan: T-0026 types the 22 currently-allowlisted fields whose
-aliases already exist; T-0027 introduces ``UserIdStr`` / ``VaultIdStr``
-/ ``FunctionIdStr`` and types the remaining 5; T-0028 extends the gate
-to ``app/backend/`` and ``sage/config.py`` (and, when it exists,
-``root_harness/``).
+- ISO timestamp strings (e.g. ``ScanResultResponse.source_modified_at``,
+  ``ParsedMetadataResponse.date``) — names do not match the current
+  ``*_date`` suffix rule and no ``IsoTimestampStr`` alias exists.
+- Filesystem paths (e.g. ``VaultIdentity.storage_root``,
+  ``VaultIdentity.brain_root``, ``RetrievalHealthConfig.assertions_file``)
+  — no path alias exists. The gate does not flag these today.
+
+Drain plan: T-0026 typed the 22 currently-allowlisted fields whose
+aliases already existed; T-0027 introduced ``UserIdStr`` / ``VaultIdStr``
+/ ``FunctionIdStr`` and typed the remaining 5 (``KNOWN_VIOLATIONS`` is
+now empty); T-0028 extended the gate to ``app.backend.router`` and
+``sage.config`` and typed the four shape-bearing fields the extension
+surfaced.
 """
 
 from __future__ import annotations
@@ -45,13 +58,22 @@ from typing import Final
 import pytest
 from pydantic import AfterValidator, BaseModel
 
+from app.backend import router as router_mod
+from sage import config as config_mod
 from sage.models import schemas as schemas_mod
 from sage.models.schemas import (
     DocumentDateStr,
     DocumentIdStr,
     EdgeIdStr,
+    FunctionIdStr,
     Sha256Str,
+    UserIdStr,
+    VaultIdStr,
 )
+
+# Modules whose ``BaseModel`` subclasses are governed by this gate.
+# Order is irrelevant; discovery dedupes by class identity.
+_SCOPED_MODULES: Final[tuple] = (schemas_mod, router_mod, config_mod)
 
 # ---------------------------------------------------------------------------
 # Shape registry
@@ -63,6 +85,8 @@ from sage.models.schemas import (
 SHAPE_REGISTRY: Final[dict[str, type]] = {
     "id": DocumentIdStr,  # exact match — Model.id default
     "edge_id": EdgeIdStr,  # exact match — wins over *_id
+    "vault_id": VaultIdStr,  # exact match — wins over *_id
+    "function_id": FunctionIdStr,  # exact match — wins over *_id
     "*_id": DocumentIdStr,
     "*_hash": Sha256Str,
     "*_date": DocumentDateStr,
@@ -79,8 +103,11 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
     {
         schemas_mod._validate_document_id,
         schemas_mod._validate_edge_id,
+        schemas_mod._validate_function_id,
         schemas_mod._validate_sha256,
         schemas_mod._validate_document_date,
+        schemas_mod._validate_user_id,
+        schemas_mod._validate_vault_id,
     }
 )
 
@@ -92,21 +119,7 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
 # leading T-NNNN points at the remediation ticket where applicable.
 # ---------------------------------------------------------------------------
 
-KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
-    # Aliases not yet defined — T-0027 introduces UserIdStr / VaultIdStr /
-    # FunctionIdStr.
-    ("User", "id"): "T-0027 — UserIdStr not defined; user id format differs from DocumentIdStr",
-    (
-        "PreconditionResult",
-        "function_id",
-    ): "T-0027 — FunctionIdStr not defined; pipeline-function id",
-    ("RefreshViewsResponse", "vault_id"): "T-0027 — VaultIdStr not defined",
-    ("EvalRetrievalResult", "vault_id"): "T-0027 — VaultIdStr not defined",
-    (
-        "VaultSummary",
-        "id",
-    ): "T-0027 — VaultIdStr not defined; field represents a vault, not a document",
-}
+KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -115,20 +128,21 @@ KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
 
 
 def _discover_basemodels() -> list[type[BaseModel]]:
-    """Every ``BaseModel`` subclass declared in ``sage.models.schemas``.
+    """Every ``BaseModel`` subclass declared in any module in ``_SCOPED_MODULES``.
 
-    Scope is restricted to that module; BaseModels in ``app/backend/`` and
-    ``sage/config.py`` are out of scope for this gate. T-0028 extends.
+    A class is attributed to a module only if its ``__module__`` matches
+    the module's import name, so re-exports do not double-count.
     """
     out: list[type[BaseModel]] = []
-    for _, obj in inspect.getmembers(schemas_mod, inspect.isclass):
-        if obj is BaseModel:
-            continue
-        if not issubclass(obj, BaseModel):
-            continue
-        if obj.__module__ != schemas_mod.__name__:
-            continue
-        out.append(obj)
+    for mod in _SCOPED_MODULES:
+        for _, obj in inspect.getmembers(mod, inspect.isclass):
+            if obj is BaseModel:
+                continue
+            if not issubclass(obj, BaseModel):
+                continue
+            if obj.__module__ != mod.__name__:
+                continue
+            out.append(obj)
     return out
 
 
@@ -203,6 +217,12 @@ def _alias_display_name(alias) -> str:
         return "Sha256Str"
     if alias is DocumentDateStr:
         return "DocumentDateStr"
+    if alias is UserIdStr:
+        return "UserIdStr"
+    if alias is VaultIdStr:
+        return "VaultIdStr"
+    if alias is FunctionIdStr:
+        return "FunctionIdStr"
     return str(alias)
 
 
@@ -238,12 +258,19 @@ def _shape_bearing_fields() -> list[tuple[type[BaseModel], str, type]]:
 
 
 def test_discovered_basemodels_are_nonempty():
-    """Sanity: discovery surfaces the expected schemas."""
+    """Sanity: discovery surfaces the expected schemas across every scoped module."""
     classes = _discover_basemodels()
     names = {cls.__name__ for cls in classes}
+    # sage.models.schemas
     assert "Document" in names, "Discovery missed core Document model"
     assert "Edge" in names, "Discovery missed core Edge model"
     assert "LinkRequest" in names, "Discovery missed canonical LinkRequest model"
+    # app.backend.router
+    assert "ScanRequest" in names, "Discovery missed app.backend.router ScanRequest"
+    assert "ScanResultResponse" in names, "Discovery missed app.backend.router ScanResultResponse"
+    # sage.config
+    assert "VaultIdentity" in names, "Discovery missed sage.config VaultIdentity"
+    assert "VaultConfig" in names, "Discovery missed sage.config VaultConfig"
     assert len(classes) >= 30, (
         f"Discovery surfaced only {len(classes)} models; expected at least 30. "
         "Did discovery filtering regress?"
