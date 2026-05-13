@@ -63,20 +63,28 @@ paths:
       operationId: trigger_workflow
       summary: Start a named workflow with input parameters.
       description: >-
-        Launches a new workflow execution. The workflow definition must
-        be registered in the domain's workflow configuration. ROOT Harness
-        validates the input parameters against the workflow's state_schema
-        before dispatching.
+        Launches a new workflow execution. The `workflow_name` must
+        resolve to a workflow definition registered in the domain
+        instantiation's workflow configuration (validated against
+        `workflow.schema.json`). ROOT Harness validates `input_params`
+        against the workflow's `state_schema.fields` array synchronously
+        before returning 201; LangGraph dispatch then runs asynchronously
+        once the response has been sent.
 
 
-        Returns immediately with the workflow execution ID. The caller
-        can monitor progress via get_status (polling) or subscribe_events
-        (real-time stream).
+        Returns immediately with the workflow execution ID. Monitor
+        progress via `get_status` (polling — `WorkflowStatus` carries
+        `pending_interrupts` and `completed_nodes`) or `subscribe_events`
+        (real-time SSE stream; subscribing after dispatch but before any
+        node completes yields a synthetic `workflow.started` event from
+        the stream's beginning).
 
 
-        If the workflow's state_schema defines required success criteria
-        fields, they must be present in the input parameters (sprint
-        contract pattern).
+        If the workflow's `state_schema` declares fields with
+        `required: true`, they must be present in `input_params`
+        (sprint contract pattern). Definition-level guidance on
+        modeling sprint contracts lives in the workflow definition,
+        not here.
       tags: [Workflow Execution]
       requestBody:
         required: true
@@ -93,9 +101,17 @@ paths:
                 $ref: "#/components/schemas/WorkflowExecution"
         "400":
           description: >-
-            Invalid request. The workflow name is not registered, or
-            the input parameters do not satisfy the workflow's
-            state_schema.
+            `workflow_not_registered`: `workflow_name` does not match
+            any workflow definition in the domain's workflow
+            configuration. See `workflow.schema.json` for the
+            definition shape and the domain instantiation's
+            `workflow.yaml` for the registered set.
+
+
+            `state_schema_validation_failed`: `input_params` fail
+            validation against the workflow's `state_schema.fields`.
+            Detail includes the failing field name and the validator
+            message.
           content:
             application/json:
               schema:
@@ -106,14 +122,21 @@ paths:
       operationId: get_status
       summary: Query the current state of a workflow execution.
       description: >-
-        Returns the execution state including current node, overall
-        status, pending interrupts (if any), and a summary of completed
-        nodes. Useful for polling-based monitoring and for checking
-        whether a workflow is awaiting human input.
+        Returns the execution state including `current_node`, overall
+        `status` (running, suspended, completed, failed, cancelled),
+        `pending_interrupts` (compact `InterruptSummary` records), and
+        `completed_nodes` (ordered list of node IDs that finished
+        execution). Useful for polling-based monitoring and for
+        checking whether a workflow is awaiting human input —
+        `status == "suspended"` plus non-empty `pending_interrupts`
+        signals that `approve` is the unblocking call.
 
 
-        For real-time monitoring, prefer subscribe_events over repeated
-        get_status calls.
+        For real-time monitoring of an in-flight workflow, prefer
+        `subscribe_events` over repeated `get_status` calls. For full
+        interrupt descriptors (evidence, response options, parameter
+        schemas), use `list_pending`; the `pending_interrupts` array
+        in this response carries only the compact summary.
       tags: [Workflow Execution]
       parameters:
         - $ref: "#/components/parameters/ExecutionId"
@@ -125,7 +148,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowStatus"
         "404":
-          description: Workflow execution not found.
+          description: >-
+            `execution_not_found`: no workflow execution with that
+            `execution_id`.
           content:
             application/json:
               schema:
@@ -140,20 +165,40 @@ paths:
       operationId: approve
       summary: Resolve a pending interrupt with approval, rejection, or modification.
       description: >-
-        Responds to a human-in-the-loop interrupt. The resolution must
-        reference a valid option_id from the interrupt's response_options.
+        Responds to a human-in-the-loop interrupt. The `resolution`
+        field must carry an `option_id` drawn from the interrupt's
+        `response_options` array (per-interrupt vocabulary; see
+        `list_pending` to retrieve the full descriptor before calling).
 
 
-        On approval (effect: resume), execution resumes from the
-        checkpoint. On rejection (effect: reject), the workflow routes
-        to the rejection handler node. On defer (effect: defer), the
-        interrupt is re-queued. On modify (effect: modify),
-        modified_parameters are validated against the option's
-        parameter_schema and execution resumes with the adjusted values.
+        Each option declares a semantic `effect`, drawn from the enum
+        in `interrupt.schema.json`:
+
+        - `resume`: execution continues from the checkpoint.
+
+        - `reject`: workflow routes to the rejection handler node.
+
+        - `defer`: interrupt is re-queued after a configured delay or
+          condition.
+
+        - `modify`: `modified_parameters` are validated against the
+          option's `parameter_schema` and execution resumes with the
+          adjusted values.
 
 
-        See interrupt.schema.json for the full interrupt descriptor
-        and approval policy contracts.
+        **Atomic resolution.** Option-id validation, parameter-schema
+        validation, comment-presence check, and dispatch of the
+        effect's resume/reject/defer/modify path all settle in one
+        transition: either the response is 200 with `WorkflowStatus`
+        reflecting the dispatched effect, or a 4xx error is returned
+        and the interrupt remains in `pending`.
+
+
+        Discovery and observation: pair with `list_pending` (to obtain
+        the `interrupt_id` and the full descriptor including evidence
+        and parameter schemas) and `subscribe_events` (to observe the
+        `interrupt.resolved` event that follows a successful
+        resolution).
       tags: [Human-in-the-Loop]
       parameters:
         - $ref: "#/components/parameters/ExecutionId"
@@ -172,24 +217,40 @@ paths:
                 $ref: "#/components/schemas/WorkflowStatus"
         "400":
           description: >-
-            Invalid resolution. The option_id is not in the interrupt's
-            response_options, or modified_parameters do not satisfy the
-            option's parameter_schema, or the selected option requires
-            a comment but none was provided.
+            `unknown_option_id`: the `resolution` value is not in the
+            interrupt's `response_options` array.
+
+
+            `parameter_schema_validation_failed`: the selected option
+            has `effect=modify` and `modified_parameters` fail
+            validation against the option's `parameter_schema`.
+
+
+            `comment_required`: the selected option has
+            `requires_comment=true` but `comment` is null or empty.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Workflow execution or interrupt not found.
+          description: >-
+            `execution_not_found`: no workflow execution with that
+            `execution_id`.
+
+
+            `interrupt_not_found`: `interrupt_id` does not match any
+            interrupt raised for this execution.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
-            Interrupt is not in pending status. It may have been
-            already resolved or expired.
+            `interrupt_not_pending`: the interrupt has already been
+            resolved, rejected, or expired (per the `status` field on
+            the descriptor). Inspect via `list_pending` (filtered) or
+            the interrupt's record to confirm; no further action is
+            possible on a non-pending interrupt.
           content:
             application/json:
               schema:
@@ -200,16 +261,23 @@ paths:
       operationId: list_pending
       summary: List all workflow executions with pending interrupts.
       description: >-
-        Returns all interrupt descriptors across all workflow executions
-        that are currently awaiting human input. Each descriptor includes
-        the full context needed for the human to make a decision:
-        what is proposed, why, supporting evidence, and available
-        response options.
+        Returns the full `InterruptDescriptor` records (see
+        `interrupt.schema.json`) for every interrupt currently in
+        `status=pending` across all workflow executions in the host.
+        Each descriptor carries the full context needed for the human
+        to make a decision: what is proposed (`description`,
+        `proposed_action`), why (`evidence`), and the available
+        response options (`response_options` with per-option `effect`
+        semantics and any `parameter_schema` for modify-effect
+        options).
 
 
-        Optionally filtered by workflow name or agent ID. Results are
-        ordered by raised_at (oldest first) to surface the longest-
-        waiting interrupts.
+        Optionally filtered by `workflow_name` or `agent_id`. Results
+        are ordered by `raised_at` oldest-first to surface the
+        longest-waiting interrupts. The response is unpaginated —
+        every matching pending interrupt is returned in a single
+        response. After selecting an interrupt, resolve it via
+        `approve` on the owning execution.
       tags: [Human-in-the-Loop]
       parameters:
         - name: workflow_name
@@ -241,15 +309,22 @@ paths:
       operationId: subscribe_events
       summary: Subscribe to the real-time typed event stream for a workflow.
       description: >-
-        Returns a stream of typed AgentEvent records for the specified
-        workflow execution. Each event is a JSON object conforming to
-        event_stream.schema.json.
+        Returns a stream of typed `AgentEvent` records for the
+        specified workflow execution. Each event is a JSON object
+        conforming to `event_stream_schema.json`; its `event_type`
+        is drawn from the 15-entry enum defined there (workflow.*,
+        node.*, tool.*, llm.*, interrupt.*, governance.*, checkpoint.*).
 
 
-        The stream begins with a synthetic workflow.started event (or
-        the current state if the workflow is already in progress) and
-        continues until the workflow completes, fails, or the client
-        disconnects.
+        The stream begins with a synthetic `workflow.started` event
+        (or replay-from-`last_event_id` when that parameter is supplied
+        and recognized) and continues until the workflow completes,
+        fails, or the client disconnects. If `last_event_id` is
+        supplied but not recognized (event aged out of retention, or
+        belonged to a different execution), the stream replays from
+        the beginning rather than failing — callers detect the
+        replay-from-start by observing a `workflow.started` event
+        despite supplying a `last_event_id`.
 
 
         This endpoint defines the HTTP surface (SSE) consumed by the
@@ -264,9 +339,11 @@ paths:
           in: query
           required: false
           description: >-
-            Resume from a specific event. The stream will replay
-            events after this ID. Supports reconnection without
-            missing events.
+            Resume from a specific event. The stream replays events
+            with `event_id` greater than this value. Supports
+            reconnection without missing events. If unrecognized,
+            the stream replays from the beginning (see description
+            for detection signal).
           schema:
             type: string
       responses:
@@ -279,9 +356,11 @@ paths:
                 description: >-
                   Server-sent events. Each event's data field contains
                   a JSON-serialized AgentEvent object conforming to
-                  event_stream.schema.json.
+                  event_stream_schema.json.
         "404":
-          description: Workflow execution not found.
+          description: >-
+            `execution_not_found`: no workflow execution with that
+            `execution_id`.
           content:
             application/json:
               schema:
@@ -297,15 +376,38 @@ paths:
       summary: Register a new agent with capabilities and policy configuration.
       description: >-
         Registers an agent in ROOT Harness and creates a corresponding
-        SAGE User entity with the same agent_id. The dual registration
+        SAGE User entity with the same `agent_id`. The dual registration
         serves two purposes: SAGE uses the identity for provenance
         tracking and editor-based access control; ROOT Harness uses
         it for dispatch, policy lookup, and execution logging.
 
 
-        Agent identity is permanent. An agent that is retired is marked
+        **Dual write is transactional.** If either the ROOT Harness
+        record or the SAGE User write fails after the other has
+        committed, the committed side is rolled back and the caller
+        receives `dual_write_failure` (500). Either the operation
+        succeeds end-to-end (201) or no record persists in either
+        store.
+
+
+        **Steward / orchestrator invariant.** Per the two-type
+        taxonomy (CAS-ADR-010), stewards own canonical artifacts and
+        must declare `owned_artifact`; orchestrators own coordination
+        lifecycles and must leave `owned_artifact` null. This
+        invariant is not expressible in JSON Schema alone; the
+        operation enforces it via `steward_missing_owned_artifact`
+        (400).
+
+
+        Agent identity is permanent. The `agent_type` enum
+        (`steward`, `orchestrator`) and `autonomy_level` 1..5 scale
+        live in `agent.schema.json`. `policy_ref` resolves against
+        the domain instantiation's policies configuration (validated
+        against `policy.schema.json`). Retirement marks the agent
         inactive in ROOT Harness but its SAGE User record persists,
-        preserving provenance.
+        preserving provenance — the retirement endpoint will arrive
+        in a future revision of this spec; until then, agent
+        deactivation is an out-of-band operation.
       tags: [Agent Management]
       requestBody:
         required: true
@@ -322,17 +424,50 @@ paths:
                 $ref: "#/components/schemas/AgentRegistration"
         "400":
           description: >-
-            Invalid registration. Missing required fields, invalid
-            agent_type, autonomy_level out of range, or policy_ref
-            not found in domain configuration.
+            `missing_required_field`: one of `agent_id`,
+            `display_name`, `agent_type`, `autonomy_level`,
+            `capabilities`, `policy_ref`, or `llm_config` is missing.
+
+
+            `invalid_agent_type`: `agent_type` is not in
+            `{steward, orchestrator}`.
+
+
+            `autonomy_level_out_of_range`: `autonomy_level` is not in
+            the integer range 1..5.
+
+
+            `policy_ref_not_found`: `policy_ref` does not resolve to
+            a `policy_id` in the domain's policies configuration.
+
+
+            `steward_missing_owned_artifact`: `agent_type=steward`
+            but `owned_artifact` is null. Stewards must declare the
+            canonical artifact they own.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
-            Agent ID already registered, or owned_artifact is already
-            claimed by another steward.
+            `agent_id_already_registered`: an agent with that
+            `agent_id` already exists. Agent IDs are permanent;
+            choose a distinct ID.
+
+
+            `owned_artifact_claimed_by_other_steward`: another active
+            steward already claims the `owned_artifact` document.
+            Steward authority over an artifact is exclusive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: >-
+            `dual_write_failure`: one side of the ROOT Harness /
+            SAGE dual write committed but the other failed; the
+            committed side has been rolled back. No record persists
+            in either store. The operation is safe to retry.
           content:
             application/json:
               schema:
@@ -345,6 +480,13 @@ paths:
       description: >-
         Returns the full registration record including capabilities,
         policy reference, autonomy level, and current status.
+
+
+        Inactive agents return 200 with `status=inactive`. Only fully
+        unknown `agent_id` values return 404 — callers building UI
+        flows should distinguish "retired but historically present"
+        from "never registered" by reading the `status` field rather
+        than treating 404 as the only signal.
       tags: [Agent Management]
       parameters:
         - $ref: "#/components/parameters/AgentId"
@@ -356,7 +498,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentRegistration"
         "404":
-          description: Agent not found.
+          description: >-
+            `agent_not_found`: no agent has been registered with that
+            `agent_id`. Distinguish from inactive agents, which return
+            200 with `status=inactive`.
           content:
             application/json:
               schema:
@@ -367,14 +512,23 @@ paths:
       operationId: get_agent_history
       summary: Query execution history for a specific agent.
       description: >-
-        Returns an array of execution records for the specified agent,
-        ordered by timestamp (newest first). Each record includes the
-        workflow context, inputs, outputs, decisions made, and duration.
+        Returns an array of `AgentExecutionRecord` entries for the
+        specified agent, ordered by timestamp newest-first. Each
+        record represents a single node execution — it carries both
+        `workflow_execution_id` and `node_id`, so an agent that ran
+        in three nodes of one workflow yields three history records,
+        not one.
 
 
-        Useful for auditing agent behavior, debugging unexpected
-        outcomes, and building the agent's decision context for
-        future executions.
+        Each record includes the LangGraph node context, tool-call
+        and LLM-call counts, total tokens, decisions summary, and
+        the outcome (success, failure, interrupted). Useful for
+        auditing agent behavior, debugging unexpected outcomes, and
+        building the agent's decision context for future executions.
+
+
+        For live observability of an in-flight execution, pair with
+        `subscribe_events` on the relevant `workflow_execution_id`.
       tags: [Agent Management]
       parameters:
         - $ref: "#/components/parameters/AgentId"
@@ -409,7 +563,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentHistoryResponse"
         "404":
-          description: Agent not found.
+          description: >-
+            `agent_not_found`: no agent has been registered with that
+            `agent_id`.
           content:
             application/json:
               schema:
@@ -424,21 +580,33 @@ paths:
       operationId: get_pipeline_status
       summary: Query the status of all documents in a domain pipeline.
       description: >-
-        Returns an array of document status records showing each
-        document's current pipeline stage, lifecycle status, any
-        blocking conditions, and the responsible agent. Provides
+        Returns an array of `DocumentPipelineStatus` records showing
+        each document's current pipeline stage, SAGE lifecycle status,
+        any blocking conditions (with structured `Blocker` records
+        identifying type, related document, and pending interrupt ID
+        where applicable), and the responsible steward agent. Provides
         a dashboard view of pipeline progress for the CAS Application.
 
 
-        The pipeline_id corresponds to the pipeline definition in
-        the domain instantiation's pipeline.yaml configuration.
+        The `pipeline_id` corresponds to a pipeline definition in the
+        domain instantiation's pipeline configuration (validated
+        against `pipeline.schema.json`). The pipeline stages enum is
+        per-domain, defined by that configuration's `stages` array.
+
+
+        The `stage` query filter is tolerant: passing a value not in
+        the domain's stage vocabulary returns an empty `documents`
+        array (not 400). This lets dashboards query speculatively
+        without first reading the pipeline definition.
       tags: [Pipeline Status]
       parameters:
         - $ref: "#/components/parameters/PipelineId"
         - name: stage
           in: query
           required: false
-          description: Filter by pipeline stage.
+          description: >-
+            Filter by pipeline stage. Tolerant — unknown stage names
+            return empty rather than 400.
           schema:
             type: string
         - name: blocked_only
@@ -456,7 +624,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/PipelineStatusResponse"
         "404":
-          description: Pipeline not found.
+          description: >-
+            `pipeline_not_found`: `pipeline_id` does not match any
+            pipeline defined in the domain instantiation's pipeline
+            configuration.
           content:
             application/json:
               schema:
@@ -901,7 +1072,15 @@ components:
           description: How the execution concluded.
         error_code:
           type: ["string", "null"]
-          description: Error code if outcome is "failure".
+          description: >-
+            Machine-readable error code when `outcome` is "failure".
+            Drawn from the same canonical vocabulary as
+            `ErrorResponse.code` for ROOT Harness operation errors,
+            plus LLM-execution codes (`llm_timeout`,
+            `token_budget_exceeded`) and SAGE Core API error codes
+            propagated from tool calls within the node. See
+            `event_stream_schema.json` `EventError.code` for the
+            broader execution-time vocabulary.
 
     # -------------------------------------------------------------------------
     # Request Schemas
@@ -1146,8 +1325,14 @@ components:
         code:
           type: string
           description: >-
-            Machine-readable error code (e.g., "workflow_not_found",
-            "invalid_state_schema", "interrupt_already_resolved").
+            Machine-readable error code. Drawn from the per-operation
+            error vocabulary documented on each operation's response
+            descriptions. Representative codes:
+            `workflow_not_registered`, `state_schema_validation_failed`,
+            `execution_not_found`, `interrupt_not_found`,
+            `interrupt_not_pending`, `unknown_option_id`,
+            `agent_id_already_registered`, `agent_not_found`,
+            `pipeline_not_found`.
         message:
           type: string
           description: Human-readable error description.
@@ -1165,6 +1350,13 @@ components:
       properties:
         code:
           type: string
+          description: >-
+            Machine-readable error code. Drawn from the same
+            canonical vocabulary as `ErrorResponse.code` (see that
+            schema for representative codes). For workflow-execution
+            failures captured here, common codes include
+            `state_schema_validation_failed`, `dual_write_failure`,
+            and adapter-level errors propagated from SAGE.
         message:
           type: string
         detail:
