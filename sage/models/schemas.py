@@ -98,6 +98,70 @@ def _validate_document_date(v: str | None) -> str | None:
 DocumentDateStr = Annotated[str | None, AfterValidator(_validate_document_date)]
 
 
+def _validate_user_id(v: str) -> str:
+    """Normalize an RFC 4122 UUID to canonical lowercase hyphenated form.
+
+    User IDs are generated as ``str(uuid.uuid4())`` by the
+    user-registration service (sage/services/user_service.py). The
+    canonical form is 8-4-4-4-12 hex digits separated by hyphens,
+    lowercase. ``uuid.UUID()`` accepts urn-prefixed (``urn:uuid:...``),
+    brace-wrapped (``{...}``), hex-no-hyphens (32 hex chars), and
+    mixed-case variants; this validator accepts them and normalizes to
+    canonical so the downstream substrate keys on a single form.
+    Flavor: normalize.
+    """
+    try:
+        return str(uuid.UUID(v))
+    except ValueError as exc:
+        raise ValueError(f"user id must be a UUID (got {v!r})") from exc
+
+
+UserIdStr = Annotated[str, AfterValidator(_validate_user_id)]
+
+
+_VAULT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _validate_vault_id(v: str) -> str:
+    """Reject vault ids that do not match the slug shape contract.
+
+    A ``vault_id`` is used as a filesystem path segment under
+    ``~/sage_vaults/{vault_id}/`` and as a primary key in the loaded
+    vault registry. The shape is a lowercase slug: ASCII alphanumeric
+    plus underscore and hyphen, starting with alphanumeric, max 64
+    chars. The producing source is the directory name on disk; this
+    validator stops path-traversal and mixed-case caller input from
+    propagating to filesystem and registry lookups downstream.
+    Flavor: reject.
+    """
+    if not _VAULT_ID_RE.fullmatch(v):
+        raise ValueError(f"vault id must match {_VAULT_ID_RE.pattern!r} (got {v!r})")
+    return v
+
+
+VaultIdStr = Annotated[str, AfterValidator(_validate_vault_id)]
+
+
+def _validate_function_id(v: str) -> str:
+    """Reject function ids that do not match the document-id shape.
+
+    A ``function_id`` references a function-document in the precondition
+    system; ``GraphOps.check_preconditions`` looks it up via
+    ``get_document(function_id)``. The shape is therefore identical to
+    DocumentIdStr (8 hex chars + ``_`` + slug). Distinct alias to
+    communicate that the field carries function-document semantics, not
+    arbitrary document semantics — a future divergence would land here
+    without disturbing DocumentIdStr's call sites.
+    Flavor: reject.
+    """
+    if not _DOCUMENT_ID_RE.fullmatch(v):
+        raise ValueError(f"function id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})")
+    return v
+
+
+FunctionIdStr = Annotated[str, AfterValidator(_validate_function_id)]
+
+
 # ---------------------------------------------------------------------------
 # Core entities
 # ---------------------------------------------------------------------------
@@ -162,7 +226,7 @@ class Edge(BaseModel):
 
 
 class User(BaseModel):
-    id: str
+    id: UserIdStr
     display_name: str
     type: UserType
     created_at: datetime
@@ -340,7 +404,7 @@ class PreconditionCheck(BaseModel):
 
 
 class PreconditionResult(BaseModel):
-    function_id: str
+    function_id: FunctionIdStr
     satisfied: bool
     checks: list[PreconditionCheck]
 
@@ -433,12 +497,12 @@ class AssertionFailure(BaseModel):
 
 
 class RefreshViewsResponse(BaseModel):
-    vault_id: str
+    vault_id: VaultIdStr
     views_generated: int
 
 
 class EvalRetrievalResult(BaseModel):
-    vault_id: str
+    vault_id: VaultIdStr
     passed: bool
     assertion_count: int
     failure_count: int
@@ -468,7 +532,7 @@ class VaultAdapterInfo(BaseModel):
 
 
 class VaultSummary(BaseModel):
-    id: str
+    id: VaultIdStr
     name: str
     description: str | None = None
     storage_root: str
