@@ -4,11 +4,23 @@ Uses mlx-lm to load Qwen3-30B-A3B-Instruct-2507 (or compatible model)
 and generate density-proportional semantic abstracts on Apple Silicon.
 """
 
+import asyncio
 import logging
 
 from sage.adapters.interfaces import AbstractionProvider
+from sage.utils.unified_memory import (
+    UnifiedMemoryExhaustedError,
+    free_unified_memory_bytes,
+    min_free_bytes,
+)
 
 logger = logging.getLogger(__name__)
+
+# Module-level lock serializing all MLX generate_abstract calls (T-0029
+# guardrail 2). Two concurrent ingest pipelines previously could both
+# drive Qwen3 toward the unified-memory ceiling at once; this lock
+# enforces single-flight discipline.
+_generation_lock = asyncio.Lock()
 
 SYSTEM_PROMPT_TEMPLATE = (
     "You are producing a relevance-triage card for an autonomous agent that "
@@ -206,23 +218,36 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         if not text or not text.strip():
             raise RuntimeError("Cannot generate abstract from empty document text")
 
-        # Lazy model load (AD-026 revised, AD-035)
-        self._ensure_loaded()
+        async with _generation_lock:
+            # Preflight unified-memory check (T-0029 guardrail 1).
+            # Surfaces a structured error to the MCP caller in place of
+            # an MLX-side process abort or kernel panic (F8).
+            free = free_unified_memory_bytes()
+            threshold = min_free_bytes()
+            if free < threshold:
+                raise UnifiedMemoryExhaustedError(
+                    free_bytes=free,
+                    min_free_bytes=threshold,
+                    model_id=self._model_id,
+                )
 
-        # Truncate if needed (AD-031)
-        truncated_text = self._truncate_for_context(text, max_tokens, doc_type)
+            # Lazy model load (AD-026 revised, AD-035)
+            self._ensure_loaded()
 
-        # Build prompt and generate (AD-028, AD-029)
-        prompt = self._build_prompt(truncated_text, doc_type)
-        result = self._generate_fn(
-            self._model,
-            self._tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            verbose=False,
-            sampler=self._greedy_sampler,
-        )
-        # Errors from _generate_fn propagate naturally (AD-033)
+            # Truncate if needed (AD-031)
+            truncated_text = self._truncate_for_context(text, max_tokens, doc_type)
+
+            # Build prompt and generate (AD-028, AD-029)
+            prompt = self._build_prompt(truncated_text, doc_type)
+            result = self._generate_fn(
+                self._model,
+                self._tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                verbose=False,
+                sampler=self._greedy_sampler,
+            )
+            # Errors from _generate_fn propagate naturally (AD-033)
 
         # Post-process (AD-027)
         abstract = result.strip() if result else ""
