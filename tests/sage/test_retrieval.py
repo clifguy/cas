@@ -486,6 +486,30 @@ async def test_get_heading_paths_returns_distinct_ordered(
     ]
 
 
+async def test_get_heading_paths_excludes_synthetic_header(
+    stub_content_store, seeded_embedding_provider
+):
+    """The synthetic header chunk's marker heading_path (T-0038) must
+    not appear in get_heading_paths output — it is an internal
+    retrieval surface, not a real heading."""
+    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_hp_synth"),
+        [
+            (SYNTHETIC_HEADER_HEADING_PATH, "Title: X\nSource: x\n"),
+            ("Overview", "Intro."),
+            ("Conclusion", "End."),
+        ],
+    )
+
+    paths = await stub_content_store.get_heading_paths(_id("doc_hp_synth"))
+    assert SYNTHETIC_HEADER_HEADING_PATH not in paths
+    assert paths == ["Overview", "Conclusion"]
+
+
 async def test_get_heading_paths_empty_document(stub_content_store):
     """get_heading_paths returns empty list for unknown document."""
     paths = await stub_content_store.get_heading_paths("nonexistent")
@@ -657,6 +681,165 @@ async def test_bh_058_document_identity_indexed_in_chunks(
 
     doc_ids = [h.document.id for h in response.results]
     assert _id("doc_pv07") in doc_ids
+
+
+# ---------------------------------------------------------------------------
+# T-0038: Documents whose identifying terms live in title/semantic_abstract
+# or in CamelCase compounds are discoverable via the synthetic header chunk
+# ---------------------------------------------------------------------------
+
+
+async def test_t_0038_camelcase_title_searchable_via_split_tokens(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document whose title is a CamelCase compound and whose body is
+    sparse placeholder content is retrievable by natural-language queries
+    against the constituent words. The synthetic header chunk carries a
+    case-split identifier-token line that unblocks BM25 matching."""
+    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+
+    doc = _make_doc(_id("doc_portfolio"))
+    doc.title = "PortfolioDashboard_Template"
+    doc.source_path = "imports/2026-05-11_PIM_REF_PortfolioDashboard_Template_v3.xlsx"
+    doc.tags = ["REF", "template"]
+    doc.semantic_abstract = (
+        "Authoritative template for the PIM Health Portfolio Dashboard "
+        "with rows per patent and columns per filing pipeline stage."
+    )
+    await graph_store.insert_document(doc)
+
+    # Synthetic header chunk content mirrors what _build_header_chunk_content
+    # produces in production. The case-split identifier line is what makes
+    # "dashboard" match against "PortfolioDashboard".
+    header_content = (
+        "Title: PortfolioDashboard_Template\n"
+        "Source: 2026-05-11_PIM_REF_PortfolioDashboard_Template_v3\n"
+        "Tags: REF, template\n"
+        "Abstract: " + doc.semantic_abstract + "\n\n"
+        "Identifier tokens: portfolio dashboard template v3 pim ref\n"
+    )
+    body_content = "[Placeholder content. Template body is structurally minimal.]"
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_portfolio"),
+        [
+            (SYNTHETIC_HEADER_HEADING_PATH, header_content),
+            ("Sheet1", body_content),
+        ],
+    )
+
+    # Add a noise document so the assertion is non-trivial.
+    doc_noise = _make_doc(_id("doc_noise"))
+    doc_noise.title = "ClinicalNormalization"
+    await graph_store.insert_document(doc_noise)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_noise"),
+        [("Section 1", "Discusses cryptographic accumulator seals.")],
+    )
+
+    # The diagnostic query: should land doc_portfolio in BM25, semantic,
+    # and hybrid modes.
+    for mode_kwargs in (
+        {"mode": RetrievalMode.KEYWORD, "query": "dashboard template"},
+        {
+            "mode": RetrievalMode.SEMANTIC,
+            "query": "dashboard template",
+            "use_hybrid": False,
+        },
+        {
+            "mode": RetrievalMode.SEMANTIC,
+            "query": "dashboard template",
+            "use_hybrid": True,
+        },
+    ):
+        request = DiscoverRequest(**mode_kwargs)
+        response = await retrieval_service.discover(request)
+        doc_ids = [h.document.id for h in response.results[:5]]
+        assert _id("doc_portfolio") in doc_ids, (
+            f"doc_portfolio missing from top 5 for {mode_kwargs!r}; got {doc_ids}"
+        )
+
+
+async def test_t_0038_semantic_abstract_drives_keyword_match(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """A document with sparse body but a descriptive semantic_abstract is
+    retrievable by BM25 queries against the abstract's terms — because the
+    abstract lives in the synthetic header chunk's indexed content."""
+    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+
+    doc = _make_doc(_id("doc_abstract_only"))
+    doc.title = "Catalog_2026"
+    doc.semantic_abstract = (
+        "Cryptographic accumulator seals govern every commit boundary in this catalog."
+    )
+    await graph_store.insert_document(doc)
+
+    header_content = (
+        "Title: Catalog_2026\n"
+        "Source: \n"
+        "Tags: \n"
+        "Abstract: " + doc.semantic_abstract + "\n\n"
+        "Identifier tokens: catalog 2026\n"
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_abstract_only"),
+        [
+            (SYNTHETIC_HEADER_HEADING_PATH, header_content),
+            ("Sheet1", "[empty]"),
+        ],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="cryptographic accumulator",
+    )
+    response = await retrieval_service.discover(request)
+    doc_ids = [h.document.id for h in response.results]
+    assert _id("doc_abstract_only") in doc_ids
+
+
+async def test_t_0038_hit_heading_path_masks_synthetic_marker(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """When a hit's winning chunk is the synthetic header (T-0038), the
+    hit's user-visible heading_path is None — never the internal
+    ``__document_header__`` sentinel."""
+    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+
+    doc = _make_doc(_id("doc_mask"))
+    doc.title = "MaskProbe_Template"
+    await graph_store.insert_document(doc)
+
+    header_content = (
+        "Title: MaskProbe_Template\n"
+        "Source: maskprobe\n"
+        "Tags: \n"
+        "Abstract: probe content\n\n"
+        "Identifier tokens: mask probe template\n"
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_mask"),
+        [
+            (SYNTHETIC_HEADER_HEADING_PATH, header_content),
+            ("Sheet1", "[empty body]"),
+        ],
+    )
+
+    request = DiscoverRequest(mode=RetrievalMode.KEYWORD, query="probe template")
+    response = await retrieval_service.discover(request)
+
+    masked = [hit for hit in response.results if hit.document.id == _id("doc_mask")]
+    assert masked, "doc_mask was not in results"
+    assert masked[0].heading_path != SYNTHETIC_HEADER_HEADING_PATH
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from sage.adapters.abstraction_utils import (
     trim_to_sentence_boundary,
 )
 from sage.adapters.content_store_lancedb import LanceDBContentStore
+from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 from sage.config import AbstractionConfig
 
 VAULT_BRAIN = Path.home() / "sage_vaults" / "theology" / "brain"
@@ -85,6 +86,10 @@ async def main() -> int:
         rec = fetch_doc_record(conn, doc_id)
 
         chunks = await content_store.get_all_chunks(doc_id)
+        # Exclude the synthetic header chunk (T-0038) so the abstraction
+        # prompt does not echo back the title/source/tags/abstract
+        # restatement carried by that chunk.
+        chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
         projection_text = "\n\n".join(c.content for c in chunks)
 
         word_count = len(projection_text.split())

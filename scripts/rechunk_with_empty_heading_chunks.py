@@ -161,16 +161,18 @@ async def rechunk_vault(vault_id: str, *, execute: bool, batch_size: int) -> int
                 merged = ingestion._merge_adapter_config(SourceType(doc.source_type), None)
                 projection = await adapter.project(source_path, merged)
 
-                # Build chunks using the new chunking logic (one chunk per
-                # heading, including empty-content headings). Apply the BH-058
-                # search preamble, mirroring the production pipeline.
-                preamble = ingestion._build_search_preamble(doc)
-                chunks = ingestion._chunk_projection(doc.id, projection, preamble)
+                # Build body chunks using the new chunking logic (one chunk
+                # per heading, including empty-content headings) and prepend
+                # the standalone synthetic header chunk (T-0038, mirroring
+                # the production pipeline).
+                body_chunks = ingestion._chunk_projection(doc.id, projection)
 
-                # Stamp doc_type on every chunk (mirrors ingestion pipeline).
-                if doc.doc_type and chunks:
-                    for c in chunks:
+                # Stamp doc_type on every body chunk (mirrors ingestion pipeline).
+                if doc.doc_type and body_chunks:
+                    for c in body_chunks:
                         c.doc_type = doc.doc_type
+
+                chunks = [ingestion._build_header_chunk(doc.id, doc), *body_chunks]
 
                 # Stage 2: embed the chunks. Combined heading_path + content
                 # text is built inside the production pipeline; mirror it here.

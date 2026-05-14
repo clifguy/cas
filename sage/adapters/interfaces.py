@@ -8,6 +8,12 @@ provide deterministic behavior for testing.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+# Reserved heading_path marker for the per-document synthetic header chunk
+# carrying title, source filename stem, tags, semantic_abstract, and
+# case-split identifier tokens (T-0038, F9). Body chunks never use this
+# marker; backfill and stage-3 refresh match on it via equality.
+SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
+
 
 @dataclass
 class Chunk:
@@ -37,6 +43,17 @@ class ContentStore(ABC):
     @abstractmethod
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         """Store embedded chunks for a document."""
+
+    @abstractmethod
+    async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
+        """Replace the synthetic document-header chunk for a document.
+
+        Targeted delete-where + insert + FTS rebuild scoped to the chunk
+        with ``heading_path == SYNTHETIC_HEADER_HEADING_PATH``. Body chunks
+        for the document are not touched. Used by Stage 3 abstraction
+        completion and reabstract to refresh the header once
+        ``semantic_abstract`` is populated (T-0038).
+        """
 
     @abstractmethod
     async def remove_document(self, document_id: str) -> None:

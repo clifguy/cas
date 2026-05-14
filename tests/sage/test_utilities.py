@@ -7,6 +7,7 @@ eval_retrieval (retrieval health assertions from YAML).
 import asyncio
 import hashlib
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -174,6 +175,30 @@ async def test_read_projection_returns_text(utilities_service, ingested_doc):
     assert result.source_path == ingested_doc.source_path
     assert len(result.projection_text) > 0
     assert "Sample" in result.projection_text
+
+
+async def test_read_projection_excludes_synthetic_header(utilities_service, ingested_doc):
+    """The synthetic header chunk (T-0038) carries title/source/tags/
+    abstract for retrieval and must not leak into the exported/read
+    projection text."""
+    result = await utilities_service.read_projection(ingested_doc.id)
+
+    assert "Identifier tokens:" not in result.projection_text
+    # The synthetic header always starts with "Title: " on its first line;
+    # the body's first chunk does not, so this is a discriminating check.
+    assert not result.projection_text.startswith("Title:")
+
+
+async def test_export_projection_excludes_synthetic_header(
+    utilities_service, ingested_doc, tmp_vault_dir
+):
+    """export_projection writes the body-only projection — the synthetic
+    header chunk content does not appear in the exported file (T-0038)."""
+    result = await utilities_service.export_projection(ingested_doc.id, "exports/no_synthetic.md")
+
+    written = Path(result.output_path).read_text(encoding="utf-8")
+    assert "Identifier tokens:" not in written
+    assert not written.startswith("Title:")
 
 
 async def test_read_projection_document_not_found(utilities_service):

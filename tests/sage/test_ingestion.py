@@ -546,13 +546,16 @@ async def test_bh_057_imports_dir_created_on_demand(
 
 
 # ---------------------------------------------------------------------------
-# BH-058 (unit): _chunk_projection prepends title to first chunk
+# T-0038 (unit): _chunk_projection emits body chunks only; identity
+# signals live in the standalone synthetic header chunk built by
+# _build_header_chunk.
 # ---------------------------------------------------------------------------
 
 
-def test_chunk_projection_prepends_preamble(ingestion_service):
-    """The first chunk produced by _chunk_projection includes the search
-    preamble so document identity signals are indexed for search."""
+def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
+    """_chunk_projection returns body chunks with original content only;
+    the search preamble lives in a standalone synthetic header chunk
+    (T-0038)."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
     projection = ProjectionResult(
@@ -567,18 +570,16 @@ def test_chunk_projection_prepends_preamble(ingestion_service):
         title="ClinicalNormalization",
     )
 
-    preamble = "Title: ClinicalNormalization\nSource: PIM_PV07_ClinicalNormalization_v1_0\n\n"
-    chunks = ingestion_service._chunk_projection("doc1", projection, preamble)
+    chunks = ingestion_service._chunk_projection("doc1", projection)
 
     assert len(chunks) == 1
-    assert chunks[0].content.startswith("Title: ClinicalNormalization\n")
-    assert "PV07" in chunks[0].content
-    assert "Body content only." in chunks[0].content
+    assert chunks[0].content == "Body content only."
+    assert not chunks[0].content.startswith("Title:")
 
 
-def test_chunk_projection_prepends_preamble_fallback_chunk(ingestion_service):
-    """When there are no headings, the fallback single chunk also gets
-    the search preamble."""
+def test_chunk_projection_fallback_chunk_has_no_preamble(ingestion_service):
+    """When there are no headings, the fallback single chunk carries the
+    raw projection text without any identity preamble (T-0038)."""
     from sage.source_adapters.base import ProjectionResult
 
     projection = ProjectionResult(
@@ -589,17 +590,16 @@ def test_chunk_projection_prepends_preamble_fallback_chunk(ingestion_service):
         title="Flat_Doc",
     )
 
-    preamble = "Title: Flat_Doc\nSource: PIM_PV07_Flat_Doc\n\n"
-    chunks = ingestion_service._chunk_projection("doc2", projection, preamble)
+    chunks = ingestion_service._chunk_projection("doc2", projection)
 
     assert len(chunks) == 1
-    assert chunks[0].content.startswith("Title: Flat_Doc\n")
-    assert "Flat document with no headings." in chunks[0].content
+    assert chunks[0].content == "Flat document with no headings."
+    assert not chunks[0].content.startswith("Title:")
 
 
-def test_chunk_projection_preamble_only_on_first_chunk(ingestion_service):
-    """When multiple headings produce multiple chunks, only the first
-    chunk gets the search preamble."""
+def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
+    """Every body chunk carries only its projected content; the synthetic
+    header chunk lives outside _chunk_projection's output (T-0038)."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
     projection = ProjectionResult(
@@ -613,16 +613,18 @@ def test_chunk_projection_preamble_only_on_first_chunk(ingestion_service):
         title="Multi_Section_Doc",
     )
 
-    preamble = "Title: Multi_Section_Doc\nSource: PIM_Multi_Section_Doc\n\n"
-    chunks = ingestion_service._chunk_projection("doc3", projection, preamble)
+    chunks = ingestion_service._chunk_projection("doc3", projection)
 
     assert len(chunks) == 2
-    assert chunks[0].content.startswith("Title: Multi_Section_Doc\n")
-    assert not chunks[1].content.startswith("Title:")
+    assert chunks[0].content == "Content for part A."
+    assert chunks[1].content == "Content for part B."
+    assert all(not c.content.startswith("Title:") for c in chunks)
 
 
-def test_build_search_preamble(ingestion_service):
-    """_build_search_preamble includes title, source filename, and tags."""
+def test_build_header_chunk_content_includes_all_identity_fields(ingestion_service):
+    """The synthetic header chunk body covers title, source filename
+    stem, tags, semantic_abstract, and a case-split identifier-token
+    line (T-0038)."""
     from sage.services.ingestion import IngestionService
 
     now = datetime.now(timezone.utc)
@@ -638,13 +640,109 @@ def test_build_search_preamble(ingestion_service):
         last_modified_by="test",
         updated_at=now,
         tags=["PV07"],
+        semantic_abstract="A canonical definition of clinical normalization.",
     )
 
-    preamble = IngestionService._build_search_preamble(doc)
+    content = IngestionService._build_header_chunk_content(doc)
 
-    assert "Title: ClinicalNormalization" in preamble
-    assert "Source: PIM_PV07_ClinicalNormalization_v1_0" in preamble
-    assert "Tags: PV07" in preamble
+    assert "Title: ClinicalNormalization" in content
+    assert "Source: PIM_PV07_ClinicalNormalization_v1_0" in content
+    assert "Tags: PV07" in content
+    assert "Abstract: A canonical definition of clinical normalization." in content
+    assert "Identifier tokens:" in content
+    # CamelCase split: ClinicalNormalization → clinical, normalization
+    assert "clinical" in content
+    assert "normalization" in content
+
+
+def test_build_header_chunk_content_empty_abstract_when_unset(ingestion_service):
+    """Header chunk shape stays stable when semantic_abstract is None;
+    Stage 3 rebuilds the chunk once abstraction completes (T-0038)."""
+    from sage.services.ingestion import IngestionService
+
+    now = datetime.now(timezone.utc)
+    doc = Document(
+        id=_id("test_doc"),
+        title="PortfolioDashboard_Template",
+        source_type=SourceType.XLSX,
+        source_path="imports/2026-05-11_PIM_REF_PortfolioDashboard_Template_v3.xlsx",
+        source_content_hash=_sha("test"),
+        adapter_version="0.1.0",
+        created_by="test",
+        created_at=now,
+        last_modified_by="test",
+        updated_at=now,
+        tags=["REF", "template"],
+        semantic_abstract=None,
+    )
+
+    content = IngestionService._build_header_chunk_content(doc)
+
+    assert "Abstract: \n\n" in content  # blank abstract line, stable shape
+    # CamelCase split unblocks BM25 'dashboard' query
+    assert "portfolio" in content
+    assert "dashboard" in content
+    assert "template" in content
+
+
+def test_build_header_chunk_marker_and_index(ingestion_service):
+    """The standalone synthetic header chunk uses the reserved heading
+    path marker and a chunk_index that sorts before body chunks (T-0038)."""
+    from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
+
+    now = datetime.now(timezone.utc)
+    doc = Document(
+        id=_id("test_doc"),
+        title="HeaderMarkerProbe",
+        source_type=SourceType.MARKDOWN,
+        source_path="imports/HeaderMarkerProbe.md",
+        source_content_hash=_sha("test"),
+        adapter_version="0.1.0",
+        created_by="test",
+        created_at=now,
+        last_modified_by="test",
+        updated_at=now,
+        doc_type="ticket",
+        tags=["probe"],
+    )
+
+    chunk = ingestion_service._build_header_chunk(doc.id, doc)
+
+    assert chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH
+    assert chunk.chunk_index == -1
+    assert chunk.doc_type == "ticket"
+    assert chunk.document_id == doc.id
+
+
+def test_case_split_identifiers_handles_camelcase_and_underscores():
+    """_case_split_identifiers lowercases, splits CamelCase compounds and
+    underscored compounds, and dedupes (T-0038)."""
+    from sage.services.ingestion import IngestionService
+
+    out = IngestionService._case_split_identifiers(
+        "PortfolioDashboard_Template_v3",
+        "NPScopeManifest_Template",
+        "XLSX",
+        "PV07",
+    )
+    tokens = set(out.split())
+    # CamelCase splits
+    assert {"portfolio", "dashboard", "template", "scope", "manifest"} <= tokens
+    # All-uppercase and mixed-alphanum tokens pass through (lowercased)
+    assert "xlsx" in tokens
+    assert "pv07" in tokens
+    # Version token
+    assert "v3" in tokens
+    # No duplicates: 'template' appears in both source strings but once in output
+    assert out.split().count("template") == 1
+
+
+def test_case_split_identifiers_empty_sources_returns_empty():
+    """No sources → empty string (T-0038)."""
+    from sage.services.ingestion import IngestionService
+
+    assert IngestionService._case_split_identifiers() == ""
+    assert IngestionService._case_split_identifiers("", "  ", None or "") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1909,13 +2007,18 @@ async def test_no_request_config_and_no_vault_adapter_config_uses_defaults(
 
 
 class _RecordingEmbeddingProvider:
-    """Captures the texts passed to embed() for assertion."""
+    """Captures the texts passed to embed() for assertion.
+
+    Accumulates across calls — the production pipeline now embeds chunks
+    in Stage 2 and re-embeds the synthetic header chunk in Stage 3
+    (T-0038), so a single call's inputs are no longer the full picture.
+    """
 
     def __init__(self) -> None:
         self.last_inputs: list[str] = []
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        self.last_inputs = list(texts)
+        self.last_inputs.extend(texts)
         return [[0.0] * 768 for _ in texts]
 
 
@@ -1932,9 +2035,10 @@ async def test_embedder_receives_combined_heading_path_and_content(
     so semantic search can find chunks via heading-only query terms.
 
     Heading text is deliberately distinct from the document title so the
-    BH-058 search preamble (which prepends Title/Source/Tags to chunk[0])
-    does not accidentally include the heading text — that would mask a
-    failure of the heading-context-embedding logic.
+    standalone synthetic header chunk (T-0038) — which carries title /
+    source / tags / semantic_abstract — does not accidentally include
+    the heading text; that would mask a failure of the heading-context
+    embedding logic.
     """
     from sage.services.ingestion import IngestionService
     from sage.services.lifecycle import LifecycleService
@@ -1976,7 +2080,17 @@ async def test_embedder_receives_combined_heading_path_and_content(
     await service.ingest(IngestRequest(source="plain_filename.docx", adapter=SourceType.DOCX))
 
     assert recording_embedder.last_inputs, "embedder was not called"
-    combined = recording_embedder.last_inputs[0]
+    # The synthetic header chunk is index 0 (T-0038); the body chunk is
+    # at the index whose embed input begins with the heading text.
+    body_inputs = [
+        text
+        for text in recording_embedder.last_inputs
+        if text.startswith("Distinctive Marker Phrase")
+    ]
+    assert body_inputs, (
+        f"no embed input started with the heading: {recording_embedder.last_inputs!r}"
+    )
+    combined = body_inputs[0]
     assert "Distinctive Marker Phrase" in combined, (
         f"heading_path missing from embed input: {combined!r}"
     )
@@ -2030,8 +2144,9 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     )
 
     chunks = await stub_content_store.get_all_chunks(result.document.id)
-    # Assert on the SECOND chunk (avoid BH-058 search_preamble which mutates
-    # only chunk[0].content with title/source/tags).
+    # Body chunks carry projected content only; the synthetic header
+    # chunk (T-0038) lives separately under heading_path
+    # SYNTHETIC_HEADER_HEADING_PATH.
     assert len(chunks) >= 2
     second = next(c for c in chunks if c.heading_path == second_heading)
     assert second.content == body_second, (
@@ -2098,9 +2213,9 @@ async def test_empty_content_heading_still_emits_chunk(
     chunks = await stub_content_store.get_all_chunks(result.document.id)
     by_path = {c.heading_path: c for c in chunks}
     assert "EMPTY PARENT" in by_path
-    # The empty-content marker chunk has no body content (the BH-058
-    # search-preamble may be prepended on chunk[0], which is fine — the
-    # heading_path is what makes the heading searchable).
+    # Body chunks carry projected content only — the synthetic header
+    # chunk (T-0038) lives under SYNTHETIC_HEADER_HEADING_PATH and does
+    # not touch the per-heading chunks.
     parent = by_path["EMPTY PARENT"]
     assert "Some body content" not in parent.content, (
         "Body of FIRST CHILD must not leak into the EMPTY PARENT chunk."

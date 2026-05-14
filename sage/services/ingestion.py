@@ -24,7 +24,13 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
-from sage.adapters.interfaces import AbstractionProvider, Chunk, ContentStore, EmbeddingProvider
+from sage.adapters.interfaces import (
+    SYNTHETIC_HEADER_HEADING_PATH,
+    AbstractionProvider,
+    Chunk,
+    ContentStore,
+    EmbeddingProvider,
+)
 from sage.api.errors import (
     AdapterNotFoundError,
     DocumentNotFoundError,
@@ -754,17 +760,24 @@ class IngestionService:
                 },
             )
 
-        # Build search preamble from document metadata (BH-058)
+        # Build body chunks from the projection. Document-identity signals
+        # live in a standalone synthetic header chunk (T-0038, F9) — not
+        # inlined into chunk[0].
         doc = await self._store.get_document(document_id)
-        preamble = self._build_search_preamble(doc) if doc else ""
+        body_chunks = self._chunk_projection(document_id, projection)
 
-        # Chunk the projection by heading
-        chunks = self._chunk_projection(document_id, projection, preamble)
-
-        # Stamp doc_type on chunks for content-store pre-filtering
-        if doc and doc.doc_type and chunks:
-            for chunk in chunks:
+        # Stamp doc_type on body chunks for content-store pre-filtering
+        if doc and doc.doc_type and body_chunks:
+            for chunk in body_chunks:
                 chunk.doc_type = doc.doc_type
+
+        # Prepend the synthetic header chunk. ``semantic_abstract`` is
+        # still ``None`` at this point in the pipeline; Stage 3 will
+        # rebuild this chunk once abstraction completes.
+        chunks: list[Chunk] = []
+        if doc is not None:
+            chunks.append(self._build_header_chunk(document_id, doc))
+        chunks.extend(body_chunks)
 
         # Embed all chunks. Combine heading_path with content so that
         # semantic search can reach chunks via heading-text-only queries
@@ -792,6 +805,33 @@ class IngestionService:
                     "updated_at": now.isoformat(),
                 },
             )
+
+    async def _refresh_header_chunk(self, document_id: str) -> None:
+        """Rebuild the synthetic header chunk after metadata changes (T-0038).
+
+        Loads the current document, rebuilds the header chunk content
+        (now potentially with ``semantic_abstract``), re-embeds, and
+        writes via the content store's targeted replace method. Body
+        chunks are not touched.
+
+        Silently no-ops when the document is missing — the caller is
+        expected to have already validated existence (Stage 3 and
+        reabstract both do).
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            return
+
+        chunk = self._build_header_chunk(document_id, doc)
+        # Embed with heading_path prepended, matching the body-chunk
+        # embed convention in _stage2_indexing so similarity scores are
+        # comparable across the synthetic and body chunks.
+        text_for_embedding = (
+            f"{chunk.heading_path}\n\n{chunk.content}" if chunk.heading_path else chunk.content
+        )
+        [embedding] = await self._embedding.embed([text_for_embedding])
+        chunk.embedding = embedding
+        await self._content_store.replace_synthetic_header_chunk(document_id, chunk)
 
     async def _generate_abstract_text(self, text: str, doc_type: str | None) -> str:
         """Generate a semantic abstract from document text.
@@ -843,6 +883,10 @@ class IngestionService:
                     "updated_at": now.isoformat(),
                 },
             )
+
+        # Refresh the synthetic header chunk so retrieval sees the new
+        # ``semantic_abstract`` (T-0038). Body chunks are not touched.
+        await self._refresh_header_chunk(document_id)
 
     async def reabstract(self, document_id: str) -> dict:
         """Re-run abstraction on an existing document (fire-and-forget).
@@ -907,7 +951,11 @@ class IngestionService:
         await asyncio.sleep(0.1)
         try:
             chunks = await self._content_store.get_all_chunks(document_id)
-            projection_text = "\n\n".join(chunk.content for chunk in chunks)
+            # Exclude the synthetic header chunk (T-0038) from the
+            # reconstituted projection text so its title/source/tags
+            # restatement does not feed back into the abstraction prompt.
+            body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+            projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
             abstract = await self._generate_abstract_text(projection_text, doc_type)
             now = datetime.now(timezone.utc)
             async with self._locks.lock(document_id):
@@ -919,6 +967,10 @@ class IngestionService:
                         "updated_at": now.isoformat(),
                     },
                 )
+
+            # Refresh the synthetic header chunk so the new abstract is
+            # indexed for retrieval (T-0038).
+            await self._refresh_header_chunk(document_id)
         except Exception:
             logger.exception("Background reabstract failed for document %s", document_id)
             async with self._locks.lock(document_id):
@@ -1030,9 +1082,8 @@ class IngestionService:
         self,
         document_id: str,
         projection: ProjectionResult,
-        search_preamble: str = "",
     ) -> list[Chunk]:
-        """Split projection into chunks by heading.
+        """Split projection into body chunks by heading (T-0038).
 
         Emits one chunk per heading regardless of whether the heading has
         immediate body content. A heading whose next paragraph is another
@@ -1043,9 +1094,10 @@ class IngestionService:
         text find the document, matching the behavior of Word's Find on
         a heading paragraph.
 
-        Prepends a search preamble to the first chunk so that document
-        identity signals (title, source filename, tags) are indexed in
-        both BM25 and vector search (BH-058).
+        Body chunks carry projected content only. Document-identity
+        signals (title, source filename, tags, semantic_abstract,
+        case-split identifier tokens) live in the standalone synthetic
+        header chunk built by ``_build_header_chunk`` (T-0038, F9).
         """
         chunks: list[Chunk] = []
         for i, heading in enumerate(projection.headings):
@@ -1069,30 +1121,90 @@ class IngestionService:
                 )
             )
 
-        # Prepend search preamble to the first chunk for indexing (BH-058)
-        if chunks and search_preamble:
-            chunks[0].content = search_preamble + chunks[0].content
-
         return chunks
 
     @staticmethod
-    def _build_search_preamble(doc: Document) -> str:
-        """Build a search preamble from document metadata (BH-058).
+    def _build_header_chunk_content(doc: Document) -> str:
+        """Build the synthetic document-header chunk's content (T-0038).
 
-        Includes title, source filename, and tags so they are indexed
-        for BM25 keyword search and vector similarity.
+        Composes a single text body covering title, source filename stem,
+        tags, semantic_abstract, and a case-split identifier-token line.
+        The abstract line is included even when ``semantic_abstract`` is
+        unset (with an empty value) so the chunk has a stable shape;
+        Stage 3 refreshes the chunk once abstraction completes.
+
+        The identifier-token line carries lowercased case-split forms of
+        compound identifiers (e.g. ``PortfolioDashboard`` →
+        ``portfolio dashboard``) so the BM25 leg can match natural-
+        language queries against camelcased identifiers that the
+        LanceDB ``simple`` tokenizer leaves intact.
         """
-        parts: list[str] = []
-        if doc.title:
-            parts.append(f"Title: {doc.title}")
-        # Source filename contains codes like PV07, REF, etc.
+        title = doc.title or ""
+        stem = ""
         if doc.source_path:
             filename = doc.source_path.rsplit("/", 1)[-1]
-            # Strip extension for cleaner indexing
             stem = filename.rsplit(".", 1)[0] if "." in filename else filename
-            parts.append(f"Source: {stem}")
-        if doc.tags:
-            parts.append(f"Tags: {', '.join(doc.tags)}")
-        if not parts:
-            return ""
-        return "\n".join(parts) + "\n\n"
+        tags_line = ", ".join(doc.tags) if doc.tags else ""
+        abstract = doc.semantic_abstract or ""
+        identifier_tokens = IngestionService._case_split_identifiers(title, stem, *(doc.tags or []))
+
+        return (
+            f"Title: {title}\n"
+            f"Source: {stem}\n"
+            f"Tags: {tags_line}\n"
+            f"Abstract: {abstract}\n\n"
+            f"Identifier tokens: {identifier_tokens}\n"
+        )
+
+    @staticmethod
+    def _case_split_identifiers(*sources: str) -> str:
+        """Return a deduplicated, lowercased space-separated string of
+        case-split identifier tokens drawn from the given source strings
+        (T-0038).
+
+        For each whitespace/punctuation-bounded token in the sources:
+        - All-alpha CamelCase compounds with at least two title-cased
+          parts (``PortfolioDashboard``, ``NanoBanana``) are split into
+          their constituent words and lowercased.
+        - Underscored compounds are also split on the underscore.
+        - Other tokens (``XLSX``, ``PV07``, single words) are not
+          split; they appear lowercased.
+
+        Output preserves first-seen order and is deduplicated. Returns
+        an empty string when no sources contribute any tokens.
+        """
+        import re
+
+        camel_split = re.compile(r"[A-Z][a-z]+|[A-Z]+(?=[A-Z]|$)|[a-z]+|[0-9]+")
+        seen: dict[str, None] = {}
+        for source in sources:
+            if not source:
+                continue
+            # Split on whitespace and underscore first.
+            for raw in re.split(r"[\s_]+", source):
+                if not raw:
+                    continue
+                # Try CamelCase split when there are 2+ uppercase boundaries
+                # in an otherwise alphabetic token.
+                if raw.isalpha() and sum(1 for ch in raw if ch.isupper()) >= 2:
+                    parts = camel_split.findall(raw)
+                    if len(parts) >= 2:
+                        for part in parts:
+                            key = part.lower()
+                            if key:
+                                seen.setdefault(key, None)
+                        continue
+                key = raw.lower()
+                if key:
+                    seen.setdefault(key, None)
+        return " ".join(seen.keys())
+
+    def _build_header_chunk(self, document_id: str, doc: Document) -> Chunk:
+        """Build the standalone synthetic document-header chunk (T-0038)."""
+        return Chunk(
+            document_id=document_id,
+            heading_path=SYNTHETIC_HEADER_HEADING_PATH,
+            content=self._build_header_chunk_content(doc),
+            chunk_index=-1,
+            doc_type=doc.doc_type,
+        )

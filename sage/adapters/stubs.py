@@ -6,6 +6,7 @@ These return predictable results and require no external services.
 import math
 
 from sage.adapters.interfaces import (
+    SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
     Chunk,
     ContentStore,
@@ -27,6 +28,17 @@ class StubContentStore(ContentStore):
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         self._store[document_id] = chunks
+
+    async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
+        """Replace the synthetic header chunk for a document (T-0038).
+
+        Drops any existing chunk with
+        ``heading_path == SYNTHETIC_HEADER_HEADING_PATH`` and inserts the
+        new one; body chunks are left in place.
+        """
+        existing = self._store.get(document_id, [])
+        body = [c for c in existing if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        self._store[document_id] = [chunk, *body]
 
     async def remove_document(self, document_id: str) -> None:
         self._store.pop(document_id, None)
@@ -117,11 +129,17 @@ class StubContentStore(ContentStore):
         return matched
 
     async def get_heading_paths(self, document_id: str) -> list[str]:
-        """Return distinct heading paths in document order."""
+        """Return distinct heading paths in document order.
+
+        Excludes the synthetic header chunk marker (T-0038); that chunk
+        is an internal retrieval surface and is not a real heading.
+        """
         chunks = self._store.get(document_id, [])
         seen: set[str] = set()
         paths: list[str] = []
         for chunk in sorted(chunks, key=lambda c: c.chunk_index):
+            if chunk.heading_path == SYNTHETIC_HEADER_HEADING_PATH:
+                continue
             if chunk.heading_path not in seen:
                 seen.add(chunk.heading_path)
                 paths.append(chunk.heading_path)

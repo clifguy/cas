@@ -26,7 +26,11 @@ from pathlib import Path
 
 import yaml
 
-from sage.adapters.interfaces import ContentStore, EmbeddingProvider
+from sage.adapters.interfaces import (
+    SYNTHETIC_HEADER_HEADING_PATH,
+    ContentStore,
+    EmbeddingProvider,
+)
 from sage.api.errors import (
     AssertionsFileInvalidError,
     AssertionsFileNotFoundError,
@@ -137,7 +141,12 @@ class UtilitiesService:
         if not chunks:
             raise NoProjectionError(document_id)
 
-        projection_text = "\n\n".join(chunk.content for chunk in chunks)
+        # Exclude the synthetic header chunk (T-0038) so exported/read
+        # projection text reflects only the body content the source
+        # adapter produced — not the synthetic title/source/tags/abstract
+        # surface added for retrieval.
+        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
         return doc, projection_text
 
     # ------------------------------------------------------------------

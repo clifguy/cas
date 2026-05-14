@@ -21,7 +21,12 @@ Deterministic mode:
 import math
 from datetime import datetime, timezone
 
-from sage.adapters.interfaces import ContentStore, EmbeddingProvider, SearchResult
+from sage.adapters.interfaces import (
+    SYNTHETIC_HEADER_HEADING_PATH,
+    ContentStore,
+    EmbeddingProvider,
+    SearchResult,
+)
 from sage.api.errors import (
     DocumentNotFoundError,
     HeadingNotFoundError,
@@ -535,10 +540,17 @@ class RetrievalService:
             # BH-084/085: suppress chunk_content when response_level=documents;
             # heading_path preserved as cheap "why this matched" context.
             include_content = request.response_level != ResponseLevel.DOCUMENTS
+            # Mask the synthetic header chunk's marker heading_path (T-0038)
+            # so users never see the internal sentinel string.
+            visible_heading_path = (
+                None
+                if result.heading_path == SYNTHETIC_HEADER_HEADING_PATH
+                else (result.heading_path or None)
+            )
             hit = DiscoverHit(
                 document=summary,
                 chunk_content=result.content if include_content else None,
-                heading_path=result.heading_path or None,
+                heading_path=visible_heading_path,
                 relevance_score=result.score,
             )
             seen_docs[result.document_id] = hit

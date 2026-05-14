@@ -11,7 +11,12 @@ import lancedb
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from sage.adapters.interfaces import Chunk, ContentStore, SearchResult
+from sage.adapters.interfaces import (
+    SYNTHETIC_HEADER_HEADING_PATH,
+    Chunk,
+    ContentStore,
+    SearchResult,
+)
 from sage.storage.migrations import SchemaMigrationRequired
 
 logger = logging.getLogger(__name__)
@@ -233,6 +238,35 @@ class LanceDBContentStore(ContentStore):
         table.add(rows)
         self._rebuild_fts(table)
 
+    async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
+        """Replace the synthetic document-header chunk for a document (T-0038).
+
+        Deletes any existing row for this document with
+        ``heading_path == SYNTHETIC_HEADER_HEADING_PATH``, inserts the new
+        header chunk, and rebuilds the FTS indexes. Body chunks are not
+        touched.
+        """
+        table = self._ensure_table()
+
+        doc_id_sql = _escape_sql(document_id)
+        marker_sql = _escape_sql(SYNTHETIC_HEADER_HEADING_PATH)
+        try:
+            table.delete(f"document_id = '{doc_id_sql}' AND heading_path = '{marker_sql}'")
+        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+            pass
+
+        embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
+        row = {
+            "document_id": chunk.document_id,
+            "heading_path": chunk.heading_path,
+            "content": chunk.content,
+            "chunk_index": chunk.chunk_index,
+            "vector": embedding,
+            "doc_type": chunk.doc_type,
+        }
+        table.add([row])
+        self._rebuild_fts(table)
+
     async def count_chunks(self) -> int:
         """Return the total number of chunk rows across all documents.
 
@@ -421,6 +455,11 @@ class LanceDBContentStore(ContentStore):
         paths: list[str] = []
         for row in rows:
             hp = row["heading_path"]
+            # Exclude the synthetic header chunk marker (T-0038) so it
+            # does not appear in user-visible "available headings" lists
+            # surfaced by HeadingNotFoundError.
+            if hp == SYNTHETIC_HEADER_HEADING_PATH:
+                continue
             if hp not in seen:
                 seen.add(hp)
                 paths.append(hp)
