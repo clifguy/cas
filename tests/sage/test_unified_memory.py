@@ -6,9 +6,14 @@ in isolation; the integration with the abstraction provider is tested
 in test_abstraction_qwen3_guardrail.py.
 """
 
+import sys
+
+import pytest
+
 from sage.utils import unified_memory
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="vm_stat is macOS-only")
 def test_t0029_free_unified_memory_bytes_returns_positive_int():
     """Helper parses vm_stat and returns a positive int (bytes).
 
