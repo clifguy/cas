@@ -3,8 +3,14 @@
 import re
 from datetime import datetime, timezone
 
+import jsonschema
+
 from sage.adapters.interfaces import ContentStore
-from sage.api.errors import DocumentNotFoundError, InvalidDocTypeError
+from sage.api.errors import (
+    DocumentNotFoundError,
+    InvalidDocTypeError,
+    Tier3SchemaViolationError,
+)
 from sage.config import VaultConfig
 from sage.models.schemas import (
     Document,
@@ -38,10 +44,17 @@ class MetadataService:
         """Partial update of mutable metadata fields.
 
         Validates doc_type against vault's document_types config.
+        Validates tier3_metadata against the resolved doc_type's
+        metadata_schema (T-0004). Replacement of tier3_metadata is
+        top-level (no deep merge): when supplied, the stored dict is
+        replaced wholesale.
 
         Raises:
             DocumentNotFoundError: document_id does not exist.
             InvalidDocTypeError: doc_type not in vault config.
+            Tier3SchemaViolationError: tier3_metadata invalid for the
+                resolved doc_type, or the doc_type has no metadata_schema
+                declared.
         """
         async with self._locks.lock(document_id):
             doc = await self._store.get_document(document_id)
@@ -66,6 +79,14 @@ class MetadataService:
                 updates["doc_type"] = request.doc_type
             if request.document_date is not None:
                 updates["document_date"] = request.document_date
+            if request.tier3_metadata is not None:
+                # Resolve against the post-update doc_type: when the caller
+                # also changes doc_type in the same request, validation
+                # uses the new doc_type so the stored tier3 conforms to
+                # the schema of its new owner.
+                effective_dt = request.doc_type if request.doc_type is not None else doc.doc_type
+                self._validate_tier3(effective_dt, request.tier3_metadata)
+                updates["tier3_metadata"] = request.tier3_metadata
 
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).
@@ -81,6 +102,32 @@ class MetadataService:
                 )
 
             return doc
+
+    def _validate_tier3(self, doc_type: str | None, tier3: dict) -> None:
+        """Validate a tier3_metadata payload against a doc_type's schema.
+
+        Raises Tier3SchemaViolationError when the doc_type has no
+        metadata_schema declared (strict no-loose-mode per T-0004) or
+        when the payload fails the schema.
+        """
+        dt_key = doc_type or ""
+        validator = self._config.tier3_validator(dt_key)
+        if validator is None:
+            raise Tier3SchemaViolationError(
+                doc_type=dt_key,
+                path="",
+                message=(f"doc_type '{dt_key}' has no metadata_schema declared in vault config"),
+                instance=tier3,
+            )
+        try:
+            validator.validate(tier3)
+        except jsonschema.ValidationError as exc:
+            raise Tier3SchemaViolationError(
+                doc_type=dt_key,
+                path=exc.json_path,
+                message=exc.message,
+                instance=tier3,
+            ) from exc
 
     async def list_pending_metadata(self) -> list[PendingMetadataItem]:
         """Documents whose extracted metadata has not been confirmed (BE-014, BE-015)."""

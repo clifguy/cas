@@ -38,6 +38,10 @@
             },
             "minItems": 1,
             "uniqueItems": true
+          },
+          "metadata_schema": {
+            "type": "object",
+            "description": "Optional JSON Schema (draft 2020-12) fragment validating the structure of `tier3_metadata` payloads for documents of this doc_type. When omitted, this doc_type does not accept `tier3_metadata` (ingest/update with non-null payload returns 400 `tier3_schema_violation`). When present, payloads are validated at the SAGE API boundary on `sage_ingest` and `sage_update_metadata`. The fragment is not recursively validated by SAGE; SAGE assumes the author supplied valid JSON Schema. Tier 3 is per-doc_type structured metadata, distinct from Tier 2 (the doc_type vocabulary itself)."
           }
         }
       }

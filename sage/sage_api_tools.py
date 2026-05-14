@@ -65,6 +65,7 @@ def register_sage_tools(
         supersedes_document_id: str | None = None,
         needs_review: bool = False,
         metadata: dict | None = None,
+        tier3_metadata: dict | None = None,
     ) -> dict:
         """Ingest a source file into SAGE. Runs the three-stage pipeline:
         projection, indexing, and abstraction.
@@ -111,6 +112,13 @@ def register_sage_tools(
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; supersede chains require
           distinct content per step.
+        - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set
+          but the resolved doc_type has no ``metadata_schema`` declared
+          in vault config, or the payload failed validation against the
+          declared schema. Detail carries ``doc_type``, ``path`` (JSON
+          Pointer to the offending field; empty when the doc_type has
+          no schema), ``message``, and ``instance`` (the payload that
+          failed).
 
         Args:
             vault_id: Target vault identifier.
@@ -152,6 +160,16 @@ def register_sage_tools(
                 supplied as a list of strings or as a comma-separated
                 string; whitespace is trimmed and empty fragments are
                 dropped in the string form.
+            tier3_metadata: Per-doc_type typed metadata payload (T-0004).
+                Validated against the JSON Schema fragment declared
+                under ``document_types.doc_types[].metadata_schema`` for
+                the resolved doc_type (see ``sage_get_vault_config``).
+                When the doc_type has no metadata_schema declared and
+                this argument is non-null, ingest fails with 400
+                ``tier3_schema_violation``. Stored verbatim once
+                validated; queryable via ``sage_discover`` filters as
+                ``{"tier3": {"<field>": <value>}}`` with exact equality
+                semantics (null matches absent-or-null fields).
         """
         try:
             v = get_vault(vault_id)
@@ -164,6 +182,7 @@ def register_sage_tools(
                 supersedes_document_id=supersedes_document_id,
                 needs_review=needs_review,
                 metadata=metadata,
+                tier3_metadata=tier3_metadata,
             )
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP
             # client timeout (BH-130). Callers poll sage_get_document
@@ -285,6 +304,7 @@ def register_sage_tools(
         doc_type: str | None = None,
         authority_scope: str | None = None,
         document_date: str | None = None,
+        tier3_metadata: dict | None = None,
     ) -> dict:
         """Update mutable metadata fields on a document. Only include fields
         you want to change.
@@ -301,8 +321,20 @@ def register_sage_tools(
         authoritative list. The ``tags`` argument replaces the existing
         tag set wholesale; pass the full intended list.
 
+        ``tier3_metadata`` (T-0004) is replaced wholesale at the top
+        level (no deep merge). To edit a single field, read the current
+        tier3_metadata via ``sage_get_document`` first, mutate, and pass
+        the full dict back.
+
         Error modes:
         - ``document_not_found`` (404): no document with that id.
+        - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set
+          but the document's doc_type has no ``metadata_schema``
+          declared, or the payload failed validation against the
+          declared schema. Detail carries ``doc_type``, ``path``,
+          ``message``, and ``instance``. When the same call also
+          changes ``doc_type``, validation runs against the new
+          doc_type.
 
         Args:
             vault_id: Target vault identifier.
@@ -318,6 +350,10 @@ def register_sage_tools(
             document_date: Document calendar date (YYYY-MM-DD). Use to
                 correct fallback-derived dates that misattributed across
                 UTC midnight.
+            tier3_metadata: Replacement Tier 3 (per-doc_type typed)
+                metadata dict. Validated against the doc_type's
+                ``metadata_schema`` in vault config; see T-0004 in the
+                CAS architecture.
         """
         try:
             v = get_vault(vault_id)
@@ -329,6 +365,7 @@ def register_sage_tools(
                 doc_type=doc_type,
                 authority_scope=authority_scope,
                 document_date=document_date,
+                tier3_metadata=tier3_metadata,
             )
             doc = await v.metadata_service.update_metadata(
                 document_id, request, v.config.vault.owner
@@ -754,7 +791,14 @@ def register_sage_tools(
             query: Search query text (required for semantic/keyword modes).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters with optional keys: doc_type, project,
-                lifecycle_status, tags, document_ids, pipeline_status.
+                lifecycle_status, tags, document_ids, pipeline_status,
+                tier3. The ``tier3`` key takes a dict of field-name to
+                expected-value pairs that match against each document's
+                ``tier3_metadata`` (T-0004). Equality is exact; ``null``
+                in the expected value matches documents whose stored
+                field is null or absent. All pairs AND together.
+                Example: ``{"doc_type": "failure_record", "tier3":
+                {"severity": "high", "fix_commit": null}}``.
             document_id: Target document (required for deterministic mode).
             heading_path: Heading path prefix (required for deterministic mode).
             limit: Maximum results (1-100). Default: 10.

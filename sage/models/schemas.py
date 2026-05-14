@@ -245,6 +245,12 @@ class IngestRequest(BaseModel):
     force: bool = False
     needs_review: bool = False
     metadata: dict[str, str | list[str]] | None = None
+    tier3_metadata: dict | None = None
+    """Per-doc_type typed metadata payload. Validated at the SAGE API boundary
+    against the JSON Schema fragment declared in vault config for the
+    resolved doc_type. When the resolved doc_type has no metadata_schema
+    declared and tier3_metadata is non-null, ingest fails with 400
+    tier3_schema_violation (strict no-loose-mode per T-0004 design)."""
     supersedes_document_id: DocumentIdStr | None = None
 
     @model_validator(mode="after")
@@ -316,6 +322,13 @@ class UpdateMetadataRequest(BaseModel):
     doc_type: str | None = None
     authority_scope: str | None = None
     document_date: DocumentDateStr = None
+    tier3_metadata: dict | None = None
+    """Per-doc_type typed metadata payload. Top-level replacement semantics
+    (no deep merge): when supplied, the stored tier3_metadata dict is
+    replaced wholesale. Validated against the doc_type's metadata_schema
+    declared in vault config; 400 tier3_schema_violation when invalid or
+    when the doc_type has no metadata_schema. Omit to leave stored tier3
+    untouched."""
 
 
 class RegisterUserRequest(BaseModel):
@@ -421,6 +434,12 @@ class RetrievalFilters(BaseModel):
     tags: list[str] | None = None
     document_ids: list[str] | None = None
     pipeline_status: str | None = None
+    tier3: dict | None = None
+    """Tier 3 (per-doc_type typed metadata) post-filter. Each key/value pair
+    in the dict is matched against the document's `tier3_metadata` dict via
+    exact equality. A value of None matches documents whose stored field is
+    either null or absent from the tier3_metadata dict. All pairs AND
+    together; an empty dict is treated as no filter."""
 
 
 class DiscoverRequest(BaseModel):

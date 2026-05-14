@@ -27,8 +27,8 @@
       "path": "sage/document_types.schema.json",
       "title": "SAGE Document Types",
       "status": "draft",
-      "version": "0.1",
-      "role": "Defines the doc_type enum for a vault's domain vocabulary. Sole Tier 2 metadata field.",
+      "version": "0.2",
+      "role": "Defines the doc_type enum for a vault's domain vocabulary. Tier 2 (the vocabulary itself) plus optional Tier 3 (per-doc_type structured metadata schema for tier3_metadata payloads).",
       "instantiation_checklist_items": [
         2
       ]
@@ -173,7 +173,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.14",
+  "substrate_version": "1.15",
   "revision_history": [
     {
       "version": "0.1",
@@ -254,6 +254,11 @@
       "version": "1.14",
       "date": "2026-05-02",
       "summary": "Additive widening of IngestRequest.metadata to support list-typed values for the tags field, plus a paired implementation fix. One change to sage/sage_core_api.openapi.yaml: metadata.additionalProperties widened from `type: string` to `oneOf: [string, array<string>]`. Backward compatible (every prior shape still validates). Motivated by a defect: sage_ingest's docstring promised that a comma-separated tags string would land on doc.tags, but sage/services/ingestion.py:_build_metadata_updates lacked a `tags` branch and silently dropped the value, requiring callers to ingest first then call sage_update_metadata to apply tags. The implementation fix adds the missing branch (accepts list[str] OR comma-separated string); the schema widening allows the list form -- which sage_update_metadata already accepts -- to flow through ingest as well, removing the cross-tool shape mismatch. No new architectural constraint; no ADR required. Ingestion regression coverage added at tests/sage/test_ad021_ingestion.py (TEST-AD021-010 through 014)."
+    },
+    {
+      "version": "1.15",
+      "date": "2026-05-14",
+      "summary": "Tier 3 typed per-doc_type metadata via tier3_metadata, Phase 1 plumbing (CAS T-0004). One schema change to sage/document_types.schema.json: each DocTypeEntry may now declare an optional metadata_schema (JSON Schema draft 2020-12 fragment) validating the structure of tier3_metadata payloads at the SAGE API boundary. When metadata_schema is omitted, doc_types reject any tier3_metadata payload with 400 tier3_schema_violation; when present, payloads must validate against the fragment. The Document model already carried a tier3_metadata dict|None field and the SQLite documents table already had a tier3_metadata TEXT JSON column with round-trip serialization wired through graph_store; Phase 1 activates the field by extending IngestRequest, UpdateMetadataRequest, and RetrievalFilters Pydantic models, adding a validator cache on VaultConfig keyed by doc_type, introducing a Tier3SchemaViolationError class, wiring validation into ingestion and metadata services, and extending the retrieval filter pipeline (RetrievalFilters.tier3) to filter both catalog and semantic modes by tier3 subfield equality (None means absent-or-null). MCP tool surface gains tier3_metadata parameters on sage_ingest and sage_update_metadata; sage_discover already accepts a generic filters dict, so the new tier3 clause flows through without signature change. Phase 1 vault-config rollout declares metadata_schema for the cas vault's failure_record and ticket doc_types only; Phase 2 (deferred to a separate ticket) will migrate existing failure_records and tickets into tier3_metadata, strip the now-redundant tag prefixes, revise the two governing steering documents, write the Tier 2 vs Tier 3 distinction ADR, and rewrite the cas-ticket-management skill to use tier3-based queries."
     }
   ]
 }

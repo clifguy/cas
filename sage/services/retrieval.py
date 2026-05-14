@@ -48,6 +48,33 @@ from sage.storage.graph_store import GraphStore
 _RRF_K = 60
 
 
+def _tier3_matches(
+    stored: dict | None,
+    requested: dict,
+) -> bool:
+    """Return True when every key/value pair in ``requested`` matches the
+    corresponding entry in ``stored``. None in ``requested`` matches a
+    stored value that is either null or absent from the dict (the natural
+    "no value here" semantics). An empty requested dict matches anything
+    and is treated as no filter by callers.
+
+    Used as the document-level post-filter for ``RetrievalFilters.tier3``
+    across all retrieval modes (T-0004).
+    """
+    if not requested:
+        return True
+    s = stored or {}
+    for key, expected in requested.items():
+        actual = s.get(key)
+        if expected is None:
+            if actual is not None:
+                return False
+        else:
+            if actual != expected:
+                return False
+    return True
+
+
 def _parse_document_date(date_str: str | None) -> datetime | None:
     """Parse a document_date string into a UTC datetime, or None.
 
@@ -128,7 +155,12 @@ class RetrievalService:
         # also intersect against doc-level filter rules (none here, so
         # passthrough).
         has_doc_constraints = bool(
-            f.lifecycle_status or f.project or f.tags or f.pipeline_status or f.document_ids
+            f.lifecycle_status
+            or f.project
+            or f.tags
+            or f.pipeline_status
+            or f.document_ids
+            or f.tier3
         )
         if has_doc_constraints:
             target_ids = set(f.document_ids or [])
@@ -144,6 +176,8 @@ class RetrievalService:
                 if f.tags and not set(f.tags).issubset(set(doc.tags or [])):
                     continue
                 if f.pipeline_status and doc.pipeline_status.value != f.pipeline_status:
+                    continue
+                if f.tier3 and not _tier3_matches(doc.tier3_metadata, f.tier3):
                     continue
                 matching.append(doc.id)
             result["document_id"] = matching
@@ -184,6 +218,8 @@ class RetrievalService:
                 active["document_ids"] = request.filters.document_ids
             if request.filters.pipeline_status:
                 active["pipeline_status"] = request.filters.pipeline_status
+            if request.filters.tier3:
+                active["tier3"] = request.filters.tier3
             if active:
                 hints["active_filters"] = active
         if request.scope and request.scope != RetrievalScope.ALL:
@@ -227,9 +263,17 @@ class RetrievalService:
         Queries the graph store directly with filter predicates. Returns
         document-level metadata only (no chunk content or relevance scores).
         Supports pagination via limit + offset.
+
+        ``RetrievalFilters.tier3`` is applied as a Python post-filter after
+        the SQL query. To keep limit/offset semantics correct after the
+        post-filter, the SQL query is widened (no limit/offset pushdown)
+        and pagination is reapplied to the filtered set. At vault scale
+        this is microseconds; if it ever becomes hot, push tier3 into
+        SQLite JSON1 predicates.
         """
         # Build filter dict from request
         sql_filters: dict[str, object] = {}
+        tier3_filter: dict | None = None
         if request.filters:
             if request.filters.doc_type:
                 sql_filters["doc_type"] = request.filters.doc_type
@@ -243,14 +287,33 @@ class RetrievalService:
                 sql_filters["tags"] = request.filters.tags
             if request.filters.document_ids:
                 sql_filters["document_ids"] = request.filters.document_ids
+            if request.filters.tier3:
+                tier3_filter = request.filters.tier3
 
-        docs, total_count = await self._graph.query_documents(
-            filters=sql_filters or None,
-            limit=request.limit,
-            offset=request.offset,
-            sort_by=request.sort_by,
-            sort_order=request.sort_order,
-        )
+        if tier3_filter is None:
+            docs, total_count = await self._graph.query_documents(
+                filters=sql_filters or None,
+                limit=request.limit,
+                offset=request.offset,
+                sort_by=request.sort_by,
+                sort_order=request.sort_order,
+            )
+        else:
+            # Fetch the entire SQL-filtered set, apply tier3 post-filter,
+            # then paginate. The SQL ceiling is the documents-table size;
+            # at vault scale this is bounded and cheap.
+            wide_docs, _ = await self._graph.query_documents(
+                filters=sql_filters or None,
+                limit=10_000_000,
+                offset=0,
+                sort_by=request.sort_by,
+                sort_order=request.sort_order,
+            )
+            filtered = [d for d in wide_docs if _tier3_matches(d.tier3_metadata, tier3_filter)]
+            total_count = len(filtered)
+            start = request.offset
+            end = start + request.limit
+            docs = filtered[start:end]
 
         hits = [
             DiscoverHit(

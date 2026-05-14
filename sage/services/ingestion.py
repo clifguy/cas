@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import jsonschema
+
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
@@ -39,6 +41,7 @@ from sage.api.errors import (
     NoProjectionError,
     SourceFileNotFoundError,
     SupersedeTargetNotActiveError,
+    Tier3SchemaViolationError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
@@ -468,6 +471,19 @@ class IngestionService:
             else None
         )
 
+        # Validate tier3_metadata against the resolved doc_type's
+        # metadata_schema (T-0004). Done before any side effects (the
+        # adapter projection runs above but is read-only on disk). Resolution
+        # mirrors the precedence chain applied below by update_document
+        # calls: caller > filename parse > predecessor inheritance > "misc".
+        # A None validator (doc_type has no metadata_schema declared) is a
+        # hard 400 per the strict no-loose-mode decision.
+        if request.tier3_metadata is not None:
+            resolved_dt = self._resolve_doc_type_for_tier3(
+                request=request, parsed=parsed, predecessor=predecessor
+            )
+            self._validate_tier3_payload(resolved_dt, request.tier3_metadata)
+
         # Resolve title with precedence: caller > filename parse > adapter.
         # The adapter's ProjectionResult.title is a content-extraction
         # candidate and loses to filename-parsed title when the vault has
@@ -523,6 +539,12 @@ class IngestionService:
                 "source_modified_at": source_modified_at_str,
                 "document_date": None,
             }
+            # Apply tier3_metadata if supplied. Pre-validated above against
+            # the resolved doc_type's schema. On force re-ingest the doc_type
+            # on the existing record IS the authority; storage replacement
+            # is top-level per T-0004 (no deep merge).
+            if request.tier3_metadata is not None:
+                updates["tier3_metadata"] = request.tier3_metadata
             # Update source_path if the file moved (BH-067)
             if vault_relative != (await self._store.get_document(existing_id)).source_path:
                 updates["source_path"] = vault_relative
@@ -565,6 +587,7 @@ class IngestionService:
                 projected_at=now,
                 source_modified_at=source_modified_at,
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
+                tier3_metadata=request.tier3_metadata,
             )
             if predecessor is not None and self._lifecycle_service is not None:
                 # Re-read the predecessor inside the (about-to-commit)
@@ -981,6 +1004,60 @@ class IngestionService:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
+
+    @staticmethod
+    def _resolve_doc_type_for_tier3(
+        request: IngestRequest,
+        parsed: ParsedMetadata | None,
+        predecessor: Document | None,
+    ) -> str:
+        """Pre-resolve the final doc_type for tier3_metadata validation.
+
+        Mirrors the precedence chain applied below by the post-insert
+        update_document calls: caller > filename parse > predecessor
+        inheritance > "misc". This keeps validation strictly upstream of
+        the insert so a tier3_schema_violation never commits a row.
+        """
+        caller_meta = request.metadata or {}
+        caller_dt = caller_meta.get("doc_type")
+        if isinstance(caller_dt, str) and caller_dt:
+            return caller_dt
+        if parsed is not None and parsed.doc_type:
+            return parsed.doc_type
+        if predecessor is not None and predecessor.doc_type:
+            return predecessor.doc_type
+        return "misc"
+
+    def _validate_tier3_payload(
+        self,
+        resolved_doc_type: str,
+        tier3: dict,
+    ) -> None:
+        """Validate a tier3_metadata payload against the resolved doc_type's
+        metadata_schema. Raises ``Tier3SchemaViolationError`` when the
+        doc_type has no schema declared (strict no-loose-mode) or when the
+        payload fails validation.
+        """
+        validator = self._config.tier3_validator(resolved_doc_type)
+        if validator is None:
+            raise Tier3SchemaViolationError(
+                doc_type=resolved_doc_type,
+                path="",
+                message=(
+                    f"doc_type '{resolved_doc_type}' has no metadata_schema "
+                    "declared in vault config"
+                ),
+                instance=tier3,
+            )
+        try:
+            validator.validate(tier3)
+        except jsonschema.ValidationError as exc:
+            raise Tier3SchemaViolationError(
+                doc_type=resolved_doc_type,
+                path=exc.json_path,
+                message=exc.message,
+                instance=tier3,
+            ) from exc
 
     @staticmethod
     def _build_metadata_updates(metadata: dict[str, str | list[str]]) -> dict:

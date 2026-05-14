@@ -25,6 +25,7 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestRequest,
     LinkRequest,
+    RetrievalFilters,
     SetLifecycleRequest,
     TraverseRequest,
     UpdateMetadataRequest,
@@ -200,3 +201,51 @@ def test_hash_check_request_rejects_missing_prefix():
 def test_hash_check_request_rejects_wrong_length():
     with pytest.raises(ValidationError):
         HashCheckRequest(hashes=["sha256:" + "a" * 32])
+
+
+# ---------------------------------------------------------------------------
+# tier3_metadata — applied to IngestRequest, UpdateMetadataRequest, and
+# RetrievalFilters (T-0004 Phase 1, plumbing only — validator-cache
+# integration tests live in test_tier3_metadata.py).
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_request_accepts_tier3_metadata_dict():
+    req = IngestRequest(
+        source="foo.md",
+        adapter=SourceType.MARKDOWN,
+        tier3_metadata={"severity": "high"},
+    )
+    assert req.tier3_metadata == {"severity": "high"}
+
+
+def test_ingest_request_tier3_metadata_defaults_none():
+    req = IngestRequest(source="foo.md", adapter=SourceType.MARKDOWN)
+    assert req.tier3_metadata is None
+
+
+def test_update_metadata_request_accepts_tier3_metadata_dict():
+    req = UpdateMetadataRequest(tier3_metadata={"ticket_priority": "high"})
+    assert req.tier3_metadata == {"ticket_priority": "high"}
+
+
+def test_update_metadata_request_tier3_metadata_defaults_none():
+    req = UpdateMetadataRequest()
+    assert req.tier3_metadata is None
+
+
+def test_retrieval_filters_accepts_tier3_dict():
+    filt = RetrievalFilters(tier3={"severity": "high", "fix_commit": None})
+    assert filt.tier3 == {"severity": "high", "fix_commit": None}
+
+
+def test_retrieval_filters_tier3_defaults_none():
+    filt = RetrievalFilters()
+    assert filt.tier3 is None
+
+
+def test_retrieval_filters_accepts_empty_tier3_dict():
+    # The semantics of an empty tier3 dict are "no filter" (handled at the
+    # service layer). The request model must still construct.
+    filt = RetrievalFilters(tier3={})
+    assert filt.tier3 == {}

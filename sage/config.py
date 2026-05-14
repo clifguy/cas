@@ -6,8 +6,9 @@ transition table used by LifecycleService for state machine validation.
 
 from pathlib import Path
 
+import jsonschema
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from sage.models.schemas import VaultIdStr
 
@@ -62,6 +63,10 @@ class DocTypeEntry(BaseModel):
     label: str
     description: str | None = None
     source_types: list[str] | None = None
+    metadata_schema: dict | None = None
+    """Optional JSON Schema (draft 2020-12) fragment validating tier3_metadata
+    payloads for documents of this doc_type. When omitted, this doc_type
+    rejects any tier3_metadata payload at the SAGE API boundary."""
 
 
 class DocumentTypesConfig(BaseModel):
@@ -81,8 +86,50 @@ class VaultConfig(BaseModel):
     abstraction: AbstractionConfig = Field(default_factory=AbstractionConfig)
     retrieval_health: RetrievalHealthConfig | None = None
 
+    _tier3_validators: dict[str, jsonschema.protocols.Validator] = PrivateAttr(default_factory=dict)
+
+    def model_post_init(self, __context: object) -> None:  # noqa: D401
+        """Build the tier3 validator cache on every construction.
+
+        Called by Pydantic v2 after ``model_validate`` finishes. Keeps the
+        cache symmetric whether the config was constructed via
+        ``load_vault_config`` (production path) or ``model_validate``
+        directly (test fixtures, vault-management code).
+        """
+        self.build_tier3_validators()
+
     def valid_doc_type_values(self) -> set[str]:
         return {dt.value for dt in self.document_types.doc_types}
+
+    def build_tier3_validators(self) -> None:
+        """Construct and cache a jsonschema Validator per doc_type that
+        declared a metadata_schema. Called via ``model_post_init`` so a
+        malformed metadata_schema surfaces at construction time rather
+        than at the first ingest call.
+
+        Raises jsonschema.SchemaError if any declared metadata_schema is not
+        itself valid JSON Schema. ``load_vault_config`` and
+        ``vault_management._validate_config`` catch and wrap the error
+        with vault-config context.
+        """
+        self._tier3_validators.clear()
+        for dt in self.document_types.doc_types:
+            if dt.metadata_schema is None:
+                continue
+            # Validate the schema fragment itself before caching; otherwise
+            # the SchemaError would not surface until the first validate()
+            # call at ingest time.
+            jsonschema.Draft202012Validator.check_schema(dt.metadata_schema)
+            self._tier3_validators[dt.value] = jsonschema.Draft202012Validator(dt.metadata_schema)
+
+    def tier3_validator(self, doc_type: str) -> jsonschema.protocols.Validator | None:
+        """Return the validator for a doc_type, or None if the doc_type has
+        no metadata_schema declared. Callers in the ingestion and metadata
+        services treat a None return as 'reject any tier3_metadata payload
+        for this doc_type' (the strict no-loose-mode decision recorded in
+        the T-0004 implementation plan).
+        """
+        return self._tier3_validators.get(doc_type)
 
 
 class TransitionTable:
@@ -123,7 +170,18 @@ class TransitionTable:
 
 
 def load_vault_config(config_path: Path) -> VaultConfig:
-    """Load and validate vault config from a YAML file."""
+    """Load and validate vault config from a YAML file.
+
+    The tier3 validator cache is built by ``VaultConfig.model_post_init``
+    during ``model_validate``; a malformed ``metadata_schema`` therefore
+    surfaces as ``jsonschema.SchemaError`` propagating from
+    ``model_validate``. Callers in upper layers (e.g.
+    ``sage.vault_management._validate_config``) wrap the error as
+    ``VaultConfigValidationError`` for the SAGE API error surface.
+    ``sage.config`` cannot import ``sage.api.errors`` directly per the
+    repository's import-linter contract (storage / config / adapters
+    layer must not depend on the api layer).
+    """
     with open(config_path) as f:
         raw = yaml.safe_load(f)
     return VaultConfig.model_validate(raw)

@@ -111,6 +111,42 @@ class InvalidDocTypeError(SAGEError):
         )
 
 
+class Tier3SchemaViolationError(SAGEError):
+    """400: tier3_metadata payload failed validation (T-0004).
+
+    Two failure modes share this error code:
+
+      (1) The resolved doc_type has no metadata_schema declared in vault
+          config (strict no-loose-mode). ``path`` is empty; ``message``
+          says so explicitly.
+      (2) The payload was validated against the declared metadata_schema
+          and failed. ``path`` is the JSON Pointer to the offending field
+          (from ``jsonschema.ValidationError.json_path``); ``message`` is
+          the validator's own error message.
+    """
+
+    def __init__(
+        self,
+        doc_type: str,
+        path: str,
+        message: str,
+        instance: object | None = None,
+    ) -> None:
+        detail: dict = {
+            "doc_type": doc_type,
+            "path": path,
+            "message": message,
+        }
+        if instance is not None:
+            detail["instance"] = instance
+        super().__init__(
+            "tier3_schema_violation",
+            f"tier3_metadata violates schema for doc_type '{doc_type}': {message}",
+            400,
+            detail,
+        )
+
+
 class PipelineIncompleteError(SAGEError):
     """422: document has incomplete/failed pipeline."""
 

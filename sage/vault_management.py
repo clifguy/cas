@@ -8,6 +8,7 @@ place. Default-config generation lives on VaultRegistryService.
 import tempfile
 from pathlib import Path
 
+import jsonschema
 import yaml
 from pydantic import ValidationError
 
@@ -30,12 +31,23 @@ _VAULTS_ROOT = Path("~/sage_vaults").expanduser()
 
 
 def _validate_config(config_dict: dict) -> VaultConfig:
-    """Validate a config dict, raising VaultConfigValidationError on failure."""
+    """Validate a config dict, raising VaultConfigValidationError on failure.
+
+    The tier3 validator cache is built by ``VaultConfig.model_post_init``
+    during ``model_validate``; a malformed ``metadata_schema`` therefore
+    surfaces here at vault-create / update_config time rather than at the
+    first ingest call.
+    """
     try:
         return VaultConfig.model_validate(config_dict)
     except ValidationError as exc:
         errors = [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
         raise VaultConfigValidationError(errors) from exc
+    except jsonschema.SchemaError as exc:
+        path_str = ".".join(str(p) for p in exc.path) or "<root>"
+        raise VaultConfigValidationError(
+            [f"document_types.metadata_schema {path_str}: {exc.message}"]
+        ) from exc
 
 
 def _write_config_yaml(config_path: Path, config_dict: dict) -> None:
