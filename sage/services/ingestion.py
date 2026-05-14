@@ -525,9 +525,40 @@ class IngestionService:
             # Hash-only check: identical content already in vault (BH-066)
             existing_id = next(iter(hash_matches.values()))
             raise DuplicateContentError(existing_id, canonical_hash)
-        elif hash_matches and request.force:
-            # Force re-ingestion: reuse existing record (BH-019, BH-067)
+
+        # Branch detection: force-reingest reuses an existing record;
+        # otherwise this is a new-doc insert (with or without predecessor).
+        # `existing_doc is not None` is the canonical narrowing predicate
+        # for the force-reingest branch from this point forward.
+        existing_doc: Document | None = None
+        if hash_matches and request.force:
             existing_id = next(iter(hash_matches.values()))
+            existing_doc = await self._store.get_document(existing_id)
+
+        # Compute the merged metadata in memory before any insert/update
+        # touches the store (T-0037). Closes the partial-metadata window
+        # that existed when these layers ran as separate post-insert
+        # update_document calls. The baseline differs by branch: empty
+        # for new-doc, the existing record's fields for force-reingest.
+        baseline: dict = existing_doc.model_dump() if existing_doc is not None else {}
+        adapter_tags = list(projection.metadata.get("adapter_tags") or [])
+        adapter_tag_prefixes = list(projection.metadata.get("adapter_tag_prefixes") or [])
+        field_updates = self._compute_metadata_field_updates(
+            baseline=baseline,
+            parsed=parsed,
+            caller_metadata=request.metadata,
+            predecessor=predecessor,
+            adapter_tags=adapter_tags,
+            adapter_tag_prefixes=adapter_tag_prefixes,
+            needs_review=request.needs_review,
+            source_modified_at=source_modified_at,
+            vault_timezone=self._config.vault.timezone,
+        )
+
+        if existing_doc is not None:
+            # Force re-ingestion: reuse existing record (BH-019, BH-067).
+            # The pre-merged field_updates carry the full metadata into
+            # this single update_document call.
             updates: dict[str, object] = {
                 "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
                 "pipeline_error": None,
@@ -537,22 +568,26 @@ class IngestionService:
                 "semantic_abstract": None,
                 "indexed_at": None,
                 "source_modified_at": source_modified_at_str,
-                "document_date": None,
             }
-            # Apply tier3_metadata if supplied. Pre-validated above against
-            # the resolved doc_type's schema. On force re-ingest the doc_type
-            # on the existing record IS the authority; storage replacement
-            # is top-level per T-0004 (no deep merge).
+            updates.update(field_updates)
+            # Tier3 metadata override (caller authority on force-reingest,
+            # T-0004). Pre-validated above against the resolved doc_type's
+            # schema; storage replacement is top-level per T-0004.
             if request.tier3_metadata is not None:
                 updates["tier3_metadata"] = request.tier3_metadata
+            # Title reaffirmation (force branch): when filename parse
+            # contributed, refresh title from the freshly-resolved value
+            # in case the filename changed between ingestions.
+            if parsed is not None and resolved_title:
+                updates["title"] = resolved_title
             # Update source_path if the file moved (BH-067)
-            if vault_relative != (await self._store.get_document(existing_id)).source_path:
+            if vault_relative != existing_doc.source_path:
                 updates["source_path"] = vault_relative
-            doc = await self._store.update_document(existing_id, updates)
+            doc = await self._store.update_document(existing_doc.id, updates)
             is_new = False
 
             # Remove old content store entries for re-indexing
-            await self._content_store.remove_document(existing_id)
+            await self._content_store.remove_document(existing_doc.id)
 
             # Force-reingest with a supersede target: apply the supersede
             # transition on the predecessor. The doc record was reused
@@ -569,10 +604,12 @@ class IngestionService:
             # commit as a single SQLite transaction (BH-136). This
             # eliminates the orphan class where a successor record exists
             # but the predecessor was never archived. Without a
-            # predecessor it is a single-row insert.
+            # predecessor it is a single-row insert. The pre-merged
+            # field_updates carry the full metadata into the atomic
+            # insert (T-0037).
             created_by = request.created_by or self._config.vault.owner
             doc_id = generate_document_id(vault_relative, now.isoformat(), resolved_title)
-            doc = Document(
+            base = dict(
                 id=doc_id,
                 title=resolved_title,
                 source_type=request.adapter,
@@ -589,6 +626,7 @@ class IngestionService:
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
                 tier3_metadata=request.tier3_metadata,
             )
+            doc = Document(**{**base, **field_updates})
             if predecessor is not None and self._lifecycle_service is not None:
                 # Re-read the predecessor inside the (about-to-commit)
                 # window to catch a concurrent archive that happened
@@ -607,91 +645,6 @@ class IngestionService:
             else:
                 await self._store.insert_document(doc)
             is_new = True
-
-        # Apply filename-parsed metadata (CAS-ADR-015). Precedence layer:
-        # filename parse < caller metadata. Title was already resolved above.
-        if parsed is not None:
-            parsed_updates = self._build_metadata_updates_from_parsed(parsed)
-            # Force branch: reaffirm the resolved title in case the filename
-            # changed between ingestions.
-            if not is_new and resolved_title:
-                parsed_updates["title"] = resolved_title
-            if parsed_updates:
-                doc = await self._store.update_document(doc.id, parsed_updates)
-
-        # Apply caller-supplied metadata (highest precedence before manual
-        # confirmation).
-        if request.metadata:
-            metadata_updates = self._build_metadata_updates(request.metadata)
-            if metadata_updates:
-                doc = await self._store.update_document(doc.id, metadata_updates)
-
-        # Chain inheritance for type-shaped trio fields (CAS-ADR-021). When
-        # the new document supersedes a predecessor, copy doc_type, project,
-        # and authority_scope down the chain on a per-field basis: each
-        # field inherits only when the predecessor has a non-None value AND
-        # the caller did not supply the field AND the field is unset on the
-        # new document. Caller-supplied values continue to win per-field;
-        # this step only fills gaps. Version-specific fields (title,
-        # version_label, document_date) and tags are explicitly excluded.
-        if predecessor is not None:
-            caller_keys = set((request.metadata or {}).keys())
-            inheritance_updates: dict = {}
-            for field in ("doc_type", "project", "authority_scope"):
-                pred_value = getattr(predecessor, field, None)
-                doc_value = getattr(doc, field, None)
-                if pred_value is not None and doc_value is None and field not in caller_keys:
-                    inheritance_updates[field] = pred_value
-            if inheritance_updates:
-                doc = await self._store.update_document(doc.id, inheritance_updates)
-
-        # Merge adapter-emitted tags into document.tags (BH-131, BH-132).
-        # The adapter declares owned namespace prefixes so force re-ingest
-        # can strip stale adapter-owned tags before applying the fresh set,
-        # without disturbing caller- or filename-contributed tags in other
-        # namespaces.
-        adapter_tags = list(projection.metadata.get("adapter_tags") or [])
-        adapter_tag_prefixes = list(projection.metadata.get("adapter_tag_prefixes") or [])
-        if adapter_tags or adapter_tag_prefixes:
-            current_tags = list(doc.tags or [])
-            if adapter_tag_prefixes:
-                current_tags = [
-                    t
-                    for t in current_tags
-                    if not any(t.startswith(p) for p in adapter_tag_prefixes)
-                ]
-            merged = list(dict.fromkeys([*adapter_tags, *current_tags]))
-            if merged != (doc.tags or []):
-                doc = await self._store.update_document(doc.id, {"tags": merged})
-
-        # Set metadata_confirmed per the caller's needs_review flag
-        # (CAS-ADR-021). Caller-authoritative ingests (needs_review=False,
-        # the default) commit confirmed; review-queue ingests
-        # (needs_review=True) leave metadata unconfirmed until
-        # update_metadata is called.
-        confirm = not request.needs_review
-        if doc.metadata_confirmed != confirm:
-            doc = await self._store.update_document(doc.id, {"metadata_confirmed": confirm})
-
-        # Ensure every document has a doc_type for content-store pre-filtering.
-        # Defaults to "misc" only when neither filename parse, caller metadata,
-        # nor existing record provides one (ME-005, ME-006).
-        if not doc.doc_type:
-            doc = await self._store.update_document(doc.id, {"doc_type": "misc"})
-
-        # Fallback: derive document_date from source_modified_at (BH-063).
-        # Convert to the vault owner's local zone before taking the
-        # calendar date so a late-evening local mtime that crosses UTC
-        # midnight still attributes to the local work date.
-        if not doc.document_date and source_modified_at:
-            local_tz = ZoneInfo(self._config.vault.timezone)
-            local_date = source_modified_at.astimezone(local_tz).date()
-            doc = await self._store.update_document(
-                doc.id,
-                {
-                    "document_date": local_date.isoformat(),
-                },
-            )
 
         # The supersede lifecycle transition was bundled into the same
         # SQLite transaction as the new-document insert above (BH-129,
@@ -1084,8 +1037,12 @@ class IngestionService:
                 # Filename-parsed date -> document_date (BH-062)
                 updates["document_date"] = value
             elif key == "codes":
-                # codes stored as comma-separated string -> tags list
-                updates["tags"] = [c.strip() for c in value.split(",") if c.strip()]
+                # codes accepts list[str] (per IngestRequest type) or
+                # comma-separated string (T-0036).
+                if isinstance(value, list):
+                    updates["tags"] = [str(c).strip() for c in value if str(c).strip()]
+                else:
+                    updates["tags"] = [c.strip() for c in str(value).split(",") if c.strip()]
             elif key == "tags":
                 if isinstance(value, list):
                     updates["tags"] = [str(t).strip() for t in value if str(t).strip()]
@@ -1154,6 +1111,107 @@ class IngestionService:
         if parsed.doc_type is not None:
             updates["doc_type"] = parsed.doc_type
         return updates
+
+    @staticmethod
+    def _compute_chain_inheritance(
+        field_view: dict,
+        predecessor: Document,
+        caller_keys: set[str],
+    ) -> dict:
+        """Per-field gap-fill of doc_type/project/authority_scope from a
+        predecessor (CAS-ADR-021). Returns updates only for fields that
+        are None on `field_view`, non-None on the predecessor, and not in
+        `caller_keys`. Pure function, no mutations.
+        """
+        updates: dict = {}
+        for field in ("doc_type", "project", "authority_scope"):
+            pred_value = getattr(predecessor, field, None)
+            view_value = field_view.get(field)
+            if pred_value is not None and view_value is None and field not in caller_keys:
+                updates[field] = pred_value
+        return updates
+
+    @staticmethod
+    def _compute_adapter_tag_merge(
+        current_tags: list[str],
+        adapter_tags: list[str],
+        adapter_tag_prefixes: list[str],
+    ) -> list[str]:
+        """Strip current tags whose prefix is in `adapter_tag_prefixes`,
+        then dedupe ``[*adapter_tags, *retained]`` preserving order via
+        ``dict.fromkeys`` (BH-131, BH-132). Pure function.
+        """
+        if adapter_tag_prefixes:
+            current_tags = [
+                t for t in current_tags if not any(t.startswith(p) for p in adapter_tag_prefixes)
+            ]
+        return list(dict.fromkeys([*adapter_tags, *current_tags]))
+
+    def _compute_metadata_field_updates(
+        self,
+        *,
+        baseline: dict,
+        parsed: ParsedMetadata | None,
+        caller_metadata: dict[str, str | list[str]] | None,
+        predecessor: Document | None,
+        adapter_tags: list[str],
+        adapter_tag_prefixes: list[str],
+        needs_review: bool,
+        source_modified_at: datetime | None,
+        vault_timezone: str,
+    ) -> dict:
+        """Compose all metadata precedence layers in memory before any
+        insert/update touches the store (T-0037). Closes the partial-
+        metadata window that existed when these layers ran as separate
+        post-insert ``update_document`` calls.
+
+        Layer order (lowest precedence first):
+          1. filename parse
+          2. caller-supplied metadata (overwrites filename parse)
+          3. chain inheritance (gap-fill only, never overwrites)
+          4. adapter-tag merge (composes with current tags, prefix-strip)
+          5. derived defaults (metadata_confirmed, doc_type, document_date)
+
+        Inheritance and defaults consult ``baseline`` for force-reingest's
+        existing-record values so an existing field blocks the "misc"
+        default and existing tags participate in the adapter-tag merge.
+        """
+        field_updates: dict = {}
+
+        if parsed is not None:
+            field_updates.update(self._build_metadata_updates_from_parsed(parsed))
+
+        caller_keys: set[str] = set()
+        if caller_metadata:
+            field_updates.update(self._build_metadata_updates(caller_metadata))
+            caller_keys = set(caller_metadata.keys())
+
+        if predecessor is not None:
+            field_view = {**baseline, **field_updates}
+            inherited = self._compute_chain_inheritance(field_view, predecessor, caller_keys)
+            for k, v in inherited.items():
+                field_updates.setdefault(k, v)
+
+        if adapter_tags or adapter_tag_prefixes:
+            current_tags = list(field_updates.get("tags") or baseline.get("tags") or [])
+            field_updates["tags"] = self._compute_adapter_tag_merge(
+                current_tags, adapter_tags, adapter_tag_prefixes
+            )
+
+        field_updates["metadata_confirmed"] = not needs_review
+
+        resolved_doc_type = field_updates.get("doc_type") or baseline.get("doc_type")
+        if not resolved_doc_type:
+            field_updates["doc_type"] = "misc"
+
+        resolved_doc_date = field_updates.get("document_date") or baseline.get("document_date")
+        if not resolved_doc_date and source_modified_at:
+            local_tz = ZoneInfo(vault_timezone)
+            field_updates["document_date"] = (
+                source_modified_at.astimezone(local_tz).date().isoformat()
+            )
+
+        return field_updates
 
     def _chunk_projection(
         self,
