@@ -16,14 +16,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import TypeAdapter
 
 import sage.app  # noqa: F401 -- import side-effect: installs T-0022 root-logger filter
 from sage.api.errors import SAGEError
 from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
+from sage.models.schemas import VaultIdStr
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
+
+# Module-scope TypeAdapter for Pattern 2 boundary validation on the
+# server-level tool below. See the parallel adapter declarations in
+# ``sage/sage_api_tools.py`` and the Typed-Alias Boundary Conventions
+# steering document.
+_VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 
 # ---------------------------------------------------------------------------
 # Vault registry
@@ -155,6 +163,10 @@ async def sage_reload_vault(vault_id: str) -> dict:
     Args:
         vault_id: Target vault identifier.
     """
+    try:
+        vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
     if vault_id not in _vaults:
         return _error_response(
             VaultNotFoundError(

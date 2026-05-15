@@ -8,10 +8,12 @@ from sage.models.schemas import (
     ChainResponse,
     Edge,
     EdgeIdStr,
+    FunctionIdStr,
     LinkRequest,
     PreconditionResult,
     TraverseRequest,
     TraverseResponse,
+    VaultIdStr,
 )
 from sage.services.graph_ops import GraphOpsService
 
@@ -21,7 +23,7 @@ router = APIRouter(tags=["Graph Operations"])
 @router.post("/edges", response_model=Edge, status_code=201)
 async def link(
     request: LinkRequest,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> Edge:
     return await service.link(request)
@@ -30,7 +32,7 @@ async def link(
 @router.delete("/edges/{edge_id}")
 async def unlink(
     edge_id: EdgeIdStr,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> dict:
     return await service.unlink(edge_id)
@@ -38,8 +40,8 @@ async def unlink(
 
 @router.get("/preconditions/{function_id}", response_model=PreconditionResult)
 async def check_preconditions(
-    function_id: str,
-    vault_id: str = Depends(get_vault_id),
+    function_id: FunctionIdStr,
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> PreconditionResult:
     return await service.check_preconditions(function_id)
@@ -48,7 +50,7 @@ async def check_preconditions(
 @router.post("/traverse", response_model=TraverseResponse)
 async def traverse(
     request: TraverseRequest,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> TraverseResponse:
     return await service.traverse(request)
@@ -57,7 +59,7 @@ async def traverse(
 @router.post("/chain", response_model=ChainResponse)
 async def chain(
     request: ChainRequest,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> ChainResponse:
     return await service.chain(request)

@@ -20,6 +20,7 @@ from sage.models.schemas import (
     HashCheckMatch,
     HashCheckRequest,
     UpdateVaultConfigRequest,
+    VaultIdStr,
     VaultStatsResponse,
     VaultSummary,
 )
@@ -42,7 +43,7 @@ async def list_vaults(
     response_model=VaultStatsResponse,
 )
 async def vault_stats(
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: VaultConfigService = Depends(get_vault_config_service),
 ) -> VaultStatsResponse:
     """Return all Dashboard statistics for a vault."""
@@ -55,7 +56,7 @@ async def vault_stats(
 )
 async def hash_check(
     body: HashCheckRequest,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: VaultConfigService = Depends(get_vault_config_service),
 ) -> dict[str, HashCheckMatch]:
     """Bulk hash existence check against the graph store."""
@@ -64,7 +65,7 @@ async def hash_check(
 
 @router.get("/sage_vaults/{vault_id}/config")
 async def get_vault_config(
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     service: VaultConfigService = Depends(get_vault_config_service),
 ) -> dict:
     """Return the full vault configuration as JSON."""
@@ -74,7 +75,7 @@ async def get_vault_config(
 @router.put("/sage_vaults/{vault_id}/config")
 async def update_vault_config(
     body: UpdateVaultConfigRequest,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     force: bool = False,
     service: VaultConfigService = Depends(get_vault_config_service),
 ) -> dict:

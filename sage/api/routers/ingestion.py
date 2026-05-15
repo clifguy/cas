@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id
-from sage.models.schemas import IngestRequest, IngestResponse
+from sage.models.schemas import IngestRequest, IngestResponse, VaultIdStr
 from sage.services.ingestion import IngestionService
 
 router = APIRouter(tags=["Ingestion"])
@@ -13,7 +13,7 @@ router = APIRouter(tags=["Ingestion"])
 @router.post("/documents", response_model=IngestResponse)
 async def ingest(
     request: IngestRequest,
-    vault_id: str = Depends(get_vault_id),
+    vault_id: VaultIdStr = Depends(get_vault_id),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
 ) -> JSONResponse:
     result = await ingestion_service.ingest(request)

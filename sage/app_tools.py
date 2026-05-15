@@ -9,9 +9,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import TypeAdapter
 
 from sage.api.errors import SAGEError
 from sage.mcp_init import SAGEServices
+from sage.models.schemas import VaultIdStr
+
+# Module-scope TypeAdapter for Pattern 2 boundary validation. See the
+# parallel adapter declarations and rationale in
+# ``sage/sage_api_tools.py``.
+_VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 
 
 def register_app_tools(
@@ -63,6 +70,7 @@ def register_app_tools(
         from app.backend.scan import build_extension_map, scan_directory
 
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             d = Path(directory.strip("'\""))
             if not d.is_dir():
@@ -136,6 +144,7 @@ def register_app_tools(
                 ParsedMetadataInput,
             )
 
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
 
             if not files:

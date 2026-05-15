@@ -21,7 +21,10 @@ from sage.models.schemas import (
     ChainRequest,
     CreateVaultRequest,
     DiscoverRequest,
+    DocumentDateStr,
+    DocumentIdStr,
     EdgeIdStr,
+    FunctionIdStr,
     HashCheckRequest,
     IngestRequest,
     LinkRequest,
@@ -30,10 +33,21 @@ from sage.models.schemas import (
     TraverseRequest,
     UpdateMetadataRequest,
     UpdateVaultConfigRequest,
+    VaultIdStr,
 )
 from sage.services.vault_registry import VaultRegistryService
 
+# Module-scope TypeAdapters for Pattern 2 boundary validation on FastMCP tool
+# parameters. Each adapter is constructed once at import time and reused per
+# tool call. ``validate_python`` raises ``pydantic_core.ValidationError`` (a
+# ``ValueError`` subclass) on shape failures; every tool's
+# ``except (SAGEError, ValueError)`` block catches it and routes through
+# ``error_response(...)`` so MCP callers see a uniform error envelope.
+_VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
+_DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
+_FUNCTION_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(FunctionIdStr)
+_DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
 
 
 def register_sage_tools(
@@ -172,6 +186,11 @@ def register_sage_tools(
                 semantics (null matches absent-or-null fields).
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            if supersedes_document_id is not None:
+                supersedes_document_id = _DOCUMENT_ID_ADAPTER.validate_python(
+                    supersedes_document_id
+                )
             v = get_vault(vault_id)
             request = IngestRequest(
                 source=source,
@@ -231,6 +250,7 @@ def register_sage_tools(
                 onenote, teams_chat). Must be enabled on the vault.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             adapter_enum = SourceType(adapter)
             response = v.ingestion_service.parse_filename(filename, adapter_enum)
@@ -285,6 +305,8 @@ def register_sage_tools(
                 be writable. Mutually exclusive with `include_content`.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             response = await v.documents_service.get_document_with_content(
                 document_id, include_content, write_to_path
@@ -356,6 +378,10 @@ def register_sage_tools(
                 CAS architecture.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if document_date is not None:
+                document_date = _DOCUMENT_DATE_ADAPTER.validate_python(document_date)
             v = get_vault(vault_id)
             request = UpdateMetadataRequest(
                 title=title,
@@ -458,6 +484,10 @@ def register_sage_tools(
                 which ingests and supersedes atomically.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if new_version_id is not None:
+                new_version_id = _DOCUMENT_ID_ADAPTER.validate_python(new_version_id)
             v = get_vault(vault_id)
             request = SetLifecycleRequest(action=action, new_version_id=new_version_id)
             response = await v.lifecycle_service.set_lifecycle(document_id, request)
@@ -490,6 +520,7 @@ def register_sage_tools(
         try:
             from sage.models.schemas import RegisterUserRequest
 
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             request = RegisterUserRequest(display_name=display_name, type=type)
             user = await v.user_service.register_user(request)
@@ -579,6 +610,12 @@ def register_sage_tools(
             rationale: Rationale for creating this edge.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            source_id = _DOCUMENT_ID_ADAPTER.validate_python(source_id)
+            if target_id is not None:
+                target_id = _DOCUMENT_ID_ADAPTER.validate_python(target_id)
+            if retracted_edge_id is not None:
+                retracted_edge_id = _EDGE_ID_ADAPTER.validate_python(retracted_edge_id)
             v = get_vault(vault_id)
             request = LinkRequest(
                 source_id=source_id,
@@ -612,6 +649,7 @@ def register_sage_tools(
             edge_id: Production edge identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
             result = await v.graph_ops_service.unlink(edge_id)
@@ -642,6 +680,8 @@ def register_sage_tools(
                 "function".
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            function_id = _FUNCTION_ID_ADAPTER.validate_python(function_id)
             v = get_vault(vault_id)
             result = await v.graph_ops_service.check_preconditions(function_id)
             return serialize(result)
@@ -696,6 +736,8 @@ def register_sage_tools(
                 false (zero overhead when disabled).
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            start_id = _DOCUMENT_ID_ADAPTER.validate_python(start_id)
             v = get_vault(vault_id)
             request = TraverseRequest(
                 start_id=start_id,
@@ -746,6 +788,8 @@ def register_sage_tools(
             offset: Skip this many entries from the start (oldest). Default: 0.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             request = ChainRequest(
                 document_id=document_id,
@@ -818,6 +862,9 @@ def register_sage_tools(
                 and relevance scores only. Default: "chunks".
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             retrieval_filters = RetrievalFilters(**filters) if filters else None
             request = DiscoverRequest(
@@ -863,6 +910,8 @@ def register_sage_tools(
                 must resolve within storage_root).
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             response = await v.utilities_service.export_projection(document_id, output_path)
             return serialize(response)
@@ -890,6 +939,8 @@ def register_sage_tools(
             document_id: The document's unique identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             response = await v.utilities_service.read_projection(document_id)
             return serialize(response)
@@ -922,6 +973,8 @@ def register_sage_tools(
                 (e.g. "Technical Description > Composite Claim Binding").
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             response = await v.utilities_service.read_section(document_id, heading_path)
             return serialize(response)
@@ -943,6 +996,7 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             response = await v.utilities_service.refresh_views()
             return serialize(response)
@@ -1017,6 +1071,8 @@ def register_sage_tools(
             config: Full vault config dict (full-config mode only).
         """
         try:
+            if vault_id is not None:
+                vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             convenience_args_set = any(x is not None for x in (vault_id, name, owner))
             if convenience_args_set and config is not None:
                 raise VaultConfigValidationError(
@@ -1077,6 +1133,7 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
             return services.vault_config_service.get_config()
         except (SAGEError, ValueError) as e:
@@ -1129,6 +1186,7 @@ def register_sage_tools(
                 existing documents. Default False.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
             valid_sections = set(UpdateVaultConfigRequest.model_fields.keys())
             for section_name in sections:
@@ -1154,6 +1212,7 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
             stats = await services.vault_config_service.get_stats()
             return serialize(stats)
@@ -1184,6 +1243,7 @@ def register_sage_tools(
                 ``sha256:<hex>`` and bare hex for each entry.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
             # Skip Sha256Str validation: the MCP transport historically
             # accepts bare-hex hashes (the form sage_ingest emits in its
@@ -1222,6 +1282,7 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             edges = await v.staging_edges_service.list_staging_edges()
             items = [e.model_dump(mode="json") for e in edges]
@@ -1254,6 +1315,7 @@ def register_sage_tools(
                 ``sage_list_staging_edges``).
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
             return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
@@ -1280,6 +1342,7 @@ def register_sage_tools(
                 ``sage_list_staging_edges``).
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
             return serialize(await v.staging_edges_service.dismiss_staging_edge(edge_id))
@@ -1306,6 +1369,7 @@ def register_sage_tools(
             vault_id: Target vault identifier.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             docs = await v.graph_store.list_pending_metadata_documents()
             items = []
@@ -1352,6 +1416,8 @@ def register_sage_tools(
             document_id: Document to re-abstract.
         """
         try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             result = await v.ingestion_service.reabstract(document_id)
             return serialize(result)

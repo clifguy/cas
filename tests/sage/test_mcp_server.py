@@ -82,13 +82,13 @@ def _parse(result: str | dict) -> dict:
 
 
 async def test_unknown_vault_returns_error(vault_services):
-    result = _parse(await sage_get_document("nonexistent_vault", "doc1"))
+    result = _parse(await sage_get_document("nonexistent_vault", "deadbeef_doc"))
     assert result["error"] == "unknown_vault"
     assert "nonexistent_vault" in result["message"]
 
 
 async def test_unknown_vault_lists_available(vault_services):
-    result = _parse(await sage_get_document("nonexistent_vault", "doc1"))
+    result = _parse(await sage_get_document("nonexistent_vault", "deadbeef_doc"))
     assert "test_vault" in result["message"]
 
 
@@ -250,7 +250,7 @@ async def test_get_document_returns_full_record(vault_services):
 
 
 async def test_get_document_not_found(vault_services):
-    result = _parse(await sage_get_document("test_vault", "nonexistent"))
+    result = _parse(await sage_get_document("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
 
 
@@ -612,7 +612,7 @@ async def test_read_projection(vault_services):
 
 
 async def test_read_projection_not_found(vault_services):
-    result = _parse(await sage_read_projection("test_vault", "nonexistent"))
+    result = _parse(await sage_read_projection("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
 
 
@@ -814,11 +814,11 @@ async def test_reabstract_returns_started_status(vault_services):
 
 async def test_reabstract_unknown_vault(vault_services):
     """sage_reabstract should return an error for unknown vault_id."""
-    result = _parse(await sage_reabstract("nonexistent_vault", "doc1"))
+    result = _parse(await sage_reabstract("nonexistent_vault", "deadbeef_doc"))
     assert result["error"] == "unknown_vault"
 
 
 async def test_reabstract_document_not_found(vault_services):
     """sage_reabstract should return document_not_found for unknown doc."""
-    result = _parse(await sage_reabstract("test_vault", "nonexistent_doc"))
+    result = _parse(await sage_reabstract("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"

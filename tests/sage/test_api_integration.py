@@ -127,7 +127,7 @@ async def test_get_document_200(client):
 
 
 async def test_get_document_404(client):
-    resp = await client.get("/sage_vaults/test_vault/documents/nonexistent")
+    resp = await client.get("/sage_vaults/test_vault/documents/deadbeef_nonexistent")
     assert resp.status_code == 404
     assert resp.json()["code"] == "document_not_found"
 
@@ -418,7 +418,7 @@ async def test_read_projection_200(app, client):
 async def test_read_projection_404(client):
     """GET /documents/{id}/projection with nonexistent id returns 404."""
     resp = await client.get(
-        "/sage_vaults/test_vault/documents/nonexistent/projection",
+        "/sage_vaults/test_vault/documents/deadbeef_nonexistent/projection",
     )
     assert resp.status_code == 404
     assert resp.json()["code"] == "document_not_found"
@@ -496,7 +496,7 @@ async def test_open_document_uses_xdg_open_on_linux(client, monkeypatch):
 async def test_open_document_404_unknown_id(client):
     """Unknown document id returns 404 with document_not_found."""
     resp = await client.post(
-        "/sage_vaults/test_vault/documents/nonexistent/open",
+        "/sage_vaults/test_vault/documents/deadbeef_nonexistent/open",
     )
     assert resp.status_code == 404
     assert resp.json()["code"] == "document_not_found"
