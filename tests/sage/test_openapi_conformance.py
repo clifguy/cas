@@ -62,18 +62,12 @@ SPEC_FORWARD_DECLARATIONS: set[tuple[str, str]] = {
 # BaseModel under app.backend.{models,router} by design. Same
 # justification discipline as YAML_ONLY_FORWARD_DECLARATIONS.
 CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
-    # /app/ingest typing pass is tracked separately from T-0043's
-    # /app/scan-focused port; the request and SSE-event schemas are
-    # YAML-only until that pass lands.
-    # Name collision: SAGE's IngestRequest already occupies the canonical
-    # name; the CAS App router uses IngestRequest_ to avoid the clash.
-    "IngestRequest",
     # SSE event payloads; serialized from plain dicts in router.py
-    # rather than Pydantic models.
+    # rather than Pydantic models. T-0047 ports these.
     "ProgressEvent",
     "SummaryEvent",
     # FastAPI HTTPException currently serializes error responses; the
-    # Pydantic mirror is a separate concern.
+    # Pydantic mirror is a separate concern. T-0048 ports this.
     "ErrorResponse",
 }
 

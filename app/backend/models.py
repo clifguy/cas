@@ -7,8 +7,10 @@ the typed aliases declared in the *CAS Typed-Alias Boundary
 Conventions* steering document.
 
 Coverage today: the scan chain (``ScanRequest``, ``ScanResponse``,
-``ScanResultResponse``, ``ParsedMetadata``). Ingest-chain models
-remain in ``app.backend.router`` pending their own typing pass.
+``ScanResultResponse``, ``ParsedMetadata``) and the ingest request
+body (``IngestRequest``, ``IngestFileItem``). SSE event payloads
+and the ErrorResponse envelope remain to be ported in follow-up
+tickets.
 """
 
 from __future__ import annotations
@@ -103,4 +105,24 @@ class ScanResponse(BaseModel):
             'files[] with status "no_adapter" or be omitted depending on '
             "the warning class."
         )
+    )
+
+
+class IngestFileItem(BaseModel):
+    file_path: str = Field(description="Absolute file path on disk.")
+    adapter: str = Field(description="Source adapter name to use for this file.")
+    parsed_metadata: ParsedMetadata | None = None
+
+
+class IngestRequest(BaseModel):
+    vault_id: VaultIdStr = Field(description="Target vault identifier.")
+    files: list[IngestFileItem] = Field(description="Files to ingest. Empty list returns 400.")
+    infer_edges: bool = Field(
+        default=True,
+        description=(
+            "When true, the post-ingest phase runs version_chain (Tier 1 "
+            "supersedes) and filename_code_match (Tier 2 covers) edge "
+            "inference. When false, edges are not inferred; ingestion is "
+            "otherwise unchanged."
+        ),
     )

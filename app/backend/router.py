@@ -13,43 +13,24 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from app.backend.ingest_service import (
     BatchIngestService,
     FileDescriptor,
     ParsedMetadataInput,
 )
-from app.backend.models import ParsedMetadata, ScanRequest, ScanResponse
+from app.backend.models import (
+    IngestFileItem,
+    IngestRequest,
+    ScanRequest,
+    ScanResponse,
+)
 from app.backend.scan_service import ScanService
 from sage.api.errors import VaultNotFoundError
-from sage.models.schemas import VaultIdStr
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/app", tags=["app"])
-
-
-# ---------------------------------------------------------------------------
-# Request / response models
-# ---------------------------------------------------------------------------
-#
-# Scan-chain models live in app.backend.models. Ingest-chain models stay
-# here pending their own typing pass.
-
-
-class IngestFileItem(BaseModel):
-    file_path: str
-    adapter: str
-    parsed_metadata: ParsedMetadata | None = None
-
-
-class IngestRequest_(BaseModel):
-    """Ingest request body (underscore to avoid collision with SAGE IngestRequest)."""
-
-    vault_id: VaultIdStr
-    files: list[IngestFileItem]
-    infer_edges: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +91,7 @@ async def scan_endpoint(body: ScanRequest, request: Request) -> ScanResponse:
 
 
 @router.post("/ingest")
-async def ingest_endpoint(body: IngestRequest_, request: Request):
+async def ingest_endpoint(body: IngestRequest, request: Request):
     """Batch ingest with two-phase edge inference, streamed via SSE."""
     if not body.files:
         raise HTTPException(status_code=400, detail="No files selected for ingestion")
