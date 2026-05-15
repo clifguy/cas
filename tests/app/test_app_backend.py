@@ -1279,6 +1279,23 @@ class TestScanEndpoint:
         md_file = [f for f in files if f["file_path"].endswith(".md")][0]
         assert md_file["file_hash"].startswith("sha256:")
 
+    async def test_scan_rejects_negative_max_depth(self, scan_client, tmp_path):
+        """Pydantic ge=0 constraint on ScanRequest.max_depth rejects negatives
+        with 422 at the boundary (T-0043)."""
+        client, _config = scan_client
+        scan_dir = tmp_path / "depth_test"
+        scan_dir.mkdir()
+
+        resp = await client.post(
+            "/app/scan",
+            json={
+                "vault_id": "pim_health",
+                "directory": str(scan_dir),
+                "max_depth": -1,
+            },
+        )
+        assert resp.status_code == 422
+
     async def test_be_021_permission_warnings(self, scan_client, tmp_path):
         """Scan handles permission errors as warnings."""
         client, config = scan_client

@@ -9,13 +9,10 @@ from __future__ import annotations
 import importlib
 import inspect
 
-from app.backend.router import (
-    IngestFileItem,
-    ParsedMetadataResponse,
-    _scan_result_to_response,
-    _to_file_descriptor,
-)
+from app.backend.models import ParsedMetadata as ApiParsedMetadata
+from app.backend.router import IngestFileItem, _to_file_descriptor
 from app.backend.scan import ScanResult
+from app.backend.scan_service import _scan_result_to_response
 from sage.services.filename_parser import ParsedMetadata
 
 # ---------------------------------------------------------------------------
@@ -152,7 +149,7 @@ class TestMetadataConversion:
         item = IngestFileItem(
             file_path="/path/to/doc.docx",
             adapter="docx",
-            parsed_metadata=ParsedMetadataResponse(
+            parsed_metadata=ApiParsedMetadata(
                 title="Claim-Set",
                 date="2026-03-09",
                 project="PIM",

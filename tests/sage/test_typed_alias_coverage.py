@@ -43,9 +43,9 @@ Scope — F4 scan, still-parallel site classes:
 
 Scope — not yet typeable (no alias exists):
 
-- ISO timestamp strings (e.g. ``ScanResultResponse.source_modified_at``,
-  ``ParsedMetadataResponse.date``) — names do not match the current
-  ``*_date`` suffix rule and no ``IsoTimestampStr`` alias exists.
+- ISO timestamp strings (e.g. ``ScanResultResponse.source_modified_at``)
+  — names do not match the current ``*_date`` suffix rule and no
+  ``IsoTimestampStr`` alias exists.
 - Filesystem paths (e.g. ``VaultIdentity.storage_root``,
   ``VaultIdentity.brain_root``, ``RetrievalHealthConfig.assertions_file``)
   — no path alias exists. The gate does not flag these today.
@@ -73,6 +73,7 @@ import pytest
 from fastapi.params import Depends as DependsParam
 from pydantic import AfterValidator, BaseModel
 
+from app.backend import models as models_mod
 from app.backend import router as router_mod
 from sage import config as config_mod
 
@@ -111,7 +112,7 @@ from sage.models.schemas import (
 
 # Modules whose ``BaseModel`` subclasses are governed by this gate.
 # Order is irrelevant; discovery dedupes by class identity.
-_SCOPED_MODULES: Final[tuple] = (schemas_mod, router_mod, config_mod)
+_SCOPED_MODULES: Final[tuple] = (schemas_mod, router_mod, models_mod, config_mod)
 
 # ---------------------------------------------------------------------------
 # Shape registry
@@ -653,9 +654,9 @@ def test_discovered_basemodels_are_nonempty():
     assert "Document" in names, "Discovery missed core Document model"
     assert "Edge" in names, "Discovery missed core Edge model"
     assert "LinkRequest" in names, "Discovery missed canonical LinkRequest model"
-    # app.backend.router
-    assert "ScanRequest" in names, "Discovery missed app.backend.router ScanRequest"
-    assert "ScanResultResponse" in names, "Discovery missed app.backend.router ScanResultResponse"
+    # app.backend.models (scan-chain models -- T-0043)
+    assert "ScanRequest" in names, "Discovery missed app.backend.models ScanRequest"
+    assert "ScanResultResponse" in names, "Discovery missed app.backend.models ScanResultResponse"
     # sage.config
     assert "VaultIdentity" in names, "Discovery missed sage.config VaultIdentity"
     assert "VaultConfig" in names, "Discovery missed sage.config VaultConfig"

@@ -58,6 +58,26 @@ SPEC_FORWARD_DECLARATIONS: set[tuple[str, str]] = {
     ("/sage_vaults/{vault_id}/documents/{document_id}/editors", "put"),
 }
 
+# YAML schemas in cas_app_api.openapi.yaml that have no same-named
+# BaseModel under app.backend.{models,router} by design. Same
+# justification discipline as YAML_ONLY_FORWARD_DECLARATIONS.
+CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
+    # /app/ingest typing pass is tracked separately from T-0043's
+    # /app/scan-focused port; the request and SSE-event schemas are
+    # YAML-only until that pass lands.
+    # Name collision: SAGE's IngestRequest already occupies the canonical
+    # name; the CAS App router uses IngestRequest_ to avoid the clash.
+    "IngestRequest",
+    # SSE event payloads; serialized from plain dicts in router.py
+    # rather than Pydantic models.
+    "ProgressEvent",
+    "SummaryEvent",
+    # FastAPI HTTPException currently serializes error responses; the
+    # Pydantic mirror is a separate concern.
+    "ErrorResponse",
+}
+
+
 # YAML schemas in sage_core_api.openapi.yaml that have no same-named
 # BaseModel in sage.models.schemas by design. Each grouping carries a
 # justification comment in the same style as SPEC_FORWARD_DECLARATIONS.
@@ -391,11 +411,11 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
     (e.g. `ExportProjectionResponse`, `RefreshViewsResponse`) are out of
     scope; their absence from the YAML, if a drift, is tracked separately.
 
-    Scope: SAGE Core API spec only. Parallel parity assertions for
-    `docs/fs/cas_app_api.openapi.yaml` and
-    `docs/fs/root_harness/orchestration_api.openapi.yaml` are tracked by
-    T-0043 (CAS App API) and a follow-up off T-0041 (ROOT Harness),
-    respectively.
+    Scope: SAGE Core API spec only. Parallel parity assertion for
+    `docs/fs/cas_app_api.openapi.yaml` is tracked by T-0043. The ROOT
+    Harness OpenAPI spec has no Python implementation yet (only the
+    spec exists), so YAML<->Pydantic parity is not yet meaningful for
+    that surface.
 
     Required-vs-optional parity is *not* asserted here. OpenAPI's
     `required` means "property always appears in the serialized JSON";
@@ -454,6 +474,75 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
             msg_lines.append(f"  {line}")
 
     assert not msg_lines, "YAML<->Pydantic parity violations:\n" + "\n".join(msg_lines)
+
+
+# ---------------------------------------------------------------------------
+# Test 6b: CAS App YAML components/schemas have parity-checked Pydantic counterparts
+# ---------------------------------------------------------------------------
+
+
+def test_every_cas_app_yaml_schema_has_pydantic_class(cas_app_spec: dict | None):
+    """Parallel of test_every_yaml_schema_has_pydantic_class for the CAS
+    App API surface (T-0043). Walks app.backend.models (the centralized
+    home for /app/scan response shapes) and app.backend.router (ingest-
+    chain models that remain in the router module pending their own
+    typing pass) for BaseModel definitions.
+
+    Same shape as the SAGE counterpart: forward-direction parity only
+    (YAML -> Pydantic); required-vs-optional comparison not asserted.
+    """
+    from pydantic import BaseModel
+
+    from app.backend import models as models_module
+    from app.backend import router as router_module
+
+    assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
+
+    pydantic_classes: dict[str, type[BaseModel]] = {}
+    for module in (models_module, router_module):
+        for name in dir(module):
+            if name.startswith("_"):
+                continue
+            obj = getattr(module, name)
+            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+                pydantic_classes[name] = obj
+
+    yaml_schemas = cas_app_spec["components"]["schemas"]
+
+    missing_classes: list[str] = []
+    missing_fields: list[str] = []
+
+    for schema_name, schema_def in yaml_schemas.items():
+        if schema_name in CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS:
+            continue
+        if schema_name not in pydantic_classes:
+            missing_classes.append(schema_name)
+            continue
+
+        model = pydantic_classes[schema_name]
+        yaml_props = _flatten_yaml_properties(schema_def, cas_app_spec)
+
+        pyd_field_names = set(model.model_fields.keys())
+        yaml_field_names = set(yaml_props.keys())
+        gap = yaml_field_names - pyd_field_names
+        if gap:
+            missing_fields.append(f"{schema_name}: Pydantic missing fields {sorted(gap)}")
+
+    msg_lines: list[str] = []
+    if missing_classes:
+        msg_lines.append(
+            "CAS App YAML schemas without a same-named BaseModel in app.backend.models "
+            "or app.backend.router (if intentional, add to "
+            "CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS with justification):"
+        )
+        for name in sorted(missing_classes):
+            msg_lines.append(f"  {name}")
+    if missing_fields:
+        msg_lines.append("Pydantic models missing YAML-declared fields:")
+        for line in sorted(missing_fields):
+            msg_lines.append(f"  {line}")
+
+    assert not msg_lines, "CAS App YAML<->Pydantic parity violations:\n" + "\n".join(msg_lines)
 
 
 # ---------------------------------------------------------------------------
