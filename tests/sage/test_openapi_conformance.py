@@ -58,6 +58,34 @@ SPEC_FORWARD_DECLARATIONS: set[tuple[str, str]] = {
     ("/sage_vaults/{vault_id}/documents/{document_id}/editors", "put"),
 }
 
+# YAML schemas in sage_core_api.openapi.yaml that have no same-named
+# BaseModel in sage.models.schemas by design. Each grouping carries a
+# justification comment in the same style as SPEC_FORWARD_DECLARATIONS.
+YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
+    # Enums codified in sage/models/enums.py as StrEnum subclasses, not
+    # as BaseModel classes.
+    "CatalogSortBy",
+    "EdgeType",
+    "LifecycleAction",
+    "LifecycleStatus",
+    "PipelineStatus",
+    "ResolutionPolicy",
+    "ResponseLevel",
+    "RetrievalMode",
+    "RetrievalScope",
+    "SortOrder",
+    "SourceType",
+    "TraversalDirection",
+    "UserType",
+    # oneOf composition -- variants handled on the Python side by
+    # discriminated unions or runtime branching, so field-level parity
+    # against a single same-named BaseModel is not meaningful. Same-named
+    # BaseModels exist in sage.models.schemas but their internal shape
+    # diverges from the YAML envelope.
+    "IngestRequest",
+    "TraverseRequest",
+}
+
 
 def _load_spec(path: Path) -> dict | None:
     """Load a yaml spec file, or return None if it doesn't exist yet.
@@ -322,7 +350,114 @@ def test_every_pydantic_field_has_description():
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Each spec covers only its declared URL-prefix domain
+# Test 6: YAML components/schemas have parity-checked Pydantic counterparts
+# ---------------------------------------------------------------------------
+
+
+def _flatten_yaml_properties(schema_def: dict, spec: dict) -> dict:
+    """Resolve `allOf` composition into a flat properties dict.
+
+    For `allOf`, walk each part: `$ref` parts resolve against
+    `components/schemas` and recurse; inline parts contribute their
+    `properties` directly. Non-`allOf` schemas pass through unchanged.
+    """
+    if "allOf" in schema_def:
+        merged: dict = {}
+        for part in schema_def["allOf"]:
+            ref = part.get("$ref")
+            if ref:
+                # "#/components/schemas/Document" -> "Document"
+                name = ref.rsplit("/", 1)[-1]
+                ref_def = spec["components"]["schemas"].get(name, {})
+                merged.update(_flatten_yaml_properties(ref_def, spec))
+            else:
+                merged.update(part.get("properties") or {})
+        return merged
+    return schema_def.get("properties") or {}
+
+
+def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
+    """Every components/schemas entry in the SAGE Core API YAML has a
+    same-named BaseModel in sage.models.schemas, and that BaseModel's
+    fields are a superset of the YAML schema's properties.
+
+    Deterministic guard against the gap class that produced T-0040 (seven
+    YAML-only response classes with no Pydantic counterpart, discovered
+    by chance). Reads the YAML on disk per CAS-ADR-008 (the formal
+    substrate is the source of truth), not via FastAPI introspection --
+    schemas not referenced by any handler still get checked.
+
+    Forward direction only (YAML -> Pydantic). Python-only classes
+    (e.g. `ExportProjectionResponse`, `RefreshViewsResponse`) are out of
+    scope; their absence from the YAML, if a drift, is tracked separately.
+
+    Scope: SAGE Core API spec only. Parallel parity assertions for
+    `docs/fs/cas_app_api.openapi.yaml` and
+    `docs/fs/root_harness/orchestration_api.openapi.yaml` are tracked by
+    T-0043 (CAS App API) and a follow-up off T-0041 (ROOT Harness),
+    respectively.
+
+    Required-vs-optional parity is *not* asserted here. OpenAPI's
+    `required` means "property always appears in the serialized JSON";
+    Pydantic's `is_required()` means "caller must supply at construction
+    time". A Pydantic field with a default value is not required in
+    Pydantic's sense but is always present in the output, so the YAML
+    correctly marks it required. The two notions of "required" do not map
+    cleanly; comparing them produces noise, not signal.
+    """
+    from pydantic import BaseModel
+
+    from sage.models import schemas as schemas_module
+
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+
+    pydantic_classes: dict[str, type[BaseModel]] = {}
+    for name in dir(schemas_module):
+        if name.startswith("_"):
+            continue
+        obj = getattr(schemas_module, name)
+        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+            pydantic_classes[name] = obj
+
+    yaml_schemas = sage_core_spec["components"]["schemas"]
+
+    missing_classes: list[str] = []
+    missing_fields: list[str] = []
+
+    for schema_name, schema_def in yaml_schemas.items():
+        if schema_name in YAML_ONLY_FORWARD_DECLARATIONS:
+            continue
+        if schema_name not in pydantic_classes:
+            missing_classes.append(schema_name)
+            continue
+
+        model = pydantic_classes[schema_name]
+        yaml_props = _flatten_yaml_properties(schema_def, sage_core_spec)
+
+        pyd_field_names = set(model.model_fields.keys())
+        yaml_field_names = set(yaml_props.keys())
+        gap = yaml_field_names - pyd_field_names
+        if gap:
+            missing_fields.append(f"{schema_name}: Pydantic missing fields {sorted(gap)}")
+
+    msg_lines: list[str] = []
+    if missing_classes:
+        msg_lines.append(
+            "YAML schemas without a same-named BaseModel in sage.models.schemas "
+            "(if intentional, add to YAML_ONLY_FORWARD_DECLARATIONS with justification):"
+        )
+        for name in sorted(missing_classes):
+            msg_lines.append(f"  {name}")
+    if missing_fields:
+        msg_lines.append("Pydantic models missing YAML-declared fields:")
+        for line in sorted(missing_fields):
+            msg_lines.append(f"  {line}")
+
+    assert not msg_lines, "YAML<->Pydantic parity violations:\n" + "\n".join(msg_lines)
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Each spec covers only its declared URL-prefix domain
 # ---------------------------------------------------------------------------
 
 
