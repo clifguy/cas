@@ -12,6 +12,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter
 
 from sage.api.errors import (
+    LegacyFormError,
     SAGEError,
     VaultConfigValidationError,
 )
@@ -48,6 +49,35 @@ _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _FUNCTION_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(FunctionIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
+
+
+def _check_legacy_patch_form(field: str, value: object) -> None:
+    """Raise LegacyFormError when a caller passes the pre-patch shape.
+
+    Catches the two common pre-patch shapes that Pydantic would otherwise
+    reject with a generic validation error:
+      - tags=["a", "b"]: bare list, the old replacement form.
+      - tier3_metadata={"ticket_priority": "high"}: bare dict with no
+        recognized patch verb. A dict that contains only the keys
+        ``set`` and/or ``unset`` is a valid Tier3Patch; anything else
+        is the legacy "this is the new state" form.
+    """
+    if value is None:
+        return
+    if field == "tags":
+        if isinstance(value, list):
+            raise LegacyFormError(
+                field="tags",
+                received_type="list",
+                example='{"add": [...]} or {"remove": [...]}',
+            )
+    elif field == "tier3_metadata":
+        if isinstance(value, dict) and value and not (set(value) <= {"set", "unset"}):
+            raise LegacyFormError(
+                field="tier3_metadata",
+                received_type="dict (bare key/value pairs)",
+                example='{"set": {"key": "value"}} or {"unset": ["key"]}',
+            )
 
 
 def register_sage_tools(
@@ -322,41 +352,84 @@ def register_sage_tools(
         title: str | None = None,
         version_label: str | None = None,
         project: str | None = None,
-        tags: list[str] | None = None,
+        tags: dict | None = None,
         doc_type: str | None = None,
         authority_scope: str | None = None,
         document_date: str | None = None,
         tier3_metadata: dict | None = None,
     ) -> dict:
-        """Update mutable metadata fields on a document. Only include fields
-        you want to change.
+        """Patch mutable metadata fields on a document.
 
-        Per CAS-ADR-021, any call to this tool sets the document's
-        ``metadata_confirmed=true`` flag (the document leaves the
-        metadata-review queue if it was there), even when only one
-        field is updated. To inspect remaining unconfirmed documents,
-        use ``sage_pending_metadata``.
+        Scalars (``title``, ``version_label``, ``project``, ``doc_type``,
+        ``authority_scope``, ``document_date``) use set-or-omit
+        semantics: pass to set, omit to leave unchanged. The collection
+        fields ``tags`` and ``tier3_metadata`` take ops-object patches;
+        the bare-list / bare-dict forms are no longer accepted (see
+        ``legacy_form`` below).
 
-        The ``doc_type`` value must be one of the values defined under
-        ``document_types.doc_types`` in the vault config. The set is
-        vault-config-defined; query ``sage_get_vault_config`` for the
-        authoritative list. The ``tags`` argument replaces the existing
-        tag set wholesale; pass the full intended list.
+        Per CAS-ADR-021, any successful call sets ``metadata_confirmed=true``
+        on the document (it leaves the metadata-review queue if it was
+        there). The ``doc_type`` value must be one of the values defined
+        under ``document_types.doc_types`` in the vault config; query
+        ``sage_get_vault_config`` for the authoritative list.
 
-        ``tier3_metadata`` (T-0004) is replaced wholesale at the top
-        level (no deep merge). To edit a single field, read the current
-        tier3_metadata via ``sage_get_document`` first, mutate, and pass
-        the full dict back.
+        See CAS-ADR-028 for the ingest-vs-update shape asymmetry
+        rationale: ``sage_ingest`` still takes ``tags`` as a list and
+        ``tier3_metadata`` as a dict (creation supplies full state);
+        ``sage_update_metadata`` patches existing state.
+
+        Tags patch shape (``tags``)::
+
+            {"add": ["x", ...], "remove": ["y", ...]}
+
+        At least one key required and non-empty. ``add`` keys must NOT
+        be present; ``remove`` keys MUST be present (strict conflict).
+        ``add`` and ``remove`` must be disjoint and individually
+        deduplicated. Worked examples:
+
+        - Add a single tag: ``tags={"add": ["urgent"]}``
+        - Remove one, add another: ``tags={"add": ["new"], "remove": ["old"]}``
+
+        Tier3 patch shape (``tier3_metadata``)::
+
+            {"set": {"key": "value", ...}, "unset": ["other_key", ...]}
+
+        At least one key required and non-empty. ``set`` overwrites
+        existing keys without error (the verb is literal: assert this
+        value). ``unset`` keys must currently be present (strict
+        conflict). ``set`` and ``unset`` must be disjoint. The merged
+        result is validated against the resolved doc_type's
+        ``metadata_schema``. Worked examples:
+
+        - Change ticket priority: ``tier3_metadata={"set": {"ticket_priority": "high"}}``
+        - Drop a key: ``tier3_metadata={"unset": ["stale_field"]}``
 
         Error modes:
         - ``document_not_found`` (404): no document with that id.
-        - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set
-          but the document's doc_type has no ``metadata_schema``
-          declared, or the payload failed validation against the
-          declared schema. Detail carries ``doc_type``, ``path``,
-          ``message``, and ``instance``. When the same call also
-          changes ``doc_type``, validation runs against the new
-          doc_type.
+        - ``invalid_doc_type`` (400): ``doc_type`` not in vault config.
+        - ``tag_add_conflict`` (400): one or more ``tags.add`` entries
+          are already present. Detail carries ``document_id``, ``tags``
+          (the conflicting subset), and ``current_tags``.
+        - ``tag_remove_conflict`` (400): one or more ``tags.remove``
+          entries are absent. Detail mirrors ``tag_add_conflict``.
+        - ``tag_patch_overlap`` (400): ``add`` and ``remove`` share
+          entries, or one list contains duplicates.
+        - ``tier3_unset_conflict`` (400): one or more ``unset`` keys
+          are absent. Detail carries ``document_id``, ``doc_type``,
+          ``keys``, and ``current_tier3_keys``.
+        - ``tier3_patch_overlap`` (400): ``set`` and ``unset`` share keys.
+        - ``patch_empty`` (400): a patch object was supplied but carries
+          no actionable operation (e.g., ``tags={}``).
+        - ``tier3_schema_violation`` (400): the merged tier3 dict failed
+          validation against the doc_type's metadata_schema, or the
+          doc_type has no metadata_schema declared.
+        - ``legacy_form`` (400): caller passed the deprecated bare-list
+          form for ``tags`` or bare-dict form for ``tier3_metadata``.
+          Detail names the new ops-object shape.
+
+        Strict-conflict errors are planning bugs, not retry conditions;
+        the caller should adjust its model of the document state rather
+        than blindly re-issue.
 
         Args:
             vault_id: Target vault identifier.
@@ -364,24 +437,21 @@ def register_sage_tools(
             title: New display title.
             version_label: Version indicator (v1, v2, draft, final, etc.).
             project: Project or workstream identifier.
-            tags: Freeform tags. Replaces the existing tag list; pass
-                the complete intended list, not a delta.
+            tags: Tags patch object ``{add?, remove?}``. See above.
             doc_type: Document type. Must be defined in
                 ``document_types.doc_types`` in the vault config.
             authority_scope: Authority scope identifier.
-            document_date: Document calendar date (YYYY-MM-DD). Use to
-                correct fallback-derived dates that misattributed across
-                UTC midnight.
-            tier3_metadata: Replacement Tier 3 (per-doc_type typed)
-                metadata dict. Validated against the doc_type's
-                ``metadata_schema`` in vault config; see T-0004 in the
-                CAS architecture.
+            document_date: Document calendar date (YYYY-MM-DD).
+            tier3_metadata: Tier-3 patch object ``{set?, unset?}``.
+                See above.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             if document_date is not None:
                 document_date = _DOCUMENT_DATE_ADAPTER.validate_python(document_date)
+            _check_legacy_patch_form("tags", tags)
+            _check_legacy_patch_form("tier3_metadata", tier3_metadata)
             v = get_vault(vault_id)
             request = UpdateMetadataRequest(
                 title=title,

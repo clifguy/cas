@@ -252,12 +252,20 @@ paths:
         confirmation, use `GET /pending-metadata`.
 
 
-        The `tags` argument is a full-replacement list, not a delta;
-        pass the complete intended list. The `doc_type` value must be
-        one of the values defined under `document_types.doc_types` in
-        the vault config -- the set is vault-config-defined; query
-        `GET /sage_vaults/{vault_id}/config` for the authoritative
-        list.
+        The `tags` and `tier3_metadata` fields take patch operations,
+        not replacement values. `tags` accepts `{add, remove}`;
+        `tier3_metadata` accepts `{set, unset}`. Strict-conflict
+        semantics: adding a tag that is already present, removing a
+        tag that is absent, or unsetting a tier3 key that is absent
+        all return 400. `set` on an existing tier3 key overwrites
+        (the verb is literal). Tier-3 post-merge validation runs
+        against the resolved doc_type's `metadata_schema` after
+        applying the patch in memory. See CAS-ADR-028 for the
+        ingest-vs-update shape asymmetry rationale. The `doc_type`
+        value must be one of the values defined under
+        `document_types.doc_types` in the vault config -- the set is
+        vault-config-defined; query `GET /sage_vaults/{vault_id}/config`
+        for the authoritative list.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2450,9 +2458,17 @@ components:
 
     UpdateMetadataRequest:
       type: object
+      additionalProperties: false
       description: >-
         Partial update of mutable document metadata. Only fields present
-        in the request are modified.
+        in the request are modified. Scalar fields (title, version_label,
+        project, doc_type, authority_scope, document_date) use set-or-omit
+        semantics: pass a value to set, omit to leave unchanged. The
+        `tags` and `tier3_metadata` fields take patch operation objects;
+        see `TagsPatch` and `Tier3Patch`. The signature deliberately
+        omits a wholesale-replace mode; the patch shape is the single
+        path for collection-field edits. See CAS-ADR-028 for the
+        ingest-vs-update shape asymmetry rationale.
       properties:
         title:
           type: string
@@ -2461,9 +2477,7 @@ components:
         project:
           type: string
         tags:
-          type: array
-          items:
-            type: string
+          $ref: "#/components/schemas/TagsPatch"
         doc_type:
           type: string
           description: Must be a valid value in the vault's document_types configuration.
@@ -2476,6 +2490,61 @@ components:
           description: >-
             Document calendar date (YYYY-MM-DD). Editable to correct
             fallback-derived dates that misattributed across UTC midnight.
+        tier3_metadata:
+          $ref: "#/components/schemas/Tier3Patch"
+
+    TagsPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: >-
+        Patch operations on the document's tag set. At least one of
+        `add` or `remove` must be present and non-empty. Adding a tag
+        already present, or removing a tag not present, returns 400
+        (`tag_add_conflict` / `tag_remove_conflict`). `add` and `remove`
+        must be disjoint; duplicates within either list are rejected
+        at request validation.
+      properties:
+        add:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Tags to add. None may already be present on the document.
+        remove:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Tags to remove. All must currently be present on the document.
+
+    Tier3Patch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: >-
+        Patch operations on the document's tier3_metadata dict. At
+        least one of `set` or `unset` must be present and non-empty.
+        `set` keys overwrite existing values without error (the verb
+        is literal: assert this post-state value). `unset` keys must
+        currently be present (else 400 `tier3_unset_conflict`). `set`
+        and `unset` keys must be disjoint. The merged result is
+        validated against the resolved doc_type's `metadata_schema`
+        after applying the patch in memory; an individually-valid
+        patch that produces an invalid merged dict returns 400
+        `tier3_schema_violation`.
+      properties:
+        set:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: Key-value pairs to set. Overwrites existing keys.
+        unset:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Keys to remove. All must currently be present.
 
     IngestRequest:
       type: object

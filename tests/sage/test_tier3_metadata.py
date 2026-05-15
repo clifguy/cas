@@ -9,9 +9,10 @@ Coverage:
 * sage_ingest validates tier3_metadata against the resolved doc_type's
   schema BEFORE inserting the document; failures raise
   Tier3SchemaViolationError without creating a row.
-* sage_update_metadata validates against the (possibly newly-set)
-  doc_type and applies tier3_metadata with top-level replacement
-  semantics (no deep merge).
+* sage_update_metadata takes Tier3Patch (`{set, unset}`) and applies
+  the patch in memory; the merged result is validated against the
+  (possibly newly-set) doc_type. Strict-conflict on `unset` of an
+  absent key.
 * sage_discover catalog and semantic filters honor the new tier3 clause;
   a null filter value matches absent-or-null stored fields.
 * A malformed metadata_schema in vault config surfaces at construction
@@ -27,13 +28,18 @@ from pathlib import Path
 
 import pytest
 
-from sage.api.errors import Tier3SchemaViolationError, VaultConfigValidationError
+from sage.api.errors import (
+    Tier3SchemaViolationError,
+    Tier3UnsetConflictError,
+    VaultConfigValidationError,
+)
 from sage.config import VaultConfig
 from sage.models.enums import RetrievalMode, SourceType
 from sage.models.schemas import (
     DiscoverRequest,
     IngestRequest,
     RetrievalFilters,
+    Tier3Patch,
     UpdateMetadataRequest,
 )
 from sage.services.ingestion import IngestionService
@@ -307,38 +313,42 @@ async def test_ingest_pre_insert_validation_does_not_orphan(
 
 
 # ---------------------------------------------------------------------------
-# Metadata service: tier3 update with top-level replacement
+# Metadata service: tier3 patch semantics (CAS-ADR-028 update revision)
 # ---------------------------------------------------------------------------
 
 
-async def test_update_metadata_replaces_tier3_top_level_no_deep_merge(
+async def test_update_metadata_patches_tier3_set_unset(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    _write_md(tmp_vault_dir, "ticket.md", "# Ticket\n\nBody.")
+    """Patch semantics: `set` overwrites named keys; keys not mentioned
+    are preserved (no deep-merge wipe). This is the load-bearing
+    assertion of patch-vs-replace: with the prior replace semantics,
+    setting only ticket_priority would have wiped ticket_id."""
+    _write_md(tmp_vault_dir, "fr.md", "# Failure\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
-            source="ticket.md",
+            source="fr.md",
             adapter=SourceType.MARKDOWN,
-            metadata={"doc_type": "ticket"},
-            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "low"},
+            metadata={"doc_type": "failure_record"},
+            tier3_metadata={"severity": "low", "fix_commit": "abc123"},
         )
     )
 
     await tier3_metadata_service.update_metadata(
         initial.document.id,
-        UpdateMetadataRequest(tier3_metadata={"ticket_id": "T-0002"}),
+        UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"severity": "high"})),
         modified_by="tester",
     )
 
     fresh = await graph_store.get_document(initial.document.id)
-    assert fresh.tier3_metadata == {"ticket_id": "T-0002"}
-    # ticket_priority should be gone (top-level replacement, no deep merge).
-    assert "ticket_priority" not in fresh.tier3_metadata
+    assert fresh.tier3_metadata == {"severity": "high", "fix_commit": "abc123"}
 
 
 async def test_update_metadata_with_tier3_validates_against_doc_type(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
 ):
+    """Post-merge validation: a set value that fails the doc_type schema
+    surfaces as Tier3SchemaViolationError."""
     _write_md(tmp_vault_dir, "ticket.md", "# Ticket\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
@@ -352,16 +362,16 @@ async def test_update_metadata_with_tier3_validates_against_doc_type(
     with pytest.raises(Tier3SchemaViolationError):
         await tier3_metadata_service.update_metadata(
             initial.document.id,
-            UpdateMetadataRequest(tier3_metadata={"ticket_id": "BAD-FORMAT"}),
+            UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"ticket_id": "BAD-FORMAT"})),
             modified_by="tester",
         )
 
 
 async def test_update_metadata_with_changing_doc_type_uses_new_schema(
-    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
     """When the caller updates both doc_type and tier3_metadata in one
-    call, validation runs against the new doc_type's schema."""
+    call, post-merge validation runs against the new doc_type's schema."""
     _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
@@ -372,13 +382,21 @@ async def test_update_metadata_with_changing_doc_type_uses_new_schema(
         )
     )
 
-    # Reclassify as failure_record AND supply a failure_record tier3:
-    # must succeed because validation uses failure_record's schema.
+    # Reclassify as failure_record AND patch tier3 to fit failure_record's
+    # schema. The merged dict carries the legacy ticket_id (which would
+    # fail failure_record validation) -- so unset it in the same call.
     await tier3_metadata_service.update_metadata(
         initial.document.id,
-        UpdateMetadataRequest(doc_type="failure_record", tier3_metadata={"severity": "high"}),
+        UpdateMetadataRequest(
+            doc_type="failure_record",
+            tier3_metadata=Tier3Patch(set={"severity": "high"}, unset=["ticket_id"]),
+        ),
         modified_by="tester",
     )
+
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "failure_record"
+    assert fresh.tier3_metadata == {"severity": "high"}
 
 
 async def test_update_metadata_with_no_tier3_leaves_stored_value_untouched(
@@ -402,6 +420,105 @@ async def test_update_metadata_with_no_tier3_leaves_stored_value_untouched(
     )
     fresh = await graph_store.get_document(initial.document.id)
     assert fresh.tier3_metadata == {"ticket_id": "T-0042"}
+
+
+async def test_update_metadata_tier3_unset_only_removes_named_keys(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """`unset` without `set`: named keys disappear; others survive."""
+    _write_md(tmp_vault_dir, "ticket.md", "# Ticket\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="ticket.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "low"},
+        )
+    )
+
+    await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(tier3_metadata=Tier3Patch(unset=["ticket_priority"])),
+        modified_by="tester",
+    )
+
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001"}
+
+
+async def test_update_metadata_tier3_unset_absent_key_conflict(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
+):
+    """Strict conflict: unsetting an absent tier3 key raises
+    Tier3UnsetConflictError with current_tier3_keys in the detail."""
+    _write_md(tmp_vault_dir, "ticket.md", "# Ticket\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="ticket.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001"},
+        )
+    )
+
+    with pytest.raises(Tier3UnsetConflictError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(tier3_metadata=Tier3Patch(unset=["never_was_here"])),
+            modified_by="tester",
+        )
+    assert excinfo.value.code == "tier3_unset_conflict"
+    assert excinfo.value.detail["keys"] == ["never_was_here"]
+    assert "ticket_id" in excinfo.value.detail["current_tier3_keys"]
+
+
+async def test_update_metadata_tier3_set_overwrites_existing_key(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """`set` is literal: overwriting an existing key is not a conflict."""
+    _write_md(tmp_vault_dir, "ticket.md", "# Ticket\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="ticket.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "low"},
+        )
+    )
+
+    await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"ticket_priority": "high"})),
+        modified_by="tester",
+    )
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.tier3_metadata["ticket_priority"] == "high"
+
+
+async def test_update_metadata_tier3_post_merge_validation_catches_set_of_unknown_property(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
+):
+    """Post-merge validation: a `set` op that introduces an additional
+    property to a strict (additionalProperties=false) schema surfaces
+    as Tier3SchemaViolationError. The check fires on the merged dict
+    -- the patch payload alone looks fine, but the merge produces a
+    schema-invalid state."""
+    _write_md(tmp_vault_dir, "fr.md", "# Failure\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="fr.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "failure_record"},
+            tier3_metadata={"severity": "high"},
+        )
+    )
+
+    with pytest.raises(Tier3SchemaViolationError):
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"unknown_field": "x"})),
+            modified_by="tester",
+        )
 
 
 # ---------------------------------------------------------------------------

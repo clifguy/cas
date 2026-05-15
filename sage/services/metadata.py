@@ -9,13 +9,18 @@ from sage.adapters.interfaces import ContentStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidDocTypeError,
+    TagAddConflictError,
+    TagRemoveConflictError,
     Tier3SchemaViolationError,
+    Tier3UnsetConflictError,
 )
 from sage.config import VaultConfig
 from sage.models.schemas import (
     Document,
     ExtractedField,
     PendingMetadataItem,
+    TagsPatch,
+    Tier3Patch,
     UpdateMetadataRequest,
 )
 from sage.storage.graph_store import GraphStore
@@ -41,18 +46,26 @@ class MetadataService:
         request: UpdateMetadataRequest,
         modified_by: str,
     ) -> Document:
-        """Partial update of mutable metadata fields.
+        """Partial update of mutable metadata fields with patch semantics.
 
-        Validates doc_type against vault's document_types config.
-        Validates tier3_metadata against the resolved doc_type's
-        metadata_schema (T-0004). Replacement of tier3_metadata is
-        top-level (no deep merge): when supplied, the stored dict is
-        replaced wholesale.
+        Scalar fields (``title``, ``version_label``, ``project``,
+        ``doc_type``, ``authority_scope``, ``document_date``) use
+        set-or-omit semantics. ``tags`` and ``tier3_metadata`` take ops
+        objects (``TagsPatch`` / ``Tier3Patch``) and apply patch
+        operations to the stored state with strict-conflict semantics:
+        adding a tag already present, removing a tag absent, or
+        unsetting a tier3 key absent each raise 400. ``set`` on an
+        existing tier3 key overwrites without error. The merged
+        tier3 dict is validated against the resolved doc_type's
+        metadata_schema after applying the patch in memory.
 
         Raises:
             DocumentNotFoundError: document_id does not exist.
             InvalidDocTypeError: doc_type not in vault config.
-            Tier3SchemaViolationError: tier3_metadata invalid for the
+            TagAddConflictError: TagsPatch.add includes already-present tags.
+            TagRemoveConflictError: TagsPatch.remove includes absent tags.
+            Tier3UnsetConflictError: Tier3Patch.unset includes absent keys.
+            Tier3SchemaViolationError: merged tier3 invalid for the
                 resolved doc_type, or the doc_type has no metadata_schema
                 declared.
         """
@@ -69,7 +82,7 @@ class MetadataService:
             if request.project is not None:
                 updates["project"] = request.project
             if request.tags is not None:
-                updates["tags"] = request.tags
+                updates["tags"] = self._apply_tags_patch(document_id, doc.tags, request.tags)
             if request.authority_scope is not None:
                 updates["authority_scope"] = request.authority_scope
             if request.doc_type is not None:
@@ -85,8 +98,11 @@ class MetadataService:
                 # uses the new doc_type so the stored tier3 conforms to
                 # the schema of its new owner.
                 effective_dt = request.doc_type if request.doc_type is not None else doc.doc_type
-                self._validate_tier3(effective_dt, request.tier3_metadata)
-                updates["tier3_metadata"] = request.tier3_metadata
+                merged = self._apply_tier3_patch(
+                    document_id, effective_dt, doc.tier3_metadata, request.tier3_metadata
+                )
+                self._validate_tier3(effective_dt, merged)
+                updates["tier3_metadata"] = merged
 
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).
@@ -102,6 +118,56 @@ class MetadataService:
                 )
 
             return doc
+
+    @staticmethod
+    def _apply_tags_patch(
+        document_id: str, current_tags: list[str] | None, patch: TagsPatch
+    ) -> list[str]:
+        """Apply a TagsPatch to ``current_tags``, returning the new ordered list.
+
+        Order discipline: survivors keep their stored position; new
+        additions append in the order the caller supplied them. Raises
+        on strict-conflict (add of present, remove of absent).
+        """
+        current = list(current_tags or [])
+        current_set = set(current)
+        if patch.add:
+            already = [t for t in patch.add if t in current_set]
+            if already:
+                raise TagAddConflictError(document_id, already, current)
+        if patch.remove:
+            absent = [t for t in patch.remove if t not in current_set]
+            if absent:
+                raise TagRemoveConflictError(document_id, absent, current)
+        removed_set: set[str] = set(patch.remove or [])
+        added_in_order = list(patch.add or [])
+        survivors = [t for t in current if t not in removed_set]
+        return [*survivors, *added_in_order]
+
+    @staticmethod
+    def _apply_tier3_patch(
+        document_id: str,
+        doc_type: str | None,
+        current_tier3: dict | None,
+        patch: Tier3Patch,
+    ) -> dict:
+        """Apply a Tier3Patch to ``current_tier3``, returning the merged dict.
+
+        Validates that all ``unset`` keys are currently present (strict
+        conflict). ``set`` values overwrite existing keys without error.
+        Does NOT run schema validation -- the caller does that on the
+        merged result so the validator sees the post-patch state.
+        """
+        merged: dict = dict(current_tier3 or {})
+        if patch.unset:
+            absent = [k for k in patch.unset if k not in merged]
+            if absent:
+                raise Tier3UnsetConflictError(document_id, doc_type, absent, list(merged.keys()))
+            for k in patch.unset:
+                merged.pop(k)
+        if patch.set:
+            merged.update(patch.set)
+        return merged
 
     def _validate_tier3(self, doc_type: str | None, tier3: dict) -> None:
         """Validate a tier3_metadata payload against a doc_type's schema.

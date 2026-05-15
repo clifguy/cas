@@ -27,6 +27,8 @@ from sage.models.schemas import (
     LinkRequest,
     RetrievalFilters,
     SetLifecycleRequest,
+    TagsPatch,
+    Tier3Patch,
     TraverseRequest,
     UpdateMetadataRequest,
 )
@@ -224,9 +226,11 @@ def test_ingest_request_tier3_metadata_defaults_none():
     assert req.tier3_metadata is None
 
 
-def test_update_metadata_request_accepts_tier3_metadata_dict():
-    req = UpdateMetadataRequest(tier3_metadata={"ticket_priority": "high"})
-    assert req.tier3_metadata == {"ticket_priority": "high"}
+def test_update_metadata_request_accepts_tier3_patch():
+    """UpdateMetadataRequest accepts a Tier3Patch ops object (post-CAS-ADR-028)."""
+    req = UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"ticket_priority": "high"}))
+    assert isinstance(req.tier3_metadata, Tier3Patch)
+    assert req.tier3_metadata.set == {"ticket_priority": "high"}
 
 
 def test_update_metadata_request_tier3_metadata_defaults_none():
@@ -249,3 +253,116 @@ def test_retrieval_filters_accepts_empty_tier3_dict():
     # service layer). The request model must still construct.
     filt = RetrievalFilters(tier3={})
     assert filt.tier3 == {}
+
+
+# ---------------------------------------------------------------------------
+# TagsPatch / Tier3Patch validators (CAS-ADR-028 update revision)
+# ---------------------------------------------------------------------------
+
+
+def test_tags_patch_requires_at_least_one_op():
+    with pytest.raises(ValidationError) as excinfo:
+        TagsPatch()
+    assert "actionable operation" in str(excinfo.value)
+
+
+def test_tags_patch_rejects_two_empty_lists():
+    """{add: [], remove: []} is degenerate -- equivalent to no operation."""
+    with pytest.raises(ValidationError):
+        TagsPatch(add=[], remove=[])
+
+
+def test_tags_patch_accepts_add_only():
+    patch = TagsPatch(add=["urgent"])
+    assert patch.add == ["urgent"]
+    assert patch.remove is None
+
+
+def test_tags_patch_accepts_remove_only():
+    patch = TagsPatch(remove=["stale"])
+    assert patch.remove == ["stale"]
+    assert patch.add is None
+
+
+def test_tags_patch_accepts_both_disjoint():
+    patch = TagsPatch(add=["new"], remove=["old"])
+    assert patch.add == ["new"]
+    assert patch.remove == ["old"]
+
+
+def test_tags_patch_rejects_add_remove_overlap():
+    with pytest.raises(ValidationError) as excinfo:
+        TagsPatch(add=["x"], remove=["x"])
+    assert "disjoint" in str(excinfo.value)
+
+
+def test_tags_patch_rejects_duplicates_in_add():
+    with pytest.raises(ValidationError) as excinfo:
+        TagsPatch(add=["x", "x"])
+    assert "duplicates" in str(excinfo.value)
+
+
+def test_tags_patch_rejects_duplicates_in_remove():
+    with pytest.raises(ValidationError):
+        TagsPatch(remove=["y", "y"])
+
+
+def test_tags_patch_rejects_extra_keys():
+    """extra='forbid' rejects unknown ops to keep the verb vocabulary tight."""
+    with pytest.raises(ValidationError):
+        TagsPatch(add=["x"], replace=["y"])  # type: ignore[call-arg]
+
+
+def test_tier3_patch_requires_at_least_one_op():
+    with pytest.raises(ValidationError):
+        Tier3Patch()
+
+
+def test_tier3_patch_rejects_two_empty_ops():
+    with pytest.raises(ValidationError):
+        Tier3Patch(set={}, unset=[])
+
+
+def test_tier3_patch_accepts_set_only():
+    patch = Tier3Patch(set={"k": "v"})
+    assert patch.set == {"k": "v"}
+    assert patch.unset is None
+
+
+def test_tier3_patch_accepts_unset_only():
+    patch = Tier3Patch(unset=["stale_key"])
+    assert patch.unset == ["stale_key"]
+
+
+def test_tier3_patch_rejects_set_unset_overlap():
+    with pytest.raises(ValidationError) as excinfo:
+        Tier3Patch(set={"k": "v"}, unset=["k"])
+    assert "disjoint" in str(excinfo.value)
+
+
+def test_tier3_patch_rejects_unset_duplicates():
+    with pytest.raises(ValidationError):
+        Tier3Patch(unset=["k", "k"])
+
+
+def test_tier3_patch_rejects_extra_keys():
+    with pytest.raises(ValidationError):
+        Tier3Patch(set={"k": "v"}, replace={"k": "x"})  # type: ignore[call-arg]
+
+
+def test_update_metadata_request_rejects_legacy_bare_list_tags():
+    """The pre-patch bare-list form for tags is rejected at request validation."""
+    with pytest.raises(ValidationError):
+        UpdateMetadataRequest(tags=["a", "b"])  # type: ignore[arg-type]
+
+
+def test_update_metadata_request_rejects_legacy_bare_dict_tier3():
+    """The pre-patch bare-dict form for tier3_metadata is rejected at request validation."""
+    with pytest.raises(ValidationError):
+        UpdateMetadataRequest(tier3_metadata={"ticket_priority": "high"})  # type: ignore[arg-type]
+
+
+def test_update_metadata_request_rejects_extra_field():
+    """model_config={'extra': 'forbid'} catches typos in field names."""
+    with pytest.raises(ValidationError):
+        UpdateMetadataRequest(titel="oops")  # type: ignore[call-arg]

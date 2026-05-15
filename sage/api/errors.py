@@ -147,6 +147,125 @@ class Tier3SchemaViolationError(SAGEError):
         )
 
 
+class TagAddConflictError(SAGEError):
+    """400: TagsPatch.add includes one or more tags already present on the document."""
+
+    def __init__(self, document_id: str, tags: list[str], current_tags: list[str]) -> None:
+        super().__init__(
+            "tag_add_conflict",
+            f"Cannot add tags already present on document {document_id}: {sorted(tags)!r}",
+            400,
+            {
+                "document_id": document_id,
+                "tags": sorted(tags),
+                "current_tags": current_tags,
+            },
+        )
+
+
+class TagRemoveConflictError(SAGEError):
+    """400: TagsPatch.remove includes one or more tags absent from the document."""
+
+    def __init__(self, document_id: str, tags: list[str], current_tags: list[str]) -> None:
+        super().__init__(
+            "tag_remove_conflict",
+            f"Cannot remove tags absent from document {document_id}: {sorted(tags)!r}",
+            400,
+            {
+                "document_id": document_id,
+                "tags": sorted(tags),
+                "current_tags": current_tags,
+            },
+        )
+
+
+class TagPatchOverlapError(SAGEError):
+    """400: TagsPatch.add and remove lists share entries, or one list contains duplicates."""
+
+    def __init__(self, violation: str, tags: list[str]) -> None:
+        super().__init__(
+            "tag_patch_overlap",
+            f"TagsPatch invalid: {violation}",
+            400,
+            {"violation": violation, "tags": sorted(tags)},
+        )
+
+
+class Tier3UnsetConflictError(SAGEError):
+    """400: Tier3Patch.unset includes one or more keys absent from the stored tier3_metadata."""
+
+    def __init__(
+        self,
+        document_id: str,
+        doc_type: str | None,
+        keys: list[str],
+        current_tier3_keys: list[str],
+    ) -> None:
+        super().__init__(
+            "tier3_unset_conflict",
+            (
+                f"Cannot unset tier3_metadata keys absent on document "
+                f"{document_id}: {sorted(keys)!r}"
+            ),
+            400,
+            {
+                "document_id": document_id,
+                "doc_type": doc_type,
+                "keys": sorted(keys),
+                "current_tier3_keys": sorted(current_tier3_keys),
+            },
+        )
+
+
+class Tier3PatchOverlapError(SAGEError):
+    """400: Tier3Patch.set and unset share keys."""
+
+    def __init__(self, keys: list[str]) -> None:
+        super().__init__(
+            "tier3_patch_overlap",
+            f"Tier3Patch set and unset must be disjoint; overlap: {sorted(keys)!r}",
+            400,
+            {"keys": sorted(keys)},
+        )
+
+
+class PatchEmptyError(SAGEError):
+    """400: a patch object was supplied but carries no actionable operation.
+
+    Examples: ``tags={}``, ``tags={"add": []}``, ``tier3_metadata={"set": {}}``.
+    Caught at Pydantic request validation; the empty-shape forms are almost
+    always serialization-stripped bugs rather than intentional no-ops.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(
+            "patch_empty",
+            (
+                f"{field} patch carries no actionable operation; supply a non-empty "
+                "operation key or omit the field entirely"
+            ),
+            400,
+            {"field": field},
+        )
+
+
+class LegacyFormError(SAGEError):
+    """400: caller passed the deprecated bare-list / bare-dict shape on a patch field.
+
+    Surfaced at the MCP boundary so callers familiar with the pre-patch
+    contract receive a structured error naming the new ops-object shape
+    rather than a generic Pydantic validation error.
+    """
+
+    def __init__(self, field: str, received_type: str, example: str) -> None:
+        super().__init__(
+            "legacy_form",
+            (f"{field} no longer accepts the {received_type} form. Use the ops object: {example}"),
+            400,
+            {"field": field, "received_type": received_type, "example": example},
+        )
+
+
 class PipelineIncompleteError(SAGEError):
     """422: document has incomplete/failed pipeline."""
 

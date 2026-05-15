@@ -260,20 +260,27 @@ async def test_get_document_not_found(vault_services):
 
 
 async def test_update_metadata_partial(vault_services):
+    """Scalar fields set verbatim; tags.add appends the patch entries to
+    whatever the document already carries. Strict-superset check on tags:
+    under add-only patch semantics, pre-existing adapter tags survive,
+    so an exact equality would over-assert; a contains-check would
+    under-assert. The post-patch set must equal pre-patch ∪ {alpha, beta}.
+    """
     ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
+    pre_patch_tags = set(_parse(await sage_get_document("test_vault", doc_id))["tags"])
 
     result = _parse(
         await sage_update_metadata(
             "test_vault",
             doc_id,
             title="Renamed Document",
-            tags=["alpha", "beta"],
+            tags={"add": ["alpha", "beta"]},
             doc_type="note",
         )
     )
     assert result["title"] == "Renamed Document"
-    assert result["tags"] == ["alpha", "beta"]
+    assert set(result["tags"]) == pre_patch_tags | {"alpha", "beta"}
     assert result["doc_type"] == "note"
 
 
@@ -305,6 +312,110 @@ async def test_update_metadata_invalid_doc_type(vault_services):
 
     result = _parse(await sage_update_metadata("test_vault", doc_id, doc_type="invalid_type"))
     assert result["error"] == "invalid_doc_type"
+
+
+# ---------------------------------------------------------------------------
+# Update metadata: TagsPatch flow through the MCP boundary (CAS-ADR-028)
+# ---------------------------------------------------------------------------
+
+
+async def test_update_metadata_tags_add_only(vault_services):
+    ingest_result = _parse(
+        await sage_ingest(
+            "test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha,beta"}
+        )
+    )
+    doc_id = ingest_result["id"]
+
+    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"add": ["gamma"]}))
+    assert set(result["tags"]) == {"alpha", "beta", "gamma"}
+
+
+async def test_update_metadata_tags_remove_only(vault_services):
+    ingest_result = _parse(
+        await sage_ingest(
+            "test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha,beta"}
+        )
+    )
+    doc_id = ingest_result["id"]
+
+    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"remove": ["alpha"]}))
+    assert result["tags"] == ["beta"]
+
+
+async def test_update_metadata_tags_add_and_remove(vault_services):
+    ingest_result = _parse(
+        await sage_ingest("test_vault", "test/sample.md", "markdown", metadata={"tags": "old,keep"})
+    )
+    doc_id = ingest_result["id"]
+
+    result = _parse(
+        await sage_update_metadata("test_vault", doc_id, tags={"add": ["new"], "remove": ["old"]})
+    )
+    assert set(result["tags"]) == {"keep", "new"}
+
+
+async def test_update_metadata_tags_add_conflict(vault_services):
+    """Adding a tag already present returns 400 tag_add_conflict
+    carrying current_tags in the detail."""
+    ingest_result = _parse(
+        await sage_ingest("test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha"})
+    )
+    doc_id = ingest_result["id"]
+
+    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"add": ["alpha"]}))
+    assert result["error"] == "tag_add_conflict"
+    assert result["detail"]["tags"] == ["alpha"]
+    assert "alpha" in result["detail"]["current_tags"]
+
+
+async def test_update_metadata_tags_remove_conflict(vault_services):
+    ingest_result = _parse(
+        await sage_ingest("test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha"})
+    )
+    doc_id = ingest_result["id"]
+
+    result = _parse(
+        await sage_update_metadata("test_vault", doc_id, tags={"remove": ["never_here"]})
+    )
+    assert result["error"] == "tag_remove_conflict"
+    assert result["detail"]["tags"] == ["never_here"]
+
+
+async def test_update_metadata_tags_legacy_form_rejected(vault_services):
+    """Bare-list tags returns structured legacy_form with a worked example."""
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    result = _parse(
+        await sage_update_metadata("test_vault", doc_id, tags=["a", "b"])  # type: ignore[arg-type]
+    )
+    assert result["error"] == "legacy_form"
+    assert result["detail"]["field"] == "tags"
+    assert "add" in result["detail"]["example"]
+
+
+async def test_update_metadata_tier3_legacy_form_rejected(vault_services):
+    """Bare-dict tier3_metadata returns structured legacy_form."""
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    result = _parse(
+        await sage_update_metadata("test_vault", doc_id, tier3_metadata={"some_key": "value"})
+    )
+    assert result["error"] == "legacy_form"
+    assert result["detail"]["field"] == "tier3_metadata"
+
+
+async def test_update_metadata_empty_tags_patch_rejected(vault_services):
+    """tags={} is degenerate; Pydantic returns a validation error."""
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={}))
+    # The empty dict has no recognized op keys -- routed through Pydantic
+    # validation; the MCP error envelope carries an error code or message.
+    assert "error" in result
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, Field, model_validator
+from pydantic import AfterValidator, BaseModel, Field, model_validator
 
 from sage.models.enums import (
     CatalogSortBy,
@@ -682,20 +682,116 @@ class SetLifecycleResponse(BaseModel):
     )
 
 
-def _coerce_tags(v: str | list[str] | None) -> list[str] | None:
-    """Accept tags as a comma-separated string or a list of strings."""
-    if v is None:
-        return None
-    if isinstance(v, str):
-        return [t.strip() for t in v.split(",") if t.strip()]
-    return v
+class TagsPatch(BaseModel):
+    """Patch operations on a document's tag set, used by sage_update_metadata.
+
+    Strict-conflict semantics enforced at the service layer (add of an
+    already-present tag and remove of an absent tag both 400). The model
+    validators here enforce shape-level invariants that don't require
+    knowing the stored state: at least one non-empty operation must be
+    present, add and remove must be disjoint, and neither list may
+    contain internal duplicates.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    add: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tags to add. Each must NOT already be present on the document "
+            "(else 400 tag_add_conflict). Must not duplicate within the list."
+        ),
+    )
+    remove: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tags to remove. Each must currently be present on the document "
+            "(else 400 tag_remove_conflict). Must not duplicate within the list."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "TagsPatch":
+        if not self.add and not self.remove:
+            raise ValueError(
+                "tags patch carries no actionable operation; supply non-empty 'add' and/or 'remove'"
+            )
+        if self.add is not None and len(self.add) != len(set(self.add)):
+            seen: set[str] = set()
+            dups = [t for t in self.add if t in seen or seen.add(t)]  # type: ignore[func-returns-value]
+            raise ValueError(f"tags.add contains duplicates: {sorted(set(dups))!r}")
+        if self.remove is not None and len(self.remove) != len(set(self.remove)):
+            seen2: set[str] = set()
+            dups2 = [t for t in self.remove if t in seen2 or seen2.add(t)]  # type: ignore[func-returns-value]
+            raise ValueError(f"tags.remove contains duplicates: {sorted(set(dups2))!r}")
+        if self.add and self.remove:
+            overlap = set(self.add) & set(self.remove)
+            if overlap:
+                raise ValueError(
+                    f"tags.add and tags.remove must be disjoint; overlap: {sorted(overlap)!r}"
+                )
+        return self
+
+
+class Tier3Patch(BaseModel):
+    """Patch operations on a document's tier3_metadata dict.
+
+    `set` keys overwrite existing values without error -- the verb is
+    literal (assert this post-state value). `unset` keys must currently
+    be present (strict-conflict at the service layer). `set` and `unset`
+    keys must be disjoint. The merged result is validated against the
+    resolved doc_type's metadata_schema after the patch is applied
+    in memory.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    set: dict | None = Field(
+        default=None,
+        description=(
+            "Keys to set on tier3_metadata. Overwrites existing keys. "
+            "Must be non-empty if supplied."
+        ),
+    )
+    unset: list[str] | None = Field(
+        default=None,
+        description=(
+            "Keys to remove from tier3_metadata. Each must currently be "
+            "present (else 400 tier3_unset_conflict). Must not duplicate."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate(self) -> "Tier3Patch":
+        if not self.set and not self.unset:
+            raise ValueError(
+                "tier3_metadata patch carries no actionable operation; "
+                "supply non-empty 'set' and/or 'unset'"
+            )
+        if self.unset is not None and len(self.unset) != len(set(self.unset)):
+            seen: set[str] = set()
+            dups = [k for k in self.unset if k in seen or seen.add(k)]  # type: ignore[func-returns-value]
+            raise ValueError(f"tier3_metadata.unset contains duplicates: {sorted(set(dups))!r}")
+        if self.set and self.unset:
+            overlap = set(self.set) & set(self.unset)
+            if overlap:
+                raise ValueError(
+                    f"tier3_metadata.set and unset must be disjoint; overlap: {sorted(overlap)!r}"
+                )
+        return self
 
 
 class UpdateMetadataRequest(BaseModel):
     """Partial update of mutable document metadata.
 
-    Only fields present in the request are modified.
+    Only fields present in the request are modified. Scalar fields use
+    set-or-omit semantics. ``tags`` and ``tier3_metadata`` take ops
+    objects (``TagsPatch`` / ``Tier3Patch``); the bare-list / bare-dict
+    forms are no longer accepted. See CAS-ADR-028 for the ingest-vs-update
+    shape asymmetry rationale.
     """
+
+    model_config = {"extra": "forbid"}
 
     title: str | None = Field(default=None, description="New title; omit to leave unchanged.")
     version_label: str | None = Field(
@@ -704,12 +800,12 @@ class UpdateMetadataRequest(BaseModel):
     project: str | None = Field(
         default=None, description="New project identifier; omit to leave unchanged."
     )
-    tags: Annotated[list[str] | None, BeforeValidator(_coerce_tags)] = Field(
+    tags: TagsPatch | None = Field(
         default=None,
         description=(
-            "Replacement tag list; omit to leave unchanged. Accepts a list "
-            "of strings or a comma-separated string (the latter is coerced "
-            "to a list)."
+            "Patch operations on the tag set: {add?: list[str], remove?: list[str]}. "
+            "At least one key required. Strict-conflict on add-present / "
+            "remove-absent. See TagsPatch."
         ),
     )
     doc_type: str | None = Field(
@@ -727,15 +823,14 @@ class UpdateMetadataRequest(BaseModel):
             "fallback-derived dates that misattributed across UTC midnight."
         ),
     )
-    tier3_metadata: dict | None = Field(
+    tier3_metadata: Tier3Patch | None = Field(
         default=None,
         description=(
-            "Per-doc_type typed metadata payload. Top-level replacement "
-            "semantics (no deep merge): when supplied, the stored "
-            "tier3_metadata dict is replaced wholesale. Validated against "
-            "the doc_type's metadata_schema declared in vault config; "
-            "400 tier3_schema_violation when invalid or when the doc_type "
-            "has no metadata_schema. Omit to leave stored tier3 untouched."
+            "Patch operations on tier3_metadata: {set?: dict, unset?: list[str]}. "
+            "At least one key required. `set` overwrites existing keys "
+            "(verb is literal); `unset` keys must currently be present "
+            "(else 400 tier3_unset_conflict). The merged result is validated "
+            "against the resolved doc_type's metadata_schema. See Tier3Patch."
         ),
     )
 
