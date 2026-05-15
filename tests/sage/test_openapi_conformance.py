@@ -288,7 +288,41 @@ def test_vault_stats_response_documents_lancedb_chunk_count(
 
 
 # ---------------------------------------------------------------------------
-# Test 5: Each spec covers only its declared URL-prefix domain
+# Test 5: Every public Pydantic field in sage.models.schemas has a description
+# ---------------------------------------------------------------------------
+
+
+def test_every_pydantic_field_has_description():
+    """Every BaseModel field in sage.models.schemas declares Field(description=...).
+
+    Source-of-truth check for the discipline established by T-0034: the
+    FastAPI-generated OpenAPI inherits its per-field documentation from
+    Pydantic Field descriptions, so an empty description here surfaces as
+    an empty description in the rendered /docs page. Walks the module
+    directly rather than the generated OpenAPI so failures attribute to a
+    specific model.field rather than a $ref-resolved schema path.
+    """
+    from pydantic import BaseModel
+
+    from sage.models import schemas as schemas_module
+
+    issues: list[str] = []
+    for name in dir(schemas_module):
+        if name.startswith("_"):
+            continue
+        obj = getattr(schemas_module, name)
+        if not (isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel):
+            continue
+        for field_name, field_info in obj.model_fields.items():
+            description = field_info.description
+            if not (isinstance(description, str) and description.strip()):
+                issues.append(f"{name}.{field_name}: missing Field(description=...)")
+
+    assert not issues, "Pydantic models missing field descriptions:\n  " + "\n  ".join(issues)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Each spec covers only its declared URL-prefix domain
 # ---------------------------------------------------------------------------
 
 

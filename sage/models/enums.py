@@ -1,9 +1,21 @@
-"""Enumerations derived from the SAGE Core API OpenAPI specification."""
+"""Enumerations derived from the SAGE Core API OpenAPI specification.
+
+`LifecycleStatus` and `LifecycleAction` are intentionally absent from this
+module: vaults define domain-specific extensions to the base sets
+(e.g., `filed` in PIM Health), so both surfaces are typed as `str` and
+validated against vault config at the API boundary rather than at the
+Python type system.
+"""
 
 from enum import StrEnum
 
 
 class SourceType(StrEnum):
+    """Source artifact format.
+
+    Determines which source adapter processes the file during ingestion.
+    """
+
     MARKDOWN = "markdown"
     DOCX = "docx"
     PDF = "pdf"
@@ -14,6 +26,21 @@ class SourceType(StrEnum):
 
 
 class EdgeType(StrEnum):
+    """Typed, directed relationship between documents.
+
+    See the SAGE Architecture Reference Section 4.6 for semantics and
+    traversal use cases. Each edge type has a `resolution_policy` declared
+    in the vault's `edge_type_registry` controlling how chain-scoped
+    resolution treats it during traversal (CAS-ADR-017).
+
+    `instantiated_from` models live-tracking derivation (e.g., a checklist
+    instantiated from a template that should propagate template updates).
+    `retracts` is a meta-edge pointing at an earlier edge instance that the
+    retracting chain now disclaims. `merged_from` is a meta-edge recording
+    that a successor chain absorbs predecessor chains, tombstoning their
+    downstream edges.
+    """
+
     SUPERSEDES = "supersedes"
     DERIVED_FROM = "derived_from"
     INSTANTIATED_FROM = "instantiated_from"
@@ -28,6 +55,30 @@ class EdgeType(StrEnum):
 
 
 class ResolutionPolicy(StrEnum):
+    """How the chain-scoped edge resolver treats an edge type during traversal (CAS-ADR-017).
+
+    `none`: the edge is a lineage fact, not a propagating relationship
+    (meta-edges: supersedes, retracts, merged_from).
+
+    `transitive_source`: the edge's source anchor must lie in the queried
+    document's supersedes lineage; target endpoint is frozen at derivation
+    (no target anchor; `target_valid_from_version` is null) (e.g.,
+    `derived_from`).
+
+    `transitive_target`: mirror of `transitive_source`. The edge's target
+    anchor must lie in the queried document's supersedes lineage; source
+    endpoint is frozen at derivation (no source anchor;
+    `source_valid_from_version` is null).
+
+    `transitive_both`: both source and target anchors must lie in their
+    respective chains' lineages relative to the query document (e.g.,
+    `covers`, `references`, `bundles_with`, `depends_on`,
+    `instantiated_from`).
+
+    `TBD`: policy not yet frozen. Any attempt to create or migrate an edge
+    with a TBD policy raises a write-time error.
+    """
+
     NONE = "none"
     TRANSITIVE_SOURCE = "transitive_source"
     TRANSITIVE_TARGET = "transitive_target"
@@ -36,6 +87,12 @@ class ResolutionPolicy(StrEnum):
 
 
 class PipelineStatus(StrEnum):
+    """Tracks progress of the three-stage ingestion pipeline.
+
+    `abstraction_skipped` indicates the vault has abstraction disabled or
+    the LLM was unavailable (graceful degradation per CAS-ADR-011).
+    """
+
     PROJECTION_COMPLETE = "projection_complete"
     INDEXING_IN_PROGRESS = "indexing_in_progress"
     INDEXING_COMPLETE = "indexing_complete"
@@ -46,11 +103,22 @@ class PipelineStatus(StrEnum):
 
 
 class UserType(StrEnum):
+    """Actor type for provenance and access control."""
+
     HUMAN = "human"
     AGENT = "agent"
 
 
 class RetrievalMode(StrEnum):
+    """Retrieval mode.
+
+    Semantic returns ranked approximate results via vector + optional BM25
+    fusion. Keyword returns BM25-only results. Catalog returns all documents
+    matching filter predicates via direct SQL query (no vector search, no
+    chunk content, supports pagination via offset). Deterministic returns
+    exact content by address.
+    """
+
     SEMANTIC = "semantic"
     KEYWORD = "keyword"
     DETERMINISTIC = "deterministic"
@@ -58,6 +126,8 @@ class RetrievalMode(StrEnum):
 
 
 class RetrievalScope(StrEnum):
+    """Controls which documents are eligible for retrieval, independent of mode."""
+
     ALL = "all"
     AUTHORITATIVE = "authoritative"
     SPECIFIC = "specific"
@@ -65,11 +135,25 @@ class RetrievalScope(StrEnum):
 
 
 class ResponseLevel(StrEnum):
+    """Controls the detail level of discover results.
+
+    `chunks` (default) includes `chunk_content`, `heading_path`, and
+    `matched_chunk_count` on each hit. `documents` suppresses
+    `chunk_content` but preserves `heading_path` (best-scoring chunk's
+    location, cheap "why this matched" context), `relevance_score`, and
+    `matched_chunk_count`. Applicable to semantic and keyword modes.
+    Catalog mode always returns document-level results regardless of this
+    value. Deterministic mode always returns chunk content regardless of
+    this value.
+    """
+
     CHUNKS = "chunks"
     DOCUMENTS = "documents"
 
 
 class CatalogSortBy(StrEnum):
+    """Sort key for catalog mode results. Ignored by other retrieval modes."""
+
     TITLE = "title"
     DOC_TYPE = "doc_type"
     DOCUMENT_DATE = "document_date"
@@ -77,11 +161,15 @@ class CatalogSortBy(StrEnum):
 
 
 class SortOrder(StrEnum):
+    """Sort direction for catalog mode results. Ignored by other modes."""
+
     ASC = "asc"
     DESC = "desc"
 
 
 class TraversalDirection(StrEnum):
+    """Edge traversal direction relative to the starting document."""
+
     OUTBOUND = "outbound"
     INBOUND = "inbound"
     BOTH = "both"
