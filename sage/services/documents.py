@@ -23,7 +23,7 @@ from sage.api.errors import (
     WritePathInvalidError,
 )
 from sage.config import VaultConfig
-from sage.models.schemas import Document, DocumentWithContent
+from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse
 from sage.storage.graph_store import GraphStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
@@ -103,7 +103,7 @@ class DocumentsService:
         self._store = graph_store
         self._config = config
 
-    async def open_document_locally(self, document_id: str) -> dict:
+    async def open_document_locally(self, document_id: str) -> OpenDocumentResponse:
         """Open the document's source file using the local OS file association.
 
         Local-only convenience: invokes the host OS opener
@@ -129,7 +129,7 @@ class DocumentsService:
         else:
             subprocess.Popen(["xdg-open", str(file_path)])  # noqa: S603,S607 -- hardcoded XDG opener fallback; file_path is registry-validated
 
-        return {"opened": True, "path": str(file_path)}
+        return OpenDocumentResponse(opened=True, path=str(file_path))
 
     async def get_document_with_content(
         self,

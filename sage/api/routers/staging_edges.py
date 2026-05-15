@@ -8,7 +8,13 @@ POST /sage_vaults/{vault_id}/staging-edges/{edge_id}/dismiss -- delete (BE-012)
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_staging_edges_service, get_vault_id
-from sage.models.schemas import EdgeIdStr, StagingEdge, VaultIdStr
+from sage.models.schemas import (
+    EdgeIdStr,
+    StagingEdge,
+    StagingEdgeConfirmResponse,
+    StagingEdgeDismissResponse,
+    VaultIdStr,
+)
 from sage.services.staging_edges import StagingEdgesService
 
 router = APIRouter(tags=["staging_edges"])
@@ -23,21 +29,21 @@ async def list_staging_edges(
     return await service.list_staging_edges()
 
 
-@router.post("/staging-edges/{edge_id}/confirm")
+@router.post("/staging-edges/{edge_id}/confirm", response_model=StagingEdgeConfirmResponse)
 async def confirm_staging_edge(
     edge_id: EdgeIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
-) -> dict:
+) -> StagingEdgeConfirmResponse:
     """Confirm a staging edge: move it to the production edge table."""
     return await service.confirm_staging_edge(edge_id)
 
 
-@router.post("/staging-edges/{edge_id}/dismiss")
+@router.post("/staging-edges/{edge_id}/dismiss", response_model=StagingEdgeDismissResponse)
 async def dismiss_staging_edge(
     edge_id: EdgeIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
-) -> dict:
+) -> StagingEdgeDismissResponse:
     """Dismiss a staging edge: delete it without creating a production edge."""
     return await service.dismiss_staging_edge(edge_id)

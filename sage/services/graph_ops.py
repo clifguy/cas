@@ -41,6 +41,7 @@ from sage.models.schemas import (
     TraversalNode,
     TraverseRequest,
     TraverseResponse,
+    UnlinkResponse,
 )
 from sage.storage.graph_store import GraphStore, LinkReadContext
 
@@ -455,13 +456,13 @@ class GraphOpsService:
     # Unlink (delete production edge)
     # ------------------------------------------------------------------
 
-    async def unlink(self, edge_id: str) -> dict:
+    async def unlink(self, edge_id: str) -> UnlinkResponse:
         """Delete a production edge by ID."""
         edge = await self._store.get_edge(edge_id)
         if edge is None:
             raise EdgeNotFoundError(edge_id)
         await self._store.delete_edge(edge_id)
-        return {"deleted": True, "edge_id": edge_id}
+        return UnlinkResponse(deleted=True, edge_id=edge_id)
 
     # ------------------------------------------------------------------
     # Check preconditions (BH-023, BH-033 through BH-036)

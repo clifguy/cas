@@ -20,6 +20,7 @@ from sage.models.schemas import (
     HashCheckMatch,
     HashCheckRequest,
     UpdateVaultConfigRequest,
+    UpdateVaultConfigResponse,
     VaultIdStr,
     VaultStatsResponse,
     VaultSummary,
@@ -72,13 +73,13 @@ async def get_vault_config(
     return service.get_config()
 
 
-@router.put("/sage_vaults/{vault_id}/config")
+@router.put("/sage_vaults/{vault_id}/config", response_model=UpdateVaultConfigResponse)
 async def update_vault_config(
     body: UpdateVaultConfigRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     force: bool = False,
     service: VaultConfigService = Depends(get_vault_config_service),
-) -> dict:
+) -> UpdateVaultConfigResponse:
     """Update vault configuration at the section level.
 
     Each provided top-level section replaces the current section wholesale;

@@ -29,6 +29,7 @@ from sage.models.schemas import (
     HashCheckRequest,
     HealthIndicators,
     UpdateVaultConfigRequest,
+    UpdateVaultConfigResponse,
     VaultStatsResponse,
 )
 from sage.storage.graph_store import GraphStore
@@ -132,7 +133,7 @@ class VaultConfigService:
         vault_id: str,
         body: UpdateVaultConfigRequest,
         force: bool,
-    ) -> dict:
+    ) -> UpdateVaultConfigResponse:
         """Update vault configuration at the section level.
 
         Each provided top-level section replaces the current section
@@ -173,8 +174,8 @@ class VaultConfigService:
 
         await self._registry_service.reload(vault_id, new_config)
 
-        return {
-            "status": "updated",
-            "vault_id": vault_id,
-            "warnings": warnings,
-        }
+        return UpdateVaultConfigResponse(
+            status="updated",
+            vault_id=vault_id,
+            warnings=warnings,
+        )

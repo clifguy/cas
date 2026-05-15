@@ -11,18 +11,23 @@ mutually-exclusive content-delivery modes:
 from fastapi import APIRouter, Depends, Query
 
 from sage.api.dependencies import get_documents_service, get_vault_id
-from sage.models.schemas import DocumentIdStr, DocumentWithContent, VaultIdStr
+from sage.models.schemas import (
+    DocumentIdStr,
+    DocumentWithContent,
+    OpenDocumentResponse,
+    VaultIdStr,
+)
 from sage.services.documents import DocumentsService
 
 router = APIRouter(tags=["Document Metadata"])
 
 
-@router.post("/documents/{document_id}/open")
+@router.post("/documents/{document_id}/open", response_model=OpenDocumentResponse)
 async def open_document(
     document_id: DocumentIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: DocumentsService = Depends(get_documents_service),
-) -> dict:
+) -> OpenDocumentResponse:
     return await service.open_document_locally(document_id)
 
 

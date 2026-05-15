@@ -13,6 +13,7 @@ from sage.models.schemas import (
     PreconditionResult,
     TraverseRequest,
     TraverseResponse,
+    UnlinkResponse,
     VaultIdStr,
 )
 from sage.services.graph_ops import GraphOpsService
@@ -29,12 +30,12 @@ async def link(
     return await service.link(request)
 
 
-@router.delete("/edges/{edge_id}")
+@router.delete("/edges/{edge_id}", response_model=UnlinkResponse)
 async def unlink(
     edge_id: EdgeIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
-) -> dict:
+) -> UnlinkResponse:
     return await service.unlink(edge_id)
 
 

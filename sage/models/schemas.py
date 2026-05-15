@@ -745,6 +745,25 @@ class RegisterUserRequest(BaseModel):
     type: UserType = Field(description="Actor type for provenance and access control.")
 
 
+class SetEditorsRequest(BaseModel):
+    """Replace the editor list on a document."""
+
+    user_ids: list[UserIdStr] = Field(
+        description=("User IDs to set as editors. An empty array restores default-open access.")
+    )
+
+
+class EditorList(BaseModel):
+    """Editor membership for a document."""
+
+    document_id: DocumentIdStr = Field(
+        description="Id of the document whose editor list is being reported."
+    )
+    editors: list[User] = Field(
+        description="Current editors. Empty array means default-open access."
+    )
+
+
 class IngestResponse(BaseModel):
     """Returned by `POST /sage_vaults/{vault_id}/documents`.
 
@@ -762,6 +781,15 @@ class IngestResponse(BaseModel):
     pipeline_status: PipelineStatus = Field(
         description="Terminal pipeline status reached during the synchronous ingest."
     )
+
+
+class OpenDocumentResponse(BaseModel):
+    """Returned after dispatching a document's source file to the OS opener."""
+
+    opened: Literal[True] = Field(
+        description="Discriminator confirming the OS opener was dispatched; always true."
+    )
+    path: str = Field(description="Absolute filesystem path that was dispatched to the OS opener.")
 
 
 class LinkRequest(BaseModel):
@@ -819,6 +847,15 @@ class LinkRequest(BaseModel):
         default=None,
         description="Decision rationale for creating this relationship.",
     )
+
+
+class UnlinkResponse(BaseModel):
+    """Returned after deleting a production edge."""
+
+    deleted: Literal[True] = Field(
+        description="Discriminator confirming the unlink succeeded; always true."
+    )
+    edge_id: EdgeIdStr = Field(description="Id of the edge that was deleted.")
 
 
 class ResolutionPathEntry(BaseModel):
@@ -1479,6 +1516,21 @@ class CreateVaultRequest(BaseModel):
     )
 
 
+class UpdateVaultConfigResponse(BaseModel):
+    """Returned after a successful vault config update."""
+
+    status: Literal["updated"] = Field(
+        description="Discriminator confirming the vault config was updated; always 'updated'."
+    )
+    vault_id: VaultIdStr = Field(description="Id of the vault whose config was updated.")
+    warnings: list[str] = Field(
+        description=(
+            "Destructive-change warnings (only populated when force=true was "
+            "used to override 409 rejection)."
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Staging edges (BE-010 through BE-013)
 # ---------------------------------------------------------------------------
@@ -1501,6 +1553,29 @@ class StagingEdge(BaseModel):
         description="Inference tier (Tier 2 = staged for review).",
     )
     created_at: datetime = Field(description="Staging timestamp.")
+
+
+class StagingEdgeConfirmResponse(BaseModel):
+    """Returned after promoting a staging edge to a production edge."""
+
+    confirmed: Literal[True] = Field(
+        description="Discriminator confirming the staging edge was promoted; always true."
+    )
+    staging_edge_id: EdgeIdStr = Field(
+        description="Id of the staging edge that was promoted (now deleted)."
+    )
+    production_edge_id: EdgeIdStr = Field(description="Id of the production edge created.")
+
+
+class StagingEdgeDismissResponse(BaseModel):
+    """Returned after dismissing a staging edge."""
+
+    dismissed: Literal[True] = Field(
+        description="Discriminator confirming the staging edge was dismissed; always true."
+    )
+    staging_edge_id: EdgeIdStr = Field(
+        description="Id of the staging edge that was dismissed (now deleted)."
+    )
 
 
 # ---------------------------------------------------------------------------

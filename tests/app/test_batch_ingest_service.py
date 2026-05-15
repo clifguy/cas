@@ -27,7 +27,7 @@ from app.backend.ingest_service import (
     ParsedMetadataInput,
 )
 from sage.models.enums import EdgeType, SourceType
-from sage.models.schemas import Document, IngestRequest
+from sage.models.schemas import Document, IngestRequest, UnlinkResponse
 from sage.services.ingestion import IngestResult
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -871,11 +871,11 @@ class _MockGraphState:
         )
         return {"edge_id": edge_id}
 
-    async def unlink(self, edge_id: str) -> dict:
+    async def unlink(self, edge_id: str) -> UnlinkResponse:
         self.removed_edge_ids.append(edge_id)
         if edge_id in self.edges:
             del self.edges[edge_id]
-        return {"deleted": True, "edge_id": edge_id}
+        return UnlinkResponse(deleted=True, edge_id=edge_id)
 
 
 def _make_chain_services(

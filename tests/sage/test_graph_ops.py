@@ -869,7 +869,8 @@ async def test_unlink_deletes_existing_edge(graph_store, graph_ops_service):
     )
 
     result = await graph_ops_service.unlink(edge.id)
-    assert result == {"deleted": True, "edge_id": edge.id}
+    assert result.deleted is True
+    assert result.edge_id == edge.id
 
     # Edge no longer exists in the store
     edges = await graph_store.get_edges_by_source(_id("doc_a"))

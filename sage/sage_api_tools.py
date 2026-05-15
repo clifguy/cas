@@ -1193,7 +1193,9 @@ def register_sage_tools(
                 if section_name not in valid_sections:
                     raise VaultConfigValidationError([f"Unknown config section: {section_name}"])
             body = UpdateVaultConfigRequest(**sections)
-            return await services.vault_config_service.update_config(vault_id, body, force)
+            return serialize(
+                await services.vault_config_service.update_config(vault_id, body, force)
+            )
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

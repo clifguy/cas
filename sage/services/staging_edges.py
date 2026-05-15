@@ -12,7 +12,12 @@ import uuid
 from datetime import datetime, timezone
 
 from sage.api.errors import StagingEdgeNotFoundError
-from sage.models.schemas import Edge, StagingEdge
+from sage.models.schemas import (
+    Edge,
+    StagingEdge,
+    StagingEdgeConfirmResponse,
+    StagingEdgeDismissResponse,
+)
 from sage.storage.graph_store import GraphStore
 
 
@@ -24,7 +29,7 @@ class StagingEdgesService:
         """Return all Tier 2 suggested edges awaiting review."""
         return await self._store.list_staging_edges()
 
-    async def confirm_staging_edge(self, edge_id: str) -> dict:
+    async def confirm_staging_edge(self, edge_id: str) -> StagingEdgeConfirmResponse:
         """Promote a staging edge to the production edge table.
 
         Mints a new production-edge UUID, copies source/target/edge_type
@@ -46,16 +51,16 @@ class StagingEdgesService:
         await self._store.insert_edge(production)
         await self._store.delete_staging_edge(edge_id)
 
-        return {
-            "confirmed": True,
-            "staging_edge_id": edge_id,
-            "production_edge_id": production.id,
-        }
+        return StagingEdgeConfirmResponse(
+            confirmed=True,
+            staging_edge_id=edge_id,
+            production_edge_id=production.id,
+        )
 
-    async def dismiss_staging_edge(self, edge_id: str) -> dict:
+    async def dismiss_staging_edge(self, edge_id: str) -> StagingEdgeDismissResponse:
         """Delete a staging edge without creating a production edge."""
         staging = await self._store.get_staging_edge(edge_id)
         if staging is None:
             raise StagingEdgeNotFoundError(edge_id)
         await self._store.delete_staging_edge(edge_id)
-        return {"dismissed": True, "staging_edge_id": edge_id}
+        return StagingEdgeDismissResponse(dismissed=True, staging_edge_id=edge_id)

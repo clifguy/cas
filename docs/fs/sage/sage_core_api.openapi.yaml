@@ -3106,6 +3106,7 @@ components:
       properties:
         document_id:
           type: string
+          description: Id of the document whose editor list is being reported.
         editors:
           type: array
           items:
@@ -3377,8 +3378,10 @@ components:
         status:
           type: string
           enum: [updated]
+          description: Discriminator confirming the vault config was updated; always 'updated'.
         vault_id:
           type: string
+          description: Id of the vault whose config was updated.
         warnings:
           type: array
           items:
@@ -3449,6 +3452,7 @@ components:
         confirmed:
           type: boolean
           enum: [true]
+          description: Discriminator confirming the staging edge was promoted; always true.
         staging_edge_id:
           type: string
           description: Id of the staging edge that was promoted (now deleted).
@@ -3463,8 +3467,10 @@ components:
         dismissed:
           type: boolean
           enum: [true]
+          description: Discriminator confirming the staging edge was dismissed; always true.
         staging_edge_id:
           type: string
+          description: Id of the staging edge that was dismissed (now deleted).
 
     # -------------------------------------------------------------------------
     # Pending Metadata
@@ -3556,6 +3562,7 @@ components:
         opened:
           type: boolean
           enum: [true]
+          description: Discriminator confirming the OS opener was dispatched; always true.
         path:
           type: string
           description: Absolute filesystem path that was dispatched to the OS opener.
@@ -3571,8 +3578,10 @@ components:
         deleted:
           type: boolean
           enum: [true]
+          description: Discriminator confirming the unlink succeeded; always true.
         edge_id:
           type: string
+          description: Id of the edge that was deleted.
 
     # -------------------------------------------------------------------------
     # Error Response
