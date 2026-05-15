@@ -154,7 +154,9 @@ class VaultRegistryService:
 
         _write_config_yaml(config_path, body.config)
 
-        services = await self._initialize_services(config, registry_service=self)
+        services = await self._initialize_services(
+            config, config_path=config_path, registry_service=self
+        )
         self._registry[vault_id] = services
 
         await services.user_service.bootstrap_owner()

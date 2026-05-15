@@ -206,6 +206,22 @@ class TestSageCreateVault:
         # No vault directory created
         assert not (vaults_root / "bad").exists()
 
+    async def test_create_vault_populates_config_path_on_services(
+        self, vaults_root, empty_registry
+    ):
+        """T-0052/F10 regression — sage_create_vault must populate
+        ``SAGEServices.config_path`` so a subsequent ``sage_reload_vault`` after
+        an on-disk YAML edit re-reads from disk instead of silently no-op'ing
+        on the in-memory ``VaultConfig``.
+        """
+        cfg = _make_full_config_dict(vaults_root, "cp_vault", "CP Vault", "testuser")
+        result = await sage_create_vault(config=cfg)
+        assert "vault_id" in result, f"setup failed: {result}"
+
+        services = _mcp._vaults["cp_vault"]
+        expected_path = vaults_root / "cp_vault" / "vault_config.yaml"
+        assert services.config_path == expected_path
+
 
 # ---------------------------------------------------------------------------
 # 2. sage_get_vault_config

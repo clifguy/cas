@@ -170,14 +170,24 @@ def _ensure_registry_service(app: FastAPI) -> VaultRegistryService:
     return app.state.vault_registry_service
 
 
-async def _initialize_vault(app: FastAPI, config: VaultConfig, **overrides) -> None:
+async def _initialize_vault(
+    app: FastAPI,
+    config: VaultConfig,
+    config_path: Path | None = None,
+    **overrides,
+) -> None:
     """Initialize services for one vault and add to the registry.
 
     Schema migrations are no longer applied here. Run ``python -m sage.migrate``
     out of band before starting the server when a vault's schema has advanced.
     """
     registry_service = _ensure_registry_service(app)
-    services = await initialize_services(config, registry_service=registry_service, **overrides)
+    services = await initialize_services(
+        config,
+        config_path=config_path,
+        registry_service=registry_service,
+        **overrides,
+    )
     app.state.vault_registry[config.vault.id] = services
 
 
@@ -247,7 +257,7 @@ def create_app(
             for cp in discover_vault_configs(vault_root):
                 try:
                     vc = load_vault_config(cp)
-                    await _initialize_vault(app, vc)
+                    await _initialize_vault(app, vc, config_path=cp)
                 except Exception as exc:
                     logger.error("Skipping vault at %s: failed to load (%s)", cp, exc)
         elif configs is not None:

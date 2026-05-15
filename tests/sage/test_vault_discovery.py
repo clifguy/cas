@@ -259,6 +259,54 @@ async def test_create_app_with_in_memory_config_still_works(minimal_config, monk
         assert minimal_config.vault.id in app.state.vault_registry
 
 
+async def test_lifespan_forwards_config_path_to_initialize_services(
+    vault_root, minimal_vault_config_dict, monkeypatch
+):
+    """#14: T-0052/F10 regression — the vault_root= lifespan branch must forward
+    each discovered config path to ``_initialize_vault`` so it lands on
+    ``SAGEServices.config_path``. Without it, ``sage_reload_vault`` falls into
+    the in-memory-config branch and silently no-ops on on-disk YAML edits.
+    """
+    cp_a = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
+    cp_b = _materialize_vault(vault_root, "vault_b", minimal_vault_config_dict)
+
+    captured: dict[str, dict] = {}
+
+    async def recording_init(app: FastAPI, config, **kwargs) -> None:
+        captured[config.vault.id] = kwargs
+        app.state.vault_registry[config.vault.id] = _FakeServices(config.vault.id)
+
+    monkeypatch.setattr("sage.app._initialize_vault", recording_init)
+
+    app = create_app(vault_root=vault_root)
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert captured["vault_a"].get("config_path") == cp_a
+    assert captured["vault_b"].get("config_path") == cp_b
+
+
+async def test_lifespan_in_memory_config_branches_omit_config_path(minimal_config, monkeypatch):
+    """#15: The pre-loaded ``config=`` and ``configs=`` branches intentionally
+    have no on-disk config path to forward — confirm they continue to call
+    ``_initialize_vault`` without a ``config_path`` kwarg, so a future refactor
+    that conflates the branches would surface here.
+    """
+    captured: dict[str, dict] = {}
+
+    async def recording_init(app: FastAPI, config, **kwargs) -> None:
+        captured[config.vault.id] = kwargs
+        app.state.vault_registry[config.vault.id] = _FakeServices(config.vault.id)
+
+    monkeypatch.setattr("sage.app._initialize_vault", recording_init)
+
+    app = create_app(config=minimal_config)
+    async with app.router.lifespan_context(app):
+        pass
+
+    assert "config_path" not in captured[minimal_config.vault.id]
+
+
 async def test_create_app_with_in_memory_configs_list_still_works(
     minimal_vault_config_dict, monkeypatch, tmp_path
 ):
