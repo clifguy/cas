@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -57,12 +58,19 @@ class SAGEServices:
     staging_edges_service: StagingEdgesService
     vault_config_service: VaultConfigService
     config_path: Path | None = None
+    # Test-only hook: when set, reload paths (sage_reload_vault,
+    # reload_vault_in_registry) re-invoke this factory with the vault's
+    # brain_root instead of constructing a LanceDBContentStore. Carried on
+    # the services tuple so the factory survives across reloads without
+    # adding module-level mutable state. None in production.
+    content_store_factory: Callable[[Path], ContentStore] | None = None
 
 
 async def initialize_services(
     config: VaultConfig,
     *,
     content_store: ContentStore | None = None,
+    content_store_factory: Callable[[Path], ContentStore] | None = None,
     embedding_provider: EmbeddingProvider | None = None,
     abstraction_provider: AbstractionProvider | None = None,
     migrate: bool = False,
@@ -74,6 +82,12 @@ async def initialize_services(
     Args:
         config: Loaded and validated vault configuration.
         content_store: Optional override (default: LanceDBContentStore).
+        content_store_factory: Optional callable invoked with the vault's
+            ``brain_root`` to build a ContentStore. Used by hermetic
+            lifespan tests to substitute ``StubContentStore`` without
+            mutating module state. Ignored if ``content_store`` is also
+            passed; stored on the returned ``SAGEServices`` so reload
+            paths reuse the same factory.
         embedding_provider: Optional override (default: NomicEmbeddingProvider).
         abstraction_provider: Optional override (default: from config).
         migrate: If True, apply any pending schema migrations to the graph
@@ -98,9 +112,12 @@ async def initialize_services(
 
     lock_manager = DocumentLockManager()
 
-    # Content store: injected or production LanceDB
+    # Content store: explicit instance > factory > production LanceDB.
     if content_store is None:
-        content_store = LanceDBContentStore(brain_root, migrate=migrate)
+        if content_store_factory is not None:
+            content_store = content_store_factory(brain_root)
+        else:
+            content_store = LanceDBContentStore(brain_root, migrate=migrate)
 
     # Embedding provider: injected or production Nomic. CI sets
     # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
@@ -192,6 +209,7 @@ async def initialize_services(
         staging_edges_service=staging_edges_service,
         vault_config_service=vault_config_service,
         config_path=config_path,
+        content_store_factory=content_store_factory,
     )
 
 
@@ -205,15 +223,22 @@ async def reload_vault_in_registry(
     """Close old services for a vault and reinitialize from a new config.
 
     Used by the PUT config endpoint after writing updated YAML.
-    Parallels the MCP server's sage_reload_vault tool.
+    Parallels the MCP server's sage_reload_vault tool. Carries any
+    ``content_store_factory`` from the predecessor services forward so
+    hermetic-lifespan-test setups survive reload.
     """
     old = registry.get(vault_id)
+    content_store_factory = None
     if old:
         await old.graph_store.close()
         if config_path is None:
             config_path = old.config_path
+        content_store_factory = old.content_store_factory
     new_services = await initialize_services(
-        config, config_path=config_path, registry_service=registry_service
+        config,
+        config_path=config_path,
+        registry_service=registry_service,
+        content_store_factory=content_store_factory,
     )
     registry[vault_id] = new_services
     return new_services

@@ -186,8 +186,13 @@ async def sage_reload_vault(vault_id: str) -> dict:
     await old_services.graph_store.close()
 
     # Reinitialize, preserving the config_path so a subsequent reload can
-    # also re-read from disk.
-    new_services = await initialize_services(config, config_path=config_path)
+    # also re-read from disk, and the content_store_factory so hermetic
+    # lifespan tests keep their stub ContentStore across reload.
+    new_services = await initialize_services(
+        config,
+        config_path=config_path,
+        content_store_factory=old_services.content_store_factory,
+    )
     _vaults[vault_id] = new_services
 
     # Return confirmation with basic stats

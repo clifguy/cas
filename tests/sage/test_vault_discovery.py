@@ -329,3 +329,64 @@ async def test_create_app_with_in_memory_configs_list_still_works(
     app = create_app(configs=[cfg1, cfg2])
     async with app.router.lifespan_context(app):
         assert set(app.state.vault_registry.keys()) == {"vault_one", "vault_two"}
+
+
+async def test_f10_reload_round_trips_on_disk_yaml_edit_through_lifespan(
+    vault_root, minimal_vault_config_dict, monkeypatch
+):
+    """#16: F10 invariant — the documented contract for ``sage_reload_vault``
+    is "after returning ``reloaded: true``, the caller's next read sees the
+    on-disk state." T-0052 wired ``config_path`` through the FastAPI lifespan
+    so the reload tool can re-read the YAML; T-0053 added the
+    ``content_store_factory`` hook so this test can drive that path end-to-end
+    without LanceDB / Nomic / Qwen3 initialization.
+
+    Flow: boot real lifespan with a stub content store; mutate
+    ``vault_config.yaml`` on disk; call ``sage_reload_vault``; call
+    ``sage_get_vault_config``; assert the on-disk edit is reflected.
+    """
+    from sage.adapters.stubs import StubContentStore
+    from sage.mcp_server import sage_get_vault_config, sage_reload_vault
+
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+
+    vault_id = "f10_vault"
+    config_path = _materialize_vault(vault_root, vault_id, minimal_vault_config_dict)
+
+    app = create_app(
+        vault_root=vault_root,
+        content_store_factory=lambda _brain_root: StubContentStore(),
+    )
+
+    async with app.router.lifespan_context(app):
+        # Sanity: lifespan booted via the factory, vault is registered.
+        services = app.state.vault_registry[vault_id]
+        assert isinstance(services.content_store, StubContentStore)
+        assert services.content_store_factory is not None
+        assert services.config_path == config_path
+
+        # Mutate vault_config.yaml on disk. ``vault.name`` is a free-form
+        # string field that VaultConfig.model_dump() round-trips verbatim,
+        # so it serves as the F10 sentinel.
+        sentinel_name = "F10 Reload Sentinel"
+        raw = yaml.safe_load(config_path.read_text())
+        raw["vault"]["name"] = sentinel_name
+        config_path.write_text(yaml.safe_dump(raw))
+
+        # Pre-reload guard: the in-memory config still shows the old value.
+        pre_reload = await sage_get_vault_config(vault_id)
+        assert pre_reload["vault"]["name"] != sentinel_name
+
+        # Reload from disk.
+        reload_result = await sage_reload_vault(vault_id)
+        assert reload_result.get("reloaded") is True, reload_result
+
+        # F10 invariant: the post-reload read reflects the on-disk edit.
+        post_reload = await sage_get_vault_config(vault_id)
+        assert post_reload["vault"]["name"] == sentinel_name
+
+        # Reload must preserve the factory so the rebuilt services still
+        # hold a stub content store, not a freshly-constructed LanceDB.
+        rebuilt = app.state.vault_registry[vault_id]
+        assert isinstance(rebuilt.content_store, StubContentStore)
+        assert rebuilt.content_store_factory is not None

@@ -7,6 +7,7 @@ correct services via the vault_id path parameter.
 """
 
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -16,6 +17,7 @@ from fastapi import FastAPI
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.backend.router import router as app_backend_router
+from sage.adapters.interfaces import ContentStore
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import (
     documents,
@@ -222,6 +224,8 @@ def create_app(
     vault_root: Path | None = None,
     config: VaultConfig | None = None,
     configs: list[VaultConfig] | None = None,
+    *,
+    content_store_factory: Callable[[Path], ContentStore] | None = None,
 ) -> FastAPI:
     """Create and configure the SAGE Core API application.
 
@@ -233,6 +237,15 @@ def create_app(
             logged and skipped; healthy vaults still load.
         config: Pre-loaded single VaultConfig (used in testing).
         configs: Pre-loaded VaultConfig list (used in testing).
+        content_store_factory: Test-only hook. When provided, the lifespan
+            invokes the callable with each vault's ``brain_root`` to build
+            that vault's ``ContentStore`` instead of constructing a
+            ``LanceDBContentStore``. Forwarded to ``initialize_services``
+            via ``_initialize_vault`` and persisted on ``SAGEServices`` so
+            ``sage_reload_vault`` reuses the same stub on disk-driven
+            reload. Sibling embedding and abstraction stubs are gated by
+            ``SAGE_TEST_STUB_PROVIDERS=1``; no factory parameters are
+            exposed for those.
 
     Exactly one of ``vault_root``, ``config``, or ``configs`` should be
     provided. None is also valid: the registry stays empty (BE-002).
@@ -253,18 +266,22 @@ def create_app(
         # VaultConfigService instances pick up the same singleton.
         _ensure_registry_service(app)
 
+        init_overrides: dict = {}
+        if content_store_factory is not None:
+            init_overrides["content_store_factory"] = content_store_factory
+
         if vault_root is not None:
             for cp in discover_vault_configs(vault_root):
                 try:
                     vc = load_vault_config(cp)
-                    await _initialize_vault(app, vc, config_path=cp)
+                    await _initialize_vault(app, vc, config_path=cp, **init_overrides)
                 except Exception as exc:
                     logger.error("Skipping vault at %s: failed to load (%s)", cp, exc)
         elif configs is not None:
             for vc in configs:
-                await _initialize_vault(app, vc)
+                await _initialize_vault(app, vc, **init_overrides)
         elif config is not None:
-            await _initialize_vault(app, config)
+            await _initialize_vault(app, config, **init_overrides)
         else:
             # No configs = empty vault registry (valid per BE-002)
             pass
