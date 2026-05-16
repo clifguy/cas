@@ -21,6 +21,7 @@ from app.backend.ingest_service import (
     ParsedMetadataInput,
 )
 from app.backend.models import (
+    ErrorResponse,
     IngestFileItem,
     IngestRequest,
     ScanRequest,
@@ -79,7 +80,20 @@ def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/scan", response_model=ScanResponse)
+@router.post(
+    "/scan",
+    response_model=ScanResponse,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": ("`invalid_directory`: `directory` does not exist or is not readable."),
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault with that id.",
+        },
+    },
+)
 async def scan_endpoint(body: ScanRequest, request: Request) -> ScanResponse:
     """Scan a directory and return files with status and parsed metadata."""
     services = _get_services(request, body.vault_id)
@@ -91,7 +105,21 @@ async def scan_endpoint(body: ScanRequest, request: Request) -> ScanResponse:
     return await scan_service.scan(body)
 
 
-@router.post("/ingest")
+@router.post(
+    "/ingest",
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`empty_file_list`: `files` was empty. Choose at least one file or skip the call."
+            ),
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault with that id.",
+        },
+    },
+)
 async def ingest_endpoint(body: IngestRequest, request: Request):
     """Batch ingest with two-phase edge inference, streamed via SSE."""
     if not body.files:
