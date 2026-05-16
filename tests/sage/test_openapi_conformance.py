@@ -474,6 +474,40 @@ def test_every_pydantic_field_has_description():
     assert not issues, "Pydantic models missing field descriptions:\n  " + "\n  ".join(issues)
 
 
+def test_every_cas_app_pydantic_field_has_description():
+    """Every BaseModel field in app.backend.{models,router} declares
+    Field(description=...).
+
+    Companion to test_every_pydantic_field_has_description (T-0034) and
+    test_every_sage_config_field_has_description (T-0057). Closes the
+    presence-test gap T-0058 identified: the CAS App surface was previously
+    gated only transitively through the YAML-parity check (T-0041), which
+    catches divergence but not absence. Walks both modules for symmetry
+    with the parity test's module set, even though router currently
+    defines no BaseModel classes -- guards against future router-defined
+    response models silently bypassing the gate.
+    """
+    from pydantic import BaseModel
+
+    from app.backend import models as app_models_module
+    from app.backend import router as app_router_module
+
+    issues: list[str] = []
+    for module in (app_models_module, app_router_module):
+        for name in dir(module):
+            if name.startswith("_"):
+                continue
+            obj = getattr(module, name)
+            if not (isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel):
+                continue
+            for field_name, field_info in obj.model_fields.items():
+                description = field_info.description
+                if not (isinstance(description, str) and description.strip()):
+                    issues.append(f"{name}.{field_name}: missing Field(description=...)")
+
+    assert not issues, "Pydantic models missing field descriptions:\n  " + "\n  ".join(issues)
+
+
 # ---------------------------------------------------------------------------
 # Test 5a: Every property in docs/fs/ OpenAPI YAML and JSON Schema files has a
 # description (T-0041)
