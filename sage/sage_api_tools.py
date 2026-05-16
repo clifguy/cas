@@ -1512,6 +1512,7 @@ def register_sage_tools(
         "sage_discover": sage_discover,
         "sage_export_projection": sage_export_projection,
         "sage_read_projection": sage_read_projection,
+        "sage_read_section": sage_read_section,
         "sage_refresh_views": sage_refresh_views,
         "sage_list_vaults": sage_list_vaults,
         "sage_create_vault": sage_create_vault,

@@ -1,0 +1,618 @@
+"""Architectural-conformance tests for the MCP tool surface.
+
+Gates the structural alignment between the MCP tool surface
+(``sage/sage_api_tools.py``, ``sage/app_tools.py``,
+``sage/mcp_server.py``) and the OpenAPI substrate (``docs/fs/sage/``,
+``docs/fs/cas_app_api.openapi.yaml``, ``docs/fs/root_harness/``).
+
+Mirrors ``test_router_conformance.py``: a small ``ToolSurface`` tuple
+declares each surface; per-element parametrized tests assert that the
+MCP surface and the OpenAPI surface agree on names, operation coverage,
+and per-argument shapes. An allowlist drains as drift is remediated.
+
+Conformance interpretation: schema-subset (per T-0059 planning
+session). Each MCP tool argument must match a parameter or
+requestBody field of its OpenAPI counterpart by name and compatible
+type. Tools may expose a strict subset of OpenAPI inputs. The MCP
+transport's JSON-string-as-carrier convention is encoded in the type
+table below: a Python ``str`` argument may stand in for an OpenAPI
+``object`` or ``array`` field (e.g. ``sage_discover(filters: str)``
+where the spec declares ``filters`` as an object). The tolerance is
+asymmetric and scoped: ``int`` cannot stand in for ``object``, etc.
+
+The check is bi-directional: every MCP tool must map to an OpenAPI
+operation (allowlisted in ``DIVERGENT_TOOLS`` otherwise), and every
+OpenAPI operation must have an MCP tool (allowlisted in
+``HTTP_ONLY_OPERATIONS`` otherwise). MCP-side argument gaps that
+predate the gate are pinned in ``KNOWN_ARG_DRIFT`` until reconciled.
+All three allowlists fail when stale.
+
+``sage_reload_vault`` is intentionally outside the gated registries
+because it is registered directly on the FastMCP instance in
+``mcp_server.py`` rather than via ``register_sage_tools``; it has no
+HTTP counterpart by design. The ROOT Harness Orchestration spec
+exists today but no MCP tools yet implement its operations
+(T-0015/T-0016); the entire spec is allowlisted at the operation
+level until those tools land.
+"""
+
+from __future__ import annotations
+
+import functools
+import inspect
+import types
+import typing
+from pathlib import Path
+from typing import Any, Callable, NamedTuple
+
+import pytest
+import yaml
+
+# ---------------------------------------------------------------------------
+# Paths to OpenAPI specs (reused from test_openapi_conformance.py)
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
+CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
+ROOT_HARNESS_SPEC_PATH = (
+    _REPO_ROOT / "docs" / "fs" / "root_harness" / "orchestration_api.openapi.yaml"
+)
+
+
+# ---------------------------------------------------------------------------
+# Tool-surface configuration
+# ---------------------------------------------------------------------------
+
+
+class ToolSurface(NamedTuple):
+    name: str
+    spec_path: Path
+    tool_registry_attr: str | None
+    tool_prefix: str
+    operation_prefix: str
+
+
+# Each surface pairs an OpenAPI spec with the module attribute on
+# ``sage.mcp_server`` that holds the registered MCP tool dict.
+# ``tool_registry_attr=None`` means "no MCP surface exists for this
+# spec yet"; the gate runs the operation-coverage direction only and
+# expects every operation to be listed in HTTP_ONLY_OPERATIONS until
+# the tools land. ``operation_prefix`` is the prefix the surface's
+# OpenAPI operationIds carry (empty for sage_core where operationIds
+# are unprefixed; ``app_`` for cas_app where operationIds carry the
+# same prefix as the tools).
+TOOL_SURFACES: tuple[ToolSurface, ...] = (
+    ToolSurface(
+        name="sage_core",
+        spec_path=SAGE_CORE_SPEC_PATH,
+        tool_registry_attr="_sage_tools",
+        tool_prefix="sage_",
+        operation_prefix="",
+    ),
+    ToolSurface(
+        name="cas_app",
+        spec_path=CAS_APP_SPEC_PATH,
+        tool_registry_attr="_app_tools",
+        tool_prefix="app_",
+        operation_prefix="app_",
+    ),
+    ToolSurface(
+        name="root_harness",
+        spec_path=ROOT_HARNESS_SPEC_PATH,
+        tool_registry_attr=None,
+        tool_prefix="root_",
+        operation_prefix="",
+    ),
+)
+
+_SURFACES_BY_NAME: dict[str, ToolSurface] = {s.name: s for s in TOOL_SURFACES}
+
+
+# ---------------------------------------------------------------------------
+# Allowlists
+# ---------------------------------------------------------------------------
+
+# (surface_name, tool_name) -> operation_id when the tool name does
+# not equal "<tool_prefix>" + operation_id. Drains as MCP tools and
+# operationIds are reconciled.
+OPERATION_RENAMES: dict[tuple[str, str], str] = {
+    ("sage_core", "sage_pending_metadata"): "list_pending_metadata",
+}
+
+# (surface_name, tool_name) -> justification for MCP tools that
+# legitimately have no HTTP counterpart.
+DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
+    (
+        "sage_core",
+        "sage_reabstract",
+    ): "Agent-only abstraction refresh; no HTTP route by design.",
+}
+
+# (surface_name, tool_name) -> set of MCP argument names that
+# legitimately do not appear in the OpenAPI operation. These are
+# first-pass drift findings to be reconciled in follow-up work
+# (T-0062). Each entry must be either remediated (by adding the
+# field to the spec or removing it from the tool) or replaced with
+# a justification for permanent divergence. The test fails on
+# stale entries (drift remediated but allowlist not pruned).
+KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
+    # sage_ingest.tier3_metadata: ingest tool accepts CAS-ADR-021
+    # tier-3 typed metadata at create time; IngestRequest schema in
+    # sage_core_api.openapi.yaml has not been updated to expose the
+    # field. Spec gap.
+    ("sage_core", "sage_ingest"): frozenset({"tier3_metadata"}),
+    # sage_chain.{limit, offset}: MCP tool paginates the chain
+    # traversal; ChainRequest schema does not declare these
+    # parameters. Either tool over-exposes (drop) or spec under-
+    # declares (add). Reconciliation deferred.
+    ("sage_core", "sage_chain"): frozenset({"limit", "offset"}),
+    # sage_discover.{include_abstracts, min_relevance}: MCP tool
+    # exposes semantic-search controls absent from DiscoverRequest.
+    # Reconciliation deferred.
+    ("sage_core", "sage_discover"): frozenset({"include_abstracts", "min_relevance"}),
+    # sage_create_vault.{vault_id, name, owner}: tool signature
+    # differs structurally from CreateVaultRequest; needs a wider
+    # alignment pass beyond this gate's scope.
+    ("sage_core", "sage_create_vault"): frozenset({"vault_id", "name", "owner"}),
+    # sage_update_vault_config.sections: tool accepts a sections-
+    # patch dict that UpdateVaultConfigRequest does not declare.
+    # Reconciliation deferred.
+    ("sage_core", "sage_update_vault_config"): frozenset({"sections"}),
+}
+
+
+# (surface_name, operation_id) -> justification for OpenAPI
+# operations that legitimately have no MCP tool. Drains as
+# operations are exposed via MCP.
+HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
+    ("sage_core", "eval_retrieval"): "HTTP-only retrieval evaluation harness.",
+    (
+        "sage_core",
+        "get_editors",
+    ): "Editor-model write control; forward-declared per SAGE Architecture Ref §4.3/§6.3.",
+    (
+        "sage_core",
+        "set_editors",
+    ): "Editor-model write control; forward-declared per SAGE Architecture Ref §4.3/§6.3.",
+    ("sage_core", "open_document"): "HTTP-only UI affordance.",
+    # ROOT Harness Orchestration API: no MCP surface yet. Each
+    # operation must drain individually once the orchestrator MCP
+    # tools land (T-0015/T-0016).
+    (
+        "root_harness",
+        "trigger_workflow",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "get_status",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "approve",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "list_pending",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "subscribe_events",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "register_agent",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "get_agent",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "get_agent_history",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+    (
+        "root_harness",
+        "get_pipeline_status",
+    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
+}
+
+
+# ---------------------------------------------------------------------------
+# Spec loading and helpers
+# ---------------------------------------------------------------------------
+
+
+@functools.lru_cache(maxsize=None)
+def _load_spec(path: Path) -> dict[str, Any]:
+    with path.open() as f:
+        return yaml.safe_load(f)
+
+
+def _resolve_ref(spec: dict[str, Any], ref: str) -> dict[str, Any]:
+    """Resolve a local ``#/components/...`` reference to its target node."""
+    assert ref.startswith("#/"), f"non-local $ref not supported: {ref}"
+    node: Any = spec
+    for part in ref[2:].split("/"):
+        node = node[part]
+    return node
+
+
+def _all_operation_ids(spec: dict[str, Any]) -> set[str]:
+    """Return every ``operationId`` declared in the spec's paths."""
+    ids: set[str] = set()
+    for path_item in spec.get("paths", {}).values():
+        for method, op in path_item.items():
+            if method.lower() in {"get", "post", "put", "patch", "delete"} and isinstance(op, dict):
+                op_id = op.get("operationId")
+                if op_id:
+                    ids.add(op_id)
+    return ids
+
+
+def _find_operation(spec: dict[str, Any], operation_id: str) -> dict[str, Any] | None:
+    """Return the operation node with the given operationId, or None."""
+    for path_item in spec.get("paths", {}).values():
+        for method, op in path_item.items():
+            if method.lower() in {"get", "post", "put", "patch", "delete"} and isinstance(op, dict):
+                if op.get("operationId") == operation_id:
+                    return op
+    return None
+
+
+def _operation_parameters(
+    spec: dict[str, Any], op: dict[str, Any]
+) -> dict[str, tuple[str | None, bool]]:
+    """Return ``{name: (openapi_type, required)}`` for an operation.
+
+    Combines path/query/header parameters and requestBody schema
+    properties. ``openapi_type`` is None if the parameter's schema
+    cannot be resolved to a single primitive type (e.g. oneOf without
+    a uniform ``type``); callers treat None as "type-compat check is
+    a no-op for this field, name-match still applies".
+    """
+    fields: dict[str, tuple[str | None, bool]] = {}
+
+    for param in op.get("parameters", []):
+        if "$ref" in param:
+            param = _resolve_ref(spec, param["$ref"])
+        name = param.get("name")
+        if not name:
+            continue
+        required = bool(param.get("required", False))
+        schema = param.get("schema", {})
+        fields[name] = (_schema_type(spec, schema), required)
+
+    body = op.get("requestBody")
+    if body:
+        if "$ref" in body:
+            body = _resolve_ref(spec, body["$ref"])
+        content = body.get("content", {})
+        json_content = content.get("application/json")
+        if json_content:
+            schema = json_content.get("schema", {})
+            if "$ref" in schema:
+                schema = _resolve_ref(spec, schema["$ref"])
+            required_fields = set(schema.get("required", []))
+            for prop_name, prop_schema in (schema.get("properties") or {}).items():
+                fields[prop_name] = (
+                    _schema_type(spec, prop_schema),
+                    prop_name in required_fields,
+                )
+
+    return fields
+
+
+def _schema_type(spec: dict[str, Any], schema: dict[str, Any]) -> str | None:
+    """Extract a single OpenAPI primitive type from a property schema.
+
+    Follows ``$ref`` once. Returns the ``type`` of the resolved node.
+    For schemas that combine types via ``oneOf``/``anyOf``/``allOf``
+    without a single ``type`` field, returns None (caller treats as
+    "skip type check").
+    """
+    if "$ref" in schema:
+        schema = _resolve_ref(spec, schema["$ref"])
+    return schema.get("type")
+
+
+# ---------------------------------------------------------------------------
+# Python -> OpenAPI type mapping
+# ---------------------------------------------------------------------------
+
+# Python concrete type -> set of OpenAPI types it may stand in for.
+# ``str`` is asymmetrically tolerant: complex JSON args are
+# transported as JSON-encoded strings over MCP, so a Python ``str``
+# parameter may match an OpenAPI ``object`` or ``array`` field.
+_TYPE_COMPAT: dict[type, frozenset[str]] = {
+    str: frozenset({"string", "object", "array"}),
+    int: frozenset({"integer"}),
+    float: frozenset({"number"}),
+    bool: frozenset({"boolean"}),
+    list: frozenset({"array"}),
+    dict: frozenset({"object"}),
+}
+
+
+def _python_types_and_optional(annotation: Any) -> tuple[frozenset[type], bool]:
+    """Return ``(concrete_types, is_optional)`` for a Python annotation.
+
+    Strips ``Optional[X]`` / ``X | None`` and reports whether ``None``
+    was present. Returns the empty set for annotations the test can't
+    reduce to a concrete type (e.g. unbound TypeVars); callers treat
+    an empty set as "skip type check, name-match still applies".
+    """
+    optional = False
+    origin = typing.get_origin(annotation)
+
+    if origin is typing.Union or origin is types.UnionType:
+        members = [m for m in typing.get_args(annotation) if m is not type(None)]
+        optional = type(None) in typing.get_args(annotation)
+        types_acc: set[type] = set()
+        for m in members:
+            sub_types, sub_optional = _python_types_and_optional(m)
+            types_acc |= sub_types
+            optional = optional or sub_optional
+        return frozenset(types_acc), optional
+
+    if origin is list:
+        return frozenset({list}), False
+    if origin is dict:
+        return frozenset({dict}), False
+    if annotation in _TYPE_COMPAT:
+        return frozenset({annotation}), False
+    return frozenset(), False
+
+
+def _types_compatible(py_types: frozenset[type], openapi_type: str | None) -> bool:
+    """Return whether any Python type in the set may stand in for the OpenAPI type."""
+    if openapi_type is None:
+        return True
+    if not py_types:
+        return True
+    for t in py_types:
+        if openapi_type in _TYPE_COMPAT.get(t, frozenset()):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# MCP registry access
+# ---------------------------------------------------------------------------
+
+
+def _surface_registry(surface: ToolSurface) -> dict[str, Callable[..., Any]]:
+    """Return the registered MCP tool dict for the surface, or empty."""
+    if surface.tool_registry_attr is None:
+        return {}
+    from sage import mcp_server
+
+    return getattr(mcp_server, surface.tool_registry_attr)
+
+
+def _resolve_expected_operation_id(surface: ToolSurface, tool_name: str) -> str:
+    """Map an MCP tool name to its expected operationId.
+
+    Strips the surface's ``tool_prefix`` and prepends its
+    ``operation_prefix``. For sage_core: ``sage_ingest`` -> ``ingest``.
+    For cas_app: ``app_scan_directory`` -> ``app_scan_directory`` (the
+    operation_prefix matches the tool_prefix).
+    """
+    override = OPERATION_RENAMES.get((surface.name, tool_name))
+    if override is not None:
+        return override
+    assert tool_name.startswith(surface.tool_prefix), (
+        f"Tool {tool_name!r} on surface {surface.name!r} does not start with "
+        f"the surface's prefix {surface.tool_prefix!r}."
+    )
+    stem = tool_name[len(surface.tool_prefix) :]
+    return f"{surface.operation_prefix}{stem}"
+
+
+def _resolve_expected_tool_name(surface: ToolSurface, operation_id: str) -> str:
+    """Map an OpenAPI operationId to its expected MCP tool name."""
+    for (surf, tool), op_id in OPERATION_RENAMES.items():
+        if surf == surface.name and op_id == operation_id:
+            return tool
+    assert operation_id.startswith(surface.operation_prefix), (
+        f"operationId {operation_id!r} on surface {surface.name!r} does not "
+        f"start with the surface's operation prefix "
+        f"{surface.operation_prefix!r}."
+    )
+    stem = operation_id[len(surface.operation_prefix) :]
+    return f"{surface.tool_prefix}{stem}"
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("surface_name", sorted(s.name for s in TOOL_SURFACES))
+def test_tool_registry_matches_surface_prefix(surface_name: str):
+    """Every registered tool's name must start with its surface's prefix."""
+    surface = _SURFACES_BY_NAME[surface_name]
+    registry = _surface_registry(surface)
+    offenders = [name for name in registry if not name.startswith(surface.tool_prefix)]
+    assert not offenders, (
+        f"Surface {surface_name!r} registry contains tool(s) {offenders!r} "
+        f"that do not start with prefix {surface.tool_prefix!r}. Either fix "
+        "the tool name or move it to the correct surface."
+    )
+
+
+def test_no_tool_appears_in_two_surfaces():
+    """A tool name must belong to exactly one surface registry."""
+    seen: dict[str, str] = {}
+    collisions: list[tuple[str, str, str]] = []
+    for surface in TOOL_SURFACES:
+        for tool_name in _surface_registry(surface):
+            if tool_name in seen:
+                collisions.append((tool_name, seen[tool_name], surface.name))
+            else:
+                seen[tool_name] = surface.name
+    assert not collisions, (
+        f"Tool name(s) appear in multiple surface registries: {collisions!r}. "
+        "Each tool must belong to exactly one surface."
+    )
+
+
+def _tool_id_pairs() -> list[tuple[str, str]]:
+    """``(surface_name, tool_name)`` pairs for every registered MCP tool."""
+    pairs: list[tuple[str, str]] = []
+    for surface in TOOL_SURFACES:
+        for tool_name in sorted(_surface_registry(surface)):
+            pairs.append((surface.name, tool_name))
+    return pairs
+
+
+@pytest.mark.parametrize(
+    ("surface_name", "tool_name"),
+    _tool_id_pairs(),
+    ids=[f"{s}-{t}" for s, t in _tool_id_pairs()],
+)
+def test_mcp_tool_has_openapi_counterpart(surface_name: str, tool_name: str):
+    """Each registered MCP tool maps to an OpenAPI operation or is allowlisted."""
+    surface = _SURFACES_BY_NAME[surface_name]
+    spec = _load_spec(surface.spec_path)
+    expected_op_id = _resolve_expected_operation_id(surface, tool_name)
+    op = _find_operation(spec, expected_op_id)
+    divergent = (surface_name, tool_name) in DIVERGENT_TOOLS
+
+    if op is None and divergent:
+        return  # allowlisted; legitimate divergence
+    if op is None and not divergent:
+        pytest.fail(
+            f"MCP tool {tool_name!r} on surface {surface_name!r} has no OpenAPI "
+            f"operation (expected operationId {expected_op_id!r}). Either add "
+            "the operation to the spec, file an OPERATION_RENAMES override, or "
+            "add (surface, tool) to DIVERGENT_TOOLS with a justification."
+        )
+    if op is not None and divergent:
+        pytest.fail(
+            f"MCP tool {tool_name!r} on surface {surface_name!r} is allowlisted "
+            f"in DIVERGENT_TOOLS but OpenAPI now has operationId "
+            f"{expected_op_id!r}. Remove the stale allowlist entry."
+        )
+
+
+def _operation_id_pairs() -> list[tuple[str, str]]:
+    """``(surface_name, operation_id)`` pairs for every operation in every spec."""
+    pairs: list[tuple[str, str]] = []
+    for surface in TOOL_SURFACES:
+        spec = _load_spec(surface.spec_path)
+        for op_id in sorted(_all_operation_ids(spec)):
+            pairs.append((surface.name, op_id))
+    return pairs
+
+
+@pytest.mark.parametrize(
+    ("surface_name", "operation_id"),
+    _operation_id_pairs(),
+    ids=[f"{s}-{o}" for s, o in _operation_id_pairs()],
+)
+def test_openapi_operation_has_mcp_tool(surface_name: str, operation_id: str):
+    """Each OpenAPI operation has an MCP tool or is allowlisted."""
+    surface = _SURFACES_BY_NAME[surface_name]
+    registry = _surface_registry(surface)
+    expected_tool = _resolve_expected_tool_name(surface, operation_id)
+    present = expected_tool in registry
+    http_only = (surface_name, operation_id) in HTTP_ONLY_OPERATIONS
+
+    if not present and http_only:
+        return  # allowlisted; legitimate HTTP-only operation
+    if not present and not http_only:
+        pytest.fail(
+            f"OpenAPI operationId {operation_id!r} on surface {surface_name!r} "
+            f"has no MCP tool (expected tool name {expected_tool!r}). Either "
+            "add the MCP tool, add an OPERATION_RENAMES override if the tool "
+            "exists under a different name, or add (surface, operation_id) to "
+            "HTTP_ONLY_OPERATIONS with a justification."
+        )
+    if present and http_only:
+        pytest.fail(
+            f"OpenAPI operationId {operation_id!r} on surface {surface_name!r} "
+            f"is allowlisted in HTTP_ONLY_OPERATIONS but MCP tool "
+            f"{expected_tool!r} is now registered. Remove the stale entry."
+        )
+
+
+def _mapped_tool_pairs() -> list[tuple[str, str]]:
+    """Tool pairs that resolve to an OpenAPI operation (excludes DIVERGENT_TOOLS)."""
+    pairs: list[tuple[str, str]] = []
+    for surface_name, tool_name in _tool_id_pairs():
+        if (surface_name, tool_name) in DIVERGENT_TOOLS:
+            continue
+        pairs.append((surface_name, tool_name))
+    return pairs
+
+
+@pytest.mark.parametrize(
+    ("surface_name", "tool_name"),
+    _mapped_tool_pairs(),
+    ids=[f"{s}-{t}" for s, t in _mapped_tool_pairs()],
+)
+def test_mcp_tool_args_conform_to_openapi(surface_name: str, tool_name: str):
+    """Schema-subset check: every MCP tool arg matches an OpenAPI param or field.
+
+    For each MCP tool argument: the name must appear in the union of
+    OpenAPI parameters and requestBody schema properties; the Python
+    type must be compatible with the OpenAPI type (subject to the
+    JSON-string-as-carrier tolerance for ``str``).
+    """
+    surface = _SURFACES_BY_NAME[surface_name]
+    spec = _load_spec(surface.spec_path)
+    registry = _surface_registry(surface)
+    op_id = _resolve_expected_operation_id(surface, tool_name)
+    op = _find_operation(spec, op_id)
+    assert op is not None, (
+        f"Internal: expected operation {op_id!r} to exist (covered by "
+        "test_mcp_tool_has_openapi_counterpart)."
+    )
+
+    tool_fn = registry[tool_name]
+    sig = inspect.signature(tool_fn)
+    openapi_fields = _operation_parameters(spec, op)
+    allowed = KNOWN_ARG_DRIFT.get((surface_name, tool_name), frozenset())
+
+    actual_missing: set[str] = set()
+    type_violations: list[str] = []
+
+    for param_name, param in sig.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            continue
+        if param_name not in openapi_fields:
+            actual_missing.add(param_name)
+            continue
+        openapi_type, _ = openapi_fields[param_name]
+        py_types, _ = _python_types_and_optional(param.annotation)
+        if not _types_compatible(py_types, openapi_type):
+            py_repr = sorted(t.__name__ for t in py_types) or [repr(param.annotation)]
+            type_violations.append(f"{param_name}: python={py_repr} openapi={openapi_type!r}")
+
+    new_drift = actual_missing - allowed
+    assert not new_drift, (
+        f"MCP tool {tool_name!r} (operationId {op_id!r}) exposes argument(s) "
+        f"{sorted(new_drift)!r} that do not appear in the OpenAPI operation's "
+        "parameters or requestBody schema. Either rename the MCP argument to "
+        "match the spec, add the field to the spec, or pin the new gap in "
+        "KNOWN_ARG_DRIFT with a remediation-ticket reference."
+    )
+
+    stale_allowlist = allowed - actual_missing
+    assert not stale_allowlist, (
+        f"MCP tool {tool_name!r} (operationId {op_id!r}) is allowlisted in "
+        f"KNOWN_ARG_DRIFT for argument(s) {sorted(stale_allowlist)!r} but no "
+        "longer exhibits the gap. Remove the stale entry (or delete the whole "
+        "key if it was the only one)."
+    )
+
+    assert not type_violations, (
+        f"MCP tool {tool_name!r} (operationId {op_id!r}) has argument(s) with "
+        f"types incompatible with the OpenAPI schema: {type_violations!r}. "
+        "Adjust either side so the types line up (consult the type-compat "
+        "table in the test module docstring)."
+    )
