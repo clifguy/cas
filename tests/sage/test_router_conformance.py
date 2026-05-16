@@ -1,14 +1,22 @@
-"""Architectural-conformance tests for SAGE FastAPI routers.
+"""Architectural-conformance tests for CAS FastAPI routers.
 
 Gates the canonical "service-as-load-bearer" router pattern documented in the
 AI-First SDLC Tooling Survey §5.7 and addresses failure modes F1 (API
 convention drift) and F5 (validation-bypass via missing dependency
 declaration).
 
-Discovery is static: the test enumerates every `*.py` file under
-`sage/api/routers/`, imports each module, and introspects `module.router`
-without constructing a FastAPI app. Allowlisted drifted routers are tracked
-in `KNOWN_VIOLATIONS`; the allowlist drains as each router is remediated.
+Discovery is static and parameterized over a small list of `RouterTree`
+records (T-0056). Each tree names a package or module to walk, the set of
+routers expected within it, and the dependencies module from which
+`get_*_service` factories are harvested. The SAGE tree walks
+``sage/api/routers/`` and recognizes the path-scoped ``Depends(get_vault_id)``
+pattern; the CAS App tree walks ``app/backend/router.py`` and additionally
+recognizes the body-scoped variant in which the request body carries
+``vault_id`` and the service factory resolves it.
+
+Allowlisted drifted routers are tracked in `KNOWN_VIOLATIONS` keyed by
+``(tree_name, router_name)``; the allowlist drains as each router is
+remediated.
 """
 
 from __future__ import annotations
@@ -16,59 +24,92 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
+import typing
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal, NamedTuple
 
 import pytest
 from fastapi.params import Depends as DependsParam
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
-from sage.api import dependencies as deps_module
-from sage.api import routers as routers_pkg
 from sage.api.dependencies import get_vault_id
 
 # ---------------------------------------------------------------------------
-# Mount table: must mirror sage/app.py:187-200
+# Router-tree configuration
+#
+# Each tree describes one route surface that is subject to the conformance
+# gate. SAGE walks the routers package as a whole; the CAS App backend ships
+# a single module. New surfaces (e.g. ROOT Harness once implemented) get a
+# new RouterTree record here; the rest of the file generalizes over the
+# `ROUTER_TREES` tuple.
 # ---------------------------------------------------------------------------
 
-VAULT_SCOPED_ROUTERS: frozenset[str] = frozenset(
-    {
-        "ingestion",
-        "documents",
-        "lifecycle",
-        "metadata",
-        "users",
-        "graph_ops",
-        "retrieval",
-        "utilities",
-        "staging_edges",
-        "pending_metadata",
-        "filename_parser",
-    }
+
+class RouterTree(NamedTuple):
+    name: str
+    discovery_kind: Literal["package", "module"]
+    discovery_target: str
+    vault_scoped_routers: frozenset[str]
+    cross_vault_routers: frozenset[str]
+    dependencies_module: str
+
+    @property
+    def all_routers(self) -> frozenset[str]:
+        return self.vault_scoped_routers | self.cross_vault_routers
+
+
+ROUTER_TREES: tuple[RouterTree, ...] = (
+    RouterTree(
+        name="sage",
+        discovery_kind="package",
+        discovery_target="sage.api.routers",
+        # Must mirror sage/app.py:187-200.
+        vault_scoped_routers=frozenset(
+            {
+                "ingestion",
+                "documents",
+                "lifecycle",
+                "metadata",
+                "users",
+                "graph_ops",
+                "retrieval",
+                "utilities",
+                "staging_edges",
+                "pending_metadata",
+                "filename_parser",
+            }
+        ),
+        cross_vault_routers=frozenset({"vaults"}),
+        dependencies_module="sage.api.dependencies",
+    ),
+    RouterTree(
+        name="cas_app",
+        discovery_kind="module",
+        discovery_target="app.backend.router",
+        # Single-module tree: the stem is the module filename ("router").
+        vault_scoped_routers=frozenset({"router"}),
+        cross_vault_routers=frozenset(),
+        dependencies_module="app.backend.dependencies",
+    ),
 )
 
-CROSS_VAULT_ROUTERS: frozenset[str] = frozenset({"vaults"})
+_TREES_BY_NAME: dict[str, RouterTree] = {t.name: t for t in ROUTER_TREES}
 
-ALL_KNOWN_ROUTERS: frozenset[str] = VAULT_SCOPED_ROUTERS | CROSS_VAULT_ROUTERS
 
 # ---------------------------------------------------------------------------
 # Allowlist of currently-drifted routers
 #
-# Each entry pins the exact set of violations a router exhibits. Adding a
-# violation outside this set fails the test (new drift). Reducing a router's
-# violation set without updating this dict also fails (stale allowlist after
-# a remediation).
-#
-# Cleanup ticket: each entry should reference its remediation ticket once
-# those tickets are filed. Ticket IDs are placeholders pending T-NNNN
-# allocation.
+# Each entry pins the exact set of violations a (tree_name, router_name) pair
+# exhibits. Adding a violation outside this set fails the test (new drift).
+# Reducing a router's violation set without updating this dict also fails
+# (stale allowlist after a remediation).
 # ---------------------------------------------------------------------------
 
 VIOLATION_VAULT_ID = "vault-id-dependency"
 VIOLATION_SERVICE_LOAD_BEARING = "service-as-load-bearer"
 
-KNOWN_VIOLATIONS: dict[str, frozenset[str]] = {}
+KNOWN_VIOLATIONS: dict[tuple[str, str], frozenset[str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -76,31 +117,37 @@ KNOWN_VIOLATIONS: dict[str, frozenset[str]] = {}
 # ---------------------------------------------------------------------------
 
 
-def _routers_dir() -> Path:
-    return Path(routers_pkg.__file__).parent
+def _discover_routers_in_tree(tree: RouterTree) -> dict[str, object]:
+    """Return ``{router_stem: APIRouter}`` for every router in this tree."""
+    if tree.discovery_kind == "package":
+        pkg = importlib.import_module(tree.discovery_target)
+        pkg_dir = Path(pkg.__file__).parent
+        out: dict[str, object] = {}
+        for _, name, ispkg in pkgutil.iter_modules([str(pkg_dir)]):
+            if ispkg:
+                continue
+            module = importlib.import_module(f"{tree.discovery_target}.{name}")
+            out[name] = module.router
+        return out
+    # discovery_kind == "module"
+    module = importlib.import_module(tree.discovery_target)
+    stem = tree.discovery_target.rsplit(".", 1)[-1]
+    return {stem: module.router}
 
 
-def _discover_router_module_names() -> set[str]:
-    """Return the stem of every router module file (excluding __init__)."""
-    return {name for _, name, ispkg in pkgutil.iter_modules([str(_routers_dir())]) if not ispkg}
-
-
-def _service_dependency_callables() -> set[Callable]:
-    """Set of `get_*_service` helpers from sage.api.dependencies.
+def _service_dependency_callables(tree: RouterTree) -> set[Callable]:
+    """Set of ``get_*_service`` helpers from this tree's dependencies module.
 
     These are the canonical "load-bearing" entry points. A router is
     service-as-load-bearer iff at least one route depends on at least one of
     these callables.
     """
+    deps_module = importlib.import_module(tree.dependencies_module)
     return {
         obj
         for name, obj in vars(deps_module).items()
         if name.startswith("get_") and name.endswith("_service") and callable(obj)
     }
-
-
-def _import_router(name: str):
-    return importlib.import_module(f"sage.api.routers.{name}")
 
 
 def _api_routes(router) -> list[APIRoute]:
@@ -118,15 +165,55 @@ def _depends_callables(route: APIRoute) -> list[Callable]:
     return out
 
 
-def _route_requires_vault_id(router_name: str, route: APIRoute) -> bool:
-    """Decide whether this route is mounted under /sage_vaults/{vault_id}.
+def _route_requires_vault_id(tree: RouterTree, router_name: str, route: APIRoute) -> bool:
+    """Decide whether this route resolves a vault.
 
-    For vault-scoped routers, every route is. For cross-vault routers
-    (vaults.py), only routes whose declared path contains {vault_id} are.
+    For vault-scoped routers, every route is in scope. For cross-vault
+    routers (currently only SAGE's ``vaults.py``), only routes whose declared
+    path contains ``{vault_id}`` are.
     """
-    if router_name in VAULT_SCOPED_ROUTERS:
+    if router_name in tree.vault_scoped_routers:
         return True
     return "{vault_id}" in route.path
+
+
+def _handler_uses_body_scoped_vault_id(route: APIRoute, service_callables: set[Callable]) -> bool:
+    """True iff some service-factory dependency binds a body with ``vault_id``.
+
+    The body-scoped vault_id pattern (CAS App, post-T-0049): the handler
+    declares ``body: SomeRequest`` plus ``service: SomeService =
+    Depends(get_xxx_service)``, and the service factory's own signature also
+    binds the request body and reads ``body.vault_id`` to resolve the vault.
+
+    The gate accepts this pattern as conformant on the vault-id dimension
+    iff at least one of the route's service-factory dependencies has a
+    parameter whose annotation is a ``BaseModel`` subclass declaring a
+    ``vault_id`` field. The field-presence check distinguishes "factory
+    resolves a vault via the body" from "factory happens to take a body for
+    some other reason".
+    """
+    for dep in _depends_callables(route):
+        if dep not in service_callables:
+            continue
+        # Resolve string annotations produced by ``from __future__ import
+        # annotations`` so that we can inspect the actual BaseModel classes.
+        # NameError is the realistic failure mode (an unresolved forward
+        # reference); any other exception propagates so structural surprises
+        # surface rather than silently mark the route non-conformant.
+        try:
+            hints = typing.get_type_hints(dep)
+        except NameError:
+            continue
+        for name, ann in hints.items():
+            if name == "return":
+                continue
+            if not inspect.isclass(ann):
+                continue
+            if not issubclass(ann, BaseModel):
+                continue
+            if "vault_id" in ann.model_fields:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -134,22 +221,27 @@ def _route_requires_vault_id(router_name: str, route: APIRoute) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _detect_violations(router_name: str) -> set[str]:
+def _detect_violations(tree: RouterTree, router_name: str) -> set[str]:
     """Return the set of violation tags this router exhibits."""
-    module = _import_router(router_name)
-    routes = _api_routes(module.router)
-    service_callables = _service_dependency_callables()
+    routers = _discover_routers_in_tree(tree)
+    routes = _api_routes(routers[router_name])
+    service_callables = _service_dependency_callables(tree)
 
     violations: set[str] = set()
 
-    # Vault-id check: every applicable route must declare Depends(get_vault_id).
+    # Vault-id check: every applicable route must declare vault resolution,
+    # either path-scoped (Depends(get_vault_id)) or body-scoped (a service
+    # factory dependency that itself binds a body model with a vault_id field).
     for route in routes:
-        if not _route_requires_vault_id(router_name, route):
+        if not _route_requires_vault_id(tree, router_name, route):
             continue
         deps = _depends_callables(route)
-        if get_vault_id not in deps:
-            violations.add(VIOLATION_VAULT_ID)
-            break
+        if get_vault_id in deps:
+            continue
+        if _handler_uses_body_scoped_vault_id(route, service_callables):
+            continue
+        violations.add(VIOLATION_VAULT_ID)
+        break
 
     # Service-as-load-bearer: at least one route must depend on a service.
     has_service_dep = False
@@ -164,8 +256,15 @@ def _detect_violations(router_name: str) -> set[str]:
     return violations
 
 
-def _allowed(router_name: str) -> frozenset[str]:
-    return KNOWN_VIOLATIONS.get(router_name, frozenset())
+def _allowed(tree_name: str, router_name: str) -> frozenset[str]:
+    return KNOWN_VIOLATIONS.get((tree_name, router_name), frozenset())
+
+
+def _all_router_pairs() -> list[tuple[str, str]]:
+    """Flatten ROUTER_TREES into ``(tree_name, router_name)`` test ids."""
+    return sorted(
+        (tree.name, router_name) for tree in ROUTER_TREES for router_name in tree.all_routers
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -173,59 +272,73 @@ def _allowed(router_name: str) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-def test_router_files_match_known_routers():
-    """Every router file is listed in the mount table; no surprises."""
-    discovered = _discover_router_module_names()
-    extra = discovered - ALL_KNOWN_ROUTERS
-    missing = ALL_KNOWN_ROUTERS - discovered
+@pytest.mark.parametrize("tree_name", sorted(t.name for t in ROUTER_TREES))
+def test_router_files_match_known_routers(tree_name: str):
+    """Every router in this tree is listed in its mount table; no surprises."""
+    tree = _TREES_BY_NAME[tree_name]
+    discovered = set(_discover_routers_in_tree(tree))
+    extra = discovered - tree.all_routers
+    missing = tree.all_routers - discovered
     assert not extra, (
-        f"Router file(s) {sorted(extra)} exist on disk but are not listed in "
-        "VAULT_SCOPED_ROUTERS or CROSS_VAULT_ROUTERS. Decide where each new "
-        "router mounts and update the table."
+        f"Router(s) {sorted(extra)} exist in tree {tree_name!r} but are not "
+        "listed in vault_scoped_routers or cross_vault_routers. Decide where "
+        "each new router mounts and update the RouterTree record."
     )
     assert not missing, (
-        f"Router(s) {sorted(missing)} are in the mount table but no module "
-        "file was found. Did the file get deleted or renamed?"
+        f"Router(s) {sorted(missing)} are in tree {tree_name!r}'s mount table "
+        "but no module was found. Did the file get deleted or renamed?"
     )
 
 
-@pytest.mark.parametrize("router_name", sorted(ALL_KNOWN_ROUTERS))
-def test_router_conformance(router_name: str):
+@pytest.mark.parametrize(
+    ("tree_name", "router_name"),
+    _all_router_pairs(),
+    ids=[f"{t}-{r}" for t, r in _all_router_pairs()],
+)
+def test_router_conformance(tree_name: str, router_name: str):
     """Per-router conformance: violations equal the allowlist exactly."""
-    actual = _detect_violations(router_name)
-    allowed = _allowed(router_name)
+    tree = _TREES_BY_NAME[tree_name]
+    actual = _detect_violations(tree, router_name)
+    allowed = _allowed(tree_name, router_name)
 
     new_drift = actual - allowed
     assert not new_drift, (
-        f"Router {router_name!r} introduced new violation(s) {sorted(new_drift)}. "
-        "Either fix the router to match the canonical pattern (preferred) or, "
-        "if this is a deliberate exception, add the violation tag(s) to "
-        "KNOWN_VIOLATIONS with a TODO referencing the remediation ticket."
+        f"Router {tree_name}/{router_name!r} introduced new violation(s) "
+        f"{sorted(new_drift)}. Either fix the router to match the canonical "
+        "pattern (preferred) or, if this is a deliberate exception, add the "
+        "violation tag(s) to KNOWN_VIOLATIONS with a TODO referencing the "
+        "remediation ticket."
     )
 
     stale_allowlist = allowed - actual
     assert not stale_allowlist, (
-        f"Router {router_name!r} is allowlisted for violation(s) "
+        f"Router {tree_name}/{router_name!r} is allowlisted for violation(s) "
         f"{sorted(stale_allowlist)} but no longer exhibits them. Remove the "
         "stale entry from KNOWN_VIOLATIONS (or delete the whole entry if it "
         "was the only one)."
     )
 
 
-@pytest.mark.parametrize("router_name", sorted(ALL_KNOWN_ROUTERS))
-def test_route_models_are_pydantic(router_name: str):
+@pytest.mark.parametrize(
+    ("tree_name", "router_name"),
+    _all_router_pairs(),
+    ids=[f"{t}-{r}" for t, r in _all_router_pairs()],
+)
+def test_route_models_are_pydantic(tree_name: str, router_name: str):
     """Request bodies and response_model declarations are BaseModel subclasses.
 
     This is a tripwire for future regressions; all current routers pass.
     """
-    module = _import_router(router_name)
-    for route in _api_routes(module.router):
+    tree = _TREES_BY_NAME[tree_name]
+    routers = _discover_routers_in_tree(tree)
+    for route in _api_routes(routers[router_name]):
         # response_model
         rm = route.response_model
         if rm is not None:
             assert _is_basemodel_or_collection_of(rm), (
-                f"{router_name}:{route.endpoint.__name__} response_model "
-                f"{rm!r} is not a Pydantic BaseModel (or list thereof)."
+                f"{tree_name}/{router_name}:{route.endpoint.__name__} "
+                f"response_model {rm!r} is not a Pydantic BaseModel (or list "
+                "thereof)."
             )
 
         # Request body parameters: detected by FastAPI as those whose
@@ -259,8 +372,9 @@ def _is_basemodel_or_collection_of(tp) -> bool:
 
 def test_known_violations_reference_real_routers():
     """Every key in KNOWN_VIOLATIONS is a real, mounted router."""
-    unknown = set(KNOWN_VIOLATIONS) - ALL_KNOWN_ROUTERS
+    real_pairs = set(_all_router_pairs())
+    unknown = set(KNOWN_VIOLATIONS) - real_pairs
     assert not unknown, (
-        f"KNOWN_VIOLATIONS references router(s) {sorted(unknown)} that are "
-        "not in the mount table. Did a router get renamed or removed?"
+        f"KNOWN_VIOLATIONS references pair(s) {sorted(unknown)} that are not "
+        "in any RouterTree's mount table. Did a router get renamed or removed?"
     )
