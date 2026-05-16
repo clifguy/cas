@@ -85,7 +85,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.1",
+      "version": "0.2",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -173,7 +173,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.17",
+  "substrate_version": "1.18",
   "revision_history": [
     {
       "version": "0.1",
@@ -269,6 +269,11 @@
       "version": "1.17",
       "date": "2026-05-15",
       "summary": "sage_update_metadata patch-mode redesign (CAS-ADR-028 revision). Three changes to sage_core_api.openapi.yaml: (1) UpdateMetadataRequest.tags switched from `array<string>` (wholesale replacement) to `$ref: TagsPatch` (ops object with `add` / `remove`). (2) UpdateMetadataRequest.tier3_metadata added (previously absent in OpenAPI despite being live in the Pydantic model and service layer; pre-existing schema/Pydantic drift closed as side effect), now `$ref: Tier3Patch` (ops object with `set` / `unset`). (3) New `TagsPatch` and `Tier3Patch` component schemas with strict-conflict semantics: adding a tag already present, removing a tag absent, or unsetting a tier3 key absent each return 400 (`tag_add_conflict` / `tag_remove_conflict` / `tier3_unset_conflict`); `tag_patch_overlap` / `tier3_patch_overlap` for disjoint-list violations; `patch_empty` for degenerate empty ops; `legacy_form` raised at the MCP boundary when callers pass the deprecated bare-list / bare-dict shapes, with a worked-example string in the error detail. Conflict errors carry `current_tags` / `current_tier3_keys` in detail (computed inside the document lock, free). `set` on an existing tier3 key overwrites without error (the verb is literal). The merged tier3 dict is validated against the resolved doc_type's metadata_schema after applying the patch in memory; an individually-valid patch that produces an invalid merged result returns 400 tier3_schema_violation. `sage_ingest` is unchanged: it still takes `tags` as a list and `tier3_metadata` as a dict (creation supplies complete state). The asymmetry mirrors REST POST vs PATCH idiom and eliminates the read-modify-write ceremony on single-field edits in the cas-ticket-management skill's Workflow 2 and any future skill touching Tier-3-bearing doc_types. Hard break: bare-list / bare-dict forms on `sage_update_metadata` are rejected (`legacy_form` 400); the skill, the CAS Ticket Conventions steering doc, the CAS Failure Record Conventions steering doc, and ADR-028 are revised in lockstep. Pydantic gains `TagsPatch` and `Tier3Patch` models with `model_config={'extra': 'forbid'}` and `model_validator(mode='after')` enforcing the disjoint/non-empty/non-duplicate invariants; `UpdateMetadataRequest` also gains `extra='forbid'` to catch field-name typos. Service layer (`MetadataService.update_metadata`) reads current state inside the existing document lock, applies the patch in memory, validates the merged tier3 against the doc_type's schema, then writes the final field values to the graph store (no storage-layer change; the JSON TEXT columns continue to accept final-value dicts). Coverage at tests/sage/test_request_validators.py (18 new tests on the Pydantic validators), tests/sage/test_tier3_metadata.py (8 rewrites + new patch happy-path / unset-conflict / post-merge / set-overwrite / unset-only coverage), and tests/sage/test_mcp_server.py (8 new tests covering tag-add / tag-remove / combined / conflict envelopes / legacy-form rejection)."
+    },
+    {
+      "version": "1.18",
+      "date": "2026-05-16",
+      "summary": "MCP-OpenAPI argument drift reconciliation (T-0062). Drains all five entries from the KNOWN_ARG_DRIFT allowlist in tests/sage/test_mcp_tool_conformance.py that the T-0059 conformance gate parked. Three additions to sage_core_api.openapi.yaml (spec direction; the Pydantic models and service layers already supported the fields, so this closes a substrate-as-source-of-truth lag rather than expanding behavior): (1) IngestRequest.tier3_metadata (bare-dict form, distinct from UpdateMetadataRequest's Tier3Patch ops-object per the CAS-ADR-028 ingest-vs-update asymmetry); (2) ChainRequest.limit + offset (caller-side pagination on chain walks); (3) DiscoverRequest.include_abstracts + min_relevance (retrieval controls in Pydantic since v1.6 / CAS-ADR-011). Two tool-direction changes to sage/sage_api_tools.py: (4) sage_update_vault_config drops the `sections: dict` wrapper kwarg in favor of the named section kwargs the spec already declares (vault, document_types, lifecycle, source_adapters, metadata_extraction, edge_inference, abstraction, access_control_defaults, retrieval_health); (5) sage_create_vault collapses to a single `config: dict` argument matching CreateVaultRequest exactly -- the convenience-mode kwargs (vault_id, name, owner) are removed and callers that want sensible defaults call VaultRegistryService.get_default_config() and pass the result through. CreateVaultRequest description is tightened to point at vault_config.schema.json as the validation authority. KNOWN_ARG_DRIFT is empty; tests/app/test_mcp_vault_management.py is updated to the new signatures. No service-layer changes."
     }
   ]
 }

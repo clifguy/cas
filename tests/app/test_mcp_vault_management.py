@@ -1,7 +1,7 @@
 """Tests for vault-management MCP tools (TEST-APP-MCP-030 through MCP-040).
 
-Covers the three new MCP tools:
-  - sage_create_vault (convenience + full-config modes)
+Covers the three vault-management MCP tools:
+  - sage_create_vault (single config-dict argument; see T-0062)
   - sage_get_vault_config
   - sage_update_vault_config (with destructive-change force-gate)
 
@@ -25,6 +25,7 @@ from sage.mcp_server import (
     sage_update_metadata,
     sage_update_vault_config,
 )
+from sage.services.vault_registry import VaultRegistryService
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -134,13 +135,11 @@ async def registered_vault(vaults_root, empty_registry, tmp_path):
 
 class TestSageCreateVault:
     # TEST-APP-MCP-030
-    async def test_mcp_030_convenience_mode_creates_vault_with_default_config(
-        self, vaults_root, empty_registry
-    ):
-        """Convenience mode: vault_id + name + owner produces default config."""
-        result = _parse(
-            await sage_create_vault(vault_id="new_vault", name="New Vault", owner="testuser")
-        )
+    async def test_mcp_030_default_config_creates_vault(self, vaults_root, empty_registry):
+        """``VaultRegistryService.get_default_config`` produces a config dict
+        that ``sage_create_vault`` accepts without further hand-tuning."""
+        default_cfg = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")
+        result = _parse(await sage_create_vault(config=default_cfg))
 
         assert result["vault_id"] == "new_vault"
         assert result["name"] == "New Vault"
@@ -163,31 +162,17 @@ class TestSageCreateVault:
         assert on_disk["vault"]["name"] == "New Vault"
 
     # TEST-APP-MCP-031
-    async def test_mcp_031_convenience_rejects_duplicate(self, vaults_root, empty_registry):
+    async def test_mcp_031_rejects_duplicate(self, vaults_root, empty_registry):
         """Creating an already-registered vault id returns vault_already_exists."""
-        await sage_create_vault(vault_id="existing", name="Existing", owner="testuser")
-        result = _parse(await sage_create_vault(vault_id="existing", name="x", owner="x"))
+        cfg = VaultRegistryService.get_default_config("existing", "Existing", "testuser")
+        await sage_create_vault(config=cfg)
+        cfg_again = VaultRegistryService.get_default_config("existing", "Existing Again", "x")
+        result = _parse(await sage_create_vault(config=cfg_again))
         assert result.get("error") == "vault_already_exists"
-
-    # TEST-APP-MCP-032
-    async def test_mcp_032_rejects_mixed_mode(self, vaults_root, empty_registry):
-        """Passing both config and convenience args returns validation error."""
-        cfg = _make_full_config_dict(vaults_root, "mixed", "Mixed", "testuser")
-        result = _parse(
-            await sage_create_vault(vault_id="mixed", name="Mixed", owner="testuser", config=cfg)
-        )
-        assert "error" in result
-        # Not strict on exact code -- just that it's a validation-style error,
-        # not a successful creation.
-        assert "vault_id" not in result or result.get("error")
-        # No vault actually created
-        vaults_list = _parse(await sage_list_vaults())
-        ids = {v["id"] for v in vaults_list["vaults"]}
-        assert "mixed" not in ids
 
     # TEST-APP-MCP-033
     async def test_mcp_033_full_config_mode_creates_vault(self, vaults_root, empty_registry):
-        """Full-config mode accepts a complete dict."""
+        """A complete config dict creates a vault matching the dict's identity."""
         cfg = _make_full_config_dict(vaults_root, "full_cfg", "Full Cfg", "testuser")
         result = _parse(await sage_create_vault(config=cfg))
 
@@ -262,14 +247,12 @@ class TestSageUpdateVaultConfig:
         result = _parse(
             await sage_update_vault_config(
                 "test_vault",
-                sections={
-                    "document_types": {
-                        "doc_types": [
-                            {"value": "note", "label": "Note"},
-                            {"value": "memo", "label": "Memo"},
-                            {"value": "extra", "label": "Extra"},
-                        ],
-                    }
+                document_types={
+                    "doc_types": [
+                        {"value": "note", "label": "Note"},
+                        {"value": "memo", "label": "Memo"},
+                        {"value": "extra", "label": "Extra"},
+                    ],
                 },
             )
         )
@@ -299,10 +282,8 @@ class TestSageUpdateVaultConfig:
         result = _parse(
             await sage_update_vault_config(
                 "test_vault",
-                sections={
-                    "document_types": {
-                        "doc_types": [{"value": "memo", "label": "Memo"}],
-                    }
+                document_types={
+                    "doc_types": [{"value": "memo", "label": "Memo"}],
                 },
             )
         )
@@ -328,10 +309,8 @@ class TestSageUpdateVaultConfig:
         result = _parse(
             await sage_update_vault_config(
                 "test_vault",
-                sections={
-                    "document_types": {
-                        "doc_types": [{"value": "memo", "label": "Memo"}],
-                    }
+                document_types={
+                    "doc_types": [{"value": "memo", "label": "Memo"}],
                 },
                 force=True,
             )
@@ -351,15 +330,13 @@ class TestSageUpdateVaultConfig:
         result = _parse(
             await sage_update_vault_config(
                 "test_vault",
-                sections={
-                    "vault": {
-                        "id": "different_id",
-                        "name": "X",
-                        "owner": "testuser",
-                        "storage_root": "/tmp/x",
-                        "brain_root": "/tmp/x",
-                        "visibility": "personal",
-                    }
+                vault={
+                    "id": "different_id",
+                    "name": "X",
+                    "owner": "testuser",
+                    "storage_root": "/tmp/x",
+                    "brain_root": "/tmp/x",
+                    "visibility": "personal",
                 },
                 force=True,
             )
@@ -376,7 +353,7 @@ class TestSageUpdateVaultConfig:
         result = _parse(
             await sage_update_vault_config(
                 "test_vault",
-                sections={"lifecycle": {"states": "not_a_list"}},
+                lifecycle={"states": "not_a_list"},
             )
         )
         assert result.get("error") == "vault_config_validation_error"

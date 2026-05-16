@@ -14,7 +14,6 @@ from pydantic import TypeAdapter
 from sage.api.errors import (
     LegacyFormError,
     SAGEError,
-    VaultConfigValidationError,
 )
 from sage.mcp_init import SAGEServices
 from sage.models.enums import SourceType
@@ -1100,75 +1099,43 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_create_vault(
-        vault_id: str | None = None,
-        name: str | None = None,
-        owner: str | None = None,
-        config: dict | None = None,
-    ) -> dict:
+    async def sage_create_vault(config: dict) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
-        Two modes, mutually exclusive:
+        Pass a complete vault config dict. The dict is validated against the
+        vault config schema, directories are created, ``vault_config.yaml``
+        is written under the vault root (default
+        ``~/sage_vaults/<vault_id>/``), services are initialized, and the
+        vault is registered with the running MCP server immediately
+        (no restart needed). The full written config is echoed back in
+        the response so the caller can follow up with
+        sage_update_vault_config to adjust individual sections without
+        a separate read.
 
-        - Convenience mode: pass vault_id, name, and owner (with config=None).
-          A minimal valid default config is generated, directories are
-          created, vault_config.yaml is written, services are initialized,
-          and the vault is registered. The full written config is echoed
-          back in the response so the caller can follow up with
-          sage_update_vault_config to adjust individual sections without
-          a separate read.
-
-        - Full-config mode: pass a complete config dict (with
-          vault_id/name/owner all None). The dict is validated, and the
-          vault is created from it.
-
-        The new vault is registered with the running MCP server
-        immediately; no restart is needed. The vault's
-        ``vault_config.yaml`` is written under the vault root
-        (default ``~/sage_vaults/<vault_id>/``).
+        A minimal default config (suitable for most one-off vaults) can be
+        produced with
+        ``VaultRegistryService.get_default_config(vault_id, name, owner)``
+        from ``sage.services.vault_registry``; callers that want a tailored
+        vault should construct the dict directly against the vault config
+        schema.
 
         Error modes:
         - ``vault_already_exists`` (409): a vault with that
           ``vault_id`` is already registered.
         - ``vault_config_validation_error`` (400): the supplied
-          config (in full-config mode) fails schema validation, or
-          the convenience-mode arguments are mixed with a config dict.
+          config fails schema validation.
 
         Args:
-            vault_id: Unique identifier for the new vault (convenience mode).
-            name: Human-readable display name (convenience mode).
-            owner: Username of the vault owner (convenience mode).
-            config: Full vault config dict (full-config mode only).
+            config: Full vault config dict. Must validate against the
+                vault config schema.
         """
         try:
-            if vault_id is not None:
-                vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            convenience_args_set = any(x is not None for x in (vault_id, name, owner))
-            if convenience_args_set and config is not None:
-                raise VaultConfigValidationError(
-                    [
-                        "Pass either (vault_id, name, owner) OR config, not both. "
-                        "Mixing the convenience args with a full config dict is not allowed."
-                    ]
-                )
-
-            if config is None:
-                if vault_id is None or name is None or owner is None:
-                    raise VaultConfigValidationError(
-                        ["vault_id, name, and owner are all required when config is not provided"]
-                    )
-                config_dict = VaultRegistryService.get_default_config(vault_id, name, owner)
-            else:
-                config_dict = config
-
-            summary = await vault_registry_service.create_vault(
-                CreateVaultRequest(config=config_dict)
-            )
+            summary = await vault_registry_service.create_vault(CreateVaultRequest(config=config))
             return {
                 "vault_id": summary.id,
                 "name": summary.name,
                 "storage_root": summary.storage_root,
-                "config": config_dict,
+                "config": config,
             }
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -1212,16 +1179,24 @@ def register_sage_tools(
     @mcp.tool()
     async def sage_update_vault_config(
         vault_id: str,
-        sections: dict,
+        vault: dict | None = None,
+        document_types: dict | None = None,
+        lifecycle: dict | None = None,
+        source_adapters: dict | None = None,
+        metadata_extraction: dict | None = None,
+        edge_inference: dict | None = None,
+        abstraction: dict | None = None,
+        access_control_defaults: dict | None = None,
+        retrieval_health: dict | None = None,
         force: bool = False,
     ) -> dict:
         """Update vault configuration at the section level.
 
-        Each key in `sections` replaces the corresponding top-level section
-        of the config wholesale; sections you do not include are preserved
-        unchanged. Partial-section merges are not supported -- if you pass
-        `{"document_types": {"doc_types": [...]}}`, the entire
-        `document_types` section is replaced by the dict you pass, so
+        Each non-null section argument replaces the corresponding top-level
+        section of the config wholesale; sections left as None are
+        preserved unchanged. Partial-section merges are not supported --
+        if you pass ``document_types={"doc_types": [...]}``, the entire
+        ``document_types`` section is replaced by the dict you pass, so
         include every key of that section you want to keep.
 
         If the merged config would remove a doc_type or lifecycle state
@@ -1242,27 +1217,37 @@ def register_sage_tools(
         Error modes:
         - ``destructive_config_change`` (409): see above.
         - ``vault_config_validation_error`` (400): the merged config
-          fails schema validation, or an unknown section name was
-          passed, or the request attempts to change ``vault.id``.
+          fails schema validation, or the request attempts to change
+          ``vault.id``.
 
         Args:
             vault_id: Target vault identifier.
-            sections: Dict mapping top-level section name
-                (vault, document_types, lifecycle, source_adapters,
-                metadata_extraction, edge_inference, abstraction,
-                access_control_defaults, retrieval_health) to the new
-                section dict.
+            vault: Replacement for the vault identity section.
+            document_types: Replacement for the document_types section.
+            lifecycle: Replacement for the lifecycle section.
+            source_adapters: Replacement for the source_adapters section.
+            metadata_extraction: Replacement for the metadata_extraction section.
+            edge_inference: Replacement for the edge_inference section.
+            abstraction: Replacement for the abstraction section.
+            access_control_defaults: Replacement for the access_control_defaults section.
+            retrieval_health: Replacement for the retrieval_health section.
             force: When True, proceed even if the update would orphan
                 existing documents. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
-            valid_sections = set(UpdateVaultConfigRequest.model_fields.keys())
-            for section_name in sections:
-                if section_name not in valid_sections:
-                    raise VaultConfigValidationError([f"Unknown config section: {section_name}"])
-            body = UpdateVaultConfigRequest(**sections)
+            body = UpdateVaultConfigRequest(
+                vault=vault,
+                document_types=document_types,
+                lifecycle=lifecycle,
+                source_adapters=source_adapters,
+                metadata_extraction=metadata_extraction,
+                edge_inference=edge_inference,
+                abstraction=abstraction,
+                access_control_defaults=access_control_defaults,
+                retrieval_health=retrieval_health,
+            )
             return serialize(
                 await services.vault_config_service.update_config(vault_id, body, force)
             )

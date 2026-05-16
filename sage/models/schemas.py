@@ -515,17 +515,6 @@ class IngestRequest(BaseModel):
             "list-typed tags field)."
         ),
     )
-    tier3_metadata: dict | None = Field(
-        default=None,
-        description=(
-            "Per-doc_type typed metadata payload. Validated at the SAGE API "
-            "boundary against the JSON Schema fragment declared in vault "
-            "config for the resolved doc_type. When the resolved doc_type "
-            "has no metadata_schema declared and tier3_metadata is non-null, "
-            "ingest fails with 400 tier3_schema_violation (strict "
-            "no-loose-mode per T-0004 design)."
-        ),
-    )
     supersedes_document_id: DocumentIdStr | None = Field(
         default=None,
         description=(
@@ -537,6 +526,22 @@ class IngestRequest(BaseModel):
             "lifecycle_status to `archived`. Predecessor validation (exists "
             "+ active + different content hash) runs before projection; "
             "failures return 404/409 before any pipeline work begins."
+        ),
+    )
+    tier3_metadata: dict | None = Field(
+        default=None,
+        description=(
+            "Caller-authoritative tier-3 typed metadata applied at "
+            "create time per CAS-ADR-021. Validated against the "
+            "doc_type's `metadata_schema` declared in vault config "
+            "(`document_types.{doc_type}.metadata_schema`); if the "
+            "doc_type has no schema declared, the ingest fails with "
+            "400 `tier3_schema_violation`. Bare-dict form: the entire "
+            "object is the tier-3 metadata for the new document. This "
+            "is the ingest-vs-update shape asymmetry called out in "
+            "CAS-ADR-028: ingest takes the literal dict, whereas "
+            "`UpdateMetadataRequest.tier3_metadata` takes a "
+            "`Tier3Patch` ops-object with `set`/`unset` semantics."
         ),
     )
 
@@ -1100,11 +1105,22 @@ class ChainRequest(BaseModel):
     )
     limit: int | None = Field(
         default=None,
-        description="Maximum number of entries to return; null returns the full chain.",
+        ge=1,
+        description=(
+            "Maximum number of chain entries to return after offset is "
+            "applied. Null (default) returns the entire chain. Pagination "
+            "is caller-side slicing performed on the full chain returned "
+            "by the graph walk; the walk itself is unbounded."
+        ),
     )
     offset: int = Field(
         default=0,
-        description="Number of entries to skip from the head before returning.",
+        ge=0,
+        description=(
+            "Number of chain entries to skip from the start of the "
+            "ordered chain before applying `limit`. Used together with "
+            "`limit` to page through long chains."
+        ),
     )
 
 
@@ -1313,16 +1329,22 @@ class DiscoverRequest(BaseModel):
     include_abstracts: bool = Field(
         default=False,
         description=(
-            "When true, populates the semantic_abstract field on each result "
-            "document so callers can render orientation without a separate "
-            "get_document call."
+            "When true, include the `semantic_abstract` field on each "
+            "returned chunk's document record. Off by default because "
+            "abstracts are large strings and inflate the response "
+            "payload; turn on when the caller needs to inspect or "
+            "display abstracts. Applies to semantic and keyword modes."
         ),
     )
     min_relevance: float | None = Field(
         default=None,
         description=(
-            "Minimum relevance score threshold; results below this score "
-            "are dropped. Applicable to semantic mode."
+            "Minimum relevance score (0.0-1.0) required for a chunk to "
+            "appear in results. Null (default) applies no threshold. "
+            "Used to suppress weak matches when the caller wants tight "
+            "precision; the filter is applied after ranking and before "
+            "limit is applied, so weak-match suppression may reduce the "
+            "returned result count below the requested limit."
         ),
     )
     response_level: ResponseLevel = Field(
@@ -1695,7 +1717,8 @@ class CreateVaultRequest(BaseModel):
     config: dict = Field(
         description=(
             "Full vault configuration object. Structure defined by "
-            "docs/fs/sage/vault_config.schema.json."
+            "``docs/fs/sage/vault_config.schema.json``; validation is "
+            "performed against that schema before any filesystem writes."
         )
     )
 

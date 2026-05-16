@@ -51,9 +51,9 @@ class VaultRegistryService:
     def get_default_config(vault_id: str, name: str, owner: str) -> dict:
         """Build a minimal valid default config dict for a new vault.
 
-        Used by the MCP `sage_create_vault` convenience mode, which accepts
-        ``vault_id``/``name``/``owner`` instead of a full config dict. The
-        REST endpoint stays full-config-only.
+        Callers that want to spin up a vault with sensible defaults pass
+        the result of this method as the ``config`` argument to
+        ``sage_create_vault`` (or to the REST create-vault endpoint).
         """
         return {
             "vault": {

@@ -130,36 +130,12 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
 }
 
 # (surface_name, tool_name) -> set of MCP argument names that
-# legitimately do not appear in the OpenAPI operation. These are
-# first-pass drift findings to be reconciled in follow-up work
-# (T-0062). Each entry must be either remediated (by adding the
-# field to the spec or removing it from the tool) or replaced with
-# a justification for permanent divergence. The test fails on
-# stale entries (drift remediated but allowlist not pruned).
-KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
-    # sage_ingest.tier3_metadata: ingest tool accepts CAS-ADR-021
-    # tier-3 typed metadata at create time; IngestRequest schema in
-    # sage_core_api.openapi.yaml has not been updated to expose the
-    # field. Spec gap.
-    ("sage_core", "sage_ingest"): frozenset({"tier3_metadata"}),
-    # sage_chain.{limit, offset}: MCP tool paginates the chain
-    # traversal; ChainRequest schema does not declare these
-    # parameters. Either tool over-exposes (drop) or spec under-
-    # declares (add). Reconciliation deferred.
-    ("sage_core", "sage_chain"): frozenset({"limit", "offset"}),
-    # sage_discover.{include_abstracts, min_relevance}: MCP tool
-    # exposes semantic-search controls absent from DiscoverRequest.
-    # Reconciliation deferred.
-    ("sage_core", "sage_discover"): frozenset({"include_abstracts", "min_relevance"}),
-    # sage_create_vault.{vault_id, name, owner}: tool signature
-    # differs structurally from CreateVaultRequest; needs a wider
-    # alignment pass beyond this gate's scope.
-    ("sage_core", "sage_create_vault"): frozenset({"vault_id", "name", "owner"}),
-    # sage_update_vault_config.sections: tool accepts a sections-
-    # patch dict that UpdateVaultConfigRequest does not declare.
-    # Reconciliation deferred.
-    ("sage_core", "sage_update_vault_config"): frozenset({"sections"}),
-}
+# legitimately do not appear in the OpenAPI operation. Each entry
+# must be either remediated (by adding the field to the spec or
+# removing it from the tool) or replaced with a justification for
+# permanent divergence. The test fails on stale entries (drift
+# remediated but allowlist not pruned). Drained to empty by T-0062.
+KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {}
 
 
 # (surface_name, operation_id) -> justification for OpenAPI

@@ -5,7 +5,7 @@ force-gate refinement to `PUT /sage_vaults/{vault_id}/config`.
 
 Three new MCP tools are added to the SAGE MCP server:
 
-- `sage_create_vault` — create a new vault (convenience or full-config form)
+- `sage_create_vault` — create a new vault from a full config dict
 - `sage_get_vault_config` — read the current config
 - `sage_update_vault_config` — section-level update with destructive-change
   gate
@@ -13,20 +13,28 @@ Three new MCP tools are added to the SAGE MCP server:
 Design decisions encoded here:
 
 - **No delete tool.** Destroying vaults is out of scope for agentic callers.
-- **Two-mode create:** `sage_create_vault` accepts either the convenience
-  triple (`vault_id`, `name`, `owner`) or a full `config` dict, but never
-  both. The convenience branch builds a default config via the shared
-  `_get_default_config(...)` helper so agents never have to assemble the
-  nested structure by hand. The full-config branch is the escape hatch for
-  callers that already have a complete dict.
+- **Single-shape create (T-0062 revision):** `sage_create_vault` takes a
+  single `config` argument that mirrors `CreateVaultRequest` exactly.
+  Callers that want a vault with sensible defaults call
+  `VaultRegistryService.get_default_config(vault_id, name, owner)` and
+  pass the result through; there is no convenience-kwargs branch on the
+  tool itself. The earlier two-mode design (convenience triple xor config
+  dict) was removed when the MCP-OpenAPI conformance gate (T-0059) flagged
+  the asymmetry, since the spec only ever declared the config-dict shape.
 - **Echo-back on create.** The tool return value includes the full written
   config. This eliminates an extra read round-trip when an agent wants to
   follow up with `sage_update_vault_config` to adjust specific sections.
-- **Full-section replacement.** `sage_update_vault_config` replaces provided
-  top-level sections wholesale; omitted sections are preserved unchanged.
-  Partial-section merges are not supported because list-valued fields
-  (doc_types, lifecycle states, transitions, adapters) have no unambiguous
-  merge semantics. The tool description states this prominently.
+- **Named-section update (T-0062 revision):** `sage_update_vault_config`
+  takes one optional kwarg per top-level section
+  (`vault`, `document_types`, `lifecycle`, `source_adapters`,
+  `metadata_extraction`, `edge_inference`, `abstraction`,
+  `access_control_defaults`, `retrieval_health`) instead of the earlier
+  `sections: dict` wrapper. Each non-null kwarg replaces the
+  corresponding section wholesale; omitted kwargs are preserved
+  unchanged. Partial-section merges are not supported because list-valued
+  fields (doc_types, lifecycle states, transitions, adapters) have no
+  unambiguous merge semantics. The shape matches the OpenAPI
+  `UpdateVaultConfigRequest` directly.
 - **Destructive-change gate.** If the merged config removes a doc_type or
   lifecycle state that still has documents, the update is blocked by
   default. Callers must pass `force=True` to proceed; the original
@@ -48,23 +56,25 @@ code.
 
 ## 1. sage_create_vault
 
-### TEST-APP-MCP-030: convenience mode creates vault with default config
+### TEST-APP-MCP-030: default-config dict creates vault
 
-**Artifact:** `sage/mcp_server.py`, `sage/sage_api_tools.py`, `sage/vault_management.py`
+**Artifact:** `sage/mcp_server.py`, `sage/sage_api_tools.py`, `sage/services/vault_registry.py`
 **Category:** mcp_tool, sage_api
 
-**Decision:** Passing `vault_id`, `name`, and `owner` (with `config=None`)
-generates a minimal valid default config via the shared helper, creates
-the vault directory tree under `~/sage_vaults/{vault_id}/`, writes
-`vault_config.yaml` atomically, initializes services, and registers the
-vault in the MCP registry. The return value includes the full written
-config.
+**Decision:** Passing the config dict produced by
+`VaultRegistryService.get_default_config(vault_id, name, owner)` to
+`sage_create_vault(config=...)` creates the vault directory tree under
+`~/sage_vaults/{vault_id}/`, writes `vault_config.yaml` atomically,
+initializes services, and registers the vault in the MCP registry. The
+return value includes the full written config. This is the canonical
+"sensible defaults" path; the convenience kwargs that used to live on
+the MCP tool were collapsed into this dict-only signature in T-0062.
 
 **Precondition:** Empty or non-colliding MCP vault registry. A temp
 vaults-root override in place so the test does not touch the real
 `~/sage_vaults/`.
 
-**Input:** Call `sage_create_vault(vault_id="new_vault", name="New Vault", owner="testuser")`.
+**Input:** Build `default_cfg = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")` and call `sage_create_vault(config=default_cfg)`.
 
 **Expected:**
 - Return value is a dict with `vault_id == "new_vault"`, `name == "New Vault"`, `storage_root` populated, and a `config` key containing the full written config.
@@ -72,10 +82,13 @@ vaults-root override in place so the test does not touch the real
 - A subsequent `sage_list_vaults()` includes the new vault.
 - The file `vault_config.yaml` exists at the vault directory and matches the echoed config.
 
-**Rationale:** Agents need a zero-effort path to create a scratch or
-project vault mid-conversation without hand-assembling a config dict.
+**Rationale:** Agents that just want a scratch vault build the dict via
+the default-config helper rather than hand-assembling the nested
+structure; the helper is the seam, not a tool-level shortcut. Keeping
+the MCP signature symmetric with the OpenAPI `CreateVaultRequest`
+preserves the substrate-as-source-of-truth invariant.
 
-### TEST-APP-MCP-031: convenience mode rejects duplicate vault_id
+### TEST-APP-MCP-031: rejects duplicate vault_id
 
 **Artifact:** `sage/sage_api_tools.py`
 **Category:** mcp_tool, sage_api
@@ -85,7 +98,9 @@ returns a `vault_already_exists` structured error instead of overwriting.
 
 **Precondition:** A vault `existing` is registered.
 
-**Input:** Call `sage_create_vault(vault_id="existing", name="x", owner="x")`.
+**Input:** Build a default config for `existing` via
+`VaultRegistryService.get_default_config(...)` and call
+`sage_create_vault(config=cfg)`.
 
 **Expected:**
 - Return value is an error dict with `error == "vault_already_exists"`.
@@ -94,36 +109,15 @@ returns a `vault_already_exists` structured error instead of overwriting.
 **Rationale:** Accidental re-creation must not silently overwrite.
 Creation is distinct from update.
 
-### TEST-APP-MCP-032: rejects mixed-mode call (convenience args + config)
-
-**Artifact:** `sage/sage_api_tools.py`
-**Category:** mcp_tool, sage_api
-
-**Decision:** If the caller passes both a `config` dict and any of the
-convenience arguments (`vault_id`, `name`, `owner`), the tool returns a
-validation error. Two sources of truth for the same field are a trap.
-
-**Precondition:** None.
-
-**Input:** Call `sage_create_vault(vault_id="v", name="n", owner="o", config={...})`.
-
-**Expected:**
-- Return value is an error dict with `error` indicating the mode
-  conflict.
-- No vault is created or registered.
-
-**Rationale:** Explicit over implicit. The caller must commit to one
-mode.
-
 ### TEST-APP-MCP-033: full-config mode creates vault from dict
 
 **Artifact:** `sage/sage_api_tools.py`, `sage/vault_management.py`
 **Category:** mcp_tool, sage_api
 
-**Decision:** Passing only a `config` dict (with all convenience args
-`None`) validates the dict, creates the directory tree from
-`config.vault.id`, writes YAML, initializes services, registers, and
-bootstraps the owner. The return value echoes the written config.
+**Decision:** Passing a complete `config` dict validates the dict,
+creates the directory tree from `config.vault.id`, writes YAML,
+initializes services, registers, and bootstraps the owner. The return
+value echoes the written config.
 
 **Precondition:** Empty registry. `config.vault.id` is unique.
 
@@ -196,7 +190,7 @@ an update.
 **Artifact:** `sage/sage_api_tools.py`, `sage/vault_management.py`
 **Category:** mcp_tool, sage_api
 
-**Decision:** Passing `sections={"document_types": {...}}` replaces the
+**Decision:** Passing `document_types={...}` replaces the
 `document_types` section wholesale. All other sections remain unchanged.
 The tool rewrites `vault_config.yaml` atomically and reloads the vault
 in the registry.
@@ -204,7 +198,7 @@ in the registry.
 **Precondition:** Vault `test_vault` registered with a known
 `lifecycle` section.
 
-**Input:** Call `sage_update_vault_config("test_vault", sections={"document_types": {"doc_types": [{"value": "note", "label": "Note"}, {"value": "memo", "label": "Memo"}, {"value": "extra", "label": "Extra"}]}})`.
+**Input:** Call `sage_update_vault_config("test_vault", document_types={"doc_types": [{"value": "note", "label": "Note"}, {"value": "memo", "label": "Memo"}, {"value": "extra", "label": "Extra"}]})`.
 
 **Expected:**
 - Return value is `{"status": "updated", "vault_id": "test_vault", "warnings": []}`.
@@ -229,7 +223,7 @@ items and counts. No YAML write, no registry reload.
 **Precondition:** Vault `test_vault` has at least one document with
 `doc_type == "note"`.
 
-**Input:** Call `sage_update_vault_config("test_vault", sections={"document_types": {"doc_types": [{"value": "memo", "label": "Memo"}]}})` (removes `note`).
+**Input:** Call `sage_update_vault_config("test_vault", document_types={"doc_types": [{"value": "memo", "label": "Memo"}]})` (removes `note`).
 
 **Expected:**
 - Return value is an error dict with `error == "destructive_config_change"`.
@@ -251,7 +245,7 @@ includes the warnings that would have blocked the default path.
 
 **Precondition:** Same as MCP-037.
 
-**Input:** Call `sage_update_vault_config("test_vault", sections={...removes note...}, force=True)`.
+**Input:** Call `sage_update_vault_config("test_vault", document_types={"doc_types": [{"value": "memo", "label": "Memo"}]}, force=True)` (removes `note`).
 
 **Expected:**
 - Return value is `{"status": "updated", "vault_id": "test_vault", "warnings": [...]}`.
@@ -272,7 +266,7 @@ is conceptually a new vault. `force` does not override this.
 
 **Precondition:** Vault `test_vault` registered.
 
-**Input:** Call `sage_update_vault_config("test_vault", sections={"vault": {"id": "different_id", ...}}, force=True)`.
+**Input:** Call `sage_update_vault_config("test_vault", vault={"id": "different_id", ...}, force=True)`.
 
 **Expected:**
 - Return value is a `vault_config_validation_error` with a message
@@ -295,7 +289,7 @@ YAML write.
 
 **Precondition:** Vault `test_vault` registered.
 
-**Input:** Call `sage_update_vault_config("test_vault", sections={"lifecycle": {"states": "not_a_list"}})`.
+**Input:** Call `sage_update_vault_config("test_vault", lifecycle={"states": "not_a_list"})`.
 
 **Expected:**
 - Error dict with `error == "vault_config_validation_error"`.
