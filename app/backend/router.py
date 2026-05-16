@@ -11,9 +11,10 @@ import json
 import logging
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from app.backend.exceptions import EmptyFileListError
 from app.backend.ingest_service import (
     BatchIngestService,
     FileDescriptor,
@@ -94,7 +95,7 @@ async def scan_endpoint(body: ScanRequest, request: Request) -> ScanResponse:
 async def ingest_endpoint(body: IngestRequest, request: Request):
     """Batch ingest with two-phase edge inference, streamed via SSE."""
     if not body.files:
-        raise HTTPException(status_code=400, detail="No files selected for ingestion")
+        raise EmptyFileListError()
 
     services = _get_services(request, body.vault_id)
 

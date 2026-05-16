@@ -66,9 +66,6 @@ CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     # rather than Pydantic models. T-0047 ports these.
     "ProgressEvent",
     "SummaryEvent",
-    # FastAPI HTTPException currently serializes error responses; the
-    # Pydantic mirror is a separate concern. T-0048 ports this.
-    "ErrorResponse",
 }
 
 

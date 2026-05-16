@@ -7,10 +7,11 @@ the typed aliases declared in the *CAS Typed-Alias Boundary
 Conventions* steering document.
 
 Coverage today: the scan chain (``ScanRequest``, ``ScanResponse``,
-``ScanResultResponse``, ``ParsedMetadata``) and the ingest request
-body (``IngestRequest``, ``IngestFileItem``). SSE event payloads
-and the ErrorResponse envelope remain to be ported in follow-up
-tickets.
+``ScanResultResponse``, ``ParsedMetadata``), the ingest request body
+(``IngestRequest``, ``IngestFileItem``), and the shared
+``ErrorResponse`` envelope (re-exported from ``sage.models.schemas``
+so /scan and /ingest error responses match the YAML). SSE event
+payloads remain to be ported in follow-up tickets.
 """
 
 from __future__ import annotations
@@ -19,7 +20,22 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from sage.models.schemas import DocumentDateStr, Sha256Str, VaultIdStr
+from sage.models.schemas import (
+    DocumentDateStr,
+    ErrorResponse,
+    Sha256Str,
+    VaultIdStr,
+)
+
+__all__ = [
+    "ErrorResponse",
+    "IngestFileItem",
+    "IngestRequest",
+    "ParsedMetadata",
+    "ScanRequest",
+    "ScanResponse",
+    "ScanResultResponse",
+]
 
 
 class ScanRequest(BaseModel):

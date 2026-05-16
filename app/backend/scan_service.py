@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import HTTPException
-
+from app.backend.exceptions import InvalidDirectoryError
 from app.backend.models import (
     ParsedMetadata,
     ScanRequest,
@@ -60,10 +59,7 @@ class ScanService:
     async def scan(self, body: ScanRequest) -> ScanResponse:
         directory = Path(body.directory.strip("'\""))
         if not directory.is_dir():
-            raise HTTPException(
-                status_code=400,
-                detail="Directory not found or not readable",
-            )
+            raise InvalidDirectoryError(str(directory))
         ext_map = build_extension_map(self.ingestion_service.registered_adapters)
         results, warnings = await scan_directory(
             directory=directory,

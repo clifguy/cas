@@ -1194,7 +1194,10 @@ class TestScanEndpoint:
             },
         )
         assert resp.status_code == 400
-        assert "Directory not found" in resp.json()["detail"]
+        body = resp.json()
+        assert body["code"] == "invalid_directory"
+        assert "not found" in body["message"]
+        assert body["detail"]["directory"] == "/nonexistent/path"
 
     async def test_be_018_returns_files_with_parsed_metadata(self, scan_client, tmp_path):
         """POST /app/scan returns file list with status and parsed metadata."""
@@ -1507,6 +1510,7 @@ class TestBatchIngest:
             },
         )
         assert resp.status_code == 400
+        assert resp.json()["code"] == "empty_file_list"
 
     async def test_be_032_two_phase_edge_inference(self, ingest_client, tmp_path):
         """Ingest runs two-phase edge inference producing edges."""

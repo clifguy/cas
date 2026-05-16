@@ -66,8 +66,7 @@ def _sparse_scan_result() -> ScanResult:
 
 
 class TestImportHygiene:
-    """CL-001 through CL-003: verify dead imports removed and
-    HTTPException promoted to module level."""
+    """CL-001 and CL-002: verify dead imports removed from backend modules."""
 
     def test_cl_001_edge_inference_no_unused_document_import(self) -> None:
         """CL-001: edge_inference should not import unused Document."""
@@ -93,15 +92,6 @@ class TestImportHygiene:
         ]
         for line in import_lines:
             assert line != "import os", f"Vestigial 'import os' found in scan module: {line}"
-
-    def test_cl_003_router_httpexception_module_level(self) -> None:
-        """CL-003: router should import HTTPException at module level."""
-        mod = importlib.import_module("app.backend.router")
-        # If HTTPException is a module-level import, it will be in the
-        # module's namespace directly.
-        assert hasattr(mod, "HTTPException"), (
-            "HTTPException should be imported at module level in router.py"
-        )
 
 
 # ---------------------------------------------------------------------------
