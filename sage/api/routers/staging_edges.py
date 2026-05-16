@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from sage.api.dependencies import get_staging_edges_service, get_vault_id
 from sage.models.schemas import (
     EdgeIdStr,
+    ErrorResponse,
     StagingEdge,
     StagingEdgeConfirmResponse,
     StagingEdgeDismissResponse,
@@ -20,7 +21,16 @@ from sage.services.staging_edges import StagingEdgesService
 router = APIRouter(tags=["staging_edges"])
 
 
-@router.get("/staging-edges", response_model=list[StagingEdge])
+@router.get(
+    "/staging-edges",
+    response_model=list[StagingEdge],
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault not found.",
+        },
+    },
+)
 async def list_staging_edges(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
@@ -29,7 +39,20 @@ async def list_staging_edges(
     return await service.list_staging_edges()
 
 
-@router.post("/staging-edges/{edge_id}/confirm", response_model=StagingEdgeConfirmResponse)
+@router.post(
+    "/staging-edges/{edge_id}/confirm",
+    response_model=StagingEdgeConfirmResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "`staging_edge_not_found`: the id is unknown (already "
+                "confirmed, already dismissed, or never existed); or vault "
+                "not found."
+            ),
+        },
+    },
+)
 async def confirm_staging_edge(
     edge_id: EdgeIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),
@@ -39,7 +62,20 @@ async def confirm_staging_edge(
     return await service.confirm_staging_edge(edge_id)
 
 
-@router.post("/staging-edges/{edge_id}/dismiss", response_model=StagingEdgeDismissResponse)
+@router.post(
+    "/staging-edges/{edge_id}/dismiss",
+    response_model=StagingEdgeDismissResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "`staging_edge_not_found`: the id is unknown (already "
+                "confirmed, already dismissed, or never existed); or vault "
+                "not found."
+            ),
+        },
+    },
+)
 async def dismiss_staging_edge(
     edge_id: EdgeIdStr,
     vault_id: VaultIdStr = Depends(get_vault_id),

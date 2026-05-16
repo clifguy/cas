@@ -17,6 +17,7 @@ from sage.api.dependencies import (
 )
 from sage.models.schemas import (
     CreateVaultRequest,
+    ErrorResponse,
     HashCheckMatch,
     HashCheckRequest,
     UpdateVaultConfigRequest,
@@ -42,6 +43,12 @@ async def list_vaults(
 @router.get(
     "/sage_vaults/{vault_id}/stats",
     response_model=VaultStatsResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault not found.",
+        },
+    },
 )
 async def vault_stats(
     vault_id: VaultIdStr = Depends(get_vault_id),
@@ -54,6 +61,12 @@ async def vault_stats(
 @router.post(
     "/sage_vaults/{vault_id}/hash-check",
     response_model=dict[str, HashCheckMatch],
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault not found.",
+        },
+    },
 )
 async def hash_check(
     body: HashCheckRequest,
@@ -64,7 +77,15 @@ async def hash_check(
     return await service.hash_check(body)
 
 
-@router.get("/sage_vaults/{vault_id}/config")
+@router.get(
+    "/sage_vaults/{vault_id}/config",
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault not found.",
+        },
+    },
+)
 async def get_vault_config(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: VaultConfigService = Depends(get_vault_config_service),
@@ -73,7 +94,33 @@ async def get_vault_config(
     return service.get_config()
 
 
-@router.put("/sage_vaults/{vault_id}/config", response_model=UpdateVaultConfigResponse)
+@router.put(
+    "/sage_vaults/{vault_id}/config",
+    response_model=UpdateVaultConfigResponse,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_config_validation_error`: the merged config failed "
+                "schema validation, an unknown section name was passed, or "
+                "the request attempts to change `vault.id`."
+            ),
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault not found.",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`destructive_config_change`: the update would orphan "
+                "documents (removed `doc_type` or lifecycle state still has "
+                "documents attached). Pass `force=true` to proceed; the "
+                "warnings then appear in the success response."
+            ),
+        },
+    },
+)
 async def update_vault_config(
     body: UpdateVaultConfigRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
@@ -94,7 +141,27 @@ async def update_vault_config(
     return await service.update_config(vault_id, body, force)
 
 
-@router.post("/sage_vaults", status_code=201, response_model=VaultSummary)
+@router.post(
+    "/sage_vaults",
+    status_code=201,
+    response_model=VaultSummary,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_config_validation_error`: the supplied configuration "
+                "failed schema validation (detail includes the list of "
+                "failed constraints)."
+            ),
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_already_exists`: a vault with the requested `id` is already registered."
+            ),
+        },
+    },
+)
 async def create_vault(
     body: CreateVaultRequest,
     service: VaultRegistryService = Depends(get_vault_registry_service),

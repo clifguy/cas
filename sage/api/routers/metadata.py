@@ -3,7 +3,13 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
-from sage.models.schemas import Document, DocumentIdStr, UpdateMetadataRequest, VaultIdStr
+from sage.models.schemas import (
+    Document,
+    DocumentIdStr,
+    ErrorResponse,
+    UpdateMetadataRequest,
+    VaultIdStr,
+)
 from sage.services.metadata import MetadataService
 
 router = APIRouter(tags=["Document Metadata"])
@@ -12,6 +18,20 @@ router = APIRouter(tags=["Document Metadata"])
 @router.patch(
     "/documents/{document_id}/metadata",
     response_model=Document,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": ("Invalid field name or value (e.g., unknown doc_type for this vault)."),
+        },
+        403: {
+            "model": ErrorResponse,
+            "description": "Caller is not a registered editor for this document.",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "`document_not_found`: no document with that id; or vault not found.",
+        },
+    },
 )
 async def update_metadata(
     document_id: DocumentIdStr,

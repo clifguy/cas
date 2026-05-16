@@ -11,13 +11,33 @@ metadata.
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id
-from sage.models.schemas import ParseFilenameRequest, ParseFilenameResponse, VaultIdStr
+from sage.models.schemas import (
+    ErrorResponse,
+    ParseFilenameRequest,
+    ParseFilenameResponse,
+    VaultIdStr,
+)
 from sage.services.ingestion import IngestionService
 
 router = APIRouter(tags=["Utilities"])
 
 
-@router.post("/parse-filename", response_model=ParseFilenameResponse)
+@router.post(
+    "/parse-filename",
+    response_model=ParseFilenameResponse,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`adapter_not_found`: `adapter` is not an enabled adapter on this vault."
+            ),
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault not found.",
+        },
+    },
+)
 async def parse_filename(
     request: ParseFilenameRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
