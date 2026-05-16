@@ -72,6 +72,17 @@ CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
 }
 
 
+# Pydantic BaseModel classes in sage.models.schemas that have no same-named
+# entry in components/schemas of sage_core_api.openapi.yaml by design. The
+# allowlist is the symmetric counterpart of YAML_ONLY_FORWARD_DECLARATIONS
+# and is governed by the same discipline: each grouping must carry a
+# justification comment explaining why the class is intentionally
+# Python-only-by-design (e.g., used only as an internal type hint, never
+# serialized over HTTP). The allowlist is not a hiding place for drift --
+# entries require a defensible architectural reason.
+PYTHON_ONLY_FORWARD_DECLARATIONS: set[str] = set()
+
+
 # YAML schemas in sage_core_api.openapi.yaml that have no same-named
 # BaseModel in sage.models.schemas by design. Each grouping carries a
 # justification comment in the same style as SPEC_FORWARD_DECLARATIONS.
@@ -468,6 +479,68 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
             msg_lines.append(f"  {line}")
 
     assert not msg_lines, "YAML<->Pydantic parity violations:\n" + "\n".join(msg_lines)
+
+
+# ---------------------------------------------------------------------------
+# Test 6a: Every Pydantic BaseModel has a counterpart in YAML components/schemas
+# ---------------------------------------------------------------------------
+
+
+def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
+    """Every BaseModel in sage.models.schemas has a same-named entry in
+    components/schemas of the SAGE Core API YAML.
+
+    Reverse-direction parity counterpart to
+    test_every_yaml_schema_has_pydantic_class (T-0042). Closes the gap
+    that produced T-0044: Python-side additions could previously drift
+    away from the YAML spec silently. Reads the YAML on disk per
+    CAS-ADR-008 (the formal substrate is the source of truth), not via
+    FastAPI introspection -- BaseModels not referenced by any handler
+    still get checked.
+
+    Reverse direction only (Pydantic -> YAML). Class-existence only; the
+    forward-direction test already covers field-level superset, and the
+    reverse direction is intentionally scoped to existence -- comparing
+    Pydantic field sets to YAML property sets in both directions would
+    duplicate the same signal.
+
+    Scope: SAGE Core API spec only. Parallel parity assertion for
+    `docs/fs/cas_app_api.openapi.yaml` is tracked separately by T-0043.
+    The ROOT Harness OpenAPI spec has no Python implementation yet (only
+    the spec exists), so YAML<->Pydantic parity is not yet meaningful
+    for that surface.
+    """
+    from pydantic import BaseModel
+
+    from sage.models import schemas as schemas_module
+
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+
+    yaml_schema_names = set(sage_core_spec["components"]["schemas"].keys())
+
+    missing_schemas: list[str] = []
+    for name in dir(schemas_module):
+        if name.startswith("_"):
+            continue
+        obj = getattr(schemas_module, name)
+        if not (isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel):
+            continue
+        if name in PYTHON_ONLY_FORWARD_DECLARATIONS:
+            continue
+        if name not in yaml_schema_names:
+            missing_schemas.append(name)
+
+    msg_lines: list[str] = []
+    if missing_schemas:
+        msg_lines.append(
+            "Pydantic BaseModels without a same-named schema in "
+            "sage_core_api.openapi.yaml components/schemas "
+            "(if intentional, add to PYTHON_ONLY_FORWARD_DECLARATIONS with justification):"
+        )
+        for name in sorted(missing_schemas):
+            msg_lines.append(f"  {name}")
+
+    assert not msg_lines, "Pydantic->YAML parity violations:\n" + "\n".join(msg_lines)
 
 
 # ---------------------------------------------------------------------------

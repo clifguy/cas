@@ -980,14 +980,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [document_id, output_path]
-                properties:
-                  document_id:
-                    type: string
-                  output_path:
-                    type: string
-                    description: Absolute path of the written file.
+                $ref: "#/components/schemas/ExportProjectionResponse"
         "400":
           description: >-
             `path_traversal_denied`: `output_path` resolves outside the
@@ -1091,14 +1084,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                required: [vault_id, views_generated]
-                properties:
-                  vault_id:
-                    type: string
-                  views_generated:
-                    type: integer
-                    description: Number of symlink directories created or updated.
+                $ref: "#/components/schemas/RefreshViewsResponse"
         "404":
           description: Vault not found.
           content:
@@ -3635,6 +3621,32 @@ components:
         path:
           type: string
           description: Absolute filesystem path that was dispatched to the OS opener.
+
+    # -------------------------------------------------------------------------
+    # Utilities
+    # -------------------------------------------------------------------------
+
+    ExportProjectionResponse:
+      type: object
+      required: [document_id, output_path]
+      properties:
+        document_id:
+          $ref: "#/components/schemas/DocumentId"
+          description: The document whose projection was exported.
+        output_path:
+          type: string
+          description: Absolute path where the projection file was written.
+
+    RefreshViewsResponse:
+      type: object
+      required: [vault_id, views_generated]
+      properties:
+        vault_id:
+          $ref: "#/components/schemas/VaultId"
+          description: The vault whose views were refreshed.
+        views_generated:
+          type: integer
+          description: Number of view artifacts regenerated.
 
     # -------------------------------------------------------------------------
     # Unlink
