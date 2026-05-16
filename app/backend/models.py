@@ -8,33 +8,38 @@ Conventions* steering document.
 
 Coverage today: the scan chain (``ScanRequest``, ``ScanResponse``,
 ``ScanResultResponse``, ``ParsedMetadata``), the ingest request body
-(``IngestRequest``, ``IngestFileItem``), and the shared
-``ErrorResponse`` envelope (re-exported from ``sage.models.schemas``
-so /scan and /ingest error responses match the YAML). SSE event
-payloads remain to be ported in follow-up tickets.
+(``IngestRequest``, ``IngestFileItem``), the SSE event payloads
+(``ProgressEvent``, ``SummaryEvent``, ``DocumentsCreated``), and the
+shared ``ErrorResponse`` envelope (re-exported from
+``sage.models.schemas`` so /scan and /ingest error responses match
+the YAML).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from sage.models.schemas import (
     DocumentDateStr,
+    DocumentIdStr,
     ErrorResponse,
     Sha256Str,
     VaultIdStr,
 )
 
 __all__ = [
+    "DocumentsCreated",
     "ErrorResponse",
     "IngestFileItem",
     "IngestRequest",
     "ParsedMetadata",
+    "ProgressEvent",
     "ScanRequest",
     "ScanResponse",
     "ScanResultResponse",
+    "SummaryEvent",
 ]
 
 
@@ -140,5 +145,89 @@ class IngestRequest(BaseModel):
             "supersedes) and filename_code_match (Tier 2 covers) edge "
             "inference. When false, edges are not inferred; ingestion is "
             "otherwise unchanged."
+        ),
+    )
+
+
+class DocumentsCreated(BaseModel):
+    """Nested counter for ``SummaryEvent.documents_created``."""
+
+    new: int = Field(description="Documents newly inserted this batch.")
+    new_version: int = Field(
+        description="Documents inserted as a new version of an existing chain.",
+    )
+
+
+class ProgressEvent(BaseModel):
+    """SSE ``progress`` event payload.
+
+    Emitted on file start, completion, and error during the per-file
+    ingestion phase.
+    """
+
+    event_type: Literal["progress"]
+    file_index: int = Field(description="Zero-based index of this file in the batch.")
+    total_files: int = Field(description="Total file count in the batch.")
+    filename: str
+    stage: Literal["projection"] = Field(
+        description="Pipeline stage the event applies to.",
+    )
+    status: Literal["started", "completed", "failed"]
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description='Set when status="completed". Document ID assigned by SAGE.',
+    )
+    error: str | None = Field(
+        default=None,
+        description='Set when status="failed". Caller-facing error message.',
+    )
+
+
+class SummaryEvent(BaseModel):
+    """SSE ``summary`` event payload.
+
+    Emitted once at the end of the batch, after all per-file events.
+    Mirrors the ``IngestSummary`` dataclass returned to non-streaming
+    callers (MCP tool).
+    """
+
+    event_type: Literal["summary"]
+    documents_created: DocumentsCreated
+    metadata_pending: int = Field(
+        description=(
+            "Count of documents in this batch whose extracted metadata is not yet confirmed."
+        ),
+    )
+    edges_created: dict[str, int] = Field(
+        description="Tier 1 edges created in production, keyed by edge type.",
+    )
+    edges_staged: dict[str, int] = Field(
+        description="Tier 2 edges inserted into staging_edges, keyed by edge type.",
+    )
+    edges_removed: int = Field(
+        description="Pre-existing edges removed during this batch (e.g. supersession cleanup).",
+    )
+    edges_dropped: int = Field(
+        description=(
+            "Edges in the original plan that were dropped because their "
+            "referenced files failed to ingest."
+        ),
+    )
+    abstracts_generated: int
+    abstracts_deferred: int = Field(
+        description=(
+            "Documents for which abstraction was skipped (empty projection "
+            "or abstraction disabled in vault config)."
+        ),
+    )
+    error_count: int
+    errors: list[dict[str, Any]] = Field(
+        description="Per-file error record (filename, error message).",
+    )
+    edge_warnings: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Optional edge-inference warnings (e.g. ambiguous version "
+            "chains). Present only when warnings were produced."
         ),
     )

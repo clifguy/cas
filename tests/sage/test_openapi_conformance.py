@@ -62,12 +62,7 @@ SPEC_FORWARD_DECLARATIONS: set[tuple[str, str]] = {
 # YAML schemas in cas_app_api.openapi.yaml that have no same-named
 # BaseModel under app.backend.{models,router} by design. Same
 # justification discipline as YAML_ONLY_FORWARD_DECLARATIONS.
-CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
-    # SSE event payloads; serialized from plain dicts in router.py
-    # rather than Pydantic models. T-0047 ports these.
-    "ProgressEvent",
-    "SummaryEvent",
-}
+CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS: set[str] = set()
 
 
 # Pydantic BaseModel classes in sage.models.schemas that have no same-named
