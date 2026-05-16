@@ -4,6 +4,22 @@ import argparse
 import os
 from pathlib import Path
 
+# Quiet huggingface library noise before any sage import pulls in
+# transformers/tokenizers (T-0060). Env vars are read at library import
+# time; setdefault preserves a debugger's explicit override.
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "warning")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+# httpx and sentence_transformers do not read env vars; raise their
+# loggers to WARNING explicitly so model-load HTTP fetches don't flood
+# the console. SAGE's own "Loading embedding model" line in
+# embedding_nomic.py covers the user-relevant signal.
+import logging as _logging  # noqa: E402
+
+for _hf_logger in ("httpx", "sentence_transformers"):
+    _logging.getLogger(_hf_logger).setLevel(_logging.WARNING)
+
+# ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 import uvicorn
 
 from sage.app import create_app

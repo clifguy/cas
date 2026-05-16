@@ -31,6 +31,7 @@ class NomicEmbeddingProvider(EmbeddingProvider):
                 "Install with: pip install sentence-transformers"
             ) from exc
 
+        self._model_name = model_name
         logger.info("Loading embedding model: %s (device=cpu)", model_name)
         try:
             # Force CPU to avoid MPS memory contention on Apple Silicon
@@ -78,3 +79,44 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         # (attention scales quadratically with sequence length).
         embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
         return [vec.tolist() for vec in embeddings]
+
+
+# ── Process-level singleton (T-0060) ─────────────────────────────────
+#
+# initialize_services() in sage/mcp_init.py used to construct a fresh
+# NomicEmbeddingProvider per vault; with N discovered vaults, the server
+# paid N model loads (~270 MB each) and emitted N huggingface INFO dumps
+# at startup. nomic-embed-text is stateless inference and shared safely
+# across vaults, so a single process-level instance suffices.
+
+_singleton: NomicEmbeddingProvider | None = None
+
+
+def get_nomic_embedding_provider(
+    model_name: str = NOMIC_MODEL_NAME,
+) -> NomicEmbeddingProvider:
+    """Return the process-wide NomicEmbeddingProvider, constructing on first call.
+
+    Subsequent calls return the cached instance. Requesting a different
+    ``model_name`` than the cached instance raises ``RuntimeError`` rather
+    than silently loading a second model — vaults are expected to agree on
+    the embedding provider per CAS design.
+    """
+    global _singleton
+    if _singleton is None:
+        _singleton = NomicEmbeddingProvider(model_name=model_name)
+    elif _singleton._model_name != model_name:
+        raise RuntimeError(
+            f"NomicEmbeddingProvider singleton already initialized with "
+            f"model_name={_singleton._model_name!r}; cannot satisfy request "
+            f"for model_name={model_name!r}. nomic-embed-text is intended to "
+            f"be SAGE-stack-wide; reconcile vault configs or call "
+            f"_reset_nomic_singleton() if intentional."
+        )
+    return _singleton
+
+
+def _reset_nomic_singleton() -> None:
+    """Clear the cached provider. For test isolation only."""
+    global _singleton
+    _singleton = None

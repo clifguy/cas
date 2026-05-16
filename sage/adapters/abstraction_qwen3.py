@@ -257,3 +257,45 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             )
 
         return abstract
+
+
+# ── Process-level singleton (T-0060) ─────────────────────────────────
+#
+# initialize_services() in sage/mcp_init.py used to construct a fresh
+# Qwen3AbstractionProvider per vault. __init__ is cheap, but each instance
+# triggers its own MLX model load (~16 GB) on first generate_abstract,
+# wasting unified memory and producing per-vault huggingface dumps.
+# Qwen3 is SAGE-stack-wide; a single process-level instance suffices.
+
+_singleton: Qwen3AbstractionProvider | None = None
+
+
+def get_qwen3_abstraction_provider(
+    model_id: str,
+    context_window: int = DEFAULT_CONTEXT_WINDOW,
+) -> Qwen3AbstractionProvider:
+    """Return the process-wide Qwen3AbstractionProvider, constructing on first call.
+
+    Subsequent calls return the cached instance. Requesting a different
+    ``model_id`` than the cached instance raises ``RuntimeError`` rather
+    than silently loading a second MLX model — vaults are expected to
+    agree on the abstraction model per CAS design.
+    """
+    global _singleton
+    if _singleton is None:
+        _singleton = Qwen3AbstractionProvider(model_id=model_id, context_window=context_window)
+    elif _singleton._model_id != model_id:
+        raise RuntimeError(
+            f"Qwen3AbstractionProvider singleton already initialized with "
+            f"model_id={_singleton._model_id!r}; cannot satisfy request "
+            f"for model_id={model_id!r}. Qwen3 is intended to be "
+            f"SAGE-stack-wide; reconcile vault configs or call "
+            f"_reset_qwen3_singleton() if intentional."
+        )
+    return _singleton
+
+
+def _reset_qwen3_singleton() -> None:
+    """Clear the cached provider. For test isolation only."""
+    global _singleton
+    _singleton = None

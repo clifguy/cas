@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sage.adapters.content_store_lancedb import LanceDBContentStore
-from sage.adapters.embedding_nomic import NomicEmbeddingProvider
+from sage.adapters.embedding_nomic import get_nomic_embedding_provider
 from sage.adapters.interfaces import (
     AbstractionProvider,
     ContentStore,
@@ -131,7 +131,7 @@ async def initialize_services(
 
             embedding_provider = StubEmbeddingProvider()
         else:
-            embedding_provider = NomicEmbeddingProvider()
+            embedding_provider = get_nomic_embedding_provider()
 
     # Abstraction provider: injected, or Qwen3/stub from config.
     # SAGE_TEST_STUB_PROVIDERS=1 forces the stub regardless of config so that
@@ -145,9 +145,9 @@ async def initialize_services(
         ):
             abstraction_provider = StubAbstractionProvider()
         else:
-            from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+            from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
 
-            abstraction_provider = Qwen3AbstractionProvider(
+            abstraction_provider = get_qwen3_abstraction_provider(
                 model_id=config.abstraction.model,
             )
 
