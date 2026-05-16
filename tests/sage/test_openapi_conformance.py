@@ -797,6 +797,171 @@ def test_pydantic_descriptions_match_yaml_verbatim(
 
 
 # ---------------------------------------------------------------------------
+# Test 5c: sage.config Pydantic fields carry descriptions sourced verbatim
+# from the JSON Schemas under docs/fs/sage/ (T-0057)
+# ---------------------------------------------------------------------------
+
+
+# Maps each Pydantic class in sage.config to the JSON Schema file (relative
+# to docs/fs/) and the JSON pointer that addresses its `properties` mapping.
+# Drives both the presence test (which fields exist) and the verbatim test
+# (which descriptions must match). VaultConfig.source_adapters /
+# metadata_extraction / edge_inference resolve at the parent-property level
+# in vault_config.schema.json; their full sub-schemas live in their own
+# files but are not Pydantic-modeled in sage.config (passed through as dict).
+SAGE_CONFIG_CLASS_TO_SCHEMA: list[tuple[str, str, str]] = [
+    ("VaultIdentity", "sage/vault_config.schema.json", "#/properties/vault"),
+    ("LifecycleState", "sage/lifecycle.schema.json", "#/properties/states/items"),
+    (
+        "LifecycleTransition",
+        "sage/lifecycle.schema.json",
+        "#/properties/transitions/items",
+    ),
+    ("LifecycleConfig", "sage/lifecycle.schema.json", "#"),
+    (
+        "DocTypeEntry",
+        "sage/document_types.schema.json",
+        "#/properties/doc_types/items",
+    ),
+    ("DocumentTypesConfig", "sage/document_types.schema.json", "#"),
+    (
+        "AbstractionConfig",
+        "sage/vault_config.schema.json",
+        "#/properties/abstraction",
+    ),
+    (
+        "RetrievalHealthConfig",
+        "sage/vault_config.schema.json",
+        "#/properties/retrieval_health",
+    ),
+    ("VaultConfig", "sage/vault_config.schema.json", "#"),
+]
+
+
+# Same allowlist discipline as DESCRIPTION_DIVERGENCE_ALLOWLIST above:
+# (class_name, field_name) tuples; each entry must carry a justification
+# comment. The allowlist is not a hiding place for drift.
+SAGE_CONFIG_DESCRIPTION_DIVERGENCE_ALLOWLIST: set[tuple[str, str]] = set()
+
+
+def _resolve_json_pointer(schema: dict, pointer: str) -> dict:
+    """Walk a `#/...`-style JSON pointer into a loaded schema dict.
+
+    Handles the subset of JSON Pointer used by SAGE_CONFIG_CLASS_TO_SCHEMA:
+    plain object property steps separated by `/`. The pointer always starts
+    with `#`; trailing path is dereferenced step by step.
+    """
+    if pointer == "#":
+        return schema
+    assert pointer.startswith("#/"), f"expected fragment pointer, got {pointer!r}"
+    node: dict = schema
+    for step in pointer[2:].split("/"):
+        assert isinstance(node, dict), (
+            f"non-object node at intermediate step of pointer {pointer!r}"
+        )
+        node = node[step]
+    return node
+
+
+def test_every_sage_config_field_has_description():
+    """Every BaseModel field in sage.config declares Field(description=...).
+
+    Mirror of test_every_pydantic_field_has_description (T-0034), scoped to
+    sage.config rather than sage.models.schemas. Closes the gap surfaced as
+    an F4 finding during the T-0041 commit-time cas-code-review pass: the
+    T-0034 module walk does not reach sage.config, so the vault-config
+    Pydantic models could carry zero descriptions without tripping any
+    existing gate. Per CAS-ADR-008 these models derive from the JSON
+    Schemas under docs/fs/sage/, so missing descriptions are drift from
+    the formal substrate authority.
+    """
+    from pydantic import BaseModel
+
+    from sage import config as sage_config_module
+
+    issues: list[str] = []
+    for name in dir(sage_config_module):
+        if name.startswith("_"):
+            continue
+        obj = getattr(sage_config_module, name)
+        if not (isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel):
+            continue
+        for field_name, field_info in obj.model_fields.items():
+            description = field_info.description
+            if not (isinstance(description, str) and description.strip()):
+                issues.append(f"{name}.{field_name}: missing Field(description=...)")
+
+    assert not issues, "sage.config models missing field descriptions:\n  " + "\n  ".join(issues)
+
+
+def test_sage_config_descriptions_match_json_schema_verbatim():
+    """For every (PydanticClass, field) pair in sage.config, the
+    Field(description=...) text equals the corresponding property
+    description in docs/fs/sage/*.schema.json verbatim (after whitespace
+    normalization).
+
+    Mirror of test_pydantic_descriptions_match_yaml_verbatim (T-0041) on
+    the JSON-Schema side: that test only compares OpenAPI YAML <-> Pydantic
+    and never reaches the vault-config schemas. Per CAS-ADR-008 the JSON
+    Schemas are the formal substrate authority for vault configuration;
+    sage.config descriptions must track them.
+
+    The class-to-schema mapping lives in SAGE_CONFIG_CLASS_TO_SCHEMA above;
+    each entry resolves to a `properties` mapping whose keys must match
+    Pydantic field names one-for-one. Intentional divergences require an
+    entry in SAGE_CONFIG_DESCRIPTION_DIVERGENCE_ALLOWLIST with
+    justification.
+    """
+    from pydantic import BaseModel
+
+    from sage import config as sage_config_module
+
+    schema_cache: dict[str, dict] = {}
+    issues: list[str] = []
+
+    for class_name, schema_rel_path, pointer in SAGE_CONFIG_CLASS_TO_SCHEMA:
+        model = getattr(sage_config_module, class_name, None)
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            issues.append(f"{class_name}: not found in sage.config or not a BaseModel")
+            continue
+
+        if schema_rel_path not in schema_cache:
+            schema_path = SUBSTRATE_ROOT / schema_rel_path
+            schema_cache[schema_rel_path] = json.loads(schema_path.read_text())
+        schema = schema_cache[schema_rel_path]
+
+        node = _resolve_json_pointer(schema, pointer)
+        properties = node.get("properties") or {}
+
+        for field_name, field_info in model.model_fields.items():
+            if (class_name, field_name) in SAGE_CONFIG_DESCRIPTION_DIVERGENCE_ALLOWLIST:
+                continue
+            schema_prop = properties.get(field_name)
+            if not isinstance(schema_prop, dict):
+                issues.append(
+                    f"{schema_rel_path} {class_name}.{field_name}:\n"
+                    f"    JSON Schema: no property {field_name!r} at {pointer}\n"
+                    f"    Pydantic:    {_norm_description(field_info.description)!r}"
+                )
+                continue
+            json_norm = _norm_description(schema_prop.get("description"))
+            pyd_norm = _norm_description(field_info.description)
+            if json_norm != pyd_norm:
+                issues.append(
+                    f"{schema_rel_path} {class_name}.{field_name}:\n"
+                    f"    JSON Schema: {json_norm!r}\n"
+                    f"    Pydantic:    {pyd_norm!r}"
+                )
+
+    assert not issues, (
+        "sage.config Field(description=...) text diverges from JSON Schema "
+        "(formal substrate is authoritative per CAS-ADR-008; sync verbatim "
+        "or add an entry to SAGE_CONFIG_DESCRIPTION_DIVERGENCE_ALLOWLIST "
+        "with justification):\n" + "\n".join(issues)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 6: YAML components/schemas have parity-checked Pydantic counterparts
 # ---------------------------------------------------------------------------
 

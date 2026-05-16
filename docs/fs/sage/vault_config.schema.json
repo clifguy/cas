@@ -22,6 +22,10 @@
           "type": "string",
           "description": "Human-readable display name for this vault."
         },
+        "description": {
+          "type": "string",
+          "description": "Optional free-text description of this vault's purpose, surfaced in vault-listing UIs (e.g., the CAS Application dashboard). Null or absent when not set."
+        },
         "owner": {
           "type": "string",
           "description": "User or team that owns this vault."
@@ -116,6 +120,16 @@
           "type": "integer",
           "minimum": 50,
           "description": "Upper bound on abstract length in tokens. Actual length is density-proportional."
+        },
+        "base_abstract_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum token floor for the density-proportional abstract budget. Combined with tokens_per_word as `min(base_abstract_tokens + word_count * tokens_per_word, max_abstract_tokens)` to set the per-document budget."
+        },
+        "tokens_per_word": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Per-word scaling factor for the density-proportional abstract budget. Combined with base_abstract_tokens as `min(base_abstract_tokens + word_count * tokens_per_word, max_abstract_tokens)` to set the per-document budget."
         }
       }
     },
