@@ -11,6 +11,7 @@ Usage:
     python -m sage.mcp_server <config1.yaml> [config2.yaml ...]
 """
 
+import json as _json
 import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -155,15 +156,64 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         _vaults.clear()
 
 
+def _envelope_error_kind(result: Any) -> str | None:
+    """Return the SAGE error-envelope kind from a FastMCP call_tool result, or None.
+
+    SAGE tools return error envelopes as `{"error": "<code>", "message": "..."}`
+    dicts (see `_error_response`). At the `_LoggingFastMCP.call_tool` layer the
+    dict has already passed through FastMCP's `_convert_to_content`, which
+    JSON-serializes it and wraps the result in
+    `[TextContent(type="text", text=<json>)]`. The production return shape is
+    therefore a single-element list of `TextContent`, not the raw dict — see
+    `mcp.server.fastmcp.utilities.func_metadata._convert_to_content`.
+
+    Three shapes are checked:
+    - `Sequence[ContentBlock]` (production): JSON-parse each text block and
+      look for the `"error"` key.
+    - `dict` (defensive): direct `"error"` key — covers a future FastMCP that
+      stops wrapping, and matches the unit test that mocks `super().call_tool`
+      to return a raw dict.
+    - `CallToolResult.isError` (defensive, per MCP spec): when a tool returns
+      a `CallToolResult` directly, FastMCP passes it through unwrapped.
+    """
+    if getattr(result, "isError", False):
+        return "is_error"
+    if isinstance(result, dict) and "error" in result:
+        return str(result["error"])
+    if isinstance(result, Sequence) and not isinstance(result, str | bytes):
+        for block in result:
+            if getattr(block, "type", None) != "text":
+                continue
+            text = getattr(block, "text", None)
+            if not isinstance(text, str):
+                continue
+            try:
+                payload = _json.loads(text)
+            except (_json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(payload, dict) and "error" in payload:
+                return str(payload["error"])
+    return None
+
+
 class _LoggingFastMCP(FastMCP):
-    """FastMCP subclass that emits one INFO log line per dispatched tool call.
+    """FastMCP subclass that distinguishes tool outcomes in the console log.
 
     T-0061: the underlying uvicorn access log shows every tool call as
     `POST /mcp/messages/?session_id=...` — uninformative because the tool
     name lives in the JSON-RPC body, not the URL. Overriding the single
     dispatch point (`FastMCP.call_tool`, wired in `_setup_handlers`)
     surfaces the tool name in the console without touching individual
-    `@mcp.tool()` registrations.
+    `@mcp.tool()` registrations. Three outcomes get three log shapes:
+
+    - success → one INFO line (`mcp tool: <name>`).
+    - envelope-error → INFO plus one WARNING line
+      (`mcp tool error: <name> (<error_kind>)`); the result is returned to the
+      caller unchanged. The envelope is detected via `_envelope_error_kind`,
+      which handles the production `[TextContent(text=<json>)]` shape that
+      FastMCP wraps SAGE dict returns into. [T-0064]
+    - raised exception → INFO plus one ERROR line
+      (`mcp tool failed: <name>`) with traceback, and re-raise.
     """
 
     async def call_tool(
@@ -172,10 +222,14 @@ class _LoggingFastMCP(FastMCP):
         logger = _logging.getLogger(__name__)
         logger.info("mcp tool: %s", name)
         try:
-            return await super().call_tool(name, arguments)
+            result = await super().call_tool(name, arguments)
         except Exception:
             logger.exception("mcp tool failed: %s", name)
             raise
+        error_kind = _envelope_error_kind(result)
+        if error_kind is not None:
+            logger.warning("mcp tool error: %s (%s)", name, error_kind)
+        return result
 
 
 mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan)
