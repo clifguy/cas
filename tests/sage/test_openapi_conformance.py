@@ -20,6 +20,7 @@ These tests catch drift in either direction:
 Run via: pytest tests/sage/test_openapi_conformance.py
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,36 @@ def _operations(spec: dict | None) -> set[tuple[str, str]]:
     return ops
 
 
+def _yaml_non_2xx_responses(
+    spec: dict | None,
+) -> list[tuple[str, str, str, str]]:
+    """(path, method, status, yaml_description) for every non-2xx response
+    declared in `spec`, excluding SPEC_FORWARD_DECLARATIONS.
+
+    Used to build the parametrize list for the error-envelope conformance
+    test. `default` and other non-numeric response keys are skipped --
+    only numeric HTTP statuses outside _SUCCESS_STATUSES qualify.
+    """
+    out: list[tuple[str, str, str, str]] = []
+    if spec is None:
+        return out
+    for path, path_item in (spec.get("paths") or {}).items():
+        if path in _INFRA_PATHS:
+            continue
+        for method, operation in (path_item or {}).items():
+            method_lower = method.lower()
+            if method_lower not in _HTTP_METHODS:
+                continue
+            if (path, method_lower) in SPEC_FORWARD_DECLARATIONS:
+                continue
+            for status, response in (operation.get("responses") or {}).items():
+                if not status.isdigit() or status in _SUCCESS_STATUSES:
+                    continue
+                description = (response or {}).get("description", "") or ""
+                out.append((path, method_lower, status, description))
+    return out
+
+
 @pytest.fixture(scope="module")
 def sage_core_spec() -> dict | None:
     """Parsed SAGE Core API spec, or None if the file is missing."""
@@ -179,6 +210,16 @@ def app_operations() -> set[tuple[str, str]]:
             if method_lower in _HTTP_METHODS:
                 ops.add((normalized, method_lower))
     return ops
+
+
+@pytest.fixture(scope="module")
+def live_openapi() -> dict:
+    """Live /openapi.json dict produced by create_app().
+
+    Module-scoped so the FastAPI app and its OpenAPI dict are built once
+    for the whole module rather than per parametrized case.
+    """
+    return create_app().openapi()
 
 
 @pytest.fixture(scope="module")
@@ -274,6 +315,70 @@ def test_every_documented_operation_has_response_schema(
 
     assert not issues, (
         f"{spec_fixture}: documented operations missing response schemas:\n" + "\n".join(issues)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 2a: Live /openapi.json matches YAML non-2xx error envelopes (T-0055)
+# ---------------------------------------------------------------------------
+
+
+_YAML_NON_2XX_OPERATIONS = _yaml_non_2xx_responses(_load_spec(SAGE_CORE_SPEC_PATH))
+
+
+def _norm_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+@pytest.mark.parametrize(
+    "path,method,status,yaml_description",
+    _YAML_NON_2XX_OPERATIONS,
+    ids=[f"{m.upper()} {p} -> {s}" for (p, m, s, _d) in _YAML_NON_2XX_OPERATIONS],
+)
+def test_live_openapi_matches_yaml_error_envelope(
+    path: str,
+    method: str,
+    status: str,
+    yaml_description: str,
+    live_openapi: dict,
+):
+    """For every non-2xx status declared in sage_core_api.openapi.yaml,
+    the live /openapi.json produced by create_app():
+
+    1. declares the same status code on the same (path, method);
+    2. points the response at #/components/schemas/ErrorResponse via $ref;
+    3. carries a description matching the YAML description after
+       whitespace normalization (re.sub(r'\\s+', ' ', s).strip()).
+
+    Regression gate for T-0054. Per-operation parametrization so failures
+    attribute to one (path, method, status) rather than aggregating into a
+    single multi-line message. Forward-declared operations
+    (SPEC_FORWARD_DECLARATIONS) are excluded at parametrize-build time.
+    """
+    live_path = (live_openapi.get("paths") or {}).get(path)
+    assert live_path is not None, f"Live /openapi.json is missing path {path!r} declared by YAML"
+
+    operation = live_path.get(method)
+    assert operation is not None, f"Live /openapi.json is missing operation {method.upper()} {path}"
+
+    responses = operation.get("responses") or {}
+    assert status in responses, (
+        f"{method.upper()} {path}: live spec is missing response {status} "
+        f"declared by YAML (router likely dropped its responses= entry)"
+    )
+
+    response = responses[status] or {}
+    schema = ((response.get("content") or {}).get("application/json") or {}).get("schema") or {}
+    assert schema.get("$ref") == "#/components/schemas/ErrorResponse", (
+        f"{method.upper()} {path}: {status} response must $ref "
+        f"#/components/schemas/ErrorResponse, got {schema!r}"
+    )
+
+    live_description = response.get("description", "") or ""
+    assert _norm_ws(live_description) == _norm_ws(yaml_description), (
+        f"{method.upper()} {path}: {status} description drift\n"
+        f"  YAML: {_norm_ws(yaml_description)!r}\n"
+        f"  live: {_norm_ws(live_description)!r}"
     )
 
 
