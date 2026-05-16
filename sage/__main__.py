@@ -55,6 +55,25 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
     return Path.home() / "sage_vaults"
 
 
+class _DropMcpMessagesAccessLogs(_logging.Filter):
+    """Drop uvicorn.access records for /mcp/messages/ (T-0063).
+
+    The MCP SSE transport hits this endpoint on every JSON-RPC message
+    (often twice per logical tool call, plus extras for notifications).
+    T-0061's ``_LoggingFastMCP.call_tool`` override already surfaces
+    the tool name; these access lines add no signal beyond that.
+    """
+
+    def filter(self, record: _logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 3:
+            return True
+        path = args[2]
+        if not isinstance(path, str):
+            return True
+        return not path.startswith("/mcp/messages/")
+
+
 # Uvicorn's default log_config with a timestamp prefix added, matching the
 # `[MM/DD/YY HH:MM:SS]` style RichHandler installs for the rest of the
 # process. `propagate=False` keeps these records out of the root logger so
@@ -62,6 +81,9 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
 UVICORN_LOG_CONFIG: dict = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "drop_mcp_messages": {"()": "sage.__main__._DropMcpMessagesAccessLogs"},
+    },
     "formatters": {
         "default": {
             "()": "uvicorn.logging.DefaultFormatter",
@@ -92,6 +114,7 @@ UVICORN_LOG_CONFIG: dict = {
         "uvicorn.error": {"level": "INFO"},
         "uvicorn.access": {
             "handlers": ["access"],
+            "filters": ["drop_mcp_messages"],
             "level": "INFO",
             "propagate": False,
         },
