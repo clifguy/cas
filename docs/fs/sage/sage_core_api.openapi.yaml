@@ -2186,9 +2186,7 @@ components:
       required:
         - id
         - source_id
-        - target_id
         - edge_type
-        - resolution_policy
         - created_at
       properties:
         id:
@@ -2211,11 +2209,14 @@ components:
           $ref: "#/components/schemas/EdgeType"
         resolution_policy:
           $ref: "#/components/schemas/ResolutionPolicy"
+          nullable: true
           description: >-
             Effective resolution policy, copied from the vault's
             edge_type_registry at edge creation time. Frozen on the
             row so later registry edits do not retroactively change
-            resolution behavior for existing edges.
+            resolution behavior for existing edges. Null when an Edge
+            is constructed without policy resolution (e.g., the
+            traversal-node Edge views returned by sage_traverse).
         source_valid_from_version:
           type: string
           nullable: true
