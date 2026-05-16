@@ -209,6 +209,7 @@ components:
     ScanRequest:
       type: object
       required: [vault_id, directory]
+      description: Request body for the directory-scan endpoint.
       properties:
         vault_id:
           type: string
@@ -231,11 +232,13 @@ components:
     ScanResponse:
       type: object
       required: [files, warnings]
+      description: Response body for the directory-scan endpoint; lists per-file scan results and any non-fatal warnings.
       properties:
         files:
           type: array
           items:
             $ref: "#/components/schemas/ScanResultResponse"
+          description: Per-file scan results in directory-walk order.
         warnings:
           type: array
           items:
@@ -249,6 +252,7 @@ components:
     ScanResultResponse:
       type: object
       required: [file_path, file_hash, source_modified_at, parsed_metadata, sage_status]
+      description: One per-file result inside a scan response; carries identity, parsed metadata, and the vault-relative ingestion status.
       properties:
         file_path:
           type: string
@@ -276,6 +280,7 @@ components:
     ParsedMetadata:
       type: object
       required: [title]
+      description: Filename-derived metadata for one file; surfaced inside scan results and used as caller-authoritative input to ingest.
       properties:
         title:
           type: string
@@ -316,6 +321,7 @@ components:
     IngestRequest:
       type: object
       required: [vault_id, files]
+      description: Request body for the batch-ingest endpoint; identifies the target vault and the files to ingest with optional edge inference.
       properties:
         vault_id:
           type: string
@@ -337,6 +343,7 @@ components:
     IngestFileItem:
       type: object
       required: [file_path, adapter]
+      description: One file entry in a batch-ingest request; pairs a path with its adapter and optional caller-supplied parsed metadata.
       properties:
         file_path:
           type: string
@@ -357,6 +364,7 @@ components:
         event_type:
           type: string
           enum: [progress]
+          description: Discriminator for the SSE event payload variant; always 'progress'.
         file_index:
           type: integer
           description: Zero-based index of this file in the batch.
@@ -365,6 +373,7 @@ components:
           description: Total file count in the batch.
         filename:
           type: string
+          description: Filename this progress event refers to.
         stage:
           type: string
           enum: [projection]
@@ -372,6 +381,7 @@ components:
         status:
           type: string
           enum: [started, completed, failed]
+          description: Per-file processing status the event reports.
         document_id:
           type: string
           description: Set when status="completed". Document ID assigned by SAGE.
@@ -401,9 +411,11 @@ components:
         event_type:
           type: string
           enum: [summary]
+          description: Discriminator for the SSE event payload variant; always 'summary'.
         documents_created:
           type: object
           required: [new, new_version]
+          description: Document-creation counts for this batch, split by whether the document opens a chain or extends one.
           properties:
             new:
               type: integer
@@ -434,6 +446,7 @@ components:
           description: Edges in the original plan that were dropped because their referenced files failed to ingest.
         abstracts_generated:
           type: integer
+          description: Number of documents for which a semantic abstract was generated during this batch.
         abstracts_deferred:
           type: integer
           description: >-
@@ -441,11 +454,13 @@ components:
             or abstraction disabled in vault config).
         error_count:
           type: integer
+          description: Total number of per-file errors recorded during the batch.
         errors:
           type: array
           items:
             type: object
             description: Per-file error record (filename, error message).
+          description: Per-file error records for files that failed to ingest in this batch.
         edge_warnings:
           type: array
           items:
@@ -461,14 +476,18 @@ components:
     ErrorResponse:
       type: object
       required: [code, message]
+      description: >-
+        Common error envelope returned by every CAS Application API endpoint
+        for non-2xx responses. Mirrors the SAGE Core API ErrorResponse and
+        reuses the same Pydantic class (sage.models.schemas.ErrorResponse).
       properties:
         code:
           type: string
-          description: Machine-readable error code (e.g. vault_not_found).
+          description: Machine-readable error code (e.g., "invalid_lifecycle_transition", "document_not_found", "editor_permission_denied").
         message:
           type: string
-          description: Human-readable error message.
+          description: Human-readable error description.
         detail:
           type: object
           nullable: true
-          description: Optional structured error detail.
+          description: Additional context. Structure varies by error type (e.g., current_state and attempted_action for lifecycle transition errors).

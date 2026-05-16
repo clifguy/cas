@@ -20,6 +20,7 @@ These tests catch drift in either direction:
 Run via: pytest tests/sage/test_openapi_conformance.py
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -32,6 +33,8 @@ from sage.app import create_app
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
 CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
+SUBSTRATE_ROOT = _REPO_ROOT / "docs" / "fs"
+SUBSTRATE_MANIFEST_PATH = SUBSTRATE_ROOT / "manifest.json"
 
 # Paths exposed by FastAPI/Starlette infrastructure that are not part of
 # any documented API surface.
@@ -469,6 +472,328 @@ def test_every_pydantic_field_has_description():
                 issues.append(f"{name}.{field_name}: missing Field(description=...)")
 
     assert not issues, "Pydantic models missing field descriptions:\n  " + "\n  ".join(issues)
+
+
+# ---------------------------------------------------------------------------
+# Test 5a: Every property in docs/fs/ OpenAPI YAML and JSON Schema files has a
+# description (T-0041)
+# ---------------------------------------------------------------------------
+
+
+def _has_nonempty_description(node: object) -> bool:
+    """True iff `node` is a dict carrying a non-empty `description` string."""
+    if not isinstance(node, dict):
+        return False
+    desc = node.get("description")
+    return isinstance(desc, str) and bool(desc.strip())
+
+
+def _is_pure_ref(node: object) -> bool:
+    """A property schema that is a bare $ref inherits its description from
+    the referenced schema; the description requirement does not apply to
+    the property site itself.
+    """
+    return isinstance(node, dict) and set(node.keys()) == {"$ref"}
+
+
+def _walk_substrate_schema(
+    node: object,
+    pointer: str,
+    file_label: str,
+    issues: list[str],
+) -> None:
+    """Recursively walk a JSON-Schema-ish dict, recording missing
+    descriptions on every leaf inside a `properties` mapping. Also
+    recurses through standard combinators (allOf, oneOf, anyOf), `items`,
+    dict-valued `additionalProperties`, `$defs`, and `definitions`. The
+    description requirement applies to property schemas only; intermediate
+    object subschemas are checked through their own properties, not as
+    schemas in their own right.
+
+    `if`/`then`/`else` blocks are intentionally not recursed into: in
+    JSON Schema 2020-12 they encode conditional validation constraints
+    (e.g., "when event_type matches this enum, require these fields"),
+    so `properties` inside them references *existing* fields by name to
+    match constraints, not to define new ones. The same field's true
+    definition (with its description) lives in the schema's main
+    `properties` block, which the walker reaches via the normal path.
+    """
+    if not isinstance(node, dict):
+        return
+
+    properties = node.get("properties")
+    if isinstance(properties, dict):
+        for prop_name, prop_schema in properties.items():
+            prop_pointer = f"{pointer}/properties/{prop_name}"
+            if isinstance(prop_schema, dict) and not _is_pure_ref(prop_schema):
+                if not _has_nonempty_description(prop_schema):
+                    issues.append(f"{file_label}::{prop_pointer}")
+            _walk_substrate_schema(prop_schema, prop_pointer, file_label, issues)
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        _walk_substrate_schema(items, f"{pointer}/items", file_label, issues)
+    elif isinstance(items, list):
+        for i, item in enumerate(items):
+            _walk_substrate_schema(item, f"{pointer}/items/{i}", file_label, issues)
+
+    add_props = node.get("additionalProperties")
+    if isinstance(add_props, dict):
+        _walk_substrate_schema(add_props, f"{pointer}/additionalProperties", file_label, issues)
+
+    for combinator in ("allOf", "oneOf", "anyOf"):
+        members = node.get(combinator)
+        if isinstance(members, list):
+            for i, member in enumerate(members):
+                _walk_substrate_schema(member, f"{pointer}/{combinator}/{i}", file_label, issues)
+
+    for defs_key in ("$defs", "definitions"):
+        defs = node.get(defs_key)
+        if isinstance(defs, dict):
+            for name, def_schema in defs.items():
+                _walk_substrate_schema(
+                    def_schema, f"{pointer}/{defs_key}/{name}", file_label, issues
+                )
+
+
+def test_every_substrate_property_has_description():
+    """Every OpenAPI components/schemas entry and every JSON Schema root
+    in `docs/fs/`, and every property at every nesting depth, carries a
+    non-empty `description`.
+
+    YAML/JSON-side counterpart to test_every_pydantic_field_has_description
+    (T-0034). docs/fs/ is the formal substrate authority per CAS-ADR-008;
+    Pydantic descriptions are derived from these files, so any gap here
+    propagates to the rendered /docs page when the corresponding Pydantic
+    Field reuses the same text.
+
+    Walks every file referenced by `docs/fs/manifest.json`. Bare-$ref
+    property schemas are exempt at the property site (the referenced
+    schema's own description applies).
+    """
+    manifest = json.loads(SUBSTRATE_MANIFEST_PATH.read_text())
+
+    missing_files: list[str] = []
+    issues: list[str] = []
+
+    for entry in manifest["schemas"]:
+        rel_path = entry["path"]
+        file_path = SUBSTRATE_ROOT / rel_path
+        if not file_path.exists():
+            missing_files.append(rel_path)
+            continue
+
+        if rel_path.endswith(".openapi.yaml"):
+            spec = yaml.safe_load(file_path.read_text())
+            components_schemas = (spec.get("components") or {}).get("schemas") or {}
+            for schema_name, schema_def in components_schemas.items():
+                pointer = f"#/components/schemas/{schema_name}"
+                if not _has_nonempty_description(schema_def):
+                    issues.append(f"{rel_path}::{pointer}")
+                _walk_substrate_schema(schema_def, pointer, rel_path, issues)
+        elif rel_path.endswith(".schema.json"):
+            schema = json.loads(file_path.read_text())
+            if not _has_nonempty_description(schema):
+                issues.append(f"{rel_path}::#")
+            _walk_substrate_schema(schema, "#", rel_path, issues)
+        else:
+            issues.append(
+                f"{rel_path}: unknown substrate file extension; expected "
+                f".openapi.yaml or .schema.json"
+            )
+
+    msg_lines: list[str] = []
+    if missing_files:
+        msg_lines.append(
+            "Manifest references files that do not exist on disk "
+            "(filename drift; align manifest.json with the on-disk path):"
+        )
+        for path in sorted(missing_files):
+            msg_lines.append(f"  {path}")
+    if issues:
+        msg_lines.append(
+            "Substrate schemas/properties missing `description` "
+            "(formal substrate authority per CAS-ADR-008):"
+        )
+        for line in sorted(issues):
+            msg_lines.append(f"  {line}")
+
+    assert not msg_lines, "\n".join(msg_lines)
+
+
+# ---------------------------------------------------------------------------
+# Test 5b: Pydantic Field descriptions match YAML verbatim (T-0041)
+# ---------------------------------------------------------------------------
+
+
+def _norm_description(text: object) -> str:
+    """Normalize a description string for verbatim comparison.
+
+    Collapses YAML folded-scalar whitespace and Pydantic implicit
+    string-literal concatenation to the same canonical form. Non-string
+    inputs (None, missing) collapse to empty string so divergences
+    surface as a textual mismatch rather than a TypeError.
+    """
+    if not isinstance(text, str):
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+# Pydantic fields whose description is intentionally allowed to diverge
+# from the same-named YAML property description. Entries are
+# (schema_name, field_name) tuples; each must carry a justification
+# comment explaining why the divergence is intentional. The allowlist
+# is not a hiding place for drift -- entries require a defensible
+# architectural reason.
+DESCRIPTION_DIVERGENCE_ALLOWLIST: set[tuple[str, str]] = set()
+
+
+def _yaml_field_descriptions(spec: dict | None) -> dict[str, dict[str, str]]:
+    """Build {schema_name: {field_name: yaml_description}} from a spec.
+
+    Resolves `allOf` composition via `_flatten_yaml_properties`. Properties
+    that are a pure `$ref` (one-key dict) are excluded from the returned
+    map: the description belongs to the referenced schema, not the
+    property site, and the verbatim-equality test would otherwise flag
+    legitimate Pydantic-side context as a divergence. Properties with a
+    missing or empty description contribute an empty string so divergences
+    surface as text mismatches.
+    """
+    if spec is None:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    components_schemas = (spec.get("components") or {}).get("schemas") or {}
+    for schema_name, schema_def in components_schemas.items():
+        flat = _flatten_yaml_properties(schema_def, spec)
+        field_map: dict[str, str] = {}
+        for prop_name, prop_schema in flat.items():
+            if isinstance(prop_schema, dict):
+                if _is_pure_ref(prop_schema):
+                    continue
+                desc = prop_schema.get("description")
+                field_map[prop_name] = desc if isinstance(desc, str) else ""
+            else:
+                field_map[prop_name] = ""
+        out[schema_name] = field_map
+    return out
+
+
+def _check_pydantic_yaml_description_parity(
+    yaml_descriptions: dict[str, dict[str, str]],
+    pydantic_classes: dict[str, type],
+    yaml_only_forward_declarations: set[str],
+    spec_label: str,
+) -> list[str]:
+    """Compare YAML property descriptions to Pydantic Field descriptions
+    for every same-named (schema, field) pair. Returns a list of
+    human-readable divergence messages; empty list means full parity.
+    """
+    from pydantic import BaseModel
+
+    issues: list[str] = []
+    for schema_name, field_map in yaml_descriptions.items():
+        if schema_name in yaml_only_forward_declarations:
+            continue
+        if schema_name not in pydantic_classes:
+            # Coverage gap is reported by test_every_yaml_schema_has_pydantic_class.
+            continue
+        model = pydantic_classes[schema_name]
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            continue
+        for field_name, yaml_desc in field_map.items():
+            if (schema_name, field_name) in DESCRIPTION_DIVERGENCE_ALLOWLIST:
+                continue
+            field_info = model.model_fields.get(field_name)
+            if field_info is None:
+                # Field-coverage gap is reported by the parity tests
+                # (Tests 6 / 6b). Skip here to avoid double-reporting.
+                continue
+            pyd_desc = field_info.description
+            yaml_norm = _norm_description(yaml_desc)
+            pyd_norm = _norm_description(pyd_desc)
+            if yaml_norm != pyd_norm:
+                issues.append(
+                    f"{spec_label} {schema_name}.{field_name}:\n"
+                    f"    YAML:    {yaml_norm!r}\n"
+                    f"    Pydantic: {pyd_norm!r}"
+                )
+    return issues
+
+
+def test_pydantic_descriptions_match_yaml_verbatim(
+    sage_core_spec: dict | None,
+    cas_app_spec: dict | None,
+):
+    """For every same-named (schema, field) pair across the SAGE Core API
+    YAML and `sage.models.schemas`, and across the CAS App API YAML and
+    `app.backend.{models,router}`, the Pydantic Field(description=...)
+    text equals the YAML property description verbatim (after whitespace
+    normalization).
+
+    Closes the drift class T-0041 left open: T-0034 authored Pydantic
+    descriptions independently while YAML descriptions were absent;
+    T-0041 filled the YAML gaps. Without this gate, the two sides can
+    silently diverge because no existing test asserts text equality --
+    only presence on each side. Per CAS-ADR-008 the YAML is authoritative,
+    so Pydantic is expected to match it.
+
+    Intentional divergences live in DESCRIPTION_DIVERGENCE_ALLOWLIST with
+    a justification comment.
+    """
+    from pydantic import BaseModel
+
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
+
+    from sage.models import schemas as sage_schemas_module
+
+    sage_classes: dict[str, type[BaseModel]] = {}
+    for name in dir(sage_schemas_module):
+        if name.startswith("_"):
+            continue
+        obj = getattr(sage_schemas_module, name)
+        if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+            sage_classes[name] = obj
+
+    from app.backend import models as app_models_module
+    from app.backend import router as app_router_module
+
+    cas_app_classes: dict[str, type[BaseModel]] = {}
+    for module in (app_models_module, app_router_module):
+        for name in dir(module):
+            if name.startswith("_"):
+                continue
+            obj = getattr(module, name)
+            if isinstance(obj, type) and issubclass(obj, BaseModel) and obj is not BaseModel:
+                cas_app_classes[name] = obj
+
+    sage_yaml_descs = _yaml_field_descriptions(sage_core_spec)
+    cas_yaml_descs = _yaml_field_descriptions(cas_app_spec)
+
+    issues: list[str] = []
+    issues.extend(
+        _check_pydantic_yaml_description_parity(
+            sage_yaml_descs,
+            sage_classes,
+            YAML_ONLY_FORWARD_DECLARATIONS,
+            spec_label="sage_core_api",
+        )
+    )
+    issues.extend(
+        _check_pydantic_yaml_description_parity(
+            cas_yaml_descs,
+            cas_app_classes,
+            CAS_APP_YAML_ONLY_FORWARD_DECLARATIONS,
+            spec_label="cas_app_api",
+        )
+    )
+
+    assert not issues, (
+        "Pydantic Field(description=...) text diverges from YAML "
+        "(formal substrate is authoritative per CAS-ADR-008; sync verbatim "
+        "or add an entry to DESCRIPTION_DIVERGENCE_ALLOWLIST with justification):\n"
+        + "\n".join(issues)
+    )
 
 
 # ---------------------------------------------------------------------------

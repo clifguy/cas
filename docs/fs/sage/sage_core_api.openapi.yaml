@@ -2142,25 +2142,32 @@ components:
       properties:
         id:
           type: string
+          description: Unique document identifier.
         title:
           type: string
+          description: Human-readable document title.
         lifecycle_status:
           type: string
+          description: Current lifecycle state of the document (active, archived, etc.).
         source_type:
           $ref: "#/components/schemas/SourceType"
         version_label:
           type: string
           nullable: true
+          description: Caller-supplied version label for the document (e.g. "v1.2"); null when no version is tracked.
         project:
           type: string
           nullable: true
+          description: Project the document belongs to within the vault's domain; null when unscoped.
         doc_type:
           type: string
           nullable: true
+          description: Vault-domain document type from the doc_types vocabulary; null when not classified.
         tags:
           type: array
           items:
             type: string
+          description: Caller-supplied tags applied to the document.
         semantic_abstract:
           type: string
           nullable: true
@@ -2253,6 +2260,7 @@ components:
         created_at:
           type: string
           format: date-time
+          description: Timestamp when the edge was created.
         notes:
           type: string
           nullable: true
@@ -2281,11 +2289,13 @@ components:
           description: Immutable, assigned at registration.
         display_name:
           type: string
+          description: Human-readable name for the user (shown in audit logs and UIs).
         type:
           $ref: "#/components/schemas/UserType"
         created_at:
           type: string
           format: date-time
+          description: Timestamp when the user was registered.
 
     # -------------------------------------------------------------------------
     # Request Schemas
@@ -2317,6 +2327,9 @@ components:
         scope:
           $ref: "#/components/schemas/RetrievalScope"
           default: all
+          description: >-
+            Retrieval scope that narrows the candidate set before
+            relevance ranking. Default "all" applies no scope filter.
         filters:
           $ref: "#/components/schemas/RetrievalFilters"
         document_id:
@@ -2422,6 +2435,7 @@ components:
     SetLifecycleRequest:
       type: object
       required: [action]
+      description: Request body for the set-lifecycle endpoint; selects a lifecycle transition action and, when superseding, the replacement version.
       properties:
         action:
           type: string
@@ -2459,10 +2473,13 @@ components:
       properties:
         title:
           type: string
+          description: New human-readable title; omit to leave unchanged.
         version_label:
           type: string
+          description: New caller-supplied version label; omit to leave unchanged.
         project:
           type: string
+          description: New project scope for the document; omit to leave unchanged.
         tags:
           $ref: "#/components/schemas/TagsPatch"
         doc_type:
@@ -2471,6 +2488,7 @@ components:
         authority_scope:
           type: string
           nullable: true
+          description: New authority scope (read-classification scope used by access-control filtering); omit to leave unchanged.
         document_date:
           type: string
           format: date
@@ -2536,6 +2554,12 @@ components:
     IngestRequest:
       type: object
       required: [source, adapter]
+      description: >-
+        Request body for the ingest endpoint. Identifies the source
+        artifact and adapter to project it through, plus optional
+        caller-authoritative metadata, supersession hints, and
+        pipeline-control flags. See CAS-ADR-021 for the metadata
+        precedence chain.
       properties:
         source:
           type: string
@@ -2652,12 +2676,15 @@ components:
         title:
           type: string
           nullable: true
+          description: Title segment extracted from the filename; null when no title was captured.
         project:
           type: string
           nullable: true
+          description: Project code extracted from the filename via project_identifier; null when none captured.
         version_label:
           type: string
           nullable: true
+          description: Version label extracted from the filename; null when none captured.
         document_date:
           type: string
           nullable: true
@@ -2742,6 +2769,10 @@ components:
     TraverseRequest:
       type: object
       required: [start_id]
+      description: >-
+        Request body for the graph traversal endpoint. Walks the document
+        graph from a starting document along the specified edge type(s)
+        with chain-scoped resolution per CAS-ADR-017.
       properties:
         start_id:
           type: string
@@ -2758,6 +2789,7 @@ components:
         direction:
           $ref: "#/components/schemas/TraversalDirection"
           default: outbound
+          description: Traversal direction relative to the start document.
         depth:
           type: integer
           minimum: 1
@@ -2777,6 +2809,10 @@ components:
     ChainRequest:
       type: object
       required: [document_id, edge_type]
+      description: >-
+        Request body for the chain walk endpoint. Walks an edge chain in
+        both directions from the named document, returning an ordered
+        list of chain entries.
       properties:
         document_id:
           type: string
@@ -2792,6 +2828,7 @@ components:
     RegisterUserRequest:
       type: object
       required: [display_name, type]
+      description: Request body for the user-registration endpoint.
       properties:
         display_name:
           type: string
@@ -2802,6 +2839,7 @@ components:
     SetEditorsRequest:
       type: object
       required: [user_ids]
+      description: Request body for the set-editors endpoint that replaces the editor allowlist on a document.
       properties:
         user_ids:
           type: array
@@ -2814,6 +2852,7 @@ components:
     ExportProjectionRequest:
       type: object
       required: [output_path]
+      description: Request body for the export-projection endpoint that writes the document projection to a Markdown file.
       properties:
         output_path:
           type: string
@@ -2828,6 +2867,7 @@ components:
     DiscoverResponse:
       type: object
       required: [mode, results]
+      description: Response body for the discover endpoint; carries the retrieval mode used and the ordered list of hits.
       properties:
         mode:
           $ref: "#/components/schemas/RetrievalMode"
@@ -2835,6 +2875,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/DiscoverHit"
+          description: Retrieval hits, ordered by descending relevance (semantic/keyword) or by sort_by (catalog).
         total_available:
           type: integer
           description: >-
@@ -2965,6 +3006,7 @@ components:
     TraverseResponse:
       type: object
       required: [start_id, nodes]
+      description: Response body for the traverse endpoint; carries the discovered nodes with their incoming edges and edge-type counts.
       properties:
         start_id:
           type: string
@@ -2973,6 +3015,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TraversalNode"
+          description: Traversal nodes ordered by depth, then by edge insertion order.
         resolution_path:
           type: array
           nullable: true
@@ -3069,6 +3112,7 @@ components:
     ChainResponse:
       type: object
       required: [chain, head_id, tail_id, query_position, length, is_linear]
+      description: Response body for the chain walk endpoint; carries the ordered chain with head/tail anchors and a fork-detection flag.
       properties:
         chain:
           type: array
@@ -3102,17 +3146,21 @@ components:
     ChainEntry:
       type: object
       required: [id, title, lifecycle_status, position]
+      description: One entry in a chain walk result; identifies a document and its ordinal position within the chain.
       properties:
         id:
           type: string
           description: Document ID.
         title:
           type: string
+          description: Human-readable title of this chain entry's document.
         version_label:
           type: string
           nullable: true
+          description: Caller-supplied version label for this entry, when set; null otherwise.
         lifecycle_status:
           type: string
+          description: Lifecycle state of this entry's document at the time the chain was walked.
         document_date:
           type: string
           format: date
@@ -3127,9 +3175,11 @@ components:
     PreconditionResult:
       type: object
       required: [function_id, satisfied, checks]
+      description: Response body for the precondition-check endpoint; carries an aggregate satisfaction flag and per-target check details.
       properties:
         function_id:
           type: string
+          description: Identifier of the workflow function whose preconditions were checked.
         satisfied:
           type: boolean
           description: True if all dependencies are satisfied.
@@ -3137,10 +3187,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PreconditionCheck"
+          description: Per-target check results making up this precondition evaluation.
 
     PreconditionCheck:
       type: object
       required: [target_id, required, actual, satisfied]
+      description: One per-target check result inside a precondition evaluation.
       properties:
         target_id:
           type: string
@@ -3155,10 +3207,12 @@ components:
           description: Actual state found (e.g., "active", "not found").
         satisfied:
           type: boolean
+          description: True when the actual state meets the required condition for this target.
 
     EditorList:
       type: object
       required: [document_id, editors]
+      description: Response body for the get-editors endpoint; carries the document id and its current editor list.
       properties:
         document_id:
           type: string
@@ -3173,24 +3227,30 @@ components:
     EvalRetrievalResult:
       type: object
       required: [vault_id, passed, assertion_count, failure_count, failures]
+      description: Response body for the retrieval-eval endpoint; aggregates assertion outcomes for the vault's retrieval-health suite.
       properties:
         vault_id:
           type: string
+          description: Identifier of the vault whose assertions were evaluated.
         passed:
           type: boolean
           description: True if all assertions passed.
         assertion_count:
           type: integer
+          description: Total number of assertions evaluated.
         failure_count:
           type: integer
+          description: Number of assertions that did not pass.
         failures:
           type: array
           items:
             $ref: "#/components/schemas/AssertionFailure"
+          description: Per-assertion failure details.
 
     AssertionFailure:
       type: object
       required: [query, expected_document_id, top_k_checked, found]
+      description: One failing assertion from a retrieval-eval run.
       properties:
         query:
           type: string
@@ -3218,6 +3278,7 @@ components:
     VaultDocTypeEntry:
       type: object
       required: [value, label]
+      description: One entry in a vault summary's doc_types list; pairs the doc_type identifier with its UI-display label.
       properties:
         value:
           type: string
@@ -3229,11 +3290,14 @@ components:
     VaultLifecycleState:
       type: object
       required: [value, label, is_terminal]
+      description: One entry in a vault summary's lifecycle_states list; pairs a state value with its UI label and terminal flag.
       properties:
         value:
           type: string
+          description: Lifecycle state identifier (e.g. "active", "archived").
         label:
           type: string
+          description: Human-readable label for UI display.
         is_terminal:
           type: boolean
           description: Terminal states cannot be transitioned out of.
@@ -3241,6 +3305,7 @@ components:
     VaultAdapterInfo:
       type: object
       required: [source_type, enabled, extensions]
+      description: One entry in a vault summary's adapters list; reports a source-adapter's enablement and handled file extensions.
       properties:
         source_type:
           $ref: "#/components/schemas/SourceType"
@@ -3258,14 +3323,18 @@ components:
     VaultSummary:
       type: object
       required: [id, name, storage_root]
+      description: Compact vault description used in vault-listing responses; carries identity, configured doc types and lifecycle states, and adapter info.
       properties:
         id:
           type: string
+          description: Unique vault identifier.
         name:
           type: string
+          description: Human-readable vault name.
         description:
           type: string
           nullable: true
+          description: Vault-config description text; null when no description was authored.
         storage_root:
           type: string
           description: Path to the vault's source-file storage root.
@@ -3273,14 +3342,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/VaultDocTypeEntry"
+          description: Doc-type vocabulary configured for this vault.
         lifecycle_states:
           type: array
           items:
             $ref: "#/components/schemas/VaultLifecycleState"
+          description: Lifecycle states configured for this vault, in display order.
         adapters:
           type: array
           items:
             $ref: "#/components/schemas/VaultAdapterInfo"
+          description: Source adapters configured for this vault, with per-adapter enablement and handled extensions.
         projects:
           type: array
           items:
@@ -3296,6 +3368,7 @@ components:
         - pending_metadata_count
         - pending_edge_count
         - failed_ingestion_count
+      description: Aggregate health signals for a vault, surfaced inside vault-stats responses.
       properties:
         pending_metadata_count:
           type: integer
@@ -3327,29 +3400,37 @@ components:
         - lancedb_chunk_count
         - sqlite_size_bytes
         - health
+      description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
       properties:
         total_documents:
           type: integer
+          description: Total number of documents in the vault.
         by_lifecycle_state:
           type: object
           additionalProperties:
             type: integer
+          description: Document count per lifecycle state.
         by_doc_type:
           type: object
           additionalProperties:
             type: integer
+          description: Document count per doc_type.
         by_source_adapter:
           type: object
           additionalProperties:
             type: integer
+          description: Document count per source_type adapter.
         total_edges:
           type: integer
+          description: Total number of production edges in the vault graph.
         by_edge_type:
           type: object
           additionalProperties:
             type: integer
+          description: Edge count per edge_type.
         staging_edge_count:
           type: integer
+          description: Number of edges in the Tier 2 staging table awaiting review.
         lancedb_size_bytes:
           type: integer
           description: On-disk size of the LanceDB directory in bytes.
@@ -3374,6 +3455,7 @@ components:
     CreateVaultRequest:
       type: object
       required: [config]
+      description: Request body for the create-vault endpoint.
       properties:
         config:
           type: object
@@ -3394,42 +3476,52 @@ components:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the vault section of vault_config.yaml; structure per vault_config.schema.json. Omit to leave unchanged.
         document_types:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the document_types section; structure per document_types.schema.json. Omit to leave unchanged.
         lifecycle:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the lifecycle section; structure per lifecycle.schema.json. Omit to leave unchanged.
         source_adapters:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the source_adapters section; structure per source_adapters.schema.json. Omit to leave unchanged.
         metadata_extraction:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the metadata_extraction section; structure per metadata_extraction.schema.json. Omit to leave unchanged.
         edge_inference:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the edge_inference section; structure per edge_inference.schema.json. Omit to leave unchanged.
         abstraction:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the abstraction section of vault_config.yaml. Omit to leave unchanged.
         access_control_defaults:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the access_control_defaults section of vault_config.yaml. Omit to leave unchanged.
         retrieval_health:
           type: object
           nullable: true
           additionalProperties: true
+          description: Replacement for the retrieval_health section of vault_config.yaml. Omit to leave unchanged.
 
     UpdateVaultConfigResponse:
       type: object
       required: [status, vault_id, warnings]
+      description: Response body for the update-vault-config endpoint; confirms the update and surfaces any destructive-change warnings.
       properties:
         status:
           type: string
@@ -3453,6 +3545,7 @@ components:
     HashCheckRequest:
       type: object
       required: [hashes]
+      description: Request body for the hash-check endpoint; carries a batch of content hashes to test for existence in the vault.
       properties:
         hashes:
           type: array
@@ -3463,9 +3556,11 @@ components:
     HashCheckMatch:
       type: object
       required: [exists]
+      description: One per-hash result from a hash-check response; reports existence and (when present) the matching document id.
       properties:
         exists:
           type: boolean
+          description: True when a document with this hash already exists in the vault.
         document_id:
           type: string
           nullable: true
@@ -3478,13 +3573,17 @@ components:
     StagingEdge:
       type: object
       required: [id, source_id, target_id, edge_type, inference_evidence, created_at]
+      description: One entry in the staging-edges queue; carries an inferred edge awaiting human confirm/dismiss.
       properties:
         id:
           type: string
+          description: Unique identifier for this staging edge.
         source_id:
           type: string
+          description: Origin document id for the proposed edge.
         target_id:
           type: string
+          description: Target document id for the proposed edge.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
         inference_evidence:
@@ -3500,10 +3599,12 @@ components:
         created_at:
           type: string
           format: date-time
+          description: Timestamp when this staging edge was created.
 
     StagingEdgeConfirmResponse:
       type: object
       required: [confirmed, staging_edge_id, production_edge_id]
+      description: Response body for the confirm-staging-edge endpoint; reports the staging-to-production promotion outcome.
       properties:
         confirmed:
           type: boolean
@@ -3519,6 +3620,7 @@ components:
     StagingEdgeDismissResponse:
       type: object
       required: [dismissed, staging_edge_id]
+      description: Response body for the dismiss-staging-edge endpoint; confirms the staging edge was discarded.
       properties:
         dismissed:
           type: boolean
@@ -3535,6 +3637,7 @@ components:
     ExtractedField:
       type: object
       required: [source]
+      description: One per-field annotation surfaced inside a pending-metadata item; carries the inferred value and its origin.
       properties:
         value:
           type: string
@@ -3556,6 +3659,7 @@ components:
     PendingMetadataItem:
       type: object
       required: [document, extracted_fields]
+      description: One entry in the pending-metadata queue; pairs a document with the per-field annotations awaiting human confirmation.
       properties:
         document:
           $ref: "#/components/schemas/Document"
@@ -3575,21 +3679,28 @@ components:
     ReadProjectionResponse:
       type: object
       required: [document_id, title, lifecycle_status, source_path, projection_text]
+      description: Response body for the read-projection endpoint; returns the canonical text projection for a document along with identifying metadata.
       properties:
         document_id:
           type: string
+          description: Id of the document whose projection was read.
         title:
           type: string
+          description: Human-readable title of the document.
         version_label:
           type: string
           nullable: true
+          description: Caller-supplied version label for the document, when set; null otherwise.
         lifecycle_status:
           type: string
+          description: Current lifecycle state of the document.
         doc_type:
           type: string
           nullable: true
+          description: Vault-domain document type from the doc_types vocabulary; null when not classified.
         source_path:
           type: string
+          description: Vault-local path to the document's source file.
         projection_text:
           type: string
           description: >-
@@ -3598,22 +3709,28 @@ components:
     ReadSectionResponse:
       type: object
       required: [document_id, title, heading_path, chunk_count, section_text]
+      description: Response body for the read-section endpoint; returns the text spanned by a heading-path prefix within a document.
       properties:
         document_id:
           type: string
+          description: Id of the document whose section was read.
         title:
           type: string
+          description: Human-readable title of the document.
         heading_path:
           type: string
+          description: Heading-path prefix that scoped the section read.
         chunk_count:
           type: integer
           description: Number of chunks matched by the heading_path prefix.
         section_text:
           type: string
+          description: Concatenated text of all chunks under the heading path.
 
     OpenDocumentResponse:
       type: object
       required: [opened, path]
+      description: Response body for the open-document endpoint; confirms the OS opener was dispatched and reports the resolved file path.
       properties:
         opened:
           type: boolean
@@ -3630,6 +3747,7 @@ components:
     ExportProjectionResponse:
       type: object
       required: [document_id, output_path]
+      description: Response body for the export-projection endpoint; confirms the projection write and reports the resolved output path.
       properties:
         document_id:
           $ref: "#/components/schemas/DocumentId"
@@ -3641,6 +3759,7 @@ components:
     RefreshViewsResponse:
       type: object
       required: [vault_id, views_generated]
+      description: Response body for the refresh-views endpoint; reports the vault and the count of regenerated view artifacts.
       properties:
         vault_id:
           $ref: "#/components/schemas/VaultId"
@@ -3656,6 +3775,7 @@ components:
     UnlinkResponse:
       type: object
       required: [deleted, edge_id]
+      description: Response body for the unlink endpoint; confirms an edge was deleted and reports its id.
       properties:
         deleted:
           type: boolean

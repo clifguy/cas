@@ -179,8 +179,8 @@ class Document(BaseModel):
     lifecycle_status: str = Field(
         default="active",
         description=(
-            "Current lifecycle state. Uses the base LifecycleStatus values "
-            "(active, completed, archived) plus any vault-defined extensions."
+            "Current lifecycle state. Uses the base LifecycleStatus "
+            "enum plus any vault-defined extensions."
         ),
     )
     version_label: str | None = Field(
@@ -268,17 +268,18 @@ class Document(BaseModel):
     pipeline_error: str | None = Field(
         default=None,
         description=(
-            "Failure description when pipeline_status is 'failed'. Null when "
-            "pipeline has not failed. Contains the error message from the "
-            "failed pipeline stage (projection, indexing, or abstraction)."
+            'Failure description when pipeline_status is "failed". Null '
+            "when pipeline has not failed. Contains the error message "
+            "from the failed pipeline stage (projection, indexing, or "
+            "abstraction)."
         ),
     )
     tier3_metadata: dict | None = Field(
         default=None,
         description=(
-            "Per-doc_type typed metadata payload (Tier 3). Structure varies "
-            "by doc_type and is validated against the JSON Schema fragment "
-            "declared in vault config for the resolved doc_type."
+            "Source-type-specific metadata (Tier 3). Structure varies "
+            "by source_type. Stored as key-value pairs in the graph "
+            "store."
         ),
     )
     metadata_confirmed: bool = Field(
@@ -294,25 +295,37 @@ class Document(BaseModel):
 class DocumentSummary(BaseModel):
     """Compact document representation for list and search results."""
 
-    id: DocumentIdStr = Field(description="Document identifier.")
-    title: str = Field(description="Human-readable display name.")
-    lifecycle_status: str = Field(description="Current lifecycle state.")
+    id: DocumentIdStr = Field(description="Unique document identifier.")
+    title: str = Field(description="Human-readable document title.")
+    lifecycle_status: str = Field(
+        description="Current lifecycle state of the document (active, archived, etc.)."
+    )
     source_type: SourceType = Field(description="Source artifact format.")
     source_path: str | None = Field(
         default=None, description="Location of the original artifact, when present."
     )
     version_label: str | None = Field(
-        default=None, description="Human-readable version indicator, when present."
+        default=None,
+        description=(
+            'Caller-supplied version label for the document (e.g. "v1.2"); '
+            "null when no version is tracked."
+        ),
     )
     project: str | None = Field(
-        default=None, description="Project or workstream identifier, when present."
+        default=None,
+        description=(
+            "Project the document belongs to within the vault's domain; null when unscoped."
+        ),
     )
     doc_type: str | None = Field(
-        default=None, description="Vault-configured document type, when assigned."
+        default=None,
+        description=(
+            "Vault-domain document type from the doc_types vocabulary; null when not classified."
+        ),
     )
     tags: list[str] = Field(
         default_factory=list,
-        description="Freeform tags carried on the document.",
+        description="Caller-supplied tags applied to the document.",
     )
     document_date: datetime | None = Field(
         default=None,
@@ -356,9 +369,11 @@ class Edge(BaseModel):
         default=None,
         description=(
             "Effective resolution policy, copied from the vault's "
-            "edge_type_registry at edge creation time. Frozen on the row so "
-            "later registry edits do not retroactively change resolution "
-            "behavior for existing edges."
+            "edge_type_registry at edge creation time. Frozen on the "
+            "row so later registry edits do not retroactively change "
+            "resolution behavior for existing edges. Null when an Edge "
+            "is constructed without policy resolution (e.g., the "
+            "traversal-node Edge views returned by sage_traverse)."
         ),
     )
     source_valid_from_version: str | None = Field(
@@ -396,7 +411,7 @@ class Edge(BaseModel):
             "being retracted. Null on all other edge types."
         ),
     )
-    created_at: datetime = Field(description="Edge creation timestamp.")
+    created_at: datetime = Field(description="Timestamp when the edge was created.")
     notes: str | None = Field(
         default=None,
         description="Optional annotation on why the relationship exists.",
@@ -418,9 +433,11 @@ class User(BaseModel):
     """
 
     id: UserIdStr = Field(description="Immutable, assigned at registration.")
-    display_name: str = Field(description="Human-readable name for the user or agent.")
+    display_name: str = Field(
+        description="Human-readable name for the user (shown in audit logs and UIs)."
+    )
     type: UserType = Field(description="Actor type for provenance and access control.")
-    created_at: datetime = Field(description="Registration timestamp.")
+    created_at: datetime = Field(description="Timestamp when the user was registered.")
 
 
 # ---------------------------------------------------------------------------
@@ -564,12 +581,20 @@ class ParseFilenameResponse(BaseModel):
     is unchanged.
     """
 
-    title: str | None = Field(default=None, description="Title parsed from the filename.")
+    title: str | None = Field(
+        default=None,
+        description="Title segment extracted from the filename; null when no title was captured.",
+    )
     project: str | None = Field(
-        default=None, description="Project identifier parsed from the filename."
+        default=None,
+        description=(
+            "Project code extracted from the filename via "
+            "project_identifier; null when none captured."
+        ),
     )
     version_label: str | None = Field(
-        default=None, description="Version label parsed from the filename."
+        default=None,
+        description="Version label extracted from the filename; null when none captured.",
     )
     document_date: DocumentDateStr = Field(
         default=None, description="ISO-8601 date string when extractable."
@@ -608,33 +633,34 @@ class DocumentWithContent(Document):
         default=None,
         description=(
             "Base64-encoded bytes of the vault-local source file at "
-            "storage_root/source_path. Present only when the request "
-            "specified include_content=true. Decodes to the exact bytes of "
-            "the authoritative file."
+            "`storage_root/source_path`. Present only when the request "
+            "specified `include_content=true`. Decodes to the exact "
+            "bytes of the authoritative file."
         ),
     )
     content_size: int | None = Field(
         default=None,
         description=(
-            "Byte count of the vault-local source file. Populated when the "
-            "request specified include_content=true or write_to_path."
+            "Byte count of the vault-local source file. Populated when "
+            "the request specified `include_content=true` or "
+            "`write_to_path`."
         ),
     )
     content_hash: Sha256Str | None = Field(
         default=None,
         description=(
             "Hex digest of the vault-local source file bytes (same algorithm "
-            "as Document.source_content_hash). Populated only when the "
-            "request specified write_to_path, for caller-side verification "
-            "that the on-disk bytes match the vault record."
+            "as Document.source_content_hash). Populated only when the request "
+            "specified `write_to_path`, for caller-side verification that the "
+            "on-disk bytes match the vault record."
         ),
     )
     written_to: str | None = Field(
         default=None,
         description=(
-            "Absolute path where SAGE wrote the source file bytes. Populated "
-            "only when the request specified write_to_path. Equals the "
-            "caller-supplied value."
+            "Absolute path where SAGE wrote the source file bytes. "
+            "Populated only when the request specified `write_to_path`. "
+            "Equals the caller-supplied value."
         ),
     )
 
@@ -654,11 +680,11 @@ class SetLifecycleRequest(BaseModel):
         default=None,
         description=(
             "Document ID of the replacement version. Required when "
-            "action='supersede'; forbidden for all other actions. SAGE "
-            "creates a `supersedes` edge from the new version to this "
-            "document atomically with the lifecycle transition. The "
-            "successor document must already exist and be active; this "
-            "operation does not create it."
+            '`action="supersede"`; forbidden for all other actions. '
+            "SAGE creates a `supersedes` edge from the new version to "
+            "this document atomically with the lifecycle transition. "
+            "The successor document must already exist and be active; "
+            "this operation does not create it."
         ),
     )
 
@@ -697,17 +723,11 @@ class TagsPatch(BaseModel):
 
     add: list[str] | None = Field(
         default=None,
-        description=(
-            "Tags to add. Each must NOT already be present on the document "
-            "(else 400 tag_add_conflict). Must not duplicate within the list."
-        ),
+        description=("Tags to add. None may already be present on the document."),
     )
     remove: list[str] | None = Field(
         default=None,
-        description=(
-            "Tags to remove. Each must currently be present on the document "
-            "(else 400 tag_remove_conflict). Must not duplicate within the list."
-        ),
+        description=("Tags to remove. All must currently be present on the document."),
     )
 
     @model_validator(mode="after")
@@ -748,17 +768,11 @@ class Tier3Patch(BaseModel):
 
     set: dict | None = Field(
         default=None,
-        description=(
-            "Keys to set on tier3_metadata. Overwrites existing keys. "
-            "Must be non-empty if supplied."
-        ),
+        description=("Key-value pairs to set. Overwrites existing keys."),
     )
     unset: list[str] | None = Field(
         default=None,
-        description=(
-            "Keys to remove from tier3_metadata. Each must currently be "
-            "present (else 400 tier3_unset_conflict). Must not duplicate."
-        ),
+        description=("Keys to remove. All must currently be present."),
     )
 
     @model_validator(mode="after")
@@ -793,12 +807,14 @@ class UpdateMetadataRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    title: str | None = Field(default=None, description="New title; omit to leave unchanged.")
+    title: str | None = Field(
+        default=None, description="New human-readable title; omit to leave unchanged."
+    )
     version_label: str | None = Field(
-        default=None, description="New version label; omit to leave unchanged."
+        default=None, description="New caller-supplied version label; omit to leave unchanged."
     )
     project: str | None = Field(
-        default=None, description="New project identifier; omit to leave unchanged."
+        default=None, description="New project scope for the document; omit to leave unchanged."
     )
     tags: TagsPatch | None = Field(
         default=None,
@@ -814,7 +830,10 @@ class UpdateMetadataRequest(BaseModel):
     )
     authority_scope: str | None = Field(
         default=None,
-        description="New authority scope; omit to leave unchanged.",
+        description=(
+            "New authority scope (read-classification scope used by "
+            "access-control filtering); omit to leave unchanged."
+        ),
     )
     document_date: DocumentDateStr = Field(
         default=None,
@@ -1053,7 +1072,7 @@ class TraversalNode(BaseModel):
 class TraverseResponse(BaseModel):
     start_id: DocumentIdStr = Field(description="The document ID traversal started from.")
     nodes: list[TraversalNode] = Field(
-        description="Nodes reached by the traversal, ordered by visit sequence."
+        description="Traversal nodes ordered by depth, then by edge insertion order."
     )
     resolution_path: list[ResolutionPathEntry] | None = Field(
         default=None,
@@ -1091,9 +1110,14 @@ class ChainRequest(BaseModel):
 
 class ChainEntry(BaseModel):
     id: DocumentIdStr = Field(description="Document ID.")
-    title: str = Field(description="Document title.")
-    version_label: str | None = Field(default=None, description="Version label when assigned.")
-    lifecycle_status: str = Field(description="Lifecycle state of this chain entry.")
+    title: str = Field(description="Human-readable title of this chain entry's document.")
+    version_label: str | None = Field(
+        default=None,
+        description="Caller-supplied version label for this entry, when set; null otherwise.",
+    )
+    lifecycle_status: str = Field(
+        description="Lifecycle state of this entry's document at the time the chain was walked."
+    )
     document_date: DocumentDateStr = Field(
         default=None,
         description="Authoritative content date (YYYY-MM-DD) if available.",
@@ -1119,7 +1143,7 @@ class ChainResponse(BaseModel):
     query_position: int = Field(
         description="Zero-based position of the queried document within the chain."
     )
-    length: int = Field(description="Number of entries actually returned in this response.")
+    length: int = Field(description="Total number of documents in the chain.")
     total_length: int = Field(description="Total number of documents in the full chain.")
     is_linear: bool = Field(
         description=(
@@ -1141,19 +1165,23 @@ class PreconditionCheck(BaseModel):
     target_id: DocumentIdStr = Field(description="Document ID of the dependency target.")
     required: str = Field(
         description=(
-            "Required condition (e.g., 'exists and lifecycle_status in [active, completed]')."
+            'Required condition (e.g., "exists and lifecycle_status in [active, completed]").'
         )
     )
-    actual: str = Field(description="Actual state found (e.g., 'active', 'not found').")
-    satisfied: bool = Field(description="Whether this individual check is satisfied.")
+    actual: str = Field(description='Actual state found (e.g., "active", "not found").')
+    satisfied: bool = Field(
+        description="True when the actual state meets the required condition for this target."
+    )
 
 
 class PreconditionResult(BaseModel):
     function_id: FunctionIdStr = Field(
-        description="The function document whose preconditions were checked."
+        description="Identifier of the workflow function whose preconditions were checked."
     )
     satisfied: bool = Field(description="True if all dependencies are satisfied.")
-    checks: list[PreconditionCheck] = Field(description="Per-dependency check results.")
+    checks: list[PreconditionCheck] = Field(
+        description="Per-target check results making up this precondition evaluation."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1179,14 +1207,14 @@ class RetrievalFilters(BaseModel):
     )
     document_ids: list[str] | None = Field(
         default=None,
-        description="Restrict to a specific set of documents. Used with scope 'specific'.",
+        description='Restrict to a specific set of documents. Used with scope "specific".',
     )
     pipeline_status: str | None = Field(
         default=None,
         description=(
-            "Filter by pipeline status (e.g., 'failed', "
-            "'abstraction_complete'). Overrides the default exclusion of "
-            "failed-pipeline documents."
+            'Filter by pipeline status (e.g., "failed", '
+            '"abstraction_complete"). Overrides the default exclusion '
+            "of failed-pipeline documents."
         ),
     )
     tier3: dict | None = Field(
@@ -1225,7 +1253,10 @@ class DiscoverRequest(BaseModel):
     )
     scope: RetrievalScope = Field(
         default=RetrievalScope.ALL,
-        description="Controls which documents are eligible for retrieval.",
+        description=(
+            "Retrieval scope that narrows the candidate set before "
+            'relevance ranking. Default "all" applies no scope filter.'
+        ),
     )
     filters: RetrievalFilters | None = Field(
         default=None,
@@ -1241,7 +1272,7 @@ class DiscoverRequest(BaseModel):
         default=None,
         description=(
             "Heading hierarchy path for deterministic extraction (e.g., "
-            "'Section 3 > Definitions > Normalization'). Required for "
+            '"Section 3 > Definitions > Normalization"). Required for '
             "deterministic mode."
         ),
     )
@@ -1297,13 +1328,13 @@ class DiscoverRequest(BaseModel):
     response_level: ResponseLevel = Field(
         default=ResponseLevel.CHUNKS,
         description=(
-            "Controls result detail level. 'chunks' (default) includes "
+            'Controls result detail level. "chunks" (default) includes '
             "chunk_content, heading_path, and matched_chunk_count. "
-            "'documents' suppresses chunk_content but preserves "
-            "heading_path (best chunk's location) and matched_chunk_count "
-            "as lightweight context. Applicable to semantic and keyword "
-            "modes. Ignored by catalog (always document-level) and "
-            "deterministic (always chunk-level)."
+            '"documents" suppresses chunk_content but preserves '
+            "heading_path (best chunk's location) and "
+            "matched_chunk_count as lightweight context. Applicable to "
+            "semantic and keyword modes. Ignored by catalog (always "
+            "document-level) and deterministic (always chunk-level)."
         ),
     )
     sort_by: CatalogSortBy | None = Field(
@@ -1338,8 +1369,8 @@ class DiscoverHit(BaseModel):
     heading_path: str | None = Field(
         default=None,
         description=(
-            "Heading hierarchy path of the retrieved chunk (e.g., 'Section "
-            "3 > Definitions > Normalization')."
+            "Heading hierarchy path of the retrieved chunk (e.g., "
+            '"Section 3 > Definitions > Normalization").'
         ),
     )
     relevance_score: float | None = Field(
@@ -1362,7 +1393,12 @@ class DiscoverHit(BaseModel):
 
 class DiscoverResponse(BaseModel):
     mode: RetrievalMode = Field(description="The retrieval mode that produced these results.")
-    results: list[DiscoverHit] = Field(description="The ranked retrieval results.")
+    results: list[DiscoverHit] = Field(
+        description=(
+            "Retrieval hits, ordered by descending relevance "
+            "(semantic/keyword) or by sort_by (catalog)."
+        )
+    )
     total_available: int = Field(
         description=(
             "Total number of results available (before pagination). May be "
@@ -1398,25 +1434,31 @@ class ExportProjectionResponse(BaseModel):
 
 
 class ReadProjectionResponse(BaseModel):
-    document_id: DocumentIdStr = Field(description="Document identifier.")
-    title: str = Field(description="Document title.")
-    version_label: str | None = Field(default=None, description="Version label when assigned.")
-    lifecycle_status: str = Field(description="Current lifecycle state.")
-    doc_type: str | None = Field(
-        default=None, description="Vault-configured document type when assigned."
+    document_id: DocumentIdStr = Field(description="Id of the document whose projection was read.")
+    title: str = Field(description="Human-readable title of the document.")
+    version_label: str | None = Field(
+        default=None,
+        description="Caller-supplied version label for the document, when set; null otherwise.",
     )
-    source_path: str = Field(description="Location of the original artifact.")
+    lifecycle_status: str = Field(description="Current lifecycle state of the document.")
+    doc_type: str | None = Field(
+        default=None,
+        description=(
+            "Vault-domain document type from the doc_types vocabulary; null when not classified."
+        ),
+    )
+    source_path: str = Field(description="Vault-local path to the document's source file.")
     projection_text: str = Field(
         description="Full canonical projection text reassembled from stored chunks."
     )
 
 
 class ReadSectionResponse(BaseModel):
-    document_id: DocumentIdStr = Field(description="Document identifier.")
-    title: str = Field(description="Document title.")
-    heading_path: str = Field(description="Heading hierarchy path that was read.")
+    document_id: DocumentIdStr = Field(description="Id of the document whose section was read.")
+    title: str = Field(description="Human-readable title of the document.")
+    heading_path: str = Field(description="Heading-path prefix that scoped the section read.")
     chunk_count: int = Field(description="Number of chunks matched by the heading_path prefix.")
-    section_text: str = Field(description="Concatenated text of the matching chunks.")
+    section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
 
 
 class AssertionFailure(BaseModel):
@@ -1441,11 +1483,13 @@ class RefreshViewsResponse(BaseModel):
 
 
 class EvalRetrievalResult(BaseModel):
-    vault_id: VaultIdStr = Field(description="The vault that was evaluated.")
+    vault_id: VaultIdStr = Field(
+        description="Identifier of the vault whose assertions were evaluated."
+    )
     passed: bool = Field(description="True if all assertions passed.")
     assertion_count: int = Field(description="Total number of assertions evaluated.")
-    failure_count: int = Field(description="Number of assertions that failed.")
-    failures: list[AssertionFailure] = Field(description="Detail for each failing assertion.")
+    failure_count: int = Field(description="Number of assertions that did not pass.")
+    failures: list[AssertionFailure] = Field(description="Per-assertion failure details.")
 
 
 # ---------------------------------------------------------------------------
@@ -1459,7 +1503,7 @@ class VaultDocTypeEntry(BaseModel):
 
 
 class VaultLifecycleState(BaseModel):
-    value: str = Field(description="Lifecycle state identifier.")
+    value: str = Field(description='Lifecycle state identifier (e.g. "active", "archived").')
     label: str = Field(description="Human-readable label for UI display.")
     is_terminal: bool = Field(
         default=False,
@@ -1471,8 +1515,9 @@ class VaultAdapterInfo(BaseModel):
     source_type: str = Field(description="Source artifact format the adapter handles.")
     enabled: bool = Field(
         description=(
-            "Whether the adapter is enabled in the vault config. Disabled "
-            "adapters surface in scan results as status 'adapter_disabled'."
+            "Whether the adapter is enabled in the vault config. "
+            "Disabled adapters surface in scan results as status "
+            '"adapter_disabled".'
         )
     )
     extensions: list[str] = Field(
@@ -1481,23 +1526,27 @@ class VaultAdapterInfo(BaseModel):
 
 
 class VaultSummary(BaseModel):
-    id: VaultIdStr = Field(description="Vault identifier (path segment under ~/sage_vaults/).")
+    id: VaultIdStr = Field(description="Unique vault identifier.")
     name: str = Field(description="Human-readable vault name.")
     description: str | None = Field(
-        default=None, description="Optional vault description from the vault config."
+        default=None,
+        description="Vault-config description text; null when no description was authored.",
     )
     storage_root: str = Field(description="Path to the vault's source-file storage root.")
     doc_types: list[VaultDocTypeEntry] = Field(
         default_factory=list,
-        description="Vault-configured document types.",
+        description="Doc-type vocabulary configured for this vault.",
     )
     lifecycle_states: list[VaultLifecycleState] = Field(
         default_factory=list,
-        description="Lifecycle states defined by the vault config.",
+        description="Lifecycle states configured for this vault, in display order.",
     )
     adapters: list[VaultAdapterInfo] = Field(
         default_factory=list,
-        description="Source adapters configured for the vault.",
+        description=(
+            "Source adapters configured for this vault, with per-adapter "
+            "enablement and handled extensions."
+        ),
     )
     projects: list[str] = Field(
         default_factory=list,
@@ -1524,15 +1573,15 @@ class HealthIndicators(BaseModel):
 
 
 class VaultStatsResponse(BaseModel):
-    total_documents: int = Field(description="Total document count in the vault.")
-    by_lifecycle_state: dict[str, int] = Field(
-        description="Document count keyed by lifecycle state."
+    total_documents: int = Field(description="Total number of documents in the vault.")
+    by_lifecycle_state: dict[str, int] = Field(description="Document count per lifecycle state.")
+    by_doc_type: dict[str, int] = Field(description="Document count per doc_type.")
+    by_source_adapter: dict[str, int] = Field(description="Document count per source_type adapter.")
+    total_edges: int = Field(description="Total number of production edges in the vault graph.")
+    by_edge_type: dict[str, int] = Field(description="Edge count per edge_type.")
+    staging_edge_count: int = Field(
+        description="Number of edges in the Tier 2 staging table awaiting review."
     )
-    by_doc_type: dict[str, int] = Field(description="Document count keyed by doc_type.")
-    by_source_adapter: dict[str, int] = Field(description="Document count keyed by source adapter.")
-    total_edges: int = Field(description="Total edge count in the vault.")
-    by_edge_type: dict[str, int] = Field(description="Edge count keyed by edge type.")
-    staging_edge_count: int = Field(description="Count of Tier 2 staging edges awaiting review.")
     lancedb_size_bytes: int = Field(description="On-disk size of the LanceDB directory in bytes.")
     lancedb_chunk_count: int = Field(description="Total chunk row count across all documents.")
     sqlite_size_bytes: int = Field(description="Size of the graph.db SQLite file in bytes.")
@@ -1552,7 +1601,9 @@ class HashCheckRequest(BaseModel):
 
 
 class HashCheckMatch(BaseModel):
-    exists: bool = Field(description="True when a document with the queried hash is present.")
+    exists: bool = Field(
+        description="True when a document with this hash already exists in the vault."
+    )
     document_id: DocumentIdStr | None = Field(
         default=None,
         description="Document id when exists=true; null otherwise.",
@@ -1572,31 +1623,69 @@ class UpdateVaultConfigRequest(BaseModel):
     structure follows docs/fs/sage/vault_config.schema.json.
     """
 
-    vault: dict | None = Field(default=None, description="Replacement for the `vault` section.")
+    vault: dict | None = Field(
+        default=None,
+        description=(
+            "Replacement for the vault section of vault_config.yaml; "
+            "structure per vault_config.schema.json. Omit to leave "
+            "unchanged."
+        ),
+    )
     document_types: dict | None = Field(
-        default=None, description="Replacement for the `document_types` section."
+        default=None,
+        description=(
+            "Replacement for the document_types section; structure per "
+            "document_types.schema.json. Omit to leave unchanged."
+        ),
     )
     lifecycle: dict | None = Field(
-        default=None, description="Replacement for the `lifecycle` section."
+        default=None,
+        description=(
+            "Replacement for the lifecycle section; structure per "
+            "lifecycle.schema.json. Omit to leave unchanged."
+        ),
     )
     source_adapters: dict | None = Field(
-        default=None, description="Replacement for the `source_adapters` section."
+        default=None,
+        description=(
+            "Replacement for the source_adapters section; structure per "
+            "source_adapters.schema.json. Omit to leave unchanged."
+        ),
     )
     metadata_extraction: dict | None = Field(
-        default=None, description="Replacement for the `metadata_extraction` section."
+        default=None,
+        description=(
+            "Replacement for the metadata_extraction section; structure "
+            "per metadata_extraction.schema.json. Omit to leave "
+            "unchanged."
+        ),
     )
     edge_inference: dict | None = Field(
-        default=None, description="Replacement for the `edge_inference` section."
+        default=None,
+        description=(
+            "Replacement for the edge_inference section; structure per "
+            "edge_inference.schema.json. Omit to leave unchanged."
+        ),
     )
     abstraction: dict | None = Field(
-        default=None, description="Replacement for the `abstraction` section."
+        default=None,
+        description=(
+            "Replacement for the abstraction section of vault_config.yaml. Omit to leave unchanged."
+        ),
     )
     access_control_defaults: dict | None = Field(
         default=None,
-        description="Replacement for the `access_control_defaults` section.",
+        description=(
+            "Replacement for the access_control_defaults section of "
+            "vault_config.yaml. Omit to leave unchanged."
+        ),
     )
     retrieval_health: dict | None = Field(
-        default=None, description="Replacement for the `retrieval_health` section."
+        default=None,
+        description=(
+            "Replacement for the retrieval_health section of "
+            "vault_config.yaml. Omit to leave unchanged."
+        ),
     )
 
 
@@ -1632,9 +1721,9 @@ class UpdateVaultConfigResponse(BaseModel):
 
 
 class StagingEdge(BaseModel):
-    id: EdgeIdStr = Field(description="Staging edge identifier.")
-    source_id: DocumentIdStr = Field(description="Origin document of the proposed edge.")
-    target_id: DocumentIdStr = Field(description="Target document of the proposed edge.")
+    id: EdgeIdStr = Field(description="Unique identifier for this staging edge.")
+    source_id: DocumentIdStr = Field(description="Origin document id for the proposed edge.")
+    target_id: DocumentIdStr = Field(description="Target document id for the proposed edge.")
     edge_type: EdgeType = Field(description="Proposed edge type.")
     inference_evidence: str = Field(
         description=(
@@ -1647,7 +1736,7 @@ class StagingEdge(BaseModel):
         default=2,
         description="Inference tier (Tier 2 = staged for review).",
     )
-    created_at: datetime = Field(description="Staging timestamp.")
+    created_at: datetime = Field(description="Timestamp when this staging edge was created.")
 
 
 class StagingEdgeConfirmResponse(BaseModel):
@@ -1682,9 +1771,7 @@ class ExtractedField(BaseModel):
     value: str | None = Field(
         default=None, description="The extracted value, or null if unavailable."
     )
-    source: str = Field(
-        description="How this field was derived ('filename', 'content', or 'default')."
-    )
+    source: str = Field(description="How this field was derived.")
     alt_value: str | None = Field(default=None, description="Optional alternative candidate value.")
     alt_source: str | None = Field(default=None, description="Source label for alt_value.")
 
@@ -1693,9 +1780,9 @@ class PendingMetadataItem(BaseModel):
     document: Document = Field(description="The document awaiting metadata confirmation.")
     extracted_fields: dict[str, ExtractedField] = Field(
         description=(
-            "Per-field annotation. Keys include 'title', 'doc_type', "
-            "'project', 'tags', 'document_date' depending on which fields "
-            "were extracted."
+            'Per-field annotation. Keys include "title", "doc_type", '
+            '"project", "tags", "document_date" depending on which '
+            "fields were extracted."
         )
     )
 
@@ -1710,8 +1797,9 @@ class ErrorResponse(BaseModel):
 
     code: str = Field(
         description=(
-            "Machine-readable error code (e.g., 'invalid_lifecycle_transition', "
-            "'document_not_found', 'editor_permission_denied')."
+            "Machine-readable error code (e.g., "
+            '"invalid_lifecycle_transition", "document_not_found", '
+            '"editor_permission_denied").'
         )
     )
     message: str = Field(description="Human-readable error description.")

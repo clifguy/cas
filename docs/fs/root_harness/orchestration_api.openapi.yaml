@@ -311,7 +311,7 @@ paths:
       description: >-
         Returns a stream of typed `AgentEvent` records for the
         specified workflow execution. Each event is a JSON object
-        conforming to `event_stream_schema.json`; its `event_type`
+        conforming to `event_stream.schema.json`; its `event_type`
         is drawn from the 15-entry enum defined there (workflow.*,
         node.*, tool.*, llm.*, interrupt.*, governance.*, checkpoint.*).
 
@@ -356,7 +356,7 @@ paths:
                 description: >-
                   Server-sent events. Each event's data field contains
                   a JSON-serialized AgentEvent object conforming to
-                  event_stream_schema.json.
+                  event_stream.schema.json.
         "404":
           description: >-
             `execution_not_found`: no workflow execution with that
@@ -843,6 +843,7 @@ components:
         started_at:
           type: string
           format: date-time
+          description: Timestamp when this workflow execution was started.
 
     WorkflowStatus:
       type: object
@@ -858,8 +859,10 @@ components:
       properties:
         execution_id:
           type: string
+          description: Identifier of the workflow execution this status describes.
         workflow_name:
           type: string
+          description: Name of the workflow definition being executed.
         status:
           $ref: "#/components/schemas/ExecutionStatus"
         current_node:
@@ -870,6 +873,7 @@ components:
         started_at:
           type: string
           format: date-time
+          description: Timestamp when the workflow execution started.
         completed_at:
           type: ["string", "null"]
           format: date-time
@@ -920,14 +924,17 @@ components:
       properties:
         interrupt_id:
           type: string
+          description: Unique interrupt identifier.
         interrupt_type:
           type: string
+          description: Interrupt type label (e.g. "tool_approval", "decision_point").
         description:
           type: string
           description: Human-readable summary of what the interrupt requests.
         raised_at:
           type: string
           format: date-time
+          description: Timestamp when the interrupt was raised.
         agent_id:
           type: string
           description: Agent that raised the interrupt.
@@ -951,6 +958,7 @@ components:
           description: SAGE document ID.
         title:
           type: string
+          description: Human-readable title of the document.
         current_stage:
           type: string
           description: >-
@@ -1026,22 +1034,28 @@ components:
       properties:
         record_id:
           type: string
+          description: Unique identifier for this execution record.
         workflow_execution_id:
           type: string
+          description: Identifier of the workflow execution that contained this agent run.
         workflow_name:
           type: string
+          description: Name of the workflow definition the agent ran under.
         node_id:
           type: string
           description: LangGraph node where the agent executed.
         started_at:
           type: string
           format: date-time
+          description: Timestamp when the agent's execution started at this node.
         completed_at:
           type: string
           format: date-time
+          description: Timestamp when the agent's execution completed at this node.
         duration_ms:
           type: integer
           minimum: 0
+          description: Total elapsed time of this agent execution, in milliseconds.
         tool_calls:
           type: integer
           minimum: 0
@@ -1079,7 +1093,7 @@ components:
             plus LLM-execution codes (`llm_timeout`,
             `token_budget_exceeded`) and SAGE Core API error codes
             propagated from tool calls within the node. See
-            `event_stream_schema.json` `EventError.code` for the
+            `event_stream.schema.json` `EventError.code` for the
             broader execution-time vocabulary.
 
     # -------------------------------------------------------------------------
@@ -1089,6 +1103,7 @@ components:
     TriggerWorkflowRequest:
       type: object
       required: [workflow_name]
+      description: Request body for the trigger-workflow endpoint; selects a registered workflow and supplies its input parameters.
       properties:
         workflow_name:
           type: string
@@ -1114,6 +1129,7 @@ components:
         - capabilities
         - policy_ref
         - llm_config
+      description: Request body for the register-agent endpoint; supplies the agent registration record described by agent.schema.json.
       properties:
         agent_id:
           type: string
@@ -1123,6 +1139,7 @@ components:
             of registration.
         display_name:
           type: string
+          description: Human-readable name for the agent (shown in audit logs and UIs).
         agent_type:
           $ref: "#/components/schemas/AgentType"
         owned_artifact:
@@ -1137,8 +1154,10 @@ components:
           items:
             type: string
           minItems: 1
+          description: Capability strings the agent advertises (used by orchestrators to route work).
         policy_ref:
           type: string
+          description: Reference to the policy that governs this agent's behavior, per policy.schema.json.
         llm_config:
           $ref: "#/components/schemas/LLMConfig"
 
@@ -1176,6 +1195,7 @@ components:
     PendingInterruptsResponse:
       type: object
       required: [interrupts, total_count]
+      description: Response body for the list-pending-interrupts endpoint; carries the full descriptors and a total count.
       properties:
         interrupts:
           type: array
@@ -1211,86 +1231,115 @@ components:
       properties:
         interrupt_id:
           type: string
+          description: Unique identifier for this interrupt.
         workflow_execution_id:
           type: string
+          description: Workflow execution that raised the interrupt.
         workflow_name:
           type: string
+          description: Name of the workflow definition the interrupt was raised under.
         agent_id:
           type: string
+          description: Agent that raised the interrupt.
         agent_type:
           $ref: "#/components/schemas/AgentType"
         node_id:
           type: string
+          description: LangGraph node at which the interrupt was raised.
         origin:
           type: string
           enum: [interrupt_node, approval_callback]
+          description: Whether the interrupt was raised by an interrupt node (autonomy Level 3) or a tool-approval callback (Levels 1-2).
         interrupt_type:
           type: string
+          description: Interrupt type label (e.g. "tool_approval", "decision_point").
         description:
           type: string
+          description: Human-readable summary of what the interrupt requests.
         evidence:
           type: array
           items:
             type: object
             additionalProperties: true
           default: []
+          description: Supporting evidence records attached to the interrupt to inform the approver.
         proposed_action:
           type: object
           additionalProperties: true
+          description: Action the agent proposes to take if the interrupt is approved.
         response_options:
           type: array
+          description: Selectable response options offered to the approver; at least one option is always present.
           items:
             type: object
             required: [option_id, label, effect]
+            description: One selectable response option offered to the approver.
             properties:
               option_id:
                 type: string
+                description: Identifier passed back in ApproveRequest.resolution to select this option.
               label:
                 type: string
+                description: Human-readable label for this option (shown in the approval UI).
               description:
                 type: string
+                description: Longer explanation of what this option does.
               effect:
                 type: string
                 enum: [resume, reject, defer, modify]
+                description: Outcome effect when this option is selected.
               is_default:
                 type: boolean
                 default: false
+                description: When true, this option is pre-selected in the approval UI.
               requires_comment:
                 type: boolean
                 default: false
+                description: When true, ApproveRequest.comment must be non-empty if this option is selected.
               parameter_schema:
                 type: ["object", "null"]
                 additionalProperties: true
+                description: JSON Schema fragment describing the structure of ApproveRequest.modified_parameters when effect is "modify". Null when no parameters apply.
           minItems: 1
         raised_at:
           type: string
           format: date-time
+          description: Timestamp when the interrupt was raised.
         status:
           type: string
           enum: [pending, approved, rejected, expired]
+          description: Current resolution state of the interrupt.
         timeout_seconds:
           type: ["integer", "null"]
           minimum: 0
+          description: Seconds after raised_at at which the interrupt expires automatically; null for no timeout.
         resolved_at:
           type: ["string", "null"]
           format: date-time
+          description: Timestamp when the interrupt was resolved; null while pending.
         resolved_by:
           type: ["string", "null"]
+          description: User or agent id that resolved the interrupt; null while pending.
         resolution:
           type: ["string", "null"]
+          description: option_id of the response option that was selected at resolution time; null while pending.
         resolution_comment:
           type: ["string", "null"]
+          description: Free-text comment supplied at resolution; may be required by the selected option.
 
     AgentHistoryResponse:
       type: object
       required: [agent_id, records]
+      description: Response body for the agent-history endpoint; carries the agent identifier and its execution records.
       properties:
         agent_id:
           type: string
+          description: Identifier of the agent whose history was returned.
         records:
           type: array
           items:
             $ref: "#/components/schemas/AgentExecutionRecord"
+          description: Execution records for this agent, ordered most-recent first.
         total_count:
           type: integer
           description: >-
@@ -1300,15 +1349,19 @@ components:
     PipelineStatusResponse:
       type: object
       required: [pipeline_id, documents]
+      description: Response body for the pipeline-status endpoint; carries per-document stage and blocker state for the named pipeline.
       properties:
         pipeline_id:
           type: string
+          description: Identifier of the pipeline whose status was returned.
         documents:
           type: array
           items:
             $ref: "#/components/schemas/DocumentPipelineStatus"
+          description: Per-document status records within this pipeline.
         total_count:
           type: integer
+          description: Total number of documents in the pipeline (before any filtering).
         blocked_count:
           type: integer
           description: Number of documents with unresolved blockers.
@@ -1359,9 +1412,11 @@ components:
             and adapter-level errors propagated from SAGE.
         message:
           type: string
+          description: Human-readable error description.
         detail:
           type: ["object", "null"]
           additionalProperties: true
+          description: Additional structured context; shape varies by error type.
 
 # =============================================================================
 # Tags

@@ -693,11 +693,11 @@ workflows:
 
 ---
 
-## event_stream_schema.json
+## event_stream.schema.json
 
 ### TEST-RH-ES-001: Valid workflow.started event
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** valid
 **Constraint:** Base required fields plus workflow.started conditional fields
 
@@ -720,7 +720,7 @@ workflows:
 
 ### TEST-RH-ES-002: Valid tool.call event
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** valid
 **Constraint:** tool.call requires node_id, tool_name, operation, arguments
 
@@ -745,7 +745,7 @@ workflows:
 
 ### TEST-RH-ES-003: Valid interrupt.raised event
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** valid
 **Constraint:** interrupt.raised requires node_id, interrupt_id, interrupt_type, interrupt_description, response_options
 
@@ -774,7 +774,7 @@ workflows:
 
 ### TEST-RH-ES-004: Valid governance.mutation_proposed event
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** valid
 **Constraint:** governance.mutation_proposed requires node_id, document_id, operation, mutation_description, requires_approval
 
@@ -800,7 +800,7 @@ workflows:
 
 ### TEST-RH-ES-005: Valid llm.response event
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** valid
 **Constraint:** llm.response requires node_id, model, purpose, prompt_tokens, completion_tokens, duration_ms
 
@@ -827,7 +827,7 @@ workflows:
 
 ### TEST-RH-ES-006: Valid checkpoint.saved event
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** valid
 **Constraint:** checkpoint.* requires node_id, checkpoint_id
 
@@ -850,7 +850,7 @@ workflows:
 
 ### TEST-RH-ES-007: Missing base required fields
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** invalid
 **Constraint:** Base required: event_id, event_type, timestamp, workflow_execution_id, agent_id, agent_type
 
@@ -867,7 +867,7 @@ workflows:
 
 ### TEST-RH-ES-008: Invalid event_type enum
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** invalid
 **Constraint:** `event_type` must be one of the 15 defined types
 
@@ -878,7 +878,7 @@ workflows:
 
 ### TEST-RH-ES-009: tool.call missing conditional fields
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** invalid
 **Constraint:** tool.call requires node_id, tool_name, operation, arguments per allOf/if-then
 
@@ -889,7 +889,7 @@ workflows:
 
 ### TEST-RH-ES-010: workflow.failed missing error field
 
-**Artifact:** `docs/fs/root_harness/event_stream_schema.json`
+**Artifact:** `docs/fs/root_harness/event_stream.schema.json`
 **Category:** invalid
 **Constraint:** workflow.failed requires error and duration_ms per allOf/if-then
 
@@ -1062,18 +1062,18 @@ Note: This schema uses `$defs` only. Tests use `validate_sub_schema()`.
 
 ### TEST-RH-API-001: OpenAPI spec loads as valid YAML
 
-**Artifact:** `docs/fs/root_harness/orchestration_api_openapi.yaml`
+**Artifact:** `docs/fs/root_harness/orchestration_api.openapi.yaml`
 **Category:** valid
 **Constraint:** File parses as YAML with openapi version 3.1.0
 
-**Input:** Load `docs/fs/root_harness/orchestration_api_openapi.yaml`
+**Input:** Load `docs/fs/root_harness/orchestration_api.openapi.yaml`
 
 **Expected:** `openapi` == `"3.1.0"`, `info.title` == `"ROOT Harness Orchestration API"`
 **Rationale:** Basic structural validity.
 
 ### TEST-RH-API-002: All 9 operations present
 
-**Artifact:** `docs/fs/root_harness/orchestration_api_openapi.yaml`
+**Artifact:** `docs/fs/root_harness/orchestration_api.openapi.yaml`
 **Category:** valid
 **Constraint:** All operations defined in ROOT Harness Architecture Reference Section 2.5
 
@@ -1093,7 +1093,7 @@ Note: This schema uses `$defs` only. Tests use `validate_sub_schema()`.
 
 ### TEST-RH-API-003: SSE event stream endpoint documented
 
-**Artifact:** `docs/fs/root_harness/orchestration_api_openapi.yaml`
+**Artifact:** `docs/fs/root_harness/orchestration_api.openapi.yaml`
 **Category:** valid
 **Constraint:** Events endpoint uses text/event-stream content type
 

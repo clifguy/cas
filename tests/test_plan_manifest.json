@@ -37,8 +37,8 @@
         "docs/fs/root_harness/agent.schema.json",
         "docs/fs/root_harness/policy.schema.json",
         "docs/fs/root_harness/workflow.schema.json",
-        "docs/fs/root_harness/orchestration_api_openapi.yaml",
-        "docs/fs/root_harness/event_stream_schema.json",
+        "docs/fs/root_harness/orchestration_api.openapi.yaml",
+        "docs/fs/root_harness/event_stream.schema.json",
         "docs/fs/root_harness/interrupt.schema.json"
       ],
       "test_count": 58

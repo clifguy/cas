@@ -313,6 +313,7 @@
   "properties": {
     "$comment": {
       "type": "string",
+      "description": "Documentation slot recording that this schema defines $defs only, not a single top-level instance type. Validators reference a specific $defs entry; the value is constrained to a fixed const string carrying that guidance.",
       "const": "This schema defines $defs only. Instances are InterruptDescriptor objects (returned by list_pending), ApproveRequest objects (sent to approve), or ApprovalPolicy objects (embedded in agent policy_ref configuration). Validators should reference the specific $defs type, e.g., {\"$ref\": \"interrupt.schema.json#/$defs/InterruptDescriptor\"}."
     }
   }

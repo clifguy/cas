@@ -117,7 +117,7 @@ class ScanResponse(BaseModel):
     """Returned by /app/scan with per-file status and any scan-time warnings."""
 
     files: list[ScanResultResponse] = Field(
-        description="Per-file scan results, one entry per file walked."
+        description="Per-file scan results in directory-walk order."
     )
     warnings: list[str] = Field(
         description=(
@@ -165,14 +165,18 @@ class ProgressEvent(BaseModel):
     ingestion phase.
     """
 
-    event_type: Literal["progress"]
+    event_type: Literal["progress"] = Field(
+        description="Discriminator for the SSE event payload variant; always 'progress'.",
+    )
     file_index: int = Field(description="Zero-based index of this file in the batch.")
     total_files: int = Field(description="Total file count in the batch.")
-    filename: str
+    filename: str = Field(description="Filename this progress event refers to.")
     stage: Literal["projection"] = Field(
         description="Pipeline stage the event applies to.",
     )
-    status: Literal["started", "completed", "failed"]
+    status: Literal["started", "completed", "failed"] = Field(
+        description="Per-file processing status the event reports.",
+    )
     document_id: DocumentIdStr | None = Field(
         default=None,
         description='Set when status="completed". Document ID assigned by SAGE.',
@@ -191,8 +195,15 @@ class SummaryEvent(BaseModel):
     callers (MCP tool).
     """
 
-    event_type: Literal["summary"]
-    documents_created: DocumentsCreated
+    event_type: Literal["summary"] = Field(
+        description="Discriminator for the SSE event payload variant; always 'summary'.",
+    )
+    documents_created: DocumentsCreated = Field(
+        description=(
+            "Document-creation counts for this batch, split by whether the "
+            "document opens a chain or extends one."
+        ),
+    )
     metadata_pending: int = Field(
         description=(
             "Count of documents in this batch whose extracted metadata is not yet confirmed."
@@ -213,16 +224,22 @@ class SummaryEvent(BaseModel):
             "referenced files failed to ingest."
         ),
     )
-    abstracts_generated: int
+    abstracts_generated: int = Field(
+        description=(
+            "Number of documents for which a semantic abstract was generated during this batch."
+        ),
+    )
     abstracts_deferred: int = Field(
         description=(
             "Documents for which abstraction was skipped (empty projection "
             "or abstraction disabled in vault config)."
         ),
     )
-    error_count: int
+    error_count: int = Field(
+        description="Total number of per-file errors recorded during the batch.",
+    )
     errors: list[dict[str, Any]] = Field(
-        description="Per-file error record (filename, error message).",
+        description="Per-file error records for files that failed to ingest in this batch.",
     )
     edge_warnings: list[dict[str, Any]] | None = Field(
         default=None,
