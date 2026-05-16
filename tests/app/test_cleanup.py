@@ -9,9 +9,9 @@ from __future__ import annotations
 import importlib
 import inspect
 
+from app.backend.ingest_streaming_service import _to_file_descriptor
 from app.backend.models import IngestFileItem
 from app.backend.models import ParsedMetadata as ApiParsedMetadata
-from app.backend.router import _to_file_descriptor
 from app.backend.scan import ScanResult
 from app.backend.scan_service import _scan_result_to_response
 from sage.services.filename_parser import ParsedMetadata
