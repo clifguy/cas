@@ -12,9 +12,10 @@ Usage:
 """
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 # Quiet huggingface library noise before any sage import pulls in
 # transformers/tokenizers (T-0060). Env vars are read at library import
@@ -33,6 +34,7 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 
 # ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ContentBlock
 from pydantic import TypeAdapter
 
 import sage.app  # noqa: F401 -- import side-effect: installs T-0022 root-logger filter
@@ -153,7 +155,30 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         _vaults.clear()
 
 
-mcp = FastMCP("SAGE", lifespan=_lifespan)
+class _LoggingFastMCP(FastMCP):
+    """FastMCP subclass that emits one INFO log line per dispatched tool call.
+
+    T-0061: the underlying uvicorn access log shows every tool call as
+    `POST /mcp/messages/?session_id=...` — uninformative because the tool
+    name lives in the JSON-RPC body, not the URL. Overriding the single
+    dispatch point (`FastMCP.call_tool`, wired in `_setup_handlers`)
+    surfaces the tool name in the console without touching individual
+    `@mcp.tool()` registrations.
+    """
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any]
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        logger = _logging.getLogger(__name__)
+        logger.info("mcp tool: %s", name)
+        try:
+            return await super().call_tool(name, arguments)
+        except Exception:
+            logger.exception("mcp tool failed: %s", name)
+            raise
+
+
+mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan)
 
 # ---------------------------------------------------------------------------
 # Register tools from submodules
