@@ -1051,6 +1051,33 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
+    async def sage_list_headings(vault_id: str, document_id: str) -> dict:
+        """List all heading paths for a document in document order.
+
+        Returns the structural table of contents (heading paths only) without
+        reading body content. Use this to verify a document's structure or
+        pick a heading path before calling sage_read_section.
+
+        Replaces the antipattern of calling sage_read_section with a
+        deliberately wrong heading path to harvest ``available_headings``
+        from the resulting ``heading_not_found`` error response. The
+        synthetic header chunk (T-0038) is excluded, so the returned paths
+        are exactly those a caller may pass to sage_read_section.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: The document's unique identifier.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            v = get_vault(vault_id)
+            response = await v.utilities_service.list_headings(document_id)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
     async def sage_refresh_views(vault_id: str) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
@@ -1498,6 +1525,7 @@ def register_sage_tools(
         "sage_export_projection": sage_export_projection,
         "sage_read_projection": sage_read_projection,
         "sage_read_section": sage_read_section,
+        "sage_list_headings": sage_list_headings,
         "sage_refresh_views": sage_refresh_views,
         "sage_list_vaults": sage_list_vaults,
         "sage_create_vault": sage_create_vault,

@@ -11,6 +11,7 @@ from sage.models.schemas import (
     EvalRetrievalResult,
     ExportProjectionRequest,
     ExportProjectionResponse,
+    ListHeadingsResponse,
     ReadProjectionResponse,
     ReadSectionResponse,
     RefreshViewsResponse,
@@ -105,6 +106,30 @@ async def read_section(
     service: UtilitiesService = Depends(get_utilities_service),
 ) -> ReadSectionResponse:
     return await service.read_section(document_id, heading_path)
+
+
+@router.get(
+    "/documents/{document_id}/headings",
+    response_model=ListHeadingsResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "`document_not_found`: no document with that id.\n\n"
+                "`no_projection`: the document exists but has no stored "
+                "projection (e.g. ingestion failed mid-pipeline or the "
+                "document is awaiting reabstraction).\n\n"
+                "Or vault not found."
+            ),
+        },
+    },
+)
+async def list_headings(
+    document_id: _DocumentIdPath,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: UtilitiesService = Depends(get_utilities_service),
+) -> ListHeadingsResponse:
+    return await service.list_headings(document_id)
 
 
 @router.post(

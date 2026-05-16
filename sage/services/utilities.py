@@ -45,6 +45,7 @@ from sage.models.schemas import (
     Document,
     EvalRetrievalResult,
     ExportProjectionResponse,
+    ListHeadingsResponse,
     ReadProjectionResponse,
     ReadSectionResponse,
     RefreshViewsResponse,
@@ -268,6 +269,40 @@ class UtilitiesService:
             heading_path=heading_path,
             chunk_count=len(chunks),
             section_text=section_text,
+        )
+
+    # ------------------------------------------------------------------
+    # list_headings (T-0069)
+    # ------------------------------------------------------------------
+
+    async def list_headings(self, document_id: str) -> ListHeadingsResponse:
+        """Return the distinct heading paths of a document in document order.
+
+        Body content is not read; the column-only LanceDB select in
+        get_heading_paths returns the structural table of contents without
+        loading chunk content. Replaces the antipattern of harvesting
+        available_headings from a deliberately-wrong read_section call.
+
+        Args:
+            document_id: Document to enumerate headings for.
+
+        Returns:
+            ListHeadingsResponse with the heading paths in document order.
+            The synthetic header chunk (T-0038) is excluded by
+            get_heading_paths so the returned paths are exactly those a
+            caller may pass to read_section.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+            NoProjectionError: Document has no stored projection chunks.
+        """
+        doc, _ = await self._get_projection_text(document_id)
+        headings = await self._content.get_heading_paths(document_id)
+
+        return ListHeadingsResponse(
+            document_id=document_id,
+            title=doc.title,
+            headings=headings,
         )
 
     # ------------------------------------------------------------------

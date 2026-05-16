@@ -1483,6 +1483,16 @@ class ReadSectionResponse(BaseModel):
     section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
 
 
+class ListHeadingsResponse(BaseModel):
+    document_id: DocumentIdStr = Field(description="Id of the document whose headings were listed.")
+    title: str = Field(description="Human-readable title of the document.")
+    headings: list[str] = Field(
+        description=(
+            "Distinct heading paths in document order, suitable for passing to read_section."
+        )
+    )
+
+
 class AssertionFailure(BaseModel):
     query: str = Field(description="The assertion query that failed.")
     expected_document_id: DocumentIdStr = Field(
