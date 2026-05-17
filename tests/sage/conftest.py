@@ -5,8 +5,11 @@ and stub adapters. Each test gets an isolated temp directory and
 fresh SQLite database via pytest's tmp_path fixture.
 """
 
+import asyncio
+
 import pytest
 
+import sage.adapters.abstraction_qwen3 as _abstraction_qwen3
 from sage.adapters.stubs import (
     FailingAbstractionProvider,
     StubAbstractionProvider,
@@ -23,6 +26,23 @@ from sage.services.user_service import UserService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+
+
+@pytest.fixture(autouse=True)
+def _reset_generation_lock():
+    """Give each test a fresh ``_generation_lock``.
+
+    The module-level ``asyncio.Lock`` in ``sage.adapters.abstraction_qwen3``
+    binds internal state to whatever event loop first awaits it.
+    pytest-asyncio runs each test in a fresh loop, so without this
+    reset the lock can fail later tests with
+    ``RuntimeError: <Lock object> is bound to a different event loop``
+    when an earlier test exercised it. The lock has no semantic state
+    worth preserving between tests.
+    """
+    _abstraction_qwen3._generation_lock = asyncio.Lock()
+    yield
+    _abstraction_qwen3._generation_lock = asyncio.Lock()
 
 
 @pytest.fixture

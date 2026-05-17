@@ -6,6 +6,7 @@ and generate density-proportional semantic abstracts on Apple Silicon.
 
 import asyncio
 import logging
+import time
 
 from sage.adapters.interfaces import AbstractionProvider
 from sage.utils.unified_memory import (
@@ -80,6 +81,13 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._tokenizer = None
         self._generate_fn = None
         self._greedy_sampler = None
+
+        # Idle tracker for the T-0068 eviction policy. Updated at the
+        # end of every successful generate_abstract; consulted by
+        # evict_if_idle. None means "never served a call since the
+        # last (re)load" — treated as "not idle" rather than
+        # "infinitely idle" so a freshly-loaded model is not reaped.
+        self._last_used_at: float | None = None
 
     def _ensure_loaded(self) -> None:
         """Load the MLX model on first use. Idempotent: skips if already loaded.
@@ -256,7 +264,99 @@ class Qwen3AbstractionProvider(AbstractionProvider):
                 f"Abstraction model returned empty output for {len(text)} chars of input"
             )
 
+        # Publish idle tracker for the T-0068 eviction policy. Set
+        # only on a successful generation so a failed call does not
+        # extend the "last used" window.
+        self._last_used_at = time.monotonic()
+
         return abstract
+
+    # ── T-0068: idle-driven eviction primitive ───────────────────────
+    #
+    # Prevention half of the F8 GPU OOM pattern. T-0029 added the
+    # reactive half (preflight raise + single-flight lock); without
+    # an eviction path, the resident ~16 GB Qwen3 footprint sits in
+    # unified memory until process exit, regardless of idle time.
+    #
+    # Pattern options weighed (T-0068 acceptance criteria):
+    #   - LFU/LRU eviction of model contexts — CHOSEN. CAS holds one
+    #     resident MLX model, so this reduces to "unload the one
+    #     model when it has been idle longer than the threshold."
+    #   - Watchdog process monitoring resident memory — rejected.
+    #     Adds a second long-lived component (lifecycle, supervisor,
+    #     IPC) disproportionate to the single-developer Mac setup.
+    #   - Graceful degradation (smaller model, batched generation) —
+    #     rejected. Changes output characteristics; different concern.
+    #   - Hybrid — already achieved: T-0029 (reactive) + T-0068
+    #     (preventive) compose. Nothing is replaced.
+    #
+    # Residual: caller-side wiring (a supervisor, a periodic task,
+    # an external signal) is deliberately out of scope. This module
+    # exposes the primitive; the policy is driven by whoever calls
+    # evict_if_idle, on whatever cadence makes sense for them.
+    #
+    # No ADR: per CAS ADR Authoring Conventions, idle-eviction of a
+    # large in-memory resource is generic performance hygiene that
+    # applies equally well to any Python project — it does not
+    # capture a CAS-specific architectural commitment. Rationale
+    # lands here in the code, where the future reader most needs it.
+
+    async def unload(self) -> bool:
+        """Release the resident MLX model and tokenizer.
+
+        Acquires the module-level ``_generation_lock`` so the unload
+        cannot race with an in-flight ``generate_abstract``. Idempotent:
+        returns ``False`` (no-op) when no model is currently loaded;
+        returns ``True`` after successfully clearing the deferred state.
+        After unload, the next ``generate_abstract`` call re-fires the
+        existing lazy-load path in ``_ensure_loaded``.
+        """
+        async with _generation_lock:
+            if self._model is None:
+                return False
+
+            self._model = None
+            self._tokenizer = None
+            self._generate_fn = None
+            self._greedy_sampler = None
+            self._last_used_at = None
+
+            # Best-effort: clear the MLX/Metal command-buffer cache so
+            # the freed memory is actually returned to unified memory
+            # rather than held by the framework. Wrapped in try/except
+            # because mlx may not be installed in some environments
+            # (tests with SAGE_TEST_STUB_PROVIDERS=1).
+            try:
+                import mlx.core as mx
+
+                mx.metal.clear_cache()
+            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("mlx.metal.clear_cache() unavailable: %s", exc)
+
+            logger.info("Abstraction model unloaded: %s", self._model_id)
+            return True
+
+    async def evict_if_idle(self, idle_threshold_seconds: float) -> bool:
+        """Unload the model iff it has been idle longer than the threshold.
+
+        Returns ``True`` if eviction occurred, ``False`` otherwise. The
+        method is safe to call regardless of load state and regardless
+        of whether ``generate_abstract`` has ever been invoked:
+
+          * Model not loaded → ``False``, no work.
+          * Model loaded but never used (``_last_used_at is None``) →
+            ``False``. A freshly-loaded model is not idle.
+          * Model loaded, used recently → ``False``.
+          * Model loaded, idle longer than threshold → unload, return
+            whatever ``unload()`` returned.
+        """
+        if self._model is None:
+            return False
+        if self._last_used_at is None:
+            return False
+        if time.monotonic() - self._last_used_at < idle_threshold_seconds:
+            return False
+        return await self.unload()
 
 
 # ── Process-level singleton (T-0060) ─────────────────────────────────
