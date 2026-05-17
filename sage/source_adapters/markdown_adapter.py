@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from markdown_it import MarkdownIt
+from mdit_py_plugins.front_matter import front_matter_plugin
 
 from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
 
@@ -20,7 +21,11 @@ class MarkdownAdapter(SourceAdapter):
     # 0.4.0: CommonMark-compliant heading extraction via markdown-it-py.
     # Suppresses ATX heading-shaped lines inside fenced and indented code
     # blocks (T-0070).
-    VERSION = "0.4.0"
+    # 0.5.0: enables mdit-py-plugins front_matter_plugin so YAML
+    # frontmatter is recognized as a block-level construct rather than
+    # binding its closing `---` to the preceding YAML body as a setext
+    # H2 underline (T-0071).
+    VERSION = "0.5.0"
     EXTENSIONS = [".md", ".markdown"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -49,6 +54,7 @@ class MarkdownAdapter(SourceAdapter):
         so any `#`-shaped lines inside them are suppressed by construction.
         """
         md = MarkdownIt("commonmark")
+        md.use(front_matter_plugin)
         tokens = md.parse(text)
         lines = text.split("\n")
 

@@ -981,6 +981,118 @@ class TestMarkdownAdapterCodeBlockSuppression:
         assert by_text["3.2"].level == 3
 
 
+class TestMarkdownAdapterFrontmatterStripping:
+    """T-0071: YAML frontmatter must not extract as headings.
+
+    Without the front_matter_plugin, the CommonMark parser binds the YAML
+    body as a paragraph anchored to its closing ``---`` delimiter and
+    interprets that delimiter as a setext H2 underline, admitting the raw
+    YAML payload as the first H2 in the heading index.
+    """
+
+    async def test_tc1_multiline_description_no_yaml_in_headings(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc1.md"
+        test_file.write_text(
+            "---\n"
+            "name: skill-name\n"
+            "description: A multi-line description that\n"
+            "  wraps onto a second line via YAML block scalar.\n"
+            "---\n"
+            "\n"
+            "# Real H1\n"
+            "\n"
+            "## Real H2\n"
+        )
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert texts == ["Real H1", "Real H2"]
+        assert result.headings[0].level == 1
+        assert result.headings[1].level == 2
+        assert not any("name:" in t or "description:" in t for t in texts)
+
+    async def test_tc2_single_line_description_no_yaml_in_headings(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc2.md"
+        test_file.write_text(
+            "---\nname: skill\ndescription: One-line description.\n---\n\n# Real H1\n"
+        )
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert texts == ["Real H1"]
+        assert not any("name:" in t or "description:" in t for t in texts)
+
+    async def test_tc3_quoted_multiline_description_with_version(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc3.md"
+        test_file.write_text(
+            "---\n"
+            'description: "A quoted multi-line\n'
+            '  description that wraps."\n'
+            "version: 1.2.3\n"
+            "---\n"
+            "\n"
+            "# Real H1\n"
+            "\n"
+            "## Real H2\n"
+        )
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert texts == ["Real H1", "Real H2"]
+        assert not any("description:" in t or "version:" in t for t in texts)
+
+    async def test_tc4_no_frontmatter_unchanged(self, tmp_path):
+        """Regression guard: documents without frontmatter parse identically
+        to adapter_version 0.4.0 behavior."""
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc4.md"
+        test_file.write_text("# H1\n\n## H2\n\nbody\n\n### H3\n")
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert texts == ["H1", "H2", "H3"]
+        assert result.headings[0].level == 1
+        assert result.headings[1].level == 2
+        assert result.headings[2].level == 3
+
+    async def test_tc5a_doc_start_dash_with_blank_is_thematic_break(self, tmp_path):
+        """A document opening with ``---`` followed by a blank line and
+        no later ``---``/``...`` closer is not a frontmatter opener.
+        The plugin's end-marker search fails, the rule aborts, and the
+        standard CommonMark thematic-break parser handles the opening
+        ``---`` instead."""
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc5a.md"
+        test_file.write_text("---\n\n# H1\n\nbody paragraph with no body-internal `---`.\n")
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert texts == ["H1"]
+        assert result.headings[0].level == 1
+
+    async def test_tc5b_body_internal_thematic_break_unaffected(self, tmp_path):
+        """A body-internal ``---`` thematic break in a document that does
+        not start with ``---`` is never a frontmatter candidate (the
+        plugin only fires at line 0). Both H1 and the H2 following the
+        thematic break are extracted."""
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc5b.md"
+        test_file.write_text("# H1\n\nbody paragraph.\n\n---\n\n## H2\n")
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert texts == ["H1", "H2"]
+
+
 # ── Docx Adapter ────────────────────────────────────────────────────
 
 import hashlib  # noqa: E402 -- grouped with the docx-adapter test section below
