@@ -895,6 +895,92 @@ class TestMarkdownAdapterProvenance:
         assert abs((parsed - known_mtime).total_seconds()) < 1.0
 
 
+class TestMarkdownAdapterCodeBlockSuppression:
+    """T-0070: ATX heading-shaped lines inside code blocks must not extract.
+
+    The regex parser at adapter_version 0.3.0 had no awareness of fenced or
+    indented code-block context, so heading-format examples inside them were
+    indexed as real headings and corrupted the heading hierarchy.
+    """
+
+    async def test_tc1_fenced_heading_not_extracted(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc1.md"
+        test_file.write_text("# Real\n\n```\n## Phantom\n```\n")
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert "Phantom" not in texts
+        assert texts == ["Real"]
+        assert result.headings[0].level == 1
+
+    async def test_tc2_indented_code_block_heading_not_extracted(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc2.md"
+        test_file.write_text("# Real\n\nbody\n\n    ## Phantom\n")
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert "Phantom" not in texts
+        assert texts == ["Real"]
+
+    async def test_tc3_language_tagged_fence_heading_not_extracted(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc3.md"
+        test_file.write_text("# Real\n\n```python\n## Phantom\n```\n")
+
+        result = await adapter.project(test_file)
+
+        texts = [h.text for h in result.headings]
+        assert "Phantom" not in texts
+        assert texts == ["Real"]
+
+    async def test_tc4_all_six_levels_in_fence_suppressed(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc4.md"
+        test_file.write_text(
+            "# Real\n\n```\n# h1\n## h2\n### h3\n#### h4\n##### h5\n###### h6\n```\n"
+        )
+
+        result = await adapter.project(test_file)
+
+        assert len(result.headings) == 1
+        assert result.headings[0].text == "Real"
+        assert result.headings[0].level == 1
+
+    async def test_tc5_hierarchy_intact_across_phantom(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc5.md"
+        test_file.write_text("# A\n\n## B\n\n```\n## Phantom\n```\n\n## C\n")
+
+        result = await adapter.project(test_file)
+
+        by_text = {h.text: h for h in result.headings}
+        assert "Phantom" not in by_text
+        assert by_text["B"].level == 2
+        assert by_text["C"].level == 2
+        assert by_text["B"].path == "A > B"
+        assert by_text["C"].path == "A > C"
+
+    async def test_tc6_canonical_reproducer_open_questions_resolved(self, tmp_path):
+        """Mirrors the pim_health design-note bug where `## Open Questions
+        Resolved` inside a fenced block phantom-headed §3.2..§3.5."""
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "tc6.md"
+        test_file.write_text(
+            "# Doc\n\n## 3\n\n### 3.1\n\n```\n## Open Questions Resolved\n```\n\n### 3.2\n"
+        )
+
+        result = await adapter.project(test_file)
+
+        by_text = {h.text: h for h in result.headings}
+        assert "Open Questions Resolved" not in by_text
+        assert by_text["3.2"].path == "Doc > 3 > 3.2"
+        assert by_text["3.2"].level == 3
+
+
 # ── Docx Adapter ────────────────────────────────────────────────────
 
 import hashlib  # noqa: E402 -- grouped with the docx-adapter test section below

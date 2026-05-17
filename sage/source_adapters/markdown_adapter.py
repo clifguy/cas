@@ -4,9 +4,10 @@ Computes SHA-256 of source file bytes for content_hash.
 """
 
 import hashlib
-import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+from markdown_it import MarkdownIt
 
 from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
 
@@ -16,7 +17,10 @@ class MarkdownAdapter(SourceAdapter):
     # content, plus FTS index on heading_path).
     # 0.3.0: chunker emits one chunk per heading regardless of body content
     # (Word-Find equivalence for empty-content parents).
-    VERSION = "0.3.0"
+    # 0.4.0: CommonMark-compliant heading extraction via markdown-it-py.
+    # Suppresses ATX heading-shaped lines inside fenced and indented code
+    # blocks (T-0070).
+    VERSION = "0.4.0"
     EXTENSIONS = [".md", ".markdown"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -39,49 +43,46 @@ class MarkdownAdapter(SourceAdapter):
         )
 
     def _parse_headings(self, text: str) -> list[HeadingNode]:
-        """Parse ATX-style headings (# through ######) into a hierarchy."""
-        headings: list[HeadingNode] = []
+        """Extract headings via CommonMark token stream.
+
+        Code-block tokens (`fence`, `code_block`) never produce `heading_open`,
+        so any `#`-shaped lines inside them are suppressed by construction.
+        """
+        md = MarkdownIt("commonmark")
+        tokens = md.parse(text)
         lines = text.split("\n")
-        heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$")
 
-        # Track heading stack for path construction
+        # First pass: collect (level, text, start_line, end_line) for each
+        # heading_open token. The next inline token carries the heading text.
+        raw: list[tuple[int, str, int, int]] = []
+        for i, tok in enumerate(tokens):
+            if tok.type != "heading_open":
+                continue
+            level = int(tok.tag[1:])
+            inline = tokens[i + 1] if i + 1 < len(tokens) else None
+            heading_text = inline.content.strip() if inline is not None else ""
+            start, end = tok.map if tok.map is not None else (0, 0)
+            raw.append((level, heading_text, start, end))
+
+        headings: list[HeadingNode] = []
         stack: list[tuple[int, str]] = []
-        current_content_lines: list[str] = []
-        current_heading_idx = -1
+        for idx, (level, heading_text, _start, end) in enumerate(raw):
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, heading_text))
+            path = " > ".join(h[1] for h in stack)
 
-        for line in lines:
-            match = heading_pattern.match(line)
-            if match:
-                # Flush content to previous heading
-                if current_heading_idx >= 0:
-                    headings[current_heading_idx].content = "\n".join(current_content_lines).strip()
-                current_content_lines = []
+            next_start = raw[idx + 1][2] if idx + 1 < len(raw) else len(lines)
+            content = "\n".join(lines[end:next_start]).strip()
 
-                level = len(match.group(1))
-                heading_text = match.group(2).strip()
-
-                # Update stack: pop deeper or equal levels
-                while stack and stack[-1][0] >= level:
-                    stack.pop()
-                stack.append((level, heading_text))
-
-                path = " > ".join(h[1] for h in stack)
-
-                headings.append(
-                    HeadingNode(
-                        level=level,
-                        text=heading_text,
-                        path=path,
-                        content="",
-                    )
+            headings.append(
+                HeadingNode(
+                    level=level,
+                    text=heading_text,
+                    path=path,
+                    content=content,
                 )
-                current_heading_idx = len(headings) - 1
-            else:
-                current_content_lines.append(line)
-
-        # Flush final heading content
-        if current_heading_idx >= 0:
-            headings[current_heading_idx].content = "\n".join(current_content_lines).strip()
+            )
 
         return headings
 
