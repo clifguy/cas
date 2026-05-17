@@ -82,6 +82,8 @@ exclude_also = [
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
 ]
+# T-0065: floor is baseline - 2. Baseline 91% observed in CI run 25975319154 (commit a8f191e).
+fail_under = 89
 
 [tool.importlinter]
 root_packages = ["sage"]
