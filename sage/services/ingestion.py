@@ -1236,11 +1236,17 @@ class IngestionService:
         """
         chunks: list[Chunk] = []
         for i, heading in enumerate(projection.headings):
+            # Prepend the ATX heading line to chunk content so the heading
+            # mark survives into the reconstructed projection text (T-0081).
+            # Without this, _get_projection_text emits prose-only text and
+            # round-trip through re-ingestion loses the heading hierarchy.
+            atx_line = ("#" * heading.level) + " " + heading.text
+            chunk_content = f"{atx_line}\n\n{heading.content}" if heading.content else atx_line
             chunks.append(
                 Chunk(
                     document_id=document_id,
                     heading_path=heading.path,
-                    content=heading.content,  # may be empty
+                    content=chunk_content,
                     chunk_index=i,
                 )
             )

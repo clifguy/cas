@@ -553,9 +553,10 @@ async def test_bh_057_imports_dir_created_on_demand(
 
 
 def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
-    """_chunk_projection returns body chunks with original content only;
-    the search preamble lives in a standalone synthetic header chunk
-    (T-0038)."""
+    """_chunk_projection prepends the ATX heading line to body content
+    (T-0081) so the projection round-trips through read_projection. The
+    synthetic-header preamble (T-0038) still lives in its own chunk and
+    must not leak into body chunks."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
     projection = ProjectionResult(
@@ -573,7 +574,7 @@ def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
     chunks = ingestion_service._chunk_projection("doc1", projection)
 
     assert len(chunks) == 1
-    assert chunks[0].content == "Body content only."
+    assert chunks[0].content == "# Introduction\n\nBody content only."
     assert not chunks[0].content.startswith("Title:")
 
 
@@ -598,8 +599,9 @@ def test_chunk_projection_fallback_chunk_has_no_preamble(ingestion_service):
 
 
 def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
-    """Every body chunk carries only its projected content; the synthetic
-    header chunk lives outside _chunk_projection's output (T-0038)."""
+    """Every body chunk carries its ATX heading line plus body content
+    (T-0081); the synthetic header chunk lives outside _chunk_projection's
+    output (T-0038)."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
     projection = ProjectionResult(
@@ -616,8 +618,8 @@ def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
     chunks = ingestion_service._chunk_projection("doc3", projection)
 
     assert len(chunks) == 2
-    assert chunks[0].content == "Content for part A."
-    assert chunks[1].content == "Content for part B."
+    assert chunks[0].content == "# Part A\n\nContent for part A."
+    assert chunks[1].content == "# Part B\n\nContent for part B."
     assert all(not c.content.startswith("Title:") for c in chunks)
 
 
@@ -2109,9 +2111,11 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     stub_abstraction_provider,
     minimal_vault_config_dict,
 ):
-    """The chunk.content field stored in the content store is body text
-    only — heading_path is NOT prepended to the stored content. The
-    combined heading+content text is used solely as embedder input."""
+    """The chunk.content field stored in the content store carries its
+    own ATX heading line plus body content (T-0081). The embedder builds
+    its `heading_path + content` input on the fly; it does not mutate the
+    stored chunk.content. The synthetic-header preamble (T-0038) does not
+    leak into body chunks."""
     config = _build_vault_config_with_docx(
         minimal_vault_config_dict,
         vault_docx_config={"heading_style_map": {"Title": 1}},
@@ -2144,15 +2148,16 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     )
 
     chunks = await stub_content_store.get_all_chunks(result.document.id)
-    # Body chunks carry projected content only; the synthetic header
-    # chunk (T-0038) lives separately under heading_path
-    # SYNTHETIC_HEADER_HEADING_PATH.
+    # Body chunks carry the ATX heading line plus body content (T-0081);
+    # the synthetic header chunk (T-0038) lives separately under
+    # heading_path SYNTHETIC_HEADER_HEADING_PATH.
     assert len(chunks) >= 2
     second = next(c for c in chunks if c.heading_path == second_heading)
-    assert second.content == body_second, (
-        "Stored chunk.content must be body text only; got: " + repr(second.content)
+    assert second.content == f"# {second_heading}\n\n{body_second}", (
+        "Stored chunk.content must be ATX heading line + body; got: " + repr(second.content)
     )
-    assert second_heading not in second.content
+    # Synthetic-header preamble fields must not leak into body chunks.
+    assert not second.content.startswith("Title:")
 
 
 @requires_docx
