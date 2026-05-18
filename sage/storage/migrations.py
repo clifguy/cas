@@ -139,11 +139,33 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_lifecycle ON documents(lifecycle_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_pipeline ON documents(pipeline_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_metadata_confirmed ON documents(metadata_confirmed);",
-    "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id);",
-    "CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id);",
+    # T-0074: doc_type and project are the two most-filtered columns in
+    # the entire codebase. The composite (doc_type, lifecycle_status) index
+    # serves the dominant "active tickets / ADRs / failures" query shape.
+    "CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);",
+    "CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project);",
+    (
+        "CREATE INDEX IF NOT EXISTS idx_documents_doc_type_lifecycle "
+        "ON documents(doc_type, lifecycle_status);"
+    ),
+    # T-0074: composite edge indexes for sage_traverse(edge_type=X). The
+    # left-prefix rule lets these cover the source-only / target-only
+    # scans previously served by idx_edges_source / idx_edges_target,
+    # which are dropped below.
+    "CREATE INDEX IF NOT EXISTS idx_edges_source_type ON edges(source_id, edge_type);",
+    "CREATE INDEX IF NOT EXISTS idx_edges_target_type ON edges(target_id, edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
+]
+
+# T-0074: single-column edge indexes superseded by the composite
+# (source_id, edge_type) and (target_id, edge_type). SQLite uses the
+# left-prefix of a composite for single-column lookups, so these are
+# strictly redundant once the composites exist.
+INDEX_REPLACEMENTS = [
+    "DROP INDEX IF EXISTS idx_edges_source;",
+    "DROP INDEX IF EXISTS idx_edges_target;",
 ]
 
 MIGRATION_PLAN: list[Migration] = [
@@ -191,8 +213,10 @@ TABLES = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE]
 # Indexes and other DDL that depend on columns added by MIGRATIONS.
 # Must run AFTER migrations so that indexes on new columns (e.g.,
 # metadata_confirmed) succeed against existing databases where
-# CREATE TABLE IF NOT EXISTS was a no-op.
-POST_MIGRATION_DDL = INDEXES
+# CREATE TABLE IF NOT EXISTS was a no-op. Replacements run first so the
+# obsolete single-column edge indexes are gone before the composites
+# (which would otherwise coexist as a transient bloat window).
+POST_MIGRATION_DDL = [*INDEX_REPLACEMENTS, *INDEXES]
 
 # Legacy alias used by tests and graph_store prior to ordering fix.
 ALL_DDL = [*TABLES, *INDEXES]
