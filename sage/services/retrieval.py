@@ -33,6 +33,7 @@ from sage.api.errors import (
     HeadingNotFoundError,
     MissingFieldError,
     PipelineIncompleteError,
+    Tier3SchemaViolationError,
 )
 from sage.config import VaultConfig
 from sage.instrumentation.timing import (
@@ -267,6 +268,37 @@ class RetrievalService:
 
             return response
 
+    def _validate_tier3_filter_keys(
+        self,
+        tier3: dict,
+        doc_type: str | None,
+    ) -> None:
+        """Reject tier3 filter keys that are not declared by the resolved
+        doc_type's metadata_schema (T-0075).
+
+        Runs only when ``doc_type`` is supplied AND that doc_type has a
+        metadata_schema declared. When the caller filters by tier3
+        without a doc_type, this check is skipped -- the storage-layer
+        format-regex check at ``_TIER3_KEY_FORMAT`` is the only fence.
+        """
+        if not doc_type:
+            return
+        validator = self._config.tier3_validator(doc_type)
+        if validator is None:
+            return
+        declared = set(validator.schema.get("properties", {}).keys())
+        for key in tier3:
+            if key not in declared:
+                raise Tier3SchemaViolationError(
+                    doc_type=doc_type,
+                    path=f"$.{key}",
+                    message=(
+                        f"tier3 filter key '{key}' is not declared in the "
+                        f"metadata_schema for doc_type '{doc_type}'. "
+                        f"Declared keys: {sorted(declared)!r}"
+                    ),
+                )
+
     # ------------------------------------------------------------------
     # Catalog mode (BH-072 through BH-079)
     # ------------------------------------------------------------------
@@ -282,16 +314,18 @@ class RetrievalService:
         document-level metadata only (no chunk content or relevance scores).
         Supports pagination via limit + offset.
 
-        ``RetrievalFilters.tier3`` is applied as a Python post-filter after
-        the SQL query. To keep limit/offset semantics correct after the
-        post-filter, the SQL query is widened (no limit/offset pushdown)
-        and pagination is reapplied to the filtered set. At vault scale
-        this is microseconds; if it ever becomes hot, push tier3 into
-        SQLite JSON1 predicates.
+        ``RetrievalFilters.tier3`` is pushed into SQL as
+        ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates (T-0075);
+        the high-frequency canonical keys (``ticket_id``, ``failure_id``,
+        ``tool_name``) are backed by SQLite expression indexes. When the
+        request also names a ``doc_type`` that declares a
+        ``metadata_schema``, tier3 keys are validated against that
+        schema's declared properties before the query runs -- a typo'd
+        key raises ``Tier3SchemaViolationError`` instead of silently
+        matching zero rows.
         """
         # Build filter dict from request
         sql_filters: dict[str, object] = {}
-        tier3_filter: dict | None = None
         if request.filters:
             if request.filters.doc_type:
                 sql_filters["doc_type"] = request.filters.doc_type
@@ -306,35 +340,17 @@ class RetrievalService:
             if request.filters.document_ids:
                 sql_filters["document_ids"] = request.filters.document_ids
             if request.filters.tier3:
-                tier3_filter = request.filters.tier3
+                self._validate_tier3_filter_keys(request.filters.tier3, request.filters.doc_type)
+                sql_filters["tier3"] = request.filters.tier3
 
-        if tier3_filter is None:
-            with phases.phase("query_documents"):
-                docs, total_count = await self._graph.query_documents(
-                    filters=sql_filters or None,
-                    limit=request.limit,
-                    offset=request.offset,
-                    sort_by=request.sort_by,
-                    sort_order=request.sort_order,
-                )
-        else:
-            # Fetch the entire SQL-filtered set, apply tier3 post-filter,
-            # then paginate. The SQL ceiling is the documents-table size;
-            # at vault scale this is bounded and cheap.
-            with phases.phase("query_documents_wide"):
-                wide_docs, _ = await self._graph.query_documents(
-                    filters=sql_filters or None,
-                    limit=10_000_000,
-                    offset=0,
-                    sort_by=request.sort_by,
-                    sort_order=request.sort_order,
-                )
-            with phases.phase("tier3_post_filter"):
-                filtered = [d for d in wide_docs if _tier3_matches(d.tier3_metadata, tier3_filter)]
-                total_count = len(filtered)
-                start = request.offset
-                end = start + request.limit
-                docs = filtered[start:end]
+        with phases.phase("query_documents"):
+            docs, total_count = await self._graph.query_documents(
+                filters=sql_filters or None,
+                limit=request.limit,
+                offset=request.offset,
+                sort_by=request.sort_by,
+                sort_order=request.sort_order,
+            )
 
         hits = [
             DiscoverHit(

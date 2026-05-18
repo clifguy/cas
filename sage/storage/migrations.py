@@ -157,6 +157,24 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
+    # T-0075: expression indexes on the three canonical high-frequency
+    # tier3_metadata fields. The SQL builder in graph_store emits
+    # json_extract(tier3_metadata, '$.<field>') = ? predicates with the
+    # path string interpolated character-for-character so the planner
+    # can match these expression indexes (parameterized paths cannot
+    # hit an expression index).
+    (
+        "CREATE INDEX IF NOT EXISTS idx_tier3_ticket_id "
+        "ON documents(json_extract(tier3_metadata, '$.ticket_id'));"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_tier3_failure_id "
+        "ON documents(json_extract(tier3_metadata, '$.failure_id'));"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS idx_tier3_tool_name "
+        "ON documents(json_extract(tier3_metadata, '$.tool_name'));"
+    ),
 ]
 
 # T-0074: single-column edge indexes superseded by the composite

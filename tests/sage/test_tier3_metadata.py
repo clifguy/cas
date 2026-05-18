@@ -671,3 +671,125 @@ def test_tier3_matches_ands_multiple_keys():
     stored = {"x": "a", "y": "b"}
     assert _tier3_matches(stored, {"x": "a", "y": "b"}) is True
     assert _tier3_matches(stored, {"x": "a", "y": "c"}) is False
+
+
+# ---------------------------------------------------------------------------
+# T-0075: SQL pushdown of tier3 filters into json_extract predicates
+# ---------------------------------------------------------------------------
+
+
+async def test_t0075_catalog_filter_unindexed_tier3_value_returns_correct_subset(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """JSON1 pushdown must work for tier3 fields that have no expression
+    index. ``fix_commit`` is declared on failure_record's metadata_schema
+    but is not one of the three indexed canonical keys (ticket_id,
+    failure_id, tool_name) -- the predicate falls through to a table
+    scan and must still return the right rows."""
+    d1, _d2, _d3, _d4 = await _seed_failure_records(tmp_vault_dir, tier3_ingestion_service)
+
+    response = await tier3_retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(
+                doc_type="failure_record",
+                tier3={"fix_commit": "abc1234"},
+            ),
+        )
+    )
+    returned_ids = {hit.document.id for hit in response.results}
+    assert returned_ids == {d1.id}
+
+
+async def test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_schema(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """A tier3 key not declared in the resolved doc_type's metadata_schema
+    must raise Tier3SchemaViolationError before the query reaches SQL.
+    A typo'd key would otherwise silently match zero rows -- the AC
+    explicitly says this should error so the caller knows."""
+    await _seed_failure_records(tmp_vault_dir, tier3_ingestion_service)
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await tier3_retrieval_service.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.CATALOG,
+                filters=RetrievalFilters(
+                    doc_type="ticket",
+                    tier3={"tickett_id": "T-0001"},  # typo
+                ),
+            )
+        )
+    assert excinfo.value.detail["doc_type"] == "ticket"
+    assert "tickett_id" in str(excinfo.value.detail.get("message", "")) or "tickett_id" in str(
+        excinfo.value.detail.get("path", "")
+    )
+
+
+async def test_t0075_catalog_filter_pushes_tier3_into_sql_not_python(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service, graph_store
+):
+    """The optimization gate: the SQL emitted for a catalog-mode tier3
+    filter must contain a json_extract predicate, and the legacy
+    wide-fetch / Python-post-filter phase must not fire.
+
+    Captured via sqlite3 connection trace. If this test breaks but the
+    behavior-equivalence tests still pass, the optimization has been
+    silently reverted to the 10M-row fallback.
+    """
+    await _seed_failure_records(tmp_vault_dir, tier3_ingestion_service)
+
+    # Warm-up: trigger the executor thread to materialize its
+    # threading.local connection (GraphStore uses one connection per
+    # thread; the test thread and the executor thread each get their
+    # own). Without this the next set_trace_callback would miss the
+    # executor's connection.
+    await graph_store.query_documents(filters={"doc_type": "ticket"}, limit=1)
+
+    captured_sql: list[str] = []
+    # Trace every connection in the pool so we capture SQL regardless
+    # of which executor thread services the discover call.
+    for conn in graph_store._all_connections:
+        conn.set_trace_callback(captured_sql.append)
+    try:
+        await tier3_retrieval_service.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.CATALOG,
+                filters=RetrievalFilters(
+                    doc_type="failure_record",
+                    tier3={"severity": "high"},
+                ),
+            )
+        )
+    finally:
+        for conn in graph_store._all_connections:
+            conn.set_trace_callback(None)
+
+    joined = "\n".join(captured_sql)
+    assert "json_extract(tier3_metadata, '$.severity')" in joined, joined
+    # The legacy wide-fetch issued a `LIMIT 10000000` on the documents
+    # table. The new path uses the request limit (default 10).
+    assert "LIMIT 10000000" not in joined, joined
+
+
+async def test_t0075_catalog_filter_rejects_sql_unsafe_tier3_key(
+    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service
+):
+    """Defense-in-depth: a tier3 key that contains characters outside
+    [A-Za-z0-9_] must be rejected before reaching the SQL builder.
+    The whitelist-against-metadata_schema check at the service layer
+    will already block this, but the storage-layer format check is the
+    last-line fence that guarantees no caller-supplied string ever
+    interpolates into a JSON path without being validated.
+    """
+    await _seed_failure_records(tmp_vault_dir, tier3_ingestion_service)
+
+    with pytest.raises((Tier3SchemaViolationError, ValueError)):
+        await tier3_retrieval_service.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.CATALOG,
+                filters=RetrievalFilters(
+                    tier3={"severity') OR 1=1 --": "x"},
+                ),
+            )
+        )

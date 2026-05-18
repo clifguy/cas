@@ -7,6 +7,7 @@ reads under WAL mode while SQLite serializes writes internally.
 
 import asyncio
 import json
+import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -33,6 +34,13 @@ from sage.storage.migrations import (
 )
 
 T = TypeVar("T")
+
+# Defense-in-depth gate for tier3 keys that get interpolated into the
+# JSON path of a json_extract() expression. The service layer validates
+# the same keys against the doc_type's metadata_schema; this regex is
+# the last-line fence guaranteeing no caller-supplied string can break
+# out of the path and inject SQL.
+_TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 @dataclass(frozen=True)
@@ -276,9 +284,17 @@ class GraphStore:
         """Query documents with SQL predicates. Returns (docs, total_count).
 
         Supported filter keys: doc_type, project, lifecycle_status,
-        pipeline_status, tags (list[str], AND semantics), document_ids (list[str]).
-        Failed-pipeline documents are excluded by default unless
-        pipeline_status is explicitly set.
+        pipeline_status, tags (list[str], AND semantics), document_ids (list[str]),
+        tier3 (dict[str, object], AND semantics, pushed into SQL as
+        ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates per
+        T-0075). Failed-pipeline documents are excluded by default
+        unless pipeline_status is explicitly set.
+
+        Tier3 keys must match ``[A-Za-z0-9_]+``; an offending key raises
+        ``ValueError`` before any SQL is built. The service layer
+        validates the same keys against the doc_type's metadata_schema;
+        the storage-layer check is defense-in-depth so the JSON path
+        interpolation is always safe.
 
         sort_by: column to sort on (title, document_date, lifecycle_status).
         sort_order: 'asc' or 'desc'. Default varies by sort_by.
@@ -333,6 +349,25 @@ class GraphStore:
                 for tag in filters["tags"]:
                     where_clauses.append("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)")
                     params.append(tag)
+            if "tier3" in filters and filters["tier3"]:
+                tier3 = filters["tier3"]
+                if not isinstance(tier3, dict):
+                    raise ValueError(f"tier3 filter must be a dict, got {type(tier3).__name__}")
+                for key, value in tier3.items():
+                    if not isinstance(key, str) or not _TIER3_KEY_FORMAT.fullmatch(key):
+                        raise ValueError(
+                            f"tier3 filter key {key!r} is not safe for SQL interpolation; "
+                            "keys must match [A-Za-z0-9_]+"
+                        )
+                    path_expr = f"json_extract(tier3_metadata, '$.{key}')"
+                    if value is None:
+                        # SQLite json_extract returns SQL NULL for both
+                        # missing keys and JSON null values, matching the
+                        # _tier3_matches helper's None semantics.
+                        where_clauses.append(f"{path_expr} IS NULL")
+                    else:
+                        where_clauses.append(f"{path_expr} = ?")
+                        params.append(value)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
