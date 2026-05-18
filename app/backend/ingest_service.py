@@ -255,13 +255,53 @@ class BatchIngestService:
             if it.parsed.version is not None
         }
 
-        # Fetch all docs once. Active docs always participate. Archived docs
-        # participate only when they share a chain identity with a new
-        # arrival (so chain-repair can see the full historical chain).
+        # Existing-doc fetch (T-0076): two SQL-pushed passes feed the
+        # union of "always include" + "chain-repair candidates" instead
+        # of pulling the entire vault into Python.
+        #
+        # Pass A: active docs (always included regardless of chain
+        #   identity). Bounded by active doc count.
+        # Pass B: chain-repair candidates -- one targeted query per
+        #   unique (project, doc_type) pair drawn from scan_chain_keys.
+        #   Each query is bounded by the cardinality of that pair.
+        #
+        # The union is deduplicated by document id. The title-case-
+        # insensitive component of the chain-key match stays in Python
+        # because query_documents has no title predicate today.
+        active_docs, _ = await vault_services.graph_store.query_documents(
+            filters={"lifecycle_status": "active"},
+            limit=10_000_000,
+            offset=0,
+        )
+
+        chain_dim_pairs: set[tuple[str | None, str | None]] = {
+            (key[1], key[2]) for key in scan_chain_keys
+        }
+        candidate_docs: list = []
+        seen_ids: set[str] = {d.id for d in active_docs}
+        for project, doc_type in chain_dim_pairs:
+            filters: dict[str, object] = {}
+            if project is not None:
+                filters["project"] = project
+            if doc_type is not None:
+                filters["doc_type"] = doc_type
+            # When both are None, fall back to an unfiltered scan for
+            # this slice. Rare (versioned arrival with neither project
+            # nor doc_type) and matches the original worst case.
+            docs, _ = await vault_services.graph_store.query_documents(
+                filters=filters or None,
+                limit=10_000_000,
+                offset=0,
+            )
+            for doc in docs:
+                if doc.id in seen_ids:
+                    continue
+                seen_ids.add(doc.id)
+                candidate_docs.append(doc)
+
         existing_items: list[InferenceItem] = []
         existing_chain_doc_ids: list[str] = []
-        all_docs = await vault_services.graph_store.list_all_documents()
-        for doc in all_docs:
+        for doc in list(active_docs) + candidate_docs:
             doc_chain_key = (
                 doc.title.lower() if doc.title else "",
                 doc.project,

@@ -175,24 +175,31 @@ class RetrievalService:
             or f.tier3
         )
         if has_doc_constraints:
-            target_ids = set(f.document_ids or [])
-            all_docs = await self._graph.list_all_documents()
-            matching: list[str] = []
-            for doc in all_docs:
-                if target_ids and doc.id not in target_ids:
-                    continue
-                if f.lifecycle_status and doc.lifecycle_status != f.lifecycle_status:
-                    continue
-                if f.project and doc.project != f.project:
-                    continue
-                if f.tags and not set(f.tags).issubset(set(doc.tags or [])):
-                    continue
-                if f.pipeline_status and doc.pipeline_status.value != f.pipeline_status:
-                    continue
-                if f.tier3 and not _tier3_matches(doc.tier3_metadata, f.tier3):
-                    continue
-                matching.append(doc.id)
-            result["document_id"] = matching
+            sql_filters: dict[str, object] = {}
+            if f.doc_type:
+                sql_filters["doc_type"] = f.doc_type
+            if f.lifecycle_status:
+                sql_filters["lifecycle_status"] = f.lifecycle_status
+            if f.project:
+                sql_filters["project"] = f.project
+            if f.pipeline_status:
+                sql_filters["pipeline_status"] = f.pipeline_status
+            if f.tags:
+                sql_filters["tags"] = f.tags
+            if f.document_ids:
+                sql_filters["document_ids"] = f.document_ids
+            if f.tier3:
+                self._validate_tier3_filter_keys(f.tier3, f.doc_type)
+                sql_filters["tier3"] = f.tier3
+            # Filter resolution wants the full match set, not a page;
+            # use an unbounded limit. The SQL ceiling is the documents
+            # table size pre-filter, which is bounded at vault scale.
+            matching_docs, _ = await self._graph.query_documents(
+                filters=sql_filters or None,
+                limit=10_000_000,
+                offset=0,
+            )
+            result["document_id"] = [doc.id for doc in matching_docs]
 
         return (result or None, has_doc_constraints)
 
@@ -444,14 +451,62 @@ class RetrievalService:
         """Return all documents matching scope and filter criteria.
 
         Used for dashboard drill-downs where no content search is needed.
-        """
-        all_docs = await self._graph.list_all_documents()
-        hits: list[DiscoverHit] = []
 
-        for doc in all_docs:
+        Filters that map to SQL column predicates (doc_type, project,
+        lifecycle_status, pipeline_status, tags, document_ids, tier3)
+        are pushed into ``query_documents()``. ``scope=AUTHORITATIVE``
+        remains a Python post-pass because ``authority_scope`` has no
+        SQL column predicate today; the other scope values (SPECIFIC,
+        FILTERED, ALL) reduce to filter or short-circuit conditions
+        that the SQL predicates already cover.
+        """
+        filters = request.filters
+
+        # Scope-based short-circuits before any SQL is issued.
+        if request.scope == RetrievalScope.SPECIFIC:
+            if not filters or not filters.document_ids:
+                return []
+        elif request.scope == RetrievalScope.FILTERED:
+            if not filters:
+                return []
+
+        sql_filters: dict[str, object] = {}
+        if filters:
+            if filters.doc_type:
+                sql_filters["doc_type"] = filters.doc_type
+            if filters.lifecycle_status:
+                sql_filters["lifecycle_status"] = filters.lifecycle_status
+            if filters.project:
+                sql_filters["project"] = filters.project
+            if filters.pipeline_status:
+                sql_filters["pipeline_status"] = filters.pipeline_status
+            if filters.tags:
+                sql_filters["tags"] = filters.tags
+            if filters.document_ids:
+                sql_filters["document_ids"] = filters.document_ids
+            if filters.tier3:
+                self._validate_tier3_filter_keys(filters.tier3, filters.doc_type)
+                sql_filters["tier3"] = filters.tier3
+
+        docs, _ = await self._graph.query_documents(
+            filters=sql_filters or None,
+            limit=10_000_000,
+            offset=0,
+        )
+
+        hits: list[DiscoverHit] = []
+        for doc in docs:
+            # The Python failed-pipeline skip is redundant when
+            # pipeline_status is unset (query_documents excludes failed
+            # by default) and harmless otherwise; kept as defense-in-
+            # depth so a future change to the SQL default cannot
+            # silently leak failed rows into the response.
             if doc.pipeline_status == PipelineStatus.FAILED:
                 continue
-            if not self._passes_scope(doc, request):
+            # AUTHORITATIVE is the one scope rule not expressible as a
+            # SQL column predicate today. Other scope rules are already
+            # satisfied by the SQL filters and the short-circuits above.
+            if request.scope == RetrievalScope.AUTHORITATIVE and not doc.authority_scope:
                 continue
 
             summary = DocumentSummary(

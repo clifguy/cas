@@ -110,7 +110,36 @@ def _make_services(
     services.config.abstraction.enabled = abstraction_enabled
 
     # Graph store
-    services.graph_store.list_all_documents = AsyncMock(return_value=existing_docs or [])
+    docs_pool: list[Document] = list(existing_docs or [])
+    services.graph_store.list_all_documents = AsyncMock(return_value=docs_pool)
+
+    async def _query_documents(
+        filters=None,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by=None,
+        sort_order=None,
+    ):
+        """Filter-aware double for GraphStore.query_documents.
+
+        Mirrors the subset of predicate behaviour exercised by
+        _build_edge_plan after T-0076's app-side filter pushdown:
+        lifecycle_status, project, doc_type. Other keys are passed
+        through (no filter applied) so unrelated callers stay agnostic
+        of fixture detail. Pagination is not implemented because no
+        test depends on it.
+        """
+        result = list(docs_pool)
+        if filters:
+            if filters.get("lifecycle_status"):
+                result = [d for d in result if d.lifecycle_status == filters["lifecycle_status"]]
+            if filters.get("project"):
+                result = [d for d in result if d.project == filters["project"]]
+            if filters.get("doc_type"):
+                result = [d for d in result if d.doc_type == filters["doc_type"]]
+        return result, len(result)
+
+    services.graph_store.query_documents = AsyncMock(side_effect=_query_documents)
     services.graph_store.get_edges_by_source = AsyncMock(return_value=[])
 
     # Ingestion service -- default: succeed and return new doc
@@ -361,6 +390,121 @@ class TestEdgePlanConstruction:
             assert ei.parsed.version == "v3"
             assert ei.parsed.doc_type == "patent_draft"
             assert ei.parsed.project == "PIM"
+
+    # ---------------------------------------------------------------------
+    # T-0076 — filter pushdown for the existing-doc fetch in
+    # _build_edge_plan. The site at app/backend/ingest_service.py
+    # historically pulled the entire vault and filtered in Python.
+    # ---------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_t0076_edge_plan_includes_active_and_chain_repair_only(self):
+        """Existing-doc fetch must return exactly:
+
+        * active docs (regardless of chain identity), and
+        * non-active docs whose (title.lower(), project, doc_type) is in
+          the incoming scan_chain_keys.
+
+        Non-active docs that do NOT share a chain identity with any
+        incoming versioned arrival must be excluded.
+        """
+        d_active = _make_document(
+            "d_active_report_v1",
+            title="Report",
+            version_label="v1",
+            project="alpha",
+            doc_type="note",
+            lifecycle_status="active",
+        )
+        d_archived_chain = _make_document(
+            "d_archived_report_v2",
+            title="Report",
+            version_label="v2",
+            project="alpha",
+            doc_type="note",
+            lifecycle_status="archived",
+        )
+        d_archived_unrelated = _make_document(
+            "d_archived_memo_v1",
+            title="Memo",
+            version_label="v1",
+            project="alpha",
+            doc_type="note",
+            lifecycle_status="archived",
+        )
+        d_completed_unrelated = _make_document(
+            "d_completed_other",
+            title="Other",
+            project="beta",
+            doc_type="note",
+            lifecycle_status="completed",
+        )
+        services = _make_services(
+            existing_docs=[
+                d_active,
+                d_archived_chain,
+                d_archived_unrelated,
+                d_completed_unrelated,
+            ]
+        )
+        svc = BatchIngestService()
+
+        with patch("app.backend.ingest_service.EdgeInferenceEngine") as MockEngine:
+            mock_engine = MockEngine.return_value
+            mock_engine.build_edge_plan.return_value = EdgePlan()
+
+            await svc.run(
+                files=[
+                    _fd(
+                        "/tmp/incoming-v3.md",
+                        title="Report",
+                        version="v3",
+                        project="alpha",
+                        doc_type="note",
+                    )
+                ],
+                vault_services=services,
+                infer_edges=True,
+            )
+
+            _scan_items, existing_items = mock_engine.build_edge_plan.call_args[0]
+            existing_refs = {ei.ref for ei in existing_items}
+            assert d_active.id in existing_refs
+            assert d_archived_chain.id in existing_refs
+            assert d_archived_unrelated.id not in existing_refs
+            assert d_completed_unrelated.id not in existing_refs
+
+    @pytest.mark.asyncio
+    async def test_t0076_edge_plan_does_not_call_list_all_documents(self):
+        """Anti-coincidental gate: list_all_documents() must not be
+        invoked from _build_edge_plan. Monkeypatched to raise; the
+        cross-check on the engine call confirms the SQL-pushdown path
+        actually populated existing_items (so a future stub that
+        silently swallowed the AssertionError would still flunk).
+        """
+        d_active = _make_document("d_active_only", title="Solo", lifecycle_status="active")
+        services = _make_services(existing_docs=[d_active])
+        services.graph_store.list_all_documents = AsyncMock(
+            side_effect=AssertionError(
+                "list_all_documents() must not be called from _build_edge_plan (T-0076)"
+            )
+        )
+        svc = BatchIngestService()
+
+        with patch("app.backend.ingest_service.EdgeInferenceEngine") as MockEngine:
+            mock_engine = MockEngine.return_value
+            mock_engine.build_edge_plan.return_value = EdgePlan()
+
+            await svc.run(
+                files=[_fd("/tmp/x.md", title="X", version="v1")],
+                vault_services=services,
+                infer_edges=True,
+            )
+
+            _scan_items, existing_items = mock_engine.build_edge_plan.call_args[0]
+            assert any(ei.ref == d_active.id for ei in existing_items), (
+                "SQL-pushdown path failed to surface the active doc"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +971,31 @@ class _MockGraphState:
     async def list_all_documents(self) -> list[Document]:
         return list(self.docs.values())
 
+    async def query_documents(
+        self,
+        filters=None,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by=None,
+        sort_order=None,
+    ):
+        """Filter-aware double mirroring the subset of predicate
+        behaviour _build_edge_plan relies on after T-0076's pushdown:
+        lifecycle_status, project, doc_type. Returns
+        (matching_documents, total_count) like the real signature.
+        Pagination is not implemented because no chain-repair test
+        depends on it.
+        """
+        result = list(self.docs.values())
+        if filters:
+            if filters.get("lifecycle_status"):
+                result = [d for d in result if d.lifecycle_status == filters["lifecycle_status"]]
+            if filters.get("project"):
+                result = [d for d in result if d.project == filters["project"]]
+            if filters.get("doc_type"):
+                result = [d for d in result if d.doc_type == filters["doc_type"]]
+        return result, len(result)
+
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
         return [
             e
@@ -889,6 +1058,7 @@ def _make_chain_services(
     services = MagicMock()
     services.config.abstraction.enabled = abstraction_enabled
     services.graph_store.list_all_documents = AsyncMock(side_effect=state.list_all_documents)
+    services.graph_store.query_documents = AsyncMock(side_effect=state.query_documents)
     services.graph_store.get_edges_by_source = AsyncMock(side_effect=state.get_edges_by_source)
     services.graph_store.get_edges_by_target = AsyncMock(side_effect=state.get_edges_by_target)
     services.graph_store.get_edge = AsyncMock(side_effect=state.get_edge)
