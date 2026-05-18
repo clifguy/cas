@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
@@ -57,13 +58,20 @@ class LinkReadContext:
 
 
 class GraphStore:
-    def __init__(self, db_path: Path, max_connections: int = 4) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        max_connections: int = 4,
+        *,
+        query_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
+    ) -> None:
         self._db_path = db_path
         self._max_connections = max_connections
         self._executor: ThreadPoolExecutor | None = None
         self._local = threading.local()
         self._all_connections: list[sqlite3.Connection] = []
         self._all_connections_lock = threading.Lock()
+        self._query_timer = query_timer
 
     def _get_connection(self) -> sqlite3.Connection:
         """Return the thread-local connection, creating one if needed."""
@@ -92,12 +100,13 @@ class GraphStore:
                 existing database, raise ``SchemaMigrationRequired``
                 rather than silently mutating the schema.
         """
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._executor = ThreadPoolExecutor(
-            max_workers=self._max_connections,
-            thread_name_prefix="sage-graph",
-        )
-        await self._run(self._initialize_sync, migrate)
+        with self._query_timer.measure("initialize"):
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._executor = ThreadPoolExecutor(
+                max_workers=self._max_connections,
+                thread_name_prefix="sage-graph",
+            )
+            await self._run(self._initialize_sync, migrate)
 
     def _initialize_sync(self, migrate: bool) -> None:
         conn = self._get_connection()
@@ -192,7 +201,8 @@ class GraphStore:
         )
 
     async def get_document(self, doc_id: str) -> Document | None:
-        return await self._run(self._get_document_sync, doc_id)
+        with self._query_timer.measure("get_document"):
+            return await self._run(self._get_document_sync, doc_id)
 
     def _get_document_sync(self, doc_id: str) -> Document | None:
         conn = self._get_connection()
@@ -237,7 +247,8 @@ class GraphStore:
 
     async def list_all_documents(self) -> list[Document]:
         """Return all documents in the graph store."""
-        return await self._run(self._list_all_documents_sync)
+        with self._query_timer.measure("list_all_documents"):
+            return await self._run(self._list_all_documents_sync)
 
     def _list_all_documents_sync(self) -> list[Document]:
         conn = self._get_connection()
@@ -274,14 +285,15 @@ class GraphStore:
         If sort_by is None, uses default sort: active lifecycle first,
         then document_date descending.
         """
-        return await self._run(
-            self._query_documents_sync,
-            filters,
-            limit,
-            offset,
-            sort_by,
-            sort_order,
-        )
+        with self._query_timer.measure("query_documents"):
+            return await self._run(
+                self._query_documents_sync,
+                filters,
+                limit,
+                offset,
+                sort_by,
+                sort_order,
+            )
 
     def _query_documents_sync(
         self,
@@ -369,7 +381,8 @@ class GraphStore:
         return f"ORDER BY {nulls_last}{sort_by} {direction}"
 
     async def find_by_source_path(self, source_path: str) -> list[Document]:
-        return await self._run(self._find_by_source_path_sync, source_path)
+        with self._query_timer.measure("find_by_source_path"):
+            return await self._run(self._find_by_source_path_sync, source_path)
 
     def _find_by_source_path_sync(self, source_path: str) -> list[Document]:
         conn = self._get_connection()
@@ -380,7 +393,8 @@ class GraphStore:
 
     async def find_documents_by_title(self, title: str) -> list[Document]:
         """Find all documents with a matching title (case-insensitive)."""
-        return await self._run(self._find_documents_by_title_sync, title)
+        with self._query_timer.measure("find_documents_by_title"):
+            return await self._run(self._find_documents_by_title_sync, title)
 
     def _find_documents_by_title_sync(self, title: str) -> list[Document]:
         conn = self._get_connection()
@@ -397,7 +411,8 @@ class GraphStore:
         ordered by source_path match first (most specific), then title,
         then tags. Case-insensitive.
         """
-        return await self._run(self._search_metadata_sync, query, limit)
+        with self._query_timer.measure("search_metadata"):
+            return await self._run(self._search_metadata_sync, query, limit)
 
     def _search_metadata_sync(self, query: str, limit: int) -> list[Document]:
         conn = self._get_connection()
@@ -422,7 +437,8 @@ class GraphStore:
         (case-insensitive). Only returns documents that have a non-null
         abstract. Used by the abstract prefilter in the retrieval pipeline.
         """
-        return await self._run(self._search_abstracts_sync, query, limit)
+        with self._query_timer.measure("search_abstracts"):
+            return await self._run(self._search_abstracts_sync, query, limit)
 
     def _search_abstracts_sync(self, query: str, limit: int) -> list[Document]:
         conn = self._get_connection()
@@ -551,7 +567,8 @@ class GraphStore:
         return inserted, updated_pred
 
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
-        return await self._run(self._get_edges_by_source_sync, source_id, edge_type)
+        with self._query_timer.measure("get_edges_by_source"):
+            return await self._run(self._get_edges_by_source_sync, source_id, edge_type)
 
     def _get_edges_by_source_sync(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
         conn = self._get_connection()
@@ -565,7 +582,8 @@ class GraphStore:
         return [self._row_to_edge(r) for r in rows]
 
     async def get_edges_by_target(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
-        return await self._run(self._get_edges_by_target_sync, target_id, edge_type)
+        with self._query_timer.measure("get_edges_by_target"):
+            return await self._run(self._get_edges_by_target_sync, target_id, edge_type)
 
     def _get_edges_by_target_sync(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
         conn = self._get_connection()
@@ -586,7 +604,8 @@ class GraphStore:
         doc_id is not in the documents table (caller treats as missing).
         Callers treat the result as a set; order is not preserved.
         """
-        return await self._run(self._get_supersedes_lineage_sync, doc_id)
+        with self._query_timer.measure("get_supersedes_lineage"):
+            return await self._run(self._get_supersedes_lineage_sync, doc_id)
 
     def _get_supersedes_lineage_sync(self, doc_id: str) -> list[str]:
         conn = self._get_connection()
@@ -618,7 +637,8 @@ class GraphStore:
         Used by the merged_from write-time invariant: predecessor target
         must be a chain head (no newer version supersedes it).
         """
-        return await self._run(self._has_supersedes_successor_sync, doc_id)
+        with self._query_timer.measure("has_supersedes_successor"):
+            return await self._run(self._has_supersedes_successor_sync, doc_id)
 
     def _has_supersedes_successor_sync(self, doc_id: str) -> bool:
         conn = self._get_connection()
@@ -634,7 +654,8 @@ class GraphStore:
         Used by the merged_from write-time invariant: successor source
         must be the first version of its chain (nothing older).
         """
-        return await self._run(self._has_supersedes_predecessor_sync, doc_id)
+        with self._query_timer.measure("has_supersedes_predecessor"):
+            return await self._run(self._has_supersedes_predecessor_sync, doc_id)
 
     def _has_supersedes_predecessor_sync(self, doc_id: str) -> bool:
         conn = self._get_connection()
@@ -653,7 +674,8 @@ class GraphStore:
         returned edge will receive `valid_until_version = predecessor_terminal`
         in the same transaction as the merged_from insert.
         """
-        return await self._run(self._find_tombstone_candidates_sync, lineage_ids)
+        with self._query_timer.measure("find_tombstone_candidates"):
+            return await self._run(self._find_tombstone_candidates_sync, lineage_ids)
 
     def _find_tombstone_candidates_sync(self, lineage_ids: list[str]) -> list[str]:
         if not lineage_ids:
@@ -726,7 +748,8 @@ class GraphStore:
         populated with safe defaults and should not be inspected. See
         `LinkReadContext` for the field taxonomy.
         """
-        return await self._run(self._read_link_context_sync, request, policy)
+        with self._query_timer.measure("read_link_context"):
+            return await self._run(self._read_link_context_sync, request, policy)
 
     def _read_link_context_sync(
         self, request: "LinkRequest", policy: ResolutionPolicy
@@ -846,7 +869,8 @@ class GraphStore:
         `retracted_edge_id` is in the input set are returned. Edges with
         no retractions are omitted from the dict.
         """
-        return await self._run(self._get_retracts_for_edges_sync, edge_ids)
+        with self._query_timer.measure("get_retracts_for_edges"):
+            return await self._run(self._get_retracts_for_edges_sync, edge_ids)
 
     def _get_retracts_for_edges_sync(self, edge_ids: list[str]) -> dict[str, list[Edge]]:
         if not edge_ids:
@@ -866,7 +890,8 @@ class GraphStore:
 
     async def get_edge(self, edge_id: str) -> Edge | None:
         """Get a production edge by ID. Returns None if not found."""
-        return await self._run(self._get_edge_sync, edge_id)
+        with self._query_timer.measure("get_edge"):
+            return await self._run(self._get_edge_sync, edge_id)
 
     def _get_edge_sync(self, edge_id: str) -> Edge | None:
         conn = self._get_connection()
@@ -889,7 +914,8 @@ class GraphStore:
 
     async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
         """Return {hash: document_id} for hashes that exist in the store."""
-        return await self._run(self._find_documents_by_hashes_sync, hashes)
+        with self._query_timer.measure("find_documents_by_hashes"):
+            return await self._run(self._find_documents_by_hashes_sync, hashes)
 
     def _find_documents_by_hashes_sync(self, hashes: list[str]) -> dict[str, str]:
         if not hashes:
@@ -908,7 +934,8 @@ class GraphStore:
     # ------------------------------------------------------------------
 
     async def list_staging_edges(self) -> list[StagingEdge]:
-        return await self._run(self._list_staging_edges_sync)
+        with self._query_timer.measure("list_staging_edges"):
+            return await self._run(self._list_staging_edges_sync)
 
     def _list_staging_edges_sync(self) -> list[StagingEdge]:
         conn = self._get_connection()
@@ -916,7 +943,8 @@ class GraphStore:
         return [self._row_to_staging_edge(r) for r in rows]
 
     async def get_staging_edge(self, edge_id: str) -> StagingEdge | None:
-        return await self._run(self._get_staging_edge_sync, edge_id)
+        with self._query_timer.measure("get_staging_edge"):
+            return await self._run(self._get_staging_edge_sync, edge_id)
 
     def _get_staging_edge_sync(self, edge_id: str) -> StagingEdge | None:
         conn = self._get_connection()
@@ -958,7 +986,8 @@ class GraphStore:
         return cursor.rowcount > 0
 
     async def count_staging_edges(self) -> int:
-        return await self._run(self._count_staging_edges_sync)
+        with self._query_timer.measure("count_staging_edges"):
+            return await self._run(self._count_staging_edges_sync)
 
     def _count_staging_edges_sync(self) -> int:
         conn = self._get_connection()
@@ -971,7 +1000,8 @@ class GraphStore:
 
     async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
         """Return {value: count} for a given document column."""
-        return await self._run(self._get_document_counts_by_field_sync, field)
+        with self._query_timer.measure("get_document_counts_by_field"):
+            return await self._run(self._get_document_counts_by_field_sync, field)
 
     def _get_document_counts_by_field_sync(self, field: str) -> dict[str, int]:
         # Allowlist of valid fields to prevent SQL injection
@@ -986,7 +1016,8 @@ class GraphStore:
         return {row[0]: row[1] for row in rows}
 
     async def get_edge_counts_by_type(self) -> dict[str, int]:
-        return await self._run(self._get_edge_counts_by_type_sync)
+        with self._query_timer.measure("get_edge_counts_by_type"):
+            return await self._run(self._get_edge_counts_by_type_sync)
 
     def _get_edge_counts_by_type_sync(self) -> dict[str, int]:
         conn = self._get_connection()
@@ -996,21 +1027,24 @@ class GraphStore:
         return {row[0]: row[1] for row in rows}
 
     async def get_total_document_count(self) -> int:
-        return await self._run(self._get_total_document_count_sync)
+        with self._query_timer.measure("get_total_document_count"):
+            return await self._run(self._get_total_document_count_sync)
 
     def _get_total_document_count_sync(self) -> int:
         conn = self._get_connection()
         return conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
 
     async def get_total_edge_count(self) -> int:
-        return await self._run(self._get_total_edge_count_sync)
+        with self._query_timer.measure("get_total_edge_count"):
+            return await self._run(self._get_total_edge_count_sync)
 
     def _get_total_edge_count_sync(self) -> int:
         conn = self._get_connection()
         return conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
 
     async def get_last_ingestion_at(self) -> datetime | None:
-        return await self._run(self._get_last_ingestion_at_sync)
+        with self._query_timer.measure("get_last_ingestion_at"):
+            return await self._run(self._get_last_ingestion_at_sync)
 
     def _get_last_ingestion_at_sync(self) -> datetime | None:
         conn = self._get_connection()
@@ -1020,7 +1054,8 @@ class GraphStore:
         return datetime.fromisoformat(row[0])
 
     async def count_documents_by_pipeline_status(self, status: str) -> int:
-        return await self._run(self._count_documents_by_pipeline_status_sync, status)
+        with self._query_timer.measure("count_documents_by_pipeline_status"):
+            return await self._run(self._count_documents_by_pipeline_status_sync, status)
 
     def _count_documents_by_pipeline_status_sync(self, status: str) -> int:
         conn = self._get_connection()
@@ -1035,7 +1070,8 @@ class GraphStore:
 
     async def list_pending_metadata_documents(self) -> list[Document]:
         """Return documents where metadata_confirmed is false."""
-        return await self._run(self._list_pending_metadata_documents_sync)
+        with self._query_timer.measure("list_pending_metadata_documents"):
+            return await self._run(self._list_pending_metadata_documents_sync)
 
     def _list_pending_metadata_documents_sync(self) -> list[Document]:
         conn = self._get_connection()
@@ -1054,7 +1090,8 @@ class GraphStore:
         depth: int,
     ) -> list[dict]:
         """Recursive CTE traversal returning raw dicts for service-layer dedup."""
-        return await self._run(self._traverse_sync, start_id, edge_type, direction, depth)
+        with self._query_timer.measure("traverse"):
+            return await self._run(self._traverse_sync, start_id, edge_type, direction, depth)
 
     def _traverse_sync(
         self,
@@ -1189,7 +1226,8 @@ class GraphStore:
         Returns raw dicts with document metadata for all reachable nodes,
         including the start node itself.
         """
-        return await self._run(self._chain_walk_sync, start_id, edge_type)
+        with self._query_timer.measure("chain_walk"):
+            return await self._run(self._chain_walk_sync, start_id, edge_type)
 
     def _chain_walk_sync(
         self,
@@ -1282,7 +1320,8 @@ class GraphStore:
         conn.commit()
 
     async def get_user(self, user_id: str) -> User | None:
-        return await self._run(self._get_user_sync, user_id)
+        with self._query_timer.measure("get_user"):
+            return await self._run(self._get_user_sync, user_id)
 
     def _get_user_sync(self, user_id: str) -> User | None:
         conn = self._get_connection()
@@ -1292,7 +1331,8 @@ class GraphStore:
         return self._row_to_user(row)
 
     async def get_user_by_display_name(self, display_name: str) -> User | None:
-        return await self._run(self._get_user_by_display_name_sync, display_name)
+        with self._query_timer.measure("get_user_by_display_name"):
+            return await self._run(self._get_user_by_display_name_sync, display_name)
 
     def _get_user_by_display_name_sync(self, display_name: str) -> User | None:
         conn = self._get_connection()
@@ -1302,7 +1342,8 @@ class GraphStore:
         return self._row_to_user(row)
 
     async def list_users(self) -> list[User]:
-        return await self._run(self._list_users_sync)
+        with self._query_timer.measure("list_users"):
+            return await self._run(self._list_users_sync)
 
     def _list_users_sync(self) -> list[User]:
         conn = self._get_connection()
@@ -1314,7 +1355,8 @@ class GraphStore:
     # ------------------------------------------------------------------
 
     async def get_journal_mode(self) -> str:
-        return await self._run(self._get_journal_mode_sync)
+        with self._query_timer.measure("get_journal_mode"):
+            return await self._run(self._get_journal_mode_sync)
 
     def _get_journal_mode_sync(self) -> str:
         conn = self._get_connection()

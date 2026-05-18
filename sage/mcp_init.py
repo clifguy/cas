@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +19,13 @@ from sage.adapters.interfaces import (
 )
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import VaultConfig
+from sage.instrumentation.timing import (
+    NULL_QUERY_TIMER,
+    NullQueryTimer,
+    QueryTimer,
+    TimingConfig,
+    VaultTimingThread,
+)
 from sage.models.enums import SourceType
 from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
@@ -34,6 +43,78 @@ from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+
+_TIMING_LOGGER_NAMES = (
+    "sage.storage.timing",
+    "sage.content.timing",
+    "sage.retrieval.timing",
+)
+
+
+def _install_timing_handler(
+    log_path: Path,
+) -> logging.handlers.RotatingFileHandler:
+    """Attach a per-vault rotating FileHandler to the three timing loggers.
+
+    Idempotent: if a handler already points at ``log_path`` on a logger,
+    it is reused. ``propagate`` is disabled on the timing loggers so
+    records don't bubble up to the root logger (which would mix them
+    into the normal app stream).
+    """
+    handler = logging.handlers.RotatingFileHandler(
+        str(log_path),
+        maxBytes=50_000_000,
+        backupCount=3,
+    )
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    for name in _TIMING_LOGGER_NAMES:
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.DEBUG)
+        existing = [
+            h
+            for h in logger.handlers
+            if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == log_path
+        ]
+        if not existing:
+            logger.addHandler(handler)
+        logger.propagate = False
+    return handler
+
+
+def _build_vault_timers(
+    timing: TimingConfig,
+    brain_root: Path,
+) -> tuple[
+    QueryTimer | NullQueryTimer,
+    QueryTimer | NullQueryTimer,
+    QueryTimer | NullQueryTimer,
+    VaultTimingThread | None,
+    logging.handlers.RotatingFileHandler | None,
+]:
+    """Construct the three per-layer QueryTimers and the flusher thread.
+
+    Returns ``(storage, content, retrieval, thread, handler)``. When
+    ``timing.enabled`` is False, all three are ``NULL_QUERY_TIMER`` and
+    the thread/handler are ``None``.
+    """
+    if not timing.enabled:
+        return NULL_QUERY_TIMER, NULL_QUERY_TIMER, NULL_QUERY_TIMER, None, None
+
+    log_path = Path(timing.log_path) if timing.log_path else brain_root / "timing.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    handler = _install_timing_handler(log_path)
+
+    storage_timer = QueryTimer("sage.storage.timing", timing, "storage")
+    content_timer = QueryTimer("sage.content.timing", timing, "content")
+    retrieval_timer = QueryTimer("sage.retrieval.timing", timing, "retrieval")
+    flusher = VaultTimingThread(
+        timers=[storage_timer, content_timer, retrieval_timer],
+        interval_seconds=timing.summary_interval_seconds,
+    )
+    flusher.start()
+    return storage_timer, content_timer, retrieval_timer, flusher, handler
+
 
 if TYPE_CHECKING:
     from sage.services.vault_registry import VaultRegistryService
@@ -64,6 +145,10 @@ class SAGEServices:
     # the services tuple so the factory survives across reloads without
     # adding module-level mutable state. None in production.
     content_store_factory: Callable[[Path], ContentStore] | None = None
+    # T-0073: per-vault background flusher for query-timing summary records.
+    # None when timing is disabled or when the content store was injected
+    # without going through _build_vault_timers (test paths).
+    timing_thread: VaultTimingThread | None = None
 
 
 async def initialize_services(
@@ -107,7 +192,11 @@ async def initialize_services(
     brain_root = Path(config.vault.brain_root).expanduser()
     brain_root.mkdir(parents=True, exist_ok=True)
 
-    graph_store = GraphStore(brain_root / "graph.db")
+    storage_timer, content_timer, retrieval_timer, timing_thread, _timing_handler = (
+        _build_vault_timers(config.timing, brain_root)
+    )
+
+    graph_store = GraphStore(brain_root / "graph.db", query_timer=storage_timer)
     await graph_store.initialize(migrate=migrate)
 
     lock_manager = DocumentLockManager()
@@ -117,7 +206,11 @@ async def initialize_services(
         if content_store_factory is not None:
             content_store = content_store_factory(brain_root)
         else:
-            content_store = LanceDBContentStore(brain_root, migrate=migrate)
+            content_store = LanceDBContentStore(
+                brain_root,
+                migrate=migrate,
+                query_timer=content_timer,
+            )
 
     # Embedding provider: injected or production Nomic. CI sets
     # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
@@ -180,6 +273,7 @@ async def initialize_services(
         content_store=content_store,
         embedding_provider=embedding_provider,
         config=config,
+        query_timer=retrieval_timer,
     )
     utilities_service = UtilitiesService(
         graph_store=graph_store,
@@ -210,6 +304,7 @@ async def initialize_services(
         vault_config_service=vault_config_service,
         config_path=config_path,
         content_store_factory=content_store_factory,
+        timing_thread=timing_thread,
     )
 
 
@@ -230,6 +325,8 @@ async def reload_vault_in_registry(
     old = registry.get(vault_id)
     content_store_factory = None
     if old:
+        if old.timing_thread is not None:
+            old.timing_thread.stop(timeout=1.0)
         await old.graph_store.close()
         if config_path is None:
             config_path = old.config_path

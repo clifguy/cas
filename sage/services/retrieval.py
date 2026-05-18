@@ -19,6 +19,7 @@ Deterministic mode:
 """
 
 import math
+import uuid
 from datetime import datetime, timezone
 
 from sage.adapters.interfaces import (
@@ -34,6 +35,13 @@ from sage.api.errors import (
     PipelineIncompleteError,
 )
 from sage.config import VaultConfig
+from sage.instrumentation.timing import (
+    NULL_QUERY_TIMER,
+    NullQueryTimer,
+    PhaseCollector,
+    QueryTimer,
+    _NullPhaseCollector,
+)
 from sage.models.enums import PipelineStatus, ResponseLevel, RetrievalMode, RetrievalScope
 from sage.models.schemas import (
     DiscoverHit,
@@ -101,11 +109,14 @@ class RetrievalService:
         content_store: ContentStore,
         embedding_provider: EmbeddingProvider,
         config: VaultConfig,
+        *,
+        query_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
     ) -> None:
         self._graph = graph_store
         self._content = content_store
         self._embedding = embedding_provider
         self._config = config
+        self._query_timer = query_timer
 
     @staticmethod
     def _fetch_limit(request: DiscoverRequest) -> int:
@@ -228,36 +239,43 @@ class RetrievalService:
 
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler."""
-        if request.mode == RetrievalMode.SEMANTIC:
-            response = await self._semantic(request)
-        elif request.mode == RetrievalMode.KEYWORD:
-            response = await self._keyword(request)
-        elif request.mode == RetrievalMode.DETERMINISTIC:
-            response = await self._deterministic(request)
-        elif request.mode == RetrievalMode.CATALOG:
-            response = await self._catalog(request)
+        request_id = uuid.uuid4().hex[:12]
+        with self._query_timer.request(request.mode.value, request_id) as phases:
+            if request.mode == RetrievalMode.SEMANTIC:
+                response = await self._semantic(request, phases)
+            elif request.mode == RetrievalMode.KEYWORD:
+                response = await self._keyword(request, phases)
+            elif request.mode == RetrievalMode.DETERMINISTIC:
+                response = await self._deterministic(request, phases)
+            elif request.mode == RetrievalMode.CATALOG:
+                response = await self._catalog(request, phases)
 
-        # Relevance threshold: drop scored results below min_relevance.
-        # Unscored results (catalog, deterministic) are always kept.
-        if request.min_relevance is not None:
-            response.results = [
-                h
-                for h in response.results
-                if h.relevance_score is None or h.relevance_score >= request.min_relevance
-            ]
-            response.total_available = len(response.results)
+            # Relevance threshold: drop scored results below min_relevance.
+            # Unscored results (catalog, deterministic) are always kept.
+            with phases.phase("post_filter_min_relevance"):
+                if request.min_relevance is not None:
+                    response.results = [
+                        h
+                        for h in response.results
+                        if h.relevance_score is None or h.relevance_score >= request.min_relevance
+                    ]
+                    response.total_available = len(response.results)
 
-        if not request.include_abstracts:
-            for hit in response.results:
-                hit.document.semantic_abstract = None
+                if not request.include_abstracts:
+                    for hit in response.results:
+                        hit.document.semantic_abstract = None
 
-        return response
+            return response
 
     # ------------------------------------------------------------------
     # Catalog mode (BH-072 through BH-079)
     # ------------------------------------------------------------------
 
-    async def _catalog(self, request: DiscoverRequest) -> DiscoverResponse:
+    async def _catalog(
+        self,
+        request: DiscoverRequest,
+        phases: PhaseCollector | _NullPhaseCollector,
+    ) -> DiscoverResponse:
         """Filter-only document enumeration via SQL. No vector search.
 
         Queries the graph store directly with filter predicates. Returns
@@ -291,29 +309,32 @@ class RetrievalService:
                 tier3_filter = request.filters.tier3
 
         if tier3_filter is None:
-            docs, total_count = await self._graph.query_documents(
-                filters=sql_filters or None,
-                limit=request.limit,
-                offset=request.offset,
-                sort_by=request.sort_by,
-                sort_order=request.sort_order,
-            )
+            with phases.phase("query_documents"):
+                docs, total_count = await self._graph.query_documents(
+                    filters=sql_filters or None,
+                    limit=request.limit,
+                    offset=request.offset,
+                    sort_by=request.sort_by,
+                    sort_order=request.sort_order,
+                )
         else:
             # Fetch the entire SQL-filtered set, apply tier3 post-filter,
             # then paginate. The SQL ceiling is the documents-table size;
             # at vault scale this is bounded and cheap.
-            wide_docs, _ = await self._graph.query_documents(
-                filters=sql_filters or None,
-                limit=10_000_000,
-                offset=0,
-                sort_by=request.sort_by,
-                sort_order=request.sort_order,
-            )
-            filtered = [d for d in wide_docs if _tier3_matches(d.tier3_metadata, tier3_filter)]
-            total_count = len(filtered)
-            start = request.offset
-            end = start + request.limit
-            docs = filtered[start:end]
+            with phases.phase("query_documents_wide"):
+                wide_docs, _ = await self._graph.query_documents(
+                    filters=sql_filters or None,
+                    limit=10_000_000,
+                    offset=0,
+                    sort_by=request.sort_by,
+                    sort_order=request.sort_order,
+                )
+            with phases.phase("tier3_post_filter"):
+                filtered = [d for d in wide_docs if _tier3_matches(d.tier3_metadata, tier3_filter)]
+                total_count = len(filtered)
+                start = request.offset
+                end = start + request.limit
+                docs = filtered[start:end]
 
         hits = [
             DiscoverHit(
@@ -348,7 +369,11 @@ class RetrievalService:
     # Keyword retrieval (BH-059, BH-060, BH-061)
     # ------------------------------------------------------------------
 
-    async def _keyword(self, request: DiscoverRequest) -> DiscoverResponse:
+    async def _keyword(
+        self,
+        request: DiscoverRequest,
+        phases: PhaseCollector | _NullPhaseCollector,
+    ) -> DiscoverResponse:
         """BM25-only search. No embedding required.
 
         A query of "*" returns all documents (useful for filter-only
@@ -359,11 +384,12 @@ class RetrievalService:
 
         raw_count = 0
         if request.query.strip() == "*":
-            # Filter-only listing: return all documents matching filters
-            hits = await self._list_filtered(request)
+            with phases.phase("list_filtered"):
+                hits = await self._list_filtered(request)
         else:
             fetch_limit = self._fetch_limit(request)
-            content_filters, has_doc_constraints = await self._content_filters(request)
+            with phases.phase("filter_resolution"):
+                content_filters, has_doc_constraints = await self._content_filters(request)
             # Short-circuit when document-level filters resolved to zero
             # matching docs — skip the search entirely. Surface hints so
             # the caller sees the active filters that culled the result.
@@ -374,16 +400,21 @@ class RetrievalService:
                     total_available=0,
                     hints=self._build_hints(0, request),
                 )
-            results = await self._content.search_bm25(
-                request.query,
-                fetch_limit,
-                filters=content_filters,
-            )
+            with phases.phase("bm25_search"):
+                results = await self._content.search_bm25(
+                    request.query,
+                    fetch_limit,
+                    filters=content_filters,
+                )
             raw_count = len(results)
-            hits = await self._results_to_hits(results, request)
-            hits = await self._boost_metadata_matches(hits, request)
-            hits = await self._boost_abstract_matches(hits, request)
-            hits = await self._rerank_salience(hits)
+            with phases.phase("results_to_hits"):
+                hits = await self._results_to_hits(results, request)
+            with phases.phase("metadata_boost"):
+                hits = await self._boost_metadata_matches(hits, request)
+            with phases.phase("abstract_boost"):
+                hits = await self._boost_abstract_matches(hits, request)
+            with phases.phase("salience_rerank"):
+                hits = await self._rerank_salience(hits)
 
         final = hits[: request.limit]
         return DiscoverResponse(
@@ -436,7 +467,11 @@ class RetrievalService:
     # Semantic retrieval (BH-020, BH-027, BH-028)
     # ------------------------------------------------------------------
 
-    async def _semantic(self, request: DiscoverRequest) -> DiscoverResponse:
+    async def _semantic(
+        self,
+        request: DiscoverRequest,
+        phases: PhaseCollector | _NullPhaseCollector,
+    ) -> DiscoverResponse:
         if not request.query:
             raise MissingFieldError("query", "query is required for semantic mode")
 
@@ -444,11 +479,12 @@ class RetrievalService:
         # aren't depleted by non-matching documents.
         fetch_limit = self._fetch_limit(request)
 
-        # Embed the query
-        embeddings = await self._embedding.embed([request.query])
-        query_embedding = embeddings[0]
+        with phases.phase("embed"):
+            embeddings = await self._embedding.embed([request.query])
+            query_embedding = embeddings[0]
 
-        content_filters, has_doc_constraints = await self._content_filters(request)
+        with phases.phase("filter_resolution"):
+            content_filters, has_doc_constraints = await self._content_filters(request)
         # Short-circuit when document-level filters resolved to zero
         # matching docs — skip the search entirely. Surface hints so the
         # caller sees the active filters that culled the result.
@@ -461,27 +497,31 @@ class RetrievalService:
             )
 
         if request.use_hybrid:
-            # Hybrid: RRF fusion of vector + BM25 (BH-027)
-            results = await self._hybrid_rrf(
-                query_embedding,
-                request.query,
-                fetch_limit,
-                filters=content_filters,
-            )
+            with phases.phase("hybrid_rrf"):
+                results = await self._hybrid_rrf(
+                    query_embedding,
+                    request.query,
+                    fetch_limit,
+                    filters=content_filters,
+                )
         else:
-            # Pure vector (BH-028)
-            results = await self._content.search_semantic(
-                query_embedding,
-                fetch_limit,
-                filters=content_filters,
-            )
+            with phases.phase("vector_search"):
+                results = await self._content.search_semantic(
+                    query_embedding,
+                    fetch_limit,
+                    filters=content_filters,
+                )
 
         # Filter results: exclude failed-pipeline documents (BH-020)
         raw_count = len(results)
-        hits = await self._results_to_hits(results, request)
-        hits = await self._boost_metadata_matches(hits, request)
-        hits = await self._boost_abstract_matches(hits, request)
-        hits = await self._rerank_salience(hits)
+        with phases.phase("results_to_hits"):
+            hits = await self._results_to_hits(results, request)
+        with phases.phase("metadata_boost"):
+            hits = await self._boost_metadata_matches(hits, request)
+        with phases.phase("abstract_boost"):
+            hits = await self._boost_abstract_matches(hits, request)
+        with phases.phase("salience_rerank"):
+            hits = await self._rerank_salience(hits)
 
         final = hits[: request.limit]
         return DiscoverResponse(
@@ -861,7 +901,11 @@ class RetrievalService:
     # Deterministic retrieval (BH-029, BH-030)
     # ------------------------------------------------------------------
 
-    async def _deterministic(self, request: DiscoverRequest) -> DiscoverResponse:
+    async def _deterministic(
+        self,
+        request: DiscoverRequest,
+        phases: PhaseCollector | _NullPhaseCollector,
+    ) -> DiscoverResponse:
         if not request.document_id:
             raise MissingFieldError("document_id", "document_id is required for deterministic mode")
         if not request.heading_path:
@@ -870,7 +914,8 @@ class RetrievalService:
             )
 
         # Validate document exists
-        doc = await self._graph.get_document(request.document_id)
+        with phases.phase("get_document"):
+            doc = await self._graph.get_document(request.document_id)
         if doc is None:
             raise DocumentNotFoundError(request.document_id)
 
@@ -879,13 +924,15 @@ class RetrievalService:
             raise PipelineIncompleteError(request.document_id)
 
         # Prefix match on heading_path (BH-029)
-        chunks = await self._content.get_chunks_by_heading_prefix(
-            request.document_id, request.heading_path
-        )
+        with phases.phase("get_chunks_by_heading_prefix"):
+            chunks = await self._content.get_chunks_by_heading_prefix(
+                request.document_id, request.heading_path
+            )
 
         # BH-030: no matching headings = 404, with available headings for guidance
         if not chunks:
-            available = await self._content.get_heading_paths(request.document_id)
+            with phases.phase("get_heading_paths"):
+                available = await self._content.get_heading_paths(request.document_id)
             raise HeadingNotFoundError(request.heading_path, request.document_id, available)
 
         summary = DocumentSummary(

@@ -143,6 +143,41 @@
           "description": "Path to a YAML file containing retrieval health assertions, relative to the domain configuration directory. Each assertion specifies a query, an expected document ID, and a top-k threshold."
         }
       }
+    },
+    "timing": {
+      "type": "object",
+      "description": "Per-vault query-timing instrumentation configuration (T-0073). Enables structured timing records on the storage, content, and retrieval layers, written to a per-vault rotating log file under brain_root.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master switch. When false, mcp_init wires the no-op timer to all services and the per-vault timing.log is never opened."
+        },
+        "log_path": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Absolute path for the per-vault timing log. When null (default), mcp_init resolves to {brain_root}/timing.log."
+        },
+        "emit_threshold_ms": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0,
+          "description": "Fast-path skip threshold. Measurements below this are not formatted or logged individually; they bump a per-label counter that the periodic summary record consolidates."
+        },
+        "warn_threshold_ms": {
+          "type": "number",
+          "minimum": 0,
+          "default": 100.0,
+          "description": "Measurements above this are logged at WARNING; otherwise at DEBUG. Configurable per-vault so test cases can drive the WARN path on fast queries by lowering it."
+        },
+        "summary_interval_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 60.0,
+          "description": "Period at which the background flusher emits a summary record containing the per-label suppressed counts accumulated since the previous flush."
+        }
+      }
     }
   }
 }

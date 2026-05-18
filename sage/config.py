@@ -10,6 +10,7 @@ import jsonschema
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr
 
+from sage.instrumentation.timing import TimingConfig
 from sage.models.schemas import VaultIdStr
 
 
@@ -264,6 +265,15 @@ class VaultConfig(BaseModel):
     retrieval_health: RetrievalHealthConfig | None = Field(
         default=None,
         description=("Configuration for retrieval health smoke tests (eval_retrieval endpoint)."),
+    )
+    timing: TimingConfig = Field(
+        default_factory=TimingConfig,
+        description=(
+            "Per-vault query-timing instrumentation configuration (T-0073). "
+            "Enables structured timing records on the storage, content, "
+            "and retrieval layers, written to a per-vault rotating log "
+            "file under brain_root."
+        ),
     )
 
     _tier3_validators: dict[str, jsonschema.protocols.Validator] = PrivateAttr(default_factory=dict)

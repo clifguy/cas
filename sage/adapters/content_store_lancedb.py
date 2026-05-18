@@ -17,6 +17,7 @@ from sage.adapters.interfaces import (
     ContentStore,
     SearchResult,
 )
+from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.storage.migrations import SchemaMigrationRequired
 
 logger = logging.getLogger(__name__)
@@ -50,12 +51,20 @@ class LanceDBContentStore(ContentStore):
     eagerly after every mutation (AD-019).
     """
 
-    def __init__(self, brain_root: str | Path, migrate: bool = False) -> None:
-        self._brain_root = Path(brain_root)
-        self._brain_root.mkdir(parents=True, exist_ok=True)
-        self._db = lancedb.connect(str(self._brain_root / "lancedb"))
-        self._table_exists = CHUNKS_TABLE in self._db.list_tables().tables
-        self._migrate_schema_if_needed(migrate=migrate)
+    def __init__(
+        self,
+        brain_root: str | Path,
+        migrate: bool = False,
+        *,
+        query_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
+    ) -> None:
+        self._query_timer = query_timer
+        with self._query_timer.measure("initialize"):
+            self._brain_root = Path(brain_root)
+            self._brain_root.mkdir(parents=True, exist_ok=True)
+            self._db = lancedb.connect(str(self._brain_root / "lancedb"))
+            self._table_exists = CHUNKS_TABLE in self._db.list_tables().tables
+            self._migrate_schema_if_needed(migrate=migrate)
 
     def pending_schema_columns(self) -> set[str]:
         """Return the set of columns that would be added by a migration.
@@ -208,35 +217,36 @@ class LanceDBContentStore(ContentStore):
 
         Replaces any existing chunks for the same document_id (AD-025).
         """
-        table = self._ensure_table()
+        with self._query_timer.measure("index_chunks", params={"chunks": len(chunks)}):
+            table = self._ensure_table()
 
-        # Remove existing chunks for this document first (AD-025)
-        try:
-            table.delete(f"document_id = '{_escape_sql(document_id)}'")
-        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
-            pass  # Table might be empty or document might not exist
+            # Remove existing chunks for this document first (AD-025)
+            try:
+                table.delete(f"document_id = '{_escape_sql(document_id)}'")
+            except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+                pass  # Table might be empty or document might not exist
 
-        if not chunks:
+            if not chunks:
+                self._rebuild_fts(table)
+                return
+
+            # Build rows as list of dicts for LanceDB
+            rows = []
+            for chunk in chunks:
+                embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
+                rows.append(
+                    {
+                        "document_id": chunk.document_id,
+                        "heading_path": chunk.heading_path,
+                        "content": chunk.content,
+                        "chunk_index": chunk.chunk_index,
+                        "vector": embedding,
+                        "doc_type": chunk.doc_type,
+                    }
+                )
+
+            table.add(rows)
             self._rebuild_fts(table)
-            return
-
-        # Build rows as list of dicts for LanceDB
-        rows = []
-        for chunk in chunks:
-            embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
-            rows.append(
-                {
-                    "document_id": chunk.document_id,
-                    "heading_path": chunk.heading_path,
-                    "content": chunk.content,
-                    "chunk_index": chunk.chunk_index,
-                    "vector": embedding,
-                    "doc_type": chunk.doc_type,
-                }
-            )
-
-        table.add(rows)
-        self._rebuild_fts(table)
 
     async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
         """Replace the synthetic document-header chunk for a document (T-0038).
@@ -246,52 +256,55 @@ class LanceDBContentStore(ContentStore):
         header chunk, and rebuilds the FTS indexes. Body chunks are not
         touched.
         """
-        table = self._ensure_table()
+        with self._query_timer.measure("replace_synthetic_header_chunk"):
+            table = self._ensure_table()
 
-        doc_id_sql = _escape_sql(document_id)
-        marker_sql = _escape_sql(SYNTHETIC_HEADER_HEADING_PATH)
-        try:
-            table.delete(f"document_id = '{doc_id_sql}' AND heading_path = '{marker_sql}'")
-        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
-            pass
+            doc_id_sql = _escape_sql(document_id)
+            marker_sql = _escape_sql(SYNTHETIC_HEADER_HEADING_PATH)
+            try:
+                table.delete(f"document_id = '{doc_id_sql}' AND heading_path = '{marker_sql}'")
+            except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+                pass
 
-        embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
-        row = {
-            "document_id": chunk.document_id,
-            "heading_path": chunk.heading_path,
-            "content": chunk.content,
-            "chunk_index": chunk.chunk_index,
-            "vector": embedding,
-            "doc_type": chunk.doc_type,
-        }
-        table.add([row])
-        self._rebuild_fts(table)
+            embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
+            row = {
+                "document_id": chunk.document_id,
+                "heading_path": chunk.heading_path,
+                "content": chunk.content,
+                "chunk_index": chunk.chunk_index,
+                "vector": embedding,
+                "doc_type": chunk.doc_type,
+            }
+            table.add([row])
+            self._rebuild_fts(table)
 
     async def count_chunks(self) -> int:
         """Return the total number of chunk rows across all documents.
 
         Returns 0 when the chunks table has not yet been created.
         """
-        table = self._get_table()
-        if table is None:
-            return 0
-        return table.count_rows()
+        with self._query_timer.measure("count_chunks"):
+            table = self._get_table()
+            if table is None:
+                return 0
+            return table.count_rows()
 
     async def remove_document(self, document_id: str) -> None:
         """Remove all chunks for a document (AD-014, AD-015).
 
         Idempotent: removing a non-existent document is a no-op.
         """
-        table = self._get_table()
-        if table is None:
-            return
+        with self._query_timer.measure("remove_document"):
+            table = self._get_table()
+            if table is None:
+                return
 
-        try:
-            table.delete(f"document_id = '{_escape_sql(document_id)}'")
-        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
-            pass  # No rows to delete is fine
+            try:
+                table.delete(f"document_id = '{_escape_sql(document_id)}'")
+            except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+                pass  # No rows to delete is fine
 
-        self._rebuild_fts(table)
+            self._rebuild_fts(table)
 
     async def update_chunk_metadata(
         self,
@@ -299,21 +312,22 @@ class LanceDBContentStore(ContentStore):
         metadata: dict[str, str | None],
     ) -> None:
         """Update metadata columns on all chunks for a document."""
-        table = self._get_table()
-        if table is None:
-            return
+        with self._query_timer.measure("update_chunk_metadata"):
+            table = self._get_table()
+            if table is None:
+                return
 
-        updates = {k: v for k, v in metadata.items() if k in _FILTERABLE_COLUMNS}
-        if not updates:
-            return
+            updates = {k: v for k, v in metadata.items() if k in _FILTERABLE_COLUMNS}
+            if not updates:
+                return
 
-        try:
-            table.update(
-                where=f"document_id = '{_escape_sql(document_id)}'",
-                values=updates,
-            )
-        except Exception as exc:
-            logger.warning("update_chunk_metadata failed for %s: %s", document_id, exc)
+            try:
+                table.update(
+                    where=f"document_id = '{_escape_sql(document_id)}'",
+                    values=updates,
+                )
+            except Exception as exc:
+                logger.warning("update_chunk_metadata failed for %s: %s", document_id, exc)
 
     async def search_semantic(
         self,
@@ -326,32 +340,36 @@ class LanceDBContentStore(ContentStore):
         Returns results ranked by descending cosine similarity.
         When filters are provided, only matching chunks are searched.
         """
-        table = self._get_table()
-        if table is None:
-            return []
+        with self._query_timer.measure(
+            "search_semantic",
+            params={"limit": limit, "filtered": bool(filters)},
+        ):
+            table = self._get_table()
+            if table is None:
+                return []
 
-        try:
-            query = table.search(query_embedding, vector_column_name="vector").metric("cosine")
-            if filters:
-                where = self._build_where(filters)
-                if where:
-                    query = query.where(where)
-            results = query.limit(limit).to_list()
-        except Exception as exc:
-            logger.warning("Semantic search failed: %s", exc)
-            return []
+            try:
+                query = table.search(query_embedding, vector_column_name="vector").metric("cosine")
+                if filters:
+                    where = self._build_where(filters)
+                    if where:
+                        query = query.where(where)
+                results = query.limit(limit).to_list()
+            except Exception as exc:
+                logger.warning("Semantic search failed: %s", exc)
+                return []
 
-        return [
-            SearchResult(
-                document_id=row["document_id"],
-                heading_path=row["heading_path"],
-                content=row["content"],
-                # LanceDB returns _distance (lower = more similar for cosine);
-                # convert to similarity score (higher = more similar)
-                score=1.0 - row.get("_distance", 0.0),
-            )
-            for row in results
-        ]
+            return [
+                SearchResult(
+                    document_id=row["document_id"],
+                    heading_path=row["heading_path"],
+                    content=row["content"],
+                    # LanceDB returns _distance (lower = more similar for cosine);
+                    # convert to similarity score (higher = more similar)
+                    score=1.0 - row.get("_distance", 0.0),
+                )
+                for row in results
+            ]
 
     async def search_bm25(
         self,
@@ -364,30 +382,34 @@ class LanceDBContentStore(ContentStore):
         Returns results ranked by relevance score, descending.
         When filters are provided, only matching chunks are searched.
         """
-        table = self._get_table()
-        if table is None:
-            return []
+        with self._query_timer.measure(
+            "search_bm25",
+            params={"limit": limit, "filtered": bool(filters)},
+        ):
+            table = self._get_table()
+            if table is None:
+                return []
 
-        try:
-            search_query = table.search(query, query_type="fts")
-            if filters:
-                where = self._build_where(filters)
-                if where:
-                    search_query = search_query.where(where)
-            results = search_query.limit(limit).to_list()
-        except Exception as exc:
-            logger.error("BM25 search failed: %s", exc)
-            return []
+            try:
+                search_query = table.search(query, query_type="fts")
+                if filters:
+                    where = self._build_where(filters)
+                    if where:
+                        search_query = search_query.where(where)
+                results = search_query.limit(limit).to_list()
+            except Exception as exc:
+                logger.error("BM25 search failed: %s", exc)
+                return []
 
-        return [
-            SearchResult(
-                document_id=row["document_id"],
-                heading_path=row["heading_path"],
-                content=row["content"],
-                score=row.get("_score", row.get("score", 0.0)),
-            )
-            for row in results
-        ]
+            return [
+                SearchResult(
+                    document_id=row["document_id"],
+                    heading_path=row["heading_path"],
+                    content=row["content"],
+                    score=row.get("_score", row.get("score", 0.0)),
+                )
+                for row in results
+            ]
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str
@@ -397,121 +419,125 @@ class LanceDBContentStore(ContentStore):
         Matches exact heading or child headings via ' > ' separator.
         Does NOT match partial heading names (AD-022).
         """
-        table = self._get_table()
-        if table is None:
-            return []
+        with self._query_timer.measure("get_chunks_by_heading_prefix"):
+            table = self._get_table()
+            if table is None:
+                return []
 
-        escaped_doc = _escape_sql(document_id)
-        escaped_prefix = _escape_sql(heading_prefix)
-        # Escape SQL LIKE wildcards in the prefix
-        like_prefix = _escape_like(heading_prefix)
+            escaped_doc = _escape_sql(document_id)
+            escaped_prefix = _escape_sql(heading_prefix)
+            # Escape SQL LIKE wildcards in the prefix
+            like_prefix = _escape_like(heading_prefix)
 
-        # Exact match OR child match via ' > ' separator
-        filter_expr = (
-            f"document_id = '{escaped_doc}' AND "
-            f"(heading_path = '{escaped_prefix}' OR "
-            f"heading_path LIKE '{like_prefix} > %')"
-        )
-
-        try:
-            results = table.search().where(filter_expr).to_list()
-        except Exception as exc:
-            logger.warning("Heading prefix query failed: %s", exc)
-            return []
-
-        chunks = [
-            Chunk(
-                document_id=row["document_id"],
-                heading_path=row["heading_path"],
-                content=row["content"],
-                embedding=row["vector"] if "vector" in row else None,
-                chunk_index=row["chunk_index"],
+            # Exact match OR child match via ' > ' separator
+            filter_expr = (
+                f"document_id = '{escaped_doc}' AND "
+                f"(heading_path = '{escaped_prefix}' OR "
+                f"heading_path LIKE '{like_prefix} > %')"
             )
-            for row in results
-        ]
-        chunks.sort(key=lambda c: c.chunk_index)
-        return chunks
+
+            try:
+                results = table.search().where(filter_expr).to_list()
+            except Exception as exc:
+                logger.warning("Heading prefix query failed: %s", exc)
+                return []
+
+            chunks = [
+                Chunk(
+                    document_id=row["document_id"],
+                    heading_path=row["heading_path"],
+                    content=row["content"],
+                    embedding=row["vector"] if "vector" in row else None,
+                    chunk_index=row["chunk_index"],
+                )
+                for row in results
+            ]
+            chunks.sort(key=lambda c: c.chunk_index)
+            return chunks
 
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths for a document in document order."""
-        table = self._get_table()
-        if table is None:
-            return []
+        with self._query_timer.measure("get_heading_paths"):
+            table = self._get_table()
+            if table is None:
+                return []
 
-        escaped_doc = _escape_sql(document_id)
-        try:
-            rows = (
-                table.search()
-                .where(f"document_id = '{escaped_doc}'")
-                .select(["heading_path", "chunk_index"])
-                .to_list()
-            )
-        except Exception as exc:
-            logger.warning("get_heading_paths failed: %s", exc)
-            return []
+            escaped_doc = _escape_sql(document_id)
+            try:
+                rows = (
+                    table.search()
+                    .where(f"document_id = '{escaped_doc}'")
+                    .select(["heading_path", "chunk_index"])
+                    .to_list()
+                )
+            except Exception as exc:
+                logger.warning("get_heading_paths failed: %s", exc)
+                return []
 
-        rows.sort(key=lambda r: r["chunk_index"])
-        seen: set[str] = set()
-        paths: list[str] = []
-        for row in rows:
-            hp = row["heading_path"]
-            # Exclude the synthetic header chunk marker (T-0038) so it
-            # does not appear in user-visible "available headings" lists
-            # surfaced by HeadingNotFoundError.
-            if hp == SYNTHETIC_HEADER_HEADING_PATH:
-                continue
-            if hp not in seen:
-                seen.add(hp)
-                paths.append(hp)
-        return paths
+            rows.sort(key=lambda r: r["chunk_index"])
+            seen: set[str] = set()
+            paths: list[str] = []
+            for row in rows:
+                hp = row["heading_path"]
+                # Exclude the synthetic header chunk marker (T-0038) so it
+                # does not appear in user-visible "available headings" lists
+                # surfaced by HeadingNotFoundError.
+                if hp == SYNTHETIC_HEADER_HEADING_PATH:
+                    continue
+                if hp not in seen:
+                    seen.add(hp)
+                    paths.append(hp)
+            return paths
 
     async def has_chunks(self, document_id: str) -> bool:
         """Return True if at least one chunk exists for the document (AD-068)."""
-        table = self._get_table()
-        if table is None:
-            return False
+        with self._query_timer.measure("has_chunks"):
+            table = self._get_table()
+            if table is None:
+                return False
 
-        escaped_doc = _escape_sql(document_id)
-        try:
-            rows = (
-                table.search()
-                .where(f"document_id = '{escaped_doc}'")
-                .select(["document_id"])
-                .limit(1)
-                .to_list()
-            )
-            return len(rows) > 0
-        except Exception as exc:
-            logger.warning("has_chunks failed: %s", exc)
-            return False
+            escaped_doc = _escape_sql(document_id)
+            try:
+                rows = (
+                    table.search()
+                    .where(f"document_id = '{escaped_doc}'")
+                    .select(["document_id"])
+                    .limit(1)
+                    .to_list()
+                )
+                return len(rows) > 0
+            except Exception as exc:
+                logger.warning("has_chunks failed: %s", exc)
+                return False
 
     async def get_all_chunks(self, document_id: str) -> list[Chunk]:
         """Return all chunks for a document in document order (AD-011, AD-013)."""
-        table = self._get_table()
-        if table is None:
-            return []
+        with self._query_timer.measure("get_all_chunks"):
+            table = self._get_table()
+            if table is None:
+                return []
 
-        escaped_doc = _escape_sql(document_id)
+            escaped_doc = _escape_sql(document_id)
 
-        try:
-            results = table.search().where(f"document_id = '{escaped_doc}'").to_list()
-        except Exception as exc:
-            logger.warning("get_all_chunks failed: %s", exc)
-            return []
+            try:
+                results = table.search().where(f"document_id = '{escaped_doc}'").to_list()
+            except Exception as exc:
+                logger.warning("get_all_chunks failed: %s", exc)
+                return []
 
-        chunks = [
-            Chunk(
-                document_id=row["document_id"],
-                heading_path=row["heading_path"],
-                content=row["content"],
-                embedding=row["vector"] if "vector" in row else None,
-                chunk_index=row["chunk_index"],
-                doc_type=row.get("doc_type"),
-            )
-            for row in results
-        ]
-        chunks.sort(key=lambda c: c.chunk_index)
-        return chunks
+            chunks = [
+                Chunk(
+                    document_id=row["document_id"],
+                    heading_path=row["heading_path"],
+                    content=row["content"],
+                    embedding=row["vector"] if "vector" in row else None,
+                    chunk_index=row["chunk_index"],
+                    doc_type=row.get("doc_type"),
+                )
+                for row in results
+            ]
+            chunks.sort(key=lambda c: c.chunk_index)
+            return chunks
 
 
 def _escape_sql(value: str) -> str:
