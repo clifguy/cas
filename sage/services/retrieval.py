@@ -18,7 +18,9 @@ Deterministic mode:
   - Returns 404 for non-existent heading paths (BH-030).
 """
 
+import json
 import math
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -69,6 +71,71 @@ _CHUNK_PUSHDOWN_KEYS = frozenset({"doc_type", "lifecycle_status", "project"})
 _FETCH_MULTIPLIER_NONE = 5
 _FETCH_MULTIPLIER_PUSHDOWN = 3
 _FETCH_MULTIPLIER_MIXED = 10
+
+# Default budget (bytes) below which the Claude Code MCP runtime will
+# deliver a tool result inline; above it the runtime falls back to the
+# disk/jq round-trip. The default is empirical; override per-process via
+# the ``SAGE_MCP_INLINE_BUDGET_BYTES`` environment variable. Catalog mode
+# attaches a ``recommended_limit`` hint when the serialized response
+# exceeds this budget (T-0091).
+DEFAULT_MCP_INLINE_BUDGET_BYTES = 24576
+
+# Safety factor applied when computing ``recommended_limit`` so the
+# re-paged response stays comfortably under budget. The hint itself adds
+# bytes the first measurement does not see; a 5% margin absorbs that.
+_BUDGET_RECOMMEND_SAFETY_FACTOR = 0.95
+
+
+def _resolve_mcp_inline_budget_bytes() -> int:
+    """Resolve the MCP inline budget per call (not at import).
+
+    Mirrors the pattern from ``sage/services/documents.py``'s
+    ``SAGE_MAX_INLINE_CONTENT_BYTES`` resolver: read the env var each
+    call so tests (and operators) can override without restarting the
+    process. Invalid or non-positive values fall back to the default.
+    """
+    raw = os.environ.get("SAGE_MCP_INLINE_BUDGET_BYTES")
+    if not raw:
+        return DEFAULT_MCP_INLINE_BUDGET_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MCP_INLINE_BUDGET_BYTES
+    return value if value > 0 else DEFAULT_MCP_INLINE_BUDGET_BYTES
+
+
+def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
+    """Annotate the response with a budget hint when it exceeds the inline ceiling.
+
+    Measures the serialized response in bytes via the same encoding the
+    MCP runtime uses (Pydantic ``model_dump(mode="json", exclude_none=True)``
+    then UTF-8 JSON). When the size is over budget, computes a
+    ``recommended_limit`` proportional to the number of records that
+    would fit, and merges the hint into ``response.hints``. No-op when
+    there are no results — empty responses are trivially inline.
+
+    T-0091: advisory only — the response is not truncated.
+    """
+    if not response.results:
+        return
+    size = len(json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8"))
+    budget = _resolve_mcp_inline_budget_bytes()
+    if size <= budget:
+        return
+    recommended = max(
+        1,
+        int(len(response.results) * budget / size * _BUDGET_RECOMMEND_SAFETY_FACTOR),
+    )
+    budget_hint: dict[str, object] = {
+        "reason": "response_exceeds_inline_budget",
+        "response_size_bytes": size,
+        "budget_bytes": budget,
+        "recommended_limit": recommended,
+    }
+    if response.hints is None:
+        response.hints = budget_hint
+    else:
+        response.hints = {**response.hints, **budget_hint}
 
 
 def _tier3_matches(
@@ -316,6 +383,13 @@ class RetrievalService:
                 if not request.include_abstracts:
                     for hit in response.results:
                         hit.document.semantic_abstract = None
+
+            # T-0091: surface a recommended_limit hint when a catalog
+            # response would bust the Claude Code MCP inline ceiling.
+            # Applied here (post-projection) so the byte measurement
+            # reflects what the wire actually carries.
+            if request.mode == RetrievalMode.CATALOG:
+                _apply_catalog_budget_hint(response)
 
             return response
 

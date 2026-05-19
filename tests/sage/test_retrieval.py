@@ -10,6 +10,7 @@ and two-pass abstract-boosted retrieval.
 """
 
 import hashlib
+import json
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -2583,6 +2584,251 @@ async def test_t0090_keyword_includes_tier3_metadata(
         "ticket_id": "T-0502",
         "ticket_priority": "medium",
     }
+
+
+# ---------------------------------------------------------------------------
+# T-0091: Catalog mode budget-hint surfacing
+# ---------------------------------------------------------------------------
+
+
+async def _seed_portfolio(
+    graph_store,
+    n: int,
+    *,
+    with_tier3: bool = True,
+    id_prefix: str = "t0091_p",
+) -> list[str]:
+    """Seed ``n`` ticket-shaped documents with realistic projection-weight fields.
+
+    Mirrors the projection shape of real CAS tickets (title, tags,
+    source_path, tier3_metadata) so byte counts approximate production
+    payload weight per record. Returns the inserted document IDs in order.
+    """
+    base_date = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    inserted: list[str] = []
+    for i in range(n):
+        doc_id = _id(f"{id_prefix}_{i:04d}")
+        tier3 = (
+            {
+                "ticket_id": f"T-9{i:04d}",
+                "ticket_type": "feature",
+                "ticket_priority": "medium",
+            }
+            if with_tier3
+            else None
+        )
+        doc = _make_doc(
+            doc_id,
+            doc_type="ticket",
+            tags=["ticket", "phase-2", "sage", "retrieval"],
+            document_date=f"2026-05-{(i % 28) + 1:02d}",
+            source_modified_at=base_date + timedelta(hours=i),
+            tier3_metadata=tier3,
+        )
+        await graph_store.insert_document(doc)
+        inserted.append(doc_id)
+    return inserted
+
+
+async def test_t0091_catalog_emits_budget_hint_when_response_exceeds_budget(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """Catalog mode emits a budget hint when the serialized response > budget."""
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
+    await _seed_portfolio(graph_store, 60)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+        limit=100,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.hints is not None
+    assert response.hints.get("reason") == "response_exceeds_inline_budget"
+    assert response.hints.get("budget_bytes") == 4096
+    assert response.hints.get("response_size_bytes", 0) >= 4096
+    recommended = response.hints.get("recommended_limit")
+    assert isinstance(recommended, int)
+    assert 1 <= recommended < 100
+    assert recommended < len(response.results)
+
+
+async def test_t0091_catalog_no_budget_hint_when_under_budget(
+    graph_store,
+    retrieval_service,
+):
+    """Small responses do not carry a budget hint at the production budget."""
+    await _seed_portfolio(graph_store, 3)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+        limit=10,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.hints is None or "recommended_limit" not in response.hints
+
+
+async def test_t0091_recommended_limit_re_pages_within_budget(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """Re-querying at the recommended limit produces an inline response."""
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
+    await _seed_portfolio(graph_store, 60)
+
+    first = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=100,
+        )
+    )
+    assert first.hints is not None
+    recommended = first.hints["recommended_limit"]
+    assert recommended >= 1
+
+    second = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=recommended,
+        )
+    )
+    assert second.hints is None or "recommended_limit" not in second.hints
+    assert len(second.results) == recommended
+
+
+async def test_t0091_response_size_bytes_matches_serialization(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """response_size_bytes matches the actual JSON serialization length."""
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
+    await _seed_portfolio(graph_store, 60)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket"),
+            limit=100,
+        )
+    )
+
+    assert response.hints is not None
+    actual_bytes = len(
+        json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8")
+    )
+    reported = response.hints["response_size_bytes"]
+    tolerance = max(64, actual_bytes // 100)
+    assert abs(reported - actual_bytes) <= tolerance, (
+        f"reported={reported}, actual={actual_bytes}, tolerance={tolerance}"
+    )
+
+
+async def test_t0091_budget_hint_respects_env_override(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """SAGE_MCP_INLINE_BUDGET_BYTES env var controls when the hint fires."""
+    await _seed_portfolio(graph_store, 30)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+        limit=100,
+    )
+
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "1024")
+    tight = await retrieval_service.discover(request)
+    assert tight.hints is not None
+    assert tight.hints.get("budget_bytes") == 1024
+
+    monkeypatch.delenv("SAGE_MCP_INLINE_BUDGET_BYTES", raising=False)
+    loose = await retrieval_service.discover(request)
+    assert loose.hints is None or "recommended_limit" not in loose.hints
+
+
+async def test_t0091_budget_hint_accounts_for_tier3_metadata(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """T-0090's tier3_metadata projection growth pushes recommended_limit lower."""
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "2048")
+
+    ids_yes = await _seed_portfolio(graph_store, 40, with_tier3=True, id_prefix="t0091_t3_yes")
+    with_t3 = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket", document_ids=ids_yes),
+            limit=100,
+        )
+    )
+
+    ids_no = await _seed_portfolio(graph_store, 40, with_tier3=False, id_prefix="t0091_t3_no")
+    without_t3 = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type="ticket", document_ids=ids_no),
+            limit=100,
+        )
+    )
+
+    assert with_t3.hints is not None
+    assert without_t3.hints is not None
+    assert with_t3.hints["response_size_bytes"] > without_t3.hints["response_size_bytes"]
+    assert with_t3.hints["recommended_limit"] < without_t3.hints["recommended_limit"]
+
+
+async def test_t0091_budget_hint_absent_on_empty_results(
+    graph_store,
+    retrieval_service,
+    monkeypatch,
+):
+    """No budget hint fires when there are no results, even at a tiny budget."""
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "256")
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="never_matches_anything"),
+        limit=100,
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) == 0
+    if response.hints is not None:
+        assert "recommended_limit" not in response.hints
+        assert "response_size_bytes" not in response.hints
+
+
+async def test_t0091_conformance_full_ticket_portfolio_fits_inline_at_default_limit(
+    graph_store,
+    retrieval_service,
+):
+    """120-doc ticket portfolio at default limit=10 fits inline under 24 KB."""
+    await _seed_portfolio(graph_store, 120)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert response.hints is None or "recommended_limit" not in response.hints
+    payload_size = len(
+        json.dumps(response.model_dump(mode="json", exclude_none=True)).encode("utf-8")
+    )
+    assert payload_size < 24576, (
+        f"Default-limit portfolio response {payload_size}B exceeds 24 KB ceiling."
+    )
 
 
 # BH-104: Document-level response mode preserves semantic_abstract

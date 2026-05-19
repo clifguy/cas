@@ -1468,8 +1468,14 @@ class DiscoverResponse(BaseModel):
     hints: dict[str, object] | None = Field(
         default=None,
         description=(
-            "Optional retrieval hints surfaced to the caller (e.g., "
-            "suggestions when results are sparse). Null when no hints apply."
+            "Optional retrieval hints surfaced to the caller. Null when no "
+            "hints apply. Empty-result hints (all modes): "
+            "`total_before_filtering`, plus `active_filters` and `scope` "
+            "when applicable. Catalog budget hint (T-0091, fires when the "
+            "serialized response exceeds the MCP inline ceiling): "
+            '`reason="response_exceeds_inline_budget"`, '
+            "`response_size_bytes`, `budget_bytes`, `recommended_limit` "
+            "(re-page at this limit to fit inline)."
         ),
     )
 

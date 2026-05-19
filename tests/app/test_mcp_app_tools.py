@@ -908,3 +908,60 @@ class TestSageDiscoverCatalog:
         ids1 = {r["document"]["id"] for r in resp1["results"]}
         ids2 = {r["document"]["id"] for r in resp2["results"]}
         assert len(ids1 & ids2) == 0  # No overlap
+
+    async def _seed_portfolio(self, services, n: int):
+        """Seed ``n`` ticket-shaped docs through the graph store."""
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+        for i in range(n):
+            doc_id = _id(f"t0091_mcp_{i:04d}")
+            await gs.insert_document(
+                Document(
+                    id=doc_id,
+                    title=f"Test ticket portfolio entry {i:04d}",
+                    source_type=SourceType.MARKDOWN,
+                    source_path=f"imports/t0091_mcp_{i:04d}.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha(doc_id),
+                    adapter_version="0.1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    doc_type="ticket",
+                    tags=["ticket", "phase-2", "sage"],
+                    tier3_metadata={
+                        "ticket_id": f"T-9{i:04d}",
+                        "ticket_type": "feature",
+                        "ticket_priority": "medium",
+                    },
+                )
+            )
+
+    async def test_mcp_028_catalog_budget_hint_surfaces_through_mcp_wrapper(
+        self, single_vault, monkeypatch
+    ):
+        """T-0091 budget hint survives Pydantic→dict serialization across the MCP boundary."""
+        monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
+        services, _ = single_vault
+        await self._seed_portfolio(services, 60)
+
+        result = _parse(
+            await sage_discover(
+                vault_id="test_vault",
+                mode="catalog",
+                filters={"doc_type": "ticket"},
+                limit=100,
+            )
+        )
+
+        assert result["mode"] == "catalog"
+        hints = result.get("hints")
+        assert hints is not None, "hints dict not surfaced through MCP wrapper"
+        assert hints.get("reason") == "response_exceeds_inline_budget"
+        assert hints.get("budget_bytes") == 4096
+        recommended = hints.get("recommended_limit")
+        assert isinstance(recommended, int)
+        assert 1 <= recommended < 100

@@ -3036,6 +3036,19 @@ components:
           description: >-
             Total number of results available (before pagination).
             May be approximate for semantic mode.
+        hints:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            Optional retrieval hints surfaced to the caller. Null when
+            no hints apply. Empty-result hints (all modes):
+            `total_before_filtering`, plus `active_filters` and `scope`
+            when applicable. Catalog budget hint (T-0091, fires when the
+            serialized response exceeds the MCP inline ceiling):
+            `reason="response_exceeds_inline_budget"`,
+            `response_size_bytes`, `budget_bytes`, `recommended_limit`
+            (re-page at this limit to fit inline).
 
     DiscoverHit:
       type: object

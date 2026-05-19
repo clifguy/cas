@@ -956,6 +956,15 @@ def register_sage_tools(
             response_level: Result detail level ("chunks" or "documents"). "documents"
                 suppresses chunk_content and heading_path, returning document metadata
                 and relevance scores only. Default: "chunks".
+
+        Catalog budget hint (T-0091):
+            Catalog responses include a ``hints`` field carrying
+            ``recommended_limit`` when the serialized result would
+            exceed the Claude Code MCP inline ceiling. When present,
+            re-page with ``limit=recommended_limit`` to keep the
+            response inline and avoid the disk/jq fallback. The
+            budget defaults to 24 KiB and is configurable per process
+            via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
