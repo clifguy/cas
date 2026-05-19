@@ -6,10 +6,12 @@ idempotent re-initialization.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class SchemaMigrationRequired(RuntimeError):
@@ -133,6 +135,18 @@ CREATE TABLE IF NOT EXISTS staging_edges (
 );
 """
 
+# T-0078: derived join table for tag-filter queries (F-1 remediation).
+# Kept in sync from the SAGE layer; documents.tags JSON remains the
+# authoritative serialization.
+DOCUMENT_TAGS_TABLE = """\
+CREATE TABLE IF NOT EXISTS document_tags (
+    document_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (document_id, tag),
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+);
+"""
+
 INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_source_path ON documents(source_path);",
     "CREATE INDEX IF NOT EXISTS idx_documents_source_hash ON documents(source_content_hash);",
@@ -175,6 +189,12 @@ INDEXES = [
         "CREATE INDEX IF NOT EXISTS idx_tier3_tool_name "
         "ON documents(json_extract(tier3_metadata, '$.tool_name'));"
     ),
+    # T-0078: tag-filter pre-filter. The composite (tag, document_id)
+    # is the covering index for the rewritten EXISTS subquery. The
+    # standalone (tag) index is redundant via left-prefix but is
+    # called out in the ticket's acceptance criteria.
+    "CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag);",
+    ("CREATE INDEX IF NOT EXISTS idx_document_tags_tag_doc ON document_tags(tag, document_id);"),
 ]
 
 # T-0074: single-column edge indexes superseded by the composite
@@ -185,6 +205,84 @@ INDEX_REPLACEMENTS = [
     "DROP INDEX IF EXISTS idx_edges_source;",
     "DROP INDEX IF EXISTS idx_edges_target;",
 ]
+
+
+@dataclass(frozen=True)
+class Backfill:
+    """A one-shot data backfill that populates derived state.
+
+    ``name`` is a short identifier for log/error messages. ``detect``
+    returns True when the backfill has work to do; ``apply`` performs
+    it. Both run inside the live migration transaction, so they must
+    not commit on their own.
+    """
+
+    name: str
+    detect: Callable[[sqlite3.Connection], bool]
+    apply: Callable[[sqlite3.Connection], None]
+
+
+def _backfill_document_tags_detect(conn: sqlite3.Connection) -> bool:
+    """T-0078: documents with tags JSON but no corresponding join rows."""
+    row = conn.execute(
+        "SELECT 1 FROM documents "
+        "WHERE tags IS NOT NULL AND tags != '[]' "
+        "AND NOT EXISTS (SELECT 1 FROM document_tags "
+        "WHERE document_tags.document_id = documents.id) "
+        "LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def _backfill_document_tags_apply(conn: sqlite3.Connection) -> None:
+    """T-0078: populate document_tags from existing documents.tags JSON."""
+    cur = conn.execute("SELECT id, tags FROM documents WHERE tags IS NOT NULL AND tags != '[]'")
+    rows: list[tuple[str, str]] = []
+    for doc_id, tags_json in cur.fetchall():
+        try:
+            tags = json.loads(tags_json)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(tags, list):
+            continue
+        for tag in tags:
+            if isinstance(tag, str):
+                rows.append((doc_id, tag))
+    if rows:
+        conn.executemany(
+            "INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?, ?)",
+            rows,
+        )
+
+
+BACKFILL_PLAN: list[Backfill] = [
+    Backfill(
+        name="document_tags",
+        detect=_backfill_document_tags_detect,
+        apply=_backfill_document_tags_apply,
+    ),
+]
+
+
+def pending_backfills(
+    conn: sqlite3.Connection,
+    backfills: list["Backfill"] | None = None,
+) -> list["Backfill"]:
+    """Return backfills whose ``detect`` returns True for this database."""
+    if backfills is None:
+        backfills = BACKFILL_PLAN
+    pending: list[Backfill] = []
+    for b in backfills:
+        try:
+            if b.detect(conn):
+                pending.append(b)
+        except sqlite3.OperationalError:
+            # Detection requires a table that may not yet exist; treat
+            # as not-pending. The DDL pass will create the table and the
+            # next initialize call will detect any actual work.
+            continue
+    return pending
+
 
 MIGRATION_PLAN: list[Migration] = [
     # v1 -> v2: source file provenance (BH-049)
@@ -226,7 +324,13 @@ MIGRATION_PLAN: list[Migration] = [
 # the standalone scripts/migrate_edge_anchors.py harness).
 MIGRATIONS: list[str] = [m.ddl for m in MIGRATION_PLAN]
 
-TABLES = [DOCUMENTS_TABLE, EDGES_TABLE, USERS_TABLE, STAGING_EDGES_TABLE]
+TABLES = [
+    DOCUMENTS_TABLE,
+    EDGES_TABLE,
+    USERS_TABLE,
+    STAGING_EDGES_TABLE,
+    DOCUMENT_TAGS_TABLE,
+]
 
 # Indexes and other DDL that depend on columns added by MIGRATIONS.
 # Must run AFTER migrations so that indexes on new columns (e.g.,

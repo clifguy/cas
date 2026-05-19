@@ -26,10 +26,12 @@ from sage.models.enums import (
 )
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 from sage.storage.migrations import (
+    BACKFILL_PLAN,
     MIGRATION_PLAN,
     POST_MIGRATION_DDL,
     TABLES,
     SchemaMigrationRequired,
+    pending_backfills,
     pending_migrations,
 )
 
@@ -121,14 +123,23 @@ class GraphStore:
         # 1. Create tables (IF NOT EXISTS -- no-op for existing databases)
         for ddl in TABLES:
             conn.execute(ddl)
-        # 2. Detect and (optionally) apply pending ALTER TABLE migrations.
+        # 2. Detect and (optionally) apply pending ALTER TABLE migrations
+        #    and data backfills (T-0078). Surface both classes of pending
+        #    work together so the operator sees one consolidated message.
         pending = pending_migrations(conn, MIGRATION_PLAN)
-        if pending and not migrate:
-            details = ", ".join(f"{m.table}.{m.column}" for m in pending)
+        pending_bf = pending_backfills(conn, BACKFILL_PLAN)
+        if (pending or pending_bf) and not migrate:
+            details_parts: list[str] = []
+            if pending:
+                details_parts.append(
+                    "ALTER: " + ", ".join(f"{m.table}.{m.column}" for m in pending)
+                )
+            if pending_bf:
+                details_parts.append("backfill: " + ", ".join(b.name for b in pending_bf))
             raise SchemaMigrationRequired(
-                f"GraphStore at {self._db_path} has {len(pending)} pending "
-                f"schema migration(s): {details}. Re-run the server with "
-                f"--migrate to apply them."
+                f"GraphStore at {self._db_path} has pending schema work "
+                f"({'; '.join(details_parts)}). Re-run the server with "
+                f"--migrate to apply."
             )
         for m in pending:
             try:
@@ -137,7 +148,12 @@ class GraphStore:
                 # Defensive: should not occur given the table_info check,
                 # but tolerate concurrent migration in tests.
                 pass
-        # 3. Create indexes (may reference columns added by migrations)
+        # 3. Run data backfills before indexes; backfills usually need the
+        #    new table itself (created in step 1) but not the post-migration
+        #    indexes. Idempotent: apply() functions tolerate re-running.
+        for bf in pending_bf:
+            bf.apply(conn)
+        # 4. Create indexes (may reference columns added by migrations)
         for ddl in POST_MIGRATION_DDL:
             conn.execute(ddl)
         conn.commit()
@@ -207,6 +223,23 @@ class GraphStore:
                 1 if doc.metadata_confirmed else 0,
             ),
         )
+        self._sync_document_tags(conn, doc.id, doc.tags)
+
+    @staticmethod
+    def _sync_document_tags(conn: sqlite3.Connection, doc_id: str, tags: list[str] | None) -> None:
+        """Rewrite the document_tags join rows for ``doc_id`` to match ``tags``.
+
+        T-0078: keeps the derived join table in sync with the JSON
+        column. Called from _exec_insert_document and from
+        _exec_update_document when the update touches `tags`. Runs in
+        the caller's transaction; the caller commits.
+        """
+        conn.execute("DELETE FROM document_tags WHERE document_id = ?", (doc_id,))
+        if tags:
+            conn.executemany(
+                "INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?, ?)",
+                [(doc_id, t) for t in tags],
+            )
 
     async def get_document(self, doc_id: str) -> Document | None:
         with self._query_timer.measure("get_document"):
@@ -237,6 +270,9 @@ class GraphStore:
         """
         if not updates:
             return
+        # T-0078: capture the resolved tag list before in-place serialization
+        # so the join-table sync sees the Python list, not the JSON string.
+        new_tags: list[str] | None = updates["tags"] if "tags" in updates else None
         # Serialize JSON fields if present
         if "tags" in updates:
             updates["tags"] = json.dumps(updates["tags"])
@@ -252,6 +288,8 @@ class GraphStore:
             f"UPDATE documents SET {set_clause} WHERE id = ?",  # noqa: S608 -- set_clause is built from trusted dict keys; all values pass through ? placeholders
             values,
         )
+        if new_tags is not None:
+            self._sync_document_tags(conn, doc_id, new_tags)
 
     async def list_all_documents(self) -> list[Document]:
         """Return all documents in the graph store."""
@@ -346,8 +384,15 @@ class GraphStore:
                 where_clauses.append(f"id IN ({placeholders})")
                 params.extend(filters["document_ids"])
             if "tags" in filters and filters["tags"]:
+                # T-0078: filter via the document_tags join table so the
+                # query is index-driven instead of a full table scan
+                # through json_each. AND-of-tags semantics preserved by
+                # adding one EXISTS clause per requested tag.
                 for tag in filters["tags"]:
-                    where_clauses.append("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)")
+                    where_clauses.append(
+                        "EXISTS (SELECT 1 FROM document_tags "
+                        "WHERE document_id = documents.id AND tag = ?)"
+                    )
                     params.append(tag)
             if "tier3" in filters and filters["tier3"]:
                 tier3 = filters["tier3"]

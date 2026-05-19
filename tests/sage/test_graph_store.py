@@ -6,13 +6,20 @@ and indexed_at nullable semantics.
 
 import asyncio
 import hashlib
+import json
 import re
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
 from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import Document
+from sage.models.schemas import Document, TagsPatch, UpdateMetadataRequest
 from sage.services.identity import generate_document_id
+from sage.storage.migrations import (
+    BACKFILL_PLAN,
+    _backfill_document_tags_apply,
+    _backfill_document_tags_detect,
+)
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -358,3 +365,304 @@ async def test_get_supersedes_lineage_linear_chain(graph_store):
 
     result = await graph_store.get_supersedes_lineage(_id("v4"))
     assert set(result) == {_id("v1"), _id("v2"), _id("v3"), _id("v4")}
+
+
+# ---------------------------------------------------------------------------
+# T-0078: document_tags join-table normalization
+# ---------------------------------------------------------------------------
+
+
+def _join_rows(db_path, doc_id: str | None = None) -> list[tuple[str, str]]:
+    """Open a fresh read-only connection and return document_tags rows."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        if doc_id is None:
+            rows = conn.execute(
+                "SELECT document_id, tag FROM document_tags ORDER BY document_id, tag"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT document_id, tag FROM document_tags WHERE document_id = ? ORDER BY tag",
+                (doc_id,),
+            ).fetchall()
+        return rows
+    finally:
+        conn.close()
+
+
+def _make_doc_with_tags(doc_id: str, tags: list[str]) -> Document:
+    doc = _make_doc(doc_id)
+    doc.tags = list(tags)
+    return doc
+
+
+async def test_t0078_insert_with_tags_populates_join_table(graph_store):
+    """T-0078 #1: insert document with tags -> matching join rows."""
+    doc = _make_doc_with_tags(_id("doc_t1"), ["alpha", "beta"])
+    await graph_store.insert_document(doc)
+    rows = _join_rows(graph_store._db_path, doc.id)
+    assert rows == [(doc.id, "alpha"), (doc.id, "beta")]
+
+
+async def test_t0078_insert_with_no_tags_creates_no_join_rows(graph_store):
+    """T-0078 #2: insert with empty tags -> zero join rows.
+
+    Vacuous pre-implementation (no hook runs, join table is always empty).
+    Kept as a regression guard against an over-eager hook that emits a
+    placeholder row for tag-less docs.
+    """
+    doc = _make_doc_with_tags(_id("doc_t2"), [])
+    await graph_store.insert_document(doc)
+    assert _join_rows(graph_store._db_path, doc.id) == []
+
+
+async def test_t0078_update_tags_add(graph_store):
+    """T-0078 #3: update ["a"] -> ["a","b"] reflects in join table."""
+    doc = _make_doc_with_tags(_id("doc_t3"), ["a"])
+    await graph_store.insert_document(doc)
+    await graph_store.update_document(doc.id, {"tags": ["a", "b"]})
+    rows = _join_rows(graph_store._db_path, doc.id)
+    assert rows == [(doc.id, "a"), (doc.id, "b")]
+
+
+async def test_t0078_update_tags_remove(graph_store):
+    """T-0078 #4: update ["a","b"] -> ["a"] removes the dropped row."""
+    doc = _make_doc_with_tags(_id("doc_t4"), ["a", "b"])
+    await graph_store.insert_document(doc)
+    await graph_store.update_document(doc.id, {"tags": ["a"]})
+    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "a")]
+
+
+async def test_t0078_update_tags_full_replace(graph_store):
+    """T-0078 #5: update ["a"] -> ["c"] replaces the row entirely."""
+    doc = _make_doc_with_tags(_id("doc_t5"), ["a"])
+    await graph_store.insert_document(doc)
+    await graph_store.update_document(doc.id, {"tags": ["c"]})
+    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "c")]
+
+
+async def test_t0078_update_without_tags_key_preserves_join(graph_store):
+    """T-0078 #6: update title only -> join rows unchanged.
+
+    Seeds the join table via the insert hook so the "unchanged" claim is
+    not vacuous. Pre-implementation this test still detects a buggy hook
+    that fires on every update regardless of which fields changed.
+    """
+    doc = _make_doc_with_tags(_id("doc_t6"), ["x", "y"])
+    await graph_store.insert_document(doc)
+    pre = _join_rows(graph_store._db_path, doc.id)
+    assert pre == [(doc.id, "x"), (doc.id, "y")], (
+        "precondition: insert hook must populate join rows; "
+        "if this fails, run sync-hook tests #1/#3-5 first"
+    )
+    await graph_store.update_document(doc.id, {"title": "New Title"})
+    assert _join_rows(graph_store._db_path, doc.id) == pre
+
+
+async def test_t0078_tag_filter_query_uses_join_table_plan(graph_store):
+    """T-0078 #7: the production tag-filter query path uses the join table.
+
+    Two assertions:
+    1. The source of `_query_documents_sync` no longer contains the
+       `json_each(tags)` form. This is what fails pre-rewrite.
+    2. The join-table form, when EXPLAIN'd, uses an index on
+       `document_tags` (any index — SQLite may pick the PK auto-index
+       on `(document_id, tag)` or our explicit `(tag, document_id)`).
+    """
+    import inspect
+
+    from sage.storage.graph_store import GraphStore
+
+    source = inspect.getsource(GraphStore._query_documents_sync)
+    assert "json_each(tags)" not in source, (
+        "_query_documents_sync still references json_each(tags); "
+        "tag filter has not been rewritten to use document_tags"
+    )
+    assert "document_tags" in source, (
+        "_query_documents_sync does not reference document_tags; tag filter rewrite incomplete"
+    )
+
+    # Seed a few documents and verify the plan is index-driven
+    for suffix, tags in (("a", ["alpha"]), ("b", ["beta"]), ("c", ["alpha", "beta"])):
+        d = _make_doc_with_tags(_id(f"doc_plan_{suffix}"), tags)
+        await graph_store.insert_document(d)
+
+    conn = sqlite3.connect(str(graph_store._db_path))
+    try:
+        plan_rows = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM documents WHERE pipeline_status != 'failed' "
+            "AND EXISTS (SELECT 1 FROM document_tags "
+            "WHERE document_id = documents.id AND tag = 'alpha')"
+        ).fetchall()
+    finally:
+        conn.close()
+    plan_text = " | ".join(str(r) for r in plan_rows)
+    assert "document_tags" in plan_text, plan_text
+    assert "USING" in plan_text and "INDEX" in plan_text, (
+        f"expected an index-driven plan over document_tags; got: {plan_text}"
+    )
+    assert "SCAN document_tags" not in plan_text, (
+        f"plan shows a full scan of document_tags; got: {plan_text}"
+    )
+
+    # Result correctness via the public API
+    docs, total = await graph_store.query_documents(
+        {"tags": ["alpha"]}, limit=100, offset=0, sort_by=None, sort_order=None
+    )
+    ids = {d.id for d in docs}
+    assert ids == {_id("doc_plan_a"), _id("doc_plan_c")}
+    assert total == 2
+
+
+async def test_t0078_tag_filter_and_semantics(graph_store):
+    """T-0078 #8: filter for two tags returns only documents that carry both."""
+    for suffix, tags in (
+        ("a", ["alpha"]),
+        ("b", ["beta"]),
+        ("c", ["alpha", "beta"]),
+        ("d", ["alpha", "beta", "gamma"]),
+    ):
+        d = _make_doc_with_tags(_id(f"doc_and_{suffix}"), tags)
+        await graph_store.insert_document(d)
+
+    docs, total = await graph_store.query_documents(
+        {"tags": ["alpha", "beta"]}, limit=100, offset=0, sort_by=None, sort_order=None
+    )
+    ids = {d.id for d in docs}
+    assert ids == {_id("doc_and_c"), _id("doc_and_d")}
+    assert total == 2
+
+
+async def test_t0078_backfill_populates_from_json(graph_store):
+    """T-0078 #9: backfill helper fills join table from existing JSON.
+
+    Simulates an unmigrated state by inserting a document directly via SQL
+    (bypassing the sync hook) so the JSON column is populated but the
+    join table is empty. Then runs the backfill apply function.
+    """
+    doc_id = _id("doc_backfill")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(str(graph_store._db_path))
+    try:
+        conn.execute(
+            "INSERT INTO documents ("
+            "id, title, source_type, source_path, lifecycle_status, "
+            "tags, source_content_hash, adapter_version, created_by, "
+            "created_at, last_modified_by, updated_at, pipeline_status, metadata_confirmed"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                doc_id,
+                "Backfill Doc",
+                "markdown",
+                f"test/{doc_id}.md",
+                "active",
+                json.dumps(["p", "q", "r"]),
+                _sha("backfill"),
+                "0.1.0",
+                "testuser",
+                now,
+                "testuser",
+                now,
+                "abstraction_complete",
+                1,
+            ),
+        )
+        # Manually clear any join rows that an existing hook may have created
+        conn.execute("DELETE FROM document_tags WHERE document_id = ?", (doc_id,))
+        conn.commit()
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM document_tags WHERE document_id = ?", (doc_id,)
+            ).fetchone()[0]
+            == 0
+        )
+
+        assert _backfill_document_tags_detect(conn) is True
+        _backfill_document_tags_apply(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    rows = _join_rows(graph_store._db_path, doc_id)
+    assert rows == [(doc_id, "p"), (doc_id, "q"), (doc_id, "r")]
+
+
+async def test_t0078_backfill_is_idempotent(graph_store):
+    """T-0078 #10: re-running backfill does not duplicate or error."""
+    doc_id = _id("doc_idem")
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(str(graph_store._db_path))
+    try:
+        conn.execute(
+            "INSERT INTO documents ("
+            "id, title, source_type, source_path, lifecycle_status, "
+            "tags, source_content_hash, adapter_version, created_by, "
+            "created_at, last_modified_by, updated_at, pipeline_status, metadata_confirmed"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                doc_id,
+                "Idem Doc",
+                "markdown",
+                f"test/{doc_id}.md",
+                "active",
+                json.dumps(["s", "t"]),
+                _sha("idem"),
+                "0.1.0",
+                "testuser",
+                now,
+                "testuser",
+                now,
+                "abstraction_complete",
+                1,
+            ),
+        )
+        conn.execute("DELETE FROM document_tags WHERE document_id = ?", (doc_id,))
+        conn.commit()
+        _backfill_document_tags_apply(conn)
+        _backfill_document_tags_apply(conn)
+        conn.commit()
+        # Second detect should now return False -- the work is fully applied
+        assert _backfill_document_tags_detect(conn) is False
+    finally:
+        conn.close()
+
+    rows = _join_rows(graph_store._db_path, doc_id)
+    assert rows == [(doc_id, "s"), (doc_id, "t")]
+
+
+async def test_t0078_fk_cascade_on_document_delete(graph_store):
+    """T-0078 #11: deleting a document cascades to document_tags rows."""
+    doc = _make_doc_with_tags(_id("doc_fk"), ["m", "n"])
+    await graph_store.insert_document(doc)
+    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "m"), (doc.id, "n")]
+
+    conn = sqlite3.connect(str(graph_store._db_path))
+    try:
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("DELETE FROM documents WHERE id = ?", (doc.id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert _join_rows(graph_store._db_path, doc.id) == []
+
+
+async def test_t0078_metadata_service_e2e(metadata_service, graph_store):
+    """T-0078 #12: TagsPatch through MetadataService syncs the join table."""
+    doc = _make_doc_with_tags(_id("doc_e2e"), ["initial"])
+    await graph_store.insert_document(doc)
+    assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "initial")]
+
+    await metadata_service.update_metadata(
+        doc.id,
+        UpdateMetadataRequest(tags=TagsPatch(add=["new1", "new2"], remove=["initial"])),
+        modified_by="testuser",
+    )
+    rows = _join_rows(graph_store._db_path, doc.id)
+    assert rows == [(doc.id, "new1"), (doc.id, "new2")]
+
+
+async def test_t0078_backfill_plan_includes_document_tags():
+    """The BACKFILL_PLAN registry must include the document_tags backfill."""
+    names = [b.name for b in BACKFILL_PLAN]
+    assert "document_tags" in names, names
