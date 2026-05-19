@@ -35,12 +35,45 @@
               "properties": {
                 "method": {
                   "type": "string",
-                  "enum": ["version_chain", "re_ingestion", "filename_code_match", "filename_co_location", "content_reference"],
-                  "description": "Inference method. version_chain: filename version numbers (v15 supersedes v14 through v1); chain identity is (title, project, doc_type), so documents with different doc_types do not chain even if they share a title. re_ingestion: change detection triggered re-ingestion. filename_code_match: target document code appears in this document's filename. filename_co_location: documents share a code and workflow stage. content_reference: textual cross-references within document content (Phase 2)."
+                  "enum": ["version_chain", "re_ingestion", "filename_code_match", "filename_co_location", "content_reference", "identifier_mention"],
+                  "description": "Inference method. version_chain: filename version numbers (v15 supersedes v14 through v1); chain identity is (title, project, doc_type), so documents with different doc_types do not chain even if they share a title. re_ingestion: change detection triggered re-ingestion. filename_code_match: target document code appears in this document's filename. filename_co_location: documents share a code and workflow stage. content_reference: textual cross-references within document content (placeholder; superseded by identifier_mention). identifier_mention (T-0016): verbatim canonical-identifier mentions in the ingested document's projected body text resolve to vault-resident targets via tag and title-prefix lookups; pattern set is declared in the `patterns` array on the inference rule."
                 },
                 "pattern": {
                   "type": "string",
-                  "description": "For filename-based methods: a pattern or regex describing how to identify the relationship from filename segments. For content_reference: a pattern describing what to look for in content."
+                  "description": "For filename-based methods: a pattern or regex describing how to identify the relationship from filename segments. For content_reference: a pattern describing what to look for in content. Not used by identifier_mention (which uses the structured `patterns` array instead)."
+                },
+                "patterns": {
+                  "type": "array",
+                  "description": "Identifier patterns for the identifier_mention method. Each pattern declares an identifier regex and the tag/title/doc_type filters used to resolve the matched literal to a vault document. T-0016.",
+                  "items": {
+                    "type": "object",
+                    "required": ["regex", "target_tags"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "regex": {
+                        "type": "string",
+                        "description": "Python regex matched verbatim against the ingested document's projected body text. Should include word boundaries (e.g., `\\bCAS-ADR-\\d{3}\\b`) to avoid spurious mid-word matches. The matched literal is fed to the resolver as the identifier."
+                      },
+                      "target_tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags the resolved target document must carry. May contain `{id}` as a placeholder for the matched identifier literal (e.g., `id:{id}` resolves to `id:T-0016` for a `T-0016` mention). All tags AND together."
+                      },
+                      "target_title_prefix": {
+                        "type": "string",
+                        "description": "Optional title-prefix filter applied after tag filtering. May contain `{id}` as a placeholder. Used for ADR-style identifiers where the tag is generic (`adr`) but title carries the id prefix (e.g., `ADR-{adr_num}:`)."
+                      },
+                      "target_doc_type": {
+                        "type": "string",
+                        "description": "Optional `doc_type` filter applied during resolution."
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Set to false to disable this pattern without removing it from config."
+                      }
+                    }
+                  }
                 },
                 "source_segment": {
                   "type": "string",

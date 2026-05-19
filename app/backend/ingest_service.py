@@ -21,6 +21,7 @@ from app.backend.edge_inference import (
     EdgeInferenceEngine,
     EdgePlan,
     InferenceItem,
+    plan_identifier_mentions_for_document,
     resolve_and_execute,
 )
 from sage.models.enums import SourceType
@@ -144,6 +145,15 @@ class BatchIngestService:
 
         # Phase 2: Per-file ingestion
         path_to_id: dict[str, str] = {}
+        # T-0016: shared cache for identifier_mention resolution across
+        # all documents in this batch. Same identifier mentioned from
+        # many sources resolves once.
+        ident_cache: dict[str, str | None] = {}
+        edge_inference_cfg = (
+            vault_services.config.edge_inference
+            if hasattr(vault_services.config, "edge_inference")
+            else {}
+        ) or {}
         for i, fd in enumerate(files):
             filename = Path(fd.file_path).name
 
@@ -180,6 +190,30 @@ class BatchIngestService:
                     summary.abstracts_generated += 1
                 else:
                     summary.abstracts_deferred += 1
+
+                # T-0016: scan the just-ingested document's projected body
+                # text for configured identifier patterns and append any
+                # resolved references edges to the plan for Phase 3.
+                if infer_edges and edge_plan is not None:
+                    try:
+                        chunks = await vault_services.content_store.get_all_chunks(
+                            ingest_result.document.id,
+                        )
+                        body_text = "\n".join(c.content for c in chunks)
+                        ident_edges = await plan_identifier_mentions_for_document(
+                            source_doc_id=ingest_result.document.id,
+                            body_text=body_text,
+                            edge_inference_config=edge_inference_cfg,
+                            graph_store=vault_services.graph_store,
+                            resolution_cache=ident_cache,
+                        )
+                        edge_plan.edges.extend(ident_edges)
+                    except Exception:
+                        logger.exception(
+                            "identifier_mention planning failed for %s; "
+                            "ingest succeeded, continuing without inferred edges",
+                            ingest_result.document.id,
+                        )
 
                 if on_file_done is not None:
                     await on_file_done(i, total, filename, ingest_result.document.id)

@@ -67,7 +67,7 @@
       "path": "sage/edge_inference.schema.json",
       "title": "SAGE Edge Inference Configuration",
       "status": "draft",
-      "version": "0.1",
+      "version": "0.2",
       "role": "Defines three-tier edge inference model: tier assignments, inference rules, and staging table behavior.",
       "instantiation_checklist_items": [
         6
@@ -173,7 +173,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.19",
+  "substrate_version": "1.20",
   "revision_history": [
     {
       "version": "0.1",
@@ -274,6 +274,11 @@
       "version": "1.19",
       "date": "2026-05-19",
       "summary": "Typed rationale-kind discriminator on edges (T-0080; CAS-ADR-019 follow-through). Three additions to sage_core_api.openapi.yaml: (1) New `RationaleKind` component schema, string enum over {version_chain, references_mention, filename_code_match, manual} with default `manual`. (2) `Edge.rationale_kind` field referencing the new schema; typed discriminator for the provenance source of the rationale text, promoted from the rationale-prefix string convention (CAS-ADR-019) to a typed, indexed column (idx_edges_rationale_kind) on the edges table so chain-repair and future inference rules filter via SQL rather than Python startswith() (F-9 from T-0072 audit). (3) `LinkRequest.rationale_kind` optional field; when omitted, the service derives the value from the rationale text prefix and falls back to `manual`. Pydantic models in sage/models/schemas.py mirror the schema additions; new `RationaleKind` StrEnum in sage/models/enums.py. Storage-layer migration adds the column with NOT NULL DEFAULT 'manual', one-time backfill maps known prefixes to kinds, and a POST_MIGRATION_DDL index supports the new filter predicate."
+    },
+    {
+      "version": "1.20",
+      "date": "2026-05-19",
+      "summary": "Identifier-mention edge inference (T-0016). One change to sage/edge_inference.schema.json (bumped to v0.2): adds `identifier_mention` to the inference-method enum and introduces a structured `patterns` array on inference rules, where each pattern object carries a `regex`, a `target_tags` filter (with `{id}` placeholder for the matched literal), an optional `target_title_prefix` (also with `{id}` placeholder for ADR-style identifiers whose tag is generic but title carries the id prefix), an optional `target_doc_type`, and an optional `enabled` flag. The `content_reference` method remains in the enum as a placeholder; the cas vault config is migrated to `identifier_mention` and promoted from Tier 2 to Tier 1 with three default patterns (CAS-ADR-NNN via `adr` tag plus title-prefix match, T-NNNN via `id:{id}` tag, F-N via `id:{id}` tag). The corresponding rationale-kind discriminator (`references_mention`) and prefix were pre-staged in substrate v1.19; this entry activates them by landing the inference rule that emits them. No API surface change."
     },
     {
       "version": "1.18",

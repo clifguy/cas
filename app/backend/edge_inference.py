@@ -14,6 +14,7 @@ Active inference methods (Phase 1):
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -43,6 +44,7 @@ WORKFLOW_DOC_TYPES = frozenset(
 # promotion time.
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
 FILENAME_CODE_MATCH_RATIONALE_PREFIX = "[filename_code_match]"
+IDENTIFIER_MENTION_RATIONALE_PREFIX = "[references_mention]"
 
 
 def _is_version_chain_edge(edge: Edge) -> bool:
@@ -57,6 +59,7 @@ def _is_version_chain_edge(edge: Edge) -> bool:
 _METHOD_TO_RATIONALE_KIND: dict[str, RationaleKind] = {
     "version_chain": RationaleKind.VERSION_CHAIN,
     "filename_code_match": RationaleKind.FILENAME_CODE_MATCH,
+    "identifier_mention": RationaleKind.REFERENCES_MENTION,
 }
 
 
@@ -77,6 +80,12 @@ class PlannedEdge:
     tier: int
     method: str
     evidence: str
+    # T-0016: anchors for transitive_both edges (references) emitted by
+    # identifier_mention. Resolved doc IDs; resolve_and_execute forwards
+    # them into LinkRequest. None for edges whose policy is `none` (e.g.,
+    # SUPERSEDES via version_chain).
+    source_valid_from_version: str | None = None
+    target_valid_from_version: str | None = None
 
 
 @dataclass
@@ -415,6 +424,8 @@ async def resolve_and_execute(
                         source_id=source_id,
                         target_id=target_id,
                         edge_type=planned.edge_type,
+                        source_valid_from_version=planned.source_valid_from_version,
+                        target_valid_from_version=planned.target_valid_from_version,
                         rationale=planned.evidence,
                         rationale_kind=rationale_kind,
                     )
@@ -491,3 +502,170 @@ async def resolve_and_execute(
                 )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# T-0016: identifier-mention inference (post-projection, per document)
+# ---------------------------------------------------------------------------
+
+
+def _identifier_mention_rules(edge_inference_config: dict) -> list[dict]:
+    """Extract identifier-mention rules' pattern lists from vault config.
+
+    Returns a flat list of pattern dicts across every `references`
+    tier_assignment whose `inference_rules` use the identifier_mention
+    method. Empty list when the vault doesn't configure the rule.
+    """
+    if not edge_inference_config:
+        return []
+    patterns: list[dict] = []
+    for assignment in edge_inference_config.get("tier_assignments", []):
+        if assignment.get("edge_type") != "references":
+            continue
+        for rule in assignment.get("inference_rules", []) or []:
+            if rule.get("method") != "identifier_mention":
+                continue
+            for pat in rule.get("patterns", []) or []:
+                if pat.get("enabled", True):
+                    patterns.append(pat)
+    return patterns
+
+
+def _format_tag(tag_template: str, *, identifier: str) -> str:
+    """Substitute the {id} placeholder; pass through tags that lack one."""
+    return tag_template.replace("{id}", identifier)
+
+
+def _title_matches_prefix(title: str | None, prefix_template: str, identifier: str) -> bool:
+    """Apply the title-prefix filter for ADR-style identifiers.
+
+    The configured prefix may contain `{adr_num}` (or `{id}`) placeholders.
+    For ADR identifiers like `CAS-ADR-099`, `{adr_num}` is the numeric
+    suffix `099`; `{id}` is the full literal. The match is a strict
+    string-prefix on the document's title.
+    """
+    if not title:
+        return False
+    expanded = prefix_template.replace("{id}", identifier)
+    adr_num = ""
+    m = re.search(r"(\d+)\s*$", identifier)
+    if m:
+        adr_num = m.group(1)
+    expanded = expanded.replace("{adr_num}", adr_num)
+    return title.startswith(expanded)
+
+
+async def _resolve_identifier(
+    *,
+    identifier: str,
+    pattern: dict,
+    graph_store: GraphStore,
+) -> str | None:
+    """Resolve an identifier literal to a vault document id.
+
+    Returns the matched document's id, or None when no unique active
+    document matches the pattern's filters. Lookup is two-step:
+      1. catalog query against the graph store with tag and (optional)
+         doc_type filters.
+      2. optional title-prefix narrowing among the tag-matched candidates.
+    Among multiple matches, an `active` lifecycle status wins; among
+    multiple active matches, the most recently updated wins.
+    """
+    target_tags = [_format_tag(t, identifier=identifier) for t in pattern.get("target_tags", [])]
+    filters: dict[str, object] = {"tags": target_tags} if target_tags else {}
+    if pattern.get("target_doc_type"):
+        filters["doc_type"] = pattern["target_doc_type"]
+    docs, _ = await graph_store.query_documents(filters=filters, limit=50)
+    if not docs:
+        return None
+
+    prefix = pattern.get("target_title_prefix")
+    if prefix:
+        docs = [d for d in docs if _title_matches_prefix(d.title, prefix, identifier)]
+    if not docs:
+        return None
+
+    active = [d for d in docs if d.lifecycle_status == "active"]
+    pool = active or docs
+    pool.sort(key=lambda d: d.updated_at, reverse=True)
+    return pool[0].id
+
+
+async def plan_identifier_mentions_for_document(
+    *,
+    source_doc_id: str,
+    body_text: str,
+    edge_inference_config: dict,
+    graph_store: GraphStore,
+    resolution_cache: dict[str, str | None] | None = None,
+) -> list[PlannedEdge]:
+    """Scan body text for configured identifier patterns and plan edges.
+
+    Args:
+        source_doc_id: Just-ingested document id (becomes edge source).
+        body_text: Concatenated projected body text from the document's
+            chunks.
+        edge_inference_config: Vault config's edge_inference section (dict).
+        graph_store: For tag/doc_type resolution lookups.
+        resolution_cache: Optional shared cache keyed by ``(regex, id)`` so
+            the same identifier mentioned from many sources resolves once.
+
+    Returns:
+        A list of PlannedEdge instances ready for resolve_and_execute.
+        Tier 1, edge_type REFERENCES, method `identifier_mention`. Anchor
+        fields are populated with the source and target doc ids so the
+        TRANSITIVE_BOTH policy on `references` is satisfied at write time.
+    """
+    patterns = _identifier_mention_rules(edge_inference_config)
+    if not patterns or not body_text:
+        return []
+    cache: dict[str, str | None] = resolution_cache if resolution_cache is not None else {}
+    seen_targets: set[str] = set()
+    edges: list[PlannedEdge] = []
+
+    for pattern in patterns:
+        regex = pattern.get("regex")
+        if not regex:
+            continue
+        try:
+            compiled = re.compile(regex)
+        except re.error:
+            logger.exception("Invalid identifier_mention regex %r; skipping", regex)
+            continue
+        matches = {m.group(0) for m in compiled.finditer(body_text)}
+        for identifier in matches:
+            cache_key = f"{regex}::{identifier}"
+            if cache_key in cache:
+                target_id = cache[cache_key]
+            else:
+                target_id = await _resolve_identifier(
+                    identifier=identifier,
+                    pattern=pattern,
+                    graph_store=graph_store,
+                )
+                cache[cache_key] = target_id
+            if target_id is None:
+                logger.info(
+                    "identifier_mention: unresolved %r in %s",
+                    identifier,
+                    source_doc_id,
+                )
+                continue
+            if target_id == source_doc_id or target_id in seen_targets:
+                continue
+            seen_targets.add(target_id)
+            edges.append(
+                PlannedEdge(
+                    source_ref=source_doc_id,
+                    target_ref=target_id,
+                    edge_type=EdgeType.REFERENCES,
+                    tier=1,
+                    method="identifier_mention",
+                    evidence=(
+                        f"{IDENTIFIER_MENTION_RATIONALE_PREFIX} {identifier!r} mentioned in body"
+                    ),
+                    source_valid_from_version=source_doc_id,
+                    target_valid_from_version=target_id,
+                )
+            )
+    return edges
