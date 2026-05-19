@@ -436,17 +436,25 @@ def test_vault_timing_thread_flushes_periodically(caplog):
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
         flush_thread.start()
-        # Two intervals worth of waiting should produce at least one summary.
+        # Two intervals worth of waiting should produce at least one summary
+        # for *this* timer (one carrying our pre-loaded `get_document` count).
+        # Under CI load, a leaked VaultTimingThread from another fixture
+        # (e.g., `initialize_services` in an earlier test that left a vault
+        # running) can flush its own summary into this caplog window first;
+        # filter to the summary carrying our expected key rather than
+        # asserting on `summaries[0]`.
         deadline = time.monotonic() + 1.0
-        summaries: list[dict] = []
+        matching: list[dict] = []
         while time.monotonic() < deadline:
-            summaries = [
-                p for p in _payloads(caplog, "sage.storage.timing") if p.get("summary") is True
+            matching = [
+                p
+                for p in _payloads(caplog, "sage.storage.timing")
+                if p.get("summary") is True and "get_document" in p.get("suppressed", {})
             ]
-            if summaries:
+            if matching:
                 break
             time.sleep(0.05)
         flush_thread.stop(timeout=1.0)
 
-    assert len(summaries) >= 1, "expected at least one summary record from the flusher"
-    assert summaries[0]["suppressed"].get("get_document") == 2
+    assert len(matching) >= 1, "expected at least one summary record from the flusher"
+    assert matching[0]["suppressed"]["get_document"] == 2
