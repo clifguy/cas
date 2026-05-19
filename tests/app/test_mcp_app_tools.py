@@ -455,6 +455,46 @@ class TestStagingEdgeActions:
         result = _parse(await sage_confirm_staging_edge("test_vault", _GONE_001))
         assert "error" in result
 
+    async def test_t0079_confirm_with_existing_production_edge_is_idempotent(self, single_vault):
+        """T-0079: if a production edge with the same natural-key triple
+        already exists when a staging edge is confirmed, the promotion
+        is idempotent: the staging row is consumed and the response
+        carries the pre-existing production edge id (no IntegrityError
+        leaks to the caller).
+        """
+        from sage.models.enums import EdgeType
+        from sage.models.schemas import LinkRequest
+
+        services, _config = single_vault
+        doc_a_id, doc_b_id = await self._setup_staging(services)
+
+        # Pre-create the production edge that the staging edge will
+        # collide with on confirm. The setup helper stages a COVERS
+        # edge, so the pre-existing edge must match.
+        await services.graph_ops_service.link(
+            LinkRequest(
+                source_id=doc_a_id,
+                target_id=doc_b_id,
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=doc_a_id,
+                target_valid_from_version=doc_b_id,
+                rationale="pre-existing production edge",
+            )
+        )
+
+        result = _parse(await sage_confirm_staging_edge("test_vault", _STG_TEST))
+        # The promotion is idempotent: no error surfaced.
+        assert result["confirmed"] is True
+        assert "production_edge_id" in result
+
+        # Exactly one production edge exists between the pair.
+        edges = await services.graph_store.get_edges_by_source(doc_a_id, "covers")
+        assert len(edges) == 1
+
+        # Staging edge is consumed.
+        listing = _parse(await sage_list_staging_edges("test_vault"))
+        assert listing["count"] == 0
+
 
 # ---------------------------------------------------------------------------
 # T-0024: edge_id validation across MCP tools that take edge_id directly

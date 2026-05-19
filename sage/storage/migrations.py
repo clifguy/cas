@@ -20,6 +20,16 @@ class SchemaMigrationRequired(RuntimeError):
     """
 
 
+class DuplicateEdgesPresentError(RuntimeError):
+    """Raised when the T-0079 unique-index migration cannot be applied
+    because the edges or staging_edges table contains duplicate rows on
+    the natural-key triple (source_id, target_id, edge_type).
+
+    Operator must run ``python -m scripts.dedup_edges --vault <id> --apply``
+    to backfill the duplicates before re-running the migration.
+    """
+
+
 @dataclass(frozen=True)
 class Migration:
     """A single ALTER-style schema migration.
@@ -206,6 +216,32 @@ INDEX_REPLACEMENTS = [
     "DROP INDEX IF EXISTS idx_edges_target;",
 ]
 
+# T-0079: natural-key uniqueness on production and staging edges.
+# SQLite cannot ALTER TABLE ADD UNIQUE; a unique index is the
+# semantic equivalent. ``IF NOT EXISTS`` keeps re-init idempotent;
+# CREATE UNIQUE INDEX still fails (with sqlite3.IntegrityError) when
+# the table already contains duplicate rows, and ``_initialize_sync``
+# translates that into DuplicateEdgesPresentError pointing at
+# scripts/dedup_edges.py. NULL semantics: SQLite treats NULLs as
+# distinct in unique indexes, so multiple ``retracts`` edges with
+# target_id=NULL on the same source remain legal (per CAS-ADR-017,
+# retraction targets an edge instance via retracted_edge_id, not
+# via the natural-key tuple).
+UNIQUE_NATURAL_KEY_INDEXES = [
+    (
+        "edges",
+        "idx_edges_uniq_natural_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_uniq_natural_key "
+        "ON edges(source_id, target_id, edge_type);",
+    ),
+    (
+        "staging_edges",
+        "idx_staging_edges_uniq_natural_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_staging_edges_uniq_natural_key "
+        "ON staging_edges(source_id, target_id, edge_type);",
+    ),
+]
+
 
 @dataclass(frozen=True)
 class Backfill:
@@ -338,7 +374,13 @@ TABLES = [
 # CREATE TABLE IF NOT EXISTS was a no-op. Replacements run first so the
 # obsolete single-column edge indexes are gone before the composites
 # (which would otherwise coexist as a transient bloat window).
-POST_MIGRATION_DDL = [*INDEX_REPLACEMENTS, *INDEXES]
+# T-0079: unique indexes follow the other indexes; their failure path
+# is special-cased in graph_store._initialize_sync.
+POST_MIGRATION_DDL = [
+    *INDEX_REPLACEMENTS,
+    *INDEXES,
+    *[ddl for _table, _name, ddl in UNIQUE_NATURAL_KEY_INDEXES],
+]
 
 # Legacy alias used by tests and graph_store prior to ordering fix.
 ALL_DDL = [*TABLES, *INDEXES]

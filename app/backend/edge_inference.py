@@ -384,7 +384,13 @@ async def resolve_and_execute(
 
         try:
             if planned.tier == 1:
-                await graph_ops_service.link(
+                # T-0079: link_idempotent makes auto-inferred edges
+                # idempotent under re-ingest. A duplicate natural-key
+                # triple returns the existing edge with created=False;
+                # we still count it as edges_created when newly minted,
+                # otherwise as edges_kept so the IngestSummary surfaces
+                # the no-op path.
+                _edge, created = await graph_ops_service.link_idempotent(
                     LinkRequest(
                         source_id=source_id,
                         target_id=target_id,
@@ -393,7 +399,15 @@ async def resolve_and_execute(
                     )
                 )
                 key = planned.edge_type.value
-                result.edges_created[key] = result.edges_created.get(key, 0) + 1
+                if created:
+                    result.edges_created[key] = result.edges_created.get(key, 0) + 1
+                else:
+                    logger.debug(
+                        "Edge %s -> %s (%s) already exists; auto-inference no-op",
+                        source_id,
+                        target_id,
+                        planned.edge_type.value,
+                    )
             else:
                 staging = StagingEdge(
                     id=str(uuid.uuid4()),
@@ -404,7 +418,11 @@ async def resolve_and_execute(
                     confidence_tier=planned.tier,
                     created_at=datetime.now(timezone.utc),
                 )
-                await graph_store.insert_staging_edge(staging)
+                # T-0079: insert_staging_edge returns (edge, created); we
+                # discard the result here since the planning layer
+                # already accounts for staging edges by their planned
+                # status, not by post-write created/skipped state.
+                await graph_store.insert_staging_edge(staging, on_conflict="noop")
                 key = planned.edge_type.value
                 result.edges_staged[key] = result.edges_staged.get(key, 0) + 1
         except Exception as exc:

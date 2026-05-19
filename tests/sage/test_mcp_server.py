@@ -493,6 +493,41 @@ async def test_link_self_referential_error(vault_services):
     assert result["error"] == "self_referential_edge"
 
 
+async def test_link_idempotent_returns_created_flag(vault_services):
+    """T-0079: re-calling sage_link with the same natural-key triple
+    returns ``created=False`` and preserves the original rationale."""
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    first = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "supersedes",
+            rationale="original rationale",
+        )
+    )
+    assert first["created"] is True
+    assert "existing_rationale" not in first
+    original_edge_id = first["id"]
+
+    second = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "supersedes",
+            rationale="DIFFERENT rationale on second call",
+        )
+    )
+    assert second["created"] is False
+    assert second["id"] == original_edge_id
+    # The pre-existing rationale is surfaced so callers can detect drift.
+    assert second["existing_rationale"] == "original rationale"
+
+
 # ---------------------------------------------------------------------------
 # Graph operations: check_preconditions
 # ---------------------------------------------------------------------------

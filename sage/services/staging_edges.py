@@ -39,7 +39,7 @@ class StagingEdgesService:
         if staging is None:
             raise StagingEdgeNotFoundError(edge_id)
 
-        production = Edge(
+        candidate = Edge(
             id=str(uuid.uuid4()),
             source_id=staging.source_id,
             target_id=staging.target_id,
@@ -48,13 +48,18 @@ class StagingEdgesService:
             notes=f"Confirmed from staging edge {edge_id}",
             rationale=staging.inference_evidence,
         )
-        await self._store.insert_edge(production)
+        # T-0079: if the natural-key triple already exists in production
+        # (e.g., a parallel sage_link or earlier auto-inference path
+        # already created the edge), confirm-staging is idempotent:
+        # consume the staging row and surface the existing production
+        # edge's id rather than raising IntegrityError to the caller.
+        stored, _created = await self._store.insert_edge(candidate, on_conflict="noop")
         await self._store.delete_staging_edge(edge_id)
 
         return StagingEdgeConfirmResponse(
             confirmed=True,
             staging_edge_id=edge_id,
-            production_edge_id=production.id,
+            production_edge_id=stored.id,
         )
 
     async def dismiss_staging_edge(self, edge_id: str) -> StagingEdgeDismissResponse:

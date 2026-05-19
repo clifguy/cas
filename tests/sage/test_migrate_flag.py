@@ -524,3 +524,142 @@ async def test_mig_013_owner_bootstrap_always_runs(tmp_path):
         assert owner.display_name == config.vault.owner
     finally:
         await services.graph_store.close()
+
+
+# ── T-0079: index-migration framework + UNIQUE on edges/staging_edges ──
+
+
+def _has_index(db_path: Path, table: str, index_name: str) -> bool:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(f"PRAGMA index_list({table})").fetchall()
+        return any(r[1] == index_name for r in rows)
+    finally:
+        conn.close()
+
+
+async def test_t0079_unique_indexes_present_on_fresh_vault(tmp_path):
+    """Fresh-vault initialize creates both T-0079 unique indexes."""
+    db_path = tmp_path / "graph.db"
+    store = GraphStore(db_path)
+    await store.initialize(migrate=False)
+    try:
+        assert _has_index(db_path, "edges", "idx_edges_uniq_natural_key")
+        assert _has_index(db_path, "staging_edges", "idx_staging_edges_uniq_natural_key")
+    finally:
+        await store.close()
+
+
+async def test_t0079_unique_index_blocks_direct_duplicate_insert(tmp_path):
+    """After the migration, direct duplicate INSERTs raise IntegrityError."""
+    db_path = tmp_path / "graph.db"
+    store = GraphStore(db_path)
+    await store.initialize(migrate=False)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            # Seed two documents and a first edge so the FK is satisfied.
+            now = datetime.now(timezone.utc).isoformat()
+            for doc_id in ("aaaa1111_a", "bbbb2222_b"):
+                conn.execute(
+                    "INSERT INTO documents (id, title, source_type, source_path, "
+                    "source_content_hash, adapter_version, created_by, created_at, "
+                    "last_modified_by, updated_at) VALUES (?, 'T', 'markdown', ?, "
+                    "'h', '0.1.0', 'tester', ?, 'tester', ?)",
+                    (doc_id, f"src/{doc_id}.md", now, now),
+                )
+            conn.execute(
+                "INSERT INTO edges (id, source_id, target_id, edge_type, "
+                "created_at) VALUES (?, ?, ?, ?, ?)",
+                ("edge-1", "aaaa1111_a", "bbbb2222_b", "references", now),
+            )
+            conn.commit()
+            with pytest.raises(sqlite3.IntegrityError) as exc_info:
+                conn.execute(
+                    "INSERT INTO edges (id, source_id, target_id, edge_type, "
+                    "created_at) VALUES (?, ?, ?, ?, ?)",
+                    ("edge-2", "aaaa1111_a", "bbbb2222_b", "references", now),
+                )
+            assert "UNIQUE constraint failed" in str(exc_info.value)
+        finally:
+            conn.close()
+    finally:
+        await store.close()
+
+
+async def test_t0079_migration_fails_clearly_when_duplicates_present(tmp_path):
+    """Legacy DB with duplicate edges produces a DuplicateEdgesPresentError
+    pointing at scripts/dedup_edges.py when the T-0079 migration runs.
+    """
+    from sage.storage.migrations import DuplicateEdgesPresentError
+
+    db_path = tmp_path / "graph.db"
+    _build_legacy_db(db_path)
+
+    # Seed two documents and two duplicate edges on the legacy schema
+    # (which has no unique index). The first time the T-0079 migration
+    # tries to CREATE UNIQUE INDEX, SQLite refuses; the wrapper in
+    # GraphStore._initialize_sync translates the IntegrityError.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        for doc_id in ("aaaa1111_a", "bbbb2222_b"):
+            conn.execute(
+                "INSERT INTO documents (id, title, source_type, source_path, "
+                "source_content_hash, adapter_version, created_by, created_at, "
+                "last_modified_by, updated_at) VALUES (?, 'T', 'markdown', ?, "
+                "'h', '0.1.0', 'tester', ?, 'tester', ?)",
+                (doc_id, f"src/{doc_id}.md", now, now),
+            )
+        for edge_id in ("edge-1", "edge-2"):
+            conn.execute(
+                "INSERT INTO edges (id, source_id, target_id, edge_type, "
+                "created_at) VALUES (?, ?, ?, ?, ?)",
+                (edge_id, "aaaa1111_a", "bbbb2222_b", "references", now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = GraphStore(db_path)
+    with pytest.raises(DuplicateEdgesPresentError) as exc_info:
+        await store.initialize(migrate=True)
+    msg = str(exc_info.value)
+    assert "scripts.dedup_edges" in msg  # module path used in the hint
+    assert "edges" in msg
+    await store.close()
+
+
+async def test_t0079_migration_succeeds_after_dedup(tmp_path):
+    """After removing duplicates, the migration applies cleanly."""
+    db_path = tmp_path / "graph.db"
+    _build_legacy_db(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        for doc_id in ("aaaa1111_a", "bbbb2222_b"):
+            conn.execute(
+                "INSERT INTO documents (id, title, source_type, source_path, "
+                "source_content_hash, adapter_version, created_by, created_at, "
+                "last_modified_by, updated_at) VALUES (?, 'T', 'markdown', ?, "
+                "'h', '0.1.0', 'tester', ?, 'tester', ?)",
+                (doc_id, f"src/{doc_id}.md", now, now),
+            )
+        # Seed only one edge to start; no duplicates means CREATE UNIQUE
+        # INDEX should succeed on first try.
+        conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_type, "
+            "created_at) VALUES (?, ?, ?, ?, ?)",
+            ("edge-1", "aaaa1111_a", "bbbb2222_b", "references", now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = GraphStore(db_path)
+    await store.initialize(migrate=True)
+    try:
+        assert _has_index(db_path, "edges", "idx_edges_uniq_natural_key")
+    finally:
+        await store.close()

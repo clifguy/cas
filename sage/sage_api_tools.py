@@ -654,6 +654,15 @@ def register_sage_tools(
         - ``self_referential_edge``: source and target resolve to the
           same document.
 
+        Idempotency (T-0079): the edges table carries a UNIQUE
+        constraint on ``(source_id, target_id, edge_type)``. Re-calling
+        ``sage_link`` with the same triple does NOT error; it returns
+        the pre-existing edge with ``created=false`` and a populated
+        ``existing_rationale``. The caller's ``rationale``/``notes`` on
+        the duplicate call are discarded -- the first-write rationale
+        is preserved as canonical provenance. To intentionally replace
+        an edge, ``sage_unlink`` it first.
+
         Args:
             vault_id: Target vault identifier.
             source_id: Source document identifier.
@@ -696,8 +705,18 @@ def register_sage_tools(
                 notes=notes,
                 rationale=rationale,
             )
-            edge = await v.graph_ops_service.link(request)
-            return serialize(edge)
+            # T-0079: link_idempotent returns (edge, created). On a
+            # duplicate natural-key triple the existing edge is
+            # returned with created=False and the caller's rationale
+            # is discarded. The MCP response surfaces both signals so
+            # callers can detect drift and inspect the canonical
+            # rationale.
+            edge, created = await v.graph_ops_service.link_idempotent(request)
+            payload = serialize(edge)
+            payload["created"] = created
+            if not created:
+                payload["existing_rationale"] = edge.rationale
+            return payload
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

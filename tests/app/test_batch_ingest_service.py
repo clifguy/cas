@@ -153,9 +153,13 @@ def _make_services(
 
     services.ingestion_service.ingest = AsyncMock(side_effect=_ingest)
 
-    # Graph ops
+    # Graph ops (T-0079: edge_inference now calls link_idempotent and
+    # passes on_conflict to insert_staging_edge; both return tuples).
+    from unittest.mock import MagicMock as _MM
+
     services.graph_ops_service.link = AsyncMock()
-    services.graph_store.insert_staging_edge = AsyncMock()
+    services.graph_ops_service.link_idempotent = AsyncMock(return_value=(_MM(), True))
+    services.graph_store.insert_staging_edge = AsyncMock(return_value=(_MM(), True))
     services.graph_store.get_document = AsyncMock(return_value=None)
     services.graph_store.update_document = AsyncMock()
 
@@ -1021,11 +1025,13 @@ class _MockGraphState:
         for k, v in fields.items():
             setattr(d, k, v)
 
-    async def insert_staging_edge(self, staging) -> None:
-        # Tracking only; no real staging in unit tests.
+    async def insert_staging_edge(self, staging, on_conflict: str = "raise") -> tuple:
+        # Tracking only; no real staging in unit tests. Returns the
+        # T-0079 tuple shape: (edge, created).
         if not hasattr(self, "staged_edges"):
             self.staged_edges = []
         self.staged_edges.append(staging)
+        return staging, True
 
     async def link(self, request: LinkRequest) -> dict:
         self.added_link_requests.append(request)
@@ -1039,6 +1045,14 @@ class _MockGraphState:
             rationale=request.rationale,
         )
         return {"edge_id": edge_id}
+
+    async def link_idempotent(self, request: LinkRequest) -> tuple:
+        # T-0079: returns (edge, created). The mock semantics here are
+        # always-created because the test scenarios never replay the
+        # same natural-key triple.
+        edge_dict = await self.link(request)
+        edge_id = edge_dict["edge_id"]
+        return self.edges[edge_id], True
 
     async def unlink(self, edge_id: str) -> UnlinkResponse:
         self.removed_edge_ids.append(edge_id)
@@ -1066,6 +1080,7 @@ def _make_chain_services(
     services.graph_store.update_document = AsyncMock(side_effect=state.update_document)
     services.graph_store.insert_staging_edge = AsyncMock(side_effect=state.insert_staging_edge)
     services.graph_ops_service.link = AsyncMock(side_effect=state.link)
+    services.graph_ops_service.link_idempotent = AsyncMock(side_effect=state.link_idempotent)
     services.graph_ops_service.unlink = AsyncMock(side_effect=state.unlink)
 
     # Standard ingestion mock: each new file becomes a fresh document.

@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Literal, TypeVar
 
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
@@ -30,12 +30,44 @@ from sage.storage.migrations import (
     MIGRATION_PLAN,
     POST_MIGRATION_DDL,
     TABLES,
+    DuplicateEdgesPresentError,
     SchemaMigrationRequired,
     pending_backfills,
     pending_migrations,
 )
 
 T = TypeVar("T")
+
+# T-0079: identifies the unique-index IntegrityError raised when a caller
+# attempts to insert an edge or staging edge whose natural-key triple
+# already exists. SQLite's IntegrityError message embeds the index name;
+# matching on the name keeps this distinct from other integrity failures
+# (FK violations, NOT NULL violations).
+_EDGES_UNIQ_INDEX = "idx_edges_uniq_natural_key"
+_STAGING_EDGES_UNIQ_INDEX = "idx_staging_edges_uniq_natural_key"
+
+
+def _is_unique_violation(exc: sqlite3.IntegrityError, index_name: str) -> bool:
+    """Return True if exc is the unique-index violation on `index_name`.
+
+    SQLite renders UNIQUE constraint failures as
+    ``"UNIQUE constraint failed: <table>.<col1>, <table>.<col2>, ..."``
+    and includes the index name only via the column list. Match on the
+    presence of "UNIQUE" plus the three natural-key columns to be robust
+    against SQLite version differences in the message format.
+    """
+    msg = str(exc)
+    if "UNIQUE constraint failed" not in msg:
+        return False
+    # Both unique indexes are on (source_id, target_id, edge_type); the
+    # caller chooses which index to match against by table.
+    table = "edges" if index_name == _EDGES_UNIQ_INDEX else "staging_edges"
+    return (
+        f"{table}.source_id" in msg and f"{table}.target_id" in msg and f"{table}.edge_type" in msg
+    )
+
+
+OnConflict = Literal["raise", "noop"]
 
 # Defense-in-depth gate for tier3 keys that get interpolated into the
 # JSON path of a json_extract() expression. The service layer validates
@@ -153,9 +185,30 @@ class GraphStore:
         #    indexes. Idempotent: apply() functions tolerate re-running.
         for bf in pending_bf:
             bf.apply(conn)
-        # 4. Create indexes (may reference columns added by migrations)
+        # 4. Create indexes (may reference columns added by migrations).
+        #    T-0079: the unique natural-key indexes in POST_MIGRATION_DDL
+        #    raise IntegrityError when the underlying table contains
+        #    duplicates. Translate that into DuplicateEdgesPresentError
+        #    with a remediation pointer to scripts/dedup_edges.py.
         for ddl in POST_MIGRATION_DDL:
-            conn.execute(ddl)
+            try:
+                conn.execute(ddl)
+            except sqlite3.IntegrityError as exc:
+                conn.rollback()
+                if "idx_edges_uniq_natural_key" in ddl:
+                    table = "edges"
+                elif "idx_staging_edges_uniq_natural_key" in ddl:
+                    table = "staging_edges"
+                else:
+                    raise
+                raise DuplicateEdgesPresentError(
+                    f"Cannot create UNIQUE index on {table}: the table "
+                    f"contains duplicate rows on the natural-key triple "
+                    f"(source_id, target_id, edge_type). Run "
+                    f"`python -m scripts.dedup_edges --vault <id> --apply` "
+                    f"to remove duplicates, then re-initialize. "
+                    f"Underlying error: {exc}"
+                ) from exc
         conn.commit()
 
     async def close(self) -> None:
@@ -533,17 +586,52 @@ class GraphStore:
     # Edge operations
     # ------------------------------------------------------------------
 
-    async def insert_edge(self, edge: Edge) -> None:
-        await self._run(self._insert_edge_sync, edge)
+    async def insert_edge(self, edge: Edge, on_conflict: OnConflict = "raise") -> tuple[Edge, bool]:
+        """Insert an edge. Return ``(stored_edge, created)``.
 
-    def _insert_edge_sync(self, edge: Edge) -> None:
+        Under ``on_conflict="raise"`` (default), a duplicate natural-key
+        triple raises ``sqlite3.IntegrityError`` and the caller is
+        expected to handle it (or, for atomic operations, allow the
+        transaction to roll back).
+
+        Under ``on_conflict="noop"`` (T-0079), a duplicate is converted
+        to a no-op: the pre-existing edge is loaded and returned with
+        ``created=False``; the new edge payload (including its rationale)
+        is discarded. Idempotency rationale: the existing rationale is
+        provenance; overwriting it on a re-insert destroys audit trail.
+        """
+        return await self._run(self._insert_edge_sync, edge, on_conflict)
+
+    def _insert_edge_sync(self, edge: Edge, on_conflict: OnConflict) -> tuple[Edge, bool]:
         conn = self._get_connection()
-        self._exec_insert_edge(conn, edge)
-        conn.commit()
+        try:
+            self._exec_insert_edge(conn, edge)
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            if on_conflict == "noop" and _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                conn.rollback()
+                existing = self._find_edge_by_natural_key_sync(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                )
+                if existing is None:
+                    # Race or matcher false-positive: the row vanished
+                    # between INSERT and lookup. Surface the original.
+                    raise
+                return existing, False
+            raise
+        return edge, True
 
     def _exec_insert_edge(self, conn: sqlite3.Connection, edge: Edge) -> None:
         """Issue the INSERT for an edge on the given connection without
         committing. Caller handles commit/rollback.
+
+        T-0079: callers using compound atomic operations
+        (``supersede_atomic``, ``insert_with_supersede_atomic``,
+        ``merge_atomic``) must NOT swallow ``sqlite3.IntegrityError``
+        from this path. The transaction must roll back so the
+        predecessor update is not committed without the corresponding
+        edge insert. Single-shot inserters (``insert_edge``,
+        ``insert_staging_edge``) handle the noop translation themselves.
         """
         conn.execute(
             """INSERT INTO edges (
@@ -568,6 +656,41 @@ class GraphStore:
                 edge.rationale,
             ),
         )
+
+    async def find_edge_by_natural_key(
+        self, source_id: str, target_id: str | None, edge_type: str
+    ) -> Edge | None:
+        """Async wrapper around the natural-key edge lookup."""
+        return await self._run(self._find_edge_by_natural_key_sync, source_id, target_id, edge_type)
+
+    def _find_edge_by_natural_key_sync(
+        self, source_id: str, target_id: str | None, edge_type: str
+    ) -> Edge | None:
+        """Return the edge with the given natural-key triple, or None.
+
+        Used by the ``on_conflict="noop"`` path after a unique-index
+        IntegrityError to hydrate the pre-existing edge for the caller.
+        ``target_id=None`` is treated literally (matches NULL); under
+        the T-0079 constraint with SQLite NULL-distinct semantics this
+        path is unreachable from the noop branch (NULLs never collide),
+        but the helper handles it for completeness.
+        """
+        conn = self._get_connection()
+        if target_id is None:
+            row = conn.execute(
+                "SELECT * FROM edges "
+                "WHERE source_id = ? AND target_id IS NULL AND edge_type = ? "
+                "LIMIT 1",
+                (source_id, edge_type),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM edges "
+                "WHERE source_id = ? AND target_id = ? AND edge_type = ? "
+                "LIMIT 1",
+                (source_id, target_id, edge_type),
+            ).fetchone()
+        return self._row_to_edge(row) if row else None
 
     # ------------------------------------------------------------------
     # Compound atomic operations (BH-135, BH-136)
@@ -1033,27 +1156,66 @@ class GraphStore:
             return None
         return self._row_to_staging_edge(row)
 
-    async def insert_staging_edge(self, edge: StagingEdge) -> None:
-        await self._run(self._insert_staging_edge_sync, edge)
+    async def insert_staging_edge(
+        self, edge: StagingEdge, on_conflict: OnConflict = "raise"
+    ) -> tuple[StagingEdge, bool]:
+        """Insert a staging edge. Return ``(stored_edge, created)``.
 
-    def _insert_staging_edge_sync(self, edge: StagingEdge) -> None:
+        Under ``on_conflict="raise"`` (default), a duplicate natural-key
+        triple raises ``sqlite3.IntegrityError``.
+
+        Under ``on_conflict="noop"`` (T-0079), a duplicate is converted
+        to a no-op: the pre-existing staging edge is loaded and returned
+        with ``created=False``. Used by edge_inference to make
+        auto-inferred staging edges idempotent under re-ingest.
+        """
+        return await self._run(self._insert_staging_edge_sync, edge, on_conflict)
+
+    def _insert_staging_edge_sync(
+        self, edge: StagingEdge, on_conflict: OnConflict
+    ) -> tuple[StagingEdge, bool]:
         conn = self._get_connection()
-        conn.execute(
-            """INSERT INTO staging_edges
-            (id, source_id, target_id, edge_type, inference_evidence,
-             confidence_tier, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                edge.id,
-                edge.source_id,
-                edge.target_id,
-                edge.edge_type.value,
-                edge.inference_evidence,
-                edge.confidence_tier,
-                edge.created_at.isoformat(),
-            ),
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                """INSERT INTO staging_edges
+                (id, source_id, target_id, edge_type, inference_evidence,
+                 confidence_tier, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    edge.id,
+                    edge.source_id,
+                    edge.target_id,
+                    edge.edge_type.value,
+                    edge.inference_evidence,
+                    edge.confidence_tier,
+                    edge.created_at.isoformat(),
+                ),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            if on_conflict == "noop" and _is_unique_violation(exc, _STAGING_EDGES_UNIQ_INDEX):
+                conn.rollback()
+                existing = self._find_staging_edge_by_natural_key_sync(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                )
+                if existing is None:
+                    raise
+                return existing, False
+            raise
+        return edge, True
+
+    def _find_staging_edge_by_natural_key_sync(
+        self, source_id: str, target_id: str, edge_type: str
+    ) -> StagingEdge | None:
+        """Return the staging edge with the given natural-key triple, or None."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT * FROM staging_edges "
+            "WHERE source_id = ? AND target_id = ? AND edge_type = ? "
+            "LIMIT 1",
+            (source_id, target_id, edge_type),
+        ).fetchone()
+        return self._row_to_staging_edge(row) if row else None
 
     async def delete_staging_edge(self, edge_id: str) -> bool:
         """Delete a staging edge. Returns True if it existed."""

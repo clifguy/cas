@@ -135,11 +135,20 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, gra
 
 
 # ---------------------------------------------------------------------------
-# BH-031: Duplicate edges are permitted
+# BH-031 (T-0079 update): Duplicate edges are now blocked
 # ---------------------------------------------------------------------------
+# Pre-T-0079, BH-031 asserted that re-calling `link` with the same
+# natural-key triple produced a second edge with a fresh id. That is
+# now an invariant violation; the UNIQUE constraint on
+# (source_id, target_id, edge_type) prevents duplicate rows. The
+# idempotent contract is exposed via `link_idempotent` (returns the
+# pre-existing edge with `created=False`); non-idempotent `link`
+# propagates `sqlite3.IntegrityError`.
 
 
-async def test_bh_031_duplicate_edges_permitted(graph_store, graph_ops_service):
+async def test_bh_031_duplicate_edges_now_blocked(graph_store, graph_ops_service):
+    import sqlite3 as _sqlite3
+
     doc_a = _make_doc(_id("doc_a"))
     doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
@@ -155,22 +164,22 @@ async def test_bh_031_duplicate_edges_permitted(graph_store, graph_ops_service):
             rationale="First rationale",
         )
     )
-    edge2 = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
-            rationale="Updated understanding",
+    with pytest.raises(_sqlite3.IntegrityError):
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.REFERENCES,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_b"),
+                rationale="Updated understanding",
+            )
         )
-    )
 
-    assert edge1.id != edge2.id
-
-    # Both edges exist in the store
+    # Only the first edge survives.
     edges = await graph_store.get_edges_by_source(_id("doc_a"), "references")
-    assert len(edges) == 2
+    assert len(edges) == 1
+    assert edges[0].id == edge1.id
 
 
 # ---------------------------------------------------------------------------
@@ -299,28 +308,48 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, extended_graph_ops_ser
 
 
 # ---------------------------------------------------------------------------
-# BH-037: Traversal deduplicates by document with edge_counts map
+# BH-037: Traversal collapses multi-path hits to one node per target
 # ---------------------------------------------------------------------------
+#
+# Under T-0079, the UNIQUE (source_id, target_id, edge_type) constraint
+# prevents storage-level duplicates, so the original BH-037 scenario
+# (three duplicate edges between the same pair) is no longer
+# constructable. The multi-path collapse responsibility of
+# `_build_traversal_response` remains load-bearing: the SQL CTE can
+# surface the same target document via different paths at different
+# depths, and the dedup must still produce one TraversalNode per
+# target with the minimum depth and a distinct-edge count per
+# edge_type. A diamond topology exercises the surviving behavior.
 
 
-async def test_bh_037_traversal_deduplicates_with_edge_counts(graph_store, graph_ops_service):
-    doc_a = _make_doc(_id("doc_a"))
-    doc_b = _make_doc(_id("doc_b"))
-    await graph_store.insert_document(doc_a)
-    await graph_store.insert_document(doc_b)
+async def test_bh_037_traversal_collapses_multipath_hits(graph_store, graph_ops_service):
+    # Diamond: A -> B, A -> C, B -> D, C -> D.
+    # Traversing from A with depth=2 reaches D via two paths (A->B->D
+    # and A->C->D). Expected: one node for D with depth=2 and
+    # edge_counts={"references": 2} (the two distinct B->D and C->D
+    # edges, not the A->B and A->C ones, which appear under their own
+    # target docs in result.nodes).
+    for name in ("doc_a", "doc_b", "doc_c", "doc_d"):
+        await graph_store.insert_document(_make_doc(_id(name)))
 
-    base_time = datetime.now(timezone.utc) - timedelta(hours=3)
-    for i in range(3):
+    base_time = datetime.now(timezone.utc) - timedelta(hours=4)
+    edge_inputs = [
+        ("edge_ab", "doc_a", "doc_b"),
+        ("edge_ac", "doc_a", "doc_c"),
+        ("edge_bd", "doc_b", "doc_d"),
+        ("edge_cd", "doc_c", "doc_d"),
+    ]
+    for i, (label, src, tgt) in enumerate(edge_inputs):
         edge = Edge(
-            id=_eid(f"edge_ref_{i}"),
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
+            id=_eid(label),
+            source_id=_id(src),
+            target_id=_id(tgt),
             edge_type=EdgeType.REFERENCES,
             resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
+            source_valid_from_version=_id(src),
+            target_valid_from_version=_id(tgt),
             created_at=base_time + timedelta(hours=i),
-            rationale=f"Rationale {i}",
+            rationale=f"Rationale {label}",
         )
         await graph_store.insert_edge(edge)
 
@@ -328,17 +357,253 @@ async def test_bh_037_traversal_deduplicates_with_edge_counts(graph_store, graph
         TraverseRequest(
             start_id=_id("doc_a"),
             edge_type=EdgeType.REFERENCES,
-            depth=1,
+            depth=2,
         )
     )
 
-    assert len(result.nodes) == 1
-    node = result.nodes[0]
-    assert node.document.id == _id("doc_b")
-    assert node.edge_counts == {"references": 3}
-    # Most recent edge (edge_ref_2) should be shown
-    assert node.edge.id == _eid("edge_ref_2")
-    assert node.edge.rationale == "Rationale 2"
+    nodes_by_id = {node.document.id: node for node in result.nodes}
+    assert _id("doc_b") in nodes_by_id
+    assert _id("doc_c") in nodes_by_id
+    assert _id("doc_d") in nodes_by_id
+
+    # D is reached at depth=2 via two paths; collapse yields one node.
+    d_node = nodes_by_id[_id("doc_d")]
+    assert d_node.depth == 2
+    assert d_node.edge_counts == {"references": 2}
+
+
+# ---------------------------------------------------------------------------
+# T-0079: insert_edge raises on duplicate natural-key triple
+# ---------------------------------------------------------------------------
+
+
+async def test_t0079_insert_edge_raises_on_duplicate(graph_store):
+    import sqlite3 as _sqlite3
+
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    first = Edge(
+        id=_eid("edge_first"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=datetime.now(timezone.utc),
+        rationale="First",
+    )
+    await graph_store.insert_edge(first)
+
+    dup = Edge(
+        id=_eid("edge_dup"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=datetime.now(timezone.utc),
+        rationale="Second",
+    )
+    with pytest.raises(_sqlite3.IntegrityError):
+        await graph_store.insert_edge(dup, on_conflict="raise")
+
+
+async def test_t0079_insert_edge_noop_returns_existing(graph_store):
+    """on_conflict="noop": duplicate insert returns existing edge."""
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    first = Edge(
+        id=_eid("edge_first"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=datetime.now(timezone.utc),
+        rationale="First",
+    )
+    stored_first, created_first = await graph_store.insert_edge(first)
+    assert created_first is True
+    assert stored_first.id == first.id
+
+    dup = Edge(
+        id=_eid("edge_dup"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=datetime.now(timezone.utc),
+        rationale="Second",
+    )
+    stored_dup, created_dup = await graph_store.insert_edge(dup, on_conflict="noop")
+    # No-op: the dup payload was discarded; the original is returned.
+    assert created_dup is False
+    assert stored_dup.id == first.id
+    assert stored_dup.rationale == "First"
+
+
+async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_service):
+    """graph_ops.link_idempotent: second call returns the existing edge."""
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    edge_1, created_1 = await graph_ops_service.link_idempotent(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            rationale="initial rationale",
+        )
+    )
+    assert created_1 is True
+    assert edge_1.rationale == "initial rationale"
+
+    edge_2, created_2 = await graph_ops_service.link_idempotent(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            rationale="DIFFERENT rationale on second call",
+        )
+    )
+    assert created_2 is False
+    # The pre-existing edge is returned; rationale is preserved.
+    assert edge_2.id == edge_1.id
+    assert edge_2.rationale == "initial rationale"
+
+
+async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_service):
+    """graph_ops.link (non-idempotent) propagates the IntegrityError."""
+    import sqlite3 as _sqlite3
+
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            rationale="first",
+        )
+    )
+    with pytest.raises(_sqlite3.IntegrityError):
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.REFERENCES,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_b"),
+                rationale="second",
+            )
+        )
+
+
+async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, graph_ops_service):
+    """SQLite UNIQUE treats NULL as distinct: multiple retracts edges
+    on the same source with target_id=NULL stay legal per ADR-017.
+    The retracted_edge_id differs across retract instances.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+    await graph_store.insert_document(_make_doc(_id("doc_c")))
+
+    # Two distinct covers edges that can each be retracted.
+    covers_b = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.COVERS,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+        )
+    )
+    covers_c = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_c"),
+            edge_type=EdgeType.COVERS,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_c"),
+        )
+    )
+
+    # Retract both: both retracts edges share source_id=doc_a,
+    # target_id=NULL, edge_type='retracts'. Under SQLite NULL-distinct
+    # semantics this is legal.
+    retract_b = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            source_valid_from_version=_id("doc_a"),
+            retracted_edge_id=covers_b.id,
+        )
+    )
+    retract_c = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            source_valid_from_version=_id("doc_a"),
+            retracted_edge_id=covers_c.id,
+        )
+    )
+    assert retract_b.id != retract_c.id
+
+
+async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
+    """T-0079 contract: the legacy BH-037 setup (three duplicate edges
+    between the same pair via direct INSERT) is now blocked at the
+    storage layer. This test pins the post-T-0079 invariant.
+    """
+    import sqlite3 as _sqlite3
+
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    base_time = datetime.now(timezone.utc) - timedelta(hours=3)
+    first = Edge(
+        id=_eid("edge_first"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=base_time,
+        rationale="first",
+    )
+    await graph_store.insert_edge(first)
+
+    for i in range(1, 3):
+        dup = Edge(
+            id=_eid(f"edge_dup_{i}"),
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.REFERENCES,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            created_at=base_time + timedelta(hours=i),
+            rationale=f"rationale {i}",
+        )
+        with pytest.raises(_sqlite3.IntegrityError):
+            await graph_store.insert_edge(dup)
 
 
 # ---------------------------------------------------------------------------
@@ -657,36 +922,37 @@ async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
 
 
 async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
+    # T-0079 reshape: a single (source, target, edge_type) row per
+    # natural-key triple is enforced. The "mixed types" invariant is
+    # preserved by attaching one of each edge_type between doc_a and
+    # doc_b; the edge_counts map should record both keys.
     doc_a = _make_doc(_id("doc_a"))
     doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     now = datetime.now(timezone.utc)
-    # 2 supersedes + 3 covers edges from doc_a to doc_b
-    for i in range(2):
-        await graph_store.insert_edge(
-            Edge(
-                id=_eid(f"edge_sup_{i}"),
-                source_id=_id("doc_a"),
-                target_id=_id("doc_b"),
-                edge_type=EdgeType.SUPERSEDES,
-                created_at=now + timedelta(seconds=i),
-            )
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_sup"),
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=now,
         )
-    for i in range(3):
-        await graph_store.insert_edge(
-            Edge(
-                id=_eid(f"edge_cov_{i}"),
-                source_id=_id("doc_a"),
-                target_id=_id("doc_b"),
-                edge_type=EdgeType.COVERS,
-                resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-                source_valid_from_version=_id("doc_a"),
-                target_valid_from_version=_id("doc_b"),
-                created_at=now + timedelta(seconds=i),
-            )
+    )
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_cov"),
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.COVERS,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            created_at=now,
         )
+    )
 
     result = await graph_ops_service.traverse(
         TraverseRequest(
@@ -698,7 +964,7 @@ async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
 
     assert len(result.nodes) == 1
     node = result.nodes[0]
-    assert node.edge_counts == {"supersedes": 2, "covers": 3}
+    assert node.edge_counts == {"supersedes": 1, "covers": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -743,32 +1009,36 @@ async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
 
 
 async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
+    # T-0079 reshape: one edge per natural-key triple. The invariant
+    # under test (edge_type filter excludes other types from counts)
+    # holds with single-row attachments.
     doc_a = _make_doc(_id("doc_a"))
     doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
     now = datetime.now(timezone.utc)
-    for i in range(2):
-        await graph_store.insert_edge(
-            Edge(
-                id=_eid(f"edge_sup_{i}"),
-                source_id=_id("doc_a"),
-                target_id=_id("doc_b"),
-                edge_type=EdgeType.SUPERSEDES,
-                created_at=now + timedelta(seconds=i),
-            )
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_sup"),
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.SUPERSEDES,
+            created_at=now,
         )
-    for i in range(3):
-        await graph_store.insert_edge(
-            Edge(
-                id=_eid(f"edge_cov_{i}"),
-                source_id=_id("doc_a"),
-                target_id=_id("doc_b"),
-                edge_type=EdgeType.COVERS,
-                created_at=now + timedelta(seconds=i),
-            )
+    )
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_cov"),
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.COVERS,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            created_at=now,
         )
+    )
 
     result = await graph_ops_service.traverse(
         TraverseRequest(
@@ -780,7 +1050,7 @@ async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
     )
 
     assert len(result.nodes) == 1
-    assert result.nodes[0].edge_counts == {"supersedes": 2}
+    assert result.nodes[0].edge_counts == {"supersedes": 1}
     assert "covers" not in result.nodes[0].edge_counts
 
 
@@ -790,11 +1060,14 @@ async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
 
 
 async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
+    # T-0079 reshape: at most one (source, target, edge_type) per
+    # natural-key triple. Multi-depth invariant is preserved with
+    # one of each edge_type per hop.
     for name in ["doc_a", "doc_b", "doc_c"]:
         await graph_store.insert_document(_make_doc(_id(name)))
 
     now = datetime.now(timezone.utc)
-    # doc_a -> doc_b: 1 supersedes + 2 covers
+    # doc_a -> doc_b: one supersedes + one covers
     await graph_store.insert_edge(
         Edge(
             id=_eid("edge_sup_ab"),
@@ -804,34 +1077,32 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
             created_at=now,
         )
     )
-    for i in range(2):
-        await graph_store.insert_edge(
-            Edge(
-                id=_eid(f"edge_cov_ab_{i}"),
-                source_id=_id("doc_a"),
-                target_id=_id("doc_b"),
-                edge_type=EdgeType.COVERS,
-                resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-                source_valid_from_version=_id("doc_a"),
-                target_valid_from_version=_id("doc_b"),
-                created_at=now + timedelta(seconds=i),
-            )
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_cov_ab"),
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.COVERS,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version=_id("doc_a"),
+            target_valid_from_version=_id("doc_b"),
+            created_at=now,
         )
+    )
 
-    # doc_b -> doc_c: 3 references
-    for i in range(3):
-        await graph_store.insert_edge(
-            Edge(
-                id=_eid(f"edge_ref_bc_{i}"),
-                source_id=_id("doc_b"),
-                target_id=_id("doc_c"),
-                edge_type=EdgeType.REFERENCES,
-                resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
-                source_valid_from_version=_id("doc_b"),
-                target_valid_from_version=_id("doc_c"),
-                created_at=now + timedelta(seconds=i),
-            )
+    # doc_b -> doc_c: one references edge.
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_ref_bc"),
+            source_id=_id("doc_b"),
+            target_id=_id("doc_c"),
+            edge_type=EdgeType.REFERENCES,
+            resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+            source_valid_from_version=_id("doc_b"),
+            target_valid_from_version=_id("doc_c"),
+            created_at=now,
         )
+    )
 
     result = await graph_ops_service.traverse(
         TraverseRequest(
@@ -842,8 +1113,8 @@ async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
     )
 
     nodes_by_id = {n.document.id: n for n in result.nodes}
-    assert nodes_by_id[_id("doc_b")].edge_counts == {"supersedes": 1, "covers": 2}
-    assert nodes_by_id[_id("doc_c")].edge_counts == {"references": 3}
+    assert nodes_by_id[_id("doc_b")].edge_counts == {"supersedes": 1, "covers": 1}
+    assert nodes_by_id[_id("doc_c")].edge_counts == {"references": 1}
 
 
 # ---------------------------------------------------------------------------

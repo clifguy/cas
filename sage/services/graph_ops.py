@@ -6,6 +6,7 @@ Covers behavioral tests BH-021, BH-023, BH-031 through BH-037.
 import asyncio
 import json
 import logging
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 
@@ -171,6 +172,38 @@ class GraphOpsService:
         the row, the anchor / retracted_edge_id field shape must match
         the policy, and any chain-scoped anchor must sit in the
         supersedes lineage of its endpoint document.
+
+        Raises ``sqlite3.IntegrityError`` if an edge with the same
+        natural-key triple (source_id, target_id, edge_type) already
+        exists (T-0079 unique constraint). For idempotent semantics
+        (no-op on duplicate, return existing edge), use
+        ``link_idempotent``.
+        """
+        edge, _ = await self._link_impl(request, on_conflict="raise")
+        return edge
+
+    async def link_idempotent(self, request: LinkRequest) -> tuple[Edge, bool]:
+        """Idempotent variant of ``link``. Returns ``(edge, created)``.
+
+        Under T-0079, the edges table carries a UNIQUE constraint on
+        ``(source_id, target_id, edge_type)``. ``link_idempotent`` swallows
+        the duplicate-key error and returns the pre-existing edge with
+        ``created=False``. The caller's rationale and notes are discarded
+        on a no-op; existing provenance is preserved (per the SAGE
+        single-source-of-truth principle: the first rationale is canonical).
+
+        Used by the ``sage_link`` MCP tool (which signals ``created`` to
+        callers) and by ``edge_inference.resolve_and_execute`` (which
+        relies on idempotency for re-ingest of auto-inferred edges).
+        """
+        return await self._link_impl(request, on_conflict="noop")
+
+    async def _link_impl(self, request: LinkRequest, *, on_conflict: str) -> tuple[Edge, bool]:
+        """Shared implementation used by ``link`` and ``link_idempotent``.
+
+        ``on_conflict="raise"`` lets the storage-layer IntegrityError
+        propagate. ``on_conflict="noop"`` translates it into a return of
+        the pre-existing edge with ``created=False``.
         """
         policy = self._edge_type_registry.policy_for(request.edge_type)
 
@@ -232,15 +265,33 @@ class GraphOpsService:
             )
 
             if request.edge_type == EdgeType.MERGED_FROM:
-                await self._store.merge_atomic(
-                    edge,
-                    list(ctx.tombstone_candidates),
-                    request.target_id,
-                )
-                return edge
+                # merge_atomic is transaction-critical (couples the
+                # merged_from insert with tombstone updates). The
+                # T-0079 storage layer does NOT noop inside the
+                # atomic op; the duplicate-key path rolls back the
+                # whole transaction and we recover here by looking
+                # up the existing merged_from edge to honor the
+                # idempotency contract.
+                try:
+                    await self._store.merge_atomic(
+                        edge,
+                        list(ctx.tombstone_candidates),
+                        request.target_id,
+                    )
+                except sqlite3.IntegrityError:
+                    if on_conflict == "noop":
+                        existing = await self._store.find_edge_by_natural_key(
+                            request.source_id,
+                            request.target_id,
+                            request.edge_type.value,
+                        )
+                        if existing is not None:
+                            return existing, False
+                    raise
+                return edge, True
 
-            await self._store.insert_edge(edge)
-            return edge
+            stored_edge, created = await self._store.insert_edge(edge, on_conflict=on_conflict)
+            return stored_edge, created
 
     def _validate_link_request_shape(self, request: LinkRequest, policy: ResolutionPolicy) -> None:
         """Enforce the policy-keyed field-shape invariant.
@@ -561,51 +612,66 @@ class GraphOpsService:
         # query at the merge point still surfaces the edge).
         filtered = await self._apply_tombstones(filtered, request.start_id, cache, recorder)
 
-        # Deduplicate: group by doc_id, pick most recent edge, min depth
+        # T-0079: collapse multi-path traversal hits by doc_id. With the
+        # UNIQUE (source_id, target_id, edge_type) constraint enforced
+        # at the storage layer, there is at most one edge per
+        # natural-key triple, so the historical "pick most recent edge"
+        # storage-dedup step is vacuous. What remains is the multi-path
+        # collapse: the SQL CTE may surface the same target doc reached
+        # via different paths at different depths, and we still need
+        # one node per target with min(depth) plus distinct-edge counts
+        # per edge_type.
         grouped: dict[str, list[dict]] = {}
         for row in filtered:
             grouped.setdefault(row["doc_id"], []).append(row)
 
         nodes: list[TraversalNode] = []
         for doc_id, rows in grouped.items():
-            # Most recent edge by created_at
-            best = max(rows, key=lambda r: r["edge_created_at"])
+            # Any row works for the document/edge fields; rows that
+            # share a doc_id with multiple distinct edge_types each
+            # surface different edges, but the existing TraversalNode
+            # shape carries one representative edge plus the edge_counts
+            # map. Pick the first row deterministically; the counts
+            # below capture the full multiplicity.
+            representative = rows[0]
             min_depth = min(r["depth"] for r in rows)
 
             doc_summary = DocumentSummary(
                 id=doc_id,
-                title=best["d_title"],
-                lifecycle_status=best["d_lifecycle_status"],
-                source_type=SourceType(best["d_source_type"]),
-                source_path=best.get("d_source_path"),
-                version_label=best["d_version_label"],
-                project=best["d_project"],
-                doc_type=best["d_doc_type"],
-                tags=json.loads(best["d_tags"]) if best["d_tags"] else [],
+                title=representative["d_title"],
+                lifecycle_status=representative["d_lifecycle_status"],
+                source_type=SourceType(representative["d_source_type"]),
+                source_path=representative.get("d_source_path"),
+                version_label=representative["d_version_label"],
+                project=representative["d_project"],
+                doc_type=representative["d_doc_type"],
+                tags=(json.loads(representative["d_tags"]) if representative["d_tags"] else []),
                 document_date=(
-                    _parse_doc_date(best["d_document_date"])
-                    if best.get("d_document_date")
+                    _parse_doc_date(representative["d_document_date"])
+                    if representative.get("d_document_date")
                     else None
                 ),
                 source_modified_at=(
-                    datetime.fromisoformat(best["d_source_modified_at"])
-                    if best.get("d_source_modified_at")
+                    datetime.fromisoformat(representative["d_source_modified_at"])
+                    if representative.get("d_source_modified_at")
                     else None
                 ),
             )
 
             edge = Edge(
-                id=best["edge_id"],
-                source_id=best["source_id"],
-                target_id=best["target_id"],
-                edge_type=EdgeType(best["edge_type"]),
-                created_at=datetime.fromisoformat(best["edge_created_at"]),
-                notes=best["notes"],
-                rationale=best["rationale"],
+                id=representative["edge_id"],
+                source_id=representative["source_id"],
+                target_id=representative["target_id"],
+                edge_type=EdgeType(representative["edge_type"]),
+                created_at=datetime.fromisoformat(representative["edge_created_at"]),
+                notes=representative["notes"],
+                rationale=representative["rationale"],
             )
 
             # Per-type edge counts (deduplicated by edge ID to avoid
-            # inflation from multi-path traversal at different depths)
+            # inflation from multi-path traversal at different depths).
+            # Different edge_types between the same pair produce distinct
+            # rows and so must be tallied separately.
             seen_edges: dict[str, set[str]] = {}
             for r in rows:
                 et = r["edge_type"]

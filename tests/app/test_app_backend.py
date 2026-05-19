@@ -906,15 +906,21 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link(self, request):
+            async def link_idempotent(self, request):
                 self.linked.append(request)
+                # Stub returns a placeholder edge and created=True so
+                # resolve_and_execute counts it under edges_created.
+                from unittest.mock import MagicMock
+
+                return MagicMock(), True
 
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
 
-            async def insert_staging_edge(self, edge):
+            async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
+                return edge, True
 
         mock_ops = MockGraphOps()
         mock_store = MockGraphStore()
@@ -953,15 +959,19 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link(self, request):
+            async def link_idempotent(self, request):
                 self.linked.append(request)
+                from unittest.mock import MagicMock
+
+                return MagicMock(), True
 
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
 
-            async def insert_staging_edge(self, edge):
+            async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
+                return edge, True
 
         mock_ops = MockGraphOps()
         mock_store = MockGraphStore()
@@ -1002,15 +1012,19 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link(self, request):
+            async def link_idempotent(self, request):
                 self.linked.append(request)
+                from unittest.mock import MagicMock
+
+                return MagicMock(), True
 
         class MockGraphStore:
             def __init__(self):
                 self.staged = []
 
-            async def insert_staging_edge(self, edge):
+            async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
+                return edge, True
 
         mock_ops = MockGraphOps()
         mock_store = MockGraphStore()
@@ -1034,8 +1048,11 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link(self, request):
+            async def link_idempotent(self, request):
                 self.linked.append(request)
+                from unittest.mock import MagicMock
+
+                return MagicMock(), True
 
         class MockGraphStore:
             def __init__(self):
@@ -1045,8 +1062,9 @@ class TestTwoPhaseOrchestration:
                     DOC_V1: {"lifecycle_status": "active"},
                 }
 
-            async def insert_staging_edge(self, edge):
+            async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
+                return edge, True
 
             async def get_document(self, doc_id):
                 from unittest.mock import MagicMock
@@ -1089,8 +1107,11 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link(self, request):
+            async def link_idempotent(self, request):
                 self.linked.append(request)
+                from unittest.mock import MagicMock
+
+                return MagicMock(), True
 
         class MockGraphStore:
             def __init__(self):
@@ -1100,8 +1121,9 @@ class TestTwoPhaseOrchestration:
                     DOC_V2: {"lifecycle_status": "archived"},
                 }
 
-            async def insert_staging_edge(self, edge):
+            async def insert_staging_edge(self, edge, on_conflict="raise"):
                 self.staged.append(edge)
+                return edge, True
 
             async def get_document(self, doc_id):
                 from unittest.mock import MagicMock

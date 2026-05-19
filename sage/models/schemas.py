@@ -351,9 +351,11 @@ class DocumentSummary(BaseModel):
 class Edge(BaseModel):
     id: EdgeIdStr = Field(
         description=(
-            "Unique edge identifier, auto-generated at creation. Required for "
-            "disambiguation when duplicate edges exist between the same "
-            "document pair."
+            "Unique edge identifier, auto-generated at creation. Per T-0079, "
+            "the production edges table enforces UNIQUE (source_id, target_id, "
+            "edge_type), so at most one edge per natural-key triple ever exists; "
+            "the id is still per-edge for retracted_edge_id targeting and for "
+            "audit trails."
         )
     )
     source_id: DocumentIdStr = Field(description="Origin document ID.")
