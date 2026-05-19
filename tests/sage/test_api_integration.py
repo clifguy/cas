@@ -347,6 +347,64 @@ async def test_discover_semantic_missing_query_422(client):
 
 
 # ---------------------------------------------------------------------------
+# Retrieval: discover — ADR-028 error envelope on parameter validation (T-0092)
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_invalid_mode_http(client):
+    """POST /discover with unknown mode returns 400 + ADR-028 envelope, not FastAPI 422."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "bogus"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "invalid_mode"
+    assert body["detail"]["mode"] == "bogus"
+    assert set(body["detail"]["valid_modes"]) == {
+        "semantic",
+        "keyword",
+        "catalog",
+        "deterministic",
+    }
+
+
+async def test_discover_unknown_filter_key_http(client):
+    """POST /discover with unknown filter key returns 400 + unknown_filter_key envelope."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "catalog", "filters": {"tickett_id": "T-0001"}},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "unknown_filter_key"
+    assert body["detail"]["key"] == "tickett_id"
+
+
+async def test_discover_invalid_filter_shape_http(client):
+    """POST /discover with wrong-typed filter value returns 400 + invalid_filter_shape envelope."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "catalog", "filters": {"tags": 42}},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "invalid_filter_shape"
+    assert body["detail"]["field"] == "tags"
+
+
+async def test_discover_semantic_missing_query_http_unchanged(client):
+    """Regression guard: existing missing_query envelope path preserved (still 400)."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "semantic"},
+    )
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "missing_query"
+
+
+# ---------------------------------------------------------------------------
 # Utilities (Slice 4)
 # ---------------------------------------------------------------------------
 

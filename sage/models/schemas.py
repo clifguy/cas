@@ -9,7 +9,8 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 from sage.models.enums import (
     CatalogSortBy,
@@ -1250,6 +1251,13 @@ class RetrievalFilters(BaseModel):
     constraints with other scopes.
     """
 
+    # extra="forbid" (T-0092): unknown filter keys raise rather than silently
+    # drop. The pre-T-0092 default ("ignore") turned a typo like
+    # ``{"tickett_id": "T-0001"}`` into a no-op match-everything filter; the
+    # translator in sage.api.errors now converts the extra_forbidden
+    # ValidationError into a typed UnknownFilterKeyError envelope.
+    model_config = ConfigDict(extra="forbid")
+
     doc_type: str | None = Field(
         default=None, description="Filter by vault-configured document type."
     )
@@ -1412,6 +1420,53 @@ class DiscoverRequest(BaseModel):
             "ascending when sort_by is specified. Ignored by other modes."
         ),
     )
+
+    @model_validator(mode="after")
+    def _reject_mode_parameter_mismatch(self) -> "DiscoverRequest":
+        """Reject parameter/mode combinations that have no defined semantics
+        (T-0092). Required-but-absent cases (e.g., semantic mode without
+        ``query``) are still handled at the service layer via
+        ``MissingFieldError`` to preserve the existing ``missing_*`` typed
+        codes. This validator only catches the inverse case: a parameter is
+        set that is not valid for the chosen mode.
+
+        Raises a ``PydanticCustomError`` carrying ``mode_parameter_mismatch``
+        as the error type plus the structured detail. The translator in
+        ``sage.api.errors`` reconstructs the public-facing
+        ``ModeParameterMismatchError`` SAGEError from the embedded ``ctx``.
+        This indirection respects the "models are a leaf layer"
+        import-linter contract: sage.models cannot import from sage.api.
+        """
+        if self.mode != RetrievalMode.DETERMINISTIC and self.heading_path is not None:
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                (
+                    "Parameter 'heading_path' is not valid for mode "
+                    "'{mode}'. Allowed: deterministic only."
+                ),
+                {
+                    "mode": self.mode.value,
+                    "forbidden_param": "heading_path",
+                    "allowed_modes": [RetrievalMode.DETERMINISTIC.value],
+                },
+            )
+        if self.mode == RetrievalMode.DETERMINISTIC and self.query is not None:
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                (
+                    "Parameter 'query' is not valid for mode 'deterministic'. "
+                    "Allowed: semantic, keyword."
+                ),
+                {
+                    "mode": self.mode.value,
+                    "forbidden_param": "query",
+                    "allowed_modes": [
+                        RetrievalMode.SEMANTIC.value,
+                        RetrievalMode.KEYWORD.value,
+                    ],
+                },
+            )
+        return self
 
 
 class DiscoverHit(BaseModel):

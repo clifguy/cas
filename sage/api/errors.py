@@ -5,7 +5,10 @@ ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from sage.models.schemas import ErrorResponse
 
@@ -263,6 +266,90 @@ class LegacyFormError(SAGEError):
             (f"{field} no longer accepts the {received_type} form. Use the ops object: {example}"),
             400,
             {"field": field, "received_type": received_type, "example": example},
+        )
+
+
+class InvalidModeError(SAGEError):
+    """400: discover mode value is not in the RetrievalMode enum (T-0092)."""
+
+    def __init__(self, mode: str, valid_modes: list[str]) -> None:
+        super().__init__(
+            "invalid_mode",
+            f"Unknown discover mode: {mode!r}. Valid modes: {sorted(valid_modes)!r}",
+            400,
+            {"mode": mode, "valid_modes": sorted(valid_modes)},
+        )
+
+
+class UnknownFilterKeyError(SAGEError):
+    """400: a key in `filters` is not in RetrievalFilters (T-0092).
+
+    Pre-T-0092, unknown filter keys were silently dropped by Pydantic's
+    default extra="ignore" behavior — a typo footgun where a misspelled
+    `tickett_id` matched every row. ``extra="forbid"`` on RetrievalFilters
+    now surfaces these typos as a typed error.
+    """
+
+    def __init__(self, key: str, valid_keys: list[str], example: str) -> None:
+        super().__init__(
+            "unknown_filter_key",
+            (f"Unknown filter key {key!r}. Valid keys: {sorted(valid_keys)!r}. Example: {example}"),
+            400,
+            {"key": key, "valid_keys": sorted(valid_keys), "example": example},
+        )
+
+
+class InvalidFilterShapeError(SAGEError):
+    """400: a value in `filters` has the wrong type for its field (T-0092).
+
+    e.g. ``filters={"tags": 42}`` passed an int where ``list[str] | None``
+    was expected.
+    """
+
+    def __init__(self, field: str, expected_type: str, received_type: str) -> None:
+        super().__init__(
+            "invalid_filter_shape",
+            (
+                f"filters[{field!r}] has wrong type: expected {expected_type}, "
+                f"received {received_type}"
+            ),
+            400,
+            {
+                "field": field,
+                "expected_type": expected_type,
+                "received_type": received_type,
+            },
+        )
+
+
+class ModeParameterMismatchError(SAGEError):
+    """400: a parameter is set that is forbidden by the chosen discover mode (T-0092).
+
+    Distinct from `missing_*` codes which fire on the inverse case
+    (parameter required for the chosen mode but absent — e.g.,
+    `missing_query` for semantic mode). This error fires when the parameter
+    IS present but is not valid for the chosen mode (e.g., catalog mode
+    with `heading_path`, which is deterministic-only).
+    """
+
+    def __init__(
+        self,
+        mode: str,
+        forbidden_param: str,
+        allowed_modes: list[str],
+    ) -> None:
+        super().__init__(
+            "mode_parameter_mismatch",
+            (
+                f"Parameter {forbidden_param!r} is not valid for mode {mode!r}. "
+                f"Allowed modes for {forbidden_param!r}: {sorted(allowed_modes)!r}"
+            ),
+            400,
+            {
+                "mode": mode,
+                "forbidden_param": forbidden_param,
+                "allowed_modes": sorted(allowed_modes),
+            },
         )
 
 
@@ -676,6 +763,100 @@ class IdenticalContentSupersedeError(SAGEError):
         )
 
 
+# Field-annotation strings used in InvalidFilterShapeError detail (T-0092).
+# Kept as a small lookup rather than introspected from RetrievalFilters because
+# Pydantic v2's stringified annotations for ``str | None`` shapes are noisy
+# (``typing.Optional[str]`` or ``Union[str, None]`` depending on Python form).
+_FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
+    "doc_type": "str",
+    "project": "str",
+    "lifecycle_status": "str",
+    "tags": "list[str]",
+    "document_ids": "list[str]",
+    "pipeline_status": "str",
+    "tier3": "dict",
+}
+
+
+def translate_validation_error(
+    exc: ValidationError | RequestValidationError,
+) -> SAGEError | None:
+    """Map a Pydantic ValidationError on DiscoverRequest/RetrievalFilters to a
+    typed ADR-028 SAGEError (T-0092).
+
+    Walks ``exc.errors()`` and returns the first matching SAGEError. Returns
+    ``None`` when no rule matches, signaling the caller to fall back to the
+    default validation-error path (FastAPI's 422 on HTTP, ``internal_error``
+    on MCP). The translator is intentionally scoped: it only fires on
+    ``mode``/``filters``-rooted errors so non-discover endpoints are
+    unaffected.
+
+    Both ``pydantic.ValidationError`` and ``fastapi.exceptions.RequestValidationError``
+    expose ``.errors()`` with the same dict shape, so one function serves
+    both transports.
+    """
+    # Local import sidesteps any future circular-import risk: errors.py is
+    # imported by routers/services that themselves import models/schemas.
+    from sage.models.enums import RetrievalMode
+    from sage.models.schemas import RetrievalFilters
+
+    for err in exc.errors():
+        loc = tuple(err.get("loc") or ())
+        # FastAPI's RequestValidationError prepends a "body" / "query" /
+        # "path" location segment naming the request component the value
+        # came from. Pydantic's ValidationError does not. Strip a leading
+        # transport-component segment so one set of loc rules works for
+        # both call sites.
+        if loc and loc[0] in ("body", "query", "path", "header", "cookie"):
+            loc = loc[1:]
+        err_type = err.get("type", "")
+        input_value = err.get("input")
+        ctx = err.get("ctx") or {}
+
+        # 0) Custom ``mode_parameter_mismatch`` raised from the
+        # DiscoverRequest model_validator via PydanticCustomError. The
+        # validator lives in sage.models.schemas which cannot import
+        # sage.api.errors (import-linter "Models are a leaf layer"
+        # contract). We reconstruct the public-facing SAGEError here from
+        # the embedded ctx.
+        if err_type == "mode_parameter_mismatch":
+            return ModeParameterMismatchError(
+                mode=str(ctx.get("mode", "")),
+                forbidden_param=str(ctx.get("forbidden_param", "")),
+                allowed_modes=list(ctx.get("allowed_modes") or []),
+            )
+
+        # 1) Invalid `mode` enum value: caller passed a string not in RetrievalMode.
+        if loc and loc[0] == "mode" and err_type in ("enum", "literal_error"):
+            valid_modes = [m.value for m in RetrievalMode]
+            return InvalidModeError(mode=str(input_value), valid_modes=valid_modes)
+
+        # 2) Unknown filter key: extra_forbidden under `filters`.
+        if len(loc) >= 2 and loc[0] == "filters" and err_type == "extra_forbidden":
+            key = str(loc[1])
+            valid_keys = list(RetrievalFilters.model_fields.keys())
+            example = (
+                '{"tier3": {"ticket_id": "T-0001"}} for typed metadata, '
+                'or {"doc_type": "ticket"} for built-in fields'
+            )
+            return UnknownFilterKeyError(key=key, valid_keys=valid_keys, example=example)
+
+        # 3) Wrong value type for a known filter key.
+        # Pydantic emits types like `list_type`, `int_type`, `string_type`,
+        # `dict_type` for primitive-shape failures.
+        if len(loc) >= 2 and loc[0] == "filters" and err_type.endswith("_type"):
+            field = str(loc[1])
+            expected_type = _FILTER_FIELD_TYPE_NAMES.get(field, "unknown")
+            received_type = type(input_value).__name__
+            return InvalidFilterShapeError(
+                field=field,
+                expected_type=expected_type,
+                received_type=received_type,
+            )
+
+    return None
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register SAGE exception handlers on the FastAPI app."""
 
@@ -688,4 +869,33 @@ def register_exception_handlers(app: FastAPI) -> None:
                 message=exc.message,
                 detail=exc.detail,
             ).model_dump(exclude_none=True),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Translate FastAPI request-body validation errors into ADR-028
+        envelopes for the discover endpoint (T-0092). Falls through to a
+        generic 400 envelope for any unmatched validation error so the HTTP
+        and MCP surfaces both stop leaking FastAPI's default 422 shape on
+        the discover path."""
+        sage_err = translate_validation_error(exc)
+        if sage_err is not None:
+            return JSONResponse(
+                status_code=sage_err.status_code,
+                content=ErrorResponse(
+                    code=sage_err.code,
+                    message=sage_err.message,
+                    detail=sage_err.detail,
+                ).model_dump(exclude_none=True),
+            )
+        # Non-discover validation errors keep FastAPI's default 422 with its
+        # native body shape. Returning a custom 422 envelope here would be a
+        # larger blast radius than T-0092 scopes; that's a follow-up.
+        # ``jsonable_encoder`` handles ctx.error ValueError values that
+        # ``json.dumps`` cannot serialize directly.
+        return JSONResponse(
+            status_code=422,
+            content={"detail": jsonable_encoder(exc.errors())},
         )

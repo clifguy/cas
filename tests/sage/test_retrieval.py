@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import SeededEmbeddingProvider, StubContentStore
@@ -569,6 +570,29 @@ async def test_deterministic_nonexistent_document(graph_store, retrieval_service
     )
     with pytest.raises(DocumentNotFoundError):
         await retrieval_service.discover(request)
+
+
+# ---------------------------------------------------------------------------
+# T-0092: mode_parameter_mismatch fires at DiscoverRequest construction
+# ---------------------------------------------------------------------------
+
+
+def test_discover_request_construction_rejects_catalog_with_heading_path():
+    """Catalog mode + heading_path raises ValidationError carrying a
+    mode_parameter_mismatch typed error at the Pydantic model_validator,
+    before any service-layer code runs. Guards the validator from being
+    silently bypassed by future refactors. The validator raises
+    PydanticCustomError (not the public ModeParameterMismatchError) because
+    sage.models is a leaf layer per the import-linter contract; the
+    sage.api.errors translator reconstructs the typed SAGEError at the
+    transport boundary."""
+    with pytest.raises(ValidationError) as excinfo:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, heading_path="X")
+    errors = excinfo.value.errors()
+    assert any(e["type"] == "mode_parameter_mismatch" for e in errors)
+    custom_err = next(e for e in errors if e["type"] == "mode_parameter_mismatch")
+    assert custom_err["ctx"]["mode"] == "catalog"
+    assert custom_err["ctx"]["forbidden_param"] == "heading_path"
 
 
 # ---------------------------------------------------------------------------

@@ -788,6 +788,101 @@ async def test_discover_semantic_missing_query(vault_services):
 
 
 # ---------------------------------------------------------------------------
+# Retrieval: discover — ADR-028 error envelope on parameter validation (T-0092)
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_invalid_mode(vault_services):
+    """Unknown mode value returns typed invalid_mode envelope, not internal_error."""
+    result = _parse(await sage_discover("test_vault", mode="bogus"))
+    assert result["error"] == "invalid_mode"
+    assert result["detail"]["mode"] == "bogus"
+    assert set(result["detail"]["valid_modes"]) == {
+        "semantic",
+        "keyword",
+        "catalog",
+        "deterministic",
+    }
+    assert "bogus" in result["message"]
+
+
+async def test_discover_unknown_filter_key(vault_services):
+    """Unknown filter key (T-0092 AC: a) returns unknown_filter_key envelope
+    rather than silently dropping the key."""
+    result = _parse(
+        await sage_discover("test_vault", mode="catalog", filters={"tickett_id": "T-0001"})
+    )
+    assert result["error"] == "unknown_filter_key"
+    assert result["detail"]["key"] == "tickett_id"
+    valid_keys = set(result["detail"]["valid_keys"])
+    assert {
+        "doc_type",
+        "project",
+        "lifecycle_status",
+        "tags",
+        "document_ids",
+        "pipeline_status",
+        "tier3",
+    } <= valid_keys
+    # A worked example helps the caller self-correct without a probe round-trip.
+    assert "tier3" in result["detail"]["example"]
+
+
+async def test_discover_invalid_filter_shape(vault_services):
+    """Wrong type for a known filter key (T-0092 AC: b) returns
+    invalid_filter_shape envelope with the offending field named."""
+    result = _parse(await sage_discover("test_vault", mode="catalog", filters={"tags": 42}))
+    assert result["error"] == "invalid_filter_shape"
+    assert result["detail"]["field"] == "tags"
+    assert "list" in result["detail"]["expected_type"]
+    assert "int" in result["detail"]["received_type"]
+
+
+async def test_discover_mode_parameter_mismatch_catalog_with_heading_path(vault_services):
+    """Catalog mode with heading_path (T-0092 AC: c) returns
+    mode_parameter_mismatch envelope. heading_path is deterministic-only."""
+    result = _parse(await sage_discover("test_vault", mode="catalog", heading_path="Section 1"))
+    assert result["error"] == "mode_parameter_mismatch"
+    assert result["detail"]["mode"] == "catalog"
+    assert result["detail"]["forbidden_param"] == "heading_path"
+    assert "deterministic" in result["detail"]["allowed_modes"]
+
+
+async def test_discover_mode_parameter_mismatch_deterministic_with_query(vault_services):
+    """Deterministic mode with query set: deterministic does not search."""
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    result = _parse(
+        await sage_discover(
+            "test_vault",
+            mode="deterministic",
+            document_id=doc["id"],
+            heading_path="Sample Document",
+            query="ignored",
+        )
+    )
+    assert result["error"] == "mode_parameter_mismatch"
+    assert result["detail"]["mode"] == "deterministic"
+    assert result["detail"]["forbidden_param"] == "query"
+
+
+async def test_discover_semantic_missing_query_still_typed(vault_services):
+    """Regression guard: the existing service-layer missing_query envelope
+    must not be folded into mode_parameter_mismatch by T-0092."""
+    result = _parse(await sage_discover("test_vault", "semantic"))
+    assert result["error"] == "missing_query"
+
+
+async def test_discover_semantic_happy_path_unchanged(vault_services):
+    """Regression guard: success-path response shape is preserved."""
+    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await asyncio.sleep(0.5)
+    result = _parse(await sage_discover("test_vault", "semantic", query="sample content"))
+    assert result["mode"] == "semantic"
+    assert isinstance(result["results"], list)
+
+
+# ---------------------------------------------------------------------------
 # Utilities: export_projection
 # ---------------------------------------------------------------------------
 

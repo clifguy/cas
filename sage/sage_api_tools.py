@@ -9,11 +9,12 @@ staging edges, pending metadata).
 from collections.abc import Callable
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from sage.api.errors import (
     LegacyFormError,
     SAGEError,
+    translate_validation_error,
 )
 from sage.mcp_init import SAGEServices
 from sage.models.enums import SourceType
@@ -28,7 +29,6 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestRequest,
     LinkRequest,
-    RetrievalFilters,
     SetLifecycleRequest,
     TraverseRequest,
     UpdateMetadataRequest,
@@ -965,18 +965,41 @@ def register_sage_tools(
             response inline and avoid the disk/jq fallback. The
             budget defaults to 24 KiB and is configurable per process
             via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
+
+        Error modes (T-0092):
+        - ``invalid_mode`` (400): ``mode`` is not one of ``semantic``,
+          ``keyword``, ``catalog``, ``deterministic``. Detail carries
+          the offending ``mode`` and ``valid_modes``.
+        - ``unknown_filter_key`` (400): a key in ``filters`` is not a
+          declared field on ``RetrievalFilters``. Detail carries the
+          offending ``key``, ``valid_keys``, and a worked ``example``.
+        - ``invalid_filter_shape`` (400): a value in ``filters`` has the
+          wrong type for its field (e.g., ``{"tags": 42}`` where
+          ``list[str]`` was expected). Detail carries ``field``,
+          ``expected_type``, ``received_type``.
+        - ``mode_parameter_mismatch`` (400): a parameter is set that is
+          not valid for the chosen mode (e.g., ``heading_path`` outside
+          deterministic mode, ``query`` in deterministic mode). Detail
+          carries ``mode``, ``forbidden_param``, ``allowed_modes``.
+        - ``missing_query`` / ``missing_document_id`` / ``missing_heading_path``
+          (400): a parameter required for the chosen mode is absent (the
+          inverse case of ``mode_parameter_mismatch``).
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             if document_id is not None:
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
-            retrieval_filters = RetrievalFilters(**filters) if filters else None
+            # T-0092: pass the raw dict so DiscoverRequest performs the
+            # nested RetrievalFilters validation. This keeps the
+            # ValidationError loc prefixed with ``("filters", ...)``, which
+            # the translator in sage.api.errors needs to map into typed
+            # ``unknown_filter_key`` / ``invalid_filter_shape`` envelopes.
             request = DiscoverRequest(
                 mode=mode,
                 query=query,
                 scope=scope,
-                filters=retrieval_filters,
+                filters=filters,
                 document_id=document_id,
                 heading_path=heading_path,
                 limit=limit,
@@ -989,7 +1012,14 @@ def register_sage_tools(
             )
             response = await v.retrieval_service.discover(request)
             return serialize(response)
-        except (SAGEError, ValueError) as e:
+        except SAGEError as e:
+            return error_response(e)
+        except ValidationError as e:
+            sage_err = translate_validation_error(e)
+            if sage_err is not None:
+                return error_response(sage_err)
+            return error_response(e)
+        except ValueError as e:
             return error_response(e)
 
     @mcp.tool()
