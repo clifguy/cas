@@ -71,9 +71,23 @@ class VaultConfigService:
         staging_count = await self._store.count_staging_edges()
         last_ingestion = await self._store.get_last_ingestion_at()
 
-        failed_count = await self._store.count_documents_by_pipeline_status("failed")
-        deferred_count = await self._store.count_documents_by_pipeline_status("abstraction_skipped")
-        pending_metadata_docs = await self._store.list_pending_metadata_documents()
+        # Doc-scoped health indicators report actionable work only.
+        # Documents in a terminal lifecycle state (e.g. archived because a
+        # text-bearing replacement superseded a scanned-PDF predecessor)
+        # are excluded so dashboard counts don't suggest unresolved work
+        # when the underlying issue has already been remediated.
+        # Staging edges have no lifecycle and are reported as-is.
+        terminal_states = tuple(s.value for s in config.lifecycle.states if s.is_terminal)
+
+        failed_count = await self._store.count_documents_by_pipeline_status(
+            "failed", exclude_lifecycle_statuses=terminal_states
+        )
+        deferred_count = await self._store.count_documents_by_pipeline_status(
+            "abstraction_skipped", exclude_lifecycle_statuses=terminal_states
+        )
+        pending_metadata_docs = await self._store.list_pending_metadata_documents(
+            exclude_lifecycle_statuses=terminal_states
+        )
         pending_metadata_count = len(pending_metadata_docs)
 
         brain_root = Path(config.vault.brain_root).expanduser()

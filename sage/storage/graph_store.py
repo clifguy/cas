@@ -10,6 +10,7 @@ import json
 import re
 import sqlite3
 import threading
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1303,29 +1304,82 @@ class GraphStore:
             return None
         return datetime.fromisoformat(row[0])
 
-    async def count_documents_by_pipeline_status(self, status: str) -> int:
-        with self._query_timer.measure("count_documents_by_pipeline_status"):
-            return await self._run(self._count_documents_by_pipeline_status_sync, status)
+    async def count_documents_by_pipeline_status(
+        self,
+        status: str,
+        exclude_lifecycle_statuses: Sequence[str] = (),
+    ) -> int:
+        """Count documents at a given pipeline_status.
 
-    def _count_documents_by_pipeline_status_sync(self, status: str) -> int:
+        ``exclude_lifecycle_statuses`` restricts the count to documents
+        whose ``lifecycle_status`` is not in the supplied list. The
+        dashboard health indicators pass the vault's terminal lifecycle
+        states here so that superseded (e.g. ``archived``) documents
+        stuck at ``abstraction_skipped`` do not surface as unresolved
+        work after a text-bearing replacement has been ingested.
+        """
+        with self._query_timer.measure("count_documents_by_pipeline_status"):
+            return await self._run(
+                self._count_documents_by_pipeline_status_sync,
+                status,
+                tuple(exclude_lifecycle_statuses),
+            )
+
+    def _count_documents_by_pipeline_status_sync(
+        self,
+        status: str,
+        exclude_lifecycle_statuses: tuple[str, ...],
+    ) -> int:
         conn = self._get_connection()
+        if not exclude_lifecycle_statuses:
+            return conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE pipeline_status = ?",
+                (status,),
+            ).fetchone()[0]
+        placeholders = ",".join("?" * len(exclude_lifecycle_statuses))
         return conn.execute(
-            "SELECT COUNT(*) FROM documents WHERE pipeline_status = ?",
-            (status,),
+            f"SELECT COUNT(*) FROM documents "  # noqa: S608 -- placeholders generated from a fixed-arity tuple; values are bound parameters
+            f"WHERE pipeline_status = ? AND lifecycle_status NOT IN ({placeholders})",
+            (status, *exclude_lifecycle_statuses),
         ).fetchone()[0]
 
     # ------------------------------------------------------------------
     # Pending metadata (BE-014)
     # ------------------------------------------------------------------
 
-    async def list_pending_metadata_documents(self) -> list[Document]:
-        """Return documents where metadata_confirmed is false."""
-        with self._query_timer.measure("list_pending_metadata_documents"):
-            return await self._run(self._list_pending_metadata_documents_sync)
+    async def list_pending_metadata_documents(
+        self,
+        exclude_lifecycle_statuses: Sequence[str] = (),
+    ) -> list[Document]:
+        """Return documents where metadata_confirmed is false.
 
-    def _list_pending_metadata_documents_sync(self) -> list[Document]:
+        ``exclude_lifecycle_statuses`` removes documents whose
+        ``lifecycle_status`` matches an entry in the list. Callers that
+        only care about actionable review work (e.g. the dashboard
+        health indicator and the pending-metadata review queue) pass
+        the vault's terminal states so superseded predecessors don't
+        appear as outstanding work.
+        """
+        with self._query_timer.measure("list_pending_metadata_documents"):
+            return await self._run(
+                self._list_pending_metadata_documents_sync,
+                tuple(exclude_lifecycle_statuses),
+            )
+
+    def _list_pending_metadata_documents_sync(
+        self,
+        exclude_lifecycle_statuses: tuple[str, ...],
+    ) -> list[Document]:
         conn = self._get_connection()
-        rows = conn.execute("SELECT * FROM documents WHERE metadata_confirmed = 0").fetchall()
+        if not exclude_lifecycle_statuses:
+            rows = conn.execute("SELECT * FROM documents WHERE metadata_confirmed = 0").fetchall()
+        else:
+            placeholders = ",".join("?" * len(exclude_lifecycle_statuses))
+            rows = conn.execute(
+                f"SELECT * FROM documents "  # noqa: S608 -- placeholders generated from a fixed-arity tuple; values are bound parameters
+                f"WHERE metadata_confirmed = 0 AND lifecycle_status NOT IN ({placeholders})",
+                exclude_lifecycle_statuses,
+            ).fetchall()
         return [self._row_to_document(r) for r in rows]
 
     # ------------------------------------------------------------------

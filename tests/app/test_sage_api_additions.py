@@ -428,6 +428,95 @@ class TestVaultStatistics:
         resp = await multi_client.get("/sage_vaults/nonexistent/stats")
         assert resp.status_code == 404
 
+    async def test_health_indicators_exclude_terminal_lifecycle_docs(
+        self, multi_vault_app, multi_client
+    ):
+        """Doc-scoped health indicators report actionable work only.
+
+        Documents in a terminal lifecycle state (``archived``) are
+        excluded from ``deferred_abstract_count``,
+        ``failed_ingestion_count``, and ``pending_metadata_count`` so
+        that superseded predecessors (e.g. a scanned PDF replaced by a
+        text-bearing version, per CAS-ADR-011 / BH-134) don't surface
+        as unresolved work on the dashboard.
+
+        ``pending_edge_count`` is NOT filtered: staging edges are not
+        doc-scoped, so terminal-lifecycle semantics don't apply.
+        """
+        services = multi_vault_app.state.vault_registry["pim_health"]
+        gs = services.graph_store
+
+        # Active docs in each actionable state — these should count.
+        # metadata_confirmed=True on the deferred/failed pair isolates
+        # each indicator: without it, every doc would also count
+        # toward pending_metadata (which defaults to unconfirmed).
+        active_deferred = _make_document(
+            "active-deferred",
+            pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+            metadata_confirmed=True,
+        )
+        active_failed = _make_document(
+            "active-failed",
+            pipeline_status=PipelineStatus.FAILED,
+            pipeline_error="boom",
+            metadata_confirmed=True,
+        )
+        active_pending_meta = _make_document(
+            "active-pending-meta",
+            pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+            metadata_confirmed=False,
+        )
+
+        # Archived docs in the same states — these mirror the
+        # surfacing case (pim_health repair 7bc3619b superseding
+        # 3ef0ff09): the predecessor's pipeline_status stays at
+        # abstraction_skipped forever even after a text-bearing
+        # replacement lands and gets a real abstract. They must not
+        # count as outstanding work.
+        archived_deferred = _make_document(
+            "archived-deferred",
+            pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
+            lifecycle_status="archived",
+            metadata_confirmed=True,
+        )
+        archived_failed = _make_document(
+            "archived-failed",
+            pipeline_status=PipelineStatus.FAILED,
+            pipeline_error="boom",
+            lifecycle_status="archived",
+            metadata_confirmed=True,
+        )
+        archived_pending_meta = _make_document(
+            "archived-pending-meta",
+            pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+            metadata_confirmed=False,
+            lifecycle_status="archived",
+        )
+
+        for d in [
+            active_deferred,
+            active_failed,
+            active_pending_meta,
+            archived_deferred,
+            archived_failed,
+            archived_pending_meta,
+        ]:
+            await gs.insert_document(d)
+
+        resp = await multi_client.get("/sage_vaults/pim_health/stats")
+        assert resp.status_code == 200
+        health = resp.json()["health"]
+
+        assert health["deferred_abstract_count"] == 1
+        assert health["failed_ingestion_count"] == 1
+        assert health["pending_metadata_count"] == 1
+        # Sanity: by_lifecycle_state still surfaces the archived docs,
+        # so we know they're present and merely excluded from the
+        # actionable-only counts.
+        by_lifecycle = resp.json()["by_lifecycle_state"]
+        assert by_lifecycle.get("archived", 0) == 3
+        assert by_lifecycle.get("active", 0) == 3
+
 
 # ---------------------------------------------------------------------------
 # 3. Hash Check (BE-007 through BE-009)
