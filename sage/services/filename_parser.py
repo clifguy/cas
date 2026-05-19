@@ -34,8 +34,16 @@ class ParsedMetadata:
 # Leading date: YYYY-MM-DD followed by a space or underscore.
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[_ ](.*)")
 # Trailing version: v-prefix with optional sub-components separated by _ or .
-# Anchored at $ so it captures the entire trailing version span (e.g. v2_3_1).
-_TRAILING_VERSION_RE = re.compile(r"(?:^|[_ ])(v\d+(?:[._]\d+)*)$", re.IGNORECASE)
+# An optional trailing annotation group (e.g. _FIXED, _FINAL) is captured
+# separately so it can be re-attached to the residual stem as title content.
+_TRAILING_VERSION_RE = re.compile(
+    r"(?:^|[_ ])((?i:v)\d+(?:[._]\d+)*)"
+    r"(_[A-Z]+(?:_[A-Z]+)*)?"
+    r"$"
+)
+# Finder-style duplication noise at end of stem: " copy", " copy 2", " (1)".
+# Stripped from the stem before version extraction; not preserved.
+_TRAILING_FINDER_NOISE_RE = re.compile(r"(?:[_ ]+(?:copy(?:\s+\d+)?|\(\d+\)))+\s*$")
 # Post-split date: a segment that is exactly YYYY-MM-DD. Catches dates
 # that appear after a project prefix (e.g. PIM_2026-01-06_Title).
 _SEGMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -139,11 +147,21 @@ class FilenameParser:
             date = date_m.group(1)
             stem = date_m.group(2)
 
+        # Strip Finder-style duplication noise before version extraction
+        noise_m = _TRAILING_FINDER_NOISE_RE.search(stem)
+        if noise_m:
+            stem = stem[: noise_m.start()]
+
         # Trailing version: v-prefix, may span multiple separator-
-        # delimited segments (e.g. v2_3, v10.4.1, V3_2)
+        # delimited segments (e.g. v2_3, v10.4.1, V3_2). An optional
+        # uppercase-alpha annotation (e.g. _FIXED) is held aside and
+        # appended to the resolved title after Phase 2, so it does not
+        # get misclassified as a code or project segment.
+        trailing_annotation = ""
         ver_m = _TRAILING_VERSION_RE.search(stem)
         if ver_m:
             version = format_version(ver_m.group(1))
+            trailing_annotation = ver_m.group(2) or ""
             stem = stem[: ver_m.start(1)].rstrip("_ ")
 
         # -- Phase 2: post-split segment classification --
@@ -190,6 +208,8 @@ class FilenameParser:
             title = codes[0]
         else:
             title = filename_stem
+        if trailing_annotation:
+            title = title + trailing_annotation
 
         # Resolve doc_type
         doc_type = self._resolve_doc_type(title, codes, adapter)

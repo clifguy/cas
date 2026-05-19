@@ -523,6 +523,41 @@ class TestFilenameParserPreSplit:
         assert result.version == "v3.2"
         assert normalize_version(result.version) == (3, 2, 0)
 
+    # -- Trailing suffix tolerance (T-0083) --
+
+    def test_version_with_uppercase_annotation_suffix(self):
+        """_FIXED annotation after version: version extracted, annotation preserved on title."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v1_0_FIXED")
+        assert result.version == "v1.0"
+        assert "FIXED" in result.title
+
+    def test_version_with_finder_copy_suffix(self):
+        """Finder ' copy' suffix is stripped; version extracted."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v4_3 copy")
+        assert result.version == "v4.3"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+
+    def test_version_with_finder_copy_numbered(self):
+        """Finder ' copy 2' (numbered duplicate) is stripped; version extracted."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v6_3 copy 2")
+        assert result.version == "v6.3"
+
+    def test_version_with_finder_paren_numbered_suffix(self):
+        """Finder ' (1)' paren-numbered duplicate is stripped; version extracted."""
+        p = self._parser()
+        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v1_2 (1)")
+        assert result.version == "v1.2"
+        assert result.title == "Portfolio_Refactoring_Checklist"
+
+    def test_v_prefixed_lowercase_token_mid_stem_not_version(self):
+        """Lowercase v-prefixed token mid-stem is not the trailing version (regression)."""
+        p = self._parser()
+        result = p.parse("notes_v3_revision_summary")
+        assert result.version is None
+
 
 # ---------------------------------------------------------------------------
 # 3. Version Chain Inference (EI-013 through EI-018)
