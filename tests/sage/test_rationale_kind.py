@@ -11,9 +11,19 @@ CAS-ADR-019 / T-0080.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+from datetime import datetime, timezone
 
-from sage.models.enums import RationaleKind
+from sage.models.enums import (
+    EdgeType,
+    PipelineStatus,
+    RationaleKind,
+    ResolutionPolicy,
+    SourceType,
+    TraversalDirection,
+)
+from sage.models.schemas import Document, LinkRequest, TraverseRequest
 from sage.storage.graph_store import GraphStore
 
 # T1 ----------------------------------------------------------------------
@@ -110,3 +120,105 @@ async def test_t9_index_idx_edges_rationale_kind_is_used(tmp_path):
 
     plan_text = " | ".join(" ".join(str(c) for c in row) for row in plan_rows)
     assert "idx_edges_rationale_kind" in plan_text, f"index not used in plan; got: {plan_text}"
+
+
+# T10 ---------------------------------------------------------------------
+
+
+def _id(name: str) -> str:
+    return f"{hashlib.sha256(name.encode()).hexdigest()[:8]}_{name}"
+
+
+def _sha(name: str) -> str:
+    return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
+
+
+def _make_doc(doc_id: str) -> Document:
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title=f"Doc {doc_id}",
+        source_type=SourceType.MARKDOWN,
+        source_path=f"test/{doc_id}.md",
+        source_content_hash=_sha(doc_id),
+        adapter_version="0.1.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+    )
+
+
+async def test_t10_traverse_returns_stored_rationale_kind(graph_store, graph_ops_service):
+    """T10. ``sage_traverse`` surfaces the stored ``rationale_kind`` on
+    each edge rather than defaulting to ``manual``.
+
+    Also asserts the parallel fields that ``_traverse_sync``'s row dict
+    carries but that the ``GraphOpsService.traverse`` Edge() construction
+    has historically dropped: ``resolution_policy``,
+    ``source_valid_from_version``, and ``target_valid_from_version``.
+    Without this regression guard, traversal-returned edges silently look
+    like ``policy=none, no anchors`` regardless of what is stored. F4
+    parallel sites covered here so future remediations don't drain the
+    set one entry at a time.
+
+    Two fields populated by the same fix are NOT asserted here:
+      - ``valid_until_version``: requires a tombstone scenario (a
+        merged_from edge tombstoning a predecessor); the field defaults
+        to None on a fresh edge, so an ``is None`` assertion would not
+        discriminate between the bug and the fix. Coverage deferred to
+        a future merged_from-aware traversal test.
+      - ``retracted_edge_id``: only non-null on a retracts edge, which
+        has a different shape (target_id null, retracted_edge_id
+        required). Coverage deferred to a future retracts-aware
+        traversal test.
+    Both fields are still populated by the production fix; only the
+    test coverage is deferred.
+    """
+    src, tgt = _id("t10_src"), _id("t10_tgt")
+    await graph_store.insert_document(_make_doc(src))
+    await graph_store.insert_document(_make_doc(tgt))
+
+    await graph_ops_service.link(
+        LinkRequest(
+            source_id=src,
+            target_id=tgt,
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version=src,
+            target_valid_from_version=tgt,
+            rationale_kind=RationaleKind.REFERENCES_MENTION,
+        )
+    )
+
+    out = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=src,
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.OUTBOUND,
+            depth=1,
+        )
+    )
+
+    assert [n.document.id for n in out.nodes] == [tgt]
+    out_edge = out.nodes[0].edge
+    assert out_edge.rationale_kind is RationaleKind.REFERENCES_MENTION
+    assert out_edge.resolution_policy is ResolutionPolicy.TRANSITIVE_BOTH
+    assert out_edge.source_valid_from_version == src
+    assert out_edge.target_valid_from_version == tgt
+
+    inbound = await graph_ops_service.traverse(
+        TraverseRequest(
+            start_id=tgt,
+            edge_type=EdgeType.REFERENCES,
+            direction=TraversalDirection.INBOUND,
+            depth=1,
+        )
+    )
+    assert [n.document.id for n in inbound.nodes] == [src]
+    in_edge = inbound.nodes[0].edge
+    assert in_edge.rationale_kind is RationaleKind.REFERENCES_MENTION
+    assert in_edge.resolution_policy is ResolutionPolicy.TRANSITIVE_BOTH
+    assert in_edge.source_valid_from_version == src
+    assert in_edge.target_valid_from_version == tgt

@@ -25,6 +25,7 @@ from sage.models.edge_registry import EdgeTypeRegistry
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
+    RationaleKind,
     ResolutionPolicy,
     SourceType,
     TraversalDirection,
@@ -663,14 +664,41 @@ class GraphOpsService:
                 ),
             )
 
+            # Read every storage-layer edge field that ``_traverse_sync``
+            # carries through its row dict; without this, the CAS-ADR-017
+            # chain-resolution fields (resolution_policy + anchors) and
+            # the tombstone field (valid_until_version) silently
+            # default to None on traversal-returned edges regardless of
+            # what is stored. The rationale_kind drop was a documented
+            # T-0080 regression; the four parallel fields had the same
+            # defect, fixed here in the same pass.
+            # Read every storage-layer edge field that ``_traverse_sync``
+            # carries through its row dict; without this, the CAS-ADR-017
+            # chain-resolution fields (resolution_policy + anchors) and
+            # the tombstone field (valid_until_version) silently
+            # default to None on traversal-returned edges regardless of
+            # what is stored. The rationale_kind drop was a documented
+            # T-0080 regression; the four parallel fields had the same
+            # defect, fixed here in the same pass.
+            resolution_policy_raw = representative.get("resolution_policy")
             edge = Edge(
                 id=representative["edge_id"],
                 source_id=representative["source_id"],
                 target_id=representative["target_id"],
                 edge_type=EdgeType(representative["edge_type"]),
+                resolution_policy=(
+                    ResolutionPolicy(resolution_policy_raw)
+                    if resolution_policy_raw is not None
+                    else None
+                ),
+                source_valid_from_version=representative.get("source_valid_from_version"),
+                target_valid_from_version=representative.get("target_valid_from_version"),
+                valid_until_version=representative.get("valid_until_version"),
+                retracted_edge_id=representative.get("retracted_edge_id"),
                 created_at=datetime.fromisoformat(representative["edge_created_at"]),
                 notes=representative["notes"],
                 rationale=representative["rationale"],
+                rationale_kind=RationaleKind(representative["rationale_kind"]),
             )
 
             # Per-type edge counts (deduplicated by edge ID to avoid

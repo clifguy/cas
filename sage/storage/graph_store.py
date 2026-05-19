@@ -1367,9 +1367,10 @@ class GraphStore:
             return (
                 f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "  # noqa: S608 -- match_col/follow_col are trusted internal column-name literals passed by the caller
                 f"e.edge_type, e.created_at AS edge_created_at, "
-                f"e.notes, e.rationale, e.source_id, e.target_id, "
+                f"e.notes, e.rationale, e.rationale_kind, e.source_id, e.target_id, "
                 f"e.resolution_policy, e.source_valid_from_version, "
                 f"e.target_valid_from_version, e.valid_until_version, "
+                f"e.retracted_edge_id, "
                 f"1 AS depth "
                 f"FROM edges e "
                 f"WHERE e.{match_col} = ?{type_filter}"
@@ -1380,9 +1381,10 @@ class GraphStore:
             return (
                 f"SELECT e.id AS edge_id, e.{follow_col} AS doc_id, "  # noqa: S608 -- match_col/follow_col are trusted internal column-name literals passed by the caller
                 f"e.edge_type, e.created_at AS edge_created_at, "
-                f"e.notes, e.rationale, e.source_id, e.target_id, "
+                f"e.notes, e.rationale, e.rationale_kind, e.source_id, e.target_id, "
                 f"e.resolution_policy, e.source_valid_from_version, "
                 f"e.target_valid_from_version, e.valid_until_version, "
+                f"e.retracted_edge_id, "
                 f"t.depth + 1 AS depth "
                 f"FROM edges e "
                 f"INNER JOIN traversal t ON e.{match_col} = t.doc_id "
@@ -1439,6 +1441,8 @@ class GraphStore:
                     "edge_created_at": row["edge_created_at"],
                     "notes": row["notes"],
                     "rationale": row["rationale"],
+                    "rationale_kind": row["rationale_kind"],
+                    "retracted_edge_id": row["retracted_edge_id"],
                     "source_id": row["source_id"],
                     "target_id": row["target_id"],
                     "resolution_policy": row["resolution_policy"],
