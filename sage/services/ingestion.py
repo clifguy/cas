@@ -642,6 +642,18 @@ class IngestionService:
                     transition.predecessor_updates,
                     transition.edge,
                 )
+                # Sync the predecessor's new lifecycle_status to its
+                # chunks. insert_with_supersede_atomic commits the flip
+                # directly in SQL (BH-136 atomicity), bypassing
+                # LifecycleService.set_lifecycle's chunk-sync hook. T-0077
+                # pre-filter pushdown requires the chunk-level
+                # lifecycle_status column to stay aligned with the
+                # document's current state.
+                new_pred_lifecycle = transition.predecessor_updates.get("lifecycle_status")
+                if new_pred_lifecycle is not None:
+                    await self._content_store.update_chunk_metadata(
+                        fresh_pred.id, {"lifecycle_status": new_pred_lifecycle}
+                    )
             else:
                 await self._store.insert_document(doc)
             is_new = True
@@ -742,10 +754,17 @@ class IngestionService:
         doc = await self._store.get_document(document_id)
         body_chunks = self._chunk_projection(document_id, projection)
 
-        # Stamp doc_type on body chunks for content-store pre-filtering
-        if doc and doc.doc_type and body_chunks:
+        # Stamp document-level scalars on body chunks for content-store
+        # pre-filtering. doc_type (T-0050), lifecycle_status, and project
+        # (T-0077) are all stable per-document fields whose values must
+        # ride along with each chunk row so LanceDB can pre-filter at
+        # top-K time without a graph-store round trip.
+        if doc and body_chunks:
             for chunk in body_chunks:
-                chunk.doc_type = doc.doc_type
+                if doc.doc_type:
+                    chunk.doc_type = doc.doc_type
+                chunk.lifecycle_status = doc.lifecycle_status
+                chunk.project = doc.project
 
         # Prepend the synthetic header chunk. ``semantic_abstract`` is
         # still ``None`` at this point in the pipeline; Stage 3 will
@@ -1348,4 +1367,6 @@ class IngestionService:
             content=self._build_header_chunk_content(doc),
             chunk_index=-1,
             doc_type=doc.doc_type,
+            lifecycle_status=doc.lifecycle_status,
+            project=doc.project,
         )

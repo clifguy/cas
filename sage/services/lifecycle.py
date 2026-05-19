@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sage.adapters.interfaces import ContentStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidActionError,
@@ -41,10 +42,12 @@ class LifecycleService:
         graph_store: GraphStore,
         lock_manager: DocumentLockManager,
         config: VaultConfig,
+        content_store: ContentStore | None = None,
     ) -> None:
         self._store = graph_store
         self._locks = lock_manager
         self._config = config
+        self._content = content_store
         self._table = build_transition_table(config)
 
     @property
@@ -117,6 +120,15 @@ class LifecycleService:
                 now = datetime.now(timezone.utc).isoformat()
                 updates = {"lifecycle_status": to_state, "updated_at": now}
                 updated_doc = await self._store.update_document(document_id, updates)
+
+            # Sync the new lifecycle_status to the chunk store so LanceDB
+            # pre-filter pushdown (T-0077) stays accurate after the
+            # transition. Best-effort: legacy wiring that omits
+            # content_store falls through as a no-op.
+            if self._content is not None:
+                await self._content.update_chunk_metadata(
+                    document_id, {"lifecycle_status": to_state}
+                )
 
             # Generate warnings (BH-014, BH-015)
             warnings: list[str] = []

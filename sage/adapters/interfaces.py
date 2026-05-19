@@ -25,6 +25,8 @@ class Chunk:
     embedding: list[float] | None = None
     chunk_index: int = 0
     doc_type: str | None = None
+    lifecycle_status: str | None = None
+    project: str | None = None
 
 
 @dataclass

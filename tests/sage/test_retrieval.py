@@ -130,11 +130,16 @@ async def _index_doc_chunks(
     document_id: str,
     chunks_data: list[tuple[str, str]],
     doc_type: str | None = None,
+    lifecycle_status: str | None = None,
+    project: str | None = None,
 ) -> None:
     """Helper: index chunks for a document in the content store.
 
     chunks_data: list of (heading_path, content) tuples.
-    doc_type: optional doc_type to stamp on chunks for pre-filter testing.
+    doc_type, lifecycle_status, project: optional document-level scalars
+    to stamp on the chunks for pre-filter testing. Production ingest
+    stamps all three from the parent ``Document`` (T-0050 for doc_type,
+    T-0077 for the other two); tests opt in per-call.
     """
     chunks = []
     for i, (heading_path, content) in enumerate(chunks_data):
@@ -145,6 +150,8 @@ async def _index_doc_chunks(
                 content=content,
                 chunk_index=i,
                 doc_type=doc_type,
+                lifecycle_status=lifecycle_status,
+                project=project,
             )
         )
 
@@ -614,12 +621,14 @@ async def test_filter_by_project(
         seeded_embedding_provider,
         _id("doc_pim"),
         [("Section 1", "Patent filing process documentation.")],
+        project="pim_health",
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_other"),
         [("Section 1", "Patent filing process documentation.")],
+        project="basketball",
     )
 
     request = DiscoverRequest(
@@ -1387,10 +1396,10 @@ async def test_postfilter_project_still_applies_with_prefilter(
     await graph_store.insert_document(doc_wrong_type)
 
     identical_content = "Patent filing process for clinical normalization."
-    for doc_id, doc_type in [
-        (_id("doc_match_both"), "patent_draft"),
-        (_id("doc_wrong_proj"), "patent_draft"),
-        (_id("doc_wrong_type"), "report"),
+    for doc_id, doc_type, project in [
+        (_id("doc_match_both"), "patent_draft", "pim_health"),
+        (_id("doc_wrong_proj"), "patent_draft", "other"),
+        (_id("doc_wrong_type"), "report", "pim_health"),
     ]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1398,6 +1407,7 @@ async def test_postfilter_project_still_applies_with_prefilter(
             doc_id,
             [("Section 1", identical_content)],
             doc_type=doc_type,
+            project=project,
         )
 
     request = DiscoverRequest(
@@ -3322,6 +3332,7 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
             _id(f"archived_{i}"),
             [("Fraud Screening Module", "fraud screening risk score detection")],
             doc_type="patent_draft",
+            lifecycle_status="archived",
         )
 
     # 1 active patent_draft with the same matching content.
@@ -3337,6 +3348,7 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
         _id("active_target"),
         [("Fraud Screening Module", "fraud screening risk score detection")],
         doc_type="patent_draft",
+        lifecycle_status="active",
     )
 
     # limit=1, so fetch_limit = 1*10 = 10. Without pre-resolution, the
@@ -3379,6 +3391,7 @@ async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
             _id(f"archived_kw_{i}"),
             [("Fraud Screening Module", "fraud screening risk score detection")],
             doc_type="patent_draft",
+            lifecycle_status="archived",
         )
 
     active_doc = _make_doc(
@@ -3393,6 +3406,7 @@ async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
         _id("active_kw_target"),
         [("Fraud Screening Module", "fraud screening risk score detection")],
         doc_type="patent_draft",
+        lifecycle_status="active",
     )
 
     request = DiscoverRequest(

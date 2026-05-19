@@ -182,13 +182,13 @@ def user_service(graph_store, minimal_config):
 
 
 @pytest.fixture
-def lifecycle_service(graph_store, lock_manager, minimal_config):
-    return LifecycleService(graph_store, lock_manager, minimal_config)
+def lifecycle_service(graph_store, lock_manager, minimal_config, stub_content_store):
+    return LifecycleService(graph_store, lock_manager, minimal_config, stub_content_store)
 
 
 @pytest.fixture
-def extended_lifecycle_service(graph_store, lock_manager, extended_config):
-    return LifecycleService(graph_store, lock_manager, extended_config)
+def extended_lifecycle_service(graph_store, lock_manager, extended_config, stub_content_store):
+    return LifecycleService(graph_store, lock_manager, extended_config, stub_content_store)
 
 
 @pytest.fixture

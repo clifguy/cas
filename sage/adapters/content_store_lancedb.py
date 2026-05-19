@@ -36,11 +36,13 @@ CHUNKS_SCHEMA = pa.schema(
         pa.field("chunk_index", pa.int32()),
         pa.field("vector", pa.list_(pa.float32(), VECTOR_DIMENSIONS)),
         pa.field("doc_type", pa.utf8(), nullable=True),
+        pa.field("lifecycle_status", pa.utf8(), nullable=True),
+        pa.field("project", pa.utf8(), nullable=True),
     ]
 )
 
 # Columns that can be pre-filtered at query time.
-_FILTERABLE_COLUMNS = {"doc_type", "document_id"}
+_FILTERABLE_COLUMNS = {"doc_type", "document_id", "lifecycle_status", "project"}
 
 
 class LanceDBContentStore(ContentStore):
@@ -242,6 +244,8 @@ class LanceDBContentStore(ContentStore):
                         "chunk_index": chunk.chunk_index,
                         "vector": embedding,
                         "doc_type": chunk.doc_type,
+                        "lifecycle_status": chunk.lifecycle_status,
+                        "project": chunk.project,
                     }
                 )
 
@@ -274,6 +278,8 @@ class LanceDBContentStore(ContentStore):
                 "chunk_index": chunk.chunk_index,
                 "vector": embedding,
                 "doc_type": chunk.doc_type,
+                "lifecycle_status": chunk.lifecycle_status,
+                "project": chunk.project,
             }
             table.add([row])
             self._rebuild_fts(table)
@@ -533,6 +539,8 @@ class LanceDBContentStore(ContentStore):
                     embedding=row["vector"] if "vector" in row else None,
                     chunk_index=row["chunk_index"],
                     doc_type=row.get("doc_type"),
+                    lifecycle_status=row.get("lifecycle_status"),
+                    project=row.get("project"),
                 )
                 for row in results
             ]

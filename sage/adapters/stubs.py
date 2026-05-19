@@ -114,6 +114,10 @@ class StubContentStore(ContentStore):
         for chunk in chunks:
             if "doc_type" in metadata:
                 chunk.doc_type = metadata["doc_type"]
+            if "lifecycle_status" in metadata:
+                chunk.lifecycle_status = metadata["lifecycle_status"]
+            if "project" in metadata:
+                chunk.project = metadata["project"]
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

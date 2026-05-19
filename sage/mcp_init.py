@@ -254,7 +254,7 @@ async def initialize_services(
 
     # Services
     user_service = UserService(graph_store, config)
-    lifecycle_service = LifecycleService(graph_store, lock_manager, config)
+    lifecycle_service = LifecycleService(graph_store, lock_manager, config, content_store)
     metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
     documents_service = DocumentsService(graph_store, config)
     ingestion_service = IngestionService(

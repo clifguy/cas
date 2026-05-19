@@ -56,6 +56,20 @@ from sage.storage.graph_store import GraphStore
 # RRF constant (standard value from the original Reciprocal Rank Fusion paper).
 _RRF_K = 60
 
+# Filter keys that LanceDB can pre-filter on as chunk-row columns. Pure
+# pushdown sets (every active key in this set) bypass the graph-store
+# document_id IN-clause resolution entirely (T-0077). Keep in sync with
+# ``_FILTERABLE_COLUMNS`` in sage/adapters/content_store_lancedb.py.
+_CHUNK_PUSHDOWN_KEYS = frozenset({"doc_type", "lifecycle_status", "project"})
+
+# Over-fetch multipliers applied to ``DiscoverRequest.limit`` when
+# computing how many candidate chunks LanceDB returns before
+# post-search dedup, RRF re-rank, and min_relevance culls. See
+# ``RetrievalService._fetch_limit`` for the tier semantics.
+_FETCH_MULTIPLIER_NONE = 5
+_FETCH_MULTIPLIER_PUSHDOWN = 3
+_FETCH_MULTIPLIER_MIXED = 10
+
 
 def _tier3_matches(
     stored: dict | None,
@@ -123,13 +137,37 @@ class RetrievalService:
     def _fetch_limit(request: DiscoverRequest) -> int:
         """Compute content store fetch limit.
 
-        Always over-fetch because results are deduplicated by document
-        (one hit per document) and filtered by pipeline status and scope.
-        Fetch more when filters are active since those discard additional
-        documents post-search.
+        Over-fetch headroom compensates for post-LanceDB culls:
+        document-level dedup (one hit per doc), the inner RRF re-rank
+        fetch multiplier, and the optional ``min_relevance`` threshold.
+        The size of the headroom depends on what kind of filtering the
+        candidate set has already been through (T-0077):
+
+        * No filters → 5x. Dedup-only headroom.
+        * All pushdownable (``doc_type``, ``lifecycle_status``,
+          ``project``) → 3x. LanceDB has already filtered at the column
+          level, so the only remaining cull is dedup.
+        * Mixed (any of ``tags``, ``pipeline_status``, ``document_ids``,
+          ``tier3``) → 10x. Graph-resolved ``document_id`` IN clause may
+          bloat the candidate set when the resolved doc set is large;
+          conservative backstop keeps recall high.
         """
-        multiplier = 10 if request.filters else 5
-        return request.limit * multiplier
+        if not request.filters:
+            return request.limit * _FETCH_MULTIPLIER_NONE
+        f = request.filters
+        has_any_filter = bool(
+            f.doc_type
+            or f.lifecycle_status
+            or f.project
+            or f.tags
+            or f.pipeline_status
+            or f.document_ids
+            or f.tier3
+        )
+        if not has_any_filter:
+            return request.limit * _FETCH_MULTIPLIER_NONE
+        is_mixed = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3)
+        return request.limit * (_FETCH_MULTIPLIER_MIXED if is_mixed else _FETCH_MULTIPLIER_PUSHDOWN)
 
     async def _content_filters(
         self,
@@ -141,18 +179,22 @@ class RetrievalService:
         the LanceDB top-K cutoff operates on the correct corpus. Two
         kinds of filters merge here:
 
-        * Chunk-level: ``doc_type`` is stored on each chunk (column).
-          Passed through directly.
-        * Document-level: ``lifecycle_status``, ``project``, ``tags``,
-          ``pipeline_status``, ``document_ids``. Resolved against the
-          graph store into a list of matching ``document_id`` values
-          which is then attached to the chunk filter.
+        * Chunk-level (``_CHUNK_PUSHDOWN_KEYS``): ``doc_type``,
+          ``lifecycle_status``, and ``project`` are stored on each chunk
+          row. Passed through directly to LanceDB as column predicates
+          (T-0050 for ``doc_type``, T-0077 for the other two).
+        * Document-level: ``tags``, ``pipeline_status``,
+          ``document_ids``, ``tier3``. Resolved against the graph store
+          into a list of matching ``document_id`` values which is then
+          attached to the chunk filter as an IN clause.
 
         Returns ``(filters, has_doc_constraints)``. ``has_doc_constraints``
-        is True when document-level filters were resolved (regardless of
-        whether any documents matched). When True and the resolved
-        document_ids list is empty, callers should short-circuit to an
-        empty result rather than querying the content store unfiltered.
+        is True when a graph-store resolution ran and might have produced
+        an empty ``document_id`` list. When True and the resolved
+        ``document_id`` list is empty, callers short-circuit to an empty
+        result rather than running an unfiltered chunk search. Pure
+        pushdown filter sets do not need the short-circuit because
+        LanceDB returns zero rows naturally when no chunk matches.
         """
         if not request.filters:
             return None, False
@@ -161,20 +203,23 @@ class RetrievalService:
         result: dict[str, str | list[str]] = {}
         if f.doc_type:
             result["doc_type"] = f.doc_type
+        if f.lifecycle_status:
+            result["lifecycle_status"] = f.lifecycle_status
+        if f.project:
+            result["project"] = f.project
 
-        # Identify doc-level filters that must be resolved via the graph
-        # store. document_ids alone counts because the resolution must
-        # also intersect against doc-level filter rules (none here, so
-        # passthrough).
-        has_doc_constraints = bool(
-            f.lifecycle_status
-            or f.project
-            or f.tags
-            or f.pipeline_status
-            or f.document_ids
-            or f.tier3
-        )
-        if has_doc_constraints:
+        # Validate tier3 filter keys against the resolved doc_type's
+        # metadata_schema even on the pure-pushdown path (defense in
+        # depth — a tier3 filter is non-pushdownable today, so this
+        # branch is unreachable, but the validation belongs with the
+        # tier3 presence check rather than with the SQL path).
+        if f.tier3:
+            self._validate_tier3_filter_keys(f.tier3, f.doc_type)
+
+        # Non-pushdownable filters still need a graph-store SQL
+        # resolution into a document_id IN clause.
+        has_non_pushdown = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3)
+        if has_non_pushdown:
             sql_filters: dict[str, object] = {}
             if f.doc_type:
                 sql_filters["doc_type"] = f.doc_type
@@ -189,7 +234,6 @@ class RetrievalService:
             if f.document_ids:
                 sql_filters["document_ids"] = f.document_ids
             if f.tier3:
-                self._validate_tier3_filter_keys(f.tier3, f.doc_type)
                 sql_filters["tier3"] = f.tier3
             # Filter resolution wants the full match set, not a page;
             # use an unbounded limit. The SQL ceiling is the documents
@@ -201,7 +245,7 @@ class RetrievalService:
             )
             result["document_id"] = [doc.id for doc in matching_docs]
 
-        return (result or None, has_doc_constraints)
+        return (result or None, has_non_pushdown)
 
     @staticmethod
     def _build_hints(

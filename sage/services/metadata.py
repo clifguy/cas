@@ -111,11 +111,20 @@ class MetadataService:
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             doc = await self._store.update_document(document_id, updates)
 
-            # Sync doc_type to content store for pre-filter consistency
-            if "doc_type" in updates and self._content:
-                await self._content.update_chunk_metadata(
-                    document_id, {"doc_type": updates["doc_type"]}
-                )
+            # Sync chunk-pushdownable scalars to the content store so
+            # LanceDB pre-filter pushdown (T-0050 for doc_type, T-0077
+            # for lifecycle_status and project) stays accurate after
+            # the document update. update_metadata never touches
+            # lifecycle_status (that lives on LifecycleService); only
+            # doc_type and project flow through here.
+            if self._content:
+                chunk_updates: dict[str, str | None] = {}
+                if "doc_type" in updates:
+                    chunk_updates["doc_type"] = updates["doc_type"]
+                if "project" in updates:
+                    chunk_updates["project"] = updates["project"]
+                if chunk_updates:
+                    await self._content.update_chunk_metadata(document_id, chunk_updates)
 
             return doc
 

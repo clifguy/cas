@@ -98,19 +98,28 @@ def _make_doc(
 async def _index_marker(
     content_store,
     embedding_provider,
-    document_id: str,
+    doc,
     marker: str = "alpha-marker",
 ) -> None:
-    """Index a single chunk containing the marker term so BM25 finds it."""
+    """Index a single chunk containing the marker term so BM25 finds it.
+
+    Stamps the parent document's lifecycle_status, project, and doc_type
+    on the chunk row so LanceDB pre-filter pushdown (T-0077) matches the
+    chunk when the filter is active. Mirrors what production ingest does
+    at ``_stage2_indexing`` time.
+    """
     chunk = Chunk(
-        document_id=document_id,
+        document_id=doc.id,
         heading_path="Body",
         content=f"This document contains the {marker} term.",
         chunk_index=0,
+        doc_type=doc.doc_type,
+        lifecycle_status=doc.lifecycle_status,
+        project=doc.project,
     )
     [embedding] = await embedding_provider.embed([chunk.content])
     chunk.embedding = embedding
-    await content_store.index_chunks(document_id, [chunk])
+    await content_store.index_chunks(doc.id, [chunk])
 
 
 @pytest.fixture
@@ -179,7 +188,7 @@ async def _seed_mixed_vault(graph_store, content_store, embedding_provider):
             # Failed docs have no chunks; matches the production
             # invariant that chunking is gated on a healthy pipeline.
             continue
-        await _index_marker(content_store, embedding_provider, doc.id)
+        await _index_marker(content_store, embedding_provider, doc)
     return docs
 
 
