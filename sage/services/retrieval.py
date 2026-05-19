@@ -418,6 +418,7 @@ class RetrievalService:
                     document_date=_parse_document_date(doc.document_date),
                     source_modified_at=doc.source_modified_at,
                     semantic_abstract=doc.semantic_abstract,
+                    tier3_metadata=doc.tier3_metadata,
                 ),
                 chunk_content=None,
                 heading_path=None,
@@ -566,6 +567,7 @@ class RetrievalService:
                 document_date=_parse_document_date(doc.document_date),
                 source_modified_at=doc.source_modified_at,
                 semantic_abstract=doc.semantic_abstract,
+                tier3_metadata=doc.tier3_metadata,
             )
             hits.append(
                 DiscoverHit(
@@ -753,6 +755,7 @@ class RetrievalService:
                 document_date=_parse_document_date(doc.document_date),
                 source_modified_at=doc.source_modified_at,
                 semantic_abstract=doc.semantic_abstract,
+                tier3_metadata=doc.tier3_metadata,
             )
 
             # BH-084/085: suppress chunk_content when response_level=documents;
@@ -839,6 +842,7 @@ class RetrievalService:
                     document_date=_parse_document_date(doc.document_date),
                     source_modified_at=doc.source_modified_at,
                     semantic_abstract=doc.semantic_abstract,
+                    tier3_metadata=doc.tier3_metadata,
                 )
                 boosted.append(
                     DiscoverHit(
@@ -1062,6 +1066,7 @@ class RetrievalService:
             tags=doc.tags,
             document_date=doc.document_date,
             semantic_abstract=doc.semantic_abstract,
+            tier3_metadata=doc.tier3_metadata,
         )
 
         hits = [

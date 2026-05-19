@@ -83,6 +83,7 @@ def _make_doc(
     document_date: str | None = None,
     source_modified_at: datetime | None = None,
     semantic_abstract: str | None = None,
+    tier3_metadata: dict | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -106,6 +107,7 @@ def _make_doc(
         document_date=document_date,
         source_modified_at=source_modified_at,
         semantic_abstract=semantic_abstract,
+        tier3_metadata=tier3_metadata,
     )
 
 
@@ -2407,6 +2409,180 @@ async def test_bh_103_catalog_returns_abstract(
         "Summary of patent draft for metabolic monitoring."
     )
     assert hits_by_id[_id("cat_no_abs")].document.semantic_abstract is None
+
+
+# ---------------------------------------------------------------------------
+# T-0090: tier3_metadata round-trips through the DocumentSummary projection
+# in all three retrieval modes (catalog, semantic, keyword). The data is
+# already populated on the underlying Document; the projection used to drop
+# it, forcing callers to issue N filtered queries or per-document reads to
+# recover fields like ``ticket_priority`` or ``failure_class``.
+# ---------------------------------------------------------------------------
+
+
+async def test_t0090_catalog_includes_tier3_metadata(
+    graph_store,
+    retrieval_service,
+):
+    """Catalog mode populates tier3_metadata on every hit where present."""
+    doc_high = _make_doc(
+        _id("t0090_high"),
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+    )
+    doc_low = _make_doc(
+        _id("t0090_low"),
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0002", "ticket_priority": "low"},
+    )
+    doc_no_tier3 = _make_doc(
+        _id("t0090_plain"),
+        doc_type="note",
+    )
+    await graph_store.insert_document(doc_high)
+    await graph_store.insert_document(doc_low)
+    await graph_store.insert_document(doc_no_tier3)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert hits_by_id[_id("t0090_high")].document.tier3_metadata == {
+        "ticket_id": "T-0001",
+        "ticket_priority": "high",
+    }
+    assert hits_by_id[_id("t0090_low")].document.tier3_metadata == {
+        "ticket_id": "T-0002",
+        "ticket_priority": "low",
+    }
+
+
+async def test_t0090_catalog_tier3_metadata_null_when_unset(
+    graph_store,
+    retrieval_service,
+):
+    """tier3_metadata is None (not {}, not omitted) for docs without tier3."""
+    doc = _make_doc(_id("t0090_plain_only"), doc_type="note")
+    await graph_store.insert_document(doc)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="note"),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) == 1
+    hit = response.results[0]
+    assert hit.document.id == _id("t0090_plain_only")
+    assert hit.document.tier3_metadata is None
+
+
+async def test_t0090_catalog_tier3_filter_round_trips_projection(
+    graph_store,
+    retrieval_service,
+):
+    """Catalog filter + projection are consistent: every returned hit's
+    tier3 fields match the filter that selected it. This catches the bug
+    where the filter pushes down correctly but the projection silently
+    drops the field, leaving the caller unable to verify what they got.
+    """
+    docs = [
+        _make_doc(
+            _id(f"t0090_filt_{n}"),
+            doc_type="ticket",
+            tier3_metadata={"ticket_id": f"T-010{n}", "ticket_priority": prio},
+        )
+        for n, prio in enumerate(["high", "medium", "high"])
+    ]
+    for doc in docs:
+        await graph_store.insert_document(doc)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(
+            doc_type="ticket",
+            tier3={"ticket_priority": "high"},
+        ),
+    )
+    response = await retrieval_service.discover(request)
+
+    assert len(response.results) == 2
+    for hit in response.results:
+        assert hit.document.tier3_metadata is not None
+        assert hit.document.tier3_metadata["ticket_priority"] == "high"
+
+
+async def test_t0090_semantic_includes_tier3_metadata(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """Semantic mode populates tier3_metadata on each hit."""
+    doc = _make_doc(
+        _id("t0090_sem"),
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0501", "ticket_priority": "high"},
+    )
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("t0090_sem"),
+        [("Section 1", "Insulin pump telemetry calibration procedures.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="insulin pump",
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert _id("t0090_sem") in hits_by_id
+    assert hits_by_id[_id("t0090_sem")].document.tier3_metadata == {
+        "ticket_id": "T-0501",
+        "ticket_priority": "high",
+    }
+
+
+async def test_t0090_keyword_includes_tier3_metadata(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """Keyword mode populates tier3_metadata on each hit."""
+    doc = _make_doc(
+        _id("t0090_kw"),
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0502", "ticket_priority": "medium"},
+    )
+    await graph_store.insert_document(doc)
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("t0090_kw"),
+        [("Section 1", "Glucose sensor electrochemistry whitepaper.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="glucose sensor",
+    )
+    response = await retrieval_service.discover(request)
+
+    hits_by_id = {h.document.id: h for h in response.results}
+    assert _id("t0090_kw") in hits_by_id
+    assert hits_by_id[_id("t0090_kw")].document.tier3_metadata == {
+        "ticket_id": "T-0502",
+        "ticket_priority": "medium",
+    }
 
 
 # BH-104: Document-level response mode preserves semantic_abstract

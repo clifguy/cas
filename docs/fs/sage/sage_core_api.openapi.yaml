@@ -2247,6 +2247,20 @@ components:
             abstract generation. Enables steward agents and vault-steward
             discovery to access document orientation without a separate
             get_document call (CAS-ADR-011).
+        tier3_metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: >-
+            Typed per-doc_type metadata (CAS-ADR-028). Opaque dict whose
+            key set is determined by the document's doc_type tier3 schema;
+            consumers should probe for keys defensively because the shape
+            varies by doc_type. Null when the document carries no tier3
+            metadata, either because the doc_type declares no schema or
+            because no values have been set. Surfaced on the projection
+            (T-0090) so callers can read fields like ticket_priority or
+            failure_class from a single catalog/semantic/keyword pass
+            without follow-up get_document round-trips.
 
     Edge:
       type: object
