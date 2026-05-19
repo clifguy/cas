@@ -917,12 +917,14 @@ class TestCallerIntegration:
 # version_chain inference; otherwise the entire group's repair is staged.
 
 
+from sage.models.enums import RationaleKind  # noqa: E402
 from sage.models.schemas import (  # noqa: E402 -- grouped with the version-chain test section below
     Edge,
     LinkRequest,
 )
 
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
+FILENAME_CODE_MATCH_RATIONALE_PREFIX = "[filename_code_match]"
 
 
 def _eid(name: str) -> str:
@@ -942,8 +944,16 @@ def _make_edge(
     *,
     edge_type: EdgeType = EdgeType.SUPERSEDES,
     rationale: str | None = None,
+    rationale_kind: RationaleKind = RationaleKind.MANUAL,
 ) -> Edge:
-    """Build a minimal Edge for in-memory mock graph state."""
+    """Build a minimal Edge for in-memory mock graph state.
+
+    T-0080: ``rationale_kind`` defaults to ``MANUAL`` so existing
+    chain-repair fixtures that constructed pre-existing edges without
+    awareness of the typed discriminator now exercise the provenance
+    gate against a non-version_chain edge (the explicit pattern in
+    CR-002).
+    """
     return Edge(
         id=edge_id,
         source_id=source_id,
@@ -951,6 +961,7 @@ def _make_edge(
         edge_type=edge_type,
         created_at=datetime.now(timezone.utc),
         rationale=rationale,
+        rationale_kind=rationale_kind,
     )
 
 
@@ -1043,6 +1054,7 @@ class _MockGraphState:
             request.target_id,
             edge_type=request.edge_type,
             rationale=request.rationale,
+            rationale_kind=request.rationale_kind or RationaleKind.MANUAL,
         )
         return {"edge_id": edge_id}
 
@@ -1148,6 +1160,7 @@ class TestChainRepair:
             V3_ID,
             V1_ID,
             rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
+            rationale_kind=RationaleKind.VERSION_CHAIN,
         )
         services, state = _make_chain_services([v1, v3], [existing_edge])
         svc = BatchIngestService()
@@ -1339,3 +1352,175 @@ class TestChainRepair:
         assert result.edges_staged.get("supersedes", 0) == 0
         assert result.edges_removed == 0
         assert state.removed_edge_ids == []
+
+    # ------------------------------------------------------------------
+    # T-0080: typed rationale_kind discriminator on edges
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_t0080_chain_repair_link_request_stamps_version_chain(self):
+        """T5. Version-chain inference passes rationale_kind=VERSION_CHAIN
+        on the LinkRequest it submits to link_idempotent. Without this,
+        the auto-inferred edge lands with the default 'manual' kind, the
+        rationale-text prefix becomes load-bearing again, and the index
+        added by T-0080 cannot be used to identify version-chain edges.
+        """
+        V1_ID = "dddddddd_v1"
+        V3_ID = "dddddddd_v3"
+        v1 = _make_document(
+            V1_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v1",
+            tags=["PV06"],
+            lifecycle_status="archived",
+        )
+        v3 = _make_document(
+            V3_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        existing_edge = _make_edge(
+            _E_V3_V1,
+            V3_ID,
+            V1_ID,
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} v3 supersedes v1 (title: Claim-Set)",
+            rationale_kind=RationaleKind.VERSION_CHAIN,
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+        svc = BatchIngestService()
+
+        await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        supersedes_requests = [
+            r for r in state.added_link_requests if r.edge_type == EdgeType.SUPERSEDES
+        ]
+        assert supersedes_requests, "chain repair should issue at least one supersedes link"
+        for req in supersedes_requests:
+            assert req.rationale_kind == RationaleKind.VERSION_CHAIN, (
+                f"chain-repair LinkRequest must carry rationale_kind=version_chain; "
+                f"got {req.rationale_kind!r} (rationale={req.rationale!r})"
+            )
+
+    @pytest.mark.asyncio
+    async def test_t0080_filename_code_match_stamps_prefix_in_evidence(self):
+        """T6. The filename-code-match inference path stamps the
+        ``[filename_code_match]`` rationale prefix on the staging edge's
+        inference_evidence. When the staging edge is later promoted via
+        confirm_staging_edge, the prefix is copied into the production
+        edge's rationale and the helper derives rationale_kind=
+        filename_code_match. Today the inference evidence is plain text,
+        breaking the ticket's claim that this is an existing tier-2
+        prefix and leaving the backfill mapping with no rows to match.
+        """
+        WF_ID = "eeeeeeee_workflow"
+        CT_ID = "eeeeeeee_content"
+        workflow_doc = _make_document(
+            WF_ID,
+            title="Checklist",
+            project="PIM",
+            doc_type="checklist",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        content_doc = _make_document(
+            CT_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        services, state = _make_chain_services([workflow_doc, content_doc], [])
+        svc = BatchIngestService()
+
+        await svc.run(
+            files=[
+                _fd(
+                    "/tmp/new_checklist.md",
+                    title="New-Checklist",
+                    project="PIM",
+                    codes=["PV06"],
+                    doc_type="checklist",
+                )
+            ],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        staged_covers = [
+            s for s in getattr(state, "staged_edges", []) if s.edge_type == EdgeType.COVERS
+        ]
+        assert staged_covers, (
+            "filename_code_match should produce at least one tier-2 covers staging edge"
+        )
+        for staging in staged_covers:
+            assert staging.inference_evidence.startswith(FILENAME_CODE_MATCH_RATIONALE_PREFIX), (
+                f"staging.inference_evidence must start with "
+                f"{FILENAME_CODE_MATCH_RATIONALE_PREFIX!r}; got {staging.inference_evidence!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_t0080_provenance_gate_uses_rationale_kind_column(self):
+        """T8. The CAS-ADR-019 provenance gate downgrades chain repair to
+        Tier 2 when an existing supersedes edge has rationale_kind=manual,
+        even if its rationale text happens to start with
+        ``[version_chain]`` (a stale rationale string from before T-0080).
+        The discriminator now lives in the typed column, not the prefix.
+        """
+        V1_ID = "ffffffff_v1"
+        V3_ID = "ffffffff_v3"
+        v1 = _make_document(
+            V1_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v1",
+            tags=["PV06"],
+            lifecycle_status="archived",
+        )
+        v3 = _make_document(
+            V3_ID,
+            title="Claim-Set",
+            project="PIM",
+            doc_type="patent_draft",
+            version_label="v3",
+            tags=["PV06"],
+            lifecycle_status="active",
+        )
+        # Stale rationale carries the prefix but the typed kind is MANUAL
+        # (e.g., a hand-curated edge written before T-0080 that someone
+        # included the prefix in by convention but never set the column).
+        existing_edge = _make_edge(
+            _E_V3_V1,
+            V3_ID,
+            V1_ID,
+            rationale=f"{VERSION_CHAIN_RATIONALE_PREFIX} Clif curated this manually",
+            rationale_kind=RationaleKind.MANUAL,
+        )
+        services, state = _make_chain_services([v1, v3], [existing_edge])
+        svc = BatchIngestService()
+
+        result = await svc.run(
+            files=[_fd("/tmp/v2.md", version="v2", **CHAIN_KW)],
+            vault_services=services,
+            infer_edges=True,
+        )
+
+        assert result.edges_created.get("supersedes", 0) == 0, (
+            "manual-kind edge should block Tier 1 repair regardless of rationale text"
+        )
+        assert result.edges_removed == 0
+        assert _E_V3_V1 in state.edges, "manual edge must not be removed"
+        assert state.removed_edge_ids == []
+        # Repair lands in Tier 2 staging
+        assert result.edges_staged.get("supersedes", 0) >= 2

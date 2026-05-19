@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from sage.models.enums import EdgeType
+from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.services.graph_ops import GraphOpsService
@@ -36,14 +36,28 @@ WORKFLOW_DOC_TYPES = frozenset(
     }
 )
 
-# Rationale prefix marks edges authored by version_chain inference.
-# Provenance check: a chain-repair removal targeting a non-prefixed edge
-# downgrades the entire group's repair to Tier 2 staging.
+# Rationale prefixes mark edges authored by an auto-inference rule.
+# Promoted to a typed, indexed `rationale_kind` column on the edges table
+# in T-0080; the prefix is still emitted in evidence/rationale text so
+# that staging edges (no rationale_kind column) can be classified at
+# promotion time.
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
+FILENAME_CODE_MATCH_RATIONALE_PREFIX = "[filename_code_match]"
 
 
 def _is_version_chain_edge(edge: Edge) -> bool:
-    return edge.rationale is not None and edge.rationale.startswith(VERSION_CHAIN_RATIONALE_PREFIX)
+    """T-0080: provenance gate check reads the typed column, not the
+    rationale-text prefix.
+    """
+    return edge.rationale_kind == RationaleKind.VERSION_CHAIN
+
+
+# T-0080: map from the inference rule's `method` name (set on each
+# PlannedEdge) to the typed RationaleKind for the produced edge.
+_METHOD_TO_RATIONALE_KIND: dict[str, RationaleKind] = {
+    "version_chain": RationaleKind.VERSION_CHAIN,
+    "filename_code_match": RationaleKind.FILENAME_CODE_MATCH,
+}
 
 
 @dataclass
@@ -300,8 +314,9 @@ class EdgeInferenceEngine:
                             tier=2,
                             method="filename_code_match",
                             evidence=(
-                                f"Workflow '{wf_item.parsed.title}' shares code "
-                                f"{code} with '{ct_item.parsed.title}'"
+                                f"{FILENAME_CODE_MATCH_RATIONALE_PREFIX} "
+                                f"Workflow '{wf_item.parsed.title}' shares "
+                                f"code {code} with '{ct_item.parsed.title}'"
                             ),
                         )
                     )
@@ -382,6 +397,11 @@ async def resolve_and_execute(
             )
             continue
 
+        # T-0080: every auto-inference method stamps its provenance prefix
+        # on the evidence string above; derive the typed discriminator
+        # from that prefix so the LinkRequest and StagingEdge land with
+        # the correct rationale_kind without re-encoding the mapping.
+        rationale_kind = _METHOD_TO_RATIONALE_KIND.get(planned.method, RationaleKind.MANUAL)
         try:
             if planned.tier == 1:
                 # T-0079: link_idempotent makes auto-inferred edges
@@ -396,6 +416,7 @@ async def resolve_and_execute(
                         target_id=target_id,
                         edge_type=planned.edge_type,
                         rationale=planned.evidence,
+                        rationale_kind=rationale_kind,
                     )
                 )
                 key = planned.edge_type.value

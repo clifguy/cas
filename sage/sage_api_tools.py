@@ -608,6 +608,7 @@ def register_sage_tools(
         retracted_edge_id: str | None = None,
         notes: str | None = None,
         rationale: str | None = None,
+        rationale_kind: str | None = None,
     ) -> dict:
         """Create a typed edge between two documents in the graph.
 
@@ -686,6 +687,12 @@ def register_sage_tools(
                 retracted. Required (and valid only) on `retracts` edges.
             notes: Free-text notes about the edge.
             rationale: Rationale for creating this edge.
+            rationale_kind: Optional explicit provenance discriminator
+                (CAS-ADR-019 / T-0080). Accepts one of
+                ``version_chain``, ``references_mention``,
+                ``filename_code_match``, ``manual``. When omitted, the
+                value is derived from the rationale text prefix and
+                falls back to ``manual``.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -704,6 +711,7 @@ def register_sage_tools(
                 retracted_edge_id=retracted_edge_id,
                 notes=notes,
                 rationale=rationale,
+                rationale_kind=rationale_kind,
             )
             # T-0079: link_idempotent returns (edge, created). On a
             # duplicate natural-key triple the existing edge is

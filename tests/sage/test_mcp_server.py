@@ -493,6 +493,74 @@ async def test_link_self_referential_error(vault_services):
     assert result["error"] == "self_referential_edge"
 
 
+async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
+    """T7. sage_link accepts an optional ``rationale_kind`` argument
+    and persists it verbatim on the edge — even when the rationale text
+    would otherwise derive to a different kind. Tests with a non-default
+    discriminator (``version_chain``) so a system that ignored
+    rationale_kind and always returned ``manual`` would fail.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    result = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "supersedes",
+            rationale="caller knows this is from version_chain inference",
+            rationale_kind="version_chain",
+        )
+    )
+    assert result.get("error") is None, result
+    assert result["rationale_kind"] == "version_chain"
+
+
+async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services):
+    """T7. sage_link derives rationale_kind from the rationale text
+    prefix when the caller omits the explicit argument. A
+    ``[version_chain]`` prefix yields ``rationale_kind=version_chain``.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    result = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "supersedes",
+            rationale="[version_chain] v2 supersedes v1",
+        )
+    )
+    assert result.get("error") is None, result
+    assert result["rationale_kind"] == "version_chain"
+
+
+async def test_t0080_sage_link_defaults_to_manual(vault_services):
+    """T7. sage_link defaults rationale_kind to ``manual`` when neither
+    an explicit kind nor a recognized rationale prefix is supplied.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    result = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "supersedes",
+            rationale="just a freeform note",
+        )
+    )
+    assert result.get("error") is None, result
+    assert result["rationale_kind"] == "manual"
+
+
 async def test_link_idempotent_returns_created_flag(vault_services):
     """T-0079: re-calling sage_link with the same natural-key triple
     returns ``created=False`` and preserves the original rationale."""

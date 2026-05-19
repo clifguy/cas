@@ -1922,6 +1922,28 @@ components:
         `merged_from` is a meta-edge recording that a successor chain
         absorbs predecessor chains, tombstoning their downstream edges.
 
+    RationaleKind:
+      type: string
+      enum:
+        - version_chain
+        - references_mention
+        - filename_code_match
+        - manual
+      default: manual
+      description: >-
+        Typed discriminator for the provenance source of an edge's
+        `rationale` text. Promoted from the rationale-prefix convention
+        introduced in CAS-ADR-019 (auto edge inference may delete only its
+        own edges) to a typed, indexed column on the edges table (T-0080).
+        Auto-inference paths stamp this explicitly:
+        `version_chain` for chain-repair supersedes edges,
+        `references_mention` for the (future) references-mention inference
+        rule (T-0016), and `filename_code_match` for the filename code
+        match inference rule. `manual` is the default for any edge whose
+        rationale lacks a recognized prefix (hand-curated edges via
+        sage_link, legacy edges, edges written before this column existed).
+        Storage enforces NOT NULL with DEFAULT 'manual'.
+
     ResolutionPolicy:
       type: string
       enum:
@@ -2321,6 +2343,14 @@ components:
             Decision rationale for this relationship. Particularly
             valuable on supersedes edges for capturing why the
             transition occurred (CAS-ADR-011).
+        rationale_kind:
+          $ref: "#/components/schemas/RationaleKind"
+          description: >-
+            Typed discriminator for the rationale's provenance source.
+            Promoted from the rationale-text prefix convention in
+            CAS-ADR-019 to a typed, indexed column (T-0080). Auto-
+            inference paths stamp this explicitly; hand-curated edges
+            and legacy rows take the default `manual`.
 
     User:
       type: object
@@ -2849,6 +2879,16 @@ components:
           type: string
           nullable: true
           description: Decision rationale for creating this relationship.
+        rationale_kind:
+          $ref: "#/components/schemas/RationaleKind"
+          nullable: true
+          description: >-
+            Optional explicit discriminator (CAS-ADR-019 / T-0080).
+            When omitted or null, the service derives the value from
+            the rationale text prefix and falls back to `manual` for
+            unrecognized or absent rationale. Callers should pass this
+            only when they have stronger provenance information than
+            the prefix-derivation rule.
 
     TraverseRequest:
       type: object

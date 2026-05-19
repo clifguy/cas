@@ -54,6 +54,26 @@ class EdgeType(StrEnum):
     MERGED_FROM = "merged_from"
 
 
+class RationaleKind(StrEnum):
+    """Typed discriminator for the provenance of an edge's `rationale` text.
+
+    Promoted from the rationale-text prefix convention introduced in
+    CAS-ADR-019 (auto edge inference may delete only its own edges) to a
+    typed, indexed column on the edges table (T-0080) so chain-repair and
+    future inference rules filter via SQL rather than Python `startswith()`.
+
+    `manual` is the default for edges with no recognized rationale prefix
+    (hand-curated via sage_link, legacy edges without a prefix, edges
+    written before this column was added). The column is NOT NULL with
+    DEFAULT 'manual' in storage.
+    """
+
+    VERSION_CHAIN = "version_chain"
+    REFERENCES_MENTION = "references_mention"
+    FILENAME_CODE_MATCH = "filename_code_match"
+    MANUAL = "manual"
+
+
 class ResolutionPolicy(StrEnum):
     """How the chain-scoped edge resolver treats an edge type during traversal (CAS-ADR-017).
 

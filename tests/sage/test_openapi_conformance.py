@@ -90,6 +90,7 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "LifecycleAction",
     "LifecycleStatus",
     "PipelineStatus",
+    "RationaleKind",
     "ResolutionPolicy",
     "ResponseLevel",
     "RetrievalMode",

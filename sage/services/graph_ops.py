@@ -44,6 +44,7 @@ from sage.models.schemas import (
     TraverseResponse,
     UnlinkResponse,
 )
+from sage.storage.edge_provenance import derive_rationale_kind
 from sage.storage.graph_store import GraphStore, LinkReadContext
 
 logger = logging.getLogger(__name__)
@@ -249,6 +250,9 @@ class GraphOpsService:
 
             self._validate_anchors_from_context(request, policy, ctx)
 
+            # T-0080: prefer the caller-supplied rationale_kind; otherwise
+            # derive from the rationale-text prefix and fall back to MANUAL.
+            rationale_kind = request.rationale_kind or derive_rationale_kind(request.rationale)
             edge = Edge(
                 id=str(uuid.uuid4()),
                 source_id=request.source_id,
@@ -262,6 +266,7 @@ class GraphOpsService:
                 created_at=datetime.now(timezone.utc),
                 notes=request.notes,
                 rationale=request.rationale,
+                rationale_kind=rationale_kind,
             )
 
             if request.edge_type == EdgeType.MERGED_FROM:

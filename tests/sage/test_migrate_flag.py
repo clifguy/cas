@@ -280,6 +280,165 @@ async def test_mig_004_graphstore_current_schema_no_op(tmp_path):
     await store2.close()
 
 
+# ── T-0080: rationale_kind backfill ────────────────────────────────
+
+
+def _seed_legacy_edges_with_rationales(
+    db_path: Path,
+    edges: list[tuple[str, str, str, str, str | None]],
+) -> None:
+    """Insert legacy rows into the rationale-text-only edges table.
+
+    Each tuple is ``(edge_id, source_id, target_id, edge_type, rationale)``.
+    ``rationale_kind`` is intentionally absent (the legacy CREATE TABLE
+    omits the column).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for edge_id, src, tgt, etype, rationale in edges:
+            conn.execute(
+                "INSERT INTO edges (id, source_id, target_id, edge_type, "
+                "created_at, rationale) VALUES (?, ?, ?, ?, ?, ?)",
+                (edge_id, src, tgt, etype, now, rationale),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_t0080_rationale_kind_backfill_on_legacy_db(tmp_path):
+    """T3. Migration adds the rationale_kind column and the backfill
+    UPDATE populates it from the rationale-text prefix for each known
+    discriminator. Edges with unrecognized or NULL rationale take the
+    NOT NULL DEFAULT 'manual'.
+
+    Edges use distinct edge_type values per row so the T-0079 unique
+    natural-key index does not collide on the shared (source, target)
+    pair.
+    """
+    import uuid
+
+    db_path = tmp_path / "graph.db"
+    _build_legacy_db(db_path)
+    _seed_legacy_row(db_path, doc_id="abc12345_a")
+    _seed_legacy_row(db_path, doc_id="abc12345_b")
+
+    e_version_chain = str(uuid.uuid4())
+    e_filename_code = str(uuid.uuid4())
+    e_manual_text = str(uuid.uuid4())
+    e_null_rationale = str(uuid.uuid4())
+
+    _seed_legacy_edges_with_rationales(
+        db_path,
+        edges=[
+            (
+                e_version_chain,
+                "abc12345_a",
+                "abc12345_b",
+                "supersedes",
+                "[version_chain] v2 supersedes v1",
+            ),
+            (
+                e_filename_code,
+                "abc12345_a",
+                "abc12345_b",
+                "covers",
+                "[filename_code_match] PV07 covers content",
+            ),
+            (
+                e_manual_text,
+                "abc12345_a",
+                "abc12345_b",
+                "references",
+                "hand-curated reason",
+            ),
+            (
+                e_null_rationale,
+                "abc12345_a",
+                "abc12345_b",
+                "depends_on",
+                None,
+            ),
+        ],
+    )
+
+    assert "rationale_kind" not in _columns(db_path, "edges")
+
+    store = GraphStore(db_path)
+    await store.initialize(migrate=True)
+    try:
+        assert "rationale_kind" in _columns(db_path, "edges")
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = dict(conn.execute("SELECT id, rationale_kind FROM edges").fetchall())
+        finally:
+            conn.close()
+
+        assert rows[e_version_chain] == "version_chain"
+        assert rows[e_filename_code] == "filename_code_match"
+        assert rows[e_manual_text] == "manual"
+        assert rows[e_null_rationale] == "manual"
+    finally:
+        await store.close()
+
+
+async def test_t0080_rationale_kind_backfill_is_idempotent(tmp_path):
+    """T4. Running migrate twice on the same data leaves every
+    ``(id, rationale_kind)`` pair unchanged and does not raise. The
+    second pass is a no-op against post-backfill state.
+    """
+    import uuid
+
+    db_path = tmp_path / "graph.db"
+    _build_legacy_db(db_path)
+    _seed_legacy_row(db_path, doc_id="abc12345_a")
+    _seed_legacy_row(db_path, doc_id="abc12345_b")
+
+    _seed_legacy_edges_with_rationales(
+        db_path,
+        edges=[
+            (
+                str(uuid.uuid4()),
+                "abc12345_a",
+                "abc12345_b",
+                "supersedes",
+                "[version_chain] x",
+            ),
+            (
+                str(uuid.uuid4()),
+                "abc12345_a",
+                "abc12345_b",
+                "covers",
+                "hand-curated",
+            ),
+        ],
+    )
+
+    store = GraphStore(db_path)
+    await store.initialize(migrate=True)
+    await store.close()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        first = sorted(conn.execute("SELECT id, rationale_kind FROM edges").fetchall())
+    finally:
+        conn.close()
+
+    store2 = GraphStore(db_path)
+    await store2.initialize(migrate=True)
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            second = sorted(conn.execute("SELECT id, rationale_kind FROM edges").fetchall())
+        finally:
+            conn.close()
+        assert first == second, f"second migrate pass changed rows. before={first} after={second}"
+    finally:
+        await store2.close()
+
+
 # ── LanceDB legacy-table builder ───────────────────────────────────
 
 

@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS edges (
     created_at TEXT NOT NULL,
     notes TEXT,
     rationale TEXT,
+    rationale_kind TEXT NOT NULL DEFAULT 'manual',  -- typed provenance (T-0080)
     FOREIGN KEY (source_id) REFERENCES documents(id),
     FOREIGN KEY (target_id) REFERENCES documents(id)
 );
@@ -179,6 +180,9 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_edges_source_type ON edges(source_id, edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_target_type ON edges(target_id, edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);",
+    # T-0080: typed provenance discriminator, indexed for chain-repair
+    # and future per-inference-rule telemetry.
+    "CREATE INDEX IF NOT EXISTS idx_edges_rationale_kind ON edges(rationale_kind);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
     # T-0075: expression indexes on the three canonical high-frequency
@@ -258,6 +262,38 @@ class Backfill:
     apply: Callable[[sqlite3.Connection], None]
 
 
+def _backfill_rationale_kind_detect(conn: sqlite3.Connection) -> bool:
+    """T-0080: edges whose rationale starts with a recognized prefix but
+    whose ``rationale_kind`` is still the post-migration default
+    ``'manual'``.
+    """
+    # _BACKFILL_RATIONALE_KIND_PAIRS is defined below; the detector
+    # short-circuits on the first matching row to stay cheap.
+    for _kind, prefix in _BACKFILL_RATIONALE_KIND_PAIRS:
+        row = conn.execute(
+            "SELECT 1 FROM edges WHERE rationale_kind = 'manual' AND rationale LIKE ? LIMIT 1",
+            (prefix + "%",),
+        ).fetchone()
+        if row is not None:
+            return True
+    return False
+
+
+def _backfill_rationale_kind_apply(conn: sqlite3.Connection) -> None:
+    """T-0080: classify ``rationale_kind`` for each known prefix.
+
+    Idempotent under repeated invocation against the same data. The
+    ``AND rationale_kind = 'manual'`` guard prevents the backfill from
+    clobbering writer-supplied kinds set after the initial migration.
+    """
+    for kind, prefix in _BACKFILL_RATIONALE_KIND_PAIRS:
+        conn.execute(
+            "UPDATE edges SET rationale_kind = ? "
+            "WHERE rationale_kind = 'manual' AND rationale LIKE ?",
+            (kind, prefix + "%"),
+        )
+
+
 def _backfill_document_tags_detect(conn: sqlite3.Connection) -> bool:
     """T-0078: documents with tags JSON but no corresponding join rows."""
     row = conn.execute(
@@ -291,11 +327,39 @@ def _backfill_document_tags_apply(conn: sqlite3.Connection) -> None:
         )
 
 
+# T-0080: prefix → kind pairs driving the one-time backfill UPDATE
+# statements. The list is derived from
+# ``sage.storage.edge_provenance.RATIONALE_PREFIX_TO_KIND`` so the helper
+# and the backfill SQL cannot drift. The detector in
+# ``_backfill_rationale_kind_detect`` and the applier in
+# ``_backfill_rationale_kind_apply`` consume this list directly.
+_BACKFILL_RATIONALE_KIND_PAIRS: list[tuple[str, str]] = []
+
+
+def _populate_backfill_rationale_kind_pairs() -> None:
+    # Late import to avoid a top-level cycle: edge_provenance imports
+    # RationaleKind from sage.models.enums, and the storage layer
+    # consumes it here without taking on the dependency at module load.
+    from sage.storage.edge_provenance import RATIONALE_PREFIX_TO_KIND
+
+    _BACKFILL_RATIONALE_KIND_PAIRS.clear()
+    for prefix, kind in RATIONALE_PREFIX_TO_KIND.items():
+        _BACKFILL_RATIONALE_KIND_PAIRS.append((kind.value, prefix))
+
+
+_populate_backfill_rationale_kind_pairs()
+
+
 BACKFILL_PLAN: list[Backfill] = [
     Backfill(
         name="document_tags",
         detect=_backfill_document_tags_detect,
         apply=_backfill_document_tags_apply,
+    ),
+    Backfill(
+        name="rationale_kind",
+        detect=_backfill_rationale_kind_detect,
+        apply=_backfill_rationale_kind_apply,
     ),
 ]
 
@@ -353,6 +417,16 @@ MIGRATION_PLAN: list[Migration] = [
         "edges", "valid_until_version", "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;"
     ),
     Migration("edges", "retracted_edge_id", "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;"),
+    # T-0080: typed rationale-kind discriminator. NOT NULL with constant
+    # default 'manual' is legal under SQLite ALTER TABLE ADD COLUMN, so
+    # existing rows pick up the default at migration time; the paired
+    # backfill (registered in BACKFILL_PLAN) then re-classifies rows whose
+    # rationale text carries a recognized prefix.
+    Migration(
+        "edges",
+        "rationale_kind",
+        "ALTER TABLE edges ADD COLUMN rationale_kind TEXT NOT NULL DEFAULT 'manual';",
+    ),
 ]
 
 # Backwards-compatible string-of-DDL view for callers that just want the

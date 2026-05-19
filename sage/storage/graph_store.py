@@ -20,6 +20,7 @@ from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryT
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
+    RationaleKind,
     ResolutionPolicy,
     SourceType,
     UserType,
@@ -183,6 +184,12 @@ class GraphStore:
         # 3. Run data backfills before indexes; backfills usually need the
         #    new table itself (created in step 1) but not the post-migration
         #    indexes. Idempotent: apply() functions tolerate re-running.
+        #    Re-detect after migrations applied so backfills that depend on
+        #    columns added in step 2 (T-0080) are picked up — the initial
+        #    detect runs before migrations and swallows column-missing
+        #    OperationalErrors as "not pending."
+        if pending:
+            pending_bf = pending_backfills(conn, BACKFILL_PLAN)
         for bf in pending_bf:
             bf.apply(conn)
         # 4. Create indexes (may reference columns added by migrations).
@@ -638,9 +645,9 @@ class GraphStore:
                 id, source_id, target_id, edge_type, resolution_policy,
                 source_valid_from_version, target_valid_from_version,
                 valid_until_version, retracted_edge_id,
-                created_at, notes, rationale
+                created_at, notes, rationale, rationale_kind
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 edge.id,
                 edge.source_id,
@@ -654,6 +661,7 @@ class GraphStore:
                 edge.created_at.isoformat(),
                 edge.notes,
                 edge.rationale,
+                edge.rationale_kind.value,
             ),
         )
 
@@ -1654,6 +1662,7 @@ class GraphStore:
     def _row_to_edge(row: sqlite3.Row) -> Edge:
         keys = row.keys()
         policy_value = row["resolution_policy"] if "resolution_policy" in keys else None
+        rationale_kind_value = row["rationale_kind"] if "rationale_kind" in keys else "manual"
         return Edge(
             id=row["id"],
             source_id=row["source_id"],
@@ -1673,6 +1682,7 @@ class GraphStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             notes=row["notes"],
             rationale=row["rationale"],
+            rationale_kind=RationaleKind(rationale_kind_value),
         )
 
     @staticmethod

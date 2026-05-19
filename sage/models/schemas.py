@@ -15,6 +15,7 @@ from sage.models.enums import (
     CatalogSortBy,
     EdgeType,
     PipelineStatus,
+    RationaleKind,
     ResolutionPolicy,
     ResponseLevel,
     RetrievalMode,
@@ -424,6 +425,16 @@ class Edge(BaseModel):
             "Decision rationale for this relationship. Particularly valuable "
             "on supersedes edges for capturing why the transition occurred "
             "(CAS-ADR-011)."
+        ),
+    )
+    rationale_kind: RationaleKind = Field(
+        default=RationaleKind.MANUAL,
+        description=(
+            "Typed discriminator for the rationale's provenance source. "
+            "Promoted from the rationale-text prefix convention in "
+            "CAS-ADR-019 to a typed, indexed column (T-0080). Auto- "
+            "inference paths stamp this explicitly; hand-curated edges "
+            "and legacy rows take the default `manual`."
         ),
     )
 
@@ -967,6 +978,17 @@ class LinkRequest(BaseModel):
     rationale: str | None = Field(
         default=None,
         description="Decision rationale for creating this relationship.",
+    )
+    rationale_kind: RationaleKind | None = Field(
+        default=None,
+        description=(
+            "Optional explicit discriminator (CAS-ADR-019 / T-0080). "
+            "When omitted or null, the service derives the value from "
+            "the rationale text prefix and falls back to `manual` for "
+            "unrecognized or absent rationale. Callers should pass this "
+            "only when they have stronger provenance information than "
+            "the prefix-derivation rule."
+        ),
     )
 
 
