@@ -38,6 +38,9 @@ test = [
 mlx = [
     "mlx-lm>=0.20",
 ]
+ocr = [
+    "ocrmypdf>=16.0",
+]
 dev = [
     "ruff==0.15.12",
     "pre-commit>=4.0",

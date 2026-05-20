@@ -2494,6 +2494,17 @@ try:
 except ImportError:
     _HAS_PIL = False
 
+try:
+    import ocrmypdf as _ocrmypdf  # noqa: F401
+
+    _HAS_OCRMYPDF = True
+except ImportError:
+    _HAS_OCRMYPDF = False
+
+import shutil as _shutil_for_ocr  # noqa: E402 -- grouped with PDF section
+
+_HAS_OCR_BINARIES = bool(_shutil_for_ocr.which("tesseract") and _shutil_for_ocr.which("gs"))
+
 
 requires_pdf = pytest.mark.skipif(
     not (_HAS_PDFPLUMBER and _HAS_REPORTLAB),
@@ -2502,6 +2513,10 @@ requires_pdf = pytest.mark.skipif(
 requires_pdf_with_image = pytest.mark.skipif(
     not (_HAS_PDFPLUMBER and _HAS_REPORTLAB and _HAS_PIL),
     reason="pdfplumber, pypdf, reportlab, or Pillow not available",
+)
+requires_ocr = pytest.mark.skipif(
+    not (_HAS_OCRMYPDF and _HAS_OCR_BINARIES),
+    reason="ocrmypdf or tesseract/ghostscript not available",
 )
 
 
@@ -2910,26 +2925,28 @@ class TestPdfAdapter:
         assert "BODY_L11" in level10_node.content
         assert "BODY_L12" in level10_node.content
 
-    # ── Section 8.5 — Scanned-PDF detection ──────────────────────
+    # ── Section 8.5 — Scanned-PDF OCR pre-pass ────────────────────
 
     @requires_pdf_with_image
-    async def test_ad_088_scanned_pdf_emits_scanned_tag(self, tmp_path):
-        """AD-088: Scanned-only PDF produces empty projection with pdf:scanned tag."""
+    @requires_ocr
+    async def test_ad_088_scanned_pdf_produces_text_with_ocr_applied_tag(self, tmp_path):
+        """AD-088: Scanned PDF gets inline OCR; projection has text and pdf:ocr_applied."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
         path = _make_scanned_pdf(tmp_path / "scanned-doc.pdf")
         adapter = PdfAdapter()
         result = await adapter.project(path)
 
-        assert result.text == ""
-        assert result.headings == []
-        assert "pdf:scanned" in result.metadata.get("adapter_tags", [])
-        assert "pdf:" in result.metadata.get("adapter_tag_prefixes", [])
-        assert result.title == "scanned-doc"
+        assert result.text != "", "OCR pre-pass must produce non-empty text"
+        adapter_tags = result.metadata.get("adapter_tags", [])
+        assert "pdf:ocr_applied" in adapter_tags
+        assert "pdf:scanned" not in adapter_tags
+        assert "pdf:ocr_no_text" not in adapter_tags
 
     @requires_pdf_with_image
+    @requires_ocr
     async def test_ad_089_adapter_tag_prefixes_declared(self, tmp_path):
-        """AD-089: adapter_tag_prefixes declares ['pdf:'] when any pdf: tag is contributed."""
+        """AD-089: adapter_tag_prefixes declares ['pdf:'] for the OCR'd path too."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
         outlined = _make_pdf_with_outline(
@@ -2946,6 +2963,120 @@ class TestPdfAdapter:
 
         assert outlined_result.metadata.get("adapter_tag_prefixes") == ["pdf:"]
         assert scanned_result.metadata.get("adapter_tag_prefixes") == ["pdf:"]
+
+    @requires_pdf_with_image
+    async def test_ad_095_scanned_pdf_without_ocrmypdf_raises(self, tmp_path, monkeypatch):
+        """AD-095: Scanned PDF with ocrmypdf unimportable raises ValueError naming [ocr] extra."""
+        import sys
+
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        # Force the lazy `import ocrmypdf` inside the OCR helper to fail.
+        monkeypatch.setitem(sys.modules, "ocrmypdf", None)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-noocr.pdf")
+        adapter = PdfAdapter()
+
+        with pytest.raises(ValueError) as exc_info:
+            await adapter.project(path)
+
+        message = str(exc_info.value)
+        assert "[ocr]" in message
+        assert "tesseract" in message
+        assert "ghostscript" in message
+
+    @requires_pdf_with_image
+    async def test_ad_096_ocrmypdf_runtime_error_raises_and_cleans_tempfile(
+        self, tmp_path, monkeypatch
+    ):
+        """AD-096: ocrmypdf.ocr raising mid-call → ValueError; tempfile is unlinked."""
+        import sys
+        import tempfile as _tempfile
+        import types
+        from pathlib import Path
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        # Fake ocrmypdf module whose .ocr() raises mid-call.
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+        def _failing_ocr(*args, **kwargs):
+            raise RuntimeError("simulated tesseract failure")
+
+        fake_ocrmypdf.ocr = _failing_ocr
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        # Capture the tempfile path the helper creates so we can assert
+        # it has been unlinked after the raise propagates.
+        captured_paths: list[str] = []
+        real_named_tempfile = _tempfile.NamedTemporaryFile
+
+        def _spy_named_tempfile(*args, **kwargs):
+            handle = real_named_tempfile(*args, **kwargs)
+            captured_paths.append(handle.name)
+            return handle
+
+        monkeypatch.setattr(pdf_adapter_mod.tempfile, "NamedTemporaryFile", _spy_named_tempfile)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-runtime-error.pdf")
+        adapter = PdfAdapter()
+
+        with pytest.raises(ValueError, match="OCR failed for"):
+            await adapter.project(path)
+
+        assert captured_paths, "OCR helper must allocate a tempfile before invoking ocrmypdf"
+        for p in captured_paths:
+            assert not Path(p).exists(), f"tempfile {p} leaked after OCR failure"
+
+    @requires_pdf_with_image
+    async def test_ad_097_ocr_yields_no_text_emits_ocr_no_text_tag(self, tmp_path, monkeypatch):
+        """AD-097: OCR succeeds but yields no extractable text → pdf:ocr_no_text tag."""
+        import sys
+        import types
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        # Stub ocrmypdf so the OCR call is a no-op (succeeds without touching the file).
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+        def _noop_ocr(input_path, output_path, *args, **kwargs):
+            # Make the output path a valid (if empty) PDF so any unlink in
+            # the success path succeeds; content is irrelevant because we
+            # also stub the post-OCR extraction.
+            from pathlib import Path
+
+            Path(output_path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+        fake_ocrmypdf.ocr = _noop_ocr
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        # Wrap _extract_from_path: first call (against the source) runs the
+        # real extraction so is_scanned trips; second call (against the
+        # OCR tempfile) returns empty page texts to simulate a blank scan.
+        original_extract = pdf_adapter_mod._extract_from_path
+        call_count = {"n": 0}
+
+        def _stub_extract(path, max_pages):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return original_extract(path, max_pages)
+            return ([""], [], None, 1, 1)
+
+        monkeypatch.setattr(pdf_adapter_mod, "_extract_from_path", _stub_extract)
+
+        path = _make_scanned_pdf(tmp_path / "scanned-blank.pdf")
+        adapter = PdfAdapter()
+        result = await adapter.project(path)
+
+        assert call_count["n"] == 2, "OCR path must invoke _extract_from_path twice"
+        assert result.text == ""
+        assert result.headings == []
+        adapter_tags = result.metadata.get("adapter_tags", [])
+        assert "pdf:ocr_no_text" in adapter_tags
+        assert "pdf:ocr_applied" not in adapter_tags
+        assert "pdf:scanned" not in adapter_tags
 
     # ── Section 8.6 — Failure modes ──────────────────────────────
 

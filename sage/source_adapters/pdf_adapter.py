@@ -1,15 +1,18 @@
-"""PDF source adapter (v0.1, native-text only).
+"""PDF source adapter.
 
 Extracts text from PDFs that carry a real text layer via `pdfplumber`.
 Reads the document outline and `/Info` dictionary via `pypdf` (its API
 for those is more direct than pdfplumber's).
 
 PDFs with no usable text layer (image-only "scanned" PDFs) are
-detected via the scanned-text threshold and yield an empty projection
-tagged `pdf:scanned`. OCR is out of scope for v0.1; the user is
-expected to OCR the file externally (e.g., Acrobat Pro) and re-ingest.
+detected via the scanned-text threshold and run through an inline
+`ocrmypdf` OCR pre-pass; the OCR'd output is then re-extracted on the
+same code path as a native-text PDF. The OCR dependency lives in the
+optional `[ocr]` extra (`pip install -e ".[ocr]"`) and requires the
+`tesseract` and `ghostscript` system binaries.
 
-Computes SHA-256 of raw PDF bytes for content_hash.
+Computes SHA-256 of raw PDF bytes for content_hash (the source PDF is
+the document's identity, not the OCR derivative).
 """
 
 import contextlib
@@ -17,6 +20,7 @@ import hashlib
 import io
 import logging
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -167,12 +171,97 @@ def _extract_info_title(reader: pypdf.PdfReader) -> str | None:
         return None
 
 
+def _extract_from_path(
+    path: Path, max_pages: int
+) -> tuple[list[str], list[tuple[int, str, int]], str | None, int, int]:
+    """Run the pypdf + pdfplumber extraction pipeline against a PDF on disk.
+
+    Returns (page_texts, outline_entries, info_title, actual_page_count,
+    pages_extracted). Shared by the native-text path and the post-OCR
+    re-extraction path.
+    """
+    with _suppress_pdf_noise():
+        try:
+            reader = pypdf.PdfReader(str(path), strict=False)
+        except Exception as e:
+            raise ValueError(f"Failed to open PDF {path}: {e}") from e
+
+        if reader.is_encrypted:
+            raise ValueError(f"PDF is encrypted and cannot be projected: {path}")
+
+        try:
+            actual_page_count = len(reader.pages)
+        except Exception as e:
+            raise ValueError(f"Failed to read pages from PDF {path}: {e}") from e
+
+        info_title = _extract_info_title(reader)
+
+        try:
+            raw_outline = reader.outline
+        except Exception:
+            raw_outline = []
+        outline_entries = _flatten_outline(raw_outline or [], reader, _OUTLINE_MAX_DEPTH)
+
+        pages_extracted = min(actual_page_count, max_pages)
+
+        page_texts: list[str] = []
+        if pages_extracted > 0:
+            try:
+                with pdfplumber.open(str(path)) as pdf:
+                    for i in range(pages_extracted):
+                        try:
+                            pt = pdf.pages[i].extract_text() or ""
+                        except Exception:
+                            pt = ""
+                        page_texts.append(pt)
+            except Exception as e:
+                raise ValueError(f"Failed to extract text from PDF {path}: {e}") from e
+
+    return page_texts, outline_entries, info_title, actual_page_count, pages_extracted
+
+
+def _ocr_to_tempfile(source_path: Path) -> Path:
+    """OCR ``source_path`` to a new tempfile and return the tempfile path.
+
+    Lazy-imports ``ocrmypdf``. ImportError surfaces as a ValueError that
+    names the [ocr] extra and the required Homebrew binaries. Any
+    ocrmypdf runtime error unlinks the tempfile and re-raises as
+    ValueError. The caller is responsible for unlinking the returned
+    tempfile on success.
+    """
+    try:
+        import ocrmypdf
+    except ImportError as e:
+        raise ValueError(
+            f"Scanned PDF detected at {source_path}; OCR requires the [ocr] extra "
+            f'(pip install -e ".[ocr]") and the tesseract + ghostscript system '
+            f"binaries (brew install tesseract ghostscript)."
+        ) from e
+
+    out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    out.close()
+    try:
+        ocrmypdf.ocr(
+            str(source_path),
+            out.name,
+            language="eng",
+            progress_bar=False,
+            quiet=True,
+        )
+    except Exception as e:
+        Path(out.name).unlink(missing_ok=True)
+        raise ValueError(f"OCR failed for {source_path}: {e}") from e
+    return Path(out.name)
+
+
 class PdfAdapter(SourceAdapter):
     # 0.2.0: chunks indexed with heading-context (heading_path embedded with
     # content, plus FTS index on heading_path).
     # 0.3.0: chunker emits one chunk per heading regardless of body content
     # (Word-Find equivalence for empty-content parents).
-    VERSION = "0.3.0"
+    # 0.4.0: scanned PDFs run through inline ocrmypdf pre-pass; tag set
+    # changes (pdf:scanned removed; pdf:ocr_applied / pdf:ocr_no_text added).
+    VERSION = "0.4.0"
     EXTENSIONS = [".pdf"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -183,42 +272,13 @@ class PdfAdapter(SourceAdapter):
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
         source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
-        with _suppress_pdf_noise():
-            try:
-                reader = pypdf.PdfReader(str(source_path), strict=False)
-            except Exception as e:
-                raise ValueError(f"Failed to open PDF {source_path}: {e}") from e
-
-            if reader.is_encrypted:
-                raise ValueError(f"PDF is encrypted and cannot be projected: {source_path}")
-
-            try:
-                actual_page_count = len(reader.pages)
-            except Exception as e:
-                raise ValueError(f"Failed to read pages from PDF {source_path}: {e}") from e
-
-            info_title = _extract_info_title(reader)
-
-            try:
-                raw_outline = reader.outline
-            except Exception:
-                raw_outline = []
-            outline_entries = _flatten_outline(raw_outline or [], reader, _OUTLINE_MAX_DEPTH)
-
-            pages_extracted = min(actual_page_count, max_pages)
-
-            page_texts: list[str] = []
-            if pages_extracted > 0:
-                try:
-                    with pdfplumber.open(str(source_path)) as pdf:
-                        for i in range(pages_extracted):
-                            try:
-                                pt = pdf.pages[i].extract_text() or ""
-                            except Exception:
-                                pt = ""
-                            page_texts.append(pt)
-                except Exception as e:
-                    raise ValueError(f"Failed to extract text from PDF {source_path}: {e}") from e
+        (
+            page_texts,
+            outline_entries,
+            info_title,
+            actual_page_count,
+            pages_extracted,
+        ) = _extract_from_path(source_path, max_pages)
 
         truncated = pages_extracted < actual_page_count
         total_chars = sum(len(p.strip()) for p in page_texts)
@@ -228,11 +288,45 @@ class PdfAdapter(SourceAdapter):
         full_text: str
         headings: list[HeadingNode]
 
-        if is_scanned or pages_extracted == 0:
+        if is_scanned:
+            ocr_path = _ocr_to_tempfile(source_path)
+            try:
+                (
+                    page_texts,
+                    outline_entries,
+                    info_title,
+                    _ocr_page_count,
+                    _ocr_pages_extracted,
+                ) = _extract_from_path(ocr_path, max_pages)
+            finally:
+                ocr_path.unlink(missing_ok=True)
+
+            total_chars = sum(len(p.strip()) for p in page_texts)
+            if total_chars > 0:
+                adapter_tags.append("pdf:ocr_applied")
+                full_text = "\n\n".join(p.strip() for p in page_texts if p.strip())
+                if outline_entries:
+                    headings = _build_outline_headings(outline_entries, page_texts, pages_extracted)
+                    adapter_tags.append("pdf:has_outline")
+                else:
+                    title_for_heading = _resolve_title(
+                        info_title, outline_entries, page_texts, source_path
+                    )
+                    headings = [
+                        HeadingNode(
+                            level=1,
+                            text=title_for_heading,
+                            path=title_for_heading,
+                            content=full_text,
+                        )
+                    ]
+            else:
+                adapter_tags.append("pdf:ocr_no_text")
+                full_text = ""
+                headings = []
+        elif pages_extracted == 0:
             full_text = ""
             headings = []
-            if is_scanned:
-                adapter_tags.append("pdf:scanned")
         else:
             full_text = "\n\n".join(p.strip() for p in page_texts if p.strip())
             if outline_entries:
