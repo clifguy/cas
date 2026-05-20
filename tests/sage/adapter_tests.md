@@ -2333,13 +2333,17 @@ that constructs a PDF with intentionally-broken xref offsets but
 still-extractable content streams.
 
 **Input:**
-1. Capture stderr via `contextlib.redirect_stderr(io.StringIO())`.
+1. Capture pypdf/pdfminer log records via pytest's `caplog.at_level(logging.WARNING, ...)`.
 2. `await adapter.project(source_path)`.
 
 **Expected:**
 - `result.text` is non-empty (extraction succeeded).
-- The captured stderr buffer contains no occurrence of "Ignoring
-  wrong pointing object".
+- The captured log records contain no occurrence of "Ignoring
+  wrong pointing object" (or the related pypdf malformed-xref messages
+  "incorrect startxref" / "parsing for Object Streams"). The adapter's
+  suppression sets the relevant loggers to ERROR so WARN records never
+  propagate; `caplog` observes the level filter directly, which
+  `contextlib.redirect_stderr` cannot do under pytest's logging plugin.
 
 **Rationale:** A real fraction of PDFs in the wild (the PV01
 patentability search report is one) parse cleanly content-wise but

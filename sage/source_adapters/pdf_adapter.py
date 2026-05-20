@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import io
 import logging
+import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -32,6 +33,29 @@ from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapt
 _DEFAULT_MAX_PAGES = 1000
 _OUTLINE_MAX_DEPTH = 10
 _TITLE_MAX_LINE_CHARS = 120
+
+
+_CID_PATTERN = re.compile(r"\(cid:(\d+)\)")
+
+
+def _decode_safe_cid(text: str) -> str:
+    """Decode ``(cid:N)`` sequences to ``chr(N)`` for printable ASCII (32-126).
+
+    pdfminer.six emits CID glyph indices for Type 1 fonts (Helvetica)
+    without a ``/ToUnicode`` CMap when ``ocrmypdf`` has been imported in
+    the same process (a global side-effect on pdfminer's font-resolution
+    path; see T-0104). For the Helvetica WinAnsiEncoding subset, CID == ASCII
+    code, so we can recover Unicode for printable codes. Non-printable
+    and >127 CIDs survive intact rather than guess at the right codepoint.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        n = int(match.group(1))
+        if 32 <= n <= 126:
+            return chr(n)
+        return match.group(0)
+
+    return _CID_PATTERN.sub(_replace, text)
 
 
 @contextlib.contextmanager
@@ -213,7 +237,7 @@ def _extract_from_path(
                             pt = pdf.pages[i].extract_text() or ""
                         except Exception:
                             pt = ""
-                        page_texts.append(pt)
+                        page_texts.append(_decode_safe_cid(pt))
             except Exception as e:
                 raise ValueError(f"Failed to extract text from PDF {path}: {e}") from e
 
@@ -261,7 +285,9 @@ class PdfAdapter(SourceAdapter):
     # (Word-Find equivalence for empty-content parents).
     # 0.4.0: scanned PDFs run through inline ocrmypdf pre-pass; tag set
     # changes (pdf:scanned removed; pdf:ocr_applied / pdf:ocr_no_text added).
-    VERSION = "0.4.0"
+    # 0.5.0: post-extraction CID safe-decode for printable-ASCII glyphs
+    # (T-0104; mitigates pdfminer.six side-effect after ocrmypdf import).
+    VERSION = "0.5.0"
     EXTENSIONS = [".pdf"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:

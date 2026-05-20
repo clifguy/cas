@@ -2690,6 +2690,44 @@ def _make_malformed_xref_pdf(path: Path) -> Path:
     return path
 
 
+# T-0104: unit tests for the PDF adapter's CID safe-decode helper.
+
+
+def test_decode_safe_cid_decodes_ascii_range():
+    from sage.source_adapters.pdf_adapter import _decode_safe_cid
+
+    cid_form = (
+        "(cid:77)(cid:65)(cid:76)(cid:70)(cid:79)(cid:82)(cid:77)"
+        "(cid:69)(cid:68)(cid:95)(cid:88)(cid:82)(cid:69)(cid:70)"
+        "(cid:95)(cid:66)(cid:79)(cid:68)(cid:89)"
+    )
+    assert _decode_safe_cid(cid_form) == "MALFORMED_XREF_BODY"
+
+
+def test_decode_safe_cid_preserves_non_ascii_cids():
+    from sage.source_adapters.pdf_adapter import _decode_safe_cid
+
+    assert _decode_safe_cid("(cid:200)(cid:300)") == "(cid:200)(cid:300)"
+
+
+def test_decode_safe_cid_preserves_control_range_cids():
+    from sage.source_adapters.pdf_adapter import _decode_safe_cid
+
+    assert _decode_safe_cid("(cid:0)(cid:7)(cid:31)") == "(cid:0)(cid:7)(cid:31)"
+
+
+def test_decode_safe_cid_passthrough_unicode():
+    from sage.source_adapters.pdf_adapter import _decode_safe_cid
+
+    assert _decode_safe_cid("Hello world") == "Hello world"
+
+
+def test_decode_safe_cid_mixed_safe_and_unsafe():
+    from sage.source_adapters.pdf_adapter import _decode_safe_cid
+
+    assert _decode_safe_cid("(cid:65)hello(cid:200)world(cid:66)") == "Ahello(cid:200)worldB"
+
+
 @requires_pdf
 class TestPdfAdapter:
     """AD-076 through AD-094: PDF source adapter tests (v0.1, native-text only)."""
@@ -3106,25 +3144,37 @@ class TestPdfAdapter:
         with pytest.raises(ValueError):
             await adapter.project(empty)
 
-    async def test_ad_092_malformed_pdf_no_stderr_leakage(self, tmp_path):
-        """AD-092: Malformed-but-readable PDF projects successfully without stderr leakage."""
-        import contextlib
-        import io
+    async def test_ad_092_malformed_pdf_no_stderr_leakage(self, tmp_path, caplog):
+        """AD-092: Malformed-but-readable PDF projects without log/stderr leakage.
+
+        Asserts via ``caplog`` rather than ``contextlib.redirect_stderr``:
+        in production, pypdf/pdfminer emit malformed-xref warnings through
+        ``logging`` (not direct ``sys.stderr`` writes); the adapter's
+        suppression sets those loggers to ERROR so WARN records never
+        propagate to any handler. ``caplog`` intercepts records before
+        any handler, so it correctly observes whether the level filter
+        is doing its job. Under pytest's logging plugin, the records
+        would never have reached ``sys.stderr`` anyway, which made the
+        old ``redirect_stderr``-based assertion non-load-bearing.
+        """
+        import logging
 
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
         path = _make_malformed_xref_pdf(tmp_path / "malformed.pdf")
         adapter = PdfAdapter()
 
-        captured = io.StringIO()
-        with contextlib.redirect_stderr(captured):
+        with (
+            caplog.at_level(logging.WARNING, logger="pypdf"),
+            caplog.at_level(logging.WARNING, logger="pdfminer"),
+        ):
             result = await adapter.project(path)
 
         assert "MALFORMED_XREF_BODY" in result.text
-        stderr_content = captured.getvalue()
-        assert "incorrect startxref" not in stderr_content
-        assert "Ignoring wrong pointing object" not in stderr_content
-        assert "parsing for Object Streams" not in stderr_content
+        log_messages = " ".join(record.getMessage() for record in caplog.records)
+        assert "incorrect startxref" not in log_messages
+        assert "Ignoring wrong pointing object" not in log_messages
+        assert "parsing for Object Streams" not in log_messages
 
     async def test_ad_093_zero_page_pdf_empty_projection(self, tmp_path):
         """AD-093: Empty (zero-page) PDF produces empty projection without error."""
