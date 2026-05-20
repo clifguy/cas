@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Re-run abstraction for every document in a vault whose pipeline_status
-is ``abstraction_skipped`` (the "deferred abstracts" health indicator).
+"""Re-run abstraction for documents in a vault.
+
+By default, picks up every document with ``pipeline_status='abstraction_skipped'``
+(the "deferred abstracts" health indicator). With ``--all``, enumerates
+every document regardless of pipeline_status -- the mode used for
+full-vault model-switch or prompt-change reabstract passes.
 
 Per CAS-ADR-011 graceful degradation, ingest writes
 ``pipeline_status='abstraction_skipped'`` when the abstraction stage was
@@ -12,8 +16,11 @@ present in the content store and ``sage_reabstract`` can rebuild the
 projection text and write a fresh abstract.
 
 Behavior:
-    * Picks up every document with ``pipeline_status='abstraction_skipped'``
-      in the named vault.
+    * Default mode: enumerates documents with
+      ``pipeline_status='abstraction_skipped'`` in the named vault.
+    * ``--all`` mode: enumerates every document in the vault regardless
+      of pipeline_status. Use for model-switch or prompt-change passes
+      where every existing abstract must be regenerated.
     * Skips scanned-PDF rows by default (``--include-pdf`` to include them).
       The scanned-PDF row has no extractable text; reabstract returns
       ``no_projection`` or a degenerate abstract.
@@ -24,7 +31,11 @@ Behavior:
 
 Usage::
 
+    # Default: reabstract only the 'abstraction_skipped' worklist
     .venv/bin/python -m scripts.reabstract_deferred VAULT_ID
+
+    # Reabstract every document (model switch, prompt change, full sweep)
+    .venv/bin/python -m scripts.reabstract_deferred VAULT_ID --all
 
     # Include scanned PDFs in the worklist
     .venv/bin/python -m scripts.reabstract_deferred VAULT_ID --include-pdf
@@ -33,11 +44,14 @@ Usage::
     .venv/bin/python -m scripts.reabstract_deferred VAULT_ID --poll-interval 2.0
 
 Operational note: the script loads its own Qwen3 MLX abstraction
-provider (~16 GB resident). The running SAGE MCP server lazily loads
-its own provider on first abstraction call -- do not invoke any
-abstraction-triggering MCP tool (``sage_ingest`` without
-``abstraction.enabled=false``, ``sage_reabstract``) while this script
-is running, or both processes will hold the model and oversubscribe RAM.
+provider (~16 GB resident for the 30B; ~5 GB for the 8B). The running
+SAGE MCP server lazily loads its own provider on first abstraction
+call -- do not invoke any abstraction-triggering MCP tool
+(``sage_ingest`` without ``abstraction.enabled=false``,
+``sage_reabstract``) while this script is running, or both processes
+will hold the model and oversubscribe RAM (F-8 precedent). For ``--all``
+passes that switch the vault's abstraction model, stop the MCP server,
+edit ``vault_config.yaml``, then run this script in a separate process.
 """
 
 from __future__ import annotations
@@ -50,6 +64,7 @@ from datetime import datetime, timezone
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
 from sage.models.enums import PipelineStatus
+from sage.models.schemas import Document
 from sage.vault_management import config_path_for_vault
 
 
@@ -57,6 +72,29 @@ def _truncate(s: str | None, n: int) -> str:
     if not s:
         return ""
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _build_worklist(
+    all_docs: list[Document],
+    *,
+    include_all_statuses: bool,
+    include_pdf: bool,
+) -> list[Document]:
+    """Filter the full document list to the reabstract worklist.
+
+    Default (``include_all_statuses=False``): only documents with
+    ``pipeline_status='abstraction_skipped'``. With
+    ``include_all_statuses=True``: every document regardless of status
+    (used for model-switch or prompt-change full-vault sweeps).
+    The PDF filter composes independently: PDFs are excluded unless
+    ``include_pdf=True``.
+    """
+    return [
+        d
+        for d in all_docs
+        if (include_all_statuses or d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value)
+        and (include_pdf or d.source_type != "pdf")
+    ]
 
 
 async def _wait_for_terminal(graph_store, document_id: str, poll_interval: float) -> str:
@@ -74,7 +112,13 @@ async def _wait_for_terminal(graph_store, document_id: str, poll_interval: float
         await asyncio.sleep(poll_interval)
 
 
-async def run(vault_id: str, *, include_pdf: bool, poll_interval: float) -> int:
+async def run(
+    vault_id: str,
+    *,
+    include_all_statuses: bool,
+    include_pdf: bool,
+    poll_interval: float,
+) -> int:
     config_path = config_path_for_vault(vault_id)
     if not config_path.exists():
         print(f"vault config not found: {config_path}", file=sys.stderr)
@@ -94,23 +138,27 @@ async def run(vault_id: str, *, include_pdf: bool, poll_interval: float) -> int:
 
     try:
         all_docs = await services.graph_store.list_all_documents()
-        worklist = [
-            d
-            for d in all_docs
-            if d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
-            and (include_pdf or d.source_type != "pdf")
-        ]
+        worklist = _build_worklist(
+            all_docs,
+            include_all_statuses=include_all_statuses,
+            include_pdf=include_pdf,
+        )
         total = len(worklist)
+        # PDFs that would have entered the worklist if --include-pdf were set.
         skipped_pdfs = [
             d
             for d in all_docs
-            if d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
+            if (
+                include_all_statuses
+                or d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
+            )
             and d.source_type == "pdf"
             and not include_pdf
         ]
 
+        mode_label = "all documents" if include_all_statuses else "deferred-abstract documents"
         print(f"Vault: {vault_id}")
-        print(f"Deferred-abstract documents found: {total + len(skipped_pdfs)}")
+        print(f"{mode_label.capitalize()} found: {total + len(skipped_pdfs)}")
         print(f"  to reabstract:    {total}")
         print(f"  skipped (pdf):    {len(skipped_pdfs)}")
         if total == 0:
@@ -162,14 +210,25 @@ async def run(vault_id: str, *, include_pdf: bool, poll_interval: float) -> int:
         await services.graph_store.close()
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Re-abstract every document in a vault whose pipeline_status "
-            "is 'abstraction_skipped'. See script docstring."
+            "Re-abstract documents in a vault. Default: the "
+            "'abstraction_skipped' worklist. With --all: every document "
+            "regardless of pipeline_status. See script docstring."
         )
     )
     parser.add_argument("vault_id", help="Vault id (e.g. pim_health)")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Reabstract every document regardless of pipeline_status. "
+            "Without this flag, only documents in 'abstraction_skipped' "
+            "are enumerated (the original behavior). Use for a full-vault "
+            "model-switch or prompt-change reabstract pass."
+        ),
+    )
     parser.add_argument(
         "--include-pdf",
         action="store_true",
@@ -184,11 +243,16 @@ def main() -> None:
         default=1.0,
         help="Seconds between pipeline_status polls (default: 1.0).",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
 
     rc = asyncio.run(
         run(
             args.vault_id,
+            include_all_statuses=args.all,
             include_pdf=args.include_pdf,
             poll_interval=args.poll_interval,
         )
