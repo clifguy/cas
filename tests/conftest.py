@@ -56,6 +56,33 @@ def _isolated_vault_registry():
     _mcp._vaults.clear()
 
 
+@pytest.fixture(autouse=True)
+def _redirect_vaults_root(tmp_path_factory, monkeypatch):
+    """Redirect ``_VAULTS_ROOT`` away from ``~/sage_vaults/`` for every test.
+
+    ``sage.vault_management.config_path_for_vault`` (used by both REST
+    create-vault and update-config paths) resolves the on-disk
+    ``vault_config.yaml`` location from a module-level ``_VAULTS_ROOT``
+    constant that points at ``~/sage_vaults`` in production. Tests that
+    exercise those endpoints (e.g. tests/sage/test_vault_config_api.py)
+    would otherwise write YAML into the real user vault tree and leave
+    orphan vault directories behind, which then show up in
+    ``sage_list_vaults`` after the server restarts.
+
+    ``sage.services.vault_registry._VAULTS_ROOT`` is the same constant
+    re-imported for default-config path construction; patch both so a
+    test using ``VaultRegistryService.get_default_config`` without overriding
+    storage_root/brain_root also lands in tmp space.
+    """
+    from sage import vault_management
+    from sage.services import vault_registry
+
+    fake_root = tmp_path_factory.mktemp("sage_vaults_isolated")
+    monkeypatch.setattr(vault_management, "_VAULTS_ROOT", fake_root)
+    monkeypatch.setattr(vault_registry, "_VAULTS_ROOT", fake_root)
+    yield fake_root
+
+
 def load_invalid_fixture(component: str, filename: str) -> Any:
     """Load an invalid fixture YAML file.
 
