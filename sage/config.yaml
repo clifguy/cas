@@ -1,0 +1,28 @@
+# SAGE Core API stack-wide configuration (CAS-ADR-030, T-0103).
+#
+# Per ADR-030, the abstraction provider and model identifier live here at
+# stack scope rather than in each vault's vault_config.yaml. The Qwen3
+# provider is enforced as a SAGE-process-wide singleton; co-locating the
+# config with the resource boundary avoids the layering contradiction
+# that surfaced when per-vault model pins silently skipped vaults at
+# startup. Per-vault knobs (enabled, token-budget tuning) remain in the
+# vault config's `abstraction:` block.
+#
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.1).
+
+abstraction:
+  # Dispatch key. `qwen3-mlx` loads Qwen3AbstractionProvider with the
+  # model identifier below. `stub` opts the whole stack out of semantic
+  # abstract generation (test/dev only).
+  provider: qwen3-mlx
+
+  # LLM model identifier passed to the provider factory. The chosen
+  # model is shared by every vault on this SAGE process.
+  #
+  # Qwen3-8B-4bit (the cas vault was already pinned to this via T-0084;
+  # see also the operational note in T-0103). The 30B variant
+  # (pim_health and theology used it previously) trips the RAM warning
+  # documented in CLAUDE.md (~38 GB resident with the rest of the SAGE
+  # process). Existing 30B-generated abstracts in those vaults remain
+  # unchanged per the T-0103 ticket ("no reabstract").
+  model: mlx-community/Qwen3-8B-4bit
