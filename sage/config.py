@@ -5,6 +5,7 @@ transition table used by LifecycleService for state machine validation.
 """
 
 from pathlib import Path
+from typing import Literal
 
 import jsonschema
 import yaml
@@ -142,6 +143,17 @@ class AbstractionConfig(BaseModel):
             "false, ingestion completes with pipeline_status "
             "'abstraction_skipped'. If true and the LLM fails at runtime, "
             "pipeline_status is 'failed' (strict quality gate)."
+        ),
+    )
+    provider: Literal["qwen3-mlx", "stub"] = Field(
+        default="qwen3-mlx",
+        description=(
+            "Abstraction provider dispatch key (Abstraction Provider "
+            "Evaluation Framework §3.6). 'qwen3-mlx' loads "
+            "Qwen3AbstractionProvider with the model identifier from "
+            "the 'model' field. 'stub' loads StubAbstractionProvider "
+            "(test/disabled vaults). Default 'qwen3-mlx' preserves "
+            "backward compatibility for vaults that already set 'model'."
         ),
     )
     model: str | None = Field(

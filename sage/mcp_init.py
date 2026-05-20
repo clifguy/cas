@@ -226,23 +226,40 @@ async def initialize_services(
         else:
             embedding_provider = get_nomic_embedding_provider()
 
-    # Abstraction provider: injected, or Qwen3/stub from config.
+    # Abstraction provider: injected, or factory-dispatched by config (T-0099).
     # SAGE_TEST_STUB_PROVIDERS=1 forces the stub regardless of config so that
     # tests cannot accidentally load Qwen3 (~16GB MLX/Metal) alongside the
     # running MCP server. The env var was originally added for nomic (T-0018)
     # and is extended to abstraction here as the interim guardrail for T-0029
     # against the kernel-panic-class failure documented in F-8.
+    #
+    # Dispatch contract:
+    #   1. SAGE_TEST_STUB_PROVIDERS=1                 -> Stub (env override)
+    #   2. config.abstraction.enabled is False        -> Stub (disabled gate;
+    #      preserves ADR-011 opt-in semantics)
+    #   3. config.abstraction.model is None           -> Stub (cannot
+    #      construct a real provider without a model id)
+    #   4. config.abstraction.provider == "stub"      -> Stub (explicit opt-out)
+    #   5. config.abstraction.provider == "qwen3-mlx" -> Qwen3 (factory)
     if abstraction_provider is None:
-        if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1" or not (
-            config.abstraction.enabled and config.abstraction.model
+        if (
+            os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1"
+            or not config.abstraction.enabled
+            or config.abstraction.model is None
         ):
             abstraction_provider = StubAbstractionProvider()
         else:
-            from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
+            match config.abstraction.provider:
+                case "stub":
+                    abstraction_provider = StubAbstractionProvider()
+                case "qwen3-mlx":
+                    from sage.adapters.abstraction_qwen3 import (
+                        get_qwen3_abstraction_provider,
+                    )
 
-            abstraction_provider = get_qwen3_abstraction_provider(
-                model_id=config.abstraction.model,
-            )
+                    abstraction_provider = get_qwen3_abstraction_provider(
+                        model_id=config.abstraction.model,
+                    )
 
     # Source adapters
     source_adapters = {

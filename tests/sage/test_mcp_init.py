@@ -217,3 +217,219 @@ async def test_di_007_stub_env_var_overrides_qwen3_config(
         )
     finally:
         await services.graph_store.close()
+
+
+# ---------------------------------------------------------------------------
+# DI-008..DI-012: explicit provider-field dispatch (T-0099)
+#
+# The dispatch contract (sage/mcp_init.py) is:
+#   1. SAGE_TEST_STUB_PROVIDERS=1                 -> Stub  (env override)
+#   2. config.abstraction.enabled is False        -> Stub  (disabled gate)
+#   3. config.abstraction.model is None           -> Stub  (no model id)
+#   4. config.abstraction.provider == "stub"      -> Stub  (explicit opt-out)
+#   5. config.abstraction.provider == "qwen3-mlx" -> Qwen3 (factory dispatch)
+#
+# These tests exercise rules 2-5; DI-007 already covers rule 1.
+# ---------------------------------------------------------------------------
+
+
+def _qwen3_enabled_abstraction_block(model_id: str = "mlx-community/test-model") -> dict:
+    """Abstraction block that would yield Qwen3 under the new dispatch
+    (enabled, model set). The ``provider`` key is the dispatch knob.
+    """
+    return {
+        "enabled": True,
+        "model": model_id,
+    }
+
+
+async def test_di_008_provider_qwen3_mlx_dispatches_to_qwen3(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """provider="qwen3-mlx" routes through ``get_qwen3_abstraction_provider``
+    with the configured model_id. We monkeypatch the factory to a sentinel
+    so the real MLX load is not triggered (CLAUDE.md RAM-budget rule).
+
+    Anti-coincidental-pass: the assertion checks both (a) the sentinel is
+    the exact instance wired into IngestionService and (b) the factory was
+    called once with the configured ``model_id``. DI-009 supplies the
+    negative pair (provider="stub" with the same config must NOT call the
+    factory).
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    cfg = dict(minimal_vault_config_dict)
+    abstraction_block = _qwen3_enabled_abstraction_block(model_id="mlx-community/test-qwen3")
+    abstraction_block["provider"] = "qwen3-mlx"
+    cfg["abstraction"] = abstraction_block
+    config = VaultConfig.model_validate(cfg)
+
+    sentinel = StubAbstractionProvider()  # any AbstractionProvider works
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return sentinel
+
+    # The mcp_init dispatch lazily imports ``get_qwen3_abstraction_provider``
+    # from ``sage.adapters.abstraction_qwen3``; patching the attribute on
+    # that source module changes what the lazy import resolves to.
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+
+    services = await initialize_services(config)
+
+    try:
+        assert services.ingestion_service._abstraction is sentinel
+        assert len(calls) == 1
+        assert calls[0]["model_id"] == "mlx-community/test-qwen3"
+    finally:
+        await services.graph_store.close()
+
+
+async def test_di_009_provider_stub_dispatches_to_stub_without_loading_qwen3(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """provider="stub" returns StubAbstractionProvider even when the rest of
+    the abstraction block would (under the OLD dispatch) construct Qwen3.
+
+    This is the killer test for the refactor: without the new dispatch,
+    ``enabled=True`` and a non-null ``model`` route through the Qwen3
+    branch. The monkeypatched factory raises if called, so a regression
+    that ignores ``provider`` fires immediately.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    cfg = dict(minimal_vault_config_dict)
+    abstraction_block = _qwen3_enabled_abstraction_block(model_id="mlx-community/test-qwen3")
+    abstraction_block["provider"] = "stub"
+    cfg["abstraction"] = abstraction_block
+    config = VaultConfig.model_validate(cfg)
+
+    def must_not_call(*args, **kwargs):
+        raise AssertionError(
+            "get_qwen3_abstraction_provider must not be called when provider='stub'"
+        )
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        must_not_call,
+    )
+
+    services = await initialize_services(config)
+
+    try:
+        assert isinstance(services.ingestion_service._abstraction, StubAbstractionProvider)
+    finally:
+        await services.graph_store.close()
+
+
+async def test_di_010_env_var_beats_provider_qwen3_mlx(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """SAGE_TEST_STUB_PROVIDERS=1 short-circuits before the provider field
+    is consulted, even when provider="qwen3-mlx" would otherwise dispatch
+    to Qwen3.
+
+    Anti-coincidental-pass: paired with DI-008 (which uses the same config
+    minus the env var and gets Qwen3). The difference between the two
+    outcomes proves the env var is what flipped the decision.
+    """
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+
+    cfg = dict(minimal_vault_config_dict)
+    abstraction_block = _qwen3_enabled_abstraction_block()
+    abstraction_block["provider"] = "qwen3-mlx"
+    cfg["abstraction"] = abstraction_block
+    config = VaultConfig.model_validate(cfg)
+
+    # Belt-and-suspenders: if the env-var short-circuit is broken, the
+    # factory monkeypatch ensures the test fails loudly instead of
+    # silently loading MLX.
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("Qwen3 factory must not be called when SAGE_TEST_STUB_PROVIDERS=1")
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        must_not_call,
+    )
+
+    services = await initialize_services(config)
+
+    try:
+        assert isinstance(services.ingestion_service._abstraction, StubAbstractionProvider)
+    finally:
+        await services.graph_store.close()
+
+
+async def test_di_011_enabled_false_yields_stub_regardless_of_provider(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """``enabled=False`` short-circuits dispatch to Stub even when
+    provider="qwen3-mlx". The disabled gate must beat the provider field
+    (ADR-011 opt-in semantics).
+
+    Anti-coincidental-pass: DI-008 is the positive pair (enabled=True
+    with provider="qwen3-mlx" -> Qwen3). This test confirms enabled=False
+    flips the decision.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    cfg = dict(minimal_vault_config_dict)
+    cfg["abstraction"] = {
+        "enabled": False,
+        "model": "mlx-community/test-qwen3",
+        "provider": "qwen3-mlx",
+    }
+    config = VaultConfig.model_validate(cfg)
+
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("Qwen3 factory must not be called when abstraction.enabled is False")
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        must_not_call,
+    )
+
+    services = await initialize_services(config)
+
+    try:
+        assert isinstance(services.ingestion_service._abstraction, StubAbstractionProvider)
+    finally:
+        await services.graph_store.close()
+
+
+async def test_di_012_no_model_yields_stub_regardless_of_provider(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """``model is None`` short-circuits dispatch to Stub even when
+    provider="qwen3-mlx". Cannot construct Qwen3 without a model id.
+
+    Anti-coincidental-pass: same pairing logic as DI-011.
+    """
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+
+    cfg = dict(minimal_vault_config_dict)
+    cfg["abstraction"] = {
+        "enabled": True,
+        # model deliberately omitted -> defaults to None
+        "provider": "qwen3-mlx",
+    }
+    config = VaultConfig.model_validate(cfg)
+
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("Qwen3 factory must not be called when abstraction.model is None")
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        must_not_call,
+    )
+
+    services = await initialize_services(config)
+
+    try:
+        assert isinstance(services.ingestion_service._abstraction, StubAbstractionProvider)
+    finally:
+        await services.graph_store.close()

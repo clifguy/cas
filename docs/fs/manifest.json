@@ -17,7 +17,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "0.1",
+      "version": "0.2",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1

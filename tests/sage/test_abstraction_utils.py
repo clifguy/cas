@@ -8,6 +8,8 @@ trim_to_sentence_boundary: trims LLM output back to the last complete
 sentence to prevent mid-sentence truncation.
 """
 
+import pytest
+
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.config import AbstractionConfig
 
@@ -186,3 +188,33 @@ class TestTrimToSentenceBoundary:
         text = "First paragraph ends here.\n\nSecond paragraph starts and is trunc"
         result = trim_to_sentence_boundary(text)
         assert result == "First paragraph ends here."
+
+
+# ---------------------------------------------------------------------------
+# AbstractionConfig.provider (T-0099)
+# ---------------------------------------------------------------------------
+
+
+class TestAbstractionConfigProvider:
+    """Tests for the ``provider`` dispatch key on AbstractionConfig."""
+
+    def test_cfg_001_default_provider_is_qwen3_mlx(self):
+        """An AbstractionConfig built with no kwargs has provider="qwen3-mlx".
+
+        The default preserves backward compatibility for vaults that already
+        set ``model`` but not ``provider``.
+        """
+        config = AbstractionConfig()
+        assert isinstance(config.provider, str)
+        assert config.provider == "qwen3-mlx"
+
+    def test_cfg_002_unknown_provider_rejected(self):
+        """Pydantic Literal rejects keys outside the supported set.
+
+        Verifies the field type is actually Literal (not bare str); a typo
+        that left the field as ``str`` would silently accept any value.
+        """
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            AbstractionConfig(provider="ollama")
