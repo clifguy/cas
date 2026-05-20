@@ -198,6 +198,7 @@ async def run(args: argparse.Namespace) -> int:
             abstraction_config=config.abstraction,
             repeats=args.repeats,
             candidate_model_id=args.model,
+            warmup_calls=args.warmup_calls,
         )
 
         date = _now_date()
@@ -266,6 +267,16 @@ def main() -> None:
         type=int,
         default=2,
         help="Repeats per document for determinism check (default: 2).",
+    )
+    parser.add_argument(
+        "--warmup-calls",
+        type=int,
+        default=1,
+        help=(
+            "Throwaway calls before the measured loop, to amortize the "
+            "provider's lazy load and Metal kernel compilation per framework "
+            "§3.2. Results are discarded. Default: 1. Set to 0 to disable."
+        ),
     )
     parser.add_argument(
         "--with-baseline-outputs",

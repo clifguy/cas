@@ -335,6 +335,7 @@ async def run_benchmark(
     mem_probe: MemoryProbe | None = None,
     poll_interval_s: float = 0.5,
     candidate_model_id: str | None = None,
+    warmup_calls: int = 1,
 ) -> BenchmarkResult:
     """Run the candidate provider over the corpus.
 
@@ -342,6 +343,13 @@ async def run_benchmark(
     joins them into projection text (filtering the synthetic header
     chunk). Never touches ``services.ingestion_service`` -- the
     benchmark is read-only against the vault graph.
+
+    ``warmup_calls`` invocations are made against the first corpus
+    document's projection text BEFORE the measured loop starts, with
+    their results discarded. This amortizes the provider's lazy load,
+    Metal kernel compilation, and any first-N-calls warm-up variance
+    so the measured latency reflects steady-state behaviour per the
+    Abstraction Provider Evaluation Framework §3.2.
     """
     if mem_probe is None:
         from sage.utils.unified_memory import free_unified_memory_bytes
@@ -352,6 +360,17 @@ async def run_benchmark(
     measurements: list[MeasurementRecord] = []
     determinism: dict[str, str] = {}
     alt_outputs: dict[str, list[str]] = {}
+
+    # Warm up the provider before timing anything. Use the first corpus
+    # doc's text so the warmup work is representative of real input.
+    if warmup_calls > 0 and corpus:
+        warmup_chunks = await services.content_store.get_all_chunks(corpus[0].doc_id)
+        warmup_body = [c for c in warmup_chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        warmup_text = "\n\n".join(c.content for c in warmup_body)
+        warmup_word_count = len(warmup_text.split())
+        warmup_max_tokens = compute_max_tokens(warmup_word_count, abstraction_config)
+        for _ in range(warmup_calls):
+            await provider.generate_abstract(warmup_text, warmup_max_tokens, corpus[0].doc_type)
 
     for entry in corpus:
         chunks = await services.content_store.get_all_chunks(entry.doc_id)

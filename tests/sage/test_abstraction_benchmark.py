@@ -336,6 +336,52 @@ async def test_harness_does_not_invoke_ingestion_reabstract():
 
 
 # ---------------------------------------------------------------------------
+# 8b. Warmup discipline (framework §3.2)
+# ---------------------------------------------------------------------------
+
+
+async def test_warmup_calls_are_excluded_from_measurements():
+    chunks_by_doc = {
+        f"doc-{i}": [
+            Chunk(
+                document_id=f"doc-{i}",
+                heading_path="Body",
+                content=f"body of doc {i}.",
+                chunk_index=0,
+            ),
+        ]
+        for i in range(3)
+    }
+    services = MagicMock()
+    services.content_store.get_all_chunks = AsyncMock(
+        side_effect=lambda doc_id: chunks_by_doc[doc_id]
+    )
+
+    corpus = [_make_entry(f"doc-{i}", "adr", 100 + i) for i in range(3)]
+    provider = RecordingProvider(output="abstract.")
+    probe = CountingProbe([0, 0])
+
+    result = await run_benchmark(
+        services=services,
+        corpus=corpus,
+        provider=provider,
+        abstraction_config=_default_config(),
+        repeats=1,
+        mem_probe=probe,
+        poll_interval_s=0.005,
+        warmup_calls=2,
+    )
+
+    # The provider is called once per warmup PLUS once per (doc × repeat).
+    # With 3 docs × 1 repeat + 2 warmups, that's 5 total calls.
+    assert len(provider.calls) == 5
+    # Only the measured calls land in the result; warmup outputs are discarded.
+    assert len(result.measurements) == 3
+    # Per-doc determinism map matches the corpus, not the warmup.
+    assert set(result.determinism_verdicts.keys()) == {"doc-0", "doc-1", "doc-2"}
+
+
+# ---------------------------------------------------------------------------
 # 9. Statistics
 # ---------------------------------------------------------------------------
 
