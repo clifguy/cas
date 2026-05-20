@@ -258,6 +258,11 @@ def create_app(
     async def lifespan(app: FastAPI):
         # Use the MCP server's _vaults dict as the canonical registry so
         # both the REST API and MCP SSE transport share the same services.
+        from sage.mcp_init import (
+            build_stack_abstraction_provider,
+            load_stack_config_or_default,
+            set_stack_config,
+        )
         from sage.mcp_server import _vaults
         from sage.vault_discovery import discover_vault_configs
 
@@ -266,7 +271,14 @@ def create_app(
         # VaultConfigService instances pick up the same singleton.
         _ensure_registry_service(app)
 
-        init_overrides: dict = {}
+        # CAS-ADR-030: load the stack-wide config once and build the
+        # abstraction provider once; thread it through every per-vault
+        # initialize_services call.
+        stack_cfg = load_stack_config_or_default()
+        set_stack_config(stack_cfg)
+        stack_provider = build_stack_abstraction_provider(stack_cfg)
+
+        init_overrides: dict = {"abstraction_provider": stack_provider}
         if content_store_factory is not None:
             init_overrides["content_store_factory"] = content_store_factory
 
@@ -291,6 +303,7 @@ def create_app(
         for services in app.state.vault_registry.values():
             await services.graph_store.close()
         app.state.vault_registry.clear()
+        set_stack_config(None)
 
     app = FastAPI(
         title="SAGE Core API",

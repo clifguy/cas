@@ -860,9 +860,19 @@ SAGE_CONFIG_CLASS_TO_SCHEMA: list[tuple[str, str, str]] = [
     ),
     ("DocumentTypesConfig", "sage/document_types.schema.json", "#"),
     (
-        "AbstractionConfig",
+        "VaultAbstractionConfig",
         "sage/vault_config.schema.json",
         "#/properties/abstraction",
+    ),
+    (
+        "StackAbstractionConfig",
+        "sage/sage_core_config.schema.json",
+        "#/properties/abstraction",
+    ),
+    (
+        "SageCoreConfig",
+        "sage/sage_core_config.schema.json",
+        "#",
     ),
     (
         "RetrievalHealthConfig",

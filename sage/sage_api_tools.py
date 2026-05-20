@@ -1549,12 +1549,14 @@ def register_sage_tools(
         density-proportional semantic abstract, and writes it back
         to the document node.
 
-        The generation uses the vault's currently-configured generic
-        abstraction prompt (see ``abstraction.model`` in vault config);
-        per-document or per-doc_type prompt overrides are not exposed
-        here. If the new abstract is still off-topic after this call,
-        the lever is a vault-config change to the abstraction prompt
-        or model, not a re-issue of this tool.
+        The generation uses the SAGE stack's currently-configured
+        abstraction provider and model (see ``abstraction`` in
+        ``sage/config.yaml``; per CAS-ADR-030 the model identifier is
+        stack-wide, not per-vault). Per-document or per-doc_type prompt
+        overrides are not exposed here. If the new abstract is still
+        off-topic after this call, the lever is a stack-config change
+        to the abstraction model (or the prompt template), not a
+        re-issue of this tool.
 
         Error modes:
         - ``document_not_found`` (404): no document with that id.

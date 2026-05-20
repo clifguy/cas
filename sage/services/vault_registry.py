@@ -154,8 +154,15 @@ class VaultRegistryService:
 
         _write_config_yaml(config_path, body.config)
 
+        # CAS-ADR-030: thread the stack-built abstraction provider through.
+        from sage.mcp_init import build_stack_abstraction_provider, get_stack_config
+
+        stack_provider = build_stack_abstraction_provider(get_stack_config())
         services = await self._initialize_services(
-            config, config_path=config_path, registry_service=self
+            config,
+            config_path=config_path,
+            registry_service=self,
+            abstraction_provider=stack_provider,
         )
         self._registry[vault_id] = services
 

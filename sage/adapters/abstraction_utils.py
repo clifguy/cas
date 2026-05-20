@@ -9,10 +9,10 @@ mid-sentence truncation when the LLM hits the token ceiling.
 
 import re
 
-from sage.config import AbstractionConfig
+from sage.config import VaultAbstractionConfig
 
 
-def compute_max_tokens(word_count: int, config: AbstractionConfig) -> int:
+def compute_max_tokens(word_count: int, config: VaultAbstractionConfig) -> int:
     """Compute a density-proportional max_tokens budget.
 
     Formula: min(base + word_count * tokens_per_word, hard_cap)

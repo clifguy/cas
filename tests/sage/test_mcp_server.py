@@ -1049,7 +1049,7 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
 
     config_path = tmp_path / "vault_config.yaml"
     initial_config_dict = _copy_dict(minimal_vault_config_dict)
-    initial_config_dict["abstraction"] = {"enabled": True, "model": "stub"}
+    initial_config_dict["abstraction"] = {"enabled": True}
     config_path.write_text(_yaml.safe_dump(initial_config_dict))
 
     config = load_vault_config(config_path)

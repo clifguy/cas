@@ -74,9 +74,18 @@ async def _migrate_vault(config: VaultConfig, config_path: Path) -> None:
 
     Initializes the graph and content stores with ``migrate=True`` and
     closes them. Raises on any underlying storage error so the caller
-    can decide whether to halt or continue.
+    can decide whether to halt or continue. Migrations never touch the
+    abstraction stage; pass a Stub provider explicitly (CAS-ADR-030
+    requires injection for production callers).
     """
-    services = await initialize_services(config, migrate=True, config_path=config_path)
+    from sage.adapters.stubs import StubAbstractionProvider
+
+    services = await initialize_services(
+        config,
+        migrate=True,
+        config_path=config_path,
+        abstraction_provider=StubAbstractionProvider(),
+    )
     await services.graph_store.close()
 
 

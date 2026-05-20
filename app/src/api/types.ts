@@ -377,10 +377,21 @@ export interface LifecycleConfig {
   transitions: LifecycleTransitionConfig[];
 }
 
-export interface AbstractionConfig {
+// Per CAS-ADR-030: vault-scope abstraction config carries enabled +
+// token-budget tuning. The provider and model identifier live in the
+// stack-wide sage/config.yaml; see StackAbstractionConfig.
+export interface VaultAbstractionConfig {
   enabled: boolean;
+  max_abstract_tokens?: number;
+  base_abstract_tokens?: number;
+  tokens_per_word?: number;
+}
+
+// Stack-wide abstraction config (CAS-ADR-030). Returned by the
+// sage_get_stack_config MCP tool.
+export interface StackAbstractionConfig {
+  provider: "qwen3-mlx" | "stub";
   model: string | null;
-  max_abstract_tokens: number;
 }
 
 export interface VaultConfig {
@@ -390,7 +401,7 @@ export interface VaultConfig {
   source_adapters: Record<string, unknown>;
   metadata_extraction: Record<string, unknown>;
   edge_inference: Record<string, unknown>;
-  abstraction: AbstractionConfig;
+  abstraction: VaultAbstractionConfig;
   access_control_defaults?: Record<string, unknown> | null;
   retrieval_health?: Record<string, unknown> | null;
 }

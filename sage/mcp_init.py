@@ -18,7 +18,7 @@ from sage.adapters.interfaces import (
     EmbeddingProvider,
 )
 from sage.adapters.stubs import StubAbstractionProvider
-from sage.config import VaultConfig
+from sage.config import SageCoreConfig, VaultConfig
 from sage.instrumentation.timing import (
     NULL_QUERY_TIMER,
     NullQueryTimer,
@@ -151,6 +151,93 @@ class SAGEServices:
     timing_thread: VaultTimingThread | None = None
 
 
+# Stack-wide SAGE Core API config (CAS-ADR-030, T-0103). Loaded once at
+# lifespan startup; nullable to support callers (tests, in-process FastAPI
+# mounts) that construct services without invoking the standalone lifespan.
+_stack_config: SageCoreConfig | None = None
+
+
+def get_stack_config() -> SageCoreConfig:
+    """Return the loaded stack config, or an empty default if none is set.
+
+    Used by `sage_get_stack_config` (MCP) and by FastAPI lifespan paths
+    that need to thread the stack config into per-vault initialization.
+    Returns the module-level singleton when set; otherwise a default
+    SageCoreConfig (defaults are stack-stub-effective when combined with
+    `SAGE_TEST_STUB_PROVIDERS=1`).
+    """
+    return _stack_config if _stack_config is not None else SageCoreConfig()
+
+
+def set_stack_config(cfg: SageCoreConfig | None) -> None:
+    """Set or clear the module-level stack config. Used by lifespan paths."""
+    global _stack_config
+    _stack_config = cfg
+
+
+_DEFAULT_STACK_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
+
+
+def load_stack_config_or_default(path: Path = _DEFAULT_STACK_CONFIG_PATH) -> SageCoreConfig:
+    """Load `sage/config.yaml` if present, else return a default config.
+
+    Returns a default `SageCoreConfig` when the file is missing so test
+    fixtures that exercise the lifespan without writing the file (and rely
+    on `SAGE_TEST_STUB_PROVIDERS=1` to short-circuit the provider build)
+    keep working. The provider builder is the gate that fails loudly when
+    a real Qwen3 dispatch is requested without a model identifier.
+    """
+    from sage.config import load_sage_core_config
+
+    if not path.exists():
+        return SageCoreConfig()
+    return load_sage_core_config(path)
+
+
+def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> AbstractionProvider:
+    """Construct the SAGE-stack-wide abstraction provider (CAS-ADR-030).
+
+    Called once at SAGE process startup, before any vault is registered.
+    The resulting provider is shared across every vault that does not
+    opt out via ``vault.abstraction.enabled = False``.
+
+    Dispatch contract:
+      1. SAGE_TEST_STUB_PROVIDERS=1               -> Stub (env override)
+      2. stack.abstraction.provider == "stub"      -> Stub (explicit opt-out)
+      3. stack.abstraction.provider == "qwen3-mlx"
+         and stack.abstraction.model is None       -> raise ValueError
+      4. stack.abstraction.provider == "qwen3-mlx"
+         and stack.abstraction.model is not None   -> Qwen3 (factory)
+
+    The env override remains the topmost short-circuit so that tests
+    cannot load Qwen3 alongside the running MCP server (T-0029, F-8).
+    Provider/model live at stack scope because the Qwen3 provider is a
+    process-wide singleton; co-locating the config with the resource
+    boundary resolves the layering contradiction (ADR-030).
+    """
+    if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
+        return StubAbstractionProvider()
+
+    abstraction = stack_config.abstraction
+    if abstraction.provider == "stub":
+        return StubAbstractionProvider()
+    if abstraction.provider == "qwen3-mlx":
+        if abstraction.model is None:
+            raise ValueError(
+                "sage_core_config.abstraction.model is required when "
+                "abstraction.provider is 'qwen3-mlx' (CAS-ADR-030). Set "
+                "the model identifier in sage/config.yaml, or set "
+                "abstraction.provider to 'stub' to opt the whole stack "
+                "out of semantic abstract generation."
+            )
+        from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
+
+        return get_qwen3_abstraction_provider(model_id=abstraction.model)
+    raise ValueError(  # pragma: no cover - schema-validated upstream
+        f"Unknown stack abstraction provider: {abstraction.provider!r}"
+    )
+
+
 async def initialize_services(
     config: VaultConfig,
     *,
@@ -226,40 +313,30 @@ async def initialize_services(
         else:
             embedding_provider = get_nomic_embedding_provider()
 
-    # Abstraction provider: injected, or factory-dispatched by config (T-0099).
-    # SAGE_TEST_STUB_PROVIDERS=1 forces the stub regardless of config so that
-    # tests cannot accidentally load Qwen3 (~16GB MLX/Metal) alongside the
-    # running MCP server. The env var was originally added for nomic (T-0018)
-    # and is extended to abstraction here as the interim guardrail for T-0029
-    # against the kernel-panic-class failure documented in F-8.
-    #
-    # Dispatch contract:
-    #   1. SAGE_TEST_STUB_PROVIDERS=1                 -> Stub (env override)
-    #   2. config.abstraction.enabled is False        -> Stub (disabled gate;
-    #      preserves ADR-011 opt-in semantics)
-    #   3. config.abstraction.model is None           -> Stub (cannot
-    #      construct a real provider without a model id)
-    #   4. config.abstraction.provider == "stub"      -> Stub (explicit opt-out)
-    #   5. config.abstraction.provider == "qwen3-mlx" -> Qwen3 (factory)
-    if abstraction_provider is None:
-        if (
-            os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1"
-            or not config.abstraction.enabled
-            or config.abstraction.model is None
-        ):
+    # Abstraction provider: post CAS-ADR-030 / T-0103, the factory dispatch
+    # lives in build_stack_abstraction_provider (stack scope). The per-vault
+    # path here only consults the vault-scope opt-out. Precedence:
+    #   1. vault.abstraction.enabled is False        -> Stub (ADR-011 opt-in)
+    #   2. abstraction_provider injected             -> use injection
+    #   3. SAGE_TEST_STUB_PROVIDERS=1                -> Stub (belt-and-suspenders
+    #      for tests that don't go through stack startup)
+    #   4. no injection, env var unset               -> raise (production path
+    #      must thread the stack-built provider through)
+    if not config.abstraction.enabled:
+        abstraction_provider = StubAbstractionProvider()
+    elif abstraction_provider is None:
+        if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
             abstraction_provider = StubAbstractionProvider()
         else:
-            match config.abstraction.provider:
-                case "stub":
-                    abstraction_provider = StubAbstractionProvider()
-                case "qwen3-mlx":
-                    from sage.adapters.abstraction_qwen3 import (
-                        get_qwen3_abstraction_provider,
-                    )
-
-                    abstraction_provider = get_qwen3_abstraction_provider(
-                        model_id=config.abstraction.model,
-                    )
+            raise ValueError(
+                "initialize_services requires an `abstraction_provider` "
+                "injection in production (post CAS-ADR-030: the provider "
+                "is built once at SAGE process startup via "
+                "build_stack_abstraction_provider and passed into every "
+                "vault's initialize_services call). Tests that want a "
+                "Stub may set SAGE_TEST_STUB_PROVIDERS=1 or pass "
+                "StubAbstractionProvider() explicitly."
+            )
 
     # Source adapters
     source_adapters = {
@@ -348,11 +425,16 @@ async def reload_vault_in_registry(
         if config_path is None:
             config_path = old.config_path
         content_store_factory = old.content_store_factory
+    # CAS-ADR-030: thread the stack-built abstraction provider through.
+    # Falls back to the default stack config when no lifespan has run
+    # (test paths that exercise reload directly).
+    stack_provider = build_stack_abstraction_provider(get_stack_config())
     new_services = await initialize_services(
         config,
         config_path=config_path,
         registry_service=registry_service,
         content_store_factory=content_store_factory,
+        abstraction_provider=stack_provider,
     )
     registry[vault_id] = new_services
     return new_services

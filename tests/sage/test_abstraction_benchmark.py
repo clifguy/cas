@@ -16,7 +16,7 @@ import pytest
 
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH, AbstractionProvider, Chunk
-from sage.config import AbstractionConfig
+from sage.config import VaultAbstractionConfig as AbstractionConfig
 from sage.utils.abstraction_benchmark import (
     BenchmarkResult,
     CatalogEntry,
@@ -99,7 +99,6 @@ def _make_entry(doc_id: str, doc_type: str, length: int) -> CatalogEntry:
 def _default_config() -> AbstractionConfig:
     return AbstractionConfig(
         enabled=True,
-        model="test-model",
         max_abstract_tokens=1500,
         base_abstract_tokens=150,
         tokens_per_word=0.02,

@@ -20,7 +20,7 @@ from sage.adapters.abstraction_utils import (
 )
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
-from sage.config import AbstractionConfig
+from sage.config import VaultAbstractionConfig
 
 VAULT_BRAIN = Path.home() / "sage_vaults" / "theology" / "brain"
 GRAPH_DB = VAULT_BRAIN / "graph.db"
@@ -37,13 +37,14 @@ DOC_IDS = [
     ("da751867_genre_guidelines_social_media", "Social Media (control: was clean)"),
 ]
 
-ABSTRACTION_CONFIG = AbstractionConfig(
+ABSTRACTION_CONFIG = VaultAbstractionConfig(
     enabled=True,
-    model=QWEN_MODEL_ID,
     max_abstract_tokens=500,  # Matches the theology vault config
     base_abstract_tokens=150,
     tokens_per_word=0.02,
 )
+# Per CAS-ADR-030, the model identifier is now stack-wide config; this
+# one-off script constructs the Qwen3 provider directly with QWEN_MODEL_ID.
 
 
 def fetch_doc_record(conn: sqlite3.Connection, doc_id: str) -> dict:

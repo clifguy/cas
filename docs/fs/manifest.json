@@ -17,11 +17,19 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "0.2",
+      "version": "0.3",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
       ]
+    },
+    {
+      "path": "sage/sage_core_config.schema.json",
+      "title": "SAGE Core API Configuration",
+      "status": "draft",
+      "version": "0.1",
+      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (abstraction provider and model). The on-disk file is sage/config.yaml at the repo root.",
+      "instantiation_checklist_items": []
     },
     {
       "path": "sage/document_types.schema.json",
@@ -173,7 +181,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.20",
+  "substrate_version": "1.21",
   "revision_history": [
     {
       "version": "0.1",
@@ -279,6 +287,11 @@
       "version": "1.20",
       "date": "2026-05-19",
       "summary": "Identifier-mention edge inference (T-0016). One change to sage/edge_inference.schema.json (bumped to v0.2): adds `identifier_mention` to the inference-method enum and introduces a structured `patterns` array on inference rules, where each pattern object carries a `regex`, a `target_tags` filter (with `{id}` placeholder for the matched literal), an optional `target_title_prefix` (also with `{id}` placeholder for ADR-style identifiers whose tag is generic but title carries the id prefix), an optional `target_doc_type`, and an optional `enabled` flag. The `content_reference` method remains in the enum as a placeholder; the cas vault config is migrated to `identifier_mention` and promoted from Tier 2 to Tier 1 with three default patterns (CAS-ADR-NNN via `adr` tag plus title-prefix match, T-NNNN via `id:{id}` tag, F-N via `id:{id}` tag). The corresponding rationale-kind discriminator (`references_mention`) and prefix were pre-staged in substrate v1.19; this entry activates them by landing the inference rule that emits them. No API surface change."
+    },
+    {
+      "version": "1.21",
+      "date": "2026-05-20",
+      "summary": "Abstraction provider/model relocated from per-vault to SAGE-stack scope (CAS-ADR-030, T-0103). Two substrate changes: (1) new schema sage/sage_core_config.schema.json (v0.1) defines a stack-wide `abstraction:` block carrying `provider` (Literal enum `qwen3-mlx`/`stub`, default `qwen3-mlx`) and `model` (`string | null`, default null). The on-disk file is sage/config.yaml at the repo root, loaded once at SAGE process startup before any vault is registered. (2) sage/vault_config.schema.json bumped to v0.3: the `abstraction` block drops the `provider` and `model` properties (formerly per-vault), keeping only `enabled` and the density-proportional token-budget fields (`max_abstract_tokens`, `base_abstract_tokens`, `tokens_per_word`). The block description is rewritten to reflect the new scope split. Vault YAMLs that retained `model` or `provider` fail loud at startup against the stricter (still `additionalProperties: false`) block. Pydantic `AbstractionConfig` in sage/config.py splits into `VaultAbstractionConfig` (vault scope) and `StackAbstractionConfig` (stack scope), both derived from their respective JSON schemas per Principle 8. The factory dispatch in sage/mcp_init.py moves to a stack-startup helper `build_stack_abstraction_provider`; per-vault `initialize_services` consults only the `enabled` opt-out and accepts the stack provider via injection. `SAGE_TEST_STUB_PROVIDERS=1` short-circuits at stack startup, preserving the T-0029/F-8 guardrail. Test surface: DI-008..DI-012 in tests/sage/test_mcp_init.py absorb into new stack-scope tests (STK-001..005 in tests/sage/test_stack_abstraction_dispatch.py); per-vault DI-008/DI-009 are rewritten as the `enabled=False` opt-out anti-coincidence pair; new schema-validation tests cover the stack-scope schema (SCH-S-001..004 in tests/sage/test_sage_core_config_schema.py); vault SCH-001 is rewritten to assert `provider` and `model` are NOT in the vault schema. The verbatim-description sync test gains a new (StackAbstractionConfig, sage_core_config.schema.json) entry. `sage_get_vault_config` MCP response naturally drops `abstraction.{provider,model}` via the Pydantic model split; the complementary new MCP tool `sage_get_stack_config` exposes the stack-wide abstraction config."
     },
     {
       "version": "1.18",

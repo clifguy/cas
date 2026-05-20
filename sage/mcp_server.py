@@ -42,7 +42,14 @@ import sage.app  # noqa: F401 -- import side-effect: installs T-0022 root-logger
 from sage.api.errors import SAGEError
 from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
-from sage.mcp_init import SAGEServices, initialize_services
+from sage.mcp_init import (
+    SAGEServices,
+    build_stack_abstraction_provider,
+    get_stack_config,
+    initialize_services,
+    load_stack_config_or_default,
+    set_stack_config,
+)
 from sage.models.schemas import VaultIdStr
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
@@ -136,10 +143,21 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     if standalone:
         from sage.vault_discovery import discover_vault_configs
 
+        # CAS-ADR-030: build the SAGE-stack-wide abstraction provider once
+        # at process startup; share it across every vault that doesn't opt
+        # out via vault.abstraction.enabled = False.
+        stack_cfg = load_stack_config_or_default()
+        set_stack_config(stack_cfg)
+        stack_abstraction_provider = build_stack_abstraction_provider(stack_cfg)
+
         for config_path in discover_vault_configs(_vault_root):
             try:
                 config = load_vault_config(config_path)
-                services = await initialize_services(config, config_path=config_path)
+                services = await initialize_services(
+                    config,
+                    config_path=config_path,
+                    abstraction_provider=stack_abstraction_provider,
+                )
                 _vaults[config.vault.id] = services
             except Exception as exc:
                 import logging
@@ -154,6 +172,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         for services in _vaults.values():
             await services.graph_store.close()
         _vaults.clear()
+        set_stack_config(None)
 
 
 def _envelope_error_kind(result: Any) -> str | None:
@@ -283,11 +302,16 @@ async def sage_reload_vault(vault_id: str) -> dict:
 
     # Reinitialize, preserving the config_path so a subsequent reload can
     # also re-read from disk, and the content_store_factory so hermetic
-    # lifespan tests keep their stub ContentStore across reload.
+    # lifespan tests keep their stub ContentStore across reload. The
+    # stack-wide abstraction provider is built once at lifespan startup
+    # (CAS-ADR-030) and threaded through here so the reload doesn't
+    # construct a second Qwen3 process.
+    stack_provider = build_stack_abstraction_provider(get_stack_config())
     new_services = await initialize_services(
         config,
         config_path=config_path,
         content_store_factory=old_services.content_store_factory,
+        abstraction_provider=stack_provider,
     )
     _vaults[vault_id] = new_services
 
@@ -298,6 +322,26 @@ async def sage_reload_vault(vault_id: str) -> dict:
         "reloaded": True,
         "document_count": total_docs,
     }
+
+
+@mcp.tool()
+async def sage_get_stack_config() -> dict:
+    """Return the SAGE-stack-wide configuration (CAS-ADR-030).
+
+    Stack-wide config governs resources whose enforcement spans the whole
+    SAGE process (e.g., the abstraction provider singleton). Per-vault
+    knobs live in `sage_get_vault_config`.
+
+    Today the response carries one section, `abstraction`, with:
+      - `provider`: dispatch key (`"qwen3-mlx"` or `"stub"`).
+      - `model`: the model identifier passed to the provider's factory
+        (string, or null when the stack is stub-only).
+
+    The shape is forward-compatible: new top-level sections can be added
+    without changing the contract of existing callers.
+    """
+    cfg = get_stack_config()
+    return cfg.model_dump(mode="json")
 
 
 _sage_tools = register_sage_tools(

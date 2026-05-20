@@ -11,7 +11,8 @@ sentence to prevent mid-sentence truncation.
 import pytest
 
 from sage.adapters.abstraction_utils import compute_max_tokens, trim_to_sentence_boundary
-from sage.config import AbstractionConfig
+from sage.config import StackAbstractionConfig
+from sage.config import VaultAbstractionConfig as AbstractionConfig
 
 # ---------------------------------------------------------------------------
 # compute_max_tokens
@@ -191,20 +192,23 @@ class TestTrimToSentenceBoundary:
 
 
 # ---------------------------------------------------------------------------
-# AbstractionConfig.provider (T-0099)
+# StackAbstractionConfig.provider (T-0099 dispatch pattern, re-anchored at
+# stack scope by CAS-ADR-030 / T-0103)
 # ---------------------------------------------------------------------------
 
 
-class TestAbstractionConfigProvider:
-    """Tests for the ``provider`` dispatch key on AbstractionConfig."""
+class TestStackAbstractionConfigProvider:
+    """Tests for the ``provider`` dispatch key on StackAbstractionConfig."""
 
     def test_cfg_001_default_provider_is_qwen3_mlx(self):
-        """An AbstractionConfig built with no kwargs has provider="qwen3-mlx".
+        """A StackAbstractionConfig built with no kwargs has
+        provider="qwen3-mlx".
 
-        The default preserves backward compatibility for vaults that already
-        set ``model`` but not ``provider``.
+        The default mirrors the JSON schema's `default: "qwen3-mlx"` at the
+        stack scope so a sage/config.yaml that omits the field still
+        constructs a usable provider.
         """
-        config = AbstractionConfig()
+        config = StackAbstractionConfig()
         assert isinstance(config.provider, str)
         assert config.provider == "qwen3-mlx"
 
@@ -217,4 +221,4 @@ class TestAbstractionConfigProvider:
         import pydantic
 
         with pytest.raises(pydantic.ValidationError):
-            AbstractionConfig(provider="ollama")
+            StackAbstractionConfig(provider="ollama")

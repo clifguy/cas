@@ -104,23 +104,13 @@
     },
     "abstraction": {
       "type": "object",
-      "description": "Configuration for the semantic abstract generation stage of the ingestion pipeline (CAS-ADR-011).",
+      "description": "Per-vault configuration for the semantic abstract generation stage of the ingestion pipeline (CAS-ADR-011). Carries the vault-scope opt-in (`enabled`) and the density-proportional token-budget tuning. Provider and model identification are SAGE-process-wide (CAS-ADR-030) and live under the stack config, not here.",
       "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean",
           "default": true,
           "description": "Whether to generate semantic abstracts during ingestion. If false, ingestion completes with pipeline_status 'abstraction_skipped'. If true and the LLM fails at runtime, pipeline_status is 'failed' (strict quality gate)."
-        },
-        "provider": {
-          "type": "string",
-          "enum": ["qwen3-mlx", "stub"],
-          "default": "qwen3-mlx",
-          "description": "Abstraction provider dispatch key (Abstraction Provider Evaluation Framework §3.6). 'qwen3-mlx' loads Qwen3AbstractionProvider with the model identifier from the 'model' field. 'stub' loads StubAbstractionProvider (test/disabled vaults). Default 'qwen3-mlx' preserves backward compatibility for vaults that already set 'model'."
-        },
-        "model": {
-          "type": "string",
-          "description": "LLM model identifier for abstract generation. Should be a local model for Phase 1."
         },
         "max_abstract_tokens": {
           "type": "integer",

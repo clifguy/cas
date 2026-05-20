@@ -135,7 +135,14 @@ class LifecycleConfig(BaseModel):
     )
 
 
-class AbstractionConfig(BaseModel):
+class VaultAbstractionConfig(BaseModel):
+    """Per-vault abstraction config (CAS-ADR-030).
+
+    Carries the vault-scope opt-in (`enabled`) and the density-proportional
+    token-budget tuning. Provider and model identification moved to stack
+    scope (see `StackAbstractionConfig`).
+    """
+
     enabled: bool = Field(
         default=True,
         description=(
@@ -143,23 +150,6 @@ class AbstractionConfig(BaseModel):
             "false, ingestion completes with pipeline_status "
             "'abstraction_skipped'. If true and the LLM fails at runtime, "
             "pipeline_status is 'failed' (strict quality gate)."
-        ),
-    )
-    provider: Literal["qwen3-mlx", "stub"] = Field(
-        default="qwen3-mlx",
-        description=(
-            "Abstraction provider dispatch key (Abstraction Provider "
-            "Evaluation Framework §3.6). 'qwen3-mlx' loads "
-            "Qwen3AbstractionProvider with the model identifier from "
-            "the 'model' field. 'stub' loads StubAbstractionProvider "
-            "(test/disabled vaults). Default 'qwen3-mlx' preserves "
-            "backward compatibility for vaults that already set 'model'."
-        ),
-    )
-    model: str | None = Field(
-        default=None,
-        description=(
-            "LLM model identifier for abstract generation. Should be a local model for Phase 1."
         ),
     )
     max_abstract_tokens: int = Field(
@@ -184,6 +174,59 @@ class AbstractionConfig(BaseModel):
             "budget. Combined with base_abstract_tokens as "
             "`min(base_abstract_tokens + word_count * tokens_per_word, "
             "max_abstract_tokens)` to set the per-document budget."
+        ),
+    )
+
+
+class StackAbstractionConfig(BaseModel):
+    """Stack-wide abstraction config (CAS-ADR-030).
+
+    Loaded once at SAGE process startup before any vault is registered.
+    Carries the provider dispatch key and the model identifier passed to
+    the provider's factory. Co-located with the resource boundary because
+    the Qwen3 provider is enforced as a process-wide singleton.
+    """
+
+    provider: Literal["qwen3-mlx", "stub"] = Field(
+        default="qwen3-mlx",
+        description=(
+            "Abstraction provider dispatch key (Abstraction Provider "
+            "Evaluation Framework §3.6, re-anchored at stack scope by "
+            "CAS-ADR-030). 'qwen3-mlx' loads Qwen3AbstractionProvider "
+            "with the model identifier from the 'model' field. 'stub' "
+            "loads StubAbstractionProvider (test/disabled stacks)."
+        ),
+    )
+    model: str | None = Field(
+        default=None,
+        description=(
+            "LLM model identifier for abstract generation, passed to the "
+            "provider's factory. Required when provider is 'qwen3-mlx' "
+            "(startup fails loudly if null). Ignored when provider is "
+            "'stub'. Should be a local model for Phase 1."
+        ),
+    )
+
+
+class SageCoreConfig(BaseModel):
+    """Root configuration for the SAGE Core API process (CAS-ADR-030).
+
+    Loaded once at process startup from `sage/config.yaml` before any vault
+    is registered. Carries resources whose enforcement spans the whole
+    SAGE process; per-vault configuration lives in `VaultConfig`.
+    """
+
+    abstraction: StackAbstractionConfig = Field(
+        default_factory=StackAbstractionConfig,
+        description=(
+            "Stack-wide abstraction provider configuration (CAS-ADR-030). "
+            "The provider and model identifier are SAGE-process-wide "
+            "because the Qwen3 provider is enforced as a singleton across "
+            "the process; co-locating the config with the resource "
+            "boundary avoids the layering contradiction where a per-vault "
+            "field controls a stack-wide resource. Per-vault opt-in and "
+            "token-budget tuning live in the vault config's abstraction "
+            "block."
         ),
     )
 
@@ -267,11 +310,15 @@ class VaultConfig(BaseModel):
         default=None,
         description=("Default access control settings for new documents in this vault."),
     )
-    abstraction: AbstractionConfig = Field(
-        default_factory=AbstractionConfig,
+    abstraction: VaultAbstractionConfig = Field(
+        default_factory=VaultAbstractionConfig,
         description=(
-            "Configuration for the semantic abstract generation stage of "
-            "the ingestion pipeline (CAS-ADR-011)."
+            "Per-vault configuration for the semantic abstract generation "
+            "stage of the ingestion pipeline (CAS-ADR-011). Carries the "
+            "vault-scope opt-in (`enabled`) and the density-proportional "
+            "token-budget tuning. Provider and model identification are "
+            "SAGE-process-wide (CAS-ADR-030) and live under the stack "
+            "config, not here."
         ),
     )
     retrieval_health: RetrievalHealthConfig | None = Field(
@@ -392,3 +439,25 @@ def load_vault_config(config_path: Path) -> VaultConfig:
 def build_transition_table(config: VaultConfig) -> TransitionTable:
     """Build the transition lookup table from a loaded vault config."""
     return TransitionTable(config.lifecycle.transitions)
+
+
+_SAGE_CORE_CONFIG_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[1] / "docs" / "fs" / "sage" / "sage_core_config.schema.json"
+)
+
+
+def load_sage_core_config(config_path: Path) -> SageCoreConfig:
+    """Load and validate the SAGE Core API stack config from a YAML file.
+
+    Validates the raw dict against `docs/fs/sage/sage_core_config.schema.json`
+    before constructing the Pydantic model, so a misnamed key or unexpected
+    type surfaces against the formal substrate (CAS-ADR-008) rather than as
+    a less-actionable Pydantic error. Returns the constructed `SageCoreConfig`.
+    """
+    import json as _json
+
+    with open(config_path) as f:
+        raw = yaml.safe_load(f) or {}
+    schema = _json.loads(_SAGE_CORE_CONFIG_SCHEMA_PATH.read_text())
+    jsonschema.validate(raw, schema)
+    return SageCoreConfig.model_validate(raw)

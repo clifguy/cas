@@ -222,8 +222,15 @@ async def test_initialize_services_shares_embedding_provider_across_vaults(tmp_p
     cfg_a = VaultConfig.model_validate(_build_vault_config_dict(brain_a, sources_a, "vault_a"))
     cfg_b = VaultConfig.model_validate(_build_vault_config_dict(brain_b, sources_b, "vault_b"))
 
-    services_a = await initialize_services(cfg_a)
-    services_b = await initialize_services(cfg_b)
+    # Post CAS-ADR-030 the abstraction provider is built once at SAGE stack
+    # startup and threaded through; inject an explicit stub to satisfy that
+    # contract while keeping the embedding-singleton-sharing assertion the
+    # actual focus of the test.
+    from sage.adapters.stubs import StubAbstractionProvider
+
+    stub_abstract = StubAbstractionProvider()
+    services_a = await initialize_services(cfg_a, abstraction_provider=stub_abstract)
+    services_b = await initialize_services(cfg_b, abstraction_provider=stub_abstract)
 
     try:
         embed_a = services_a.ingestion_service._embedding

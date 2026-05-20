@@ -216,7 +216,13 @@ class TestSageCreateVault:
 class TestSageGetVaultConfig:
     # TEST-APP-MCP-035
     async def test_mcp_035_returns_full_config_and_errors_on_unknown(self, registered_vault):
-        """Returns full config for known vault; error for unknown."""
+        """Returns full config for known vault; error for unknown.
+
+        Also asserts (CAS-ADR-030 / T-0103) that the vault-config response
+        no longer carries `abstraction.provider` or `abstraction.model`;
+        those moved to stack scope. The `sage_get_stack_config` MCP tool
+        is the canonical surface for them.
+        """
         result = _parse(await sage_get_vault_config("test_vault"))
         for section in (
             "vault",
@@ -229,8 +235,25 @@ class TestSageGetVaultConfig:
             assert section in result
         assert result["vault"]["id"] == "test_vault"
 
+        abstraction = result.get("abstraction", {})
+        assert "provider" not in abstraction
+        assert "model" not in abstraction
+
         unknown = _parse(await sage_get_vault_config("does_not_exist"))
         assert unknown.get("error") == "unknown_vault"
+
+    async def test_mcp_get_stack_config_returns_provider_and_model(self, registered_vault):
+        """`sage_get_stack_config` surfaces the stack-wide abstraction config
+        (CAS-ADR-030). Shape: `{"abstraction": {"provider": ..., "model": ...}}`.
+        """
+        from sage.mcp_server import sage_get_stack_config
+
+        result = _parse(await sage_get_stack_config())
+        assert "abstraction" in result
+        assert "provider" in result["abstraction"]
+        assert "model" in result["abstraction"]
+        # The provider must be one of the documented enum values.
+        assert result["abstraction"]["provider"] in {"qwen3-mlx", "stub"}
 
 
 # ---------------------------------------------------------------------------

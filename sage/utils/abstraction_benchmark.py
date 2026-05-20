@@ -36,7 +36,7 @@ from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
 )
-from sage.config import AbstractionConfig
+from sage.config import VaultAbstractionConfig as AbstractionConfig
 
 MemoryProbe = Callable[[], int]
 
@@ -396,7 +396,7 @@ async def run_benchmark(
     memory_stats = aggregate_latency([float(m.peak_used_bytes_during_call) for m in measurements])
 
     return BenchmarkResult(
-        candidate_model_id=candidate_model_id or abstraction_config.model or "unknown",
+        candidate_model_id=candidate_model_id or "unknown",
         corpus_size=len(corpus),
         repeats=repeats,
         measurements=measurements,
