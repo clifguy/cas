@@ -80,11 +80,15 @@ async def _migrate_vault(config: VaultConfig, config_path: Path) -> None:
     """
     from sage.adapters.stubs import StubAbstractionProvider
 
+    # No registry_service: this one-shot CLI never invokes maintenance_service
+    # post-migration. Explicit None marks the omission so callers extending this
+    # script know to thread a real registry_service if they add such ops.
     services = await initialize_services(
         config,
         migrate=True,
         config_path=config_path,
         abstraction_provider=StubAbstractionProvider(),
+        registry_service=None,
     )
     await services.graph_store.close()
 

@@ -157,6 +157,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
                     config,
                     config_path=config_path,
                     abstraction_provider=stack_abstraction_provider,
+                    registry_service=_vault_registry_service,
                 )
                 _vaults[config.vault.id] = services
             except Exception as exc:
@@ -312,6 +313,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
         config_path=config_path,
         content_store_factory=old_services.content_store_factory,
         abstraction_provider=stack_provider,
+        registry_service=_vault_registry_service,
     )
     _vaults[vault_id] = new_services
 
