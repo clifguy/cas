@@ -151,8 +151,12 @@ jobs:
           .venv/bin/lint-imports
 
   vitest:
-    # Frontend unit tests for the CAS app (T-0128). Pure Node; no Python
-    # or backend needed. Gated on app/** changes via paths-filter.
+    # Frontend unit tests + TypeScript/Vite build gate for the CAS app
+    # (T-0128, T-0140). Pure Node; no Python or backend needed. Gated on
+    # app/** changes via paths-filter. The build step (`npm run build` =
+    # `tsc -b && vite build`) catches type errors and bundling failures
+    # that the dev server (Vite) tolerates silently; this gate exists
+    # because pre-T-0140 such errors could sit on main undetected.
     needs: paths-filter
     if: needs.paths-filter.outputs.app == 'true'
     runs-on: ubuntu-latest
@@ -171,6 +175,9 @@ jobs:
 
       - name: Install app dependencies
         run: npm ci
+
+      - name: Build (tsc -b && vite build)
+        run: npm run build
 
       - name: Run Vitest
         run: npm test
