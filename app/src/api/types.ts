@@ -423,3 +423,71 @@ export interface UpdateMetadataRequest {
   authority_scope?: string;
   document_date?: string;
 }
+
+// --- Bulk operations (CAS-ADR-028 ops-object shape) ---
+
+export interface TagsPatch {
+  add?: string[];
+  remove?: string[];
+}
+
+export interface Tier3Patch {
+  set?: Record<string, unknown>;
+  unset?: string[];
+}
+
+export interface BulkItemErrorEnvelope {
+  error: string;
+  message: string;
+  detail?: unknown;
+}
+
+export interface BulkLifecycleItem {
+  document_id: string;
+  action: string;
+  new_version_id?: string | null;
+}
+
+export interface BulkLifecycleItemResult {
+  document_id: string;
+  status: 'success' | 'error';
+  document?: Document | null;
+  warnings?: string[] | null;
+  error?: BulkItemErrorEnvelope | null;
+}
+
+export interface BulkLifecycleRequest {
+  items: BulkLifecycleItem[];
+}
+
+export interface BulkLifecycleResponse {
+  results: BulkLifecycleItemResult[];
+  success_count: number;
+  error_count: number;
+  total: number;
+}
+
+export interface BulkMetadataItem {
+  document_id: string;
+  tags?: TagsPatch;
+  tier3_metadata?: Tier3Patch;
+}
+
+export interface BulkMetadataItemResult {
+  document_id: string;
+  status: 'success' | 'error';
+  document?: Document | null;
+  warnings?: string[] | null;
+  error?: BulkItemErrorEnvelope | null;
+}
+
+export interface BulkMetadataRequest {
+  items: BulkMetadataItem[];
+}
+
+export interface BulkMetadataResponse {
+  results: BulkMetadataItemResult[];
+  success_count: number;
+  error_count: number;
+  total: number;
+}

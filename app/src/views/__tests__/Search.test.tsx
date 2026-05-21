@@ -711,3 +711,197 @@ describe('Search view: URL-driven state persistence', () => {
     expect(screen.getByRole('heading', { name: /failed ingestions/i })).toBeInTheDocument();
   });
 });
+
+describe('Search view: bulk selection model (T-0116)', () => {
+  it('initializes with no rows selected and no BulkActionBar visible', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(3, 3));
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+    await screen.findByText('Document 1');
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    for (const cb of checkboxes) {
+      expect((cb as HTMLInputElement).checked).toBe(false);
+    }
+    expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+  });
+
+  it('shows the bulk action bar with count 1 when a row is checked', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(3, 3));
+    const user = userEvent.setup();
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+    await screen.findByText('Document 1');
+
+    const firstRowCheckbox = screen.getByTestId('bulk-row-checkbox-doc-1');
+    await user.click(firstRowCheckbox);
+
+    expect(screen.getByTestId('bulk-action-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('bulk-action-bar-count')).toHaveTextContent(/1 selected/);
+  });
+
+  it('checks every visible row when the header select-all is clicked', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(3, 3));
+    const user = userEvent.setup();
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+    await screen.findByText('Document 1');
+
+    const selectAll = screen.getByTestId('bulk-select-all');
+    await user.click(selectAll);
+
+    for (let i = 1; i <= 3; i++) {
+      const cb = screen.getByTestId(`bulk-row-checkbox-doc-${i}`) as HTMLInputElement;
+      expect(cb.checked).toBe(true);
+    }
+    expect(screen.getByTestId('bulk-action-bar-count')).toHaveTextContent(/3 selected/);
+  });
+
+  it('clears selection when URL query parameters change', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(3, 3));
+    const user = userEvent.setup();
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+    await screen.findByText('Document 1');
+
+    await user.click(screen.getByTestId('bulk-row-checkbox-doc-1'));
+    await user.click(screen.getByTestId('bulk-row-checkbox-doc-2'));
+    expect(screen.getByTestId('bulk-action-bar-count')).toHaveTextContent(/2 selected/);
+
+    // Switch mode to hybrid + add a query — paramsKey changes, selection should clear.
+    mockDiscover.mockResolvedValueOnce({
+      mode: 'semantic',
+      results: [makeHit('hit-x', 'X')],
+      total_available: 1,
+      cursor: null,
+    });
+    const modeSelect = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(modeSelect, 'hybrid');
+    const searchInput = screen.getByPlaceholderText(/search documents/i);
+    await user.type(searchInput, 'something');
+    await user.click(screen.getByRole('button', { name: /search/i }));
+
+    await screen.findByText('X');
+    expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+  });
+
+  it('clears selection when the offset (pagination) changes', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(50, 127, 0));
+    const user = userEvent.setup();
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+    await screen.findByText('Document 1');
+
+    await user.click(screen.getByTestId('bulk-row-checkbox-doc-1'));
+    expect(screen.getByTestId('bulk-action-bar-count')).toHaveTextContent(/1 selected/);
+
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(50, 127, 50));
+    await user.click(screen.getByRole('button', { name: /next/i }));
+    await screen.findByText('Document 51');
+
+    expect(screen.queryByTestId('bulk-action-bar')).not.toBeInTheDocument();
+  });
+
+  it('renders row checkboxes in card mode without a select-all header', async () => {
+    mockDiscover.mockResolvedValueOnce({
+      mode: 'hybrid',
+      results: [makeHit('h-1', 'A'), makeHit('h-2', 'B'), makeHit('h-3', 'C')],
+      total_available: 3,
+      cursor: null,
+    });
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=hybrid&q=test']}
+      />,
+    );
+    await screen.findByText('A');
+
+    expect(screen.getByTestId('bulk-row-checkbox-h-1')).toBeInTheDocument();
+    expect(screen.getByTestId('bulk-row-checkbox-h-2')).toBeInTheDocument();
+    expect(screen.getByTestId('bulk-row-checkbox-h-3')).toBeInTheDocument();
+    expect(screen.queryByTestId('bulk-select-all')).not.toBeInTheDocument();
+  });
+});
+
+describe('Search view: tags URL parameter (T-0130)', () => {
+  it('populates filters.tags from ?tags=<single>', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(0, 0));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&tags=e2e-bulk-fixture']}
+      />,
+    );
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+
+    const [vaultId, request] = mockDiscover.mock.calls[0];
+    expect(vaultId).toBe('test_vault');
+    expect(request.mode).toBe('catalog');
+    expect(request.filters).toEqual({ tags: ['e2e-bulk-fixture'] });
+  });
+
+  it('splits comma-separated ?tags=a,b into an array', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(0, 0));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&tags=a,b']}
+      />,
+    );
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.filters?.tags).toEqual(['a', 'b']);
+  });
+
+  it('omits filters.tags when the URL has no ?tags param', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(0, 0));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&doc_type=patent_draft']}
+      />,
+    );
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.filters).toEqual({ doc_type: 'patent_draft' });
+    expect(request.filters?.tags).toBeUndefined();
+  });
+});

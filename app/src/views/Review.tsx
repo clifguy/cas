@@ -4,6 +4,9 @@ import type { VaultContext } from '../App';
 import type { PendingMetadata, StagingEdge, UpdateMetadataRequest } from '../api/types';
 import { listPendingMetadata, listStagingEdges, confirmStagingEdge, dismissStagingEdge } from '../api/review';
 import { updateMetadata } from '../api/documents';
+import { BulkActionBar } from '../components/BulkActionBar';
+import { BulkLifecycleDialog } from '../components/BulkLifecycleDialog';
+import { BulkMetadataDialog } from '../components/BulkMetadataDialog';
 
 export default function Review() {
   const { vaultId, vault } = useOutletContext<VaultContext>();
@@ -14,6 +17,14 @@ export default function Review() {
   const [stagingEdges, setStagingEdges] = useState<StagingEdge[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
+
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
+  const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeTab]);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -33,6 +44,37 @@ export default function Review() {
   }, [vaultId]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  function toggleRow(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllVisible(ids: string[]) {
+    setSelectedIds((prev) => {
+      const allSelected = ids.length > 0 && ids.every((id) => prev.has(id));
+      if (allSelected) {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+  }
+
+  function handleBulkResolved(result: { succeeded: string[]; failed: string[] }) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of result.succeeded) next.delete(id);
+      return next;
+    });
+  }
 
   if (!vault) return <div>Vault not found.</div>;
   if (loading) return <div>Loading review data...</div>;
@@ -56,9 +98,42 @@ export default function Review() {
       </div>
 
       {activeTab === 'metadata' ? (
-        <MetadataReview vaultId={vaultId} items={pendingMeta} />
+        <>
+          {selectedIds.size > 0 && (
+            <BulkActionBar
+              count={selectedIds.size}
+              onSetLifecycle={() => setLifecycleDialogOpen(true)}
+              onUpdateMetadata={() => setMetadataDialogOpen(true)}
+              onClear={() => setSelectedIds(new Set())}
+            />
+          )}
+          <MetadataReview
+            vaultId={vaultId}
+            items={pendingMeta}
+            selectedIds={selectedIds}
+            onToggleRow={toggleRow}
+            onToggleAll={toggleAllVisible}
+          />
+        </>
       ) : (
         <EdgeReview vaultId={vaultId} edges={stagingEdges} />
+      )}
+
+      {lifecycleDialogOpen && (
+        <BulkLifecycleDialog
+          vaultId={vaultId}
+          selectedIds={Array.from(selectedIds)}
+          onResolved={handleBulkResolved}
+          onClose={() => setLifecycleDialogOpen(false)}
+        />
+      )}
+      {metadataDialogOpen && (
+        <BulkMetadataDialog
+          vaultId={vaultId}
+          selectedIds={Array.from(selectedIds)}
+          onResolved={handleBulkResolved}
+          onClose={() => setMetadataDialogOpen(false)}
+        />
       )}
     </div>
   );
@@ -66,7 +141,19 @@ export default function Review() {
 
 // -- Metadata Review --
 
-function MetadataReview({ vaultId, items }: { vaultId: string; items: PendingMetadata[] }) {
+function MetadataReview({
+  vaultId,
+  items,
+  selectedIds,
+  onToggleRow,
+  onToggleAll,
+}: {
+  vaultId: string;
+  items: PendingMetadata[];
+  selectedIds: Set<string>;
+  onToggleRow: (id: string) => void;
+  onToggleAll: (ids: string[]) => void;
+}) {
   const [queue, setQueue] = useState(items);
   const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -116,6 +203,11 @@ function MetadataReview({ vaultId, items }: { vaultId: string; items: PendingMet
     }
   }
 
+  const visibleIds = queue.map((item) => item.document.id);
+  const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+  const allChecked = visibleIds.length > 0 && selectedVisible === visibleIds.length;
+  const someChecked = selectedVisible > 0 && selectedVisible < visibleIds.length;
+
   return (
     <div>
       <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
@@ -124,6 +216,18 @@ function MetadataReview({ vaultId, items }: { vaultId: string; items: PendingMet
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr>
+            <th style={{ ...thStyle, width: 32 }}>
+              <input
+                type="checkbox"
+                data-testid="bulk-select-all"
+                aria-label="Select all visible"
+                checked={allChecked}
+                ref={(el) => {
+                  if (el) el.indeterminate = someChecked;
+                }}
+                onChange={() => onToggleAll(visibleIds)}
+              />
+            </th>
             <th style={thStyle}>Document</th>
             <th style={thStyle}>Field</th>
             <th style={thStyle}>Value</th>
@@ -138,6 +242,17 @@ function MetadataReview({ vaultId, items }: { vaultId: string; items: PendingMet
             const docError = errors[item.document.id];
             return fields.map(([field, info], fi) => (
               <tr key={`${item.document.id}-${field}`} style={docError ? { background: '#fff3f3' } : undefined}>
+                {fi === 0 && (
+                  <td style={{ ...tdStyle, verticalAlign: 'top' }} rowSpan={fields.length}>
+                    <input
+                      type="checkbox"
+                      data-testid={`bulk-row-checkbox-${item.document.id}`}
+                      aria-label={`Select ${item.document.title}`}
+                      checked={selectedIds.has(item.document.id)}
+                      onChange={() => onToggleRow(item.document.id)}
+                    />
+                  </td>
+                )}
                 {fi === 0 && (
                   <td style={{ ...tdStyle, verticalAlign: 'top' }} rowSpan={fields.length}>
                     <Link to={`/documents/${item.document.id}`} style={{ color: '#1565c0' }}>

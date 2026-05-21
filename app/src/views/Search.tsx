@@ -3,6 +3,9 @@ import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
 import type { VaultContext } from '../App';
 import type { DiscoverHit, DiscoverRequest } from '../api/types';
 import { discover } from '../api/discover';
+import { BulkActionBar } from '../components/BulkActionBar';
+import { BulkLifecycleDialog } from '../components/BulkLifecycleDialog';
+import { BulkMetadataDialog } from '../components/BulkMetadataDialog';
 
 const PAGE_SIZE = 50;
 
@@ -26,6 +29,10 @@ export default function Search() {
   const urlLifecycle = searchParams.get('lifecycle_status') ?? '';
   const urlProject = searchParams.get('project') ?? '';
   const urlPipelineStatus = searchParams.get('pipeline_status') ?? '';
+  const urlTags = (searchParams.get('tags') ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
   const urlOffset = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10) || 0);
   const urlSortBy = searchParams.get('sort_by') as SortColumn | null;
   const urlSortOrder = searchParams.get('sort_order') as SortDir | null;
@@ -55,10 +62,18 @@ export default function Search() {
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
 
+  // --- Selection state (bulk actions) ---
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
+  const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
+
   // --- Execute search whenever the URL changes ---
   const paramsKey = searchParams.toString();
   useEffect(() => {
     if (!vaultId) return;
+    // Selection is bound to the current filter result set; any URL change
+    // means the rows under the user's fingers may be different.
+    setSelectedIds(new Set());
     let cancelled = false;
 
     async function run(req: DiscoverRequest) {
@@ -130,11 +145,12 @@ export default function Search() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramsKey, vaultId]);
 
-  function buildUrlFilters(): Record<string, string> {
-    const f: Record<string, string> = {};
+  function buildUrlFilters(): NonNullable<DiscoverRequest['filters']> {
+    const f: NonNullable<DiscoverRequest['filters']> = {};
     if (urlDocType) f.doc_type = urlDocType;
     if (urlLifecycle) f.lifecycle_status = urlLifecycle;
     if (urlProject) f.project = urlProject;
+    if (urlTags.length) f.tags = urlTags;
     return f;
   }
 
@@ -170,6 +186,38 @@ export default function Search() {
     setSearchParams(next);
   }
 
+  function toggleRow(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllVisible() {
+    setSelectedIds((prev) => {
+      const visibleIds = results.map((h) => h.document.id);
+      const allSelected = visibleIds.every((id) => prev.has(id)) && visibleIds.length > 0;
+      if (allSelected) {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const id of visibleIds) next.add(id);
+      return next;
+    });
+  }
+
+  function handleBulkResolved(result: { succeeded: string[]; failed: string[] }) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of result.succeeded) next.delete(id);
+      return next;
+    });
+  }
+
   if (!vault) return <div>Vault not found.</div>;
 
   const currentSort: SortState | null = urlSortBy && urlSortOrder
@@ -191,7 +239,22 @@ export default function Search() {
           <div style={{ color: '#999' }}>No documents match this filter.</div>
         ) : (
           <>
-            <CatalogTable hits={results} sort={currentSort} onSort={handleSort} />
+            {selectedIds.size > 0 && (
+              <BulkActionBar
+                count={selectedIds.size}
+                onSetLifecycle={() => setLifecycleDialogOpen(true)}
+                onUpdateMetadata={() => setMetadataDialogOpen(true)}
+                onClear={() => setSelectedIds(new Set())}
+              />
+            )}
+            <CatalogTable
+              hits={results}
+              sort={currentSort}
+              onSort={handleSort}
+              selectedIds={selectedIds}
+              onToggleRow={toggleRow}
+              onToggleAll={toggleAllVisible}
+            />
             {(hasPrev || hasNext) && (
               <div style={paginationStyle}>
                 {hasPrev && (
@@ -214,6 +277,23 @@ export default function Search() {
         <div style={{ marginTop: 16 }}>
           <Link to="/dashboard" style={{ fontSize: 12, color: '#666' }}>&larr; Back to dashboard</Link>
         </div>
+
+        {lifecycleDialogOpen && (
+          <BulkLifecycleDialog
+            vaultId={vaultId}
+            selectedIds={Array.from(selectedIds)}
+            onResolved={handleBulkResolved}
+            onClose={() => setLifecycleDialogOpen(false)}
+          />
+        )}
+        {metadataDialogOpen && (
+          <BulkMetadataDialog
+            vaultId={vaultId}
+            selectedIds={Array.from(selectedIds)}
+            onResolved={handleBulkResolved}
+            onClose={() => setMetadataDialogOpen(false)}
+          />
+        )}
       </div>
     );
   }
@@ -334,15 +414,38 @@ export default function Search() {
         </p>
       )}
 
+      {hasSearched && results.length > 0 && selectedIds.size > 0 && (
+        <BulkActionBar
+          count={selectedIds.size}
+          onSetLifecycle={() => setLifecycleDialogOpen(true)}
+          onUpdateMetadata={() => setMetadataDialogOpen(true)}
+          onClear={() => setSelectedIds(new Set())}
+        />
+      )}
+
       {/* Browse mode: sortable table */}
       {urlMode === 'browse' && hasSearched && results.length > 0 && (
-        <CatalogTable hits={results} sort={currentSort} onSort={handleSort} />
+        <CatalogTable
+          hits={results}
+          sort={currentSort}
+          onSort={handleSort}
+          selectedIds={selectedIds}
+          onToggleRow={toggleRow}
+          onToggleAll={toggleAllVisible}
+        />
       )}
 
       {/* Semantic/keyword/hybrid: card layout */}
       {urlMode && urlMode !== 'browse' && results.map((hit) => (
         <div key={hit.document.id} style={{ borderBottom: '1px solid #eee', padding: '16px 0' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+            <input
+              type="checkbox"
+              data-testid={`bulk-row-checkbox-${hit.document.id}`}
+              aria-label={`Select ${hit.document.title}`}
+              checked={selectedIds.has(hit.document.id)}
+              onChange={() => toggleRow(hit.document.id)}
+            />
             <Link to={`/documents/${hit.document.id}`} style={{ fontSize: 15, fontWeight: 600, color: '#1565c0', textDecoration: 'none' }}>
               {sourceFilename(hit.document.source_path) ?? hit.document.title}
             </Link>
@@ -386,6 +489,23 @@ export default function Search() {
           )}
         </div>
       )}
+
+      {lifecycleDialogOpen && (
+        <BulkLifecycleDialog
+          vaultId={vaultId}
+          selectedIds={Array.from(selectedIds)}
+          onResolved={handleBulkResolved}
+          onClose={() => setLifecycleDialogOpen(false)}
+        />
+      )}
+      {metadataDialogOpen && (
+        <BulkMetadataDialog
+          vaultId={vaultId}
+          selectedIds={Array.from(selectedIds)}
+          onResolved={handleBulkResolved}
+          onClose={() => setMetadataDialogOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -396,15 +516,38 @@ function CatalogTable({
   hits,
   sort,
   onSort,
+  selectedIds,
+  onToggleRow,
+  onToggleAll,
 }: {
   hits: DiscoverHit[];
   sort: SortState | null;
   onSort: (column: SortColumn) => void;
+  selectedIds: Set<string>;
+  onToggleRow: (id: string) => void;
+  onToggleAll: () => void;
 }) {
+  const visibleIds = hits.map((h) => h.document.id);
+  const selectedVisible = visibleIds.filter((id) => selectedIds.has(id)).length;
+  const allChecked = visibleIds.length > 0 && selectedVisible === visibleIds.length;
+  const someChecked = selectedVisible > 0 && selectedVisible < visibleIds.length;
+
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
       <thead>
         <tr>
+          <th style={{ ...thStyle, width: 32 }}>
+            <input
+              type="checkbox"
+              data-testid="bulk-select-all"
+              aria-label="Select all visible"
+              checked={allChecked}
+              ref={(el) => {
+                if (el) el.indeterminate = someChecked;
+              }}
+              onChange={onToggleAll}
+            />
+          </th>
           <SortableHeader label="Title" column="title" sort={sort} onSort={onSort} />
           <SortableHeader label="Type" column="doc_type" sort={sort} onSort={onSort} />
           <SortableHeader label="Date" column="document_date" sort={sort} onSort={onSort} />
@@ -414,6 +557,15 @@ function CatalogTable({
       <tbody>
         {hits.map(hit => (
           <tr key={hit.document.id}>
+            <td style={tdStyle}>
+              <input
+                type="checkbox"
+                data-testid={`bulk-row-checkbox-${hit.document.id}`}
+                aria-label={`Select ${hit.document.title}`}
+                checked={selectedIds.has(hit.document.id)}
+                onChange={() => onToggleRow(hit.document.id)}
+              />
+            </td>
             <td style={tdStyle}>
               <Link to={`/documents/${hit.document.id}`} style={{ color: '#1565c0', textDecoration: 'none' }}>
                 {sourceFilename(hit.document.source_path) ?? hit.document.title}
