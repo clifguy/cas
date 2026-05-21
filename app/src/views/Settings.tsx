@@ -7,7 +7,7 @@ import type {
   DocTypeConfig,
   LifecycleStateConfig,
   LifecycleTransitionConfig,
-  AbstractionConfig,
+  VaultAbstractionConfig,
 } from '../api/types';
 import { getVaultConfig, updateVaultConfig } from '../api/vaults';
 import MaintenancePanel from '../components/MaintenancePanel';
@@ -527,8 +527,8 @@ function JsonEditor({
 
 function AbstractionEditor({
   config, editing, onEdit, onCancel, onSave, saving,
-}: EditorProps & { config: AbstractionConfig; onSave: (data: AbstractionConfig) => void }) {
-  const [draft, setDraft] = useState<AbstractionConfig>(config);
+}: EditorProps & { config: VaultAbstractionConfig; onSave: (data: VaultAbstractionConfig) => void }) {
+  const [draft, setDraft] = useState<VaultAbstractionConfig>(config);
   useEffect(() => { setDraft(config); }, [config]);
 
   return (
@@ -547,7 +547,6 @@ function AbstractionEditor({
                   <input type="checkbox" checked={draft.enabled} onChange={e => setDraft(prev => ({ ...prev, enabled: e.target.checked }))} />
                 </td>
               </tr>
-              <EditableFieldRow label="Model" value={draft.model ?? ''} onChange={v => setDraft(prev => ({ ...prev, model: v || null }))} />
               <tr>
                 <td style={tdLabelStyle}>Max Abstract Tokens</td>
                 <td style={tdStyle}>
@@ -563,7 +562,6 @@ function AbstractionEditor({
           ) : (
             <>
               <FieldRow label="Enabled" value={config.enabled ? 'Yes' : 'No'} />
-              <FieldRow label="Model" value={config.model ?? '(none)'} />
               <FieldRow label="Max Abstract Tokens" value={String(config.max_abstract_tokens)} />
             </>
           )}
