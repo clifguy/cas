@@ -9,9 +9,9 @@ process documents already in the vault.
 This script sweeps every active document in the named vault, reads its
 projected body text from LanceDB, scans for configured identifier
 patterns, and writes `references` edges via the same code path as the
-live rule (``plan_identifier_mentions_for_document`` +
-``resolve_and_execute``). Idempotent: re-running produces no duplicates
-because the live `link_idempotent` enforces the natural-key UNIQUE
+live rule (``plan_identifier_mention_edges`` +
+``GraphOpsService.link_idempotent``). Idempotent: re-running produces no
+duplicates because ``link_idempotent`` enforces the natural-key UNIQUE
 constraint.
 
 Usage::
@@ -42,17 +42,17 @@ if str(ROOT) not in sys.path:
 
 import yaml  # noqa: E402
 
-from app.backend.edge_inference import (  # noqa: E402
-    EdgePlan,
-    plan_identifier_mentions_for_document,
-    resolve_and_execute,
-)
 from sage.adapters.stubs import (  # noqa: E402
     StubAbstractionProvider,
     StubEmbeddingProvider,
 )
 from sage.config import VaultConfig  # noqa: E402
 from sage.mcp_init import initialize_services  # noqa: E402
+from sage.models.enums import EdgeType, RationaleKind  # noqa: E402
+from sage.models.schemas import LinkRequest  # noqa: E402
+from sage.services.identifier_mention_inference import (  # noqa: E402
+    plan_identifier_mention_edges,
+)
 
 
 @dataclass
@@ -103,7 +103,7 @@ async def _process_document(
 ) -> DocReport:
     chunks = await services.content_store.get_all_chunks(doc.id)
     body_text = "\n".join(c.content for c in chunks)
-    planned = await plan_identifier_mentions_for_document(
+    planned = await plan_identifier_mention_edges(
         source_doc_id=doc.id,
         body_text=body_text,
         edge_inference_config=edge_inference_cfg,
@@ -115,17 +115,21 @@ async def _process_document(
         title=doc.title,
         doc_type=doc.doc_type,
         edges_planned=len(planned),
-        edge_targets=[],
+        edge_targets=[(p.identifier, p.target_doc_id) for p in planned],
     )
-    for e in planned:
-        # Recover the identifier literal from the evidence string for the
-        # audit log. Evidence is shaped like:
-        #   "[references_mention] 'CAS-ADR-099' mentioned in body"
-        ident = e.evidence.split("'")[1] if "'" in e.evidence else "?"
-        report.edge_targets.append((ident, e.target_ref))
     if execute and planned:
-        plan = EdgePlan(edges=planned)
-        await resolve_and_execute(plan, {}, services.graph_store, services.graph_ops_service)
+        for p in planned:
+            await services.graph_ops_service.link_idempotent(
+                LinkRequest(
+                    source_id=p.source_doc_id,
+                    target_id=p.target_doc_id,
+                    edge_type=EdgeType.REFERENCES,
+                    source_valid_from_version=p.source_doc_id,
+                    target_valid_from_version=p.target_doc_id,
+                    rationale=p.evidence,
+                    rationale_kind=RationaleKind.REFERENCES_MENTION,
+                )
+            )
     return report
 
 

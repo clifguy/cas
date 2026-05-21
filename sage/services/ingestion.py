@@ -53,6 +53,7 @@ from sage.models.schemas import (
     SetLifecycleRequest,
 )
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
+from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.graph_store import GraphStore
@@ -275,6 +276,7 @@ class IngestionService:
         config: VaultConfig,
         source_adapters: dict[SourceType, SourceAdapter] | None = None,
         lifecycle_service: object | None = None,
+        graph_ops_service: object | None = None,
     ) -> None:
         self._store = graph_store
         self._locks = lock_manager
@@ -284,6 +286,12 @@ class IngestionService:
         self._config = config
         self._adapters = source_adapters or {}
         self._lifecycle_service = lifecycle_service
+        # T-0129: identifier_mention inference runs inside the per-document
+        # pipeline so all ingest pathways (bulk and sage_ingest) honor the
+        # vault's declared rules. Optional in the constructor signature so
+        # legacy call sites that don't yet pass it still construct; inference
+        # silently no-ops when absent.
+        self._graph_ops_service = graph_ops_service
 
         # Build the vault's FilenameParser once per service instance (CAS-ADR-015).
         # Only active when the vault's metadata_extraction block declares a
@@ -711,6 +719,13 @@ class IngestionService:
         try:
             await self._stage2_indexing(document_id, projection)
 
+            # T-0129: run vault-declared identifier_mention inference after
+            # Stage 2 (chunks materialized in the content store) and before
+            # Stage 3 (abstraction). Placement here -- rather than after
+            # abstraction -- ensures inferred edges appear even when
+            # abstraction is disabled or skipped on empty text.
+            await self._infer_identifier_mention_edges(document_id)
+
             # Check abstraction config
             if not self._config.abstraction.enabled:
                 # BH-025: abstraction_skipped
@@ -752,6 +767,39 @@ class IngestionService:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
+
+    async def _infer_identifier_mention_edges(self, document_id: str) -> None:
+        """T-0129: run identifier_mention inference for the just-indexed doc.
+
+        Reads chunks from the content store (Stage 2 must have completed),
+        invokes ``infer_identifier_mentions_for_document``, and lets it
+        write Tier-1 ``references`` edges directly via the graph_ops
+        service. Errors here are swallowed -- inference is an enrichment,
+        not a precondition for terminal pipeline status.
+        """
+        if self._graph_ops_service is None:
+            return
+        edge_inference_cfg = getattr(self._config, "edge_inference", None)
+        if not edge_inference_cfg:
+            return
+        try:
+            chunks = await self._content_store.get_all_chunks(document_id)
+            body_text = "\n".join(c.content for c in chunks)
+            if not body_text:
+                return
+            await infer_identifier_mentions_for_document(
+                source_doc_id=document_id,
+                body_text=body_text,
+                edge_inference_config=edge_inference_cfg,
+                graph_store=self._store,
+                graph_ops_service=self._graph_ops_service,
+            )
+        except Exception:
+            logger.exception(
+                "identifier_mention inference failed for %s; "
+                "pipeline continues without inferred edges",
+                document_id,
+            )
 
     async def _stage2_indexing(self, document_id: str, projection: ProjectionResult) -> None:
         """Stage 2: Chunk projection, embed, store in content store.

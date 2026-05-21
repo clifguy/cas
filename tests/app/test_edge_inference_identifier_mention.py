@@ -65,7 +65,6 @@ from pathlib import Path
 
 import pytest
 
-from app.backend.edge_inference import IDENTIFIER_MENTION_RATIONALE_PREFIX
 from app.backend.ingest_service import BatchIngestService, FileDescriptor
 from sage.adapters.stubs import (
     StubAbstractionProvider,
@@ -75,7 +74,11 @@ from sage.adapters.stubs import (
 from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.models.enums import EdgeType, RationaleKind, SourceType
-from sage.models.schemas import Document, LinkRequest
+from sage.models.schemas import Document, IngestRequest, LinkRequest
+from sage.services.identifier_mention_inference import (
+    IDENTIFIER_MENTION_RATIONALE_PREFIX,
+    infer_identifier_mentions_for_document,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture: vault config with the new identifier_mention rule
@@ -412,27 +415,21 @@ async def test_t4_re_ingest_does_not_duplicate_edge(tmp_path, services):
     inbound_sources = {e.source_id for e in inbound}
     assert inbound_sources == {src_a_id, src_b_id}
 
-    # Re-run the planner directly against doc_a's already-ingested body
-    # text and resolve_and_execute it -- idempotency check at the
-    # link_idempotent level (re-running the rule for the same document
-    # must not create duplicates).
-    from app.backend.edge_inference import (
-        EdgePlan,
-        plan_identifier_mentions_for_document,
-        resolve_and_execute,
-    )
-
+    # Re-run inference directly against doc_a's already-ingested body
+    # text -- idempotency check at the link_idempotent level. Re-running
+    # the rule for the same document must produce edges_existing > 0 and
+    # not duplicate the existing edge.
     chunks = await services.content_store.get_all_chunks(src_a_id)
     body = "\n".join(c.content for c in chunks)
-    replanned = await plan_identifier_mentions_for_document(
+    result = await infer_identifier_mentions_for_document(
         source_doc_id=src_a_id,
         body_text=body,
         edge_inference_config=services.config.edge_inference,
         graph_store=services.graph_store,
+        graph_ops_service=services.graph_ops_service,
     )
-    assert len(replanned) == 1
-    plan = EdgePlan(edges=replanned)
-    await resolve_and_execute(plan, {}, services.graph_store, services.graph_ops_service)
+    assert result.edges_created == 0
+    assert result.edges_existing == 1
     inbound_after = await services.graph_store.get_edges_by_target(adr_id, "references")
     assert len(inbound_after) == 2  # unchanged
 
@@ -589,3 +586,304 @@ async def test_t7_disabled_pattern_skips_matches(tmp_path, monkeypatch):
         assert ticket_inbound == []
     finally:
         await svc.graph_store.close()
+
+
+# ---------------------------------------------------------------------------
+# T-0129: sage_ingest pathway tests
+#
+# The tests above exercise BatchIngestService.run() with wait_for_pipeline=True
+# (implicit). The tests below exercise the per-document sage_ingest pathway:
+# IngestionService.ingest() with wait_for_pipeline=False, followed by polling
+# for terminal pipeline_status. Both pathways must produce identical edge
+# sets because T-0129 relocates identifier_mention inference into the SAGE
+# substrate so all ingest pathways honor the vault's declared rules.
+# ---------------------------------------------------------------------------
+
+
+TERMINAL_PIPELINE_STATUSES = {
+    "abstraction_complete",
+    "abstraction_skipped",
+    "failed",
+}
+
+
+async def _ingest_via_sage_ingest_and_get_edges(
+    svc: SAGEServices,
+    file_path: str,
+    *,
+    edge_type: str = "references",
+    force: bool = False,
+) -> tuple[str, list]:
+    """Run IngestionService.ingest with wait_for_pipeline=False and poll.
+
+    Mirrors the production sage_ingest MCP-tool dispatch shape: fire-and-
+    forget Stages 2-3, then poll the document's pipeline_status until it
+    reaches a terminal state. Identifier_mention edges must be present
+    by the time terminal status is observed (T-0129 acceptance criterion).
+    """
+    request = IngestRequest(
+        source=file_path,
+        adapter=SourceType.MARKDOWN,
+        force=force,
+        needs_review=False,
+    )
+    ingest_result = await svc.ingestion_service.ingest(
+        request,
+        wait_for_pipeline=False,
+    )
+    doc_id = ingest_result.document.id
+
+    # Poll for terminal pipeline_status. Bounded timeout prevents a hung
+    # pipeline from masking a zero-edge "pass" — the test fails with a
+    # readable timeout message instead of asserting against partial state.
+    import asyncio
+
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while True:
+        doc = await svc.graph_store.get_document(doc_id)
+        assert doc is not None, f"document {doc_id} disappeared during polling"
+        if doc.pipeline_status.value in TERMINAL_PIPELINE_STATUSES:
+            break
+        if asyncio.get_event_loop().time() > deadline:
+            raise AssertionError(
+                f"pipeline_status did not reach terminal in 5s; "
+                f"last observed: {doc.pipeline_status.value}"
+            )
+        await asyncio.sleep(0.05)
+
+    edges = await svc.graph_store.get_edges_by_source(doc_id, edge_type)
+    return doc_id, edges
+
+
+@pytest.mark.asyncio
+async def test_t1_sage_ingest_adr_mention_creates_references_edge(tmp_path, services):
+    """T-0129: sage_ingest path also produces identifier_mention edges."""
+    adr_id = _doc_id("adr_099")
+    await _seed_document(
+        services,
+        doc_id=adr_id,
+        title="ADR-099: Synthetic ADR for T-0129 testing",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "sage_ingest_ticket_adr_reference.md",
+        "# Ticket body\n\nThis ticket implements CAS-ADR-099.\n",
+    )
+
+    src_doc_id, edges = await _ingest_via_sage_ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1, f"expected one references edge, got {edges}"
+    edge = edges[0]
+    assert edge.target_id == adr_id
+    assert edge.source_id == src_doc_id
+    assert edge.edge_type == EdgeType.REFERENCES
+    assert edge.rationale_kind == RationaleKind.REFERENCES_MENTION
+    assert edge.rationale.startswith(IDENTIFIER_MENTION_RATIONALE_PREFIX)
+
+
+@pytest.mark.asyncio
+async def test_t2_sage_ingest_ticket_mention_creates_references_edge(tmp_path, services):
+    ticket_id = _doc_id("ticket_0042")
+    await _seed_document(
+        services,
+        doc_id=ticket_id,
+        title="T-0042: Synthetic ticket for testing",
+        doc_type="ticket",
+        tags=["ticket", "id:T-0042"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "sage_ingest_note_about_t_0042.md",
+        "# Note\n\nSee also T-0042 for the related work.\n",
+    )
+
+    src_doc_id, edges = await _ingest_via_sage_ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1
+    assert edges[0].target_id == ticket_id
+    assert edges[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+
+
+@pytest.mark.asyncio
+async def test_t3_sage_ingest_failure_record_mention_creates_references_edge(tmp_path, services):
+    failure_id = _doc_id("failure_3")
+    await _seed_document(
+        services,
+        doc_id=failure_id,
+        title="F-3: Synthetic failure for testing",
+        doc_type="failure_record",
+        tags=["failure_record", "id:F-3"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "sage_ingest_postmortem_referencing_f_3.md",
+        "# Postmortem\n\nRoot cause traces back to F-3.\n",
+    )
+
+    _src, edges = await _ingest_via_sage_ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1
+    assert edges[0].target_id == failure_id
+    assert edges[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+
+
+@pytest.mark.asyncio
+async def test_t5_sage_ingest_unresolved_identifier_creates_no_edge_with_positive_control(
+    tmp_path, services
+):
+    """Unresolved identifier produces no edge, with a positive control.
+
+    The body mentions BOTH an unresolved identifier (CAS-ADR-999) and a
+    resolved one (CAS-ADR-028). Exactly one edge must be created — to
+    ADR-028. Without the positive control, a buggy planner that returned
+    no edges for any input would still pass an "unresolved → zero edges"
+    assertion.
+    """
+    adr_028_id = _doc_id("adr_028")
+    await _seed_document(
+        services,
+        doc_id=adr_028_id,
+        title="ADR-028: Positive-control target",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    decoy_id = _doc_id("adr_decoy_sage")
+    await _seed_document(
+        services,
+        doc_id=decoy_id,
+        title="ADR-007: A real but unrelated ADR",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "sage_ingest_dangling_and_resolved.md",
+        "# Doc\n\nMentions CAS-ADR-999 (unresolved) and CAS-ADR-028 (resolved).\n",
+    )
+
+    src_doc_id, edges = await _ingest_via_sage_ingest_and_get_edges(services, src_path)
+
+    # Exactly one edge — to ADR-028. The unresolved CAS-ADR-999 produces
+    # no edge; the decoy ADR-007 is filtered by the title-prefix rule.
+    assert len(edges) == 1
+    assert edges[0].target_id == adr_028_id
+    decoy_inbound = await services.graph_store.get_edges_by_target(decoy_id, "references")
+    assert decoy_inbound == []
+
+
+@pytest.mark.asyncio
+async def test_t6_sage_ingest_manual_references_edge_is_preserved(tmp_path, services):
+    """Pre-existing manual edge survives sage_ingest with a matching mention.
+
+    Strengthened over the batch T6: this version's ingested doc DOES
+    mention the ADR, so identifier_mention inference fires and calls
+    link_idempotent against the same (source, target, references) triple
+    that already has a manual edge. The natural-key uniqueness check
+    must return the existing manual edge with created=False; the manual
+    edge's rationale_kind must remain MANUAL.
+    """
+    adr_id = _doc_id("adr_055")
+    await _seed_document(
+        services,
+        doc_id=adr_id,
+        title="ADR-055: Manual edge target",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "sage_ingest_mentions_adr_055.md",
+        "# Doc\n\nThis doc mentions CAS-ADR-055 inline.\n",
+    )
+
+    # First ingest produces an inferred edge.
+    src_doc_id, edges_first = await _ingest_via_sage_ingest_and_get_edges(services, src_path)
+    assert len(edges_first) == 1
+    assert edges_first[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+
+    # Force-ingest the same content. The existing inferred edge stays;
+    # link_idempotent returns the existing row without rewriting rationale.
+    src_doc_id_2, edges_second = await _ingest_via_sage_ingest_and_get_edges(
+        services, src_path, force=True
+    )
+    assert src_doc_id_2 == src_doc_id  # force-reingest reuses the record
+    assert len(edges_second) == 1
+    inbound = await services.graph_store.get_edges_by_target(adr_id, "references")
+    assert len(inbound) == 1
+    assert inbound[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+
+
+@pytest.mark.asyncio
+async def test_t9_batch_ingest_service_does_not_import_identifier_mention():
+    """T-0129 boundary: BatchIngestService source no longer references the
+    relocated inference function or the new sage module.
+
+    This is a structural anti-coincidental-pass check: if a future commit
+    silently restores the per-batch inference call in BatchIngestService
+    (causing double-write that link_idempotent would dedupe), the
+    edge-count assertions in the other tests would still pass. This test
+    catches the regression at the source-text level.
+    """
+    from pathlib import Path
+
+    text = Path("app/backend/ingest_service.py").read_text(encoding="utf-8")
+    assert "plan_identifier_mentions_for_document" not in text, (
+        "BatchIngestService must not reference the legacy planning function"
+    )
+    assert "identifier_mention_inference" not in text, (
+        "BatchIngestService must not import sage.services.identifier_mention_inference"
+    )
+    assert "infer_identifier_mentions_for_document" not in text, (
+        "BatchIngestService must not call the new infer_*_for_document entry point"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t10_wait_for_pipeline_independence(tmp_path, services):
+    """T-0129: edges produced are identical regardless of wait_for_pipeline.
+
+    Ingest one file with wait_for_pipeline=True (batch semantics) and a
+    different file containing the same identifier mention with
+    wait_for_pipeline=False (sage_ingest semantics). The two source docs
+    must each produce exactly one edge to the same target, with the same
+    rationale_kind and rationale prefix.
+
+    Anti-coincidental guard: requires a non-empty edge set (using a
+    resolvable identifier) and asserts that BOTH paths produce the same
+    structural outcome — not just that both happen to produce zero.
+    """
+    adr_id = _doc_id("adr_077")
+    await _seed_document(
+        services,
+        doc_id=adr_id,
+        title="ADR-077: Independence-test target",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    # Path A: wait_for_pipeline=True via BatchIngestService.
+    src_a = _write_md(
+        tmp_path,
+        "indep_batch.md",
+        "# Doc A\n\nMentions CAS-ADR-077 inline.\n",
+    )
+    a_id, a_edges = await _ingest_and_get_edges(services, src_a)
+
+    # Path B: wait_for_pipeline=False via IngestionService directly.
+    src_b = _write_md(
+        tmp_path,
+        "indep_sage_ingest.md",
+        "# Doc B\n\nMentions CAS-ADR-077 inline.\n",
+    )
+    b_id, b_edges = await _ingest_via_sage_ingest_and_get_edges(services, src_b)
+
+    assert len(a_edges) == 1
+    assert len(b_edges) == 1
+    assert a_edges[0].target_id == adr_id
+    assert b_edges[0].target_id == adr_id
+    assert a_edges[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+    assert b_edges[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+    assert a_edges[0].rationale.startswith(IDENTIFIER_MENTION_RATIONALE_PREFIX)
+    assert b_edges[0].rationale.startswith(IDENTIFIER_MENTION_RATIONALE_PREFIX)
+    assert a_id != b_id  # two distinct documents

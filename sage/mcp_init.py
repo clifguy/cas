@@ -356,6 +356,10 @@ async def initialize_services(
     lifecycle_service = LifecycleService(graph_store, lock_manager, config, content_store)
     metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
     documents_service = DocumentsService(graph_store, config)
+    # T-0129: GraphOpsService is constructed before IngestionService so the
+    # ingestion pipeline can run identifier_mention inference (which writes
+    # edges via link_idempotent) inside its Stage-2 → Stage-3 transition.
+    graph_ops_service = GraphOpsService(graph_store, config)
     ingestion_service = IngestionService(
         graph_store=graph_store,
         lock_manager=lock_manager,
@@ -365,8 +369,8 @@ async def initialize_services(
         config=config,
         source_adapters=source_adapters,
         lifecycle_service=lifecycle_service,
+        graph_ops_service=graph_ops_service,
     )
-    graph_ops_service = GraphOpsService(graph_store, config)
     retrieval_service = RetrievalService(
         graph_store=graph_store,
         content_store=content_store,
