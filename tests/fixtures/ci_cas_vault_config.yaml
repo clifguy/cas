@@ -1,0 +1,78 @@
+# Minimal cas vault config for the GitHub Actions Playwright e2e job (T-0128).
+#
+# Copied into ~/sage_vaults/cas/vault_config.yaml on the CI runner before
+# SAGE starts, so SAGE's lifespan vault-discovery picks it up and the
+# Playwright bulk-actions e2e (which hardcodes VAULT_ID="cas") finds a
+# vault to ingest fixture docs into.
+#
+# Shape mirrors VaultRegistryService.get_default_config in
+# sage/services/vault_registry.py, pruned to the minimum the seed script
+# (app/e2e/fixtures/seed_e2e_fixtures.py) and bulk-actions spec exercise:
+# markdown ingest, lifecycle archive transition, tag/lifecycle-filtered
+# discover. Abstraction is disabled at vault scope so MLX/Qwen3 is never
+# touched on the Linux runner (SAGE_TEST_STUB_PROVIDERS=1 is the
+# belt-and-suspenders fallback set by the workflow env).
+vault:
+  id: cas
+  name: CAS Documentation
+  owner: clif
+  storage_root: ~/sage_vaults/cas/sources
+  brain_root: ~/sage_vaults/cas/brain
+  visibility: personal
+document_types:
+  doc_types:
+    - value: misc
+      label: Miscellaneous
+      description: General-purpose document type used by the bulk-actions e2e fixtures.
+      source_types:
+        - markdown
+    - value: document
+      label: Document
+      description: Catch-all document type.
+      source_types:
+        - markdown
+lifecycle:
+  base_states_required: true
+  states:
+    - value: active
+      label: Active
+    - value: completed
+      label: Completed
+    - value: archived
+      label: Archived
+      is_terminal: true
+  transitions:
+    - from_state: (new)
+      action: ingest
+      to_state: active
+    - from_state: active
+      action: supersede
+      to_state: archived
+      creates_edge: supersedes
+    - from_state: active
+      action: complete
+      to_state: completed
+    - from_state: active
+      action: archive
+      to_state: archived
+    - from_state: completed
+      action: archive
+      to_state: archived
+    - from_state: archived
+      action: reactivate
+      to_state: active
+source_adapters:
+  adapters:
+    - source_type: markdown
+      enabled: true
+metadata_extraction:
+  filename_extraction:
+    separator: _
+edge_inference:
+  tier_assignments:
+    - edge_type: supersedes
+      tier: 1
+      inference_rules:
+        - method: version_chain
+abstraction:
+  enabled: false
