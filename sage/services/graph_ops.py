@@ -178,7 +178,7 @@ class GraphOpsService:
         single-source-of-truth principle: the first rationale is canonical).
 
         Used by the ``sage_link`` MCP tool (which signals ``created`` to
-        callers) and by ``edge_inference.resolve_and_execute`` (which
+        callers) and by ``batch_inference.resolve_and_execute`` (which
         relies on idempotency for re-ingest of auto-inferred edges).
         """
         return await self._link_impl(request, on_conflict="noop")

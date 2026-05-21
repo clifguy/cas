@@ -1,14 +1,34 @@
-"""Two-phase edge inference engine (EI-013 through EI-030).
+"""Batch edge inference service (T-0138; follows T-0129's pattern).
 
-Phase 1 (pre-ingest): Builds an edge plan from parsed filename metadata
-and existing vault documents.
+Owns the vault-declared inference rules that operate on multi-document
+batch context. Per principle 5 ("SAGE owns vault-declared behavior"), the
+inference rules themselves and their Phase 1/Phase 2 machinery belong in
+SAGE; the app layer's ``BatchIngestService`` retains only the file-scan
+and per-document ingest loop, then delegates to this module for the
+inference pass.
 
-Phase 2 (post-ingest): Resolves file paths to document IDs and executes
-the edge plan (Tier 1 via link(), Tier 2 via staging insertion).
-
-Active inference methods (Phase 1):
+Active inference methods:
   - version_chain: Tier 1, supersedes edges. Linear chain only.
   - filename_code_match: Tier 2, covers edges. Workflow -> content direction.
+
+Public entry points:
+
+* ``EdgeInferenceEngine.build_edge_plan`` -- pure planner; given pre-built
+  ``InferenceItem`` lists for the scan batch and the existing vault, plus
+  existing supersedes edges, returns an ``EdgePlan``. Side-effect free.
+* ``plan_batch_edges`` -- batch-context entry point. Takes the scan-batch
+  ``InferenceItem``s plus the ``SAGEServices`` container, performs the
+  vault-side queries (active docs, chain-repair candidates, existing
+  supersedes edges) needed to anchor inference, and returns the planner's
+  ``EdgePlan``. This is what ``BatchIngestService._build_edge_plan``
+  invokes during Phase 1.
+* ``resolve_and_execute`` -- Phase 2 executor. Resolves file paths to
+  document IDs and writes Tier 1 edges via ``GraphOpsService.link_idempotent``
+  and Tier 2 edges via ``GraphStore.insert_staging_edge``.
+
+The provenance gate inside ``_chain_repair_plan`` (CAS-ADR-019) is the
+canonical implementation of that decision; relocations must preserve it
+verbatim.
 """
 
 from __future__ import annotations
@@ -17,12 +37,16 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.services.graph_ops import GraphOpsService
 from sage.storage.graph_store import GraphStore
+
+if TYPE_CHECKING:
+    from sage.mcp_init import SAGEServices
 
 logger = logging.getLogger(__name__)
 
@@ -329,6 +353,122 @@ class EdgeInferenceEngine:
                     )
 
         return edges
+
+
+async def plan_batch_edges(
+    *,
+    scan_items: list[InferenceItem],
+    vault_services: SAGEServices,
+) -> EdgePlan:
+    """Phase 1 batch-context entry point.
+
+    Given pre-built ``InferenceItem``s for the scan batch and the vault's
+    ``SAGEServices`` container, performs the vault-side queries needed to
+    anchor inference and returns an ``EdgePlan``:
+
+      - Pass A: active documents (always included regardless of chain
+        identity). Bounded by active doc count.
+      - Pass B: chain-repair candidates -- one targeted query per unique
+        (project, doc_type) pair drawn from the scan batch's versioned
+        items. Bounded by the cardinality of that pair.
+
+    Existing supersedes edges between any chain-scope member are then
+    fetched so the engine can diff existing vs desired chain.
+
+    This function relocates the vault-querying body of
+    ``BatchIngestService._build_edge_plan`` so the principle-5 boundary
+    runs through the FileDescriptor -> InferenceItem conversion in the
+    app layer and everything below it in SAGE.
+    """
+    engine = EdgeInferenceEngine()
+
+    # Chain identities present in this batch (only versioned items
+    # participate in chain repair).
+    scan_chain_keys: set[tuple[str, str | None, str | None]] = {
+        (it.parsed.title.lower(), it.parsed.project, it.parsed.doc_type)
+        for it in scan_items
+        if it.parsed.version is not None
+    }
+
+    # Existing-doc fetch (T-0076): two SQL-pushed passes feed the
+    # union of "always include" + "chain-repair candidates" instead
+    # of pulling the entire vault into Python.
+    active_docs, _ = await vault_services.graph_store.query_documents(
+        filters={"lifecycle_status": "active"},
+        limit=10_000_000,
+        offset=0,
+    )
+
+    chain_dim_pairs: set[tuple[str | None, str | None]] = {
+        (key[1], key[2]) for key in scan_chain_keys
+    }
+    candidate_docs: list = []
+    seen_ids: set[str] = {d.id for d in active_docs}
+    for project, doc_type in chain_dim_pairs:
+        filters: dict[str, object] = {}
+        if project is not None:
+            filters["project"] = project
+        if doc_type is not None:
+            filters["doc_type"] = doc_type
+        # When both are None, fall back to an unfiltered scan for
+        # this slice. Rare (versioned arrival with neither project
+        # nor doc_type) and matches the original worst case.
+        docs, _ = await vault_services.graph_store.query_documents(
+            filters=filters or None,
+            limit=10_000_000,
+            offset=0,
+        )
+        for doc in docs:
+            if doc.id in seen_ids:
+                continue
+            seen_ids.add(doc.id)
+            candidate_docs.append(doc)
+
+    existing_items: list[InferenceItem] = []
+    existing_chain_doc_ids: list[str] = []
+    for doc in list(active_docs) + candidate_docs:
+        doc_chain_key = (
+            doc.title.lower() if doc.title else "",
+            doc.project,
+            doc.doc_type,
+        )
+        in_repair_scope = doc_chain_key in scan_chain_keys
+        if doc.lifecycle_status == "active" or in_repair_scope:
+            existing_items.append(
+                InferenceItem(
+                    ref=doc.id,
+                    is_existing=True,
+                    parsed=ParsedMetadata(
+                        title=doc.title,
+                        project=doc.project,
+                        codes=doc.tags,
+                        version=doc.version_label,
+                        doc_type=doc.doc_type,
+                    ),
+                )
+            )
+            if in_repair_scope:
+                existing_chain_doc_ids.append(doc.id)
+
+    # Fetch existing supersedes edges between chain-scope members so the
+    # engine can diff existing vs desired chain.
+    existing_supersedes_edges: list[Edge] = []
+    seen_edge_ids: set[str] = set()
+    chain_id_set = set(existing_chain_doc_ids)
+    for doc_id in existing_chain_doc_ids:
+        edges = await vault_services.graph_store.get_edges_by_source(doc_id, "supersedes")
+        for e in edges:
+            if e.id in seen_edge_ids:
+                continue
+            if e.target_id in chain_id_set:
+                existing_supersedes_edges.append(e)
+                seen_edge_ids.add(e.id)
+
+    return engine.build_edge_plan(
+        scan_items,
+        existing_items,
+        existing_supersedes_edges=existing_supersedes_edges,
+    )
 
 
 async def resolve_and_execute(

@@ -1399,7 +1399,7 @@ class GraphStore:
 
         Under ``on_conflict="noop"`` (T-0079), a duplicate is converted
         to a no-op: the pre-existing staging edge is loaded and returned
-        with ``created=False``. Used by edge_inference to make
+        with ``created=False``. Used by batch_inference to make
         auto-inferred staging edges idempotent under re-ingest.
         """
         return await self._run(self._insert_staging_edge_sync, edge, on_conflict)

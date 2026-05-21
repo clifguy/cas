@@ -212,13 +212,12 @@
       "title": "CAS Application Backend Cleanup Tests",
       "status": "specified",
       "covers": [
-        "app/backend/edge_inference.py",
         "app/backend/scan.py",
         "app/backend/router.py"
       ],
-      "test_count": 6,
+      "test_count": 5,
       "decision_date": "2026-04-10",
-      "notes": "Code hygiene and refactoring safety for app/backend modules after iterative development. Two sections: import hygiene (TEST-APP-CL-001..003 cover edge_inference unused imports, scan pathlib-only convention, router HTTPException at module level); metadata conversion fidelity (TEST-APP-CL-004..006 cover ScanResult to response, response to file descriptor, full round-trip preservation of all ParsedMetadata fields)."
+      "notes": "Code hygiene and refactoring safety for app/backend modules after iterative development. Two sections: import hygiene (TEST-APP-CL-002..003 cover scan pathlib-only convention, router HTTPException at module level; CL-001 retired by T-0138 when app/backend/edge_inference.py was deleted); metadata conversion fidelity (TEST-APP-CL-004..006 cover ScanResult to response, response to file descriptor, full round-trip preservation of all ParsedMetadata fields)."
     },
     {
       "path": "tests/sage/migrate_flag_tests.md",
@@ -244,7 +243,7 @@
         "sage/mcp_server.py",
         "app/backend/router.py",
         "sage/services/ingestion.py",
-        "app/backend/edge_inference.py"
+        "sage/services/batch_inference.py"
       ],
       "test_count": 9,
       "decision_date": "2026-04-10",

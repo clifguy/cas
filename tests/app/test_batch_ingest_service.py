@@ -19,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.backend.edge_inference import EdgePlan
 from app.backend.ingest_service import (
     BatchIngestService,
     FileDescriptor,
@@ -28,6 +27,7 @@ from app.backend.ingest_service import (
 )
 from sage.models.enums import EdgeType, SourceType
 from sage.models.schemas import Document, IngestRequest, UnlinkResponse
+from sage.services.batch_inference import EdgePlan
 from sage.services.ingestion import IngestResult
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -153,7 +153,7 @@ def _make_services(
 
     services.ingestion_service.ingest = AsyncMock(side_effect=_ingest)
 
-    # Graph ops (T-0079: edge_inference now calls link_idempotent and
+    # Graph ops (T-0079: batch_inference now calls link_idempotent and
     # passes on_conflict to insert_staging_edge; both return tuples).
     from unittest.mock import MagicMock as _MM
 
@@ -372,7 +372,7 @@ class TestEdgePlanConstruction:
         svc = BatchIngestService()
 
         # Patch EdgeInferenceEngine to capture what it receives
-        with patch("app.backend.ingest_service.EdgeInferenceEngine") as MockEngine:
+        with patch("sage.services.batch_inference.EdgeInferenceEngine") as MockEngine:
             mock_engine = MockEngine.return_value
             mock_engine.build_edge_plan.return_value = EdgePlan()
 
@@ -453,7 +453,7 @@ class TestEdgePlanConstruction:
         )
         svc = BatchIngestService()
 
-        with patch("app.backend.ingest_service.EdgeInferenceEngine") as MockEngine:
+        with patch("sage.services.batch_inference.EdgeInferenceEngine") as MockEngine:
             mock_engine = MockEngine.return_value
             mock_engine.build_edge_plan.return_value = EdgePlan()
 
@@ -495,7 +495,7 @@ class TestEdgePlanConstruction:
         )
         svc = BatchIngestService()
 
-        with patch("app.backend.ingest_service.EdgeInferenceEngine") as MockEngine:
+        with patch("sage.services.batch_inference.EdgeInferenceEngine") as MockEngine:
             mock_engine = MockEngine.return_value
             mock_engine.build_edge_plan.return_value = EdgePlan()
 

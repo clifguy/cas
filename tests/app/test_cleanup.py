@@ -66,20 +66,13 @@ def _sparse_scan_result() -> ScanResult:
 
 
 class TestImportHygiene:
-    """CL-001 and CL-002: verify dead imports removed from backend modules."""
+    """CL-002: verify dead imports removed from backend modules.
 
-    def test_cl_001_edge_inference_no_unused_document_import(self) -> None:
-        """CL-001: edge_inference should not import unused Document."""
-        mod = importlib.import_module("app.backend.edge_inference")
-        source = inspect.getsource(mod)
-        # Document should not appear in any import statement
-        import_lines = [
-            line.strip()
-            for line in source.splitlines()
-            if line.strip().startswith(("import ", "from "))
-        ]
-        for line in import_lines:
-            assert "Document" not in line, f"Unused 'Document' found in import: {line}"
+    CL-001 (edge_inference Document import) is retired -- T-0138 deleted
+    ``app/backend/edge_inference.py`` entirely; the relocated SAGE
+    service ``sage/services/batch_inference.py`` doesn't import Document
+    either.
+    """
 
     def test_cl_002_scan_no_os_import(self) -> None:
         """CL-002: scan module should not import os."""

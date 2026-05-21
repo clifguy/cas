@@ -9,26 +9,15 @@ Tests are grouped by concern: import hygiene first, then conversion fidelity.
 
 ## 1. Import Hygiene
 
-### TEST-APP-CL-001: edge_inference module has no unused imports
+### TEST-APP-CL-001: edge_inference module has no unused imports — RETIRED
 
-**Artifact:** Code review (2026-04-10)
-**Category:** import_hygiene
+**Status:** Retired by T-0138 (2026-05-21).
 
-**Decision:** `edge_inference.py` imports `Document` from `sage.models.schemas`
-but never references it. The only schema types actually used are `LinkRequest`
-and `StagingEdge`. Unused imports increase coupling surface and mislead readers.
-
-**Precondition:** Module importable.
-
-**Input:** Import `app.backend.edge_inference` and inspect module-level names.
-
-**Expected:**
-- `Document` is not present in the module's namespace
-- `LinkRequest` and `StagingEdge` remain importable via `sage.models.schemas`
-  within the module's functions
-
-**Rationale:** Dead imports accumulate during iterative development. Removing
-them reduces cognitive load and prevents false dependency signals.
+The `app/backend/edge_inference.py` module was deleted entirely when the
+remaining `version_chain` and `filename_code_match` inference rules
+relocated to `sage/services/batch_inference.py`. The new SAGE module does
+not import `Document`, so the original hygiene concern is structurally
+prevented rather than test-enforced.
 
 ### TEST-APP-CL-002: scan module uses pathlib exclusively (no os import)
 
