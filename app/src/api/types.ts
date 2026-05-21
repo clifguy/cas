@@ -470,7 +470,13 @@ export interface BulkLifecycleResponse {
 
 export interface BulkMetadataItem {
   document_id: string;
+  title?: string;
+  version_label?: string;
+  project?: string;
   tags?: TagsPatch;
+  doc_type?: string;
+  authority_scope?: string;
+  document_date?: string;
   tier3_metadata?: Tier3Patch;
 }
 
