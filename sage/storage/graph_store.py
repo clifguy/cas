@@ -31,10 +31,16 @@ from sage.storage.migrations import (
     MIGRATION_PLAN,
     POST_MIGRATION_DDL,
     TABLES,
+    TIER3_UNIQUE_INDEX_PREFIX,
     DuplicateEdgesPresentError,
     SchemaMigrationRequired,
+    Tier3UniqueIndexBlockedError,
+    Tier3UniqueViolation,
     pending_backfills,
     pending_migrations,
+    tier3_unique_index_ddl,
+    tier3_unique_index_drop_ddl,
+    tier3_unique_index_name,
 )
 
 T = TypeVar("T")
@@ -66,6 +72,31 @@ def _is_unique_violation(exc: sqlite3.IntegrityError, index_name: str) -> bool:
     return (
         f"{table}.source_id" in msg and f"{table}.target_id" in msg and f"{table}.edge_type" in msg
     )
+
+
+# T-0115: SQLite renders partial expression-index UNIQUE violations as
+# ``"UNIQUE constraint failed: index 'idx_name'"`` because there is no
+# single column to name. The tier3 partial indexes are named
+# ``idx_tier3_unique_<doc_type>_<field>``; the regex below extracts the
+# tail token so the translator can recover (doc_type, field) by stripping
+# the known doc_type prefix from the captured tail.
+_TIER3_UNIQUE_INDEX_NAME_REGEX = re.compile(
+    rf"index '({re.escape(TIER3_UNIQUE_INDEX_PREFIX)}[A-Za-z0-9_]+)'"
+)
+
+
+def _is_tier3_unique_violation(exc: sqlite3.IntegrityError) -> str | None:
+    """Return the colliding tier3 index name (T-0115) or None.
+
+    Format: ``idx_tier3_unique_<doc_type>_<field>``. The doc_type / field
+    boundary is recovered by the caller by stripping the known doc_type
+    prefix from the captured tail.
+    """
+    msg = str(exc)
+    if TIER3_UNIQUE_INDEX_PREFIX not in msg:
+        return None
+    match = _TIER3_UNIQUE_INDEX_NAME_REGEX.search(msg)
+    return match.group(1) if match else None
 
 
 OnConflict = Literal["raise", "noop"]
@@ -237,8 +268,13 @@ class GraphStore:
 
     def _insert_document_sync(self, doc: Document) -> None:
         conn = self._get_connection()
-        self._exec_insert_document(conn, doc)
-        conn.commit()
+        try:
+            self._exec_insert_document(conn, doc)
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            self._maybe_raise_tier3_violation(conn, exc, doc)
+            raise
 
     def _exec_insert_document(self, conn: sqlite3.Connection, doc: Document) -> None:
         """Issue the INSERT for a Document on the given connection without
@@ -284,6 +320,69 @@ class GraphStore:
             ),
         )
         self._sync_document_tags(conn, doc.id, doc.tags)
+
+    def _maybe_raise_tier3_violation(
+        self,
+        conn: sqlite3.Connection,
+        exc: sqlite3.IntegrityError,
+        doc: Document,
+        supersedes_id: str | None = None,
+    ) -> None:
+        """If `exc` is a tier3 partial UNIQUE violation, raise
+        `Tier3UniqueViolation` with structured detail. Otherwise return
+        and let the caller re-raise the original IntegrityError.
+
+        The caller has already issued `conn.rollback()` before invoking
+        this method, so the SELECT used to hydrate the existing-holder
+        document id runs against the committed-snapshot view of the
+        documents table.
+
+        When `supersedes_id` is supplied, a collision against the
+        designated predecessor is the supersession-lineage exception and
+        does NOT raise — the partial UNIQUE filter would not have fired
+        for that case in the first place (the predecessor is flipped
+        before the successor is inserted), so reaching this branch means
+        the collision is against a *different* row and is a real violation.
+        """
+        index_name = _is_tier3_unique_violation(exc)
+        if index_name is None or doc.doc_type is None:
+            return
+        # Recover (doc_type, field) from the index name. The doc_type is
+        # known from the inserted Document; the field is the remainder of
+        # the name after stripping `idx_tier3_unique_<doc_type>_`.
+        prefix = f"{TIER3_UNIQUE_INDEX_PREFIX}{doc.doc_type}_"
+        if not index_name.startswith(prefix):
+            return  # different doc_type's index fired — not our row
+        field = index_name[len(prefix) :]
+        if not _TIER3_KEY_FORMAT.match(field):
+            return
+        if not doc.tier3_metadata or field not in doc.tier3_metadata:
+            return
+        colliding_value = doc.tier3_metadata[field]
+        # Look up the existing holder using the same predicate the partial
+        # index uses, so we report the row the constraint actually matched.
+        # The doc_type and field are interpolated character-for-character
+        # because parameterized identifiers cannot be bound. Both have been
+        # validated against `^[a-z][a-z0-9_]*$` (doc_type via vault-config
+        # schema) and `^[A-Za-z0-9_]+$` (field via the regex above).
+        sql = (
+            f"SELECT id FROM documents "  # noqa: S608 -- field validated by _TIER3_KEY_FORMAT regex
+            f"WHERE doc_type = ? AND is_chain_head = 1 "
+            f"AND json_extract(tier3_metadata, '$.{field}') = ? "
+            f"LIMIT 1"
+        )
+        row = conn.execute(sql, (doc.doc_type, colliding_value)).fetchone()
+        if row is None:
+            return  # holder vanished between the failed write and the lookup
+        existing_id = row["id"] if hasattr(row, "keys") else row[0]
+        if supersedes_id is not None and existing_id == supersedes_id:
+            return  # caller asserted supersession of the colliding row
+        raise Tier3UniqueViolation(
+            doc_type=doc.doc_type,
+            field=field,
+            colliding_value=colliding_value,
+            existing_document_id=existing_id,
+        )
 
     @staticmethod
     def _sync_document_tags(conn: sqlite3.Connection, doc_id: str, tags: list[str] | None) -> None:
@@ -590,6 +689,114 @@ class GraphStore:
         return [self._row_to_document(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Tier3 uniqueness (T-0115, CAS-ADR-031)
+    # ------------------------------------------------------------------
+
+    async def ensure_tier3_unique_index(self, doc_type: str, field: str) -> None:
+        """Idempotently create the partial UNIQUE index for (doc_type, field).
+
+        Wraps SQLite's CREATE UNIQUE INDEX IF NOT EXISTS so the call is a
+        no-op when the index already exists. Raises
+        ``Tier3UniqueIndexBlockedError`` (RuntimeError subclass) when the
+        documents table holds rows that violate the constraint — the
+        operator must resolve the collisions before the index can be
+        activated (CAS-ADR-031 §5).
+        """
+        await self._run(self._ensure_tier3_unique_index_sync, doc_type, field)
+
+    def _ensure_tier3_unique_index_sync(self, doc_type: str, field: str) -> None:
+        self._validate_tier3_identifier(doc_type, field)
+        conn = self._get_connection()
+        try:
+            conn.execute(tier3_unique_index_ddl(doc_type, field))
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            raise Tier3UniqueIndexBlockedError(
+                doc_type=doc_type,
+                field=field,
+                message=(
+                    f"Cannot create tier3 UNIQUE index on "
+                    f"({doc_type!r}, {field!r}): the documents table holds "
+                    f"chain heads with colliding values. Resolve the "
+                    f"collisions (renumber, supersede, or "
+                    f"archive-and-recreate) before retrying. "
+                    f"Underlying error: {exc}"
+                ),
+            ) from exc
+
+    async def drop_tier3_unique_index(self, doc_type: str, field: str) -> None:
+        """Drop the partial UNIQUE index for (doc_type, field) if it exists."""
+        await self._run(self._drop_tier3_unique_index_sync, doc_type, field)
+
+    def _drop_tier3_unique_index_sync(self, doc_type: str, field: str) -> None:
+        self._validate_tier3_identifier(doc_type, field)
+        conn = self._get_connection()
+        conn.execute(tier3_unique_index_drop_ddl(doc_type, field))
+        conn.commit()
+
+    async def tier3_unique_index_exists(self, doc_type: str, field: str) -> bool:
+        """True if the partial UNIQUE index for (doc_type, field) is present."""
+        return await self._run(self._tier3_unique_index_exists_sync, doc_type, field)
+
+    def _tier3_unique_index_exists_sync(self, doc_type: str, field: str) -> bool:
+        self._validate_tier3_identifier(doc_type, field)
+        conn = self._get_connection()
+        name = tier3_unique_index_name(doc_type, field)
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
+    async def find_chain_heads_with_tier3_value(
+        self, doc_type: str, field: str
+    ) -> list[tuple[object, list[str]]]:
+        """Return chain heads grouped by `tier3_metadata.<field>` value.
+
+        Output: list of ``(value, [doc_id, ...])`` tuples for chain heads
+        (`is_chain_head = 1`) of `doc_type` where the named field is not
+        null. Used by the migration scan to detect cross-chain collisions
+        before activating a `unique_keys` declaration.
+        """
+        return await self._run(self._find_chain_heads_with_tier3_value_sync, doc_type, field)
+
+    def _find_chain_heads_with_tier3_value_sync(
+        self, doc_type: str, field: str
+    ) -> list[tuple[object, list[str]]]:
+        self._validate_tier3_identifier(doc_type, field)
+        conn = self._get_connection()
+        rows = conn.execute(
+            (
+                "SELECT id, json_extract(tier3_metadata, '$." + field + "') AS value "
+                "FROM documents "
+                "WHERE doc_type = ? AND is_chain_head = 1 "
+                "  AND json_extract(tier3_metadata, '$." + field + "') IS NOT NULL"
+            ),
+            (doc_type,),
+        ).fetchall()
+        grouped: dict[object, list[str]] = {}
+        for row in rows:
+            value = row["value"]
+            grouped.setdefault(value, []).append(row["id"])
+        return [(v, ids) for v, ids in grouped.items()]
+
+    @staticmethod
+    def _validate_tier3_identifier(doc_type: str, field: str) -> None:
+        """Defense-in-depth fence for the tier3 identifiers interpolated
+        into expression-index DDL and json_extract paths. doc_type is
+        constrained by the vault-config schema to ``^[a-z][a-z0-9_]*$``;
+        field names are constrained by the cross-field validator in
+        sage.config to property names declared in metadata_schema (which
+        themselves are JSON Schema property names). The regex below is
+        the last-line fence.
+        """
+        if not re.match(r"^[a-z][a-z0-9_]*$", doc_type):
+            raise ValueError(f"Invalid doc_type identifier for tier3 index DDL: {doc_type!r}")
+        if not _TIER3_KEY_FORMAT.match(field):
+            raise ValueError(f"Invalid tier3 field identifier for index DDL: {field!r}")
+
+    # ------------------------------------------------------------------
     # Edge operations
     # ------------------------------------------------------------------
 
@@ -726,8 +933,14 @@ class GraphStore:
         self, predecessor_id: str, predecessor_updates: dict, edge: Edge
     ) -> Document | None:
         conn = self._get_connection()
+        # T-0115: flip the predecessor's is_chain_head flag alongside the
+        # caller's lifecycle updates. The supersedes-edge insert below
+        # would also trigger the chain-head flip via the substrate trigger
+        # (`trg_tier3_chain_head_on_supersedes`), but doing it explicitly
+        # here keeps the storage layer self-contained and idempotent.
+        updates_with_chain_head = {**predecessor_updates, "is_chain_head": 0}
         try:
-            self._exec_update_document(conn, predecessor_id, predecessor_updates)
+            self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
             self._exec_insert_edge(conn, edge)
             conn.commit()
         except Exception:
@@ -765,11 +978,23 @@ class GraphStore:
         edge: Edge,
     ) -> tuple[Document, Document]:
         conn = self._get_connection()
+        # T-0115: flip the predecessor's is_chain_head flag and apply the
+        # caller-supplied lifecycle updates BEFORE inserting the new
+        # document. If the predecessor were still a chain head at successor-
+        # insert time, the partial UNIQUE index on (doc_type, tier3 field)
+        # would fire against the predecessor + successor pair (the
+        # supersession-lineage exception per CAS-ADR-031 §3 is realized by
+        # excluding non-chain-heads from the partial filter).
+        updates_with_chain_head = {**predecessor_updates, "is_chain_head": 0}
         try:
+            self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
             self._exec_insert_document(conn, new_doc)
-            self._exec_update_document(conn, predecessor_id, predecessor_updates)
             self._exec_insert_edge(conn, edge)
             conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            self._maybe_raise_tier3_violation(conn, exc, new_doc, supersedes_id=predecessor_id)
+            raise
         except Exception:
             conn.rollback()
             raise

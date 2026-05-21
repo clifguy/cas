@@ -152,6 +152,47 @@ class Tier3SchemaViolationError(SAGEError):
         )
 
 
+class Tier3UniqueConstraintViolation(SAGEError):
+    """409: tier3_metadata field value collides with the declared uniqueness
+    constraint (CAS-ADR-031, T-0115).
+
+    Raised by the storage substrate when an insert or supersession-insert
+    would violate a `unique_keys` declaration on the resolved doc_type.
+    The supersession chain is the explicit exception: a successor inherits
+    its predecessor's identifier without collision because the substrate
+    marks the predecessor superseded before inserting the successor, and
+    the partial UNIQUE index excludes superseded rows.
+
+    Callers detect this error to drive a retry path (e.g., the
+    cas-ticket-management skill's W1.1 allocator re-runs its existence
+    check and fallback scan on this 409, then propagates the error if a
+    single retry does not converge).
+    """
+
+    def __init__(
+        self,
+        doc_type: str,
+        field: str,
+        colliding_value: object,
+        existing_document_id: str,
+    ) -> None:
+        super().__init__(
+            "tier3_unique_constraint_violation",
+            (
+                f"tier3_metadata field {field!r} value {colliding_value!r} "
+                f"is already held by document {existing_document_id!r} "
+                f"in doc_type {doc_type!r}"
+            ),
+            409,
+            {
+                "doc_type": doc_type,
+                "field": field,
+                "colliding_value": colliding_value,
+                "existing_document_id": existing_document_id,
+            },
+        )
+
+
 class TagAddConflictError(SAGEError):
     """400: TagsPatch.add includes one or more tags already present on the document."""
 

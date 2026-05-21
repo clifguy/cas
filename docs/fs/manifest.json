@@ -35,8 +35,8 @@
       "path": "sage/document_types.schema.json",
       "title": "SAGE Document Types",
       "status": "draft",
-      "version": "0.2",
-      "role": "Defines the doc_type enum for a vault's domain vocabulary. Tier 2 (the vocabulary itself) plus optional Tier 3 (per-doc_type structured metadata schema for tier3_metadata payloads).",
+      "version": "0.3",
+      "role": "Defines the doc_type enum for a vault's domain vocabulary. Tier 2 (the vocabulary itself), optional Tier 3 metadata_schema (per-doc_type structured metadata schema for tier3_metadata payloads), and optional unique_keys declaration (tier3_metadata fields whose values must be unique within the doc_type, enforced atomically by the storage substrate per CAS-ADR-031).",
       "instantiation_checklist_items": [
         2
       ]
@@ -181,7 +181,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.22",
+  "substrate_version": "1.23",
   "revision_history": [
     {
       "version": "0.1",
@@ -302,6 +302,11 @@
       "version": "1.22",
       "date": "2026-05-21",
       "summary": "Graduation of scripts/reabstract_deferred.py to the maintenance API surface (T-0089, CAS-ADR-029). One new path on sage_core_api.openapi.yaml: POST /sage_vaults/{vault_id}/admin/reabstract-deferred (operationId admin_reabstract_deferred), backfilling semantic abstracts for documents whose pipeline_status is 'abstraction_skipped'. Four new component schemas: ReabstractRequest (single include_pdf boolean, default false), ReabstractOutcome (string enum over success / skipped_pdf / llm_failure), ReabstractReportEntry (document_id + outcome + optional error_message + optional elapsed_seconds), ReabstractReport (vault_id + aggregate counts + entries array). Pydantic models in sage/models/schemas.py mirror the schema additions; new ReabstractOutcome StrEnum in sage/models/enums.py. New ReabstractAlreadyInFlightError (409, error_code 'reabstract_already_in_flight') in sage/api/errors.py with start_time in the structured detail; single-flight per vault is enforced by MaintenanceService via a non-blocking asyncio.Lock check (a queued caller would mask client-side coordination bugs on operations that can run for minutes). The service method MUST reuse the in-process IngestionService (and its already-loaded AbstractionProvider) -- spinning up a second Qwen3 MLX provider is forbidden (F-8 unified-memory cautionary tale). The complementary standalone script remains as the operator fallback for cron-style workflows where no MCP server is running."
+    },
+    {
+      "version": "1.23",
+      "date": "2026-05-21",
+      "summary": "Vault-config-declared tier3 uniqueness enforcement (T-0115, CAS-ADR-031). One schema change to sage/document_types.schema.json (bumped to v0.3): each DocTypeEntry may now declare an optional unique_keys list naming tier3_metadata fields whose values must be unique within the doc_type across all lifecycle statuses. A doc_type with no unique_keys (or an empty list) preserves current behavior. The substrate enforces uniqueness atomically via partial UNIQUE expression indexes on json_extract(tier3_metadata, '$.<field>') scoped per (doc_type, field), with WHERE lifecycle_status != 'superseded' so the supersession-chain exception (CAS-ADR-031 §3) drops out of the partial filter; the supersession-insert path in graph_store.py is reordered to mark the predecessor superseded before inserting the successor. New Tier3UniqueConstraintViolation (409, error_code 'tier3_unique_constraint_violation') in sage/api/errors.py with doc_type / field / colliding_value / existing_document_id in the structured detail. Pydantic DocTypeEntry in sage/config.py gains unique_keys: list[str] | None and a cross-field validator (each entry must name a metadata_schema property). MaintenanceService grows scan_tier3_uniqueness_collisions and the migration tool refuses to activate the constraint while collisions exist (CAS-ADR-031 §5); collisions are surfaced via the MigrationReport. The cas-ticket-management skill's W1.1 allocator gains a 409-retry branch and the steering doc retracts its 'out of scope for SAGE' caveat. No vault_config.yaml opt-ins land in this revision; activation per doc_type is operator follow-on."
     }
   ]
 }

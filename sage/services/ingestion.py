@@ -42,6 +42,7 @@ from sage.api.errors import (
     SourceFileNotFoundError,
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
+    Tier3UniqueConstraintViolation,
 )
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
@@ -56,6 +57,7 @@ from sage.services.identity import generate_document_id
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+from sage.storage.migrations import Tier3UniqueViolation
 
 logger = logging.getLogger(__name__)
 
@@ -636,12 +638,20 @@ class IngestionService:
                 if fresh_pred is None:
                     raise DocumentNotFoundError(predecessor.id)
                 transition = self._lifecycle_service.prepare_supersede(fresh_pred, doc.id)
-                doc, _updated_pred = await self._store.insert_with_supersede_atomic(
-                    doc,
-                    fresh_pred.id,
-                    transition.predecessor_updates,
-                    transition.edge,
-                )
+                try:
+                    doc, _updated_pred = await self._store.insert_with_supersede_atomic(
+                        doc,
+                        fresh_pred.id,
+                        transition.predecessor_updates,
+                        transition.edge,
+                    )
+                except Tier3UniqueViolation as exc:
+                    raise Tier3UniqueConstraintViolation(
+                        doc_type=exc.doc_type,
+                        field=exc.field,
+                        colliding_value=exc.colliding_value,
+                        existing_document_id=exc.existing_document_id,
+                    ) from exc
                 # Sync the predecessor's new lifecycle_status to its
                 # chunks. insert_with_supersede_atomic commits the flip
                 # directly in SQL (BH-136 atomicity), bypassing
@@ -655,7 +665,15 @@ class IngestionService:
                         fresh_pred.id, {"lifecycle_status": new_pred_lifecycle}
                     )
             else:
-                await self._store.insert_document(doc)
+                try:
+                    await self._store.insert_document(doc)
+                except Tier3UniqueViolation as exc:
+                    raise Tier3UniqueConstraintViolation(
+                        doc_type=exc.doc_type,
+                        field=exc.field,
+                        colliding_value=exc.colliding_value,
+                        existing_document_id=exc.existing_document_id,
+                    ) from exc
             is_new = True
 
         # The supersede lifecycle transition was bundled into the same

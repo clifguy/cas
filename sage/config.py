@@ -9,7 +9,7 @@ from typing import Literal
 
 import jsonschema
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from sage.instrumentation.timing import TimingConfig
 from sage.models.schemas import VaultIdStr
@@ -281,6 +281,49 @@ class DocTypeEntry(BaseModel):
             "distinct from Tier 2 (the doc_type vocabulary itself)."
         ),
     )
+    unique_keys: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of tier3_metadata field names whose values must "
+            "be unique within this doc_type across all lifecycle statuses "
+            "(CAS-ADR-031). Each entry must name a top-level property "
+            "declared in `metadata_schema.properties`. Uniqueness is "
+            "enforced atomically by the SAGE storage substrate on insert "
+            "and supersession-insert; a write that would violate the "
+            "constraint raises `tier3_unique_constraint_violation` (409). "
+            "The supersession chain is the explicit exception: a successor "
+            "inherits its predecessor's identifier without collision. A "
+            "doc_type with no `unique_keys` (or an empty list) has no "
+            "uniqueness constraint on any tier3 field. Activating a "
+            "`unique_keys` declaration requires a clean portfolio per "
+            "CAS-ADR-031 §5; SAGE refuses to create the underlying "
+            "index while collisions exist."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_unique_keys_reference_metadata_schema(self) -> "DocTypeEntry":
+        """Each `unique_keys` entry must name a property declared in
+        `metadata_schema.properties`. A `unique_keys` declaration on a
+        doc_type with no `metadata_schema` (or no matching property) is a
+        configuration error — the constraint would target a field SAGE
+        doesn't validate the shape of.
+        """
+        if not self.unique_keys:
+            return self
+        schema_props: set[str] = set()
+        if self.metadata_schema is not None:
+            props = self.metadata_schema.get("properties")
+            if isinstance(props, dict):
+                schema_props = set(props.keys())
+        missing = [k for k in self.unique_keys if k not in schema_props]
+        if missing:
+            raise ValueError(
+                f"doc_type '{self.value}' declares unique_keys {missing} that "
+                f"are not properties of its metadata_schema "
+                f"(declared properties: {sorted(schema_props) or 'none'})"
+            )
+        return self
 
 
 class DocumentTypesConfig(BaseModel):

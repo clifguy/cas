@@ -4453,6 +4453,71 @@ components:
           items:
             type: string
           description: Names of data backfills that were detected as pending and applied. Empty when no backfills were needed.
+        tier3_uniqueness_activations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tier3UniquenessActivation"
+          description: >-
+            Per-(doc_type, field) entries for each `unique_keys` declaration
+            whose underlying partial UNIQUE index was created or confirmed by
+            this migration (T-0115). Empty when no `unique_keys` are declared
+            or all were already active.
+        tier3_uniqueness_collisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tier3UniquenessCollision"
+          description: >-
+            Per-(doc_type, field, value) entries for every collision that
+            prevented activation of a `unique_keys` declaration (T-0115).
+            Non-empty means at least one declaration is NOT live; the
+            substrate refuses to activate the constraint while collisions
+            remain (CAS-ADR-031 §5). The operator resolves via renumber,
+            supersede, or archive-and-recreate, then re-runs the migration.
+
+    Tier3UniquenessActivation:
+      type: object
+      required: [doc_type, field]
+      description: >-
+        One (doc_type, field) pair whose partial UNIQUE index was created
+        or confirmed by the migration (T-0115, CAS-ADR-031).
+      properties:
+        doc_type:
+          type: string
+          description: Document type opted into uniqueness.
+        field:
+          type: string
+          description: The tier3_metadata field whose values are now unique.
+
+    Tier3UniquenessCollision:
+      type: object
+      required: [doc_type, field, value, document_ids]
+      description: >-
+        One value held by multiple chain heads of the same doc_type
+        (T-0115). Surfaced by the migration scan when a vault's
+        `unique_keys` declaration cannot be activated because the existing
+        portfolio violates the constraint. Per CAS-ADR-031 §5 the substrate
+        refuses to activate (does not auto-resolve, does not flag-and-pass);
+        the operator must resolve the collision via renumbering,
+        supersession, or archive-and-recreate before the constraint can
+        take effect.
+      properties:
+        doc_type:
+          type: string
+          description: Document type whose unique_keys declaration was scanned.
+        field:
+          type: string
+          description: The tier3_metadata field whose values collided.
+        value:
+          description: The colliding value held by more than one chain head.
+        document_ids:
+          type: array
+          items:
+            type: string
+          description: >-
+            All chain-head document ids holding this value (length >= 2).
+            Each id is the head of a distinct supersession chain; resolving
+            the collision means making all-but-one of these no longer carry
+            the value.
 
     ReabstractOutcome:
       type: string

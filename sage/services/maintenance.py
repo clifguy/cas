@@ -23,6 +23,8 @@ from sage.models.schemas import (
     MigrationReportEntry,
     ReabstractReport,
     ReabstractReportEntry,
+    Tier3UniquenessActivation,
+    Tier3UniquenessCollision,
 )
 from sage.storage.graph_store import GraphStore
 from sage.storage.migrations import (
@@ -31,6 +33,7 @@ from sage.storage.migrations import (
     TABLES,
     Backfill,
     Migration,
+    Tier3UniqueIndexBlockedError,
     pending_backfills,
     pending_migrations,
 )
@@ -138,6 +141,16 @@ class MaintenanceService:
         it, then ask the VaultRegistryService to reload the vault so the
         registry holds a freshly-initialized SAGEServices bundle whose
         graph_store carries the post-migration schema.
+
+        T-0115: after the schema migration step settles, scan every
+        ``unique_keys`` declaration in vault config. For each declared
+        (doc_type, field), build the chain-head-grouped value map and
+        report any collisions; for each clean declaration, ensure the
+        underlying partial UNIQUE index exists. The substrate refuses to
+        activate a declaration while collisions remain (CAS-ADR-031 §5);
+        existing index state for a colliding declaration is preserved
+        (no implicit DROP) so a previously-clean activation is not
+        silently torn down.
         """
         pending_alters, pending_bfs = _detect_pending_work(self._db_path)
 
@@ -146,25 +159,90 @@ class MaintenanceService:
         ]
         backfills_applied = [b.name for b in pending_bfs]
 
-        if not columns_added and not backfills_applied:
-            return MigrationReport(
-                vault_id=self._vault_id,
-                columns_added=[],
-                backfills_applied=[],
-            )
+        if columns_added or backfills_applied:
+            await self._graph_store.close()
+            fresh = GraphStore(self._db_path)
+            await fresh.initialize(migrate=True)
+            await fresh.close()
 
-        await self._graph_store.close()
-        fresh = GraphStore(self._db_path)
-        await fresh.initialize(migrate=True)
-        await fresh.close()
+            await self._registry_service.reload(self._vault_id, self._config)
 
-        await self._registry_service.reload(self._vault_id, self._config)
+        activations, collisions = await self._activate_tier3_uniqueness()
 
         return MigrationReport(
             vault_id=self._vault_id,
             columns_added=columns_added,
             backfills_applied=backfills_applied,
+            tier3_uniqueness_activations=activations,
+            tier3_uniqueness_collisions=collisions,
         )
+
+    async def scan_tier3_uniqueness_collisions(
+        self, doc_type: str, field: str
+    ) -> list[Tier3UniquenessCollision]:
+        """Enumerate cross-chain collisions on `(doc_type, field)` (T-0115).
+
+        Groups chain heads of `doc_type` by their `tier3_metadata.<field>`
+        value. Any value held by more than one chain head is a collision:
+        each chain is one logical artifact per the supersession-lineage
+        exception in CAS-ADR-031 §3, so a value spanning multiple chains
+        means the identifier has been double-allocated.
+
+        Read-only; callable independently of `migrate_vault` so an
+        operator can inspect a vault before declaring `unique_keys`. The
+        returned list is empty when the portfolio is clean.
+        """
+        groups = await self._graph_store.find_chain_heads_with_tier3_value(doc_type, field)
+        return [
+            Tier3UniquenessCollision(
+                doc_type=doc_type,
+                field=field,
+                value=value,
+                document_ids=sorted(doc_ids),
+            )
+            for value, doc_ids in groups
+            if len(doc_ids) > 1
+        ]
+
+    async def _activate_tier3_uniqueness(
+        self,
+    ) -> tuple[list[Tier3UniquenessActivation], list[Tier3UniquenessCollision]]:
+        """Walk the vault's `unique_keys` declarations.
+
+        For each (doc_type, field) declared, scan for collisions. If clean,
+        create (or confirm) the partial UNIQUE index. If colliding, record
+        the collision and skip index creation so the substrate refuses to
+        activate the constraint (CAS-ADR-031 §5).
+        """
+        activations: list[Tier3UniquenessActivation] = []
+        collisions: list[Tier3UniquenessCollision] = []
+        for dt in self._config.document_types.doc_types:
+            if not dt.unique_keys:
+                continue
+            for field in dt.unique_keys:
+                dt_collisions = await self.scan_tier3_uniqueness_collisions(dt.value, field)
+                if dt_collisions:
+                    collisions.extend(dt_collisions)
+                    continue
+                try:
+                    await self._graph_store.ensure_tier3_unique_index(dt.value, field)
+                except Tier3UniqueIndexBlockedError as exc:
+                    # Defensive: a chain-head SELECT-based scan returned
+                    # clean, but the SQLite CREATE UNIQUE INDEX still
+                    # rejected. Surface as a synthetic collision entry so
+                    # the operator sees the substrate's view rather than
+                    # losing the diagnostic to a swallowed exception.
+                    collisions.append(
+                        Tier3UniquenessCollision(
+                            doc_type=exc.doc_type,
+                            field=exc.field,
+                            value="<reported by SQLite, value not recovered>",
+                            document_ids=[],
+                        )
+                    )
+                    continue
+                activations.append(Tier3UniquenessActivation(doc_type=dt.value, field=field))
+        return activations, collisions
 
     async def reabstract_deferred(self, include_pdf: bool = False) -> ReabstractReport:
         """Backfill semantic abstracts for the deferred-abstract worklist (T-0089).

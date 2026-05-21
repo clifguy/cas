@@ -30,6 +30,48 @@ class DuplicateEdgesPresentError(RuntimeError):
     """
 
 
+class Tier3UniqueViolation(Exception):
+    """Storage-layer signal that a tier3_metadata uniqueness constraint
+    fired on insert or supersession-insert (CAS-ADR-031, T-0115).
+
+    Raised by GraphStore when SQLite's partial UNIQUE index on
+    `(doc_type, json_extract(tier3_metadata, '$.<field>'))` rejects a write.
+    The service layer translates this into the public
+    `Tier3UniqueConstraintViolation` SAGEError (sage.api.errors), preserving
+    the layering rule that storage does not depend on the api layer.
+    """
+
+    def __init__(
+        self,
+        doc_type: str,
+        field: str,
+        colliding_value: object,
+        existing_document_id: str,
+    ) -> None:
+        super().__init__(
+            f"tier3_metadata.{field}={colliding_value!r} on doc_type "
+            f"{doc_type!r} is already held by document {existing_document_id!r}"
+        )
+        self.doc_type = doc_type
+        self.field = field
+        self.colliding_value = colliding_value
+        self.existing_document_id = existing_document_id
+
+
+class Tier3UniqueIndexBlockedError(RuntimeError):
+    """Raised when an attempt to create a tier3 unique index fails because
+    pre-existing rows violate the uniqueness constraint (CAS-ADR-031 §5).
+
+    The migration tool surfaces the collision report to the operator and
+    refuses to activate the constraint; the substrate does not auto-resolve.
+    """
+
+    def __init__(self, doc_type: str, field: str, message: str) -> None:
+        super().__init__(message)
+        self.doc_type = doc_type
+        self.field = field
+
+
 @dataclass(frozen=True)
 class Migration:
     """A single ALTER-style schema migration.
@@ -99,7 +141,8 @@ CREATE TABLE IF NOT EXISTS documents (
     pipeline_status TEXT NOT NULL DEFAULT 'projection_complete',
     pipeline_error TEXT,              -- nullable (BH-022, BH-024)
     tier3_metadata TEXT,              -- JSON, nullable
-    metadata_confirmed INTEGER NOT NULL DEFAULT 0  -- boolean (BE-014)
+    metadata_confirmed INTEGER NOT NULL DEFAULT 0,  -- boolean (BE-014)
+    is_chain_head INTEGER NOT NULL DEFAULT 1  -- T-0115: 0 once a supersedes edge points at this row
 );
 """
 
@@ -220,6 +263,23 @@ INDEX_REPLACEMENTS = [
     "DROP INDEX IF EXISTS idx_edges_target;",
 ]
 
+# T-0115: trigger maintaining `documents.is_chain_head` whenever a
+# supersedes edge is created via any path (the compound atomic methods
+# explicitly flip the flag inside their transactions; this trigger
+# covers direct edge creation via `link()` and any future path that
+# inserts a supersedes edge without coordinating with the storage
+# layer). Idempotent against repeated re-inserts of the same edge:
+# UPDATE on a row already at is_chain_head=0 is a no-op.
+TIER3_CHAIN_HEAD_TRIGGER = """\
+CREATE TRIGGER IF NOT EXISTS trg_tier3_chain_head_on_supersedes
+AFTER INSERT ON edges
+WHEN NEW.edge_type = 'supersedes' AND NEW.target_id IS NOT NULL
+BEGIN
+    UPDATE documents SET is_chain_head = 0 WHERE id = NEW.target_id;
+END;
+"""
+
+
 # T-0079: natural-key uniqueness on production and staging edges.
 # SQLite cannot ALTER TABLE ADD UNIQUE; a unique index is the
 # semantic equivalent. ``IF NOT EXISTS`` keeps re-init idempotent;
@@ -294,6 +354,35 @@ def _backfill_rationale_kind_apply(conn: sqlite3.Connection) -> None:
         )
 
 
+def _backfill_is_chain_head_detect(conn: sqlite3.Connection) -> bool:
+    """T-0115: documents that are the target of a supersedes edge but whose
+    `is_chain_head` is still the post-migration default 1.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM documents d "
+        "WHERE d.is_chain_head = 1 AND EXISTS ("
+        "    SELECT 1 FROM edges e WHERE e.edge_type = 'supersedes' AND e.target_id = d.id"
+        ") LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def _backfill_is_chain_head_apply(conn: sqlite3.Connection) -> None:
+    """T-0115: a document is a chain head iff no supersedes edge points at it.
+
+    Flip `is_chain_head` to 0 for every document that is the target of a
+    supersedes edge. The default of 1 is preserved for chain heads (the
+    most-recent version) and for documents not in any supersession chain.
+    """
+    conn.execute(
+        "UPDATE documents SET is_chain_head = 0 "
+        "WHERE id IN ("
+        "    SELECT DISTINCT target_id FROM edges "
+        "    WHERE edge_type = 'supersedes' AND target_id IS NOT NULL"
+        ")"
+    )
+
+
 def _backfill_document_tags_detect(conn: sqlite3.Connection) -> bool:
     """T-0078: documents with tags JSON but no corresponding join rows."""
     row = conn.execute(
@@ -361,6 +450,11 @@ BACKFILL_PLAN: list[Backfill] = [
         detect=_backfill_rationale_kind_detect,
         apply=_backfill_rationale_kind_apply,
     ),
+    Backfill(
+        name="is_chain_head",
+        detect=_backfill_is_chain_head_detect,
+        apply=_backfill_is_chain_head_apply,
+    ),
 ]
 
 
@@ -427,6 +521,17 @@ MIGRATION_PLAN: list[Migration] = [
         "rationale_kind",
         "ALTER TABLE edges ADD COLUMN rationale_kind TEXT NOT NULL DEFAULT 'manual';",
     ),
+    # T-0115: chain-head flag enabling partial UNIQUE indexes on declared
+    # tier3 unique_keys. NOT NULL with constant default 1 is legal under
+    # SQLite ALTER TABLE ADD COLUMN, so existing rows pick up the default
+    # at migration time; the paired backfill (registered in BACKFILL_PLAN)
+    # then flips the flag to 0 for every row that is the target of a
+    # supersedes edge.
+    Migration(
+        "documents",
+        "is_chain_head",
+        "ALTER TABLE documents ADD COLUMN is_chain_head INTEGER NOT NULL DEFAULT 1;",
+    ),
 ]
 
 # Backwards-compatible string-of-DDL view for callers that just want the
@@ -454,7 +559,52 @@ POST_MIGRATION_DDL = [
     *INDEX_REPLACEMENTS,
     *INDEXES,
     *[ddl for _table, _name, ddl in UNIQUE_NATURAL_KEY_INDEXES],
+    TIER3_CHAIN_HEAD_TRIGGER,
 ]
+
+
+# T-0115: defense-in-depth gate for the doc_type and field tokens
+# interpolated into the tier3 partial UNIQUE index DDL. doc_type already
+# matches `^[a-z][a-z0-9_]*$` by vault-config schema; the cross-field
+# validator in sage.config restricts unique_keys entries to declared
+# metadata_schema properties. This regex is the last-line fence
+# guaranteeing no caller-supplied string can break out of the DDL.
+TIER3_UNIQUE_INDEX_PREFIX = "idx_tier3_unique_"
+
+
+def tier3_unique_index_name(doc_type: str, field: str) -> str:
+    """Canonical index name for the (doc_type, field) partial UNIQUE index.
+
+    Format: ``idx_tier3_unique_<doc_type>_<field>``. The doc_type/field
+    boundary is recovered at error-translation time by stripping the known
+    doc_type prefix from the captured tail.
+    """
+    return f"{TIER3_UNIQUE_INDEX_PREFIX}{doc_type}_{field}"
+
+
+def tier3_unique_index_ddl(doc_type: str, field: str) -> str:
+    """SQL DDL for the partial UNIQUE expression index on (doc_type, field).
+
+    Per CAS-ADR-031 §3, uniqueness is global within doc_type across all
+    lifecycle statuses, with the supersession-lineage exception
+    (predecessors carry is_chain_head=0 and are excluded from the
+    partial filter). NULL tier3 values are excluded so doc_types whose
+    declared field is optional do not collide on NULL.
+    """
+    name = tier3_unique_index_name(doc_type, field)
+    return (
+        f"CREATE UNIQUE INDEX IF NOT EXISTS {name} "
+        f"ON documents (json_extract(tier3_metadata, '$.{field}')) "
+        f"WHERE doc_type = '{doc_type}' "
+        f"  AND is_chain_head = 1 "
+        f"  AND json_extract(tier3_metadata, '$.{field}') IS NOT NULL;"
+    )
+
+
+def tier3_unique_index_drop_ddl(doc_type: str, field: str) -> str:
+    """DROP INDEX statement for the (doc_type, field) partial UNIQUE index."""
+    return f"DROP INDEX IF EXISTS {tier3_unique_index_name(doc_type, field)};"
+
 
 # Legacy alias used by tests and graph_store prior to ordering fix.
 ALL_DDL = [*TABLES, *INDEXES]

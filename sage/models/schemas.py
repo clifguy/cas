@@ -1865,6 +1865,38 @@ class MigrationReportEntry(BaseModel):
     column: str = Field(description="Column name added to the table by this migration.")
 
 
+class Tier3UniquenessCollision(BaseModel):
+    """One value held by multiple chain heads of the same doc_type (T-0115).
+
+    Surfaced by the migration scan when a vault's `unique_keys` declaration
+    cannot be activated because the existing portfolio violates the
+    constraint. Per CAS-ADR-031 §5 the substrate refuses to activate (does
+    not auto-resolve, does not flag-and-pass); the operator must resolve
+    the collision via renumbering, supersession, or archive-and-recreate
+    before the constraint can take effect.
+    """
+
+    doc_type: str = Field(description="Document type whose unique_keys declaration was scanned.")
+    field: str = Field(description="The tier3_metadata field whose values collided.")
+    value: object = Field(description="The colliding value held by more than one chain head.")
+    document_ids: list[DocumentIdStr] = Field(
+        description=(
+            "All chain-head document ids holding this value (length >= 2). "
+            "Each id is the head of a distinct supersession chain; resolving "
+            "the collision means making all-but-one of these no longer carry "
+            "the value."
+        )
+    )
+
+
+class Tier3UniquenessActivation(BaseModel):
+    """One (doc_type, field) pair whose partial UNIQUE index was created or
+    confirmed by the migration (T-0115)."""
+
+    doc_type: str = Field(description="Document type opted into uniqueness.")
+    field: str = Field(description="The tier3_metadata field whose values are now unique.")
+
+
 class MigrationReport(BaseModel):
     vault_id: VaultIdStr = Field(description="Identifier of the vault whose schema was inspected.")
     columns_added: list[MigrationReportEntry] = Field(
@@ -1878,6 +1910,26 @@ class MigrationReport(BaseModel):
             "Names of data backfills that were detected as pending and applied. "
             "Empty when no backfills were needed."
         )
+    )
+    tier3_uniqueness_activations: list[Tier3UniquenessActivation] = Field(
+        default_factory=list,
+        description=(
+            "Per-(doc_type, field) entries for each `unique_keys` declaration "
+            "whose underlying partial UNIQUE index was created or confirmed by "
+            "this migration (T-0115). Empty when no `unique_keys` are declared "
+            "or all were already active."
+        ),
+    )
+    tier3_uniqueness_collisions: list[Tier3UniquenessCollision] = Field(
+        default_factory=list,
+        description=(
+            "Per-(doc_type, field, value) entries for every collision that "
+            "prevented activation of a `unique_keys` declaration (T-0115). "
+            "Non-empty means at least one declaration is NOT live; the "
+            "substrate refuses to activate the constraint while collisions "
+            "remain (CAS-ADR-031 §5). The operator resolves via renumber, "
+            "supersede, or archive-and-recreate, then re-runs the migration."
+        ),
     )
 
 
