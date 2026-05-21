@@ -25,6 +25,7 @@ from sage.api.routers import (
     graph_ops,
     ingestion,
     lifecycle,
+    maintenance,
     metadata,
     pending_metadata,
     retrieval,
@@ -329,6 +330,7 @@ def create_app(
     app.include_router(staging_edges.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(pending_metadata.router, prefix="/sage_vaults/{vault_id}")
     app.include_router(filename_parser.router, prefix="/sage_vaults/{vault_id}")
+    app.include_router(maintenance.router, prefix="/sage_vaults/{vault_id}")
 
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)

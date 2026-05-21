@@ -1576,6 +1576,44 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    @mcp.tool()
+    async def sage_admin_migrate_vault(vault_id: str) -> dict:
+        """Apply pending schema migrations to a single vault in the running session.
+
+        Pilot of the maintenance/admin API surface (CAS-ADR-029). Wraps
+        the GraphStore.initialize(migrate=True) codepath: detects pending
+        ALTER TABLE migrations and BACKFILL_PLAN entries, applies them
+        if any are pending, then reloads the vault in this MCP process's
+        registry so subsequent operations observe the new schema.
+
+        Idempotent: a re-call against an already-migrated vault returns
+        a MigrationReport with empty ``columns_added`` and
+        ``backfills_applied`` lists and no error; the registry reload is
+        skipped on the no-op path.
+
+        Cross-process staleness caveat (F-10, CAS-ADR-029): the
+        operation closes and reopens this MCP process's view of the
+        vault, but is not bulletproof if other MCP server processes
+        hold imports of the same vault directory. Cross-process
+        staleness requires the caller to restart any other open MCP
+        sessions to observe the new schema.
+
+        Args:
+            vault_id: Target vault identifier.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            if v.maintenance_service is None:
+                raise RuntimeError(
+                    f"Vault {vault_id!r} was initialized without a "
+                    "registry_service; maintenance_service is unavailable."
+                )
+            report = await v.maintenance_service.migrate_vault()
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     return {
         "sage_ingest": sage_ingest,
         "sage_parse_filename": sage_parse_filename,
@@ -1605,4 +1643,5 @@ def register_sage_tools(
         "sage_confirm_staging_edge": sage_confirm_staging_edge,
         "sage_dismiss_staging_edge": sage_dismiss_staging_edge,
         "sage_pending_metadata": sage_pending_metadata,
+        "sage_admin_migrate_vault": sage_admin_migrate_vault,
     }

@@ -31,7 +31,7 @@ openapi: "3.1.0"
 
 info:
   title: SAGE Core API
-  version: "0.1.0"
+  version: "0.2.0"
   description: >-
     Protocol-neutral Core API for SAGE (Salience-Aware Graph Engine). Exposes
     discovery, ingestion, lifecycle management, graph operations, and access
@@ -1844,6 +1844,50 @@ paths:
           description: >-
             `edge_not_found`: no production edge with that id; or
             vault not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ---------------------------------------------------------------------------
+  # Maintenance / Admin (CAS-ADR-029)
+  # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/admin/migrate:
+    post:
+      operationId: admin_migrate_vault
+      summary: Apply pending schema migrations to a single vault in the running session.
+      description: >-
+        Per-vault schema-migration operation for the SAGE Core API
+        maintenance surface (CAS-ADR-029). Wraps the
+        GraphStore.initialize(migrate=True) codepath: closes the running
+        vault's graph_store, opens a fresh one to apply ALTER TABLE
+        migrations and BACKFILL_PLAN backfills, then reloads the vault in
+        the registry so subsequent operations observe the new schema.
+
+
+        Idempotent: a re-call against an already-migrated vault returns a
+        MigrationReport with empty columns_added and backfills_applied
+        lists and no error; the registry reload is skipped on the no-op
+        path to avoid pointless thrash.
+
+
+        Cross-process staleness (F-10, CAS-ADR-029): the operation is not
+        bulletproof if other MCP server processes hold imports of the
+        same vault directory. Callers must restart any other open MCP
+        sessions to observe the new schema.
+      tags: [Maintenance]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Migration applied (or no-op when already current).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MigrationReport"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
           content:
             application/json:
               schema:
@@ -3964,6 +4008,41 @@ components:
         views_generated:
           type: integer
           description: Number of view artifacts regenerated.
+
+    # -------------------------------------------------------------------------
+    # Maintenance (CAS-ADR-029)
+    # -------------------------------------------------------------------------
+
+    MigrationReportEntry:
+      type: object
+      required: [table, column]
+      description: One schema migration that was applied to a vault by sage_admin_migrate_vault.
+      properties:
+        table:
+          type: string
+          description: SQLite table name whose schema was altered (e.g., 'documents', 'edges').
+        column:
+          type: string
+          description: Column name added to the table by this migration.
+
+    MigrationReport:
+      type: object
+      required: [vault_id, columns_added, backfills_applied]
+      description: Result of a sage_admin_migrate_vault call -- what changed on disk.
+      properties:
+        vault_id:
+          $ref: "#/components/schemas/VaultId"
+          description: Identifier of the vault whose schema was inspected.
+        columns_added:
+          type: array
+          items:
+            $ref: "#/components/schemas/MigrationReportEntry"
+          description: Per-column entries for every ALTER TABLE that was applied. Empty when no schema work was pending.
+        backfills_applied:
+          type: array
+          items:
+            type: string
+          description: Names of data backfills that were detected as pending and applied. Empty when no backfills were needed.
 
     # -------------------------------------------------------------------------
     # Unlink

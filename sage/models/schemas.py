@@ -1613,6 +1613,29 @@ class RefreshViewsResponse(BaseModel):
     views_generated: int = Field(description="Number of view artifacts regenerated.")
 
 
+class MigrationReportEntry(BaseModel):
+    table: str = Field(
+        description="SQLite table name whose schema was altered (e.g., 'documents', 'edges')."
+    )
+    column: str = Field(description="Column name added to the table by this migration.")
+
+
+class MigrationReport(BaseModel):
+    vault_id: VaultIdStr = Field(description="Identifier of the vault whose schema was inspected.")
+    columns_added: list[MigrationReportEntry] = Field(
+        description=(
+            "Per-column entries for every ALTER TABLE that was applied. "
+            "Empty when no schema work was pending."
+        )
+    )
+    backfills_applied: list[str] = Field(
+        description=(
+            "Names of data backfills that were detected as pending and applied. "
+            "Empty when no backfills were needed."
+        )
+    )
+
+
 class EvalRetrievalResult(BaseModel):
     vault_id: VaultIdStr = Field(
         description="Identifier of the vault whose assertions were evaluated."

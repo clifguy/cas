@@ -31,6 +31,7 @@ from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
+from sage.services.maintenance import MaintenanceService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.staging_edges import StagingEdgesService
@@ -138,6 +139,10 @@ class SAGEServices:
     utilities_service: UtilitiesService
     staging_edges_service: StagingEdgesService
     vault_config_service: VaultConfigService
+    # CAS-ADR-029 pilot maintenance operation. None when initialize_services
+    # was called without a registry_service (test paths that bypass the
+    # lifespan); the production lifespan always supplies one.
+    maintenance_service: MaintenanceService | None = None
     config_path: Path | None = None
     # Test-only hook: when set, reload paths (sage_reload_vault,
     # reload_vault_in_registry) re-invoke this factory with the vault's
@@ -377,6 +382,18 @@ async def initialize_services(
     )
     staging_edges_service = StagingEdgesService(graph_store)
     vault_config_service = VaultConfigService(graph_store, content_store, config, registry_service)
+    # CAS-ADR-029: only construct the maintenance service when a registry
+    # service is available, since migrate_vault closes-and-reopens via
+    # registry_service.reload(...).
+    maintenance_service: MaintenanceService | None = None
+    if registry_service is not None:
+        maintenance_service = MaintenanceService(
+            vault_id=config.vault.id,
+            db_path=brain_root / "graph.db",
+            graph_store=graph_store,
+            config=config,
+            registry_service=registry_service,
+        )
 
     # Bootstrap vault owner
     await user_service.bootstrap_owner()
@@ -396,6 +413,7 @@ async def initialize_services(
         utilities_service=utilities_service,
         staging_edges_service=staging_edges_service,
         vault_config_service=vault_config_service,
+        maintenance_service=maintenance_service,
         config_path=config_path,
         content_store_factory=content_store_factory,
         timing_thread=timing_thread,

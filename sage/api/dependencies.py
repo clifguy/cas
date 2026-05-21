@@ -16,6 +16,7 @@ from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
+from sage.services.maintenance import MaintenanceService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.staging_edges import StagingEdgesService
@@ -151,3 +152,17 @@ async def get_vault_config_service(
     vault_id: VaultIdStr = Depends(get_vault_id),
 ) -> VaultConfigService:
     return _get_services(request, vault_id).vault_config_service
+
+
+async def get_maintenance_service(
+    request: Request,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+) -> MaintenanceService:
+    services = _get_services(request, vault_id)
+    if services.maintenance_service is None:
+        raise RuntimeError(
+            f"Vault {vault_id!r} was initialized without a registry_service; "
+            "maintenance_service is unavailable. The production lifespan path "
+            "always supplies one (CAS-ADR-029)."
+        )
+    return services.maintenance_service

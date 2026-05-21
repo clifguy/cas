@@ -64,7 +64,7 @@ ROUTER_TREES: tuple[RouterTree, ...] = (
         name="sage",
         discovery_kind="package",
         discovery_target="sage.api.routers",
-        # Must mirror sage/app.py:187-200.
+        # Must mirror the include_router block in sage/app.py.
         vault_scoped_routers=frozenset(
             {
                 "ingestion",
@@ -78,6 +78,7 @@ ROUTER_TREES: tuple[RouterTree, ...] = (
                 "staging_edges",
                 "pending_metadata",
                 "filename_parser",
+                "maintenance",
             }
         ),
         cross_vault_routers=frozenset({"vaults"}),
