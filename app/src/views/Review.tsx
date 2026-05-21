@@ -139,6 +139,17 @@ export default function Review() {
   );
 }
 
+// Tier-1 scalar fields on UpdateMetadataRequest (CAS-ADR-028). Any other key
+// surfaced by the metadata extractor is treated as tier3_metadata.
+const TIER1_SCALAR_FIELDS: ReadonlySet<string> = new Set([
+  'title',
+  'version_label',
+  'project',
+  'doc_type',
+  'authority_scope',
+  'document_date',
+]);
+
 // -- Metadata Review --
 
 function MetadataReview({
@@ -184,12 +195,32 @@ function MetadataReview({
           if (info.value != null) baseline[field] = info.value;
         }
       }
-      const docEdits: Record<string, unknown> = { ...baseline, ...edits[docId] };
-      // tags is a comma-separated string in extracted_fields but the API expects string[]
-      if (typeof docEdits.tags === 'string') {
-        docEdits.tags = (docEdits.tags as string).split(',').map(t => t.trim()).filter(Boolean);
+      const merged: Record<string, unknown> = { ...baseline, ...edits[docId] };
+
+      // Partition into CAS-ADR-028 ops-object shape: Tier-1 scalars go on the
+      // body root, `tags` becomes a TagsPatch.add, anything else becomes a
+      // Tier3Patch.set entry. Empty patches are omitted because the backend
+      // rejects TagsPatch / Tier3Patch carrying no actionable operation.
+      const body: UpdateMetadataRequest = {};
+      const tier3Set: Record<string, unknown> = {};
+      for (const [field, value] of Object.entries(merged)) {
+        if (TIER1_SCALAR_FIELDS.has(field)) {
+          (body as Record<string, unknown>)[field] = value;
+        } else if (field === 'tags') {
+          const tagsArr =
+            typeof value === 'string'
+              ? value.split(',').map(t => t.trim()).filter(Boolean)
+              : Array.isArray(value)
+              ? value.filter((t): t is string => typeof t === 'string' && t.length > 0)
+              : [];
+          if (tagsArr.length > 0) body.tags = { add: tagsArr };
+        } else {
+          tier3Set[field] = value;
+        }
       }
-      await updateMetadata(vaultId, docId, docEdits as UpdateMetadataRequest);
+      if (Object.keys(tier3Set).length > 0) body.tier3_metadata = { set: tier3Set };
+
+      await updateMetadata(vaultId, docId, body);
       setQueue(q => q.filter(item => item.document.id !== docId));
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Confirmation failed';

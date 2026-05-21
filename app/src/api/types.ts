@@ -412,19 +412,7 @@ export interface UpdateConfigResponse {
   warnings: string[];
 }
 
-// --- Metadata update ---
-
-export interface UpdateMetadataRequest {
-  title?: string;
-  version_label?: string;
-  project?: string;
-  tags?: string[];
-  doc_type?: string;
-  authority_scope?: string;
-  document_date?: string;
-}
-
-// --- Bulk operations (CAS-ADR-028 ops-object shape) ---
+// --- Metadata update (CAS-ADR-028 ops-object shape) ---
 
 export interface TagsPatch {
   add?: string[];
@@ -435,6 +423,19 @@ export interface Tier3Patch {
   set?: Record<string, unknown>;
   unset?: string[];
 }
+
+export interface UpdateMetadataRequest {
+  title?: string;
+  version_label?: string;
+  project?: string;
+  tags?: TagsPatch;
+  doc_type?: string;
+  authority_scope?: string;
+  document_date?: string;
+  tier3_metadata?: Tier3Patch;
+}
+
+// --- Bulk operations (CAS-ADR-028 ops-object shape) ---
 
 export interface BulkItemErrorEnvelope {
   error: string;
