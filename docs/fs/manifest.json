@@ -75,7 +75,7 @@
       "path": "sage/edge_inference.schema.json",
       "title": "SAGE Edge Inference Configuration",
       "status": "draft",
-      "version": "0.2",
+      "version": "0.3",
       "role": "Defines three-tier edge inference model: tier assignments, inference rules, and staging table behavior.",
       "instantiation_checklist_items": [
         6
@@ -181,7 +181,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.23",
+  "substrate_version": "1.24",
   "revision_history": [
     {
       "version": "0.1",
@@ -307,6 +307,11 @@
       "version": "1.23",
       "date": "2026-05-21",
       "summary": "Vault-config-declared tier3 uniqueness enforcement (T-0115, CAS-ADR-031). One schema change to sage/document_types.schema.json (bumped to v0.3): each DocTypeEntry may now declare an optional unique_keys list naming tier3_metadata fields whose values must be unique within the doc_type across all lifecycle statuses. A doc_type with no unique_keys (or an empty list) preserves current behavior. The substrate enforces uniqueness atomically via partial UNIQUE expression indexes on json_extract(tier3_metadata, '$.<field>') scoped per (doc_type, field), with WHERE lifecycle_status != 'superseded' so the supersession-chain exception (CAS-ADR-031 §3) drops out of the partial filter; the supersession-insert path in graph_store.py is reordered to mark the predecessor superseded before inserting the successor. New Tier3UniqueConstraintViolation (409, error_code 'tier3_unique_constraint_violation') in sage/api/errors.py with doc_type / field / colliding_value / existing_document_id in the structured detail. Pydantic DocTypeEntry in sage/config.py gains unique_keys: list[str] | None and a cross-field validator (each entry must name a metadata_schema property). MaintenanceService grows scan_tier3_uniqueness_collisions and the migration tool refuses to activate the constraint while collisions exist (CAS-ADR-031 §5); collisions are surfaced via the MigrationReport. The cas-ticket-management skill's W1.1 allocator gains a 409-retry branch and the steering doc retracts its 'out of scope for SAGE' caveat. No vault_config.yaml opt-ins land in this revision; activation per doc_type is operator follow-on."
+    },
+    {
+      "version": "1.24",
+      "date": "2026-05-21",
+      "summary": "identifier_mention resolver targets via tier3_metadata (T-0139). One additive schema change to sage/edge_inference.schema.json (bumped to v0.3): the pattern object for the identifier_mention method gains an optional target_tier3 field — an object mapping tier3_metadata keys to exact-match values (strings may carry the `{id}` placeholder for the matched identifier literal). The pattern's `required` list relaxes from `[regex, target_tags]` to `[regex]`, paired with an `anyOf` constraint requiring at least one of `target_tags` or `target_tier3` so a pattern cannot omit both resolver hints. Existing patterns that declare target_tags continue to validate unchanged; the cas vault's CAS-ADR-NNN and F-N patterns are untouched. Motivation: ticket identity is canonicalized in tier3_metadata.ticket_id under CAS-ADR-028, not in tags, so the prior target_tags=['id:{id}'] pattern matched zero tickets after the T-0039 migration stripped the id:T-NNNN prefixes. Surfaced by T-0138's post-restart ingest. Resolver in sage/services/identifier_mention_inference.py threads the new key through `_resolve_identifier` by populating `filters[\"tier3\"]` with the substituted dict, reusing `_format_tag` for the placeholder substitution; the storage-layer tier3 filter (substrate v1.15) carries the equality semantics. Coverage at tests/app/test_edge_inference_identifier_mention.py: test_t2_* and test_t2_sage_ingest_* are rewritten to seed tickets via tier3_metadata={'ticket_id': 'T-0042'} with a decoy ticket that ensures the test fails if the resolver falls back to a doc_type-only lookup; new test_t2b (decoy discrimination) and test_t2c (unresolved + decoy) load-bear the anti-coincidence guarantee; new test_pattern_schema_* trio validates the schema's anyOf constraint accepts target_tier3-only, accepts target_tags-only, and rejects neither-target. cas vault config (~/sage_vaults/cas/vault_config.yaml) is updated in lockstep to use target_tier3 for the T-NNNN pattern."
     }
   ]
 }

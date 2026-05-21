@@ -120,14 +120,21 @@ async def _resolve_identifier(
 
     Returns the matched document's id, or None when no unique active
     document matches the pattern's filters. Lookup is two-step:
-      1. catalog query against the graph store with tag and (optional)
-         doc_type filters.
-      2. optional title-prefix narrowing among the tag-matched candidates.
+      1. catalog query against the graph store with tag, tier3, and
+         (optional) doc_type filters. Tags and tier3 entries each may
+         contain ``{id}`` placeholders substituted with the matched
+         literal (T-0016 for tags; T-0139 for tier3).
+      2. optional title-prefix narrowing among the catalog candidates.
     Among multiple matches, an ``active`` lifecycle status wins; among
     multiple active matches, the most recently updated wins.
     """
     target_tags = [_format_tag(t, identifier=identifier) for t in pattern.get("target_tags", [])]
     filters: dict[str, object] = {"tags": target_tags} if target_tags else {}
+    if pattern.get("target_tier3"):
+        filters["tier3"] = {
+            key: (_format_tag(value, identifier=identifier) if isinstance(value, str) else value)
+            for key, value in pattern["target_tier3"].items()
+        }
     if pattern.get("target_doc_type"):
         filters["doc_type"] = pattern["target_doc_type"]
     docs, _ = await graph_store.query_documents(filters=filters, limit=50)

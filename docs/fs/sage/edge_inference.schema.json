@@ -44,10 +44,14 @@
                 },
                 "patterns": {
                   "type": "array",
-                  "description": "Identifier patterns for the identifier_mention method. Each pattern declares an identifier regex and the tag/title/doc_type filters used to resolve the matched literal to a vault document. T-0016.",
+                  "description": "Identifier patterns for the identifier_mention method. Each pattern declares an identifier regex and the tag/tier3/title/doc_type filters used to resolve the matched literal to a vault document. At least one of `target_tags` or `target_tier3` must be declared to scope the resolver away from a doc_type-wide lookup. T-0016, T-0139.",
                   "items": {
                     "type": "object",
-                    "required": ["regex", "target_tags"],
+                    "required": ["regex"],
+                    "anyOf": [
+                      {"required": ["target_tags"]},
+                      {"required": ["target_tier3"]}
+                    ],
                     "additionalProperties": false,
                     "properties": {
                       "regex": {
@@ -57,11 +61,16 @@
                       "target_tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags the resolved target document must carry. May contain `{id}` as a placeholder for the matched identifier literal (e.g., `id:{id}` resolves to `id:T-0016` for a `T-0016` mention). All tags AND together."
+                        "description": "Tags the resolved target document must carry. May contain `{id}` as a placeholder for the matched identifier literal (e.g., `id:{id}` resolves to `id:T-0016` for a `T-0016` mention). All tags AND together. Mutually exclusive in practice with `target_tier3`, but the schema permits combining them; both filters AND together at query time."
+                      },
+                      "target_tier3": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Tier-3 metadata fields (CAS-ADR-028) the resolved target document's `tier3_metadata` dict must carry as exact-match values. Each value may contain `{id}` as a placeholder for the matched identifier literal (e.g., `{ticket_id: \"{id}\"}` resolves to `ticket_id=T-0042` for a `T-0042` mention). All pairs AND together. Used for doc_types whose canonical identity lives in `tier3_metadata` rather than tags. T-0139."
                       },
                       "target_title_prefix": {
                         "type": "string",
-                        "description": "Optional title-prefix filter applied after tag filtering. May contain `{id}` as a placeholder. Used for ADR-style identifiers where the tag is generic (`adr`) but title carries the id prefix (e.g., `ADR-{adr_num}:`)."
+                        "description": "Optional title-prefix filter applied after tag/tier3 filtering. May contain `{id}` as a placeholder. Used for ADR-style identifiers where the tag is generic (`adr`) but title carries the id prefix (e.g., `ADR-{adr_num}:`)."
                       },
                       "target_doc_type": {
                         "type": "string",

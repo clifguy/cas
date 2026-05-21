@@ -59,10 +59,12 @@ T7 -- Pattern config drives behavior (per-vault configurability).
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from app.backend.ingest_service import BatchIngestService, FileDescriptor
@@ -92,7 +94,7 @@ ADR_PATTERN = {
 }
 TICKET_PATTERN = {
     "regex": r"\bT-\d{4}\b",
-    "target_tags": ["id:{id}"],
+    "target_tier3": {"ticket_id": "{id}"},
     "target_doc_type": "ticket",
 }
 FAILURE_PATTERN = {
@@ -207,6 +209,7 @@ def _make_document(
     title: str,
     doc_type: str,
     tags: list[str],
+    tier3_metadata: dict | None = None,
     source_path: str = "synthetic.md",
 ) -> Document:
     now = datetime.now(timezone.utc)
@@ -223,22 +226,35 @@ def _make_document(
         updated_at=now,
         doc_type=doc_type,
         tags=tags,
+        tier3_metadata=tier3_metadata,
         lifecycle_status="active",
         pipeline_status="abstraction_complete",
     )
 
 
 async def _seed_document(
-    svc: SAGEServices, *, doc_id: str, title: str, doc_type: str, tags: list[str]
+    svc: SAGEServices,
+    *,
+    doc_id: str,
+    title: str,
+    doc_type: str,
+    tags: list[str],
+    tier3_metadata: dict | None = None,
 ) -> str:
     """Insert a target document directly into the graph store (no ingestion).
 
-    Target documents only need to be findable by tag/title/doc_type during
-    identifier resolution; their content is not scanned. Direct insert
-    avoids needing to construct full markdown bodies for every fixture
-    target.
+    Target documents only need to be findable by tag/title/doc_type/tier3
+    during identifier resolution; their content is not scanned. Direct
+    insert avoids needing to construct full markdown bodies for every
+    fixture target.
     """
-    doc = _make_document(doc_id=doc_id, title=title, doc_type=doc_type, tags=tags)
+    doc = _make_document(
+        doc_id=doc_id,
+        title=title,
+        doc_type=doc_type,
+        tags=tags,
+        tier3_metadata=tier3_metadata,
+    )
     await svc.graph_store.insert_document(doc)
     return doc_id
 
@@ -316,13 +332,31 @@ async def test_t1_adr_mention_creates_references_edge(tmp_path, services):
 
 @pytest.mark.asyncio
 async def test_t2_ticket_mention_creates_references_edge(tmp_path, services):
+    """T-0139: ticket mentions resolve via tier3_metadata.ticket_id, not tags.
+
+    The seeded ticket carries `tier3_metadata={"ticket_id": "T-0042"}` and
+    no `id:T-0042` tag, matching the cas vault's post-T-0039 ticket
+    convention (CAS-ADR-028). A decoy ticket seeded after the target
+    ensures the assertion fails if the resolver falls back to a
+    doc_type-only lookup — the decoy would win on `updated_at`.
+    """
     ticket_id = _doc_id("ticket_0042")
+    decoy_id = _doc_id("ticket_t2_decoy")
     await _seed_document(
         services,
         doc_id=ticket_id,
         title="T-0042: Synthetic ticket for testing",
         doc_type="ticket",
-        tags=["ticket", "id:T-0042"],
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0042"},
+    )
+    await _seed_document(
+        services,
+        doc_id=decoy_id,
+        title="T-0011: Decoy ticket (not mentioned)",
+        doc_type="ticket",
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0011"},
     )
     src_path = _write_md(
         tmp_path,
@@ -335,6 +369,81 @@ async def test_t2_ticket_mention_creates_references_edge(tmp_path, services):
     assert len(edges) == 1
     assert edges[0].target_id == ticket_id
     assert edges[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+
+
+@pytest.mark.asyncio
+async def test_t2b_ticket_mention_distinguishes_among_tickets(tmp_path, services):
+    """T-0139 anti-coincidence: tier3 filter must discriminate among tickets.
+
+    Without the tier3 filter, the resolver would return the most-recently-
+    updated active ticket (a doc_type-only query). The decoy is seeded
+    AFTER the target so it has a later updated_at; a buggy resolver that
+    ignored target_tier3 would return the decoy and the assertion would
+    fail.
+    """
+    target_id = _doc_id("ticket_0042")
+    decoy_id = _doc_id("ticket_0099")
+    await _seed_document(
+        services,
+        doc_id=target_id,
+        title="T-0042: Resolver target",
+        doc_type="ticket",
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0042"},
+    )
+    await _seed_document(
+        services,
+        doc_id=decoy_id,
+        title="T-0099: Decoy ticket (should not be picked)",
+        doc_type="ticket",
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0099"},
+    )
+    src_path = _write_md(
+        tmp_path,
+        "note_distinguishing_tickets.md",
+        "# Note\n\nThis only mentions T-0042, not the decoy.\n",
+    )
+
+    _src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1
+    assert edges[0].target_id == target_id
+    # And the decoy received nothing.
+    decoy_inbound = await services.graph_store.get_edges_by_target(decoy_id, "references")
+    assert decoy_inbound == []
+
+
+@pytest.mark.asyncio
+async def test_t2c_unresolved_ticket_mention_creates_no_edge(tmp_path, services):
+    """T-0139: a T-NNNN mention with no matching tier3.ticket_id produces no edge.
+
+    A decoy ticket (T-0050, not mentioned) is seeded so the trap is real:
+    without the tier3 filter, the resolver's doc_type-only fallback
+    would return the decoy and emit a spurious edge. The fix's tier3
+    filter rejects the decoy because its ticket_id does not match
+    T-9999.
+    """
+    decoy_id = _doc_id("ticket_decoy_t2c")
+    await _seed_document(
+        services,
+        doc_id=decoy_id,
+        title="T-0050: Decoy (should not match T-9999)",
+        doc_type="ticket",
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0050"},
+    )
+    src_path = _write_md(
+        tmp_path,
+        "note_dangling_ticket_reference.md",
+        "# Note\n\nMentions T-9999 which does not exist.\n",
+    )
+
+    _src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    assert edges == []
+    decoy_inbound = await services.graph_store.get_edges_by_target(decoy_id, "references")
+    assert decoy_inbound == []
 
 
 # ---------------------------------------------------------------------------
@@ -685,13 +794,29 @@ async def test_t1_sage_ingest_adr_mention_creates_references_edge(tmp_path, serv
 
 @pytest.mark.asyncio
 async def test_t2_sage_ingest_ticket_mention_creates_references_edge(tmp_path, services):
+    """T-0139 + T-0129: tier3-resolved ticket edges also fire on sage_ingest path.
+
+    Same decoy guard as the batch T2: a second ticket with a different
+    tier3.ticket_id is seeded so the test fails if the resolver falls
+    back to a doc_type-only lookup.
+    """
     ticket_id = _doc_id("ticket_0042")
+    decoy_id = _doc_id("ticket_t2_sage_decoy")
     await _seed_document(
         services,
         doc_id=ticket_id,
         title="T-0042: Synthetic ticket for testing",
         doc_type="ticket",
-        tags=["ticket", "id:T-0042"],
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0042"},
+    )
+    await _seed_document(
+        services,
+        doc_id=decoy_id,
+        title="T-0011: Decoy ticket (not mentioned)",
+        doc_type="ticket",
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0011"},
     )
     src_path = _write_md(
         tmp_path,
@@ -887,3 +1012,81 @@ async def test_t10_wait_for_pipeline_independence(tmp_path, services):
     assert a_edges[0].rationale.startswith(IDENTIFIER_MENTION_RATIONALE_PREFIX)
     assert b_edges[0].rationale.startswith(IDENTIFIER_MENTION_RATIONALE_PREFIX)
     assert a_id != b_id  # two distinct documents
+
+
+# ---------------------------------------------------------------------------
+# T-0139: identifier_mention pattern-schema contract tests
+#
+# The schema must (a) accept a pattern with target_tier3 only (no
+# target_tags) and (b) reject a pattern with neither target_tags nor
+# target_tier3 — at least one resolver hint is mandatory.
+# ---------------------------------------------------------------------------
+
+
+_EDGE_INFERENCE_SCHEMA_PATH = Path(__file__).resolve().parents[2] / (
+    "docs/fs/sage/edge_inference.schema.json"
+)
+
+
+def _load_edge_inference_schema() -> dict:
+    return json.loads(_EDGE_INFERENCE_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _edge_inference_block_with_pattern(pattern: dict) -> dict:
+    """Wrap a pattern in the minimal valid edge_inference shape."""
+    return {
+        "tier_assignments": [
+            {
+                "edge_type": "references",
+                "tier": 1,
+                "inference_rules": [{"method": "identifier_mention", "patterns": [pattern]}],
+            }
+        ]
+    }
+
+
+def test_pattern_schema_accepts_target_tier3_only():
+    """A pattern with target_tier3 and no target_tags must validate.
+
+    This is the post-T-0139 shape used by the cas vault's ticket pattern.
+    """
+    schema = _load_edge_inference_schema()
+    pattern = {
+        "regex": r"\bT-\d{4}\b",
+        "target_tier3": {"ticket_id": "{id}"},
+        "target_doc_type": "ticket",
+    }
+    jsonschema.validate(_edge_inference_block_with_pattern(pattern), schema)
+
+
+def test_pattern_schema_rejects_pattern_with_neither_target():
+    """A pattern that declares neither target_tags nor target_tier3 must fail.
+
+    Anti-coincidence guard: simply dropping target_tags from `required`
+    without adding an `anyOf` constraint would let a hint-less pattern slip
+    through. The resolver would then return any active doc_type match
+    (or any active document), producing spurious edges.
+    """
+    schema = _load_edge_inference_schema()
+    pattern = {
+        "regex": r"\bT-\d{4}\b",
+        "target_doc_type": "ticket",
+    }
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(_edge_inference_block_with_pattern(pattern), schema)
+
+
+def test_pattern_schema_still_accepts_target_tags_only():
+    """Regression guard: the existing target_tags-only path stays valid.
+
+    The cas vault's ADR and failure-record patterns continue to use
+    target_tags after T-0139.
+    """
+    schema = _load_edge_inference_schema()
+    pattern = {
+        "regex": r"\bCAS-ADR-\d{3}\b",
+        "target_tags": ["adr"],
+        "target_title_prefix": "ADR-{adr_num}:",
+        "target_doc_type": "adr",
+    }
+    jsonschema.validate(_edge_inference_block_with_pattern(pattern), schema)
