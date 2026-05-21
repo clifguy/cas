@@ -79,15 +79,21 @@ test('bulk lifecycle round-trip in Search archives three documents', async ({ pa
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, `/search?mode=browse&tags=${FIXTURE_TAG}&lifecycle_status=active`);
 
-  // Wait for the three fixture documents.
-  await expect(page.getByRole('link', { name: 'e2e-doc-1' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'e2e-doc-2' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'e2e-doc-3' })).toBeVisible();
+  // Wait for the three fixture documents. SAGE may rename the rendered
+  // source filename with a hash suffix (e.g., `e2e-doc-1_abc12345`) when
+  // archived predecessors hold the original filename — accept both forms.
+  const fixtureLink = (n: number) =>
+    page.getByRole('link', { name: new RegExp(`^e2e-doc-${n}(_[a-f0-9]+)?$`) });
+  await expect(fixtureLink(1)).toBeVisible();
+  await expect(fixtureLink(2)).toBeVisible();
+  await expect(fixtureLink(3)).toBeVisible();
 
-  // The tag filter must produce exactly 3 rows — coincidental-pass guard:
-  // if the filter regresses, the cas vault's normal active doc set would
-  // dwarf 3 and this assertion would fail loudly.
-  await expect(page.getByRole('link', { name: /^e2e-doc-\d$/ })).toHaveCount(3);
+  // The tag+active filter must produce exactly 3 rows — coincidental-pass
+  // guard: if the filter regresses, the cas vault's normal active doc set
+  // would dwarf 3 and this assertion would fail loudly.
+  await expect(
+    page.getByRole('link', { name: /^e2e-doc-\d(_[a-f0-9]+)?$/ }),
+  ).toHaveCount(3);
 
   // Click the header select-all.
   await page.getByTestId('bulk-select-all').check();
