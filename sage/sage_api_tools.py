@@ -1775,6 +1775,64 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    @mcp.tool()
+    async def sage_admin_reabstract_deferred_vault(
+        vault_id: str, include_pdf: bool = False
+    ) -> dict:
+        """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
+
+        Graduation of the standalone scripts/reabstract_deferred.py
+        script to the maintenance API surface (T-0089, CAS-ADR-029).
+        Enumerates documents in the named vault whose pipeline_status is
+        ``abstraction_skipped``, dispatches IngestionService.reabstract
+        per document, and polls until each reaches terminal status
+        (``abstraction_complete`` or ``failed``). Returns a
+        ReabstractReport with per-document outcomes and aggregate counts.
+
+        Reuses the in-process AbstractionProvider that this MCP server
+        loaded at startup; does NOT spin up a second Qwen3 instance
+        (F-8 cautionary tale). The standalone script remains as the
+        operator fallback for cron-style workflows where no MCP server
+        is running.
+
+        Single-flight per vault: a concurrent call returns a structured
+        ``reabstract_already_in_flight`` error (409) whose detail
+        carries the ``start_time`` of the in-flight operation. The
+        operation is non-blocking on the rejection path -- a queued
+        long-running second caller would mask client-side coordination
+        bugs.
+
+        Long-running: an N-document pass takes roughly N times the
+        per-document abstraction wall-clock (seconds to tens of seconds
+        each against Qwen3-30B MLX, sub-second against the test stub).
+        Phase 1 ships synchronous; allocate a generous client-side
+        timeout. Streaming progress events over MCP/SSE are scoped out
+        and tracked as future work in the T-0089 close-out notes.
+
+        Error modes:
+        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``reabstract_already_in_flight`` (409): a reabstract is
+          already running on this vault.
+
+        Args:
+            vault_id: Target vault identifier.
+            include_pdf: When False (default), source_type=pdf documents
+                are skipped (scanned PDFs typically have no extractable
+                text). When True, PDFs are included in the worklist.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            if v.maintenance_service is None:
+                raise RuntimeError(
+                    f"Vault {vault_id!r} was initialized without a "
+                    "registry_service; maintenance_service is unavailable."
+                )
+            report = await v.maintenance_service.reabstract_deferred(include_pdf=include_pdf)
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     return {
         "sage_ingest": sage_ingest,
         "sage_parse_filename": sage_parse_filename,
@@ -1807,4 +1865,5 @@ def register_sage_tools(
         "sage_dismiss_staging_edge": sage_dismiss_staging_edge,
         "sage_pending_metadata": sage_pending_metadata,
         "sage_admin_migrate_vault": sage_admin_migrate_vault,
+        "sage_admin_reabstract_deferred_vault": sage_admin_reabstract_deferred_vault,
     }

@@ -2021,6 +2021,64 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/admin/reabstract-deferred:
+    post:
+      operationId: admin_reabstract_deferred_vault
+      summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
+      description: >-
+        Graduation of the standalone scripts/reabstract_deferred.py script
+        to the maintenance API surface (T-0089, CAS-ADR-029). Enumerates
+        documents whose pipeline_status is 'abstraction_skipped', dispatches
+        IngestionService.reabstract per document, and polls until each
+        reaches a terminal pipeline_status (abstraction_complete or failed).
+
+
+        Reuses the in-process AbstractionProvider that the running SAGE
+        process loaded once at startup; does NOT initialize a second
+        provider (the F-8 unified-memory cautionary tale). The
+        complementary scripts/reabstract_deferred.py remains as the
+        operator fallback for cron-style workflows where no MCP server is
+        running.
+
+
+        Single-flight per vault: a concurrent call against the same vault
+        returns 409 reabstract_already_in_flight with the start_time of
+        the running operation rather than queueing.
+
+
+        Phase 1 ships synchronous (the HTTP response is held open for the
+        duration of the operation). Streaming progress events over SSE
+        are scoped out and tracked as future work in the T-0089 close-out
+        notes.
+      tags: [Maintenance]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReabstractRequest"
+      responses:
+        "200":
+          description: Reabstract pass complete; report enumerates per-document outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReabstractReport"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: "`reabstract_already_in_flight`: a reabstract is already running on this vault."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 
 # =============================================================================
 # Components
@@ -4395,6 +4453,78 @@ components:
           items:
             type: string
           description: Names of data backfills that were detected as pending and applied. Empty when no backfills were needed.
+
+    ReabstractOutcome:
+      type: string
+      enum: [success, skipped_pdf, llm_failure]
+      description: >-
+        Per-document outcome classification in a ReabstractReport (T-0089).
+        `success`: the document's pipeline_status transitioned to
+        abstraction_complete. `skipped_pdf`: the document is source_type=pdf
+        and was excluded because include_pdf was False. `llm_failure`:
+        dispatch raised, background generation raised, or the document
+        terminated in pipeline_status='failed'.
+
+    ReabstractRequest:
+      type: object
+      description: Request body for sage_admin_reabstract_deferred_vault (T-0089).
+      properties:
+        include_pdf:
+          type: boolean
+          default: false
+          description: >-
+            When False (default), documents whose source_type is 'pdf' are
+            skipped: scanned PDFs typically have no extractable text and
+            reabstract returns a degenerate abstract. When True, PDFs are
+            included in the worklist.
+
+    ReabstractReportEntry:
+      type: object
+      required: [document_id, outcome]
+      description: One per-document outcome record in a ReabstractReport (T-0089).
+      properties:
+        document_id:
+          type: string
+          description: Document id whose reabstract outcome this entry records.
+        outcome:
+          $ref: "#/components/schemas/ReabstractOutcome"
+          description: Per-document classification (success / skipped_pdf / llm_failure).
+        error_message:
+          type: string
+          nullable: true
+          description: Failure description when outcome is 'llm_failure'; null otherwise.
+        elapsed_seconds:
+          type: number
+          nullable: true
+          description: >-
+            Wall-clock seconds from dispatch to terminal status for this
+            document; null for skipped_pdf entries (no work was done).
+
+    ReabstractReport:
+      type: object
+      required:
+        [vault_id, reabstracted_count, skipped_pdf_count, failed_count, entries]
+      description: >-
+        Result of a sage_admin_reabstract_deferred_vault call -- aggregate
+        counts and per-document outcomes for the deferred-abstract worklist.
+      properties:
+        vault_id:
+          $ref: "#/components/schemas/VaultId"
+          description: Identifier of the vault whose deferred abstracts were processed.
+        reabstracted_count:
+          type: integer
+          description: Number of documents whose pipeline_status transitioned to abstraction_complete by this operation.
+        skipped_pdf_count:
+          type: integer
+          description: Number of source_type=pdf documents excluded because include_pdf was False. Always 0 when include_pdf is True.
+        failed_count:
+          type: integer
+          description: Number of documents whose reabstract attempt did not reach abstraction_complete.
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReabstractReportEntry"
+          description: Per-document outcome records. Length equals reabstracted_count + skipped_pdf_count + failed_count.
 
     # -------------------------------------------------------------------------
     # Unlink

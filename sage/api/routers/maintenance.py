@@ -6,10 +6,16 @@ operation on the SAGE Core API maintenance surface; subsequent
 shape.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 
 from sage.api.dependencies import get_maintenance_service, get_vault_id
-from sage.models.schemas import ErrorResponse, MigrationReport, VaultIdStr
+from sage.models.schemas import (
+    ErrorResponse,
+    MigrationReport,
+    ReabstractReport,
+    ReabstractRequest,
+    VaultIdStr,
+)
 from sage.services.maintenance import MaintenanceService
 
 router = APIRouter(tags=["Maintenance"])
@@ -30,3 +36,27 @@ async def admin_migrate_vault(
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> MigrationReport:
     return await service.migrate_vault()
+
+
+@router.post(
+    "/admin/reabstract-deferred",
+    response_model=ReabstractReport,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`reabstract_already_in_flight`: a reabstract is already running on this vault."
+            ),
+        },
+    },
+)
+async def admin_reabstract_deferred(
+    body: ReabstractRequest = Body(default_factory=ReabstractRequest),
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: MaintenanceService = Depends(get_maintenance_service),
+) -> ReabstractReport:
+    return await service.reabstract_deferred(include_pdf=body.include_pdf)

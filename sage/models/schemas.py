@@ -17,6 +17,7 @@ from sage.models.enums import (
     EdgeType,
     PipelineStatus,
     RationaleKind,
+    ReabstractOutcome,
     ResolutionPolicy,
     ResponseLevel,
     RetrievalMode,
@@ -1849,6 +1850,67 @@ class MigrationReport(BaseModel):
         description=(
             "Names of data backfills that were detected as pending and applied. "
             "Empty when no backfills were needed."
+        )
+    )
+
+
+class ReabstractRequest(BaseModel):
+    include_pdf: bool = Field(
+        default=False,
+        description=(
+            "When False (default), documents whose source_type is 'pdf' are "
+            "skipped: scanned PDFs typically have no extractable text and "
+            "reabstract returns a degenerate abstract. When True, PDFs are "
+            "included in the worklist."
+        ),
+    )
+
+
+class ReabstractReportEntry(BaseModel):
+    document_id: DocumentIdStr = Field(
+        description="Document id whose reabstract outcome this entry records."
+    )
+    outcome: ReabstractOutcome = Field(
+        description="Per-document classification (success / skipped_pdf / llm_failure)."
+    )
+    error_message: str | None = Field(
+        default=None,
+        description="Failure description when outcome is 'llm_failure'; null otherwise.",
+    )
+    elapsed_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Wall-clock seconds from dispatch to terminal status for this "
+            "document; null for skipped_pdf entries (no work was done)."
+        ),
+    )
+
+
+class ReabstractReport(BaseModel):
+    vault_id: VaultIdStr = Field(
+        description="Identifier of the vault whose deferred abstracts were processed."
+    )
+    reabstracted_count: int = Field(
+        description=(
+            "Number of documents whose pipeline_status transitioned to "
+            "abstraction_complete by this operation."
+        )
+    )
+    skipped_pdf_count: int = Field(
+        description=(
+            "Number of source_type=pdf documents excluded because include_pdf "
+            "was False. Always 0 when include_pdf is True."
+        )
+    )
+    failed_count: int = Field(
+        description=(
+            "Number of documents whose reabstract attempt did not reach abstraction_complete."
+        )
+    )
+    entries: list[ReabstractReportEntry] = Field(
+        description=(
+            "Per-document outcome records. Length equals "
+            "reabstracted_count + skipped_pdf_count + failed_count."
         )
     )
 

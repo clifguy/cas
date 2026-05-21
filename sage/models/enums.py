@@ -195,6 +195,14 @@ class TraversalDirection(StrEnum):
     BOTH = "both"
 
 
+class ReabstractOutcome(StrEnum):
+    """Per-document outcome categories in a ReabstractReport (T-0089)."""
+
+    SUCCESS = "success"
+    SKIPPED_PDF = "skipped_pdf"
+    LLM_FAILURE = "llm_failure"
+
+
 # Terminal pipeline statuses: pipeline has finished processing.
 TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
     {

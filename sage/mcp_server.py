@@ -385,6 +385,7 @@ sage_confirm_staging_edge = _sage_tools["sage_confirm_staging_edge"]
 sage_dismiss_staging_edge = _sage_tools["sage_dismiss_staging_edge"]
 sage_pending_metadata = _sage_tools["sage_pending_metadata"]
 sage_admin_migrate_vault = _sage_tools["sage_admin_migrate_vault"]
+sage_admin_reabstract_deferred_vault = _sage_tools["sage_admin_reabstract_deferred_vault"]
 
 app_scan_directory = _app_tools["app_scan_directory"]
 app_batch_ingest = _app_tools["app_batch_ingest"]

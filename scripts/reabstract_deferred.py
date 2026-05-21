@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Re-run abstraction for documents in a vault.
 
+Standalone fallback for operator workflows (cron-style, no MCP server
+running). Agents should call the ``sage_admin_reabstract_deferred_vault``
+MCP tool instead -- it reuses the running MCP server's already-loaded
+AbstractionProvider so the dual-Qwen3 RAM hazard does not apply (T-0089,
+F-8). The ``--all`` mode (full-vault sweep regardless of pipeline_status)
+is still operator-only and remains the reason this script lives on.
+
 By default, picks up every document with ``pipeline_status='abstraction_skipped'``
 (the "deferred abstracts" health indicator). With ``--all``, enumerates
 every document regardless of pipeline_status -- the mode used for

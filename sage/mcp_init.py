@@ -385,6 +385,9 @@ async def initialize_services(
     # CAS-ADR-029: only construct the maintenance service when a registry
     # service is available, since migrate_vault closes-and-reopens via
     # registry_service.reload(...).
+    # T-0089: ingestion_service is wired through so reabstract_deferred can
+    # reuse the in-process AbstractionProvider (F-8 budget rule); ordering
+    # matters -- ingestion_service is constructed above this block.
     maintenance_service: MaintenanceService | None = None
     if registry_service is not None:
         maintenance_service = MaintenanceService(
@@ -393,6 +396,7 @@ async def initialize_services(
             graph_store=graph_store,
             config=config,
             registry_service=registry_service,
+            ingestion_service=ingestion_service,
         )
 
     # Bootstrap vault owner

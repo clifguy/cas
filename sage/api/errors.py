@@ -4,6 +4,8 @@ Exception classes carry structured detail dicts matching the OpenAPI
 ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
+from datetime import datetime
+
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -522,6 +524,29 @@ class VaultAlreadyExistsError(SAGEError):
             f"Vault '{vault_id}' already exists",
             409,
             {"vault_id": vault_id},
+        )
+
+
+class ReabstractAlreadyInFlightError(SAGEError):
+    """409: a reabstract_deferred operation is already running on the vault (T-0089).
+
+    Single-flight per vault: a second concurrent caller receives this
+    structured error with the start_time of the running operation rather
+    than queueing. The non-blocking rejection (vs. await lock.acquire())
+    is intentional -- reabstract passes can run for minutes against the
+    in-process Qwen3 provider, and silently queuing a second long-running
+    caller would mask client-side coordination bugs.
+    """
+
+    def __init__(self, vault_id: str, start_time: datetime) -> None:
+        super().__init__(
+            "reabstract_already_in_flight",
+            (
+                f"A reabstract_deferred operation is already running on vault "
+                f"{vault_id!r}; started at {start_time.isoformat()}."
+            ),
+            409,
+            {"vault_id": vault_id, "start_time": start_time.isoformat()},
         )
 
 

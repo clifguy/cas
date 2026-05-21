@@ -181,7 +181,7 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.21",
+  "substrate_version": "1.22",
   "revision_history": [
     {
       "version": "0.1",
@@ -297,6 +297,11 @@
       "version": "1.18",
       "date": "2026-05-16",
       "summary": "MCP-OpenAPI argument drift reconciliation (T-0062). Drains all five entries from the KNOWN_ARG_DRIFT allowlist in tests/sage/test_mcp_tool_conformance.py that the T-0059 conformance gate parked. Three additions to sage_core_api.openapi.yaml (spec direction; the Pydantic models and service layers already supported the fields, so this closes a substrate-as-source-of-truth lag rather than expanding behavior): (1) IngestRequest.tier3_metadata (bare-dict form, distinct from UpdateMetadataRequest's Tier3Patch ops-object per the CAS-ADR-028 ingest-vs-update asymmetry); (2) ChainRequest.limit + offset (caller-side pagination on chain walks); (3) DiscoverRequest.include_abstracts + min_relevance (retrieval controls in Pydantic since v1.6 / CAS-ADR-011). Two tool-direction changes to sage/sage_api_tools.py: (4) sage_update_vault_config drops the `sections: dict` wrapper kwarg in favor of the named section kwargs the spec already declares (vault, document_types, lifecycle, source_adapters, metadata_extraction, edge_inference, abstraction, access_control_defaults, retrieval_health); (5) sage_create_vault collapses to a single `config: dict` argument matching CreateVaultRequest exactly -- the convenience-mode kwargs (vault_id, name, owner) are removed and callers that want sensible defaults call VaultRegistryService.get_default_config() and pass the result through. CreateVaultRequest description is tightened to point at vault_config.schema.json as the validation authority. KNOWN_ARG_DRIFT is empty; tests/app/test_mcp_vault_management.py is updated to the new signatures. No service-layer changes."
+    },
+    {
+      "version": "1.22",
+      "date": "2026-05-21",
+      "summary": "Graduation of scripts/reabstract_deferred.py to the maintenance API surface (T-0089, CAS-ADR-029). One new path on sage_core_api.openapi.yaml: POST /sage_vaults/{vault_id}/admin/reabstract-deferred (operationId admin_reabstract_deferred), backfilling semantic abstracts for documents whose pipeline_status is 'abstraction_skipped'. Four new component schemas: ReabstractRequest (single include_pdf boolean, default false), ReabstractOutcome (string enum over success / skipped_pdf / llm_failure), ReabstractReportEntry (document_id + outcome + optional error_message + optional elapsed_seconds), ReabstractReport (vault_id + aggregate counts + entries array). Pydantic models in sage/models/schemas.py mirror the schema additions; new ReabstractOutcome StrEnum in sage/models/enums.py. New ReabstractAlreadyInFlightError (409, error_code 'reabstract_already_in_flight') in sage/api/errors.py with start_time in the structured detail; single-flight per vault is enforced by MaintenanceService via a non-blocking asyncio.Lock check (a queued caller would mask client-side coordination bugs on operations that can run for minutes). The service method MUST reuse the in-process IngestionService (and its already-loaded AbstractionProvider) -- spinning up a second Qwen3 MLX provider is forbidden (F-8 unified-memory cautionary tale). The complementary standalone script remains as the operator fallback for cron-style workflows where no MCP server is running."
     }
   ]
 }
