@@ -35,6 +35,7 @@ from sage.models.enums import (
 from sage.models.schemas import (
     DiscoverRequest,
     Document,
+    DocumentSummary,
     RetrievalFilters,
     UpdateMetadataRequest,
 )
@@ -86,6 +87,7 @@ def _make_doc(
     source_modified_at: datetime | None = None,
     semantic_abstract: str | None = None,
     tier3_metadata: dict | None = None,
+    version_label: str | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -110,6 +112,7 @@ def _make_doc(
         source_modified_at=source_modified_at,
         semantic_abstract=semantic_abstract,
         tier3_metadata=tier3_metadata,
+        version_label=version_label,
     )
 
 
@@ -350,7 +353,16 @@ async def test_bh_029_deterministic_prefix_match(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """heading_path matches the specified heading and all children."""
-    doc = _make_doc(_id("doc_structured"))
+    # T-0096: set document_date and source_modified_at so the assertions
+    # below can lock the deterministic-site field-drop regression at the
+    # consumer surface (both were silently omitted before the from_document
+    # consolidation).
+    deterministic_smt = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+    doc = _make_doc(
+        _id("doc_structured"),
+        document_date="2026-05-15",
+        source_modified_at=deterministic_smt,
+    )
     await graph_store.insert_document(doc)
 
     # Index chunks with heading hierarchy
@@ -397,6 +409,14 @@ async def test_bh_029_deterministic_prefix_match(
     # relevance_score is null for deterministic mode
     for hit in response.results:
         assert hit.relevance_score is None
+
+    # T-0096: deterministic site previously dropped source_modified_at and
+    # passed document_date through as a raw string. The from_document
+    # consolidation fixes both; assert the consumer-surface round-trip.
+    summary = response.results[0].document
+    assert summary.source_modified_at == deterministic_smt
+    assert isinstance(summary.document_date, datetime)
+    assert summary.document_date == datetime(2026, 5, 15, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -3900,15 +3920,131 @@ async def test_pre_resolved_filters_return_empty_when_zero_docs_match(
 
 
 # ---------------------------------------------------------------------------
-# _parse_document_date: tolerate ISO-with-time form alongside YYYY-MM-DD.
-# Pre-fix, the helper used strptime("%Y-%m-%d") and silently dropped
-# `2026-05-05T00:00:00Z` to None. The fix accepts both shapes via
-# datetime.fromisoformat.
+# T-0096: DocumentSummary.from_document factory consolidates 5 retrieval-site
+# constructions and folds the two near-duplicate date-parse helpers into
+# sage.utils.date_parsing.parse_document_date. The exhaustive-fields test
+# (T1) is the structural F4 closure: it fails closed when a new field is
+# added to DocumentSummary without a matching factory update.
 # ---------------------------------------------------------------------------
 
 
-def test_parse_document_date_accepts_iso_with_z():
-    from sage.services.retrieval import _parse_document_date
+def _doc_with_every_summary_field() -> Document:
+    """Build a Document with every DocumentSummary-mapped field set to a
+    distinct non-default sentinel. Used by the exhaustive-fields test to
+    verify ``DocumentSummary.from_document`` populates each field; a
+    default-only Document would let the test pass coincidentally on
+    list/dict fields whose defaults are ``[]`` / ``None``."""
+    return _make_doc(
+        _id("doc_all_fields"),
+        lifecycle_status="archived",
+        project="proj-X",
+        doc_type="ticket",
+        tags=["alpha", "beta"],
+        document_date="2026-05-15",
+        source_modified_at=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+        semantic_abstract="an abstract for testing",
+        tier3_metadata={"ticket_id": "T-0096", "ticket_priority": "medium"},
+        version_label="v1.2",
+    )
 
-    result = _parse_document_date("2026-05-05T00:00:00Z")
-    assert result == datetime(2026, 5, 5, tzinfo=timezone.utc)
+
+# T1: exhaustive fields — the keystone F4-closure test.
+def test_from_document_populates_every_summary_field():
+    doc = _doc_with_every_summary_field()
+    summary = DocumentSummary.from_document(doc)
+    for field_name, field_info in DocumentSummary.model_fields.items():
+        value = getattr(summary, field_name)
+        annotation = field_info.annotation
+        # list-typed and dict-typed fields default to [] / None respectively
+        # and would pass a naive `value is not None` check on an empty default;
+        # require truthy for these and non-None for the rest.
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"DocumentSummary.{field_name} not populated by from_document "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, f"DocumentSummary.{field_name} not populated by from_document"
+
+
+# T2: document_date is parsed to datetime, not passed through as a string.
+def test_from_document_parses_document_date():
+    doc = _make_doc(_id("doc_dated"), document_date="2026-05-15")
+    summary = DocumentSummary.from_document(doc)
+    assert isinstance(summary.document_date, datetime)
+    assert summary.document_date == datetime(2026, 5, 15, tzinfo=timezone.utc)
+
+
+# T3: None document_date round-trips to None without raising.
+def test_from_document_handles_none_document_date():
+    doc = _make_doc(_id("doc_no_date"))
+    summary = DocumentSummary.from_document(doc)
+    assert summary.document_date is None
+
+
+# T4: source_modified_at passes through unchanged.
+def test_from_document_passes_source_modified_at():
+    smt = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+    doc = _make_doc(_id("doc_smt"), source_modified_at=smt)
+    summary = DocumentSummary.from_document(doc)
+    assert summary.source_modified_at == smt
+
+
+# T5: defaults round-trip transparently — factory must not invent values.
+def test_from_document_round_trips_defaults():
+    doc = _make_doc(_id("doc_defaults"))
+    summary = DocumentSummary.from_document(doc)
+    assert summary.tags == []
+    assert summary.project is None
+    assert summary.doc_type is None
+    assert summary.version_label is None
+    assert summary.document_date is None
+    assert summary.source_modified_at is None
+    assert summary.semantic_abstract is None
+    assert summary.tier3_metadata is None
+
+
+# T6: None input → None.
+def test_parse_document_date_none_returns_none():
+    from sage.utils.date_parsing import parse_document_date
+
+    assert parse_document_date(None) is None
+
+
+# T7: Empty string → None.
+def test_parse_document_date_empty_string_returns_none():
+    from sage.utils.date_parsing import parse_document_date
+
+    assert parse_document_date("") is None
+
+
+# T8: ISO date string → UTC datetime at midnight.
+def test_parse_document_date_iso_date_returns_utc_midnight():
+    from sage.utils.date_parsing import parse_document_date
+
+    assert parse_document_date("2026-05-15") == datetime(2026, 5, 15, tzinfo=timezone.utc)
+
+
+# T9: ISO datetime with trailing Z → UTC datetime.
+def test_parse_document_date_iso_with_z_returns_utc():
+    from sage.utils.date_parsing import parse_document_date
+
+    assert parse_document_date("2026-05-15T10:30:00Z") == datetime(
+        2026, 5, 15, 10, 30, tzinfo=timezone.utc
+    )
+
+
+# T10: aware datetime in non-UTC offset → normalized to UTC.
+def test_parse_document_date_aware_offset_normalizes_to_utc():
+    from sage.utils.date_parsing import parse_document_date
+
+    assert parse_document_date("2026-05-15T10:30:00-04:00") == datetime(
+        2026, 5, 15, 14, 30, tzinfo=timezone.utc
+    )
+
+
+# T11: malformed string → None (does not raise).
+def test_parse_document_date_malformed_returns_none():
+    from sage.utils.date_parsing import parse_document_date
+
+    assert parse_document_date("not-a-date") is None

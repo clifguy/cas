@@ -165,25 +165,6 @@ def _tier3_matches(
     return True
 
 
-def _parse_document_date(date_str: str | None) -> datetime | None:
-    """Parse a document_date string into a UTC datetime, or None.
-
-    Accepts the contract YYYY-MM-DD shape plus any other ISO-8601 form
-    datetime.fromisoformat understands (including the trailing Z that
-    ingest paths have historically produced for some records). Naive
-    results are treated as UTC; aware results are normalized to UTC.
-    """
-    if not date_str:
-        return None
-    try:
-        parsed = datetime.fromisoformat(date_str)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
 class RetrievalService:
     def __init__(
         self,
@@ -479,21 +460,7 @@ class RetrievalService:
 
         hits = [
             DiscoverHit(
-                document=DocumentSummary(
-                    id=doc.id,
-                    title=doc.title,
-                    lifecycle_status=doc.lifecycle_status,
-                    source_type=doc.source_type,
-                    source_path=doc.source_path,
-                    version_label=doc.version_label,
-                    project=doc.project,
-                    doc_type=doc.doc_type,
-                    tags=doc.tags,
-                    document_date=_parse_document_date(doc.document_date),
-                    source_modified_at=doc.source_modified_at,
-                    semantic_abstract=doc.semantic_abstract,
-                    tier3_metadata=doc.tier3_metadata,
-                ),
+                document=DocumentSummary.from_document(doc),
                 chunk_content=None,
                 heading_path=None,
                 relevance_score=None,
@@ -628,21 +595,7 @@ class RetrievalService:
             if request.scope == RetrievalScope.AUTHORITATIVE and not doc.authority_scope:
                 continue
 
-            summary = DocumentSummary(
-                id=doc.id,
-                title=doc.title,
-                lifecycle_status=doc.lifecycle_status,
-                source_type=doc.source_type,
-                source_path=doc.source_path,
-                version_label=doc.version_label,
-                project=doc.project,
-                doc_type=doc.doc_type,
-                tags=doc.tags,
-                document_date=_parse_document_date(doc.document_date),
-                source_modified_at=doc.source_modified_at,
-                semantic_abstract=doc.semantic_abstract,
-                tier3_metadata=doc.tier3_metadata,
-            )
+            summary = DocumentSummary.from_document(doc)
             hits.append(
                 DiscoverHit(
                     document=summary,
@@ -816,21 +769,7 @@ class RetrievalService:
             if not self._passes_scope(doc, request):
                 continue
 
-            summary = DocumentSummary(
-                id=doc.id,
-                title=doc.title,
-                lifecycle_status=doc.lifecycle_status,
-                source_type=doc.source_type,
-                source_path=doc.source_path,
-                version_label=doc.version_label,
-                project=doc.project,
-                doc_type=doc.doc_type,
-                tags=doc.tags,
-                document_date=_parse_document_date(doc.document_date),
-                source_modified_at=doc.source_modified_at,
-                semantic_abstract=doc.semantic_abstract,
-                tier3_metadata=doc.tier3_metadata,
-            )
+            summary = DocumentSummary.from_document(doc)
 
             # BH-084/085: suppress chunk_content when response_level=documents;
             # heading_path preserved as cheap "why this matched" context.
@@ -903,21 +842,7 @@ class RetrievalService:
                 # Promote existing hit's score to boost level
                 existing_hits[doc.id].relevance_score = boost_score
             else:
-                summary = DocumentSummary(
-                    id=doc.id,
-                    title=doc.title,
-                    lifecycle_status=doc.lifecycle_status,
-                    source_type=doc.source_type,
-                    source_path=doc.source_path,
-                    version_label=doc.version_label,
-                    project=doc.project,
-                    doc_type=doc.doc_type,
-                    tags=doc.tags,
-                    document_date=_parse_document_date(doc.document_date),
-                    source_modified_at=doc.source_modified_at,
-                    semantic_abstract=doc.semantic_abstract,
-                    tier3_metadata=doc.tier3_metadata,
-                )
+                summary = DocumentSummary.from_document(doc)
                 boosted.append(
                     DiscoverHit(
                         document=summary,
@@ -1128,20 +1053,7 @@ class RetrievalService:
                 available = await self._content.get_heading_paths(request.document_id)
             raise HeadingNotFoundError(request.heading_path, request.document_id, available)
 
-        summary = DocumentSummary(
-            id=doc.id,
-            title=doc.title,
-            lifecycle_status=doc.lifecycle_status,
-            source_type=doc.source_type,
-            source_path=doc.source_path,
-            version_label=doc.version_label,
-            project=doc.project,
-            doc_type=doc.doc_type,
-            tags=doc.tags,
-            document_date=doc.document_date,
-            semantic_abstract=doc.semantic_abstract,
-            tier3_metadata=doc.tier3_metadata,
-        )
+        summary = DocumentSummary.from_document(doc)
 
         hits = [
             DiscoverHit(

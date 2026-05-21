@@ -364,6 +364,33 @@ class DocumentSummary(BaseModel):
         ),
     )
 
+    @classmethod
+    def from_document(cls, doc: "Document") -> "DocumentSummary":
+        """Build a DocumentSummary from a Document (T-0096).
+
+        Single owner of the Document → DocumentSummary projection. Adding a
+        field to DocumentSummary requires updating exactly one site; the
+        exhaustive-fields test in tests/sage/test_retrieval.py fails closed
+        if a future field is added to the schema but not to this factory.
+        """
+        from sage.utils.date_parsing import parse_document_date
+
+        return cls(
+            id=doc.id,
+            title=doc.title,
+            lifecycle_status=doc.lifecycle_status,
+            source_type=doc.source_type,
+            source_path=doc.source_path,
+            version_label=doc.version_label,
+            project=doc.project,
+            doc_type=doc.doc_type,
+            tags=doc.tags,
+            document_date=parse_document_date(doc.document_date),
+            source_modified_at=doc.source_modified_at,
+            semantic_abstract=doc.semantic_abstract,
+            tier3_metadata=doc.tier3_metadata,
+        )
+
 
 class Edge(BaseModel):
     id: EdgeIdStr = Field(

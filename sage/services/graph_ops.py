@@ -47,26 +47,9 @@ from sage.models.schemas import (
 )
 from sage.storage.edge_provenance import derive_rationale_kind
 from sage.storage.graph_store import GraphStore, LinkReadContext
+from sage.utils.date_parsing import parse_document_date
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_doc_date(date_str: str) -> datetime | None:
-    """Parse a stored document_date string into a UTC datetime, or None.
-
-    Tolerant of the contract YYYY-MM-DD shape and any other ISO-8601 form
-    datetime.fromisoformat understands (including a trailing Z); naive
-    results are treated as UTC. Returns None on unparseable input rather
-    than raising, since the read path should not crash on out-of-spec
-    data already persisted by upstream paths.
-    """
-    try:
-        parsed = datetime.fromisoformat(date_str)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 class _ResolutionPathRecorder:
@@ -652,11 +635,7 @@ class GraphOpsService:
                 project=representative["d_project"],
                 doc_type=representative["d_doc_type"],
                 tags=(json.loads(representative["d_tags"]) if representative["d_tags"] else []),
-                document_date=(
-                    _parse_doc_date(representative["d_document_date"])
-                    if representative.get("d_document_date")
-                    else None
-                ),
+                document_date=parse_document_date(representative.get("d_document_date")),
                 source_modified_at=(
                     datetime.fromisoformat(representative["d_source_modified_at"])
                     if representative.get("d_source_modified_at")
