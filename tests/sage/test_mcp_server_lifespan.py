@@ -169,3 +169,101 @@ async def test_standalone_teardown_clears_registry(
         assert "vault_a" in mcp_server._vaults
 
     assert mcp_server._vaults == {}
+
+
+# ---------------------------------------------------------------------------
+# F13 conformance: every initialize_services call from this module must thread
+# the module-scope _vault_registry_service. Without it, MaintenanceService is
+# not constructed (sage/mcp_init.py:392) and the admin tools refuse the call.
+# Discovered 2026-05-21; fix commit c0bf7ed.
+# ---------------------------------------------------------------------------
+
+
+async def test_standalone_lifespan_threads_registry_service_into_initialize_services(
+    isolate_module_state,
+    monkeypatch,
+    vault_root,
+    minimal_vault_config_dict,
+):
+    """F13 conformance: standalone lifespan must pass registry_service=
+    _vault_registry_service to every initialize_services call. Asserted for
+    every discovered vault."""
+    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
+    _materialize_vault(vault_root, "vault_b", minimal_vault_config_dict)
+    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
+    mcp_server._vaults.clear()
+
+    captured: list[dict] = []
+
+    async def capturing_init(config, **kwargs):
+        captured.append(kwargs)
+        return _FakeServices(config)
+
+    monkeypatch.setattr("sage.mcp_server.initialize_services", capturing_init)
+
+    async with mcp_server._lifespan(mcp_server.mcp):
+        pass
+
+    assert len(captured) == 2
+    for call_kwargs in captured:
+        assert call_kwargs.get("registry_service") is mcp_server._vault_registry_service, (
+            "lifespan must thread _vault_registry_service into initialize_services; "
+            "without it, services.maintenance_service is None and the admin tools "
+            "refuse the call (F13)"
+        )
+
+
+async def test_sage_reload_vault_threads_registry_service_into_initialize_services(
+    isolate_module_state,
+    monkeypatch,
+    vault_root,
+    minimal_vault_config_dict,
+):
+    """F13 conformance for the reload path: sage_reload_vault must pass
+    registry_service=_vault_registry_service to initialize_services."""
+    config_path = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
+    monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
+    mcp_server._vaults.clear()
+
+    # Seed the registry with a fake services entry to satisfy the reload
+    # preconditions (config_path + content_store_factory + graph_store.close).
+    from sage.config import load_vault_config
+
+    config = load_vault_config(config_path)
+    old_services = _FakeServices(config)
+    old_services.config_path = config_path
+    old_services.content_store_factory = None
+    mcp_server._vaults["vault_a"] = old_services
+
+    captured: list[dict] = []
+
+    class _CountingGraphStore(_FakeGraphStore):
+        async def list_all_documents(self) -> list:
+            return []
+
+    class _CountingServices(_FakeServices):
+        def __init__(self, config) -> None:  # noqa: ANN001
+            super().__init__(config)
+            self.graph_store = _CountingGraphStore()
+
+    async def capturing_init(config, **kwargs):
+        captured.append(kwargs)
+        return _CountingServices(config)
+
+    monkeypatch.setattr("sage.mcp_server.initialize_services", capturing_init)
+    # build_stack_abstraction_provider would otherwise construct a real
+    # Qwen3 process; replace with a sentinel since the reload path only
+    # forwards it through initialize_services (which is itself stubbed).
+    monkeypatch.setattr(
+        "sage.mcp_server.build_stack_abstraction_provider",
+        lambda _cfg: object(),
+    )
+
+    await mcp_server.sage_reload_vault("vault_a")
+
+    assert len(captured) == 1
+    assert captured[0].get("registry_service") is mcp_server._vault_registry_service, (
+        "sage_reload_vault must thread _vault_registry_service into "
+        "initialize_services; without it, the post-reload services bundle has "
+        "maintenance_service=None and the admin tools refuse the call (F13)"
+    )
