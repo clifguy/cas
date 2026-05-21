@@ -1,9 +1,4 @@
-import { execSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
-
-const SPEC_DIR = dirname(fileURLToPath(import.meta.url));
 
 const VAULT_ID = 'cas';
 const FIXTURE_TAG = 'e2e-bulk-fixture';
@@ -38,18 +33,6 @@ async function archivedFixtureCount(): Promise<number> {
   const body = (await res.json()) as { results: unknown[] };
   return body.results.length;
 }
-
-test.beforeAll(() => {
-  const venvPython = resolve(SPEC_DIR, '../../.venv/bin/python');
-  const seed = resolve(SPEC_DIR, 'fixtures/seed_e2e_fixtures.py');
-  try {
-    execSync(`${venvPython} ${seed}`, { stdio: 'inherit' });
-  } catch (err) {
-    throw new Error(
-      `e2e seed failed (run \`${venvPython} ${seed}\` manually to debug). Underlying error: ${(err as Error).message}`,
-    );
-  }
-});
 
 test('bulk lifecycle round-trip in Search archives three documents', async ({ page }) => {
   // Precondition: seed has placed exactly 3 active fixture-tagged docs in cas.

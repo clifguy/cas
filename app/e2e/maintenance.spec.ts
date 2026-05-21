@@ -9,12 +9,7 @@
 // would dominate the wall-clock time and the MaintenancePanel.test.tsx
 // component tests (mocked-API) cover the running and completion states.
 
-import { execSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { test, expect } from '@playwright/test';
-
-const SPEC_DIR = dirname(fileURLToPath(import.meta.url));
 
 const VAULT_ID = 'cas';
 const BACKEND = 'http://localhost:8000';
@@ -38,18 +33,6 @@ async function activeMaintenanceFixtureCount(): Promise<number> {
   const body = (await res.json()) as { total_available: number };
   return body.total_available;
 }
-
-test.beforeAll(() => {
-  const venvPython = resolve(SPEC_DIR, '../../.venv/bin/python');
-  const seed = resolve(SPEC_DIR, 'fixtures/seed_e2e_fixtures.py');
-  try {
-    execSync(`${venvPython} ${seed}`, { stdio: 'inherit' });
-  } catch (err) {
-    throw new Error(
-      `e2e seed failed (run \`${venvPython} ${seed}\` manually to debug). Underlying error: ${(err as Error).message}`,
-    );
-  }
-});
 
 test('maintenance panel shows deferred count and enables the reabstract button', async ({
   page,
