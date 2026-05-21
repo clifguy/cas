@@ -25,6 +25,9 @@ If a new ``PipelineStatus`` enum value is added in the future, update
 terminality; this script reads that set rather than enumerating statuses
 locally.
 
+The per-document cascade lives in ``sage.maintenance._internal._purge_one``
+and is shared with ``sage.maintenance.purge_batch`` (T-0106).
+
 Usage::
 
     .venv/bin/python -m sage.maintenance.purge_document \\
@@ -34,16 +37,17 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-import lancedb
 
 from sage.config import load_vault_config
+from sage.maintenance._internal import (
+    _fetch_document_row,
+    _lancedb_chunk_count,
+    _list_staging_edge_ids,
+    _purge_one,
+)
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES
 from sage.vault_management import config_path_for_vault
 
@@ -51,11 +55,6 @@ from sage.vault_management import config_path_for_vault
 _sqlite_connect = sqlite3.connect
 
 _TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PIPELINE_STATUSES)
-
-
-def _escape_sql(value: str) -> str:
-    """Single-quote escape for inline LanceDB SQL-like predicates."""
-    return value.replace("'", "''")
 
 
 def _resolve_paths(vault_id: str) -> tuple[Path, Path, Path] | None:
@@ -72,53 +71,9 @@ def _resolve_paths(vault_id: str) -> tuple[Path, Path, Path] | None:
     return config_path.parent, brain_root / "graph.db", brain_root / "lancedb"
 
 
-def _fetch_document(conn: sqlite3.Connection, document_id: str) -> dict[str, Any] | None:
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT id, title, source_path, source_content_hash, doc_type, "
-        "pipeline_status FROM documents WHERE id = ?",
-        (document_id,),
-    ).fetchone()
-    return dict(row) if row else None
-
-
 def _count_one(conn: sqlite3.Connection, sql: str, params: tuple) -> int:
     row = conn.execute(sql, params).fetchone()
     return row[0] if row else 0
-
-
-def _list_staging_edge_ids(conn: sqlite3.Connection, document_id: str) -> list[str]:
-    rows = conn.execute(
-        "SELECT id FROM staging_edges WHERE source_id = ? OR target_id = ?",
-        (document_id, document_id),
-    ).fetchall()
-    return [r[0] for r in rows]
-
-
-def _lancedb_chunk_count(lancedb_dir: Path, document_id: str) -> int:
-    if not lancedb_dir.exists():
-        return 0
-    db = lancedb.connect(str(lancedb_dir))
-    if "chunks" not in db.list_tables().tables:
-        return 0
-    return db.open_table("chunks").count_rows(filter=f"document_id = '{_escape_sql(document_id)}'")
-
-
-def _write_audit_record(vault_dir: Path, doc_row: dict[str, Any], reason: str) -> None:
-    """Append a JSONL audit record to {vault_dir}/.maintenance_log.jsonl."""
-    record = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "document_id": doc_row["id"],
-        "title": doc_row["title"],
-        "source_path": doc_row["source_path"],
-        "source_content_hash": doc_row["source_content_hash"],
-        "doc_type": doc_row["doc_type"],
-        "reason": reason,
-    }
-    audit_path = vault_dir / ".maintenance_log.jsonl"
-    audit_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(audit_path, "a") as f:
-        f.write(json.dumps(record) + "\n")
 
 
 def purge(
@@ -133,7 +88,8 @@ def purge(
     ``apply=False`` (default behaviour of the CLI without ``--apply``)
     prints the enumeration and exits 0. ``apply=True`` runs the full
     safeguard chain: preconditions → typed-confirmation prompt →
-    audit-log append → SQLite cascade → LanceDB delete.
+    audit-log append → SQLite cascade → LanceDB delete (the last three
+    via ``_purge_one``).
     """
     paths = _resolve_paths(vault_id)
     if paths is None:
@@ -149,7 +105,7 @@ def purge(
 
     conn = _sqlite_connect(sqlite_path)
     try:
-        doc = _fetch_document(conn, document_id)
+        doc = _fetch_document_row(conn, document_id)
         if doc is None:
             print(
                 f"error: document {document_id!r} not found in vault {vault_id!r}",
@@ -225,44 +181,23 @@ def purge(
             )
             return 3
 
-        # Audit record first — a failure here leaves no delete behind.
-        _write_audit_record(vault_dir, doc, reason)
-
-        # SQLite cascade in a single transaction.
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "DELETE FROM document_tags WHERE document_id = ?",
-                (document_id,),
-            )
-            conn.execute(
-                "DELETE FROM edges WHERE source_id = ? OR target_id = ?",
-                (document_id, document_id),
-            )
-            conn.execute(
-                "DELETE FROM staging_edges WHERE source_id = ? OR target_id = ?",
-                (document_id, document_id),
-            )
-            conn.execute(
-                "DELETE FROM documents WHERE id = ?",
-                (document_id,),
-            )
-            conn.commit()
-        except Exception as exc:
-            conn.rollback()
+        result = _purge_one(
+            document_id=document_id,
+            conn=conn,
+            lancedb_dir=lancedb_dir,
+            vault_dir=vault_dir,
+            reason=reason,
+            batch_id=None,
+        )
+        if not result.succeeded:
             print(
-                f"error: SQLite cascade failed; audit record retained, "
-                f"document row preserved: {exc}",
+                f"error: {result.error}; "
+                f"audit_written={result.audit_written}, "
+                f"sqlite_committed={result.sqlite_committed}, "
+                f"lancedb_deleted={result.lancedb_deleted}",
                 file=sys.stderr,
             )
             return 4
-
-        # LanceDB delete after SQLite commit. Failure here leaves orphan
-        # chunks; surface but do not undo the SQLite cascade.
-        if chunk_count > 0:
-            db = lancedb.connect(str(lancedb_dir))
-            table = db.open_table("chunks")
-            table.delete(f"document_id = '{_escape_sql(document_id)}'")
 
         print(f"purge complete: {document_id} removed from vault {vault_id!r}.")
         return 0
