@@ -989,6 +989,121 @@ class UpdateMetadataRequest(BaseModel):
     )
 
 
+class BulkMetadataItem(BaseModel):
+    """One metadata patch request inside a bulk batch.
+
+    Mirrors `UpdateMetadataRequest` plus the `document_id` carried in the
+    request body (since the bulk endpoint does not address documents via
+    the URL path).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    document_id: DocumentIdStr = Field(description="Target document id for this item.")
+    title: str | None = Field(
+        default=None, description="New human-readable title; omit to leave unchanged."
+    )
+    version_label: str | None = Field(
+        default=None,
+        description="New caller-supplied version label; omit to leave unchanged.",
+    )
+    project: str | None = Field(
+        default=None,
+        description="New project scope for the document; omit to leave unchanged.",
+    )
+    tags: TagsPatch | None = Field(
+        default=None,
+        description=(
+            "Patch operations on the tag set: {add?: list[str], remove?: list[str]}. "
+            "Same semantics as `UpdateMetadataRequest.tags`."
+        ),
+    )
+    doc_type: str | None = Field(
+        default=None,
+        description="Must be a valid value in the vault's document_types configuration.",
+    )
+    authority_scope: str | None = Field(
+        default=None,
+        description="New authority scope; omit to leave unchanged.",
+    )
+    document_date: DocumentDateStr = Field(
+        default=None,
+        description="Document calendar date (YYYY-MM-DD).",
+    )
+    tier3_metadata: Tier3Patch | None = Field(
+        default=None,
+        description=(
+            "Patch operations on tier3_metadata: {set?: dict, unset?: list[str]}. "
+            "Same semantics as `UpdateMetadataRequest.tier3_metadata`."
+        ),
+    )
+
+
+class BulkMetadataRequest(BaseModel):
+    """Request body for the bulk metadata endpoint.
+
+    Carries an ordered list of per-item metadata-patch requests. The list
+    may be empty; the response then has an empty `results` array.
+    """
+
+    items: list[BulkMetadataItem] = Field(
+        description=(
+            "Items processed in order. Each item runs in its own "
+            "per-document lock and its own SQLite transaction; the batch "
+            "as a whole is NOT atomic (CAS-ADR-029). A bad item does not "
+            "roll back earlier-or-later successful items."
+        ),
+    )
+
+
+class BulkMetadataItemResult(BaseModel):
+    """Outcome record for a single item inside a bulk metadata response."""
+
+    document_id: DocumentIdStr = Field(
+        description="The target document id from the corresponding request item."
+    )
+    status: Literal["success", "error"] = Field(
+        description=(
+            "`success` if the per-item patch committed; `error` if the "
+            "item raised a SAGEError and the batch continued with the "
+            "next item."
+        )
+    )
+    document: Document | None = Field(
+        default=None,
+        description="The updated document record when `status=success`. Absent on error entries.",
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        description=(
+            "Advisory messages; reserved for parity with `BulkLifecycleItemResult`. "
+            "Not currently emitted by `update_metadata`."
+        ),
+    )
+    error: dict | None = Field(
+        default=None,
+        description=(
+            "Error envelope when `status=error`. Shape matches the MCP "
+            "`error_response` envelope: `{error: <code>, message: <text>, "
+            "detail: <dict>}` where `detail` is present iff the underlying "
+            "SAGEError carries one."
+        ),
+    )
+
+
+class BulkMetadataResponse(BaseModel):
+    """Response body for the bulk metadata endpoint.
+
+    Carries per-item outcomes plus aggregate counts. Aggregate counts are
+    redundant with iterating `results` and exist for caller ergonomics.
+    """
+
+    results: list[BulkMetadataItemResult] = Field(description="Per-item outcomes in request order.")
+    success_count: int = Field(ge=0, description="Number of items with `status=success`.")
+    error_count: int = Field(ge=0, description="Number of items with `status=error`.")
+    total: int = Field(ge=0, description="Total items processed; equals `len(results)`.")
+
+
 class RegisterUserRequest(BaseModel):
     display_name: str = Field(description="Human-readable name for the user or agent.")
     type: UserType = Field(description="Actor type for provenance and access control.")

@@ -1,9 +1,14 @@
-"""PATCH /sage_vaults/{vault_id}/documents/{document_id}/metadata -- update_metadata."""
+"""Document metadata endpoints:
+- PATCH /sage_vaults/{vault_id}/documents/{document_id}/metadata -- update_metadata.
+- POST /sage_vaults/{vault_id}/metadata/bulk -- bulk_update_metadata (T-0088).
+"""
 
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
 from sage.models.schemas import (
+    BulkMetadataRequest,
+    BulkMetadataResponse,
     Document,
     DocumentIdStr,
     ErrorResponse,
@@ -41,3 +46,29 @@ async def update_metadata(
 ) -> Document:
     # In Phase 1, use vault owner as modifier. In production, extract from auth.
     return await metadata_service.update_metadata(document_id, request, modified_by="system")
+
+
+@router.post(
+    "/metadata/bulk",
+    response_model=BulkMetadataResponse,
+    description=(
+        "Apply one metadata patch per item; per-item per-document lock "
+        "and per-item SQLite transaction. The batch is NOT atomic "
+        "(CAS-ADR-029): a per-item SAGEError surfaces in the response's "
+        "per-item error envelope while earlier-or-later successful items "
+        "remain committed. The endpoint returns 200 even when some items "
+        "fail; check ``success_count`` / ``error_count`` on the response."
+    ),
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def bulk_update_metadata(
+    request: BulkMetadataRequest,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    metadata_service: MetadataService = Depends(get_metadata_service),
+) -> BulkMetadataResponse:
+    return await metadata_service.bulk_update_metadata(request, modified_by="system")

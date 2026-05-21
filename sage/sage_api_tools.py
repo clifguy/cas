@@ -21,6 +21,8 @@ from sage.models.enums import SourceType
 from sage.models.schemas import (
     BulkLifecycleItem,
     BulkLifecycleRequest,
+    BulkMetadataItem,
+    BulkMetadataRequest,
     ChainRequest,
     CreateVaultRequest,
     DiscoverRequest,
@@ -617,6 +619,108 @@ def register_sage_tools(
             v = get_vault(vault_id)
             request = BulkLifecycleRequest(items=validated_items)
             response = await v.lifecycle_service.bulk_set_lifecycle(request)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_bulk_update_metadata(
+        vault_id: str,
+        items: list[dict],
+    ) -> dict:
+        """Apply metadata patches to many documents in one call.
+
+        Second ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
+        ``document_id`` plus any subset of the single-item
+        ``sage_update_metadata`` fields (``title``, ``version_label``,
+        ``project``, ``tags``, ``doc_type``, ``authority_scope``,
+        ``document_date``, ``tier3_metadata``) with the same semantics as
+        ``sage_update_metadata``; items are processed in order, each
+        holding the per-document lock and a per-item SQLite transaction.
+
+        **The batch is NOT atomic.** A per-item SAGEError surfaces in the
+        response's per-item error envelope but does not roll back earlier-
+        or-later successful items. The tool returns a successful response
+        envelope (not an error envelope) when at least one item is
+        processed, even if some items failed; callers must inspect each
+        ``BulkMetadataItemResult.status`` and the aggregate
+        ``success_count`` / ``error_count`` fields. The tool returns an
+        error envelope only when up-front validation rejects the call
+        (invalid ``vault_id`` shape, malformed ``items`` shape, per-item
+        ``legacy_form`` shape, or unknown vault).
+
+        Per CAS-ADR-021, every successful per-item patch sets
+        ``metadata_confirmed=true`` on the target document (the document
+        leaves the metadata-review queue if it was there).
+
+        Empty ``items`` is valid: the response carries an empty
+        ``results`` array and all counts are zero.
+
+        Tags patch shape (per item ``tags``)::
+
+            {"add": ["x", ...], "remove": ["y", ...]}
+
+        At least one key required and non-empty. ``add`` keys must NOT be
+        present; ``remove`` keys MUST be present (strict conflict). See
+        ``sage_update_metadata`` for the full grammar (CAS-ADR-028).
+
+        Tier3 patch shape (per item ``tier3_metadata``)::
+
+            {"set": {"key": "value", ...}, "unset": ["other_key", ...]}
+
+        Same grammar as ``sage_update_metadata``. The merged result is
+        validated against the resolved doc_type's ``metadata_schema``.
+
+        Per-item error modes (surfaced inside the response envelope):
+        ``document_not_found`` (404), ``invalid_doc_type`` (400),
+        ``tag_add_conflict`` / ``tag_remove_conflict`` /
+        ``tag_patch_overlap`` (400), ``tier3_unset_conflict`` /
+        ``tier3_patch_overlap`` / ``patch_empty`` (400), and
+        ``tier3_schema_violation`` (400). See ``sage_update_metadata``
+        for detail-envelope shape.
+
+        Batch-level error modes (surfaced as the tool's error envelope):
+        ``legacy_form`` (a per-item ``tags`` is a bare list or per-item
+        ``tier3_metadata`` is a bare key/value dict; detail names the new
+        ops-object shape), ``unknown_vault``, and ``internal_error``
+        (malformed ``vault_id`` / ``items`` shape).
+
+        Performance: a bulk call is observably faster than N sequential
+        ``sage_update_metadata`` calls because MCP framing overhead and
+        inter-call asyncio scheduling are eliminated; the per-document
+        lock and per-item SQLite transaction are unchanged.
+
+        Args:
+            vault_id: Target vault identifier.
+            items: List of per-item patch requests. Each item must
+                conform to the ``BulkMetadataItem`` shape:
+                ``{document_id: str, title?: str, version_label?: str,
+                project?: str, tags?: TagsPatch, doc_type?: str,
+                authority_scope?: str, document_date?: str,
+                tier3_metadata?: Tier3Patch}``. Shape validation runs up
+                front; a single malformed item rejects the entire batch
+                before any per-item work executes.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            # Up-front per-item legacy-form check BEFORE Pydantic
+            # validation: without this, Pydantic would raise a generic
+            # ValueError for a bare-list `tags` or bare-dict
+            # `tier3_metadata` value and the `legacy_form` error code
+            # (with the worked-example detail per CAS-ADR-028) would be
+            # lost to the caller.
+            for item in items:
+                if isinstance(item, dict):
+                    _check_legacy_patch_form("tags", item.get("tags"))
+                    _check_legacy_patch_form("tier3_metadata", item.get("tier3_metadata"))
+            # Up-front shape validation across the whole batch: rejecting
+            # the request here (rather than per-item inside the service
+            # loop) guarantees that a malformed item produces an error
+            # envelope without committing any partial state.
+            validated_items = [BulkMetadataItem.model_validate(it) for it in items]
+            v = get_vault(vault_id)
+            request = BulkMetadataRequest(items=validated_items)
+            response = await v.metadata_service.bulk_update_metadata(request, v.config.vault.owner)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -1679,6 +1783,7 @@ def register_sage_tools(
         "sage_update_metadata": sage_update_metadata,
         "sage_set_lifecycle": sage_set_lifecycle,
         "sage_bulk_set_lifecycle": sage_bulk_set_lifecycle,
+        "sage_bulk_update_metadata": sage_bulk_update_metadata,
         "sage_register_user": sage_register_user,
         "sage_link": sage_link,
         "sage_unlink": sage_unlink,

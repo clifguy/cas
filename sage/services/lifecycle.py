@@ -28,22 +28,9 @@ from sage.models.schemas import (
     SetLifecycleRequest,
     SetLifecycleResponse,
 )
+from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
-
-
-def _sage_error_to_envelope(exc: SAGEError) -> dict:
-    """Translate a SAGEError into the same envelope shape the MCP layer emits.
-
-    Mirrors ``mcp_server._error_response`` so per-item errors in a bulk
-    response are indistinguishable from single-item MCP errors at the
-    caller. Kept in the service module (and not imported from the MCP
-    layer) to respect the boundary rule.
-    """
-    payload: dict = {"error": exc.code, "message": exc.message}
-    if exc.detail:
-        payload["detail"] = exc.detail
-    return payload
 
 
 @dataclass
@@ -200,7 +187,7 @@ class LifecycleService:
                     BulkLifecycleItemResult(
                         document_id=item.document_id,
                         status="error",
-                        error=_sage_error_to_envelope(exc),
+                        error=sage_error_to_envelope(exc),
                     )
                 )
         success_count = sum(1 for r in results if r.status == "success")

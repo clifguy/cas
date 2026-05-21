@@ -9,6 +9,7 @@ from sage.adapters.interfaces import ContentStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidDocTypeError,
+    SAGEError,
     TagAddConflictError,
     TagRemoveConflictError,
     Tier3SchemaViolationError,
@@ -16,6 +17,9 @@ from sage.api.errors import (
 )
 from sage.config import VaultConfig
 from sage.models.schemas import (
+    BulkMetadataItemResult,
+    BulkMetadataRequest,
+    BulkMetadataResponse,
     Document,
     ExtractedField,
     PendingMetadataItem,
@@ -23,6 +27,7 @@ from sage.models.schemas import (
     Tier3Patch,
     UpdateMetadataRequest,
 )
+from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -127,6 +132,68 @@ class MetadataService:
                     await self._content.update_chunk_metadata(document_id, chunk_updates)
 
             return doc
+
+    async def bulk_update_metadata(
+        self,
+        request: BulkMetadataRequest,
+        modified_by: str,
+    ) -> BulkMetadataResponse:
+        """Apply one metadata patch per item; per-item lock and per-item transaction.
+
+        The batch is NOT atomic (CAS-ADR-029). A SAGEError raised by one
+        item does not roll back earlier-or-later successful items; the
+        item's per-document lock and per-item transaction provide
+        isolation. Anything outside the SAGEError hierarchy is treated
+        as a programmer or infrastructure bug and propagates out of the
+        batch.
+
+        Per-item patch semantics (tags, tier3_metadata, scalar fields)
+        are identical to single-item ``update_metadata`` (CAS-ADR-028).
+        The bulk method is a thin loop around the single-item code path
+        and reuses its patch validators, merge-and-validate-tier3 step,
+        and locking discipline.
+
+        The performance win versus N sequential ``sage_update_metadata``
+        MCP calls comes from eliminating per-call MCP framing overhead
+        and asyncio scheduling between items; the per-document lock and
+        the per-item SQLite transaction are unchanged.
+        """
+        results: list[BulkMetadataItemResult] = []
+        for item in request.items:
+            single = UpdateMetadataRequest(
+                title=item.title,
+                version_label=item.version_label,
+                project=item.project,
+                tags=item.tags,
+                doc_type=item.doc_type,
+                authority_scope=item.authority_scope,
+                document_date=item.document_date,
+                tier3_metadata=item.tier3_metadata,
+            )
+            try:
+                doc = await self.update_metadata(item.document_id, single, modified_by)
+                results.append(
+                    BulkMetadataItemResult(
+                        document_id=item.document_id,
+                        status="success",
+                        document=doc,
+                    )
+                )
+            except SAGEError as exc:
+                results.append(
+                    BulkMetadataItemResult(
+                        document_id=item.document_id,
+                        status="error",
+                        error=sage_error_to_envelope(exc),
+                    )
+                )
+        success_count = sum(1 for r in results if r.status == "success")
+        return BulkMetadataResponse(
+            results=results,
+            success_count=success_count,
+            error_count=len(results) - success_count,
+            total=len(results),
+        )
 
     @staticmethod
     def _apply_tags_patch(

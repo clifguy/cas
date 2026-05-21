@@ -281,6 +281,77 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/metadata/bulk:
+    post:
+      operationId: bulk_update_metadata
+      summary: Apply metadata patches to many documents in one call.
+      description: >-
+        Second `sage_bulk_*` operation per CAS-ADR-029. Each item carries
+        `document_id` plus any subset of the single-item `update_metadata`
+        fields (`title`, `version_label`, `project`, `tags`, `doc_type`,
+        `authority_scope`, `document_date`, `tier3_metadata`) with the
+        same semantics as `update_metadata`; items are processed in
+        order, each holding the per-document lock and a per-item SQLite
+        transaction.
+
+
+        **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
+        the response's per-item error envelope but does not roll back
+        earlier-or-later successful items. The endpoint returns HTTP 200
+        even when some items fail; callers must inspect each
+        `BulkMetadataItemResult.status` and the aggregate
+        `success_count` / `error_count` fields. HTTP 404 is reserved for
+        the unknown-vault case; HTTP 422 covers request-body shape
+        validation.
+
+
+        Per-item patch semantics (tags, tier3_metadata, scalar fields)
+        are identical to single-item `update_metadata` (CAS-ADR-028).
+        Strict-conflict errors (`tag_add_conflict`,
+        `tier3_unset_conflict`, `tier3_schema_violation`, etc.) surface
+        as per-item error envelopes inside the response rather than as
+        batch-level 400s.
+
+
+        Per CAS-ADR-021, every successful per-item patch sets
+        `metadata_confirmed=true` on the target document.
+
+
+        Empty `items` is valid: the response carries an empty `results`
+        array and all counts are zero.
+
+
+        The performance win versus N sequential `update_metadata` calls
+        comes from eliminating per-call HTTP/MCP framing overhead and
+        inter-call asyncio scheduling; the per-document lock and per-
+        item transaction semantics are unchanged.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkMetadataRequest"
+      responses:
+        "200":
+          description: >-
+            Batch processed. The response carries per-item outcomes
+            (success or error envelope) and aggregate counts. A 200
+            does NOT mean every item succeeded; check `error_count`
+            and each `BulkMetadataItemResult.status`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkMetadataResponse"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/documents/{document_id}/metadata:
     patch:
       operationId: update_metadata
@@ -3299,6 +3370,125 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BulkLifecycleItemResult"
+          description: Per-item outcomes in request order.
+        success_count:
+          type: integer
+          minimum: 0
+          description: Number of items with `status=success`.
+        error_count:
+          type: integer
+          minimum: 0
+          description: Number of items with `status=error`.
+        total:
+          type: integer
+          minimum: 0
+          description: Total items processed; equals `len(results)`.
+
+    BulkMetadataItem:
+      type: object
+      additionalProperties: false
+      required: [document_id]
+      description: >-
+        One metadata patch request inside a bulk batch. Mirrors
+        `UpdateMetadataRequest` plus the `document_id` carried in the
+        request body (since the bulk endpoint does not address documents
+        via the URL path).
+      properties:
+        document_id:
+          type: string
+          description: Target document id for this item.
+        title:
+          type: string
+          description: New human-readable title; omit to leave unchanged.
+        version_label:
+          type: string
+          description: New caller-supplied version label; omit to leave unchanged.
+        project:
+          type: string
+          description: New project scope for the document; omit to leave unchanged.
+        tags:
+          $ref: "#/components/schemas/TagsPatch"
+        doc_type:
+          type: string
+          description: Must be a valid value in the vault's document_types configuration.
+        authority_scope:
+          type: string
+          nullable: true
+          description: New authority scope; omit to leave unchanged.
+        document_date:
+          type: string
+          format: date
+          description: Document calendar date (YYYY-MM-DD).
+        tier3_metadata:
+          $ref: "#/components/schemas/Tier3Patch"
+
+    BulkMetadataRequest:
+      type: object
+      required: [items]
+      description: >-
+        Request body for `POST /sage_vaults/{vault_id}/metadata/bulk`.
+        Carries an ordered list of per-item metadata-patch requests. The
+        list may be empty; the response then has an empty `results`
+        array.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BulkMetadataItem"
+          description: >-
+            Items processed in order. Each item runs in its own
+            per-document lock and its own SQLite transaction; the batch
+            as a whole is NOT atomic (CAS-ADR-029). A bad item does not
+            roll back earlier-or-later successful items.
+
+    BulkMetadataItemResult:
+      type: object
+      required: [document_id, status]
+      description: Outcome record for a single item inside a bulk metadata response.
+      properties:
+        document_id:
+          type: string
+          description: The target document id from the corresponding request item.
+        status:
+          type: string
+          enum: [success, error]
+          description: >-
+            `success` if the per-item patch committed; `error` if the
+            item raised a SAGEError and the batch continued with the
+            next item.
+        document:
+          $ref: "#/components/schemas/Document"
+          description: >-
+            The updated document record when `status=success`. Absent
+            on error entries.
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Advisory messages; reserved for parity with
+            `BulkLifecycleItemResult`. Not currently emitted by
+            `update_metadata`.
+        error:
+          type: object
+          description: >-
+            Error envelope when `status=error`. Shape matches the MCP
+            `error_response` envelope: `{error: <code>, message: <text>,
+            detail: <dict>}` where `detail` is present iff the
+            underlying SAGEError carries one.
+
+    BulkMetadataResponse:
+      type: object
+      required: [results, success_count, error_count, total]
+      description: >-
+        Response body for the bulk metadata endpoint. Carries per-item
+        outcomes plus aggregate counts. Aggregate counts are redundant
+        with iterating `results` and exist for caller ergonomics.
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BulkMetadataItemResult"
           description: Per-item outcomes in request order.
         success_count:
           type: integer
