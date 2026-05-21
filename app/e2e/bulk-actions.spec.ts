@@ -57,18 +57,27 @@ test('bulk lifecycle round-trip in Search archives three documents', async ({ pa
   const baselineArchived = await archivedFixtureCount();
 
   // Ensure the cas vault is active. The default-vault choice depends on
-  // alphabetical order of the SAGE-served vault list, so explicitly select
-  // the cas vault if Layout landed somewhere else.
+  // sort order of the SAGE-served vault list, so explicitly select the
+  // cas vault if Layout landed somewhere else. The subsequent navigation
+  // uses history.pushState (not page.goto) so React state survives the URL
+  // change — page.goto would full-reload and reset activeVault back to
+  // vaults[0].
   await page.goto('/dashboard');
   const vaultSelector = page.getByRole('combobox').first();
   await vaultSelector.waitFor({ state: 'visible' });
   if ((await vaultSelector.inputValue()) !== VAULT_ID) {
     await vaultSelector.selectOption(VAULT_ID);
+    await expect(vaultSelector).toHaveValue(VAULT_ID);
   }
 
-  // Navigate to Search with the fixture tag URL filter so only the three
-  // seeded rows are visible.
-  await page.goto(`/search?mode=browse&tags=${FIXTURE_TAG}`);
+  // In-app navigation to Search with the fixture tag URL filter scoped to
+  // active docs. Archived fixture-tagged predecessors accumulate over time
+  // (per T-0130 design notes) so an active filter is required to keep the
+  // row set deterministic.
+  await page.evaluate((url) => {
+    window.history.pushState({}, '', url);
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, `/search?mode=browse&tags=${FIXTURE_TAG}&lifecycle_status=active`);
 
   // Wait for the three fixture documents.
   await expect(page.getByRole('link', { name: 'e2e-doc-1' })).toBeVisible();
