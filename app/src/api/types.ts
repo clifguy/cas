@@ -491,3 +491,71 @@ export interface BulkMetadataResponse {
   error_count: number;
   total: number;
 }
+
+// --- Maintenance / Reabstract (T-0117 / T-0134) ---
+
+// Per-document outcome classification in a ReabstractReport.
+// Mirrors sage/models/enums.py::ReabstractOutcome.
+export type ReabstractOutcome = 'success' | 'skipped_pdf' | 'llm_failure';
+
+// Request body for POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
+export interface ReabstractRequest {
+  // When false (default), source_type=pdf documents are skipped.
+  include_pdf?: boolean;
+}
+
+// Per-document outcome record appearing in ReabstractReport.entries and
+// ReabstractSummaryEvent.entries.
+export interface ReabstractReportEntry {
+  document_id: string;
+  outcome: ReabstractOutcome;
+  // Failure description when outcome === 'llm_failure'; null otherwise.
+  error_message: string | null;
+  // Wall-clock seconds from dispatch to terminal status; null for skipped_pdf.
+  elapsed_seconds: number | null;
+}
+
+// Aggregate report returned at the end of a reabstract run (also the
+// payload of ReabstractSummaryEvent, sans the event_type discriminator).
+// Length(entries) === reabstracted_count + skipped_pdf_count + failed_count.
+export interface ReabstractReport {
+  vault_id: string;
+  reabstracted_count: number;
+  skipped_pdf_count: number;
+  failed_count: number;
+  entries: ReabstractReportEntry[];
+}
+
+// SSE 'progress' event for reabstract-deferred (T-0134).
+// Each non-PDF document emits two events: a 'started' event (outcome omitted)
+// before dispatch, then a 'completed' or 'failed' event after the polling
+// loop reaches a terminal pipeline_status. Each PDF emits a single 'skipped'
+// event. `processed` increments only on terminal ('completed' / 'failed' /
+// 'skipped') events.
+export interface ReabstractProgressEvent {
+  event_type: 'progress';
+  processed: number;
+  total: number;
+  current_document_id: string;
+  current_title: string;
+  status: 'started' | 'completed' | 'failed' | 'skipped';
+  // Set on 'completed' / 'failed' / 'skipped'; omitted on 'started'.
+  outcome?: ReabstractOutcome | null;
+  // Set only on 'failed'.
+  error?: string | null;
+  // Set on 'completed' / 'failed'; omitted on 'started' and 'skipped'.
+  elapsed_seconds?: number | null;
+}
+
+// SSE 'summary' event for reabstract-deferred (T-0134). Emitted once at
+// stream end. Payload (sans event_type) is structurally ReabstractReport.
+export interface ReabstractSummaryEvent {
+  event_type: 'summary';
+  vault_id: string;
+  reabstracted_count: number;
+  skipped_pdf_count: number;
+  failed_count: number;
+  entries: ReabstractReportEntry[];
+}
+
+export type ReabstractEvent = ReabstractProgressEvent | ReabstractSummaryEvent;

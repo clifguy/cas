@@ -10,6 +10,7 @@ import type {
   AbstractionConfig,
 } from '../api/types';
 import { getVaultConfig, updateVaultConfig } from '../api/vaults';
+import MaintenancePanel from '../components/MaintenancePanel';
 
 // ---------------------------------------------------------------------------
 // Tab definitions
@@ -23,6 +24,7 @@ const TABS = [
   { key: 'metadata_extraction', label: 'Metadata Extraction' },
   { key: 'edge_inference', label: 'Edge Inference' },
   { key: 'abstraction', label: 'Abstraction' },
+  { key: 'maintenance', label: 'Maintenance' },
 ] as const;
 
 type TabKey = (typeof TABS)[number]['key'];
@@ -204,6 +206,7 @@ export default function Settings() {
           saving={saving}
         />
       )}
+      {activeTab === 'maintenance' && <MaintenancePanel />}
     </div>
   );
 }
