@@ -68,7 +68,7 @@ describe('BulkLifecycleDialog', () => {
   it('populates the action dropdown from transitions excluding supersede', async () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive', 'supersede', 'complete']));
     renderDialog();
-    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     const select = screen.getByRole('combobox', { name: /action/i }) as HTMLSelectElement;
     const optionValues = Array.from(select.options)
       .map((o) => o.value)
@@ -79,7 +79,7 @@ describe('BulkLifecycleDialog', () => {
   it('disables the apply button until an action is selected', async () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive', 'complete']));
     const { user } = renderDialog();
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     const apply = screen.getByRole('button', { name: /^apply$/i });
     expect(apply).toBeDisabled();
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
@@ -90,7 +90,7 @@ describe('BulkLifecycleDialog', () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive']));
     vi.mocked(bulkSetLifecycle).mockResolvedValue(makeBulkResponse(['D1', 'D2', 'D3']));
     const { user } = renderDialog({ selectedIds: ['D1', 'D2', 'D3'] });
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
     await user.click(screen.getByRole('button', { name: /^apply$/i }));
     expect(bulkSetLifecycle).toHaveBeenCalledTimes(1);
@@ -105,7 +105,7 @@ describe('BulkLifecycleDialog', () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive']));
     const ids = Array.from({ length: 11 }, (_, i) => `D${i}`);
     const { user } = renderDialog({ selectedIds: ids });
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
     await user.click(screen.getByRole('button', { name: /^apply$/i }));
     expect(screen.getByTestId('bulk-lifecycle-confirm')).toHaveTextContent(/apply archive to 11 documents/i);
@@ -117,7 +117,7 @@ describe('BulkLifecycleDialog', () => {
     vi.mocked(bulkSetLifecycle).mockResolvedValue(makeBulkResponse(Array.from({ length: 11 }, (_, i) => `D${i}`)));
     const ids = Array.from({ length: 11 }, (_, i) => `D${i}`);
     const { user } = renderDialog({ selectedIds: ids });
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
     await user.click(screen.getByRole('button', { name: /^apply$/i }));
     await user.click(screen.getByRole('button', { name: /confirm and apply/i }));
@@ -130,7 +130,7 @@ describe('BulkLifecycleDialog', () => {
       makeBulkResponse(['A'], [{ id: 'B', message: 'archive not valid from completed' }]),
     );
     const { user } = renderDialog({ selectedIds: ['A', 'B'] });
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
     await user.click(screen.getByRole('button', { name: /^apply$/i }));
     await waitFor(() => expect(screen.getByTestId('bulk-lifecycle-results-summary')).toHaveTextContent(/1 succeeded, 1 failed/i));
@@ -145,7 +145,7 @@ describe('BulkLifecycleDialog', () => {
     );
     const onResolved = vi.fn();
     const { user } = renderDialog({ selectedIds: ['A', 'B'], onResolved });
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
     await user.click(screen.getByRole('button', { name: /^apply$/i }));
     await waitFor(() => screen.getByTestId('bulk-lifecycle-results-summary'));
@@ -157,7 +157,7 @@ describe('BulkLifecycleDialog', () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive']));
     vi.mocked(bulkSetLifecycle).mockResolvedValue(makeBulkResponse(['D1']));
     const { user } = renderDialog({ selectedIds: ['D1'] });
-    await waitFor(() => screen.getByRole('combobox', { name: /action/i }));
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
     await user.selectOptions(screen.getByRole('combobox', { name: /action/i }), 'archive');
     await user.click(screen.getByRole('button', { name: /^apply$/i }));
     expect(bulkSetLifecycle).toHaveBeenCalledTimes(1);
