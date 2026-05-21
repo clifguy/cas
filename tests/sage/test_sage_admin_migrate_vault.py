@@ -13,6 +13,7 @@ from sage import mcp_server
 from sage.models.schemas import MigrationReport
 from tests.sage.test_maintenance_service import (
     _bootstrap_post_migration_vault,
+    _close_registry_vault,
     _swap_in_legacy_db,
 )
 
@@ -36,18 +37,24 @@ async def test_sage_admin_migrate_vault_returns_report_dict(tmp_path, monkeypatc
     registry, services, registry_service = await _bootstrap_post_migration_vault(
         tmp_path, monkeypatch
     )
-    _db_path, _maintenance = await _swap_in_legacy_db(registry, services, registry_service)
-    # mcp_server._vaults IS the registry that mcp_server._get_vault reads.
-    # Mirror the entry we just built so the tool sees it.
     vault_id = services.config.vault.id
-    mcp_server._vaults[vault_id] = registry[vault_id]
+    try:
+        _db_path, _maintenance = await _swap_in_legacy_db(registry, services, registry_service)
+        # mcp_server._vaults IS the registry that mcp_server._get_vault reads.
+        # Mirror the entry we just built so the tool sees it.
+        mcp_server._vaults[vault_id] = registry[vault_id]
 
-    result = await mcp_server.sage_admin_migrate_vault(vault_id=vault_id)
+        result = await mcp_server.sage_admin_migrate_vault(vault_id=vault_id)
 
-    # The tool returns a dict that must validate cleanly as a MigrationReport.
-    report = MigrationReport.model_validate(result)
-    assert report.vault_id == vault_id
-    assert len(report.columns_added) > 0, "expected pending alters on legacy DB"
+        # The tool returns a dict that must validate cleanly as a MigrationReport.
+        report = MigrationReport.model_validate(result)
+        assert report.vault_id == vault_id
+        assert len(report.columns_added) > 0, "expected pending alters on legacy DB"
+    finally:
+        # T-0135: close the post-migration graph_store currently bound to
+        # the local registry; the in-tool reload swapped a fresh
+        # SAGEServices in here whose graph_store would otherwise leak.
+        await _close_registry_vault(registry, vault_id)
 
 
 async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_envelope(

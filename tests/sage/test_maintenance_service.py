@@ -16,7 +16,9 @@ contracts the service must hold:
 from __future__ import annotations
 
 import dataclasses
+import gc
 import sqlite3
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -54,6 +56,39 @@ async def _bootstrap_post_migration_vault(
     )
     registry[config.vault.id] = services
     return registry, services, registry_service
+
+
+async def _close_registry_vault(registry: dict[str, SAGEServices], vault_id: str) -> None:
+    """Close the graph_store of whichever SAGEServices currently occupies
+    registry[vault_id] (T-0135).
+
+    ``migrate_vault()`` reload paths swap the registry entry for a fresh
+    SAGEServices and close the old graph_store as part of the swap; this
+    helper closes whatever is bound at teardown time. ``GraphStore.close``
+    is idempotent, so it's safe even on the no-swap path.
+    """
+    current = registry.get(vault_id)
+    if current is not None:
+        await current.graph_store.close()
+
+
+@pytest.fixture
+async def post_migration_vault(tmp_path, monkeypatch):
+    """Pytest-fixture form of ``_bootstrap_post_migration_vault`` (T-0135).
+
+    Yields ``(registry, services, registry_service)``. On teardown, closes
+    the graph_store currently bound to ``registry[vault_id]`` -- which may
+    be a *fresh* post-reload SAGEServices if the test triggered
+    ``maintenance.migrate_vault()``. Reading the registry at teardown time
+    (not capturing ``services`` up front) is what closes the actual leak.
+    """
+    registry, services, registry_service = await _bootstrap_post_migration_vault(
+        tmp_path, monkeypatch
+    )
+    try:
+        yield registry, services, registry_service
+    finally:
+        await _close_registry_vault(registry, services.config.vault.id)
 
 
 async def _swap_in_legacy_db(
@@ -176,12 +211,10 @@ def _seed_backfill_triggers(db_path: Path) -> None:
         conn.close()
 
 
-async def test_migrate_vault_applies_pending_alters_on_legacy_db(tmp_path, monkeypatch):
+async def test_migrate_vault_applies_pending_alters_on_legacy_db(post_migration_vault):
     """A legacy-shape DB gets every MIGRATION_PLAN column added, and the
     report enumerates the entries that were applied."""
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
+    registry, services, registry_service = post_migration_vault
     db_path, maintenance = await _swap_in_legacy_db(registry, services, registry_service)
 
     report = await maintenance.migrate_vault()
@@ -205,12 +238,10 @@ async def test_migrate_vault_applies_pending_alters_on_legacy_db(tmp_path, monke
             assert m.column in edge_cols
 
 
-async def test_migrate_vault_is_idempotent_on_current_schema(tmp_path, monkeypatch):
+async def test_migrate_vault_is_idempotent_on_current_schema(post_migration_vault):
     """A re-call against an already-migrated vault returns an empty
     report and does not touch the registry."""
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
+    registry, services, registry_service = post_migration_vault
     # Build a maintenance service bound to the live (post-migration)
     # graph_store, mirroring what initialize_services already produced.
     maintenance = MaintenanceService(
@@ -233,13 +264,11 @@ async def test_migrate_vault_is_idempotent_on_current_schema(tmp_path, monkeypat
     assert docs == []
 
 
-async def test_migrate_vault_reloads_registry_in_place(tmp_path, monkeypatch):
+async def test_migrate_vault_reloads_registry_in_place(post_migration_vault):
     """After migration, registry[vault_id] is a *new* SAGEServices
     instance whose graph_store serves reads against the now-migrated
     schema."""
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
+    registry, services, registry_service = post_migration_vault
     _db_path, maintenance = await _swap_in_legacy_db(registry, services, registry_service)
     pre_call_services = registry[services.config.vault.id]
 
@@ -254,12 +283,10 @@ async def test_migrate_vault_reloads_registry_in_place(tmp_path, monkeypatch):
     assert docs == []
 
 
-async def test_migrate_vault_reports_backfills(tmp_path, monkeypatch):
+async def test_migrate_vault_reports_backfills(post_migration_vault):
     """Pending BACKFILL_PLAN entries appear in
     MigrationReport.backfills_applied alongside the column migrations."""
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
+    registry, services, registry_service = post_migration_vault
     db_path, maintenance = await _swap_in_legacy_db(registry, services, registry_service)
     _seed_backfill_triggers(db_path)
 
@@ -270,3 +297,44 @@ async def test_migrate_vault_reports_backfills(tmp_path, monkeypatch):
     # - rationale_kind: re-classifies seeded edges with known prefixes
     assert "document_tags" in report.backfills_applied
     assert "rationale_kind" in report.backfills_applied
+
+
+async def test_no_resource_warning_on_post_migration_teardown(tmp_path, monkeypatch):
+    """T-0135 regression: the post-migration teardown closes the registry's
+    *current* graph_store, not the pre-migration ``services`` reference.
+
+    Without the fix, ``maintenance.migrate_vault()`` swaps registry[vault_id]
+    for a freshly-initialized SAGEServices and the test's local ``services``
+    binding still points at the (already-closed) predecessor. Closing
+    ``services.graph_store`` is a no-op; the new graph_store leaks and
+    surfaces a ResourceWarning at GC time.
+
+    We exercise the full cycle in an inner function so locals release on
+    return, then force ``gc.collect()`` inside ``catch_warnings`` to make
+    any deferred ``__del__`` finalizer surface as an error.
+    """
+
+    async def _exercise() -> None:
+        registry, services, registry_service = await _bootstrap_post_migration_vault(
+            tmp_path, monkeypatch
+        )
+        _db_path, maintenance = await _swap_in_legacy_db(registry, services, registry_service)
+        await maintenance.migrate_vault()
+        # The exact teardown step under test: read the registry at teardown
+        # time and close the current graph_store.
+        await _close_registry_vault(registry, services.config.vault.id)
+
+    await _exercise()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        gc.collect()
+        gc.collect()
+
+    # Inspect the recorded warnings rather than filtering as error: pytest's
+    # unraisable hook re-wraps ResourceWarning as PytestUnraisableExceptionWarning,
+    # so a naive ``simplefilter("error", ResourceWarning)`` would let the
+    # wrapped form through. Scan the formatted messages for the leak signature.
+    leak_signature = "unclosed database"
+    leaked = [str(w.message) for w in caught if leak_signature in str(w.message)]
+    assert not leaked, f"unclosed sqlite3 connections surfaced after teardown: {leaked}"
