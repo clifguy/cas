@@ -11,6 +11,7 @@ import asyncio
 import shutil
 import sqlite3
 import tempfile
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,8 +22,10 @@ from sage.models.enums import PipelineStatus, ReabstractOutcome
 from sage.models.schemas import (
     MigrationReport,
     MigrationReportEntry,
+    ReabstractProgressEvent,
     ReabstractReport,
     ReabstractReportEntry,
+    ReabstractSummaryEvent,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
 )
@@ -37,6 +40,9 @@ from sage.storage.migrations import (
     pending_backfills,
     pending_migrations,
 )
+
+# Union type for events yielded by reabstract_deferred_events.
+ReabstractEvent = ReabstractProgressEvent | ReabstractSummaryEvent
 
 if TYPE_CHECKING:
     from sage.services.ingestion import IngestionService
@@ -244,8 +250,36 @@ class MaintenanceService:
                 activations.append(Tier3UniquenessActivation(doc_type=dt.value, field=field))
         return activations, collisions
 
+    def _reject_if_in_flight(self) -> None:
+        """Raise ReabstractAlreadyInFlightError synchronously if a reabstract
+        is already running on this vault (T-0089, T-0134).
+
+        Synchronous helper -- not ``async`` -- so callers can fail fast
+        BEFORE constructing a StreamingResponse. The in-flight check
+        must surface as a real 409 (application/json ErrorResponse),
+        not as an in-stream SSE error event after a 200 text/event-stream
+        response has already been opened.
+
+        Non-blocking rejection: ``self._reabstract_lock.locked()`` peeks
+        at the lock state without awaiting. ``_reabstract_started_at``
+        is set inside the lock by the in-flight caller before any await
+        that could yield to this branch, so reading it here is race-free.
+        """
+        if self._reabstract_lock.locked():
+            raise ReabstractAlreadyInFlightError(
+                vault_id=self._vault_id,
+                start_time=self._reabstract_started_at or datetime.now(timezone.utc),
+            )
+
     async def reabstract_deferred(self, include_pdf: bool = False) -> ReabstractReport:
         """Backfill semantic abstracts for the deferred-abstract worklist (T-0089).
+
+        Consumes the ``reabstract_deferred_events`` streaming generator
+        and returns the final summary event re-shaped as a
+        ``ReabstractReport``. The streaming generator is the single
+        source of truth for per-document iteration logic; this method
+        is a thin aggregator used by the MCP tool path where the
+        caller wants one synchronous report rather than an event stream.
 
         Enumerates documents whose ``pipeline_status`` is
         ``abstraction_skipped``, dispatches
@@ -292,6 +326,66 @@ class MaintenanceService:
             ReabstractAlreadyInFlightError: another reabstract is
                 already running on this vault.
         """
+        summary: ReabstractSummaryEvent | None = None
+        # reabstract_deferred_events does the in-flight check + None-
+        # ingestion guard synchronously before returning the generator;
+        # exceptions from those checks propagate up unchanged.
+        async for event in self.reabstract_deferred_events(include_pdf=include_pdf):
+            if isinstance(event, ReabstractSummaryEvent):
+                summary = event
+
+        # The generator always emits exactly one summary event as its
+        # final yield; if we somehow get here without one, the streaming
+        # contract has been violated.
+        if summary is None:
+            raise RuntimeError(
+                "reabstract_deferred_events did not emit a summary event; "
+                "streaming-aggregator contract violated."
+            )
+        return ReabstractReport.model_validate(summary.model_dump(exclude={"event_type"}))
+
+    def reabstract_deferred_events(
+        self, include_pdf: bool = False
+    ) -> AsyncGenerator[ReabstractEvent, None]:
+        """Stream per-document progress events for the deferred-abstract
+        worklist (T-0134).
+
+        Returns an async generator that yields a ``ReabstractProgressEvent``
+        per per-document state transition (one ``started`` and one
+        ``completed``/``failed`` for each non-PDF entry; one ``skipped``
+        for each PDF entry when ``include_pdf=False``), then a final
+        ``ReabstractSummaryEvent`` carrying the aggregate
+        ``ReabstractReport``-shaped payload.
+
+        IMPORTANT -- synchronous pre-check before first yield. This
+        method is a regular ``def`` (not ``async def``) that performs
+        the in-flight check and None-ingestion guard synchronously,
+        then returns the underlying async generator. The conventional
+        ``async def`` generator does not execute its body until the
+        first ``__anext__()``, which would mean a 409 would not raise
+        until iteration starts -- by which point a FastAPI route has
+        already opened a 200 text/event-stream response. Mirrors the
+        precedent at ``IngestStreamingService.stream`` which raises
+        ``EmptyFileListError`` synchronously before constructing its
+        ``StreamingResponse`` (see app/backend/ingest_streaming_service.py).
+
+        Args:
+            include_pdf: When ``False`` (default), PDF docs surface as
+                a single ``skipped`` progress event each. When ``True``,
+                PDFs run through dispatch like every other doc.
+
+        Returns:
+            Async generator of ``ReabstractProgressEvent`` then a final
+            ``ReabstractSummaryEvent``.
+
+        Raises:
+            RuntimeError: ingestion_service was not wired in at
+                construction (defensive guard against the F-8 hazard).
+            ReabstractAlreadyInFlightError: another reabstract is
+                already running on this vault. Raised SYNCHRONOUSLY
+                from this method (before iteration), so HTTP callers
+                can return 409 instead of opening a stream.
+        """
         if self._ingestion is None:
             raise RuntimeError(
                 f"reabstract_deferred requires an IngestionService "
@@ -302,105 +396,164 @@ class MaintenanceService:
                 "explicitly (T-0089, F-8 guard)."
             )
 
-        if self._reabstract_lock.locked():
-            # Non-blocking rejection. _reabstract_started_at is set
-            # inside the lock by the in-flight caller before any await
-            # that could yield to this branch, so reading it here is
-            # race-free.
-            raise ReabstractAlreadyInFlightError(
-                vault_id=self._vault_id,
-                start_time=self._reabstract_started_at or datetime.now(timezone.utc),
-            )
-
-        # Local capture narrows the type from `IngestionService | None`
-        # to `IngestionService` for the helper call site; the gate above
-        # has already raised if it was None.
+        self._reject_if_in_flight()
+        # Local capture narrows `IngestionService | None` to
+        # `IngestionService` for the inner-generator call site; the
+        # gate above already raised if it was None.
         ingestion = self._ingestion
+        return self._reabstract_deferred_events_impl(ingestion=ingestion, include_pdf=include_pdf)
+
+    async def _reabstract_deferred_events_impl(
+        self, *, ingestion: "IngestionService", include_pdf: bool
+    ) -> AsyncGenerator[ReabstractEvent, None]:
+        """Lock-held body of reabstract_deferred_events. Separated from
+        the public method so the synchronous pre-checks run before the
+        generator body (Python's async generators defer body execution
+        until the first ``__anext__()``).
+        """
         async with self._reabstract_lock:
             self._reabstract_started_at = datetime.now(timezone.utc)
             try:
-                return await self._run_reabstract_deferred(
-                    ingestion=ingestion, include_pdf=include_pdf
+                all_docs = await self._graph_store.list_all_documents()
+                skipped = [
+                    d
+                    for d in all_docs
+                    if d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
+                ]
+                pdf_skipped = [d for d in skipped if not include_pdf and d.source_type == "pdf"]
+                worklist = [d for d in skipped if include_pdf or d.source_type != "pdf"]
+
+                # Total document count for the progress counter: PDFs to
+                # be skipped plus the dispatchable worklist. Constant
+                # across all events in this stream.
+                total = len(pdf_skipped) + len(worklist)
+                processed = 0
+                entries: list[ReabstractReportEntry] = []
+                reabstracted = 0
+                failed = 0
+
+                # PDFs first: each surfaces as a single ``skipped`` event
+                # (no dispatch, no wait). Aggregator order preserves the
+                # pre-T-0134 behavior in which PDF entries lead the
+                # report.
+                for doc in pdf_skipped:
+                    entry = ReabstractReportEntry(
+                        document_id=doc.id,
+                        outcome=ReabstractOutcome.SKIPPED_PDF,
+                    )
+                    entries.append(entry)
+                    processed += 1
+                    yield ReabstractProgressEvent(
+                        event_type="progress",
+                        processed=processed,
+                        total=total,
+                        current_document_id=doc.id,
+                        current_title=doc.title,
+                        status="skipped",
+                        outcome=ReabstractOutcome.SKIPPED_PDF,
+                    )
+
+                terminal = {
+                    PipelineStatus.ABSTRACTION_COMPLETE.value,
+                    PipelineStatus.FAILED.value,
+                }
+                for doc in worklist:
+                    # ``started`` event: processed counts terminal events
+                    # only, so a started event leaves it unchanged.
+                    yield ReabstractProgressEvent(
+                        event_type="progress",
+                        processed=processed,
+                        total=total,
+                        current_document_id=doc.id,
+                        current_title=doc.title,
+                        status="started",
+                    )
+
+                    doc_started = datetime.now(timezone.utc)
+                    try:
+                        await ingestion.reabstract(doc.id)
+                    except Exception as exc:
+                        elapsed = (datetime.now(timezone.utc) - doc_started).total_seconds()
+                        error_message = f"dispatch failed: {exc!r}"
+                        entries.append(
+                            ReabstractReportEntry(
+                                document_id=doc.id,
+                                outcome=ReabstractOutcome.LLM_FAILURE,
+                                error_message=error_message,
+                                elapsed_seconds=elapsed,
+                            )
+                        )
+                        failed += 1
+                        processed += 1
+                        yield ReabstractProgressEvent(
+                            event_type="progress",
+                            processed=processed,
+                            total=total,
+                            current_document_id=doc.id,
+                            current_title=doc.title,
+                            status="failed",
+                            outcome=ReabstractOutcome.LLM_FAILURE,
+                            error=error_message,
+                            elapsed_seconds=elapsed,
+                        )
+                        continue
+
+                    status = await self._wait_for_terminal(doc.id, terminal)
+                    elapsed = (datetime.now(timezone.utc) - doc_started).total_seconds()
+                    if status == PipelineStatus.ABSTRACTION_COMPLETE.value:
+                        entries.append(
+                            ReabstractReportEntry(
+                                document_id=doc.id,
+                                outcome=ReabstractOutcome.SUCCESS,
+                                elapsed_seconds=elapsed,
+                            )
+                        )
+                        reabstracted += 1
+                        processed += 1
+                        yield ReabstractProgressEvent(
+                            event_type="progress",
+                            processed=processed,
+                            total=total,
+                            current_document_id=doc.id,
+                            current_title=doc.title,
+                            status="completed",
+                            outcome=ReabstractOutcome.SUCCESS,
+                            elapsed_seconds=elapsed,
+                        )
+                    else:
+                        error_message = f"terminal pipeline_status: {status}"
+                        entries.append(
+                            ReabstractReportEntry(
+                                document_id=doc.id,
+                                outcome=ReabstractOutcome.LLM_FAILURE,
+                                error_message=error_message,
+                                elapsed_seconds=elapsed,
+                            )
+                        )
+                        failed += 1
+                        processed += 1
+                        yield ReabstractProgressEvent(
+                            event_type="progress",
+                            processed=processed,
+                            total=total,
+                            current_document_id=doc.id,
+                            current_title=doc.title,
+                            status="failed",
+                            outcome=ReabstractOutcome.LLM_FAILURE,
+                            error=error_message,
+                            elapsed_seconds=elapsed,
+                        )
+
+                yield ReabstractSummaryEvent(
+                    event_type="summary",
+                    vault_id=self._vault_id,
+                    reabstracted_count=reabstracted,
+                    skipped_pdf_count=len(pdf_skipped),
+                    failed_count=failed,
+                    entries=entries,
                 )
             finally:
                 self._reabstract_started_at = None
-
-    async def _run_reabstract_deferred(
-        self, *, ingestion: "IngestionService", include_pdf: bool
-    ) -> ReabstractReport:
-        """Lock-held body of reabstract_deferred. Separated so the lock
-        management stays readable; ``ingestion`` is passed in narrowed
-        from the public-method gate.
-        """
-        all_docs = await self._graph_store.list_all_documents()
-        skipped = [
-            d for d in all_docs if d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
-        ]
-        pdf_skipped = [d for d in skipped if not include_pdf and d.source_type == "pdf"]
-        worklist = [d for d in skipped if include_pdf or d.source_type != "pdf"]
-
-        entries: list[ReabstractReportEntry] = []
-        reabstracted = 0
-        failed = 0
-
-        for doc in pdf_skipped:
-            entries.append(
-                ReabstractReportEntry(
-                    document_id=doc.id,
-                    outcome=ReabstractOutcome.SKIPPED_PDF,
-                )
-            )
-
-        terminal = {
-            PipelineStatus.ABSTRACTION_COMPLETE.value,
-            PipelineStatus.FAILED.value,
-        }
-        for doc in worklist:
-            doc_started = datetime.now(timezone.utc)
-            try:
-                await ingestion.reabstract(doc.id)
-            except Exception as exc:
-                elapsed = (datetime.now(timezone.utc) - doc_started).total_seconds()
-                entries.append(
-                    ReabstractReportEntry(
-                        document_id=doc.id,
-                        outcome=ReabstractOutcome.LLM_FAILURE,
-                        error_message=f"dispatch failed: {exc!r}",
-                        elapsed_seconds=elapsed,
-                    )
-                )
-                failed += 1
-                continue
-
-            status = await self._wait_for_terminal(doc.id, terminal)
-            elapsed = (datetime.now(timezone.utc) - doc_started).total_seconds()
-            if status == PipelineStatus.ABSTRACTION_COMPLETE.value:
-                entries.append(
-                    ReabstractReportEntry(
-                        document_id=doc.id,
-                        outcome=ReabstractOutcome.SUCCESS,
-                        elapsed_seconds=elapsed,
-                    )
-                )
-                reabstracted += 1
-            else:
-                entries.append(
-                    ReabstractReportEntry(
-                        document_id=doc.id,
-                        outcome=ReabstractOutcome.LLM_FAILURE,
-                        error_message=f"terminal pipeline_status: {status}",
-                        elapsed_seconds=elapsed,
-                    )
-                )
-                failed += 1
-
-        return ReabstractReport(
-            vault_id=self._vault_id,
-            reabstracted_count=reabstracted,
-            skipped_pdf_count=len(pdf_skipped),
-            failed_count=failed,
-            entries=entries,
-        )
 
     async def _wait_for_terminal(self, document_id: str, terminal: set[str]) -> str:
         """Poll the document's pipeline_status until it reaches a terminal

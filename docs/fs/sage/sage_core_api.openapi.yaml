@@ -2046,10 +2046,13 @@ paths:
         the running operation rather than queueing.
 
 
-        Phase 1 ships synchronous (the HTTP response is held open for the
-        duration of the operation). Streaming progress events over SSE
-        are scoped out and tracked as future work in the T-0089 close-out
-        notes.
+        Response is `text/event-stream` (T-0134). Per-document state
+        transitions surface as `progress` events
+        (`status` = started / completed / failed / skipped); a final
+        `summary` event carries the ReabstractReport payload. The 404
+        and 409 error paths resolve synchronously BEFORE the stream is
+        opened and return an application/json ErrorResponse envelope
+        with no SSE events emitted.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2061,11 +2064,19 @@ paths:
               $ref: "#/components/schemas/ReabstractRequest"
       responses:
         "200":
-          description: Reabstract pass complete; report enumerates per-document outcomes.
+          description: >-
+            Server-Sent Event stream of per-document progress events
+            and a final summary event.
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: "#/components/schemas/ReabstractReport"
+                type: string
+                description: >-
+                  SSE stream. Each event is a `data:` line with a JSON
+                  payload conforming to ReabstractProgressEvent or
+                  ReabstractSummaryEvent. See
+                  components.schemas.ReabstractProgressEvent and
+                  components.schemas.ReabstractSummaryEvent.
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -4582,6 +4593,107 @@ components:
         skipped_pdf_count:
           type: integer
           description: Number of source_type=pdf documents excluded because include_pdf was False. Always 0 when include_pdf is True.
+        failed_count:
+          type: integer
+          description: Number of documents whose reabstract attempt did not reach abstraction_complete.
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReabstractReportEntry"
+          description: Per-document outcome records. Length equals reabstracted_count + skipped_pdf_count + failed_count.
+
+    ReabstractProgressEvent:
+      type: object
+      required: [event_type, processed, total, current_document_id, current_title, status]
+      description: >-
+        SSE `progress` event payload for sage_admin_reabstract_deferred_vault
+        (T-0134). Emitted twice per non-PDF document (a `started` event
+        before dispatch, then a `completed` or `failed` event after the
+        polling loop reaches a terminal pipeline_status) and once per
+        skipped PDF (a `skipped` event). Shape mirrors the ingest
+        pipeline's ProgressEvent precedent
+        (docs/fs/cas_app_api.openapi.yaml).
+      properties:
+        event_type:
+          type: string
+          enum: [progress]
+          description: Discriminator for the SSE event payload variant; always 'progress'.
+        processed:
+          type: integer
+          description: >-
+            Count of documents whose terminal event has already been
+            emitted in this stream. Zero on the first `started` event;
+            increments by one on each `completed`, `failed`, or `skipped`
+            event. Equals `total` once the stream is exhausted.
+        total:
+          type: integer
+          description: >-
+            Total document count in the reabstract-deferred worklist for
+            this run, including PDFs that will be skipped when
+            `include_pdf=False`. Constant across all events in the stream.
+        current_document_id:
+          type: string
+          description: Document id this event refers to.
+        current_title:
+          type: string
+          description: >-
+            Human-readable title of the document this event refers to.
+            Surfaced so the maintenance panel can show the user what is
+            in flight without a separate get_document round-trip.
+        status:
+          type: string
+          enum: [started, completed, failed, skipped]
+          description: >-
+            Per-document status. `started`: dispatch begun, no outcome
+            yet. `completed`: reabstract reached `abstraction_complete`.
+            `failed`: dispatch raised or terminal pipeline_status was
+            `failed` (outcome=`llm_failure`). `skipped`: PDF excluded
+            from the worklist by `include_pdf=False`
+            (outcome=`skipped_pdf`).
+        outcome:
+          $ref: "#/components/schemas/ReabstractOutcome"
+          nullable: true
+          description: >-
+            Per-document terminal classification. Set on `completed`,
+            `failed`, and `skipped` events; omitted on the leading
+            `started` event.
+        error:
+          type: string
+          nullable: true
+          description: Failure description when `status=failed`; omitted otherwise.
+        elapsed_seconds:
+          type: number
+          nullable: true
+          description: >-
+            Wall-clock seconds from dispatch to terminal status, set on
+            `completed` and `failed` events. Omitted on `started` (no
+            work yet) and `skipped` (no work was done).
+
+    ReabstractSummaryEvent:
+      type: object
+      required:
+        [event_type, vault_id, reabstracted_count, skipped_pdf_count, failed_count, entries]
+      description: >-
+        SSE `summary` event payload for sage_admin_reabstract_deferred_vault
+        (T-0134). Emitted once at the end of the stream, after all per-
+        document progress events. Payload fields (sans the `event_type`
+        discriminator) are structurally identical to ReabstractReport so
+        the MCP tool aggregator can derive its return dict directly from
+        this event.
+      properties:
+        event_type:
+          type: string
+          enum: [summary]
+          description: Discriminator for the SSE event payload variant; always 'summary'.
+        vault_id:
+          $ref: "#/components/schemas/VaultId"
+          description: Identifier of the vault whose deferred abstracts were processed.
+        reabstracted_count:
+          type: integer
+          description: Number of documents whose pipeline_status transitioned to abstraction_complete by this run.
+        skipped_pdf_count:
+          type: integer
+          description: Number of source_type=pdf documents excluded because include_pdf was False.
         failed_count:
           type: integer
           description: Number of documents whose reabstract attempt did not reach abstraction_complete.

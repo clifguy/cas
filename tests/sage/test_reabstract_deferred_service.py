@@ -33,7 +33,12 @@ import pytest
 from sage.adapters.interfaces import AbstractionProvider, Chunk
 from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.models.enums import PipelineStatus, ReabstractOutcome, SourceType
-from sage.models.schemas import Document, ReabstractReport
+from sage.models.schemas import (
+    Document,
+    ReabstractProgressEvent,
+    ReabstractReport,
+    ReabstractSummaryEvent,
+)
 from sage.services.ingestion import IngestionService
 from sage.services.maintenance import MaintenanceService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
@@ -469,3 +474,417 @@ async def test_reabstract_deferred_hard_errors_when_no_ingestion_service(
     with pytest.raises(RuntimeError) as exc_info:
         await maintenance.reabstract_deferred()
     assert "ingestion" in str(exc_info.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Streaming-generator tests (T-0134)
+#
+# Cover the async-generator surface of MaintenanceService that the new
+# SSE-emitting HTTP route consumes. The aggregator tests above pin the
+# MCP-facing contract; these tests pin the per-event wire shape and the
+# error-before-stream-open contract.
+# ---------------------------------------------------------------------------
+
+
+async def test_reabstract_deferred_events_yields_started_then_completed_per_document(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """Two abstraction_skipped docs produce ordered events:
+    started(A), completed(A), started(B), completed(B), summary.
+
+    Pins the per-doc started+completed pair shape (the maintenance-panel
+    UX affordance: 'X is processing now' followed by 'X finished'),
+    monotonic ``processed`` counter (0 on first started, incrementing to
+    N on the Nth terminal event), constant ``total``, and the summary
+    event landing last.
+
+    Anti-coincidental-pass: a summary-only stream that drops progress
+    events fails the ``assert len(progress) == 4`` check; an ordering
+    bug fails the per-doc started/completed pairing check.
+    """
+    doc_a = _make_skipped_doc(_id("stream_md_a"))
+    doc_b = _make_skipped_doc(_id("stream_md_b"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc_a)
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc_b)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        ingestion_service=ingestion_service,
+    )
+
+    events: list = []
+    async for ev in maintenance.reabstract_deferred_events(include_pdf=False):
+        events.append(ev)
+
+    progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]
+    summaries = [e for e in events if isinstance(e, ReabstractSummaryEvent)]
+
+    # 2 docs × (started + completed) = 4 progress events, then 1 summary.
+    assert len(progress) == 4, f"expected 4 progress events, got {len(progress)}: {events!r}"
+    assert len(summaries) == 1
+    assert events[-1] is summaries[0], "summary event must be last"
+
+    # First doc: started(processed=0) -> completed(processed=1).
+    assert progress[0].status == "started"
+    assert progress[0].current_document_id == doc_a.id
+    assert progress[0].processed == 0
+    assert progress[0].total == 2
+
+    assert progress[1].status == "completed"
+    assert progress[1].current_document_id == doc_a.id
+    assert progress[1].outcome == ReabstractOutcome.SUCCESS
+    assert progress[1].processed == 1
+    assert progress[1].total == 2
+
+    # Second doc: started(processed=1) -> completed(processed=2).
+    assert progress[2].status == "started"
+    assert progress[2].current_document_id == doc_b.id
+    assert progress[2].processed == 1
+    assert progress[2].total == 2
+
+    assert progress[3].status == "completed"
+    assert progress[3].current_document_id == doc_b.id
+    assert progress[3].outcome == ReabstractOutcome.SUCCESS
+    assert progress[3].processed == 2
+    assert progress[3].total == 2
+
+    # Summary event mirrors the aggregator's ReabstractReport.
+    summary = summaries[0]
+    assert summary.vault_id == minimal_config.vault.id
+    assert summary.reabstracted_count == 2
+    assert summary.skipped_pdf_count == 0
+    assert summary.failed_count == 0
+    assert len(summary.entries) == 2
+
+
+async def test_reabstract_deferred_events_emits_skipped_for_pdf_when_include_pdf_false(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """include_pdf=False: a PDF in the worklist surfaces as a single
+    ``status=skipped`` progress event (no started/completed pair --
+    skipped_pdf is not dispatched). Markdown doc still gets the normal
+    pair.
+
+    Anti-coincidental-pass: if the PDF branch silently drops events,
+    the user sees nothing happen for skipped entries in the maintenance
+    panel. The assertion ``len(progress) == 3`` (markdown started +
+    markdown completed + pdf skipped) catches that omission directly.
+    """
+    md_doc = _make_skipped_doc(_id("stream_md_pdf"))
+    pdf_doc = _make_skipped_doc(_id("stream_pdf_skip"), source_type=SourceType.PDF)
+    await _seed_doc_with_chunks(graph_store, stub_content_store, md_doc)
+    await _seed_doc_with_chunks(graph_store, stub_content_store, pdf_doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        ingestion_service=ingestion_service,
+    )
+
+    events: list = []
+    async for ev in maintenance.reabstract_deferred_events(include_pdf=False):
+        events.append(ev)
+
+    progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]
+    skipped = [p for p in progress if p.status == "skipped"]
+
+    assert len(progress) == 3, f"expected 3 progress events, got {len(progress)}: {events!r}"
+    assert len(skipped) == 1
+    assert skipped[0].current_document_id == pdf_doc.id
+    assert skipped[0].outcome == ReabstractOutcome.SKIPPED_PDF
+
+    # Markdown doc had its normal started/completed pair.
+    md_events = [p for p in progress if p.current_document_id == md_doc.id]
+    assert {p.status for p in md_events} == {"started", "completed"}
+
+    # Summary reflects the split.
+    summary = events[-1]
+    assert isinstance(summary, ReabstractSummaryEvent)
+    assert summary.reabstracted_count == 1
+    assert summary.skipped_pdf_count == 1
+    assert summary.failed_count == 0
+
+
+async def test_reabstract_deferred_events_emits_failed_then_continues(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """A mid-batch LLM failure surfaces as a status=failed progress event
+    and the generator continues to the next document. Mirrors the
+    aggregator's per-doc isolation test (#5) at the streaming layer.
+
+    Anti-coincidental-pass: if the failure path raises out of the
+    generator instead of yielding a ``failed`` event, ``async for``
+    propagates the exception and the second doc never gets a started
+    event. The ``len(progress) == 4`` assertion plus the started/failed
+    + started/completed pairing checks catch that.
+    """
+    provider = _SelectivelyFailingProvider()
+    ingestion = _build_ingestion_service(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=provider,
+        config=minimal_config,
+        lifecycle_service=lifecycle_service,
+    )
+
+    fail_doc = _make_skipped_doc(_id("stream_fail_a"))
+    ok_doc = _make_skipped_doc(_id("stream_ok_b"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, fail_doc)
+    await _seed_doc_with_chunks(graph_store, stub_content_store, ok_doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        ingestion_service=ingestion,
+    )
+
+    events: list = []
+    async for ev in maintenance.reabstract_deferred_events(include_pdf=False):
+        events.append(ev)
+
+    progress = [e for e in events if isinstance(e, ReabstractProgressEvent)]
+    assert len(progress) == 4, f"expected 4 progress events, got {len(progress)}: {events!r}"
+
+    # First doc -> started + failed.
+    assert progress[0].status == "started"
+    assert progress[0].current_document_id == fail_doc.id
+
+    assert progress[1].status == "failed"
+    assert progress[1].current_document_id == fail_doc.id
+    assert progress[1].outcome == ReabstractOutcome.LLM_FAILURE
+    assert progress[1].error is not None and progress[1].error != ""
+
+    # Second doc -> started + completed (loop continued past the failure).
+    assert progress[2].status == "started"
+    assert progress[2].current_document_id == ok_doc.id
+
+    assert progress[3].status == "completed"
+    assert progress[3].current_document_id == ok_doc.id
+    assert progress[3].outcome == ReabstractOutcome.SUCCESS
+
+    summary = events[-1]
+    assert isinstance(summary, ReabstractSummaryEvent)
+    assert summary.reabstracted_count == 1
+    assert summary.failed_count == 1
+
+
+async def test_reabstract_deferred_events_summary_payload_is_reabstract_report_shaped(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """The summary event's payload (sans event_type discriminator) round-trips
+    through ReabstractReport.model_validate. Pins the structural-equivalence
+    contract that lets the MCP tool aggregator return a report dict
+    derived from the streaming generator.
+
+    Anti-coincidental-pass: a future change that adds a field to
+    ReabstractSummaryEvent without backing it into ReabstractReport (or
+    vice versa) breaks the model_validate call. The aggregator can no
+    longer trivially derive its return from the summary event.
+    """
+    md_doc = _make_skipped_doc(_id("stream_shape_md"))
+    pdf_doc = _make_skipped_doc(_id("stream_shape_pdf"), source_type=SourceType.PDF)
+    await _seed_doc_with_chunks(graph_store, stub_content_store, md_doc)
+    await _seed_doc_with_chunks(graph_store, stub_content_store, pdf_doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        ingestion_service=ingestion_service,
+    )
+
+    events: list = []
+    async for ev in maintenance.reabstract_deferred_events(include_pdf=False):
+        events.append(ev)
+
+    summary = events[-1]
+    assert isinstance(summary, ReabstractSummaryEvent)
+
+    # The summary payload (minus the SSE event-type discriminator) is a
+    # ReabstractReport in disguise. If the two shapes ever diverge, this
+    # model_validate call fails closed.
+    payload = summary.model_dump(exclude={"event_type"})
+    report = ReabstractReport.model_validate(payload)
+    assert report.vault_id == minimal_config.vault.id
+    assert report.reabstracted_count == 1
+    assert report.skipped_pdf_count == 1
+    assert report.failed_count == 0
+    assert len(report.entries) == 2
+
+
+async def test_reabstract_deferred_events_raises_in_flight_before_first_yield(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    minimal_config,
+    lifecycle_service,
+):
+    """The 409 in-flight check fires synchronously on the
+    ``reabstract_deferred_events(...)`` call itself, BEFORE iteration
+    starts.
+
+    Why this matters: FastAPI's StreamingResponse opens the HTTP
+    response (status 200, text/event-stream) as soon as it is
+    constructed; the route handler must therefore see the
+    ReabstractAlreadyInFlightError SYNCHRONOUSLY -- i.e., from the
+    constructor call, not from the first ``__anext__()`` -- so it can
+    raise instead of returning a StreamingResponse. The conventional
+    ``async def`` generator does not execute its body until the first
+    iteration, so the implementation must use the
+    ``def`` -> ``self._impl_async_def`` wrapper pattern (precedent:
+    ``IngestStreamingService.stream`` raises EmptyFileListError before
+    constructing its StreamingResponse).
+
+    Anti-coincidental-pass: if the in-flight check is deferred into the
+    generator body, calling ``maintenance.reabstract_deferred_events(...)``
+    succeeds without raising; ``pytest.raises`` then fails the test
+    immediately.
+    """
+    provider = _GatedAbstractionProvider()
+    ingestion = _build_ingestion_service(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=provider,
+        config=minimal_config,
+        lifecycle_service=lifecycle_service,
+    )
+
+    doc = _make_skipped_doc(_id("stream_lock_a"))
+    await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
+
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        ingestion_service=ingestion,
+    )
+
+    async def _consume_first(gen):
+        async for ev in gen:
+            # Drain to completion once the gate releases.
+            del ev
+
+    # Start the first stream consuming, which acquires the lock.
+    gen_a = maintenance.reabstract_deferred_events(include_pdf=False)
+    task_a = asyncio.create_task(_consume_first(gen_a))
+
+    # Wait for the gated provider to be hit -- by then the lock is held.
+    await asyncio.wait_for(provider.entered.wait(), timeout=5.0)
+
+    # SYNCHRONOUS check: calling reabstract_deferred_events MUST raise
+    # before any iteration. No `await`, no `async for`.
+    with pytest.raises(ReabstractAlreadyInFlightError) as exc_info:
+        maintenance.reabstract_deferred_events(include_pdf=False)
+    after = datetime.now(timezone.utc)
+
+    err = exc_info.value
+    assert err.code == "reabstract_already_in_flight"
+    assert err.status_code == 409
+    assert err.detail is not None
+    assert err.detail["vault_id"] == minimal_config.vault.id
+    start_time = datetime.fromisoformat(err.detail["start_time"])
+    # start_time was set by the in-flight caller inside the lock, so it
+    # predates this point in wall-clock time.
+    assert start_time <= after
+
+    # Release the gate; let the first stream complete and clean up.
+    provider.gate.set()
+    await asyncio.wait_for(task_a, timeout=5.0)
+
+
+async def test_reabstract_deferred_aggregator_consumes_event_stream(
+    graph_store,
+    ingestion_service,
+    minimal_config,
+    monkeypatch,
+):
+    """reabstract_deferred() builds its ReabstractReport by consuming the
+    reabstract_deferred_events() generator. Monkeypatching the generator
+    to yield a fabricated sequence proves the aggregator does not
+    re-implement the per-document iteration.
+
+    Anti-coincidental-pass: if the aggregator carries its own duplicate
+    iteration loop (i.e., does not consume the generator), the
+    monkeypatched events have no effect and the aggregator returns the
+    real worklist's report (empty in this seeded vault). The
+    assertions then fail on the fabricated counts.
+    """
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        ingestion_service=ingestion_service,
+    )
+
+    # Build fabricated events that DO NOT correspond to any real
+    # vault state; they should still flow through the aggregator's
+    # return value if the aggregator consumes the generator.
+    fake_doc_id_ok = _id("fake_aggregator_ok")
+    fake_doc_id_pdf = _id("fake_aggregator_pdf")
+
+    def _fake_events_factory(include_pdf: bool = False):  # noqa: ARG001
+        async def _gen():
+            yield ReabstractProgressEvent(
+                event_type="progress",
+                processed=0,
+                total=2,
+                current_document_id=fake_doc_id_ok,
+                current_title="Fake OK",
+                status="started",
+            )
+            yield ReabstractProgressEvent(
+                event_type="progress",
+                processed=1,
+                total=2,
+                current_document_id=fake_doc_id_ok,
+                current_title="Fake OK",
+                status="completed",
+                outcome=ReabstractOutcome.SUCCESS,
+                elapsed_seconds=0.01,
+            )
+            yield ReabstractProgressEvent(
+                event_type="progress",
+                processed=1,
+                total=2,
+                current_document_id=fake_doc_id_pdf,
+                current_title="Fake PDF",
+                status="skipped",
+                outcome=ReabstractOutcome.SKIPPED_PDF,
+            )
+            yield ReabstractSummaryEvent(
+                event_type="summary",
+                vault_id=minimal_config.vault.id,
+                reabstracted_count=1,
+                skipped_pdf_count=1,
+                failed_count=0,
+                entries=[],
+            )
+
+        return _gen()
+
+    monkeypatch.setattr(maintenance, "reabstract_deferred_events", _fake_events_factory)
+
+    report = await maintenance.reabstract_deferred()
+
+    # If the aggregator runs its own loop instead of consuming the
+    # generator, these fail (the real worklist is empty).
+    assert report.reabstracted_count == 1
+    assert report.skipped_pdf_count == 1
+    assert report.failed_count == 0

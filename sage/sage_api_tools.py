@@ -1805,9 +1805,18 @@ def register_sage_tools(
         Long-running: an N-document pass takes roughly N times the
         per-document abstraction wall-clock (seconds to tens of seconds
         each against Qwen3-30B MLX, sub-second against the test stub).
-        Phase 1 ships synchronous; allocate a generous client-side
-        timeout. Streaming progress events over MCP/SSE are scoped out
-        and tracked as future work in the T-0089 close-out notes.
+        The MCP tool returns a single ReabstractReport dict once the
+        pass completes; allocate a generous client-side timeout.
+
+        T-0134: the HTTP route now streams per-document SSE progress
+        events, but the MCP-layer contract is unchanged. Under the
+        hood, ``MaintenanceService.reabstract_deferred`` consumes the
+        streaming generator and re-shapes the final summary event as a
+        ``ReabstractReport``, so the dict this tool returns is
+        structurally identical to the pre-streaming response shape.
+        Callers that want per-document observability should subscribe
+        to the HTTP route's SSE stream directly; the MCP tool exists
+        for the report-and-return access pattern.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.

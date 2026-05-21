@@ -1994,6 +1994,112 @@ class ReabstractReport(BaseModel):
     )
 
 
+class ReabstractProgressEvent(BaseModel):
+    """SSE `progress` event payload for reabstract-deferred (T-0134).
+
+    Emitted twice per non-PDF document (a `started` event before
+    dispatch, then a `completed` or `failed` event after the polling
+    loop reaches a terminal pipeline_status) and once per skipped PDF
+    (a `skipped` event). Shape mirrors the ingest pipeline's
+    `ProgressEvent` precedent (docs/fs/cas_app_api.openapi.yaml).
+    """
+
+    event_type: Literal["progress"] = Field(
+        description="Discriminator for the SSE event payload variant; always 'progress'.",
+    )
+    processed: int = Field(
+        description=(
+            "Count of documents whose terminal event has already been "
+            "emitted in this stream. Zero on the first `started` event; "
+            "increments by one on each `completed`, `failed`, or `skipped` "
+            "event. Equals `total` once the stream is exhausted."
+        )
+    )
+    total: int = Field(
+        description=(
+            "Total document count in the reabstract-deferred worklist for "
+            "this run, including PDFs that will be skipped when "
+            "`include_pdf=False`. Constant across all events in the stream."
+        )
+    )
+    current_document_id: DocumentIdStr = Field(description="Document id this event refers to.")
+    current_title: str = Field(
+        description=(
+            "Human-readable title of the document this event refers to. "
+            "Surfaced so the maintenance panel can show the user what is "
+            "in flight without a separate get_document round-trip."
+        )
+    )
+    status: Literal["started", "completed", "failed", "skipped"] = Field(
+        description=(
+            "Per-document status. `started`: dispatch begun, no outcome "
+            "yet. `completed`: reabstract reached `abstraction_complete`. "
+            "`failed`: dispatch raised or terminal pipeline_status was "
+            "`failed` (outcome=`llm_failure`). `skipped`: PDF excluded "
+            "from the worklist by `include_pdf=False` "
+            "(outcome=`skipped_pdf`)."
+        )
+    )
+    outcome: ReabstractOutcome | None = Field(
+        default=None,
+        description=(
+            "Per-document terminal classification. Set on `completed`, "
+            "`failed`, and `skipped` events; omitted on the leading "
+            "`started` event."
+        ),
+    )
+    error: str | None = Field(
+        default=None,
+        description="Failure description when `status=failed`; omitted otherwise.",
+    )
+    elapsed_seconds: float | None = Field(
+        default=None,
+        description=(
+            "Wall-clock seconds from dispatch to terminal status, set on "
+            "`completed` and `failed` events. Omitted on `started` (no "
+            "work yet) and `skipped` (no work was done)."
+        ),
+    )
+
+
+class ReabstractSummaryEvent(BaseModel):
+    """SSE `summary` event payload for reabstract-deferred (T-0134).
+
+    Emitted once at the end of the stream, after all per-document
+    progress events. Payload fields (sans the `event_type`
+    discriminator) are structurally identical to ReabstractReport so
+    the MCP tool aggregator can derive its return dict directly from
+    this event.
+    """
+
+    event_type: Literal["summary"] = Field(
+        description="Discriminator for the SSE event payload variant; always 'summary'.",
+    )
+    vault_id: VaultIdStr = Field(
+        description="Identifier of the vault whose deferred abstracts were processed."
+    )
+    reabstracted_count: int = Field(
+        description=(
+            "Number of documents whose pipeline_status transitioned to "
+            "abstraction_complete by this run."
+        )
+    )
+    skipped_pdf_count: int = Field(
+        description=("Number of source_type=pdf documents excluded because include_pdf was False.")
+    )
+    failed_count: int = Field(
+        description=(
+            "Number of documents whose reabstract attempt did not reach abstraction_complete."
+        )
+    )
+    entries: list[ReabstractReportEntry] = Field(
+        description=(
+            "Per-document outcome records. Length equals "
+            "reabstracted_count + skipped_pdf_count + failed_count."
+        )
+    )
+
+
 class EvalRetrievalResult(BaseModel):
     vault_id: VaultIdStr = Field(
         description="Identifier of the vault whose assertions were evaluated."
