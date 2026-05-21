@@ -77,6 +77,63 @@ describe('BulkMetadataDialog', () => {
     expect(within(setLane).getByRole('button', { name: /add row/i })).toBeInTheDocument();
   });
 
+  it('does not render a delete control when only one Tier3 > Set row exists', () => {
+    renderDialog();
+    const setLane = screen.getByTestId('lane-tier3-set');
+    expect(within(setLane).queryByRole('button', { name: /remove row/i })).toBeNull();
+    expect(within(setLane).getByRole('button', { name: /add row/i })).toBeInTheDocument();
+  });
+
+  it('renders a delete control on each row once a second row is added', async () => {
+    const { user } = renderDialog();
+    const setLane = screen.getByTestId('lane-tier3-set');
+    await user.click(within(setLane).getByRole('button', { name: /add row/i }));
+    expect(within(setLane).getByRole('button', { name: /remove row 1/i })).toBeInTheDocument();
+    expect(within(setLane).getByRole('button', { name: /remove row 2/i })).toBeInTheDocument();
+  });
+
+  it('deleting a Tier3 > Set row drops its values from the request body', async () => {
+    vi.mocked(bulkUpdateMetadata).mockResolvedValue(makeResponse(['D1']));
+    const { user } = renderDialog({ selectedIds: ['D1'] });
+    const setLane = screen.getByTestId('lane-tier3-set');
+
+    const keyInputs = () => within(setLane).getAllByPlaceholderText(/key/i);
+    const valueInputs = () => within(setLane).getAllByPlaceholderText(/value/i);
+
+    await user.type(keyInputs()[0], 'alpha');
+    await user.type(valueInputs()[0], 'A');
+    await user.click(within(setLane).getByRole('button', { name: /add row/i }));
+    await user.type(keyInputs()[1], 'beta');
+    await user.type(valueInputs()[1], 'B');
+
+    await user.click(within(setLane).getByRole('button', { name: /remove row 1/i }));
+
+    expect(within(setLane).queryByDisplayValue('alpha')).toBeNull();
+    expect(within(setLane).queryByDisplayValue('A')).toBeNull();
+    expect(within(setLane).getByDisplayValue('beta')).toBeInTheDocument();
+    expect(within(setLane).getByDisplayValue('B')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^apply$/i }));
+
+    expect(bulkUpdateMetadata).toHaveBeenCalledTimes(1);
+    expect(bulkUpdateMetadata).toHaveBeenCalledWith('test_vault', [
+      { document_id: 'D1', tier3_metadata: { set: { beta: 'B' } } },
+    ]);
+  });
+
+  it('deleting a row renumbers the remaining delete controls', async () => {
+    const { user } = renderDialog();
+    const setLane = screen.getByTestId('lane-tier3-set');
+    await user.click(within(setLane).getByRole('button', { name: /add row/i }));
+    expect(within(setLane).getByRole('button', { name: /remove row 2/i })).toBeInTheDocument();
+
+    await user.click(within(setLane).getByRole('button', { name: /remove row 1/i }));
+
+    expect(within(setLane).queryByRole('button', { name: /remove row/i })).toBeNull();
+    expect(within(setLane).getByPlaceholderText(/key/i)).toBeInTheDocument();
+    expect(within(setLane).getByPlaceholderText(/value/i)).toBeInTheDocument();
+  });
+
   it('detects Tier3 set/unset overlap client-side and disables apply', async () => {
     const { user } = renderDialog();
     const setLane = screen.getByTestId('lane-tier3-set');

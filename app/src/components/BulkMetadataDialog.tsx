@@ -115,6 +115,9 @@ export function BulkMetadataDialog({ vaultId, selectedIds, onResolved, onClose }
   function addTier3Row() {
     setTier3Set((prev) => [...prev, { key: '', value: '' }]);
   }
+  function removeTier3Row(idx: number) {
+    setTier3Set((prev) => prev.filter((_, i) => i !== idx));
+  }
 
   return (
     <Dialog title="Bulk update metadata" onClose={onClose} width={560}>
@@ -141,9 +144,19 @@ export function BulkMetadataDialog({ vaultId, selectedIds, onResolved, onClose }
             </Lane>
             <Lane title="Tier3 > Set" testId="lane-tier3-set" help="Key-value pairs to set (overwrites existing keys)">
               {tier3Set.map((row, i) => (
-                <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 4, alignItems: 'center' }}>
                   <input type="text" value={row.key} onChange={(e) => updateTier3Row(i, 'key', e.target.value)} placeholder="key" style={{ ...inputStyle, flex: 1 }} />
                   <input type="text" value={row.value} onChange={(e) => updateTier3Row(i, 'value', e.target.value)} placeholder="value" style={{ ...inputStyle, flex: 1 }} />
+                  {tier3Set.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeTier3Row(i)}
+                      aria-label={`Remove row ${i + 1}`}
+                      style={removeRowBtnStyle}
+                    >
+                      ×
+                    </button>
+                  )}
                 </div>
               ))}
               <button type="button" onClick={addTier3Row} style={secondaryBtnStyle}>Add row</button>
@@ -247,3 +260,12 @@ const errStyle: React.CSSProperties = { color: '#c62828', fontSize: 12, marginBo
 const primaryBtnStyle: React.CSSProperties = { padding: '6px 16px', border: '1px solid #ccc', borderRadius: 4, background: '#333', color: '#fff', cursor: 'pointer', fontSize: 13 };
 const secondaryBtnStyle: React.CSSProperties = { padding: '4px 12px', border: '1px solid #ccc', borderRadius: 4, background: '#fff', color: '#333', cursor: 'pointer', fontSize: 12 };
 const confirmPanelStyle: React.CSSProperties = { padding: 12, background: '#fff3e0', border: '1px solid #ffb74d', borderRadius: 4, marginTop: 12 };
+const removeRowBtnStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  fontSize: 16,
+  lineHeight: 1,
+  cursor: 'pointer',
+  color: '#666',
+  padding: '0 4px',
+};
