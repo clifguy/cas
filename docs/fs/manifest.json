@@ -93,7 +93,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.2",
+      "version": "0.3",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },

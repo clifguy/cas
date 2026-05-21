@@ -15,12 +15,35 @@ from sage.api.errors import (
     InvalidActionError,
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    SAGEError,
 )
 from sage.config import TransitionTable, VaultConfig, build_transition_table
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, EdgeType, ResolutionPolicy
-from sage.models.schemas import Document, Edge, SetLifecycleRequest, SetLifecycleResponse
+from sage.models.schemas import (
+    BulkLifecycleItemResult,
+    BulkLifecycleRequest,
+    BulkLifecycleResponse,
+    Document,
+    Edge,
+    SetLifecycleRequest,
+    SetLifecycleResponse,
+)
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+
+
+def _sage_error_to_envelope(exc: SAGEError) -> dict:
+    """Translate a SAGEError into the same envelope shape the MCP layer emits.
+
+    Mirrors ``mcp_server._error_response`` so per-item errors in a bulk
+    response are indistinguishable from single-item MCP errors at the
+    caller. Kept in the service module (and not imported from the MCP
+    layer) to respect the boundary rule.
+    """
+    payload: dict = {"error": exc.code, "message": exc.message}
+    if exc.detail:
+        payload["detail"] = exc.detail
+    return payload
 
 
 @dataclass
@@ -142,6 +165,51 @@ class LifecycleService:
                 document=updated_doc,
                 warnings=warnings if warnings else None,
             )
+
+    async def bulk_set_lifecycle(self, request: BulkLifecycleRequest) -> BulkLifecycleResponse:
+        """Apply one lifecycle transition per item; per-item lock and
+        per-item transaction.
+
+        The batch is NOT atomic (CAS-ADR-029). A SAGEError raised by one
+        item does not roll back earlier-or-later successful items; the
+        item's per-document lock and per-item transaction provide
+        isolation. Anything outside the SAGEError hierarchy is treated
+        as a programmer or infrastructure bug and propagates out of the
+        batch.
+
+        The performance win versus N sequential ``sage_set_lifecycle``
+        MCP calls comes from eliminating per-call MCP framing overhead
+        and asyncio scheduling between items; the per-document lock and
+        the per-item SQLite transaction are unchanged.
+        """
+        results: list[BulkLifecycleItemResult] = []
+        for item in request.items:
+            single = SetLifecycleRequest(action=item.action, new_version_id=item.new_version_id)
+            try:
+                response = await self.set_lifecycle(item.document_id, single)
+                results.append(
+                    BulkLifecycleItemResult(
+                        document_id=item.document_id,
+                        status="success",
+                        document=response.document,
+                        warnings=response.warnings,
+                    )
+                )
+            except SAGEError as exc:
+                results.append(
+                    BulkLifecycleItemResult(
+                        document_id=item.document_id,
+                        status="error",
+                        error=_sage_error_to_envelope(exc),
+                    )
+                )
+        success_count = sum(1 for r in results if r.status == "success")
+        return BulkLifecycleResponse(
+            results=results,
+            success_count=success_count,
+            error_count=len(results) - success_count,
+            total=len(results),
+        )
 
     def prepare_supersede(
         self,

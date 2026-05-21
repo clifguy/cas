@@ -19,6 +19,8 @@ from sage.api.errors import (
 from sage.mcp_init import SAGEServices
 from sage.models.enums import SourceType
 from sage.models.schemas import (
+    BulkLifecycleItem,
+    BulkLifecycleRequest,
     ChainRequest,
     CreateVaultRequest,
     DiscoverRequest,
@@ -560,6 +562,61 @@ def register_sage_tools(
             v = get_vault(vault_id)
             request = SetLifecycleRequest(action=action, new_version_id=new_version_id)
             response = await v.lifecycle_service.set_lifecycle(document_id, request)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_bulk_set_lifecycle(
+        vault_id: str,
+        items: list[dict],
+    ) -> dict:
+        """Apply lifecycle transitions to many documents in one call.
+
+        First ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
+        ``document_id``, ``action``, and optional ``new_version_id`` with
+        the same semantics as ``sage_set_lifecycle``; items are processed
+        in order, each holding the per-document lock and a per-item
+        SQLite transaction.
+
+        **The batch is NOT atomic.** A per-item SAGEError surfaces in the
+        response's per-item error envelope but does not roll back earlier-
+        or-later successful items. The tool returns a successful response
+        envelope (not an error envelope) when at least one item is processed,
+        even if some items failed; callers must inspect each
+        ``BulkLifecycleItemResult.status`` and the aggregate
+        ``success_count`` / ``error_count`` fields. The tool returns an
+        error envelope only when up-front validation rejects the call
+        (invalid ``vault_id`` shape, malformed ``items`` shape, or
+        unknown vault).
+
+        Empty ``items`` is valid: the response carries an empty
+        ``results`` array and all counts are zero.
+
+        Performance: a bulk call is observably faster than N sequential
+        ``sage_set_lifecycle`` calls because MCP framing overhead and
+        inter-call asyncio scheduling are eliminated; the per-document
+        lock and per-item SQLite transaction are unchanged.
+
+        Args:
+            vault_id: Target vault identifier.
+            items: List of per-item transition requests. Each item must
+                conform to the ``BulkLifecycleItem`` shape:
+                ``{document_id: str, action: str, new_version_id: str | None}``.
+                Shape validation runs up front; a single malformed item
+                rejects the entire batch before any per-item work
+                executes.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            # Up-front shape validation across the whole batch: rejecting
+            # the request here (rather than per-item inside the service
+            # loop) guarantees that a malformed item produces an error
+            # envelope without committing any partial state.
+            validated_items = [BulkLifecycleItem.model_validate(it) for it in items]
+            v = get_vault(vault_id)
+            request = BulkLifecycleRequest(items=validated_items)
+            response = await v.lifecycle_service.bulk_set_lifecycle(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -1621,6 +1678,7 @@ def register_sage_tools(
         "sage_get_document": sage_get_document,
         "sage_update_metadata": sage_update_metadata,
         "sage_set_lifecycle": sage_set_lifecycle,
+        "sage_bulk_set_lifecycle": sage_bulk_set_lifecycle,
         "sage_register_user": sage_register_user,
         "sage_link": sage_link,
         "sage_unlink": sage_unlink,

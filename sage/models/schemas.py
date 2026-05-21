@@ -741,6 +741,108 @@ class SetLifecycleResponse(BaseModel):
     )
 
 
+class BulkLifecycleItem(BaseModel):
+    """One lifecycle transition request inside a bulk batch.
+
+    Mirrors ``SetLifecycleRequest`` plus the ``document_id`` carried in
+    the request body (since the bulk endpoint does not address documents
+    via the URL path).
+    """
+
+    document_id: DocumentIdStr = Field(description="Target document id for this item.")
+    action: str = Field(
+        description=(
+            "Lifecycle transition action. Vault-config-defined; same "
+            "shape as `SetLifecycleRequest.action`."
+        )
+    )
+    new_version_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Document id of the replacement version. Required when "
+            '`action="supersede"`; forbidden for all other actions. Same '
+            "shape and semantics as `SetLifecycleRequest.new_version_id`."
+        ),
+    )
+
+
+class BulkLifecycleRequest(BaseModel):
+    """Request body for the bulk lifecycle endpoint.
+
+    Carries an ordered list of per-item lifecycle requests. The list may
+    be empty; the response then has an empty ``results`` array.
+    """
+
+    items: list[BulkLifecycleItem] = Field(
+        description=(
+            "Items processed in order. Each item runs in its own "
+            "per-document lock and its own SQLite transaction; the batch "
+            "as a whole is NOT atomic (CAS-ADR-029). A bad item does not "
+            "roll back earlier-or-later successful items."
+        ),
+    )
+
+
+class BulkLifecycleItemResult(BaseModel):
+    """Outcome record for a single item inside a bulk lifecycle response."""
+
+    document_id: DocumentIdStr = Field(
+        description="The target document id from the corresponding request item."
+    )
+    status: Literal["success", "error"] = Field(
+        description=(
+            "`success` if the per-item transition committed; `error` if "
+            "the item raised a SAGEError and the batch continued with "
+            "the next item."
+        )
+    )
+    document: Document | None = Field(
+        default=None,
+        description=("The updated document record when `status=success`. Absent on error entries."),
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        description=(
+            "Same advisory shape as `SetLifecycleResponse.warnings`; "
+            "present on success entries when the underlying transition "
+            "emits warnings."
+        ),
+    )
+    error: dict | None = Field(
+        default=None,
+        description=(
+            "Error envelope when `status=error`. Shape matches the MCP "
+            "`error_response` envelope: `{error: <code>, message: <text>, "
+            "detail: <dict>}` where `detail` is present iff the "
+            "underlying SAGEError carries one."
+        ),
+    )
+
+
+class BulkLifecycleResponse(BaseModel):
+    """Response body for the bulk lifecycle endpoint.
+
+    Carries per-item outcomes plus aggregate counts. Aggregate counts are
+    redundant with iterating ``results`` and exist for caller ergonomics.
+    """
+
+    results: list[BulkLifecycleItemResult] = Field(
+        description="Per-item outcomes in request order."
+    )
+    success_count: int = Field(
+        ge=0,
+        description="Number of items with `status=success`.",
+    )
+    error_count: int = Field(
+        ge=0,
+        description="Number of items with `status=error`.",
+    )
+    total: int = Field(
+        ge=0,
+        description="Total items processed; equals `len(results)`.",
+    )
+
+
 class TagsPatch(BaseModel):
     """Patch operations on a document's tag set, used by sage_update_metadata.
 

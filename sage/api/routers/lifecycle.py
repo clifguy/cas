@@ -1,9 +1,14 @@
-"""POST /sage_vaults/{vault_id}/documents/{document_id}/lifecycle -- set_lifecycle."""
+"""Lifecycle endpoints:
+- POST /sage_vaults/{vault_id}/documents/{document_id}/lifecycle -- set_lifecycle
+- POST /sage_vaults/{vault_id}/lifecycle/bulk -- bulk_set_lifecycle (T-0087)
+"""
 
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_lifecycle_service, get_vault_id
 from sage.models.schemas import (
+    BulkLifecycleRequest,
+    BulkLifecycleResponse,
     DocumentIdStr,
     ErrorResponse,
     SetLifecycleRequest,
@@ -63,3 +68,29 @@ async def set_lifecycle(
     lifecycle_service: LifecycleService = Depends(get_lifecycle_service),
 ) -> SetLifecycleResponse:
     return await lifecycle_service.set_lifecycle(document_id, request)
+
+
+@router.post(
+    "/lifecycle/bulk",
+    response_model=BulkLifecycleResponse,
+    description=(
+        "Apply one lifecycle transition per item; per-item per-document lock "
+        "and per-item SQLite transaction. The batch is NOT atomic "
+        "(CAS-ADR-029): a per-item SAGEError surfaces in the response's "
+        "per-item error envelope while earlier-or-later successful items "
+        "remain committed. The endpoint returns 200 even when some items "
+        "fail; check ``success_count`` / ``error_count`` on the response."
+    ),
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def bulk_set_lifecycle(
+    request: BulkLifecycleRequest,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    lifecycle_service: LifecycleService = Depends(get_lifecycle_service),
+) -> BulkLifecycleResponse:
+    return await lifecycle_service.bulk_set_lifecycle(request)
