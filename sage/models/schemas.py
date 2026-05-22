@@ -1357,6 +1357,31 @@ class TraversalNode(BaseModel):
         ),
     )
 
+    @classmethod
+    def from_traversal(
+        cls,
+        document: "DocumentSummary",
+        edge: "Edge",
+        depth: int,
+        edge_counts: dict[str, int],
+    ) -> "TraversalNode":
+        """Build a TraversalNode from its component parts (T-0119).
+
+        Single owner of the (DocumentSummary, Edge, depth, edge_counts) →
+        TraversalNode projection per the *CAS Projection-Point Audit
+        Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        `test_from_traversal_populates_every_traversal_node_field` in
+        `tests/sage/test_graph_ops.py` fails closed if a field is added
+        to TraversalNode but not wired through this factory.
+        """
+        return cls(
+            document=document,
+            edge=edge,
+            depth=depth,
+            edge_counts=edge_counts,
+        )
+
 
 class TraverseResponse(BaseModel):
     start_id: DocumentIdStr = Field(description="The document ID traversal started from.")

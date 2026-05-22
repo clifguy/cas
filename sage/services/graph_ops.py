@@ -718,7 +718,7 @@ class GraphOpsService:
             counts = {et: len(ids) for et, ids in seen_edges.items()}
 
             nodes.append(
-                TraversalNode(
+                TraversalNode.from_traversal(
                     document=doc_summary,
                     edge=edge,
                     depth=min_depth,

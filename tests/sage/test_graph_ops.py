@@ -28,8 +28,10 @@ from sage.models.schemas import (
     ChainEntry,
     ChainRequest,
     Document,
+    DocumentSummary,
     Edge,
     LinkRequest,
+    TraversalNode,
     TraverseRequest,
 )
 from sage.storage.graph_store import GraphStore
@@ -1655,3 +1657,86 @@ def test_from_chain_row_populates_every_chain_entry_field():
             )
         else:
             assert value is not None, f"ChainEntry.{field_name} not populated by from_chain_row"
+
+
+# ---------------------------------------------------------------------------
+# T-0119: TraversalNode.from_traversal closure-pair install.
+# Single owning factory consolidates the TraversalNode construction site at
+# sage/services/graph_ops.py:693. The exhaustive-fields test below is the
+# structural F4 closure: it iterates TraversalNode.model_fields and fails
+# closed if a future field is added to the model but not wired through the
+# factory. Per the *CAS Projection-Point Audit Conventions* steering
+# document (cas vault, doc_type=steering_document).
+# ---------------------------------------------------------------------------
+
+
+def _document_summary_with_every_field() -> DocumentSummary:
+    """Build a DocumentSummary with every field set to a distinct non-default
+    sentinel. Local to this ticket's closure test; the cohort policy is
+    per-ticket sentinels with no shared module."""
+    return DocumentSummary(
+        id=_id("traversal_doc"),
+        title="Traversal Doc Title",
+        lifecycle_status="active",
+        source_type=SourceType.MARKDOWN,
+        source_path="imports/traversal-doc.md",
+        version_label="v1.0",
+        project="proj-T",
+        doc_type="ticket",
+        tags=["alpha", "beta"],
+        document_date=datetime(2026, 5, 15, tzinfo=timezone.utc),
+        source_modified_at=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
+        semantic_abstract="an abstract for the traversal sentinel",
+        tier3_metadata={"ticket_id": "T-0119", "ticket_priority": "high"},
+    )
+
+
+def _edge_with_every_field() -> Edge:
+    """Build an Edge with every field set to a distinct non-default sentinel.
+    Local to this ticket's closure test."""
+    return Edge(
+        id=str(uuid.uuid4()),
+        source_id=_id("traversal_src"),
+        target_id=_id("traversal_doc"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("traversal_src_v1"),
+        target_valid_from_version=_id("traversal_doc_v1"),
+        valid_until_version=_id("traversal_doc_v2"),
+        retracted_edge_id=str(uuid.uuid4()),
+        created_at=datetime(2026, 5, 21, 9, 30, tzinfo=timezone.utc),
+        notes="sentinel notes",
+        rationale="sentinel rationale",
+        rationale_kind=RationaleKind.VERSION_CHAIN,
+    )
+
+
+def test_from_traversal_populates_every_traversal_node_field():
+    """Exhaustive-fields closure: every TraversalNode field must be
+    populated by ``TraversalNode.from_traversal`` when given non-default
+    sentinel inputs. List-typed and dict-typed fields must be truthy
+    (anti-coincidental: an empty default would pass a naive
+    ``is not None`` check). When a future field is added to TraversalNode
+    without a matching factory update, this test fails closed."""
+    document = _document_summary_with_every_field()
+    edge = _edge_with_every_field()
+    depth = 3
+    edge_counts = {"references": 2, "supersedes": 1}
+
+    node = TraversalNode.from_traversal(
+        document=document,
+        edge=edge,
+        depth=depth,
+        edge_counts=edge_counts,
+    )
+
+    for field_name, field_info in TraversalNode.model_fields.items():
+        value = getattr(node, field_name)
+        annotation = field_info.annotation
+        if annotation == dict[str, int] or annotation == list[str]:
+            assert value, (
+                f"TraversalNode.{field_name} not populated by from_traversal "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, f"TraversalNode.{field_name} not populated by from_traversal"
