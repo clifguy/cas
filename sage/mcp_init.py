@@ -243,6 +243,22 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     )
 
 
+# Closure-pair invariant (T-0136): the canonical declaration of kwargs that
+# every transport-reachable production call site of ``initialize_services``
+# must thread. ``tests/sage/test_initialize_services_conformance.py`` walks
+# every call site (MCP standalone lifespan + reload tool in sage/mcp_server.py,
+# FastAPI lifespan in sage/app.py, standalone CLI in sage/migrate.py, the
+# create-vault and reload feature-operation paths in sage/services/vault_registry.py
+# / sage/mcp_init.reload_vault_in_registry) and asserts each captured kwargs
+# dict has every key listed here. Adding a new must-thread kwarg is a
+# deliberate one-line edit to this set, not an automatic consequence of
+# growing the signature -- most signature kwargs are test-injection defaults
+# that no transport-reachable code must override. Presence is the contract:
+# ``registry_service=None`` (as in sage/migrate.py) satisfies the gate
+# because the key is present; silent omission does not.
+REQUIRED_TRANSPORT_KWARGS: frozenset[str] = frozenset({"config_path", "registry_service"})
+
+
 async def initialize_services(
     config: VaultConfig,
     *,
