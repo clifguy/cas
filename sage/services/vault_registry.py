@@ -189,7 +189,19 @@ class VaultRegistryService:
         services: Any,
         projects: list[str] | None = None,
     ) -> VaultSummary:
-        """Build a VaultSummary from a config and services instance."""
+        """Build a VaultSummary from a config and services instance (T-0122).
+
+        Single owner of the ``VaultConfig`` -> ``VaultSummary`` projection per
+        the *CAS Projection-Point Audit Conventions* steering document
+        (cas vault, doc_type=steering_document). The exhaustive-fields test
+        ``test_build_vault_summary_populates_every_vault_summary_field`` in
+        ``tests/sage/test_vault_registry.py`` fails closed if a field is
+        added to ``VaultSummary`` (or to its sub-models ``VaultDocTypeEntry``,
+        ``VaultLifecycleState``, ``VaultAdapterInfo``) but not wired through
+        this factory; the test exercises the sub-models transitively on the
+        first element of each sub-collection rather than splitting closure
+        pairs onto each sub-model individually.
+        """
         vault = config.vault
         doc_types = [
             VaultDocTypeEntry(value=dt.value, label=dt.label)
