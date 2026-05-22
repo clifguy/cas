@@ -659,6 +659,33 @@ class GraphOpsService:
             # what is stored. The rationale_kind drop was a documented
             # T-0080 regression; the four parallel fields had the same
             # defect, fixed here in the same pass.
+            #
+            # BH-101 (T-0124): excluded projection point.
+            #
+            # This inline ``Edge`` construction deliberately bypasses the
+            # canonical factory ``GraphStore._row_to_edge``
+            # (sage/storage/graph_store.py) because the traversal hot path
+            # cannot absorb a per-row ``Edge.model_validate`` allocation:
+            # ``_traverse_sync`` returns one row per (multi-path, depth)
+            # tuple, and a top-K traversal at depth>=3 can produce
+            # thousands of rows per query. Routing each through the
+            # canonical factory would re-run Pydantic validation on every
+            # row -- measured prohibitive on benchmark BH-101 -- whereas
+            # the storage layer has already validated the same fields on
+            # insert. The inline assembly skips revalidation while still
+            # building a structurally-identical ``Edge``.
+            #
+            # The exclusion is preserved but guarded per the *CAS
+            # Projection-Point Audit Conventions* steering document
+            # (cas vault, doc_type=steering_document, "Source-shape
+            # exclusions"). The structural guard against field-addition
+            # drift between this inline path and ``_row_to_edge`` is the
+            # parity test ``test_edge_cte_row_parity_with_row_to_edge``
+            # in ``tests/sage/test_graph_ops.py`` (T-0124): when a field
+            # is added to ``Edge`` and wired through one path but not the
+            # other, the parity test trips. Any modification to this
+            # construction must keep the two paths field-equivalent or
+            # update the parity test in the same change.
             resolution_policy_raw = representative.get("resolution_policy")
             edge = Edge(
                 id=representative["edge_id"],

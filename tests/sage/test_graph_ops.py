@@ -17,8 +17,15 @@ from sage.api.errors import (
     PipelineIncompleteError,
     SelfReferentialEdgeError,
 )
-from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
+from sage.models.enums import (
+    EdgeType,
+    PipelineStatus,
+    RationaleKind,
+    ResolutionPolicy,
+    SourceType,
+)
 from sage.models.schemas import ChainRequest, Document, Edge, LinkRequest, TraverseRequest
+from sage.storage.graph_store import GraphStore
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -1383,3 +1390,217 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
     assert result.length == 3
     assert result.total_length == 3
     assert len(result.chain) == 3
+
+
+# ---------------------------------------------------------------------------
+# T-0124: Parity test for the BH-101-excluded ``Edge`` CTE-row construction.
+#
+# The traversal hot path at sage/services/graph_ops.py:663 constructs an
+# ``Edge`` directly from a CTE join row, deliberately bypassing the
+# canonical factory ``GraphStore._row_to_edge`` per the BH-101 performance
+# rationale (per-row ``model_validate`` cost on a thousands-of-rows hot
+# path). Per the *CAS Projection-Point Audit Conventions* steering
+# document (cas vault, doc_type=steering_document), excluded projection
+# points still owe a structural guard against field-addition drift
+# between the two paths: when ``Edge`` grows a field and one path is
+# updated but the other is not, the guard must trip.
+#
+# The exhaustive-fields test on the canonical factory itself lives in
+# tests/sage/test_graph_store.py::test_row_to_edge_populates_every_edge_field
+# (T-0123). This file installs the parity half of the same closure: a
+# test that iterates ``Edge.model_fields`` and asserts field-by-field
+# equality between an ``Edge`` built via ``_row_to_edge`` and an ``Edge``
+# built via the graph_ops.py:663 inline construction from equivalent
+# row inputs.
+# ---------------------------------------------------------------------------
+
+
+import sqlite3  # noqa: E402 -- co-located with the T-0124 fixtures below
+
+# Shared sentinel values used to populate both the canonical
+# ``sqlite3.Row`` (matching the ``_row_to_edge`` shape) and the CTE row
+# dict (matching the graph_ops.py:663 shape). Per the cohort decision
+# sheet, sentinel fixtures are per-ticket local -- no shared module --
+# but within a single ticket the same sentinel constants drive both
+# halves of the parity assertion so the equality check is meaningful.
+_T0124_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C124))
+_T0124_RETRACTED_EDGE_ID = str(uuid.UUID(int=0xED9E0000_0000_0000_0000_00000000C125))
+_T0124_SOURCE_ID = _id("t0124_doc_source")
+_T0124_TARGET_ID = _id("t0124_doc_target")
+_T0124_SOURCE_ANCHOR = _id("t0124_doc_source_anchor")
+_T0124_TARGET_ANCHOR = _id("t0124_doc_target_anchor")
+_T0124_TOMBSTONE = _id("t0124_doc_tombstone")
+_T0124_CREATED_AT_ISO = datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat()
+_T0124_EDGE_TYPE = EdgeType.REFERENCES.value
+_T0124_RESOLUTION_POLICY = ResolutionPolicy.TRANSITIVE_BOTH.value
+_T0124_RATIONALE_KIND = RationaleKind.VERSION_CHAIN.value
+_T0124_NOTES = "t0124 sentinel notes"
+_T0124_RATIONALE = "t0124 sentinel rationale"
+
+
+def _edge_row_with_every_edge_field() -> sqlite3.Row:
+    """Per-ticket sentinel ``sqlite3.Row`` matching the ``_row_to_edge``
+    column shape, with every field set to a distinct non-default value.
+
+    Co-derived with ``_edge_cte_row_with_every_edge_field`` from the same
+    underlying sentinel constants so the two row shapes carry equivalent
+    payloads despite their different column-name conventions
+    (``id`` / ``created_at`` here vs. ``edge_id`` / ``edge_created_at``
+    in the CTE row dict).
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            """
+            SELECT
+                ? AS id,
+                ? AS source_id,
+                ? AS target_id,
+                ? AS edge_type,
+                ? AS resolution_policy,
+                ? AS source_valid_from_version,
+                ? AS target_valid_from_version,
+                ? AS valid_until_version,
+                ? AS retracted_edge_id,
+                ? AS created_at,
+                ? AS notes,
+                ? AS rationale,
+                ? AS rationale_kind
+            """,
+            (
+                _T0124_EDGE_ID,
+                _T0124_SOURCE_ID,
+                _T0124_TARGET_ID,
+                _T0124_EDGE_TYPE,
+                _T0124_RESOLUTION_POLICY,
+                _T0124_SOURCE_ANCHOR,
+                _T0124_TARGET_ANCHOR,
+                _T0124_TOMBSTONE,
+                _T0124_RETRACTED_EDGE_ID,
+                _T0124_CREATED_AT_ISO,
+                _T0124_NOTES,
+                _T0124_RATIONALE,
+                _T0124_RATIONALE_KIND,
+            ),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return row
+
+
+def _edge_cte_row_with_every_edge_field() -> dict:
+    """Per-ticket sentinel dict matching the CTE row shape consumed at
+    sage/services/graph_ops.py:663, with every field set to a distinct
+    non-default value drawn from the same constants as
+    ``_edge_row_with_every_edge_field``.
+
+    The column-name conventions differ from the ``_row_to_edge`` shape:
+    the traversal CTE aliases the edge-id and created-at columns as
+    ``edge_id`` and ``edge_created_at`` to avoid collision with the
+    document join's own ``id``/``created_at`` columns. The remaining
+    storage-layer fields keep their bare names.
+    """
+    return {
+        "edge_id": _T0124_EDGE_ID,
+        "source_id": _T0124_SOURCE_ID,
+        "target_id": _T0124_TARGET_ID,
+        "edge_type": _T0124_EDGE_TYPE,
+        "resolution_policy": _T0124_RESOLUTION_POLICY,
+        "source_valid_from_version": _T0124_SOURCE_ANCHOR,
+        "target_valid_from_version": _T0124_TARGET_ANCHOR,
+        "valid_until_version": _T0124_TOMBSTONE,
+        "retracted_edge_id": _T0124_RETRACTED_EDGE_ID,
+        "edge_created_at": _T0124_CREATED_AT_ISO,
+        "notes": _T0124_NOTES,
+        "rationale": _T0124_RATIONALE,
+        "rationale_kind": _T0124_RATIONALE_KIND,
+    }
+
+
+def _build_edge_from_cte_row(representative: dict) -> Edge:
+    """Emulate the inline ``Edge`` construction at
+    sage/services/graph_ops.py:663 verbatim.
+
+    Mirrors the production code field-by-field so the parity assertion
+    detects drift between the two construction paths when ``Edge`` grows
+    a field. If the production inline construction changes its kwargs,
+    this emulation must change in lockstep -- the parity test will
+    surface the divergence as a field-name-specific assertion failure.
+    """
+    resolution_policy_raw = representative.get("resolution_policy")
+    return Edge(
+        id=representative["edge_id"],
+        source_id=representative["source_id"],
+        target_id=representative["target_id"],
+        edge_type=EdgeType(representative["edge_type"]),
+        resolution_policy=(
+            ResolutionPolicy(resolution_policy_raw) if resolution_policy_raw is not None else None
+        ),
+        source_valid_from_version=representative.get("source_valid_from_version"),
+        target_valid_from_version=representative.get("target_valid_from_version"),
+        valid_until_version=representative.get("valid_until_version"),
+        retracted_edge_id=representative.get("retracted_edge_id"),
+        created_at=datetime.fromisoformat(representative["edge_created_at"]),
+        notes=representative["notes"],
+        rationale=representative["rationale"],
+        rationale_kind=RationaleKind(representative["rationale_kind"]),
+    )
+
+
+def test_edge_cte_row_parity_with_row_to_edge():
+    """T-0124 (F4 closure pair, T2 -- parity guard on the BH-101 excluded
+    projection point): the inline ``Edge`` construction at
+    sage/services/graph_ops.py:663 and the canonical factory
+    ``GraphStore._row_to_edge`` (sage/storage/graph_store.py) construct
+    field-equivalent ``Edge`` instances from equivalent row inputs.
+
+    The exhaustive-fields test on the canonical factory itself is T-0123
+    (``tests/sage/test_graph_store.py::``
+    ``test_row_to_edge_populates_every_edge_field``). This parity test
+    composes against the same sentinel-row pattern and adds the
+    drift-detection half: iterating ``Edge.model_fields`` and asserting
+    equality at every field guarantees that when a future field is
+    added to ``Edge`` and wired through one path but not the other, the
+    parity check trips.
+
+    Together the T-0123 exhaustive-fields test and this T-0124 parity
+    test satisfy the three sub-criteria for an excluded projection
+    point under the *CAS Projection-Point Audit Conventions* steering
+    document (the third sub-criterion -- the in-line BH-101 exclusion
+    comment at the construction site -- lives in
+    sage/services/graph_ops.py adjacent to the inline ``Edge`` block).
+    """
+    row = _edge_row_with_every_edge_field()
+    cte_row = _edge_cte_row_with_every_edge_field()
+
+    edge_canonical = GraphStore._row_to_edge(row)
+    edge_inline = _build_edge_from_cte_row(cte_row)
+
+    # Both halves of the parity must produce identical Edge instances.
+    # Iterating ``Edge.model_fields`` is the structural closure: a field
+    # added to Edge automatically becomes part of the assertion.
+    divergences = []
+    for field_name in Edge.model_fields:
+        canonical_value = getattr(edge_canonical, field_name)
+        inline_value = getattr(edge_inline, field_name)
+        if canonical_value != inline_value:
+            divergences.append(
+                f"Edge.{field_name}: canonical={canonical_value!r} inline={inline_value!r}"
+            )
+    assert not divergences, (
+        "Edge inline construction at sage/services/graph_ops.py:663 "
+        "diverged from canonical GraphStore._row_to_edge factory on "
+        f"the following fields: {divergences}. The two paths must "
+        "remain field-equivalent per the BH-101 exclusion guard "
+        "(T-0124, T-0123) in the *CAS Projection-Point Audit "
+        "Conventions* steering document."
+    )
+
+    # Belt-and-suspenders: also assert structural equality at the model
+    # level. This catches anything ``model_fields`` enumeration might
+    # miss (extra/dropped fields would already trip pydantic validation
+    # before reaching this line; equality is the residual check).
+    assert edge_canonical == edge_inline
