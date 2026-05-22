@@ -459,8 +459,8 @@ class RetrievalService:
             )
 
         hits = [
-            DiscoverHit(
-                document=DocumentSummary.from_document(doc),
+            DiscoverHit.from_summary(
+                DocumentSummary.from_document(doc),
                 chunk_content=None,
                 heading_path=None,
                 relevance_score=None,
@@ -597,8 +597,8 @@ class RetrievalService:
 
             summary = DocumentSummary.from_document(doc)
             hits.append(
-                DiscoverHit(
-                    document=summary,
+                DiscoverHit.from_summary(
+                    summary,
                     chunk_content=None,
                     heading_path=None,
                     relevance_score=None,
@@ -781,8 +781,8 @@ class RetrievalService:
                 if result.heading_path == SYNTHETIC_HEADER_HEADING_PATH
                 else (result.heading_path or None)
             )
-            hit = DiscoverHit(
-                document=summary,
+            hit = DiscoverHit.from_summary(
+                summary,
                 chunk_content=result.content if include_content else None,
                 heading_path=visible_heading_path,
                 relevance_score=result.score,
@@ -844,8 +844,8 @@ class RetrievalService:
             else:
                 summary = DocumentSummary.from_document(doc)
                 boosted.append(
-                    DiscoverHit(
-                        document=summary,
+                    DiscoverHit.from_summary(
+                        summary,
                         chunk_content=None,
                         heading_path=None,
                         relevance_score=boost_score,
@@ -1056,8 +1056,8 @@ class RetrievalService:
         summary = DocumentSummary.from_document(doc)
 
         hits = [
-            DiscoverHit(
-                document=summary,
+            DiscoverHit.from_summary(
+                summary,
                 chunk_content=chunk.content,
                 heading_path=chunk.heading_path,
                 relevance_score=None,  # Deterministic mode: no relevance score

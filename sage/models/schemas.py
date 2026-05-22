@@ -1851,6 +1851,33 @@ class DiscoverHit(BaseModel):
         ),
     )
 
+    @classmethod
+    def from_summary(
+        cls,
+        document: "DocumentSummary",
+        *,
+        chunk_content: str | None = None,
+        heading_path: str | None = None,
+        relevance_score: float | None = None,
+        matched_chunk_count: int | None = None,
+    ) -> "DiscoverHit":
+        """Build a DiscoverHit from a DocumentSummary plus optional chunk fields (T-0121).
+
+        Single owner of the DocumentSummary → DiscoverHit projection per the *CAS
+        Projection-Point Audit Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        ``test_from_summary_populates_every_discover_hit_field`` in
+        ``tests/sage/test_retrieval.py`` fails closed if a field is added to
+        DiscoverHit but not wired through this factory.
+        """
+        return cls(
+            document=document,
+            chunk_content=chunk_content,
+            heading_path=heading_path,
+            relevance_score=relevance_score,
+            matched_chunk_count=matched_chunk_count,
+        )
+
 
 class DiscoverResponse(BaseModel):
     mode: RetrievalMode = Field(description="The retrieval mode that produced these results.")

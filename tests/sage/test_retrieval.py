@@ -33,6 +33,7 @@ from sage.models.enums import (
     SourceType,
 )
 from sage.models.schemas import (
+    DiscoverHit,
     DiscoverRequest,
     Document,
     DocumentSummary,
@@ -4048,3 +4049,50 @@ def test_parse_document_date_malformed_returns_none():
     from sage.utils.date_parsing import parse_document_date
 
     assert parse_document_date("not-a-date") is None
+
+
+# ---------------------------------------------------------------------------
+# T-0121: DiscoverHit.from_summary factory consolidates 5 retrieval-site
+# constructions of DiscoverHit (sage/services/retrieval.py lines 462, 600,
+# 784, 847, 1059). The exhaustive-fields test below is the structural F4
+# closure: it fails closed when a new field is added to DiscoverHit
+# without a matching update to from_summary.
+# ---------------------------------------------------------------------------
+
+
+def _summary_with_every_discover_hit_field() -> DocumentSummary:
+    """Build a DocumentSummary with every field set to a non-default sentinel.
+
+    Reuses ``_doc_with_every_summary_field`` (the T-0096 sentinel Document)
+    routed through ``DocumentSummary.from_document`` so the document side of
+    the projection is non-default at every field. Combined with the
+    non-default chunk-field kwargs supplied by the caller, this ensures the
+    exhaustive-fields test cannot pass coincidentally on a default/None
+    value at any field.
+    """
+    return DocumentSummary.from_document(_doc_with_every_summary_field())
+
+
+# T1: exhaustive fields — the keystone F4-closure test for T-0121.
+def test_from_summary_populates_every_discover_hit_field():
+    summary = _summary_with_every_discover_hit_field()
+    hit = DiscoverHit.from_summary(
+        summary,
+        chunk_content="sentinel chunk content",
+        heading_path="Section 1 > Sentinel Heading",
+        relevance_score=0.875,
+        matched_chunk_count=7,
+    )
+    for field_name, field_info in DiscoverHit.model_fields.items():
+        value = getattr(hit, field_name)
+        annotation = field_info.annotation
+        # DiscoverHit has no list/dict fields today, but keep the branch
+        # for forward compatibility: a future list/dict field defaulting
+        # to [] / None would pass a naive `value is not None` check.
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"DiscoverHit.{field_name} not populated by from_summary "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, f"DiscoverHit.{field_name} not populated by from_summary"
