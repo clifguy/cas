@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from sage.api.dependencies import get_maintenance_service, get_vault_id
 from sage.models.schemas import (
+    DriftReport,
     ErrorResponse,
     MigrationReport,
     ReabstractRequest,
@@ -61,6 +62,23 @@ async def admin_migrate_vault(
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> MigrationReport:
     return await service.migrate_vault()
+
+
+@router.post(
+    "/admin/detect-drift",
+    response_model=DriftReport,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def admin_detect_drift(
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: MaintenanceService = Depends(get_maintenance_service),
+) -> DriftReport:
+    return await service.detect_drift()
 
 
 @router.post(

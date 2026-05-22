@@ -57,7 +57,13 @@ extended the gate to ``app.backend.router`` and ``sage.config`` and
 typed the four shape-bearing fields the extension surfaced; T-0035
 extended the gate to FastAPI route parameters and FastMCP tool entry
 points and typed every shape-bearing parameter at those boundaries.
-All three ``KNOWN_*_VIOLATIONS`` dicts are now empty.
+T-0110 added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
+and the ``sage_link`` MCP tool as ``str | None`` with hash-format
+validation deferred to T-0111; T-0111 retyped those three sites to
+``Sha256Str``-shaped validation (Pattern 1 on the Pydantic models,
+Pattern 2 via ``_SHA256_ADAPTER`` in ``sage_link``) and cleared the
+three allowlist entries. All three ``KNOWN_*_VIOLATIONS`` dicts are
+once again empty.
 """
 
 from __future__ import annotations
@@ -158,22 +164,7 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
 # leading T-NNNN points at the remediation ticket where applicable.
 # ---------------------------------------------------------------------------
 
-KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
-    # T-0110 ships synced-from provenance as schema-only; hash-format
-    # validation (Sha256Str AfterValidator) is one of the tightenings
-    # explicitly deferred to T-0111 (drift-detection follow-up), which
-    # will define the consumer shape and decide whether to enforce the
-    # `sha256:<64-hex>` form at the Pydantic boundary or accept the bare
-    # hex used by some upstream sources. Until then, the field is bare
-    # `str | None` so callers can write whatever shape their source
-    # produces. Remove this entry when T-0111 lands and tightens.
-    ("Edge", "synced_from_content_hash"): (
-        "T-0111: hash-format validation deferred until drift-detection consumer shape is known"
-    ),
-    ("LinkRequest", "synced_from_content_hash"): (
-        "T-0111: hash-format validation deferred until drift-detection consumer shape is known"
-    ),
-}
+KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -456,17 +447,7 @@ def _registered_fastmcp_tools() -> list[Callable]:
 
 
 # Keyed by (qualified_callable_name, param_name). One-line reason values.
-KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
-    # T-0110: mirrors the Pydantic-side allowlist on Edge / LinkRequest
-    # for the same hash-format-validation deferral. The MCP tool parameter
-    # passes through to LinkRequest unchanged; tightening here without
-    # tightening the model would create asymmetric coverage. Remove this
-    # entry when T-0111 lands and tightens.
-    ("sage.sage_api_tools.sage_link", "synced_from_content_hash"): (
-        "T-0110: hash-format validation deferred to T-0111 (mirrors the "
-        "Edge/LinkRequest entries in KNOWN_VIOLATIONS)"
-    ),
-}
+KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
 
 
 # Cache: ``module → {adapter_name → alias_class}`` computed via AST.

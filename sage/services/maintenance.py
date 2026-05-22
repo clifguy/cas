@@ -18,8 +18,10 @@ from typing import TYPE_CHECKING
 
 from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.config import VaultConfig
-from sage.models.enums import PipelineStatus, ReabstractOutcome
+from sage.models.enums import EdgeType, PipelineStatus, ReabstractOutcome, StalenessBasis
 from sage.models.schemas import (
+    DriftEntry,
+    DriftReport,
     MigrationReport,
     MigrationReportEntry,
     ReabstractProgressEvent,
@@ -181,6 +183,137 @@ class MaintenanceService:
             backfills_applied=backfills_applied,
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
+        )
+
+    async def detect_drift(self) -> DriftReport:
+        """Walk every active sync_target / derived_from edge; classify drift (T-0111).
+
+        For each edge whose target's supersedes-chain head has advanced
+        past the recorded ``synced_from_*`` provenance, emit a
+        ``DriftEntry``. Hash is the authoritative comparator; the
+        version doc-id is a display key. Edges whose recorded state
+        still matches the head are absent from the report. See
+        ``StalenessBasis`` for the four bucket semantics.
+        """
+        edges = await self._graph_store.list_provenance_edges(
+            [EdgeType.SYNC_TARGET.value, EdgeType.DERIVED_FROM.value]
+        )
+
+        entries: list[DriftEntry] = []
+        for edge in edges:
+            entry = await self._classify_edge_for_drift(edge)
+            if entry is not None:
+                entries.append(entry)
+
+        summary: dict[str, int] = {basis.value: 0 for basis in StalenessBasis}
+        for entry in entries:
+            summary[entry.staleness_basis.value] += 1
+
+        return DriftReport(
+            vault_id=self._vault_id,
+            total_edges_walked=len(edges),
+            summary=summary,
+            entries=entries,
+        )
+
+    async def _classify_edge_for_drift(self, edge: dict) -> DriftEntry | None:
+        """Build a DriftEntry for one edge, or None if the edge is current.
+
+        See ``detect_drift`` for the four-bucket semantics. ``edge`` is
+        a raw dict produced by ``list_provenance_edges``; this method
+        does its own auxiliary reads (chain head, recorded-version
+        dereference) and returns a fully-populated DriftEntry or None
+        for the "current" case.
+        """
+        recorded_version = edge["synced_from_version"]
+        recorded_hash = edge["synced_from_content_hash"]
+        edge_type = EdgeType(edge["edge_type"])
+
+        # Step 1: resolve target chain head.
+        head_info = await self._graph_store.head_with_hash_for_chain(
+            edge["target_id"], edge_type="supersedes"
+        )
+
+        # Step 2: chain nonlinear → data-quality flag, regardless of recorded state.
+        if not head_info["is_linear"]:
+            return DriftEntry(
+                edge_id=edge["id"],
+                edge_type=edge_type,
+                source_id=edge["source_id"],
+                target_id=edge["target_id"],
+                recorded_version_id=recorded_version,
+                recorded_version_label=None,
+                recorded_content_hash=recorded_hash,
+                current_head_id=None,
+                current_head_version_label=None,
+                current_head_content_hash=None,
+                competing_head_count=head_info["heads_count"],
+                staleness_basis=StalenessBasis.CHAIN_NONLINEAR,
+            )
+
+        head_id = head_info["head_id"]
+        head_hash = head_info["head_content_hash"]
+        head_label = head_info["head_version_label"]
+
+        # Step 3: neither field recorded → legacy/unknown.
+        if recorded_version is None and recorded_hash is None:
+            return DriftEntry(
+                edge_id=edge["id"],
+                edge_type=edge_type,
+                source_id=edge["source_id"],
+                target_id=edge["target_id"],
+                recorded_version_id=None,
+                recorded_version_label=None,
+                recorded_content_hash=None,
+                current_head_id=head_id,
+                current_head_version_label=head_label,
+                current_head_content_hash=head_hash,
+                competing_head_count=None,
+                staleness_basis=StalenessBasis.RECORDED_NULL,
+            )
+
+        # Step 4: compute drift.
+        recorded_version_label: str | None = None
+        if recorded_version is not None:
+            recorded_doc = await self._graph_store.get_document(recorded_version)
+            if recorded_doc is not None:
+                recorded_version_label = recorded_doc.version_label
+            recorded_doc_hash = (
+                recorded_doc.source_content_hash if recorded_doc is not None else None
+            )
+        else:
+            recorded_doc_hash = None
+
+        if recorded_hash is not None:
+            # Hash-authoritative path.
+            if recorded_hash != head_hash:
+                basis = StalenessBasis.CONTENT_DRIFT
+            elif recorded_version is not None and recorded_version != head_id:
+                basis = StalenessBasis.CHAIN_ADVANCED_NO_CONTENT_CHANGE
+            else:
+                return None  # current — recorded matches head
+        else:
+            # Only version recorded; dereference its hash to compare.
+            if recorded_doc_hash is None or recorded_doc_hash != head_hash:
+                basis = StalenessBasis.CONTENT_DRIFT
+            elif recorded_version != head_id:
+                basis = StalenessBasis.CHAIN_ADVANCED_NO_CONTENT_CHANGE
+            else:
+                return None  # current — recorded version is head, hash matches
+
+        return DriftEntry(
+            edge_id=edge["id"],
+            edge_type=edge_type,
+            source_id=edge["source_id"],
+            target_id=edge["target_id"],
+            recorded_version_id=recorded_version,
+            recorded_version_label=recorded_version_label,
+            recorded_content_hash=recorded_hash,
+            current_head_id=head_id,
+            current_head_version_label=head_label,
+            current_head_content_hash=head_hash,
+            competing_head_count=None,
+            staleness_basis=basis,
         )
 
     async def scan_tier3_uniqueness_collisions(

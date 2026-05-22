@@ -7,6 +7,7 @@ idempotent re-initialization.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -228,6 +229,16 @@ INDEXES = [
     # T-0080: typed provenance discriminator, indexed for chain-repair
     # and future per-inference-rule telemetry.
     "CREATE INDEX IF NOT EXISTS idx_edges_rationale_kind ON edges(rationale_kind);",
+    # T-0111: supports the drift detector's hash-comparison scan over
+    # provenance-bearing edges. The detector's list_provenance_edges
+    # filters by edge_type (covered by idx_edges_type) and projects
+    # synced_from_content_hash for per-edge comparison; this index lets
+    # operators run ad-hoc hash-equality queries (e.g. "which edges
+    # recorded this exact source revision?") without a full scan.
+    (
+        "CREATE INDEX IF NOT EXISTS idx_edges_synced_from_content_hash "
+        "ON edges(synced_from_content_hash);"
+    ),
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
     # T-0075: expression indexes on the three canonical high-frequency
@@ -441,6 +452,95 @@ def _populate_backfill_rationale_kind_pairs() -> None:
 _populate_backfill_rationale_kind_pairs()
 
 
+# T-0111: verb-gated regex for the rationale-prose backfill that
+# recovers synced_from_version on legacy derived_from edges. Requires a
+# provenance verb (derived/synced/copied/adapted/based) followed by
+# from/on, then a version token (optional `v`, then 1-3 numeric groups).
+# Conservative on purpose: false-positive provenance is worse than honest
+# null. False-positive verbs ("contradicts", "until", "regression from",
+# "see also") are NOT in the allowlist.
+_BACKFILL_SYNCED_FROM_REGEX = re.compile(
+    r"\b(?:derived|synced|copied|adapted|based)\s+(?:from|on)"
+    r"\s+(v?\d+(?:\.\d+){1,2})\b",
+    re.IGNORECASE,
+)
+
+
+def _iter_synced_from_version_backfill_assignments(
+    conn: sqlite3.Connection,
+) -> "list[tuple[str, str]]":
+    """T-0111: yield (edge_id, resolved_version_doc_id) pairs to assign.
+
+    Shared driver for the detect/apply pair. Each pair indicates a
+    derived_from edge whose rationale prose names a version label that
+    resolves to exactly one member of the edge's target's supersedes
+    chain. Ambiguous matches (regex captures a token that matches more
+    than one chain entry's ``version_label``) are dropped silently -- the
+    edge stays NULL so future detection can surface it via the
+    ``recorded_null`` basket rather than recording false provenance.
+    """
+    rows = conn.execute(
+        "SELECT id, target_id, rationale FROM edges "
+        "WHERE edge_type = 'derived_from' "
+        "AND synced_from_version IS NULL "
+        "AND target_id IS NOT NULL "
+        "AND rationale IS NOT NULL"
+    ).fetchall()
+    chain_sql = (
+        "WITH RECURSIVE chain AS ("
+        " SELECT ? AS doc_id"
+        " UNION"
+        " SELECT e.target_id AS doc_id FROM edges e "
+        "  INNER JOIN chain c ON e.source_id = c.doc_id "
+        "  WHERE e.edge_type = 'supersedes'"
+        " UNION"
+        " SELECT e.source_id AS doc_id FROM edges e "
+        "  INNER JOIN chain c ON e.target_id = c.doc_id "
+        "  WHERE e.edge_type = 'supersedes'"
+        ")"
+        " SELECT d.id FROM chain c "
+        " INNER JOIN documents d ON c.doc_id = d.id "
+        " WHERE d.version_label = ?"
+    )
+    assignments: list[tuple[str, str]] = []
+    for row in rows:
+        edge_id = row[0] if not isinstance(row, sqlite3.Row) else row["id"]
+        target_id = row[1] if not isinstance(row, sqlite3.Row) else row["target_id"]
+        rationale = row[2] if not isinstance(row, sqlite3.Row) else row["rationale"]
+        match = _BACKFILL_SYNCED_FROM_REGEX.search(rationale)
+        if match is None:
+            continue
+        version_token = match.group(1)
+        chain_hits = conn.execute(chain_sql, (target_id, version_token)).fetchall()
+        if len(chain_hits) == 1:
+            resolved_id = chain_hits[0][0]
+            assignments.append((edge_id, resolved_id))
+    return assignments
+
+
+def _backfill_synced_from_version_from_rationale_detect(conn: sqlite3.Connection) -> bool:
+    """T-0111: detect if any derived_from edge has a backfill-assignable
+    synced_from_version pending. Iterates the same regex-then-chain-match
+    logic as apply; returns True on the first assignable pair.
+    """
+    return bool(_iter_synced_from_version_backfill_assignments(conn))
+
+
+def _backfill_synced_from_version_from_rationale_apply(conn: sqlite3.Connection) -> None:
+    """T-0111: per-edge UPDATE of ``synced_from_version`` for legacy
+    ``derived_from`` edges whose rationale prose unambiguously names a
+    chain member. Idempotent: re-running produces no new changes
+    because the WHERE clause filters on ``synced_from_version IS NULL``.
+    """
+    assignments = _iter_synced_from_version_backfill_assignments(conn)
+    if not assignments:
+        return
+    conn.executemany(
+        "UPDATE edges SET synced_from_version = ? WHERE id = ? AND synced_from_version IS NULL",
+        [(resolved_id, edge_id) for edge_id, resolved_id in assignments],
+    )
+
+
 BACKFILL_PLAN: list[Backfill] = [
     Backfill(
         name="document_tags",
@@ -456,6 +556,11 @@ BACKFILL_PLAN: list[Backfill] = [
         name="is_chain_head",
         detect=_backfill_is_chain_head_detect,
         apply=_backfill_is_chain_head_apply,
+    ),
+    Backfill(
+        name="synced_from_version_from_rationale",
+        detect=_backfill_synced_from_version_from_rationale_detect,
+        apply=_backfill_synced_from_version_from_rationale_apply,
     ),
 ]
 

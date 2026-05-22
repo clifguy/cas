@@ -106,7 +106,11 @@ async def test_t1_round_trip_both_attributes_via_link_and_traverse(
     """
     src = _id("t1_src")
     tgt = _id("t1_tgt")
-    synced_from = _id("t1_synced_from")
+    # T-0111 chain-membership guard: synced_from_version must be a member
+    # of target_id's supersedes chain. tgt itself is a one-element chain;
+    # synced_from = tgt is valid (recorded == head → "current" per the
+    # detector's classification).
+    synced_from = tgt
     expected_hash = "sha256:" + "a1" * 32
 
     await graph_store.insert_document(_make_doc(src))
@@ -209,7 +213,9 @@ async def test_t3_one_attribute_set_other_null_no_coupled_enforcement(
     """
     src = _id("t3_src")
     tgt = _id("t3_tgt")
-    synced_from = _id("t3_synced_from")
+    # T-0111 chain-membership guard: synced_from_version must be a member
+    # of target_id's supersedes chain.
+    synced_from = tgt
 
     await graph_store.insert_document(_make_doc(src))
     await graph_store.insert_document(_make_doc(tgt))

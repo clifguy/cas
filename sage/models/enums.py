@@ -203,6 +203,22 @@ class ReabstractOutcome(StrEnum):
     LLM_FAILURE = "llm_failure"
 
 
+class StalenessBasis(StrEnum):
+    """Per-edge drift classification in a DriftReport (T-0111).
+
+    Used to discriminate why a `sync_target` / `derived_from` edge appears
+    in the drift report. `content_drift` is the load-bearing "stale, act
+    now" signal. `chain_advanced_no_content_change` and `recorded_null`
+    are informational. `chain_nonlinear` is a data-quality flag, not a
+    drift signal.
+    """
+
+    CONTENT_DRIFT = "content_drift"
+    CHAIN_ADVANCED_NO_CONTENT_CHANGE = "chain_advanced_no_content_change"
+    RECORDED_NULL = "recorded_null"
+    CHAIN_NONLINEAR = "chain_nonlinear"
+
+
 # Terminal pipeline statuses: pipeline has finished processing.
 TERMINAL_PIPELINE_STATUSES: frozenset[PipelineStatus] = frozenset(
     {

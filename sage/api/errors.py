@@ -829,6 +829,56 @@ class IdenticalContentSupersedeError(SAGEError):
         )
 
 
+class SyncedFromInapplicableEdgeType(SAGEError):
+    """400: synced_from_* fields set on an edge_type other than sync_target /
+    derived_from (T-0111).
+
+    The `synced_from_version` and `synced_from_content_hash` columns are
+    semantically meaningful only on `sync_target` (Tier 1) and
+    `derived_from` (Tier 3) edges. Setting them on any other edge type
+    creates orphaned provenance the drift detector would never inspect.
+    """
+
+    def __init__(self, edge_type: str, fields_set: list[str]) -> None:
+        super().__init__(
+            "synced_from_inapplicable_edge_type",
+            (
+                f"synced_from_* fields {sorted(fields_set)!r} are not "
+                f"applicable to edge_type '{edge_type}'; only 'sync_target' "
+                "and 'derived_from' carry synced-from provenance."
+            ),
+            400,
+            {"edge_type": edge_type, "fields_set": sorted(fields_set)},
+        )
+
+
+class SyncedFromVersionNotInSourceChain(SAGEError):
+    """400: synced_from_version doc id is not a member of the target's
+    supersedes chain (T-0111).
+
+    Raised when `sage_link` is called with a `synced_from_version` that
+    either references a document outside the chain rooted at `target_id`
+    or references a document id that does not resolve at all. Surfaced
+    as this dedicated code (not `document_not_found`) so operators can
+    distinguish "wrong document" from "missing document" — the
+    remediation differs.
+    """
+
+    def __init__(self, target_id: str, synced_from_version: str) -> None:
+        super().__init__(
+            "synced_from_version_not_in_source_chain",
+            (
+                f"synced_from_version {synced_from_version!r} is not a member "
+                f"of the supersedes chain rooted at target_id {target_id!r}."
+            ),
+            400,
+            {
+                "target_id": target_id,
+                "synced_from_version": synced_from_version,
+            },
+        )
+
+
 # Field-annotation strings used in InvalidFilterShapeError detail (T-0092).
 # Kept as a small lookup rather than introspected from RetrievalFilters because
 # Pydantic v2's stringified annotations for ``str | None`` shapes are noisy

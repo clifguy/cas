@@ -42,7 +42,17 @@ router = APIRouter(tags=["Graph Operations"])
                 "`tbd_policy_edge`: the requested `edge_type` has no shipped "
                 "resolution policy and cannot be created.\n\n"
                 "`self_referential_edge`: `source_id` and `target_id` "
-                "resolve to the same document."
+                "resolve to the same document.\n\n"
+                "`synced_from_inapplicable_edge_type` (T-0111): "
+                "`synced_from_version` or `synced_from_content_hash` was set "
+                "on an edge type other than `sync_target` or `derived_from`. "
+                "Provenance fields are only meaningful on those two types.\n\n"
+                "`synced_from_version_not_in_source_chain` (T-0111): "
+                "`synced_from_version` references a document that is not a "
+                "member of `target_id`'s supersedes chain (covers both "
+                "wrong-document and missing-document cases — surfaced as "
+                "this dedicated code so operators can distinguish them "
+                "from `document_not_found`)."
             ),
         },
         403: {

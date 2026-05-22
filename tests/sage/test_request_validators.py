@@ -206,6 +206,83 @@ def test_hash_check_request_rejects_wrong_length():
 
 
 # ---------------------------------------------------------------------------
+# Sha256Str — applied to LinkRequest.synced_from_content_hash and
+# Edge.synced_from_content_hash (T-0111; tightening of the schema-only
+# fields introduced by T-0110).
+#
+# Each rejection case populates all other required LinkRequest fields with
+# valid values so the only validator that can fire is the synced_from
+# hash check — guards against the coincidental-pass scenario where some
+# unrelated required-field error happens to raise ValidationError.
+# ---------------------------------------------------------------------------
+
+
+def test_link_request_synced_from_content_hash_accepts_valid_sha256():
+    valid = "sha256:" + "a" * 64
+    req = LinkRequest(
+        source_id=_DOC_A,
+        target_id=_DOC_B,
+        edge_type=EdgeType.DERIVED_FROM,
+        synced_from_content_hash=valid,
+    )
+    assert req.synced_from_content_hash == valid
+
+
+def test_link_request_synced_from_content_hash_accepts_none():
+    req = LinkRequest(
+        source_id=_DOC_A,
+        target_id=_DOC_B,
+        edge_type=EdgeType.DERIVED_FROM,
+        synced_from_content_hash=None,
+    )
+    assert req.synced_from_content_hash is None
+
+
+def test_link_request_synced_from_content_hash_rejects_short_digest():
+    with pytest.raises(ValidationError) as excinfo:
+        LinkRequest(
+            source_id=_DOC_A,
+            target_id=_DOC_B,
+            edge_type=EdgeType.DERIVED_FROM,
+            synced_from_content_hash="sha256:" + "a" * 63,
+        )
+    assert "synced_from_content_hash" in str(excinfo.value)
+
+
+def test_link_request_synced_from_content_hash_rejects_uppercase_hex():
+    with pytest.raises(ValidationError) as excinfo:
+        LinkRequest(
+            source_id=_DOC_A,
+            target_id=_DOC_B,
+            edge_type=EdgeType.DERIVED_FROM,
+            synced_from_content_hash="sha256:" + "A" * 64,
+        )
+    assert "synced_from_content_hash" in str(excinfo.value)
+
+
+def test_link_request_synced_from_content_hash_rejects_missing_prefix():
+    with pytest.raises(ValidationError) as excinfo:
+        LinkRequest(
+            source_id=_DOC_A,
+            target_id=_DOC_B,
+            edge_type=EdgeType.DERIVED_FROM,
+            synced_from_content_hash="a" * 64,
+        )
+    assert "synced_from_content_hash" in str(excinfo.value)
+
+
+def test_link_request_synced_from_content_hash_rejects_empty_string():
+    with pytest.raises(ValidationError) as excinfo:
+        LinkRequest(
+            source_id=_DOC_A,
+            target_id=_DOC_B,
+            edge_type=EdgeType.DERIVED_FROM,
+            synced_from_content_hash="",
+        )
+    assert "synced_from_content_hash" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
 # tier3_metadata — applied to IngestRequest, UpdateMetadataRequest, and
 # RetrievalFilters (T-0004 Phase 1, plumbing only — validator-cache
 # integration tests live in test_tier3_metadata.py).

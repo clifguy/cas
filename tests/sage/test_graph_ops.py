@@ -17,6 +17,8 @@ from sage.api.errors import (
     EdgeNotFoundError,
     PipelineIncompleteError,
     SelfReferentialEdgeError,
+    SyncedFromInapplicableEdgeType,
+    SyncedFromVersionNotInSourceChain,
 )
 from sage.models.enums import (
     EdgeType,
@@ -670,6 +672,176 @@ async def test_link_nonexistent_target_raises_404(graph_store, graph_ops_service
                 edge_type=EdgeType.REFERENCES,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# T-0111: Write-time guards on synced_from_* fields
+#
+# (A) Inapplicable-edge-type guard: synced_from_* only applies to
+#     sync_target / derived_from. Setting them on any other edge type
+#     raises SyncedFromInapplicableEdgeType (400).
+# ---------------------------------------------------------------------------
+
+
+async def test_t0111_synced_from_version_inapplicable_on_supersedes(graph_store, graph_ops_service):
+    """supersedes + synced_from_version set → 400 inapplicable error.
+
+    `supersedes` does not carry synced-from provenance; only
+    `sync_target` and `derived_from` do. Tests use SUPERSEDES (policy
+    `none`, no anchor requirements) so the test signal isolates the
+    new inapplicable-edge-type guard.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    with pytest.raises(SyncedFromInapplicableEdgeType) as exc_info:
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.SUPERSEDES,
+                synced_from_version=_id("doc_b"),
+            )
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "synced_from_inapplicable_edge_type"
+    assert "synced_from_version" in exc_info.value.detail["fields_set"]
+
+
+async def test_t0111_synced_from_content_hash_inapplicable_on_supersedes(
+    graph_store, graph_ops_service
+):
+    """supersedes + synced_from_content_hash set → 400 inapplicable error."""
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    with pytest.raises(SyncedFromInapplicableEdgeType) as exc_info:
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.SUPERSEDES,
+                synced_from_content_hash="sha256:" + "a" * 64,
+            )
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "synced_from_inapplicable_edge_type"
+    assert "synced_from_content_hash" in exc_info.value.detail["fields_set"]
+
+
+async def test_t0111_supersedes_without_synced_from_still_succeeds(graph_store, graph_ops_service):
+    """supersedes edge with NEITHER synced_from_* field set → succeeds.
+
+    Load-bearing companion to the rejection tests above: confirms the
+    inapplicable check fires only when a synced_from_* field is actually
+    set, not for every non-{sync_target,derived_from} link.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    edge = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("doc_a"),
+            target_id=_id("doc_b"),
+            edge_type=EdgeType.SUPERSEDES,
+        )
+    )
+    assert edge.edge_type == EdgeType.SUPERSEDES
+    assert edge.synced_from_version is None
+    assert edge.synced_from_content_hash is None
+
+
+# ---------------------------------------------------------------------------
+# T-0111 (B) Chain-membership guard: when synced_from_version is set on a
+# derived_from edge, it must be a member of target_id's supersedes chain.
+# Otherwise SyncedFromVersionNotInSourceChain (400) is raised.
+# ---------------------------------------------------------------------------
+
+
+async def test_t0111_chain_membership_accepts_predecessor_version(graph_store, graph_ops_service):
+    """derived_from edge with synced_from_version pointing at a chain
+    member (here: the middle version of a 3-deep chain) succeeds."""
+    chain_ids = await _create_linear_chain(graph_store, count=3)
+    # chain_ids = [v1, v2, v3]; v3 is the head, v2 is the middle.
+    await graph_store.insert_document(_make_doc(_id("consumer")))
+
+    edge = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("consumer"),
+            target_id=chain_ids[2],  # head
+            edge_type=EdgeType.DERIVED_FROM,
+            source_valid_from_version=_id("consumer"),
+            synced_from_version=chain_ids[1],  # middle, in chain
+        )
+    )
+    assert edge.synced_from_version == chain_ids[1]
+
+
+async def test_t0111_chain_membership_accepts_tail_version(graph_store, graph_ops_service):
+    """derived_from + synced_from_version pointing at the chain tail
+    (oldest revision) succeeds — every member of the chain is valid."""
+    chain_ids = await _create_linear_chain(graph_store, count=3)
+    await graph_store.insert_document(_make_doc(_id("consumer")))
+
+    edge = await graph_ops_service.link(
+        LinkRequest(
+            source_id=_id("consumer"),
+            target_id=chain_ids[2],
+            edge_type=EdgeType.DERIVED_FROM,
+            source_valid_from_version=_id("consumer"),
+            synced_from_version=chain_ids[0],  # tail, also in chain
+        )
+    )
+    assert edge.synced_from_version == chain_ids[0]
+
+
+async def test_t0111_chain_membership_rejects_unrelated_doc(graph_store, graph_ops_service):
+    """derived_from + synced_from_version pointing at a document
+    OUTSIDE target_id's supersedes chain → 400 not-in-chain error.
+
+    Verifies the dedicated error code surfaces (not DocumentNotFoundError)
+    so operators can distinguish "wrong document" from "missing
+    document".
+    """
+    chain_ids = await _create_linear_chain(graph_store, count=3)
+    await graph_store.insert_document(_make_doc(_id("consumer")))
+    await graph_store.insert_document(_make_doc(_id("unrelated")))
+
+    with pytest.raises(SyncedFromVersionNotInSourceChain) as exc_info:
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("consumer"),
+                target_id=chain_ids[2],
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=_id("consumer"),
+                synced_from_version=_id("unrelated"),
+            )
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == "synced_from_version_not_in_source_chain"
+    assert exc_info.value.detail["synced_from_version"] == _id("unrelated")
+
+
+async def test_t0111_chain_membership_rejects_nonexistent_id(graph_store, graph_ops_service):
+    """derived_from + synced_from_version pointing at a NON-EXISTENT
+    doc id → same SyncedFromVersionNotInSourceChain code (NOT
+    DocumentNotFoundError). The chain walk implicitly catches dangling
+    refs; surfacing the not-in-chain code keeps operator semantics
+    consistent."""
+    chain_ids = await _create_linear_chain(graph_store, count=3)
+    await graph_store.insert_document(_make_doc(_id("consumer")))
+
+    with pytest.raises(SyncedFromVersionNotInSourceChain) as exc_info:
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("consumer"),
+                target_id=chain_ids[2],
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=_id("consumer"),
+                synced_from_version=_id("nonexistent_42"),
+            )
+        )
+    assert exc_info.value.code == "synced_from_version_not_in_source_chain"
 
 
 async def test_traverse_nonexistent_start_raises_404(graph_store, graph_ops_service):

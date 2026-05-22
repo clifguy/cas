@@ -761,6 +761,20 @@ paths:
 
             `self_referential_edge`: `source_id` and `target_id`
             resolve to the same document.
+
+
+            `synced_from_inapplicable_edge_type` (T-0111):
+            `synced_from_version` or `synced_from_content_hash` was set
+            on an edge type other than `sync_target` or `derived_from`.
+            Provenance fields are only meaningful on those two types.
+
+
+            `synced_from_version_not_in_source_chain` (T-0111):
+            `synced_from_version` references a document that is not a
+            member of `target_id`'s supersedes chain (covers both
+            wrong-document and missing-document cases — surfaced as
+            this dedicated code so operators can distinguish them
+            from `document_not_found`).
           content:
             application/json:
               schema:
@@ -1981,6 +1995,48 @@ paths:
   # Maintenance / Admin (CAS-ADR-029)
   # ---------------------------------------------------------------------------
 
+  /sage_vaults/{vault_id}/admin/detect-drift:
+    post:
+      operationId: admin_detect_drift
+      summary: Audit active sync_target / derived_from edges for drift (T-0111).
+      description: >-
+        Walks every active provenance-bearing edge in the vault and
+        compares its recorded ``synced_from_*`` fields against the
+        current head of the target's supersedes chain. Returns a
+        DriftReport whose ``entries`` enumerate edges that need
+        operator attention; edges whose recorded state still matches
+        the head are absent from the report.
+
+
+        Hash is the authoritative comparator (``synced_from_content_hash``
+        vs the head's ``source_content_hash``); ``synced_from_version``
+        is a display key. See ``StalenessBasis`` for the four-bucket
+        classification (``content_drift`` — real drift, action required;
+        ``chain_advanced_no_content_change`` — chain advanced but
+        content unchanged, informational;
+        ``recorded_null`` — legacy edge with no provenance signal;
+        ``chain_nonlinear`` — data-quality flag for forked chains).
+
+
+        Replaces the manual hand-walk phase of the verbatim-sync and
+        terminology-remediation workflows.
+      tags: [Maintenance]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: Drift report (possibly empty).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriftReport"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/admin/migrate:
     post:
       operationId: admin_migrate_vault
@@ -2619,16 +2675,18 @@ components:
             `source_valid_from_version`, which records chain-scoped
             edge visibility per CAS-ADR-017 — the two must not be
             conflated. Unset = explicit null; never inferred from chain
-            anchors. (T-0110)
+            anchors. (T-0110 schema; T-0111 typed)
         synced_from_content_hash:
           type: string
           nullable: true
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             The source document's `source_content_hash` captured at
             the moment this edge was asserted. Optional companion to
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
-            (in-place edits). Unset = explicit null. (T-0110)
+            (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
+            unset = explicit null. (T-0110 schema; T-0111 typed)
 
     User:
       type: object
@@ -3180,16 +3238,18 @@ components:
             `source_valid_from_version`, which records chain-scoped
             edge visibility per CAS-ADR-017 — the two must not be
             conflated. Unset = explicit null; never inferred from chain
-            anchors. (T-0110)
+            anchors. (T-0110 schema; T-0111 typed)
         synced_from_content_hash:
           type: string
           nullable: true
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             The source document's `source_content_hash` captured at
             the moment this edge was asserted. Optional companion to
             `synced_from_version`; recommended on derivations because
             version labels are reused and can drift from content
-            (in-place edits). Unset = explicit null. (T-0110)
+            (in-place edits). Must match `^sha256:[0-9a-f]{64}$`;
+            unset = explicit null. (T-0110 schema; T-0111 typed)
 
     TraverseRequest:
       type: object
@@ -4621,6 +4681,125 @@ components:
           description: >-
             Wall-clock seconds from dispatch to terminal status for this
             document; null for skipped_pdf entries (no work was done).
+
+    StalenessBasis:
+      type: string
+      enum:
+        [content_drift, chain_advanced_no_content_change, recorded_null, chain_nonlinear]
+      description: >-
+        Per-edge drift classification in a DriftReport (T-0111).
+        `content_drift`: recorded hash differs from the head's hash —
+        real drift, action required. `chain_advanced_no_content_change`:
+        chain advanced past recorded version but content unchanged —
+        informational. `recorded_null`: neither synced_from_* field
+        recorded (legacy edge or unknown provenance). `chain_nonlinear`:
+        target's supersedes chain has multiple heads — data-quality
+        flag, not drift.
+
+    DriftEntry:
+      type: object
+      required: [edge_id, edge_type, source_id, target_id, staleness_basis]
+      description: >-
+        Per-edge entry in a DriftReport (T-0111). Surfaced when an
+        active sync_target / derived_from edge no longer matches the
+        current head of its target's supersedes chain. Hash is the
+        authoritative comparator; version doc-id is a display key.
+      properties:
+        edge_id:
+          type: string
+          description: Identifier of the drifted edge.
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+          description: "`sync_target` or `derived_from` (the two provenance-bearing edge types)."
+        source_id:
+          type: string
+          description: Edge source document id (the dependent).
+        target_id:
+          type: string
+          description: Edge target document id (the canonical/source document).
+        recorded_version_id:
+          type: string
+          nullable: true
+          description: >-
+            The `synced_from_version` recorded on the edge (a document
+            id), or null when not recorded.
+        recorded_version_label:
+          type: string
+          nullable: true
+          description: >-
+            The `version_label` of the recorded synced-from document at
+            the time the drift report was generated, when resolvable.
+        recorded_content_hash:
+          type: string
+          nullable: true
+          description: >-
+            The `synced_from_content_hash` recorded on the edge, or
+            null when not recorded.
+        current_head_id:
+          type: string
+          nullable: true
+          description: >-
+            Document id of the current head of the target's supersedes
+            chain. Null when `staleness_basis = chain_nonlinear`
+            (multiple heads — see `competing_head_count`).
+        current_head_version_label:
+          type: string
+          nullable: true
+          description: Version label of the current chain head, when resolvable.
+        current_head_content_hash:
+          type: string
+          nullable: true
+          description: >-
+            `source_content_hash` of the current chain head. Null on
+            `chain_nonlinear` and on `recorded_null` rows where we did
+            not need to compute it.
+        competing_head_count:
+          type: integer
+          nullable: true
+          description: >-
+            Number of heads observed when `staleness_basis =
+            chain_nonlinear`; null otherwise. Operators follow up via
+            `sage_chain` for full forensics.
+        staleness_basis:
+          $ref: "#/components/schemas/StalenessBasis"
+          description: Why this edge appears in the drift report.
+
+    DriftReport:
+      type: object
+      required: [vault_id, total_edges_walked, summary, entries]
+      description: >-
+        Result of a sage_admin_detect_drift call (T-0111). Per-vault
+        audit of sync_target / derived_from edges whose recorded
+        provenance has diverged from the current source-chain head.
+        Entries with `staleness_basis = content_drift` are stale and
+        require action; `chain_advanced_no_content_change` and
+        `recorded_null` are informational; `chain_nonlinear` is a
+        data-quality flag. Edges whose recorded state still matches
+        the head are absent from the report.
+      properties:
+        vault_id:
+          type: string
+          description: Identifier of the vault whose edges were walked.
+        total_edges_walked:
+          type: integer
+          description: >-
+            Total count of active `sync_target` / `derived_from` edges
+            the detector inspected. Equals the universe; `len(entries)`
+            is the subset that triggered a report row.
+        summary:
+          type: object
+          additionalProperties:
+            type: integer
+          description: >-
+            Per-basis counts. Keys are `StalenessBasis` enum values;
+            each value is the count of `entries` carrying that basis.
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/DriftEntry"
+          description: >-
+            Per-edge report rows; one row per edge whose state
+            warranted operator attention.
 
     ReabstractReport:
       type: object

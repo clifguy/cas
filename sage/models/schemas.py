@@ -24,6 +24,7 @@ from sage.models.enums import (
     RetrievalScope,
     SortOrder,
     SourceType,
+    StalenessBasis,
     TraversalDirection,
     UserType,
 )
@@ -531,7 +532,7 @@ class Edge(BaseModel):
             "and legacy rows take the default `manual`."
         ),
     )
-    synced_from_version: str | None = Field(
+    synced_from_version: DocumentIdStr | None = Field(
         default=None,
         description=(
             "The source-chain version (document id) the content was "
@@ -543,17 +544,18 @@ class Edge(BaseModel):
             "`source_valid_from_version`, which records chain-scoped "
             "edge visibility per CAS-ADR-017 — the two must not be "
             "conflated. Unset = explicit null; never inferred from chain "
-            "anchors. (T-0110)"
+            "anchors. (T-0110 schema; T-0111 typed)"
         ),
     )
-    synced_from_content_hash: str | None = Field(
+    synced_from_content_hash: Sha256Str | None = Field(
         default=None,
         description=(
             "The source document's `source_content_hash` captured at "
             "the moment this edge was asserted. Optional companion to "
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
-            "(in-place edits). Unset = explicit null. (T-0110)"
+            "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
+            "unset = explicit null. (T-0110 schema; T-0111 typed)"
         ),
     )
 
@@ -1326,7 +1328,7 @@ class LinkRequest(BaseModel):
             "the prefix-derivation rule."
         ),
     )
-    synced_from_version: str | None = Field(
+    synced_from_version: DocumentIdStr | None = Field(
         default=None,
         description=(
             "The source-chain version (document id) the content was "
@@ -1338,17 +1340,18 @@ class LinkRequest(BaseModel):
             "`source_valid_from_version`, which records chain-scoped "
             "edge visibility per CAS-ADR-017 — the two must not be "
             "conflated. Unset = explicit null; never inferred from chain "
-            "anchors. (T-0110)"
+            "anchors. (T-0110 schema; T-0111 typed)"
         ),
     )
-    synced_from_content_hash: str | None = Field(
+    synced_from_content_hash: Sha256Str | None = Field(
         default=None,
         description=(
             "The source document's `source_content_hash` captured at "
             "the moment this edge was asserted. Optional companion to "
             "`synced_from_version`; recommended on derivations because "
             "version labels are reused and can drift from content "
-            "(in-place edits). Unset = explicit null. (T-0110)"
+            "(in-place edits). Must match `^sha256:[0-9a-f]{64}$`; "
+            "unset = explicit null. (T-0110 schema; T-0111 typed)"
         ),
     )
 
@@ -2231,6 +2234,112 @@ class ReabstractReport(BaseModel):
         description=(
             "Per-document outcome records. Length equals "
             "reabstracted_count + skipped_pdf_count + failed_count."
+        )
+    )
+
+
+class DriftEntry(BaseModel):
+    """Per-edge entry in a DriftReport (T-0111).
+
+    Surfaced when the recorded `synced_from_*` provenance on a
+    `sync_target` / `derived_from` edge no longer matches the current
+    head of the source chain (`content_drift`), the chain has advanced
+    without content change (`chain_advanced_no_content_change`), the
+    edge predates the T-0110 columns (`recorded_null`), or the source
+    chain is forked (`chain_nonlinear`). Hash is the authoritative
+    comparator; version label is a display key.
+    """
+
+    edge_id: EdgeIdStr = Field(description="Identifier of the drifted edge.")
+    edge_type: EdgeType = Field(
+        description="`sync_target` or `derived_from` (the two provenance-bearing edge types)."
+    )
+    source_id: DocumentIdStr = Field(description="Edge source document id (the dependent).")
+    target_id: DocumentIdStr = Field(
+        description="Edge target document id (the canonical/source document)."
+    )
+    recorded_version_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "The `synced_from_version` recorded on the edge (a document "
+            "id), or null when not recorded."
+        ),
+    )
+    recorded_version_label: str | None = Field(
+        default=None,
+        description=(
+            "The `version_label` of the recorded synced-from document at "
+            "the time the drift report was generated, when resolvable."
+        ),
+    )
+    recorded_content_hash: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "The `synced_from_content_hash` recorded on the edge, or null when not recorded."
+        ),
+    )
+    current_head_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Document id of the current head of the target's supersedes "
+            "chain. Null when `staleness_basis = chain_nonlinear` "
+            "(multiple heads — see `competing_head_count`)."
+        ),
+    )
+    current_head_version_label: str | None = Field(
+        default=None,
+        description="Version label of the current chain head, when resolvable.",
+    )
+    current_head_content_hash: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "`source_content_hash` of the current chain head. Null on "
+            "`chain_nonlinear` and on `recorded_null` rows where we did "
+            "not need to compute it."
+        ),
+    )
+    competing_head_count: int | None = Field(
+        default=None,
+        description=(
+            "Number of heads observed when `staleness_basis = "
+            "chain_nonlinear`; null otherwise. Operators follow up via "
+            "`sage_chain` for full forensics."
+        ),
+    )
+    staleness_basis: StalenessBasis = Field(
+        description="Why this edge appears in the drift report."
+    )
+
+
+class DriftReport(BaseModel):
+    """Result of a `sage_admin_detect_drift` call (T-0111).
+
+    Per-vault audit of `sync_target` / `derived_from` edges whose
+    recorded provenance has diverged from the current source-chain head.
+    `entries` includes one row per edge that is either drifted
+    (`content_drift`), informationally noteworthy
+    (`chain_advanced_no_content_change`, `recorded_null`), or carrying a
+    data-quality issue (`chain_nonlinear`). Edges whose recorded
+    provenance still matches the head are absent from the report.
+    """
+
+    vault_id: VaultIdStr = Field(description="Identifier of the vault whose edges were walked.")
+    total_edges_walked: int = Field(
+        description=(
+            "Total count of active `sync_target` / `derived_from` edges "
+            "the detector inspected. Equals the universe; `len(entries)` "
+            "is the subset that triggered a report row."
+        )
+    )
+    summary: dict[str, int] = Field(
+        description=(
+            "Per-basis counts. Keys are `StalenessBasis` enum values; "
+            "each value is the count of `entries` carrying that basis."
+        )
+    )
+    entries: list[DriftEntry] = Field(
+        description=(
+            "Per-edge report rows; one row per edge whose state warranted operator attention."
         )
     )
 

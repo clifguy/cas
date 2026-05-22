@@ -17,6 +17,8 @@ from sage.api.errors import (
     PipelineIncompleteError,
     RetractTargetNotEdgeError,
     SelfReferentialEdgeError,
+    SyncedFromInapplicableEdgeType,
+    SyncedFromVersionNotInSourceChain,
     TBDPolicyEdgeError,
 )
 from sage.config import VaultConfig
@@ -231,6 +233,36 @@ class GraphOpsService:
 
             self._validate_anchors_from_context(request, policy, ctx)
 
+            # T-0111: when synced_from_version is set on a sync_target /
+            # derived_from edge, verify the recorded id is a member of
+            # the target_id's supersedes chain. Catches both "wrong
+            # document" (id exists but not in this chain) and "dangling
+            # ref" (id does not exist anywhere) in one membership
+            # predicate. Runs under link_lock so the chain read serializes
+            # with the edge insert; without this, a concurrent supersede
+            # could orphan the recorded provenance between read and
+            # write. TODO: future optimization — replace the full chain
+            # walk with a chain_contains(target_id, candidate) helper
+            # that early-exits when the candidate is found, dropping the
+            # per-link cost from O(chain) to O(path to candidate).
+            if (
+                request.synced_from_version is not None
+                and request.target_id is not None
+                and request.edge_type in (EdgeType.SYNC_TARGET, EdgeType.DERIVED_FROM)
+            ):
+                chain_response = await self.chain(
+                    ChainRequest(
+                        document_id=request.target_id,
+                        edge_type=EdgeType.SUPERSEDES,
+                    )
+                )
+                chain_member_ids = {entry.id for entry in chain_response.chain}
+                if request.synced_from_version not in chain_member_ids:
+                    raise SyncedFromVersionNotInSourceChain(
+                        target_id=request.target_id,
+                        synced_from_version=request.synced_from_version,
+                    )
+
             # T-0080: prefer the caller-supplied rationale_kind; otherwise
             # derive from the rationale-text prefix and fall back to MANUAL.
             rationale_kind = request.rationale_kind or derive_rationale_kind(request.rationale)
@@ -289,6 +321,19 @@ class GraphOpsService:
         """
         edge_type = request.edge_type
         offending: list[str] = []
+
+        # T-0111: synced_from_* fields are only meaningful on sync_target
+        # (Tier 1) and derived_from (Tier 3). Reject any other edge type
+        # carrying these fields; this is a pure-field gate independent
+        # of policy, so it fires before any policy branch.
+        if edge_type not in (EdgeType.SYNC_TARGET, EdgeType.DERIVED_FROM):
+            fields_set: list[str] = []
+            if request.synced_from_version is not None:
+                fields_set.append("synced_from_version")
+            if request.synced_from_content_hash is not None:
+                fields_set.append("synced_from_content_hash")
+            if fields_set:
+                raise SyncedFromInapplicableEdgeType(edge_type.value, fields_set)
 
         # retracts: target_id null, retracted_edge_id required,
         # source-side anchor required, target-side anchor null, no until.

@@ -205,3 +205,22 @@ async def test_t0074_source_only_edge_query_uses_composite_via_left_prefix(tmp_p
     # selected (not a full scan).
     assert "idx_edges_source_type" in plan or "USING INDEX" in plan, plan
     assert "SCAN edges" not in plan, plan
+
+
+async def test_t0111_query_planner_picks_synced_from_content_hash_index(tmp_path):
+    """T-0111 detector index: hash-equality scans over the edges table
+    must use ``idx_edges_synced_from_content_hash`` so the per-vault
+    drift sweep is index-driven, not a full scan.
+    """
+    db_path = tmp_path / "graph.db"
+    store = GraphStore(db_path)
+    await store.initialize()
+    await store.close()
+
+    plan = _explain(
+        db_path,
+        "SELECT id FROM edges WHERE synced_from_content_hash = ?",
+        ("sha256:" + "a" * 64,),
+    )
+    assert "idx_edges_synced_from_content_hash" in plan, plan
+    assert "SCAN edges" not in plan, plan

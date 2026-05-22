@@ -1790,6 +1790,125 @@ class GraphStore:
 
         return {"documents": documents, "edges": edges}
 
+    async def list_provenance_edges(self, edge_types: list[str]) -> list[dict]:
+        """Return active edges of the given types carrying synced_from_* (T-0111).
+
+        Detector enumeration helper. "Active" = ``valid_until_version IS
+        NULL``. Returns raw dicts with the fields the detector needs to
+        classify each row; no Pydantic round-trip because the detector
+        does its own DriftEntry construction.
+        """
+        with self._query_timer.measure("list_provenance_edges"):
+            return await self._run(self._list_provenance_edges_sync, edge_types)
+
+    def _list_provenance_edges_sync(self, edge_types: list[str]) -> list[dict]:
+        if not edge_types:
+            return []
+        conn = self._get_connection()
+        placeholders = ",".join("?" * len(edge_types))
+        sql = (
+            "SELECT id, edge_type, source_id, target_id, "  # noqa: S608 -- placeholders are ? markers; values are bound via parameters
+            "synced_from_version, synced_from_content_hash "
+            "FROM edges WHERE valid_until_version IS NULL "
+            f"AND edge_type IN ({placeholders})"
+        )
+        rows = conn.execute(sql, edge_types).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "edge_type": r["edge_type"],
+                "source_id": r["source_id"],
+                "target_id": r["target_id"],
+                "synced_from_version": r["synced_from_version"],
+                "synced_from_content_hash": r["synced_from_content_hash"],
+            }
+            for r in rows
+        ]
+
+    async def head_with_hash_for_chain(
+        self,
+        target_id: str,
+        edge_type: str = "supersedes",
+    ) -> dict:
+        """Return the head of target_id's chain plus a linearity signal (T-0111).
+
+        Used by `MaintenanceService.detect_drift` to look up the current
+        canonical revision for each candidate edge in one round-trip.
+
+        Returns a dict with keys:
+            head_id: str | None
+            head_content_hash: str | None
+            head_version_label: str | None
+            heads_count: int
+            is_linear: bool
+
+        Head identification: a chain node is a head iff no chain-member
+        supersedes it (no `edge_type` edge whose target is the candidate).
+        For a fork (heads_count > 1), `head_id` / `head_content_hash` /
+        `head_version_label` are all None; the detector reports the edge
+        as `staleness_basis=chain_nonlinear` and the operator follows up
+        via `sage_chain`.
+        """
+        with self._query_timer.measure("head_with_hash_for_chain"):
+            return await self._run(self._head_with_hash_for_chain_sync, target_id, edge_type)
+
+    def _head_with_hash_for_chain_sync(
+        self,
+        target_id: str,
+        edge_type: str,
+    ) -> dict:
+        conn = self._get_connection()
+
+        sql = """
+            WITH RECURSIVE chain AS (
+                SELECT ? AS doc_id
+
+                UNION
+
+                SELECT e.target_id AS doc_id
+                FROM edges e
+                INNER JOIN chain c ON e.source_id = c.doc_id
+                WHERE e.edge_type = ?
+
+                UNION
+
+                SELECT e.source_id AS doc_id
+                FROM edges e
+                INNER JOIN chain c ON e.target_id = c.doc_id
+                WHERE e.edge_type = ?
+            )
+            SELECT d.id AS head_id,
+                   d.source_content_hash AS head_content_hash,
+                   d.version_label       AS head_version_label
+            FROM chain c
+            INNER JOIN documents d ON c.doc_id = d.id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM edges e
+                INNER JOIN chain c2 ON e.source_id = c2.doc_id
+                WHERE e.edge_type = ? AND e.target_id = d.id
+            )
+        """
+        params = [target_id, edge_type, edge_type, edge_type]
+        rows = conn.execute(sql, params).fetchall()
+        heads_count = len(rows)
+
+        if heads_count == 1:
+            row = rows[0]
+            return {
+                "head_id": row["head_id"],
+                "head_content_hash": row["head_content_hash"],
+                "head_version_label": row["head_version_label"],
+                "heads_count": 1,
+                "is_linear": True,
+            }
+        return {
+            "head_id": None,
+            "head_content_hash": None,
+            "head_version_label": None,
+            "heads_count": heads_count,
+            "is_linear": False,
+        }
+
     # ------------------------------------------------------------------
     # User operations
     # ------------------------------------------------------------------

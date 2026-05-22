@@ -98,6 +98,7 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "RetrievalScope",
     "SortOrder",
     "SourceType",
+    "StalenessBasis",
     "TraversalDirection",
     "UserType",
     # oneOf composition -- variants handled on the Python side by

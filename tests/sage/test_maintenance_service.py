@@ -26,7 +26,8 @@ import pytest
 
 from sage.adapters.stubs import StubContentStore
 from sage.mcp_init import SAGEServices, initialize_services
-from sage.models.schemas import MigrationReport
+from sage.models.enums import EdgeType, PipelineStatus, SourceType, StalenessBasis
+from sage.models.schemas import Document, DriftReport, Edge, MigrationReport
 from sage.services.maintenance import MaintenanceService
 from sage.services.vault_registry import VaultRegistryService
 from sage.storage.graph_store import GraphStore
@@ -338,3 +339,303 @@ async def test_no_resource_warning_on_post_migration_teardown(tmp_path, monkeypa
     leak_signature = "unclosed database"
     leaked = [str(w.message) for w in caught if leak_signature in str(w.message)]
     assert not leaked, f"unclosed sqlite3 connections surfaced after teardown: {leaked}"
+
+
+# ---------------------------------------------------------------------------
+# T-0111: MaintenanceService.detect_drift
+# ---------------------------------------------------------------------------
+
+
+def _drift_doc(doc_id: str, content_hash: str, version_label: str | None = None) -> Document:
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title=f"Drift test {doc_id}",
+        source_type=SourceType.MARKDOWN,
+        source_path=f"drift/{doc_id}.md",
+        lifecycle_status="active",
+        source_content_hash=content_hash,
+        adapter_version="0.1.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        version_label=version_label,
+    )
+
+
+def _drift_edge(
+    edge_id: str,
+    source_id: str,
+    target_id: str,
+    *,
+    edge_type: EdgeType = EdgeType.DERIVED_FROM,
+    synced_from_version: str | None = None,
+    synced_from_content_hash: str | None = None,
+) -> Edge:
+    return Edge(
+        id=edge_id,
+        source_id=source_id,
+        target_id=target_id,
+        edge_type=edge_type,
+        source_valid_from_version=source_id if edge_type == EdgeType.DERIVED_FROM else None,
+        created_at=datetime.now(timezone.utc),
+        synced_from_version=synced_from_version,
+        synced_from_content_hash=synced_from_content_hash,
+    )
+
+
+def _hash(suffix: str) -> str:
+    """Canonical sha256-shaped hash from a short test suffix.
+
+    Caller passes a single hex char; we repeat to make a 64-char digest.
+    Non-hex inputs fall back to a deterministic hex digest derived from
+    the suffix so test signatures stay readable but the value still
+    validates against `^sha256:[0-9a-f]{64}$`.
+    """
+    import hashlib
+
+    if len(suffix) == 1 and suffix in "0123456789abcdef":
+        return "sha256:" + suffix * 64
+    return "sha256:" + hashlib.sha256(f"t0111-test:{suffix}".encode()).hexdigest()
+
+
+async def test_t0111_detect_drift_multi_basket(post_migration_vault):
+    """T-DD-multi: one fixture, four edges, three expected baskets.
+
+    - A: hash matches current head → absent from report.
+    - B: hash differs from head → content_drift.
+    - C: hash matches head but synced_from_version != head_id →
+      chain_advanced_no_content_change.
+    - D: both fields NULL → recorded_null.
+    """
+    registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maintenance = MaintenanceService(
+        vault_id=services.config.vault.id,
+        db_path=Path(services.config.vault.brain_root) / "graph.db",
+        graph_store=gs,
+        config=services.config,
+        registry_service=registry_service,
+    )
+
+    # Chain T1 (tail) → T2 (head, supersedes T1).
+    t1_hash = _hash("1")
+    t2_hash = _hash("2")
+    wrong_hash = _hash("f")
+    await gs.insert_document(_drift_doc("deadbeef_t1", t1_hash, "v1"))
+    await gs.insert_document(_drift_doc("cafebabe_t2", t2_hash, "v2"))
+    # T2 supersedes T1 (source=T2 is newer).
+    await gs.insert_edge(
+        _drift_edge(
+            "11111111-1111-4111-8111-111111111111",
+            source_id="cafebabe_t2",
+            target_id="deadbeef_t1",
+            edge_type=EdgeType.SUPERSEDES,
+        )
+    )
+
+    # Four source docs to dodge the (source_id, target_id, edge_type) unique constraint.
+    for sid in ("aaaaaaaa_a", "bbbbbbbb_b", "cccccccc_c", "dddddddd_d"):
+        await gs.insert_document(_drift_doc(sid, _hash(sid[0])))
+
+    # A: current — recorded matches head exactly.
+    await gs.insert_edge(
+        _drift_edge(
+            "22222222-2222-4222-8222-222222222222",
+            source_id="aaaaaaaa_a",
+            target_id="cafebabe_t2",
+            synced_from_version="cafebabe_t2",
+            synced_from_content_hash=t2_hash,
+        )
+    )
+    # B: content_drift — hash diverged from head.
+    await gs.insert_edge(
+        _drift_edge(
+            "33333333-3333-4333-8333-333333333333",
+            source_id="bbbbbbbb_b",
+            target_id="cafebabe_t2",
+            synced_from_version="cafebabe_t2",
+            synced_from_content_hash=wrong_hash,
+        )
+    )
+    # C: chain_advanced_no_content_change — recorded version != head, hash matches.
+    await gs.insert_edge(
+        _drift_edge(
+            "44444444-4444-4444-8444-444444444444",
+            source_id="cccccccc_c",
+            target_id="cafebabe_t2",
+            synced_from_version="deadbeef_t1",
+            synced_from_content_hash=t2_hash,
+        )
+    )
+    # D: recorded_null — neither field set.
+    await gs.insert_edge(
+        _drift_edge(
+            "55555555-5555-4555-8555-555555555555",
+            source_id="dddddddd_d",
+            target_id="cafebabe_t2",
+        )
+    )
+
+    report = await maintenance.detect_drift()
+
+    assert isinstance(report, DriftReport)
+    assert report.vault_id == services.config.vault.id
+    # A is absent → 3 entries (one each B, C, D).
+    assert len(report.entries) == 3
+    bases = {e.edge_id: e.staleness_basis for e in report.entries}
+    assert bases["33333333-3333-4333-8333-333333333333"] == StalenessBasis.CONTENT_DRIFT
+    assert (
+        bases["44444444-4444-4444-8444-444444444444"]
+        == StalenessBasis.CHAIN_ADVANCED_NO_CONTENT_CHANGE
+    )
+    assert bases["55555555-5555-4555-8555-555555555555"] == StalenessBasis.RECORDED_NULL
+    # A's id should NOT be in the report.
+    assert "22222222-2222-4222-8222-222222222222" not in bases
+    # Summary counts the basis values directly.
+    assert report.summary["content_drift"] == 1
+    assert report.summary["chain_advanced_no_content_change"] == 1
+    assert report.summary["recorded_null"] == 1
+    assert report.summary["chain_nonlinear"] == 0
+
+
+async def test_t0111_detect_drift_nonlinear_chain(post_migration_vault):
+    """T-DD-nonlinear: target with a forked chain (two heads) is reported
+    with staleness_basis=chain_nonlinear; head fields are null and
+    competing_head_count carries the fork width."""
+    registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maintenance = MaintenanceService(
+        vault_id=services.config.vault.id,
+        db_path=Path(services.config.vault.brain_root) / "graph.db",
+        graph_store=gs,
+        config=services.config,
+        registry_service=registry_service,
+    )
+
+    # Fork: T1 has TWO superseding successors → two heads.
+    await gs.insert_document(_drift_doc("deadbeef_t1", _hash("1"), "v1"))
+    await gs.insert_document(_drift_doc("cafebabe_2a", _hash("a"), "v2a"))
+    await gs.insert_document(_drift_doc("cafef00d_2b", _hash("b"), "v2b"))
+    await gs.insert_edge(
+        _drift_edge(
+            "11111111-1111-4111-8111-aaaaaaaaaaaa",
+            source_id="cafebabe_2a",
+            target_id="deadbeef_t1",
+            edge_type=EdgeType.SUPERSEDES,
+        )
+    )
+    await gs.insert_edge(
+        _drift_edge(
+            "11111111-1111-4111-8111-bbbbbbbbbbbb",
+            source_id="cafef00d_2b",
+            target_id="deadbeef_t1",
+            edge_type=EdgeType.SUPERSEDES,
+        )
+    )
+
+    # Consumer edge targeting any chain member.
+    await gs.insert_document(_drift_doc("aaaaaaaa_s", _hash("s")))
+    await gs.insert_edge(
+        _drift_edge(
+            "99999999-9999-4999-8999-999999999999",
+            source_id="aaaaaaaa_s",
+            target_id="deadbeef_t1",  # target = tail; chain has 2 heads
+            synced_from_version="cafebabe_2a",
+            synced_from_content_hash=_hash("a"),
+        )
+    )
+
+    report = await maintenance.detect_drift()
+    assert len(report.entries) == 1
+    entry = report.entries[0]
+    assert entry.staleness_basis == StalenessBasis.CHAIN_NONLINEAR
+    assert entry.current_head_id is None
+    assert entry.competing_head_count == 2
+    assert report.summary["chain_nonlinear"] == 1
+
+
+async def test_t0111_detect_drift_version_only(post_migration_vault):
+    """T-DD-version-only: edges with synced_from_version set but
+    synced_from_content_hash NULL. Three sub-cases — current (recorded
+    == head), chain_advanced (recorded != head, recorded.hash == head.hash),
+    content_drift (recorded != head, recorded.hash != head.hash)."""
+    registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maintenance = MaintenanceService(
+        vault_id=services.config.vault.id,
+        db_path=Path(services.config.vault.brain_root) / "graph.db",
+        graph_store=gs,
+        config=services.config,
+        registry_service=registry_service,
+    )
+
+    # Chain: T1 (oldest, hash_old) → T2 (middle, SAME hash as head) → T3 (head, hash_head).
+    # T2 and T3 share a hash to make chain_advanced_no_content_change observable.
+    same_hash = _hash("c")
+    t1_hash = _hash("1")
+    await gs.insert_document(_drift_doc("deadbeef_t1", t1_hash, "v1"))
+    await gs.insert_document(_drift_doc("cafebabe_t2", same_hash, "v2"))
+    await gs.insert_document(_drift_doc("cafef00d_t3", same_hash, "v3"))
+    # T2 supersedes T1, T3 supersedes T2.
+    await gs.insert_edge(
+        _drift_edge(
+            "11111111-1111-4111-8111-111111111111",
+            source_id="cafebabe_t2",
+            target_id="deadbeef_t1",
+            edge_type=EdgeType.SUPERSEDES,
+        )
+    )
+    await gs.insert_edge(
+        _drift_edge(
+            "11111111-1111-4111-8111-222222222222",
+            source_id="cafef00d_t3",
+            target_id="cafebabe_t2",
+            edge_type=EdgeType.SUPERSEDES,
+        )
+    )
+
+    # Three consumer source docs.
+    for sid in ("aaaaaaaa_a", "bbbbbbbb_b", "cccccccc_c"):
+        await gs.insert_document(_drift_doc(sid, _hash(sid[0])))
+
+    # Sub 1: recorded == head_id, hash NULL → current (absent).
+    await gs.insert_edge(
+        _drift_edge(
+            "22222222-2222-4222-8222-222222222222",
+            source_id="aaaaaaaa_a",
+            target_id="cafef00d_t3",
+            synced_from_version="cafef00d_t3",
+        )
+    )
+    # Sub 2: recorded != head, recorded.hash == head.hash → chain_advanced.
+    await gs.insert_edge(
+        _drift_edge(
+            "33333333-3333-4333-8333-333333333333",
+            source_id="bbbbbbbb_b",
+            target_id="cafef00d_t3",
+            synced_from_version="cafebabe_t2",  # T2 shares hash with head T3
+        )
+    )
+    # Sub 3: recorded != head, recorded.hash != head.hash → content_drift.
+    await gs.insert_edge(
+        _drift_edge(
+            "44444444-4444-4444-8444-444444444444",
+            source_id="cccccccc_c",
+            target_id="cafef00d_t3",
+            synced_from_version="deadbeef_t1",  # T1 has DIFFERENT hash
+        )
+    )
+
+    report = await maintenance.detect_drift()
+    assert len(report.entries) == 2  # sub-2 + sub-3; sub-1 is current
+    bases = {e.edge_id: e.staleness_basis for e in report.entries}
+    assert (
+        bases["33333333-3333-4333-8333-333333333333"]
+        == StalenessBasis.CHAIN_ADVANCED_NO_CONTENT_CHANGE
+    )
+    assert bases["44444444-4444-4444-8444-444444444444"] == StalenessBasis.CONTENT_DRIFT
+    assert "22222222-2222-4222-8222-222222222222" not in bases

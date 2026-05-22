@@ -34,6 +34,7 @@ from sage.models.schemas import (
     IngestRequest,
     LinkRequest,
     SetLifecycleRequest,
+    Sha256Str,
     TraverseRequest,
     UpdateMetadataRequest,
     UpdateVaultConfigRequest,
@@ -52,6 +53,7 @@ _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _FUNCTION_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(FunctionIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
+_SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 
 def _check_legacy_patch_form(field: str, value: object) -> None:
@@ -879,6 +881,10 @@ def register_sage_tools(
                 target_id = _DOCUMENT_ID_ADAPTER.validate_python(target_id)
             if retracted_edge_id is not None:
                 retracted_edge_id = _EDGE_ID_ADAPTER.validate_python(retracted_edge_id)
+            if synced_from_version is not None:
+                synced_from_version = _DOCUMENT_ID_ADAPTER.validate_python(synced_from_version)
+            if synced_from_content_hash is not None:
+                synced_from_content_hash = _SHA256_ADAPTER.validate_python(synced_from_content_hash)
             v = get_vault(vault_id)
             request = LinkRequest(
                 source_id=source_id,
@@ -1795,6 +1801,40 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
+    async def sage_admin_detect_drift(vault_id: str) -> dict:
+        """Audit active sync_target / derived_from edges for drift (T-0111).
+
+        Walks every active provenance-bearing edge in the vault and
+        compares its recorded ``synced_from_*`` fields against the
+        current head of the source's supersedes chain. Returns a
+        DriftReport whose ``entries`` enumerate edges that need
+        operator attention; current edges are absent from the report.
+
+        Hash is the authoritative comparator; ``synced_from_version``
+        is a display key. See ``StalenessBasis`` for the four-bucket
+        classification (``content_drift``, ``chain_advanced_no_content_change``,
+        ``recorded_null``, ``chain_nonlinear``).
+
+        Replaces the manual hand-walk phase of the verbatim-sync and
+        terminology-remediation workflows.
+
+        Args:
+            vault_id: Target vault identifier.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            if v.maintenance_service is None:
+                raise RuntimeError(
+                    f"Vault {vault_id!r} was initialized without a "
+                    "registry_service; maintenance_service is unavailable."
+                )
+            report = await v.maintenance_service.detect_drift()
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
     async def sage_admin_reabstract_deferred_vault(
         vault_id: str, include_pdf: bool = False
     ) -> dict:
@@ -1893,5 +1933,6 @@ def register_sage_tools(
         "sage_dismiss_staging_edge": sage_dismiss_staging_edge,
         "sage_pending_metadata": sage_pending_metadata,
         "sage_admin_migrate_vault": sage_admin_migrate_vault,
+        "sage_admin_detect_drift": sage_admin_detect_drift,
         "sage_admin_reabstract_deferred_vault": sage_admin_reabstract_deferred_vault,
     }
