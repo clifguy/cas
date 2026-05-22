@@ -1936,6 +1936,15 @@ class GraphStore:
 
     @staticmethod
     def _row_to_staging_edge(row: sqlite3.Row) -> StagingEdge:
+        """Build a ``StagingEdge`` from a ``sqlite3.Row`` (T-0125).
+
+        Single owner of the row-dict -> ``StagingEdge`` projection per
+        the *CAS Projection-Point Audit Conventions* steering document
+        (cas vault, doc_type=steering_document). The exhaustive-fields
+        test ``test_row_to_staging_edge_populates_every_staging_edge_field``
+        in ``tests/sage/test_graph_store.py`` fails closed if a field is
+        added to ``StagingEdge`` but not wired through this factory.
+        """
         return StagingEdge(
             id=row["id"],
             source_id=row["source_id"],

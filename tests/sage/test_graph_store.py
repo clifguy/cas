@@ -19,7 +19,13 @@ from sage.models.enums import (
     ResolutionPolicy,
     SourceType,
 )
-from sage.models.schemas import Document, Edge, TagsPatch, UpdateMetadataRequest
+from sage.models.schemas import (
+    Document,
+    Edge,
+    StagingEdge,
+    TagsPatch,
+    UpdateMetadataRequest,
+)
 from sage.services.identity import generate_document_id
 from sage.storage.graph_store import GraphStore
 from sage.storage.migrations import (
@@ -770,3 +776,101 @@ def test_row_to_edge_populates_every_edge_field():
             )
         else:
             assert value is not None, f"Edge.{field_name} not populated by _row_to_edge"
+
+
+# ---------------------------------------------------------------------------
+# T-0125: Exhaustive-fields closure test for ``GraphStore._row_to_staging_edge``.
+#
+# ``_row_to_staging_edge`` is the single owning factory for the
+# ``sqlite3.Row -> StagingEdge`` projection (sage/storage/graph_store.py).
+# Per the *CAS Projection-Point Audit Conventions* steering document (cas
+# vault, doc_type=steering_document), every projection point owes a
+# closure pair: a single owning factory and an exhaustive-fields test
+# that fails closed when a field is added to the destination model but is
+# not wired through the factory. This test installs the second half of
+# the pair.
+# ---------------------------------------------------------------------------
+
+
+def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
+    """Build a ``sqlite3.Row`` with every column consumed by
+    ``GraphStore._row_to_staging_edge`` set to a distinct non-default
+    sentinel.
+
+    A real ``sqlite3.Row`` is used (rather than a ``dict`` stand-in) so
+    that column-lookup semantics match the production factory's
+    expectations exactly.
+
+    Every column has a non-default value:
+
+    - ``confidence_tier`` is set to ``3`` rather than the model's default
+      of ``2`` so a regression that hard-codes the default would be
+      caught structurally (the destination field is scalar with a
+      non-falsy default, so the assertion idiom ``value is not None``
+      alone would not catch it — the sentinel must differ from the
+      default).
+    - ``inference_evidence`` carries a distinctive sentinel string so
+      an unread column trips ``value is not None``.
+    - ``created_at`` is an ISO-8601 string (the factory parses it via
+      ``datetime.fromisoformat``), matching how production rows are
+      persisted in SQLite.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            """
+            SELECT
+                ? AS id,
+                ? AS source_id,
+                ? AS target_id,
+                ? AS edge_type,
+                ? AS inference_evidence,
+                ? AS confidence_tier,
+                ? AS created_at
+            """,
+            (
+                # Edge ids validate as UUIDs (sage/models/schemas.py:57),
+                # whereas document ids use the ``_id()`` short-hash form.
+                str(uuid.UUID(int=0x57A60000_0000_0000_0000_000000000001)),
+                _id("doc_source"),
+                _id("doc_target"),
+                EdgeType.REFERENCES.value,
+                "sentinel inference evidence",
+                3,
+                datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
+            ),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return row
+
+
+def test_row_to_staging_edge_populates_every_staging_edge_field():
+    """T-0125 (F4 closure pair, T1): every ``StagingEdge`` field is
+    populated by ``GraphStore._row_to_staging_edge`` from a sentinel
+    row dict whose columns are all non-default. Iterates
+    ``StagingEdge.model_fields`` so the assertion grows automatically
+    when a field is added to ``StagingEdge``; if the new field is not
+    wired through ``_row_to_staging_edge``, the loop trips the
+    assertion.
+    """
+    row = _staging_edge_row_with_every_staging_edge_field()
+    staging_edge = GraphStore._row_to_staging_edge(row)
+    for field_name, field_info in StagingEdge.model_fields.items():
+        value = getattr(staging_edge, field_name)
+        annotation = field_info.annotation
+        # Match the cohort scaffolding idiom even though no current
+        # StagingEdge field is list- or dict-typed; the branch is
+        # forward defense for future field additions.
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"StagingEdge.{field_name} not populated by _row_to_staging_edge "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, (
+                f"StagingEdge.{field_name} not populated by _row_to_staging_edge"
+            )
