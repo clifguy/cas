@@ -588,10 +588,15 @@ class RetrievalService:
         for doc in docs:
             # The Python failed-pipeline skip is redundant when
             # pipeline_status is unset (query_documents excludes failed
-            # by default) and harmless otherwise; kept as defense-in-
-            # depth so a future change to the SQL default cannot
-            # silently leak failed rows into the response.
-            if doc.pipeline_status == PipelineStatus.FAILED:
+            # by default) and kept as defense-in-depth so a future change
+            # to the SQL default cannot silently leak failed rows into
+            # the response. The explicit-filter carve-out (T-0149) mirrors
+            # the storage-layer pattern: when the caller passes an
+            # explicit pipeline_status filter (e.g., asking for failed
+            # docs), the gate steps aside and honors the override.
+            if doc.pipeline_status == PipelineStatus.FAILED and (
+                request.filters is None or request.filters.pipeline_status is None
+            ):
                 continue
             # AUTHORITATIVE is the one scope rule not expressible as a
             # SQL column predicate today. Other scope rules are already
@@ -765,8 +770,14 @@ class RetrievalService:
             if doc is None:
                 continue
 
-            # BH-020: failed pipeline = excluded from all retrieval
-            if doc.pipeline_status == PipelineStatus.FAILED:
+            # BH-020: failed pipeline = excluded from all retrieval, EXCEPT when
+            # the caller passes an explicit pipeline_status filter (T-0149). The
+            # gate mirrors the storage-layer default_exclude_failed: skip the
+            # post-filter when the request asks for failed docs (or any non-default
+            # pipeline_status), otherwise apply it as a service-layer mirror.
+            if doc.pipeline_status == PipelineStatus.FAILED and (
+                request.filters is None or request.filters.pipeline_status is None
+            ):
                 continue
 
             # Scope gating
@@ -834,7 +845,12 @@ class RetrievalService:
         boosted: list[DiscoverHit] = []
 
         for i, doc in enumerate(metadata_docs):
-            if doc.pipeline_status == PipelineStatus.FAILED:
+            # Service-layer mirror of the storage-layer default-exclude (T-0149):
+            # drop failed docs from the metadata-boost path only when the caller
+            # has not asked for them. Explicit pipeline_status filters bypass.
+            if doc.pipeline_status == PipelineStatus.FAILED and (
+                request.filters is None or request.filters.pipeline_status is None
+            ):
                 continue
             if not self._passes_scope(doc, request):
                 continue

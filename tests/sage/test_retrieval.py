@@ -991,6 +991,181 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# T-0149: Explicit pipeline_status="failed" filter is honored end-to-end
+# ---------------------------------------------------------------------------
+
+
+async def test_explicit_failed_filter_returns_failed_doc_semantic(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """T-0149: explicit pipeline_status=failed filter must surface failed docs in semantic mode.
+
+    The storage layer's default_exclude_failed steps aside when the caller passes an
+    explicit pipeline_status filter; the service-layer post-filter at _results_to_hits
+    must mirror that behavior, otherwise the documented override path is silently
+    re-gated on the way out. Both docs index chunks (anti-coincidental-pass: without
+    chunks for the failed doc, LanceDB returns nothing and the test would pass for
+    the wrong reason).
+    """
+    doc_ok = _make_doc(_id("doc_ok_sem_exp"))
+    doc_failed = _make_doc(_id("doc_failed_sem_exp"), pipeline_status=PipelineStatus.FAILED)
+    doc_failed.pipeline_error = "LLM unavailable"
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_failed)
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_ok_sem_exp"),
+        [("Section 1", "This document discusses patent claims and prior art.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_failed_sem_exp"),
+        [("Section 1", "This document discusses patent claims and prior art.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="patent claims",
+        filters=RetrievalFilters(pipeline_status="failed"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert _id("doc_failed_sem_exp") in doc_ids
+    assert _id("doc_ok_sem_exp") not in doc_ids
+
+
+async def test_explicit_failed_filter_returns_failed_doc_keyword(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """T-0149: explicit pipeline_status=failed filter is honored in non-wildcard keyword mode.
+
+    Mirrors BH-061 setup but flips the assertion: the caller asked for failed docs and
+    must get them. Exercises the _results_to_hits site on the keyword scoring path.
+    """
+    doc_ok = _make_doc(_id("doc_ok_kw_exp"))
+    doc_failed = _make_doc(_id("doc_failed_kw_exp"), pipeline_status=PipelineStatus.FAILED)
+    doc_failed.pipeline_error = "LLM unavailable"
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_failed)
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_ok_kw_exp"),
+        [("Section 1", "Patent claims analysis for PV07.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_failed_kw_exp"),
+        [("Section 1", "Patent claims analysis for PV07.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="PV07",
+        filters=RetrievalFilters(pipeline_status="failed"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert _id("doc_failed_kw_exp") in doc_ids
+    assert _id("doc_ok_kw_exp") not in doc_ids
+
+
+async def test_explicit_failed_filter_returns_failed_doc_keyword_wildcard(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """T-0149: explicit pipeline_status=failed filter is honored in keyword wildcard mode.
+
+    query="*" routes through _list_filtered (the dashboard drill-down path), which has
+    its own redundant Python post-filter. The explicit filter must override that gate
+    just as it overrides the SQL default at the storage layer.
+    """
+    doc_ok = _make_doc(_id("doc_ok_wc_exp"))
+    doc_failed = _make_doc(_id("doc_failed_wc_exp"), pipeline_status=PipelineStatus.FAILED)
+    doc_failed.pipeline_error = "LLM unavailable"
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_failed)
+
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_ok_wc_exp"),
+        [("Section 1", "Patent claims analysis.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_failed_wc_exp"),
+        [("Section 1", "Patent claims analysis.")],
+    )
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="*",
+        filters=RetrievalFilters(pipeline_status="failed"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert _id("doc_failed_wc_exp") in doc_ids
+    assert _id("doc_ok_wc_exp") not in doc_ids
+
+
+async def test_explicit_failed_filter_returns_failed_doc_metadata_boost(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """T-0149: explicit pipeline_status=failed filter is honored at the metadata-boost site.
+
+    Targets the third post-filter site (_boost_metadata_matches). To exercise it
+    specifically, the test uses a query that matches only the failed doc's metadata
+    (title/source_path) but does NOT match any chunk content. The chunk-search path
+    returns nothing, so the failed doc can only enter the results via the
+    metadata-boost path -- which is the site under test. Without the gate at that
+    site, the boost path silently drops the failed doc and the assertion fails.
+    """
+    doc_ok = _make_doc(_id("doc_ok_boost"))
+    doc_failed = _make_doc(_id("doc_failed_boost"), pipeline_status=PipelineStatus.FAILED)
+    doc_failed.pipeline_error = "LLM unavailable"
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_failed)
+
+    # Chunk content deliberately does NOT contain the query string, so BM25 has
+    # nothing to return. The failed doc must reach results via _boost_metadata_matches
+    # (which searches title/source_path/tags) or not at all.
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_ok_boost"),
+        [("Section 1", "Patent claims analysis.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("doc_failed_boost"),
+        [("Section 1", "Patent claims analysis.")],
+    )
+
+    # Query matches the failed doc's title ("Test <sha>_doc_failed_boost") and
+    # source_path ("test/<sha>_doc_failed_boost.md") via SQL LIKE in
+    # search_metadata; does not appear in any chunk content.
+    request = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="failed_boost",
+        filters=RetrievalFilters(pipeline_status="failed"),
+    )
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert _id("doc_failed_boost") in doc_ids
+
+
+# ---------------------------------------------------------------------------
 # BH-069: Active lifecycle tier sort -- active always ranks above non-active
 # ---------------------------------------------------------------------------
 
