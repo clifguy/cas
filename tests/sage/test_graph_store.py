@@ -35,6 +35,7 @@ from sage.storage.migrations import (
     _backfill_document_tags_apply,
     _backfill_document_tags_detect,
 )
+from tests.sage._sentinel_rows import build_sentinel_row
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -693,10 +694,11 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
     """Build a ``sqlite3.Row`` with every column consumed by
     ``GraphStore._row_to_edge`` set to a distinct non-default sentinel.
 
-    A real ``sqlite3.Row`` is used (rather than a ``dict`` stand-in) so
-    that ``row.keys()`` and column lookup semantics match the production
-    factory's expectations exactly, including the defensive
-    ``"<col>" in keys`` guards for the optional CTE-stripped columns.
+    Delegates the row-construction scaffold to ``build_sentinel_row``
+    (T-0145); only the column->value mapping is per-ticket. The real
+    ``sqlite3.Row`` it returns matches ``_row_to_edge``'s expectations
+    including the defensive ``"<col>" in row.keys()`` guards for the
+    optional CTE-stripped columns.
 
     Every field has a non-default value:
 
@@ -705,59 +707,34 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
       ``retracted_edge_id``, ``notes``, ``rationale``) are populated, not
       left null, so an unread column trips ``value is not None``.
     - ``rationale_kind`` is set to ``version_chain`` rather than the
-      ``manual`` default so a regression that hard-codes the default would
-      be caught structurally.
+      ``manual`` default so a regression that drops the field is caught
+      by the T-0144 non-None-default-scalar branch (``MANUAL`` would
+      satisfy ``is not None`` coincidentally).
     - ``edge_type`` is ``references`` (a ``transitive_both`` edge type)
       paired with ``resolution_policy='transitive_both'`` so the policy
       sentinel is itself a coherent value for the chosen edge type.
     """
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            """
-            SELECT
-                ? AS id,
-                ? AS source_id,
-                ? AS target_id,
-                ? AS edge_type,
-                ? AS resolution_policy,
-                ? AS source_valid_from_version,
-                ? AS target_valid_from_version,
-                ? AS valid_until_version,
-                ? AS retracted_edge_id,
-                ? AS created_at,
-                ? AS notes,
-                ? AS rationale,
-                ? AS rationale_kind,
-                ? AS synced_from_version,
-                ? AS synced_from_content_hash
-            """,
-            (
-                # Edge ids validate as UUIDs (sage/models/schemas.py:57),
-                # whereas document ids use the ``_id()`` short-hash form.
-                str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000001)),
-                _id("doc_source"),
-                _id("doc_target"),
-                EdgeType.REFERENCES.value,
-                ResolutionPolicy.TRANSITIVE_BOTH.value,
-                _id("doc_source_anchor"),
-                _id("doc_target_anchor"),
-                _id("doc_tombstone"),
-                str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000002)),
-                datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
-                "sentinel notes",
-                "sentinel rationale",
-                RationaleKind.VERSION_CHAIN.value,
-                _id("doc_synced_from_version"),
-                "sha256:" + "ab" * 32,
-            ),
-        )
-        row = cursor.fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    return row
+    return build_sentinel_row(
+        {
+            # Edge ids validate as UUIDs (sage/models/schemas.py:57),
+            # whereas document ids use the ``_id()`` short-hash form.
+            "id": str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000001)),
+            "source_id": _id("doc_source"),
+            "target_id": _id("doc_target"),
+            "edge_type": EdgeType.REFERENCES.value,
+            "resolution_policy": ResolutionPolicy.TRANSITIVE_BOTH.value,
+            "source_valid_from_version": _id("doc_source_anchor"),
+            "target_valid_from_version": _id("doc_target_anchor"),
+            "valid_until_version": _id("doc_tombstone"),
+            "retracted_edge_id": str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000002)),
+            "created_at": datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
+            "notes": "sentinel notes",
+            "rationale": "sentinel rationale",
+            "rationale_kind": RationaleKind.VERSION_CHAIN.value,
+            "synced_from_version": _id("doc_synced_from_version"),
+            "synced_from_content_hash": "sha256:" + "ab" * 32,
+        }
+    )
 
 
 def test_row_to_edge_populates_every_edge_field():
@@ -815,55 +792,36 @@ def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
     ``GraphStore._row_to_staging_edge`` set to a distinct non-default
     sentinel.
 
-    A real ``sqlite3.Row`` is used (rather than a ``dict`` stand-in) so
-    that column-lookup semantics match the production factory's
-    expectations exactly.
+    Delegates the row-construction scaffold to ``build_sentinel_row``
+    (T-0145); only the column->value mapping is per-ticket. The real
+    ``sqlite3.Row`` it returns matches ``_row_to_staging_edge``'s
+    column-lookup expectations.
 
     Every column has a non-default value:
 
     - ``confidence_tier`` is set to ``3`` rather than the model's default
-      of ``2`` so a regression that hard-codes the default would be
-      caught structurally (the destination field is scalar with a
-      non-falsy default, so the assertion idiom ``value is not None``
-      alone would not catch it — the sentinel must differ from the
-      default).
+      of ``2`` so a regression that drops the field is caught by the
+      T-0144 non-None-default-scalar branch (default ``2`` would
+      satisfy ``is not None`` coincidentally).
     - ``inference_evidence`` carries a distinctive sentinel string so
       an unread column trips ``value is not None``.
     - ``created_at`` is an ISO-8601 string (the factory parses it via
       ``datetime.fromisoformat``), matching how production rows are
       persisted in SQLite.
     """
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            """
-            SELECT
-                ? AS id,
-                ? AS source_id,
-                ? AS target_id,
-                ? AS edge_type,
-                ? AS inference_evidence,
-                ? AS confidence_tier,
-                ? AS created_at
-            """,
-            (
-                # Edge ids validate as UUIDs (sage/models/schemas.py:57),
-                # whereas document ids use the ``_id()`` short-hash form.
-                str(uuid.UUID(int=0x57A60000_0000_0000_0000_000000000001)),
-                _id("doc_source"),
-                _id("doc_target"),
-                EdgeType.REFERENCES.value,
-                "sentinel inference evidence",
-                3,
-                datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
-            ),
-        )
-        row = cursor.fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    return row
+    return build_sentinel_row(
+        {
+            # Edge ids validate as UUIDs (sage/models/schemas.py:57),
+            # whereas document ids use the ``_id()`` short-hash form.
+            "id": str(uuid.UUID(int=0x57A60000_0000_0000_0000_000000000001)),
+            "source_id": _id("doc_source"),
+            "target_id": _id("doc_target"),
+            "edge_type": EdgeType.REFERENCES.value,
+            "inference_evidence": "sentinel inference evidence",
+            "confidence_tier": 3,
+            "created_at": datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
+        }
+    )
 
 
 def test_row_to_staging_edge_populates_every_staging_edge_field():

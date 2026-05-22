@@ -36,6 +36,7 @@ from sage.models.schemas import (
     TraverseRequest,
 )
 from sage.storage.graph_store import GraphStore
+from tests.sage._sentinel_rows import build_sentinel_row
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -1454,57 +1455,33 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
     """Per-ticket sentinel ``sqlite3.Row`` matching the ``_row_to_edge``
     column shape, with every field set to a distinct non-default value.
 
-    Co-derived with ``_edge_cte_row_with_every_edge_field`` from the same
-    underlying sentinel constants so the two row shapes carry equivalent
-    payloads despite their different column-name conventions
+    Delegates the row-construction scaffold to ``build_sentinel_row``
+    (T-0145); only the column->value mapping is per-ticket. Co-derived
+    with ``_edge_cte_row_with_every_edge_field`` from the same
+    underlying sentinel constants so the two row shapes carry
+    equivalent payloads despite their different column-name conventions
     (``id`` / ``created_at`` here vs. ``edge_id`` / ``edge_created_at``
     in the CTE row dict).
     """
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            """
-            SELECT
-                ? AS id,
-                ? AS source_id,
-                ? AS target_id,
-                ? AS edge_type,
-                ? AS resolution_policy,
-                ? AS source_valid_from_version,
-                ? AS target_valid_from_version,
-                ? AS valid_until_version,
-                ? AS retracted_edge_id,
-                ? AS created_at,
-                ? AS notes,
-                ? AS rationale,
-                ? AS rationale_kind,
-                ? AS synced_from_version,
-                ? AS synced_from_content_hash
-            """,
-            (
-                _T0124_EDGE_ID,
-                _T0124_SOURCE_ID,
-                _T0124_TARGET_ID,
-                _T0124_EDGE_TYPE,
-                _T0124_RESOLUTION_POLICY,
-                _T0124_SOURCE_ANCHOR,
-                _T0124_TARGET_ANCHOR,
-                _T0124_TOMBSTONE,
-                _T0124_RETRACTED_EDGE_ID,
-                _T0124_CREATED_AT_ISO,
-                _T0124_NOTES,
-                _T0124_RATIONALE,
-                _T0124_RATIONALE_KIND,
-                _T0124_SYNCED_FROM_VERSION,
-                _T0124_SYNCED_FROM_CONTENT_HASH,
-            ),
-        )
-        row = cursor.fetchone()
-    finally:
-        conn.close()
-    assert row is not None
-    return row
+    return build_sentinel_row(
+        {
+            "id": _T0124_EDGE_ID,
+            "source_id": _T0124_SOURCE_ID,
+            "target_id": _T0124_TARGET_ID,
+            "edge_type": _T0124_EDGE_TYPE,
+            "resolution_policy": _T0124_RESOLUTION_POLICY,
+            "source_valid_from_version": _T0124_SOURCE_ANCHOR,
+            "target_valid_from_version": _T0124_TARGET_ANCHOR,
+            "valid_until_version": _T0124_TOMBSTONE,
+            "retracted_edge_id": _T0124_RETRACTED_EDGE_ID,
+            "created_at": _T0124_CREATED_AT_ISO,
+            "notes": _T0124_NOTES,
+            "rationale": _T0124_RATIONALE,
+            "rationale_kind": _T0124_RATIONALE_KIND,
+            "synced_from_version": _T0124_SYNCED_FROM_VERSION,
+            "synced_from_content_hash": _T0124_SYNCED_FROM_CONTENT_HASH,
+        }
+    )
 
 
 def _edge_cte_row_with_every_edge_field() -> dict:
