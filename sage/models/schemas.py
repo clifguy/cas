@@ -1426,6 +1426,31 @@ class ChainEntry(BaseModel):
         description="Zero-based ordinal position in the chain (0 = tail, length-1 = head)."
     )
 
+    @classmethod
+    def from_chain_row(cls, row: dict, position: int) -> "ChainEntry":
+        """Build a ChainEntry from a chain-walk CTE row dict and position (T-0120).
+
+        Single owner of the chain-walk row dict -> ChainEntry projection per the
+        *CAS Projection-Point Audit Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        ``test_from_chain_row_populates_every_chain_entry_field`` in
+        ``tests/sage/test_graph_ops.py`` fails closed if a field is added to
+        ChainEntry but not wired through this factory.
+
+        The row dict is the per-document shape produced by
+        ``GraphStore.chain_walk`` (keys: ``doc_id``, ``title``, ``version_label``,
+        ``lifecycle_status``, ``document_date``). ``position`` is supplied by
+        the caller's chain-ordering pass.
+        """
+        return cls(
+            id=row["doc_id"],
+            title=row["title"],
+            version_label=row["version_label"],
+            lifecycle_status=row["lifecycle_status"],
+            document_date=row["document_date"],
+            position=position,
+        )
+
 
 class ChainResponse(BaseModel):
     chain: list[ChainEntry] = Field(

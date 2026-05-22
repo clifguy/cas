@@ -1157,16 +1157,7 @@ class GraphOpsService:
             d = doc_map[doc_id]
             if doc_id == request.document_id:
                 query_position = i
-            chain_entries.append(
-                ChainEntry(
-                    id=doc_id,
-                    title=d["title"],
-                    version_label=d["version_label"],
-                    lifecycle_status=d["lifecycle_status"],
-                    document_date=d["document_date"],
-                    position=i,
-                )
-            )
+            chain_entries.append(ChainEntry.from_chain_row(d, position=i))
 
         # tail = position 0 (oldest), head = position N (newest)
         tail_id = ordered[0] if ordered else request.document_id

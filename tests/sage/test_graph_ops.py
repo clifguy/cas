@@ -24,7 +24,14 @@ from sage.models.enums import (
     ResolutionPolicy,
     SourceType,
 )
-from sage.models.schemas import ChainRequest, Document, Edge, LinkRequest, TraverseRequest
+from sage.models.schemas import (
+    ChainEntry,
+    ChainRequest,
+    Document,
+    Edge,
+    LinkRequest,
+    TraverseRequest,
+)
 from sage.storage.graph_store import GraphStore
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -1604,3 +1611,47 @@ def test_edge_cte_row_parity_with_row_to_edge():
     # miss (extra/dropped fields would already trip pydantic validation
     # before reaching this line; equality is the residual check).
     assert edge_canonical == edge_inline
+
+
+# ---------------------------------------------------------------------------
+# T-0120: ChainEntry.from_chain_row factory closes the chain-walk CTE-row
+# projection. The exhaustive-fields test (T1) is the structural F4 closure:
+# it fails closed when a new field is added to ChainEntry without a matching
+# factory update.
+# ---------------------------------------------------------------------------
+
+
+def _chain_row_with_every_chain_entry_field() -> dict:
+    """Build a chain-walk row dict with every ChainEntry-mapped key set to a
+    distinct non-default sentinel. Used by the exhaustive-fields test to
+    verify ``ChainEntry.from_chain_row`` populates each field; a row whose
+    nullable keys (``version_label``, ``document_date``) are left at their
+    default ``None`` would let the test pass coincidentally on a buggy
+    factory that drops one of them."""
+    return {
+        "doc_id": _id("chain_sentinel"),
+        "title": "Sentinel chain title",
+        "version_label": "v1.7",
+        "lifecycle_status": "archived",
+        "document_date": "2026-05-19",
+    }
+
+
+# T1: exhaustive fields — the keystone F4-closure test.
+def test_from_chain_row_populates_every_chain_entry_field():
+    row = _chain_row_with_every_chain_entry_field()
+    entry = ChainEntry.from_chain_row(row, position=3)
+    for field_name, field_info in ChainEntry.model_fields.items():
+        value = getattr(entry, field_name)
+        annotation = field_info.annotation
+        # ChainEntry has no list- or dict-typed fields, but keep the
+        # branch shape consistent with T-0096's canonical template so
+        # future field additions to ChainEntry are caught regardless of
+        # the new field's annotation.
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"ChainEntry.{field_name} not populated by from_chain_row "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, f"ChainEntry.{field_name} not populated by from_chain_row"
