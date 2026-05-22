@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic_core import PydanticUndefined
+
 from sage.config import (
     DocTypeEntry,
     DocumentTypesConfig,
@@ -160,12 +162,14 @@ def test_build_vault_summary_populates_every_vault_summary_field():
     summary = VaultRegistryService._build_vault_summary(config, services, projects)
 
     # ---- VaultSummary: every field non-empty / non-None ----
+    # Three-branch closure-test idiom (T-0144): list/dict-annotation branch
+    # catches empty/falsy defaults; non-None-default-scalar branch catches
+    # coincidental passes where Pydantic supplies the default and the value
+    # would still satisfy ``is not None``; else falls back to non-None.
     for field_name, field_info in VaultSummary.model_fields.items():
         value = getattr(summary, field_name)
         annotation = field_info.annotation
-        # list-typed sub-collections default to ``[]`` and would pass a
-        # naive ``value is not None`` check on an empty default; require
-        # truthy for these and non-None for the rest (the T-0096 idiom).
+        default = field_info.default
         if (
             annotation == list[str]
             or annotation == list[VaultDocTypeEntry]
@@ -177,6 +181,12 @@ def test_build_vault_summary_populates_every_vault_summary_field():
                 f"VaultSummary.{field_name} not populated by _build_vault_summary "
                 "(empty/falsy default would pass a naive 'is not None' check)"
             )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"VaultSummary.{field_name} matches its default ({default!r}) — "
+                "_build_vault_summary may have dropped this field (coincidental "
+                "pass: Pydantic supplies the default and 'is not None' would still pass)"
+            )
         else:
             assert value is not None, (
                 f"VaultSummary.{field_name} not populated by _build_vault_summary"
@@ -185,30 +195,38 @@ def test_build_vault_summary_populates_every_vault_summary_field():
     # ---- VaultDocTypeEntry: every field populated on first element ----
     assert summary.doc_types, "summary.doc_types empty — sub-model test cannot run"
     first_doc_type = summary.doc_types[0]
-    for field_name, _field_info in VaultDocTypeEntry.model_fields.items():
+    for field_name, field_info in VaultDocTypeEntry.model_fields.items():
         value = getattr(first_doc_type, field_name)
-        assert value is not None, (
-            f"VaultDocTypeEntry.{field_name} not populated by _build_vault_summary"
-        )
+        default = field_info.default
+        if default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"VaultDocTypeEntry.{field_name} matches its default ({default!r}) — "
+                "_build_vault_summary may have dropped this field (coincidental pass)"
+            )
+        else:
+            assert value is not None, (
+                f"VaultDocTypeEntry.{field_name} not populated by _build_vault_summary"
+            )
 
     # ---- VaultLifecycleState: every field populated on first element ----
+    # The ``is_terminal`` field defaults to ``False`` and the sentinel sets it
+    # ``True``; the non-None-default-scalar branch (T-0144) catches a factory
+    # regression where Pydantic would supply the default and the prior
+    # ``is not None`` idiom would pass coincidentally.
     assert summary.lifecycle_states, "summary.lifecycle_states empty — sub-model test cannot run"
     first_state = summary.lifecycle_states[0]
-    for field_name, _field_info in VaultLifecycleState.model_fields.items():
+    for field_name, field_info in VaultLifecycleState.model_fields.items():
         value = getattr(first_state, field_name)
-        assert value is not None, (
-            f"VaultLifecycleState.{field_name} not populated by _build_vault_summary"
-        )
-    # Additional anti-coincidental-pass guard: ``is_terminal`` defaults to
-    # ``False`` and ``False is not None`` would pass the loop above. The
-    # sentinel sets it ``True``; a factory that hard-codes the default
-    # would still pass the loop but fail this explicit assertion.
-    assert first_state.is_terminal is True, (
-        "VaultLifecycleState.is_terminal not threaded from LifecycleState "
-        "by _build_vault_summary (sentinel set is_terminal=True; factory "
-        "regression to default False would not be caught by the "
-        "value-is-not-None loop above)"
-    )
+        default = field_info.default
+        if default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"VaultLifecycleState.{field_name} matches its default ({default!r}) — "
+                "_build_vault_summary may have dropped this field (coincidental pass)"
+            )
+        else:
+            assert value is not None, (
+                f"VaultLifecycleState.{field_name} not populated by _build_vault_summary"
+            )
 
     # ---- VaultAdapterInfo: every field populated on first element ----
     assert summary.adapters, "summary.adapters empty — sub-model test cannot run"
@@ -216,10 +234,16 @@ def test_build_vault_summary_populates_every_vault_summary_field():
     for field_name, field_info in VaultAdapterInfo.model_fields.items():
         value = getattr(first_adapter, field_name)
         annotation = field_info.annotation
+        default = field_info.default
         if annotation == list[str]:
             assert value, (
                 f"VaultAdapterInfo.{field_name} not populated by "
                 "_build_vault_summary (empty list would pass 'is not None')"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"VaultAdapterInfo.{field_name} matches its default ({default!r}) — "
+                "_build_vault_summary may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, (

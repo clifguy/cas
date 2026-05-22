@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic_core import PydanticUndefined
 
 from sage.adapters.stubs import (
     SeededEmbeddingProvider,
@@ -568,13 +569,21 @@ def _doc_with_every_document_field() -> Document:
 def test_from_document_populates_every_read_projection_response_field():
     doc = _doc_with_every_document_field()
     response = ReadProjectionResponse.from_document(doc, projection_text="sentinel projection text")
+    # Three-branch closure-test idiom (T-0144). ReadProjectionResponse has
+    # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadProjectionResponse.model_fields.items():
         value = getattr(response, field_name)
         annotation = field_info.annotation
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"ReadProjectionResponse.{field_name} not populated by from_document "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"ReadProjectionResponse.{field_name} matches its default ({default!r}) — "
+                "from_document may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, (
@@ -591,13 +600,21 @@ def test_from_document_populates_every_read_section_response_field():
         chunk_count=7,
         section_text="sentinel section text",
     )
+    # Three-branch closure-test idiom (T-0144). ReadSectionResponse has
+    # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadSectionResponse.model_fields.items():
         value = getattr(response, field_name)
         annotation = field_info.annotation
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"ReadSectionResponse.{field_name} not populated by from_document "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"ReadSectionResponse.{field_name} matches its default ({default!r}) — "
+                "from_document may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, (
@@ -609,13 +626,21 @@ def test_from_document_populates_every_read_section_response_field():
 def test_from_document_populates_every_list_headings_response_field():
     doc = _doc_with_every_document_field()
     response = ListHeadingsResponse.from_document(doc, headings=["Heading A", "Heading B > Sub"])
+    # Three-branch closure-test idiom (T-0144). ListHeadingsResponse has
+    # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ListHeadingsResponse.model_fields.items():
         value = getattr(response, field_name)
         annotation = field_info.annotation
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"ListHeadingsResponse.{field_name} not populated by from_document "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"ListHeadingsResponse.{field_name} matches its default ({default!r}) — "
+                "from_document may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, (

@@ -12,6 +12,8 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
+from pydantic_core import PydanticUndefined
+
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
@@ -770,13 +772,25 @@ def test_row_to_edge_populates_every_edge_field():
     for field_name, field_info in Edge.model_fields.items():
         value = getattr(edge, field_name)
         annotation = field_info.annotation
-        # Match the cohort scaffolding idiom even though no current Edge
-        # field is list- or dict-typed; the branch is forward defense for
-        # future field additions.
+        default = field_info.default
+        # Three-branch closure-test idiom (T-0144). The list/dict
+        # branch is forward defense for future Edge field additions
+        # (no current Edge field is list- or dict-typed). The
+        # non-None-default-scalar branch catches the coincidental-pass
+        # class where Pydantic's default would satisfy ``is not None``
+        # on a factory that dropped the field: Edge.rationale_kind
+        # defaults to RationaleKind.MANUAL; the sentinel row carries
+        # VERSION_CHAIN so the branch trips if the factory regresses.
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"Edge.{field_name} not populated by _row_to_edge "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"Edge.{field_name} matches its default ({default!r}) — "
+                "_row_to_edge may have dropped this field (coincidental pass: "
+                "Pydantic supplies the default and 'is not None' would still pass)"
             )
         else:
             assert value is not None, f"Edge.{field_name} not populated by _row_to_edge"
@@ -866,13 +880,21 @@ def test_row_to_staging_edge_populates_every_staging_edge_field():
     for field_name, field_info in StagingEdge.model_fields.items():
         value = getattr(staging_edge, field_name)
         annotation = field_info.annotation
-        # Match the cohort scaffolding idiom even though no current
-        # StagingEdge field is list- or dict-typed; the branch is
-        # forward defense for future field additions.
+        default = field_info.default
+        # Three-branch closure-test idiom (T-0144). StagingEdge.confidence_tier
+        # defaults to 2; the sentinel sets it to 3 so the non-None-default
+        # branch trips if the factory drops the field (Pydantic would supply
+        # the default and 'is not None' would still pass).
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"StagingEdge.{field_name} not populated by _row_to_staging_edge "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"StagingEdge.{field_name} matches its default ({default!r}) — "
+                "_row_to_staging_edge may have dropped this field (coincidental "
+                "pass: Pydantic supplies the default and 'is not None' would still pass)"
             )
         else:
             assert value is not None, (

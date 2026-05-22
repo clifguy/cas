@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
+from pydantic_core import PydanticUndefined
 
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import SeededEmbeddingProvider, StubContentStore
@@ -3953,16 +3954,21 @@ def _doc_with_every_summary_field() -> Document:
 def test_from_document_populates_every_summary_field():
     doc = _doc_with_every_summary_field()
     summary = DocumentSummary.from_document(doc)
+    # Three-branch closure-test idiom (T-0144). DocumentSummary has no
+    # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DocumentSummary.model_fields.items():
         value = getattr(summary, field_name)
         annotation = field_info.annotation
-        # list-typed and dict-typed fields default to [] / None respectively
-        # and would pass a naive `value is not None` check on an empty default;
-        # require truthy for these and non-None for the rest.
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"DocumentSummary.{field_name} not populated by from_document "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"DocumentSummary.{field_name} matches its default ({default!r}) — "
+                "from_document may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, f"DocumentSummary.{field_name} not populated by from_document"
@@ -4083,16 +4089,21 @@ def test_from_summary_populates_every_discover_hit_field():
         relevance_score=0.875,
         matched_chunk_count=7,
     )
+    # Three-branch closure-test idiom (T-0144). DiscoverHit has no
+    # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DiscoverHit.model_fields.items():
         value = getattr(hit, field_name)
         annotation = field_info.annotation
-        # DiscoverHit has no list/dict fields today, but keep the branch
-        # for forward compatibility: a future list/dict field defaulting
-        # to [] / None would pass a naive `value is not None` check.
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"DiscoverHit.{field_name} not populated by from_summary "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"DiscoverHit.{field_name} matches its default ({default!r}) — "
+                "from_summary may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, f"DiscoverHit.{field_name} not populated by from_summary"

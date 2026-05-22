@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic_core import PydanticUndefined
 
 from sage.api.errors import (
     DocumentNotFoundError,
@@ -1653,17 +1654,22 @@ def _chain_row_with_every_chain_entry_field() -> dict:
 def test_from_chain_row_populates_every_chain_entry_field():
     row = _chain_row_with_every_chain_entry_field()
     entry = ChainEntry.from_chain_row(row, position=3)
+    # Three-branch closure-test idiom (T-0144). ChainEntry has no
+    # list/dict or non-None-default scalar fields today; both branches
+    # are forward defense for future field additions.
     for field_name, field_info in ChainEntry.model_fields.items():
         value = getattr(entry, field_name)
         annotation = field_info.annotation
-        # ChainEntry has no list- or dict-typed fields, but keep the
-        # branch shape consistent with T-0096's canonical template so
-        # future field additions to ChainEntry are caught regardless of
-        # the new field's annotation.
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"ChainEntry.{field_name} not populated by from_chain_row "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"ChainEntry.{field_name} matches its default ({default!r}) — "
+                "from_chain_row may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, f"ChainEntry.{field_name} not populated by from_chain_row"
@@ -1740,13 +1746,24 @@ def test_from_traversal_populates_every_traversal_node_field():
         edge_counts=edge_counts,
     )
 
+    # Three-branch closure-test idiom (T-0144). The list/dict branch is
+    # extended to ``dict[str, int]`` for ``TraversalNode.edge_counts``
+    # (default_factory={} — not addressed by the non-None-default-scalar
+    # branch). The elif branch is forward defense; TraversalNode has no
+    # non-None-default scalar fields today.
     for field_name, field_info in TraversalNode.model_fields.items():
         value = getattr(node, field_name)
         annotation = field_info.annotation
+        default = field_info.default
         if annotation == dict[str, int] or annotation == list[str]:
             assert value, (
                 f"TraversalNode.{field_name} not populated by from_traversal "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"TraversalNode.{field_name} matches its default ({default!r}) — "
+                "from_traversal may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, f"TraversalNode.{field_name} not populated by from_traversal"
@@ -1812,13 +1829,21 @@ def test_from_traversal_row_populates_every_document_summary_field():
     closed (T-0118)."""
     row = _traversal_row_with_every_document_summary_field()
     summary = DocumentSummary.from_traversal_row(row)
+    # Three-branch closure-test idiom (T-0144). DocumentSummary has no
+    # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DocumentSummary.model_fields.items():
         value = getattr(summary, field_name)
         annotation = field_info.annotation
+        default = field_info.default
         if annotation == list[str] or annotation == (dict | None):
             assert value, (
                 f"DocumentSummary.{field_name} not populated by from_traversal_row "
                 "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        elif default is not PydanticUndefined and default is not None:
+            assert value != default, (
+                f"DocumentSummary.{field_name} matches its default ({default!r}) — "
+                "from_traversal_row may have dropped this field (coincidental pass)"
             )
         else:
             assert value is not None, (
