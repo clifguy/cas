@@ -69,7 +69,7 @@ async def test_get_config_404_unknown_vault(client):
 # ---------------------------------------------------------------------------
 
 
-async def test_update_config_identity_200(client):
+async def test_update_config_identity_200(client, tmp_vault_dir):
     """Update vault name via identity section."""
     resp = await client.put(
         "/sage_vaults/test_vault/config",
@@ -78,8 +78,8 @@ async def test_update_config_identity_200(client):
                 "id": "test_vault",
                 "name": "Renamed Vault",
                 "owner": "testuser",
-                "storage_root": "/tmp/unused",
-                "brain_root": "/tmp/unused",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
                 "visibility": "personal",
             }
         },
@@ -219,7 +219,7 @@ async def test_update_config_destructive_with_force_returns_200(client, tmp_vaul
 
 
 # TEST-SAGE-VM-REST-003
-async def test_update_config_non_destructive_ignores_force(client):
+async def test_update_config_non_destructive_ignores_force(client, tmp_vault_dir):
     """A benign update returns 200 with empty warnings whether or not force is set."""
     # Without force
     resp1 = await client.put(
@@ -229,8 +229,8 @@ async def test_update_config_non_destructive_ignores_force(client):
                 "id": "test_vault",
                 "name": "Renamed Once",
                 "owner": "testuser",
-                "storage_root": "/tmp/unused",
-                "brain_root": "/tmp/unused",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
                 "visibility": "personal",
             }
         },
@@ -246,8 +246,8 @@ async def test_update_config_non_destructive_ignores_force(client):
                 "id": "test_vault",
                 "name": "Renamed Twice",
                 "owner": "testuser",
-                "storage_root": "/tmp/unused",
-                "brain_root": "/tmp/unused",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
                 "visibility": "personal",
             }
         },
