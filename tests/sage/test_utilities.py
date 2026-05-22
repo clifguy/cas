@@ -2,11 +2,18 @@
 
 Tests for export_projection (path containment security) and
 eval_retrieval (retrieval health assertions from YAML).
+
+Also carries the T-0126 closure-pair exhaustive-fields tests for the
+three thin ``Document`` → response-model projections in
+``sage/services/utilities.py`` (``ReadProjectionResponse``,
+``ReadSectionResponse``, ``ListHeadingsResponse``), per the *CAS
+Projection-Point Audit Conventions* steering document.
 """
 
 import asyncio
 import hashlib
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -18,8 +25,14 @@ from sage.adapters.stubs import (
     StubContentStore,
 )
 from sage.config import VaultConfig
-from sage.models.enums import SourceType
-from sage.models.schemas import IngestRequest
+from sage.models.enums import PipelineStatus, SourceType
+from sage.models.schemas import (
+    Document,
+    IngestRequest,
+    ListHeadingsResponse,
+    ReadProjectionResponse,
+    ReadSectionResponse,
+)
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
@@ -498,3 +511,113 @@ async def test_export_nonexistent_document(utilities_service):
 
     with pytest.raises(DocumentNotFoundError):
         await utilities_service.export_projection("nonexistent", "output.md")
+
+
+# ---------------------------------------------------------------------------
+# T-0126: Closure-pair tests for the three thin Document-field pulls in
+# sage/services/utilities.py. Each ``from_document`` factory consolidates a
+# single construction site behind a model classmethod; the exhaustive-fields
+# tests below are the structural F4 closure — they fail closed when a new
+# field is added to a response model without a matching factory update.
+# Methodology: *CAS Projection-Point Audit Conventions* (cas vault,
+# doc_type=steering_document).
+# ---------------------------------------------------------------------------
+
+
+def _doc_with_every_document_field() -> Document:
+    """Build a Document with every Document-mapped field set to a distinct
+    non-default sentinel.
+
+    Used by the T-0126 exhaustive-fields tests so that a factory which
+    inadvertently drops a Document-sourced field surfaces as a non-populated
+    response-model field; defaulted source values would let the assertions
+    pass coincidentally for ``str | None`` / ``list[str]`` / ``dict | None``
+    fields.
+    """
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    return Document(
+        id=_id("doc_all_fields"),
+        title="Sentinel Title",
+        source_type=SourceType.MARKDOWN,
+        source_path="sentinel/path.md",
+        lifecycle_status="archived",
+        version_label="v1.2",
+        project="proj-X",
+        tags=["alpha", "beta"],
+        authority_scope="scope-X",
+        doc_type="ticket",
+        source_content_hash=_sha("doc_all_fields"),
+        adapter_version="0.5.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        indexed_at=now,
+        source_modified_at=now,
+        document_date="2026-05-15",
+        semantic_abstract="a sentinel abstract",
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        pipeline_error="non-null sentinel error string",
+        tier3_metadata={"ticket_id": "T-0126", "ticket_priority": "low"},
+        metadata_confirmed=True,
+    )
+
+
+# T1: ReadProjectionResponse exhaustive fields — the keystone F4 closure.
+def test_from_document_populates_every_read_projection_response_field():
+    doc = _doc_with_every_document_field()
+    response = ReadProjectionResponse.from_document(doc, projection_text="sentinel projection text")
+    for field_name, field_info in ReadProjectionResponse.model_fields.items():
+        value = getattr(response, field_name)
+        annotation = field_info.annotation
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"ReadProjectionResponse.{field_name} not populated by from_document "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, (
+                f"ReadProjectionResponse.{field_name} not populated by from_document"
+            )
+
+
+# T2: ReadSectionResponse exhaustive fields — the keystone F4 closure.
+def test_from_document_populates_every_read_section_response_field():
+    doc = _doc_with_every_document_field()
+    response = ReadSectionResponse.from_document(
+        doc,
+        heading_path="Section 1 > Sentinel Heading",
+        chunk_count=7,
+        section_text="sentinel section text",
+    )
+    for field_name, field_info in ReadSectionResponse.model_fields.items():
+        value = getattr(response, field_name)
+        annotation = field_info.annotation
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"ReadSectionResponse.{field_name} not populated by from_document "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, (
+                f"ReadSectionResponse.{field_name} not populated by from_document"
+            )
+
+
+# T3: ListHeadingsResponse exhaustive fields — the keystone F4 closure.
+def test_from_document_populates_every_list_headings_response_field():
+    doc = _doc_with_every_document_field()
+    response = ListHeadingsResponse.from_document(doc, headings=["Heading A", "Heading B > Sub"])
+    for field_name, field_info in ListHeadingsResponse.model_fields.items():
+        value = getattr(response, field_name)
+        annotation = field_info.annotation
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"ListHeadingsResponse.{field_name} not populated by from_document "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, (
+                f"ListHeadingsResponse.{field_name} not populated by from_document"
+            )

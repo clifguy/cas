@@ -212,15 +212,7 @@ class UtilitiesService:
         """
         doc, projection_text = await self._get_projection_text(document_id)
 
-        return ReadProjectionResponse(
-            document_id=document_id,
-            title=doc.title,
-            version_label=doc.version_label,
-            lifecycle_status=doc.lifecycle_status,
-            doc_type=doc.doc_type,
-            source_path=doc.source_path,
-            projection_text=projection_text,
-        )
+        return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
 
     # ------------------------------------------------------------------
     # read_section
@@ -263,9 +255,8 @@ class UtilitiesService:
 
         section_text = "\n\n".join(chunk.content for chunk in chunks)
 
-        return ReadSectionResponse(
-            document_id=document_id,
-            title=doc.title,
+        return ReadSectionResponse.from_document(
+            doc,
             heading_path=heading_path,
             chunk_count=len(chunks),
             section_text=section_text,
@@ -299,11 +290,7 @@ class UtilitiesService:
         doc, _ = await self._get_projection_text(document_id)
         headings = await self._content.get_heading_paths(document_id)
 
-        return ListHeadingsResponse(
-            document_id=document_id,
-            title=doc.title,
-            headings=headings,
-        )
+        return ListHeadingsResponse.from_document(doc, headings=headings)
 
     # ------------------------------------------------------------------
     # eval_retrieval (BH-041, BH-042)

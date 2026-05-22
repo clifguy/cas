@@ -1946,6 +1946,27 @@ class ReadProjectionResponse(BaseModel):
         description="Full canonical projection text reassembled from stored chunks."
     )
 
+    @classmethod
+    def from_document(cls, doc: "Document", projection_text: str) -> "ReadProjectionResponse":
+        """Build a ReadProjectionResponse from a Document plus projection text (T-0126).
+
+        Single owner of the Document → ReadProjectionResponse projection per the
+        *CAS Projection-Point Audit Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        ``test_from_document_populates_every_read_projection_response_field``
+        in ``tests/sage/test_utilities.py`` fails closed if a field is added
+        to ReadProjectionResponse but not wired through this factory.
+        """
+        return cls(
+            document_id=doc.id,
+            title=doc.title,
+            version_label=doc.version_label,
+            lifecycle_status=doc.lifecycle_status,
+            doc_type=doc.doc_type,
+            source_path=doc.source_path,
+            projection_text=projection_text,
+        )
+
 
 class ReadSectionResponse(BaseModel):
     document_id: DocumentIdStr = Field(description="Id of the document whose section was read.")
@@ -1953,6 +1974,31 @@ class ReadSectionResponse(BaseModel):
     heading_path: str = Field(description="Heading-path prefix that scoped the section read.")
     chunk_count: int = Field(description="Number of chunks matched by the heading_path prefix.")
     section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
+
+    @classmethod
+    def from_document(
+        cls,
+        doc: "Document",
+        heading_path: str,
+        chunk_count: int,
+        section_text: str,
+    ) -> "ReadSectionResponse":
+        """Build a ReadSectionResponse from a Document plus section fields (T-0126).
+
+        Single owner of the Document → ReadSectionResponse projection per the
+        *CAS Projection-Point Audit Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        ``test_from_document_populates_every_read_section_response_field`` in
+        ``tests/sage/test_utilities.py`` fails closed if a field is added to
+        ReadSectionResponse but not wired through this factory.
+        """
+        return cls(
+            document_id=doc.id,
+            title=doc.title,
+            heading_path=heading_path,
+            chunk_count=chunk_count,
+            section_text=section_text,
+        )
 
 
 class ListHeadingsResponse(BaseModel):
@@ -1963,6 +2009,23 @@ class ListHeadingsResponse(BaseModel):
             "Distinct heading paths in document order, suitable for passing to read_section."
         )
     )
+
+    @classmethod
+    def from_document(cls, doc: "Document", headings: list[str]) -> "ListHeadingsResponse":
+        """Build a ListHeadingsResponse from a Document plus heading list (T-0126).
+
+        Single owner of the Document → ListHeadingsResponse projection per the
+        *CAS Projection-Point Audit Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        ``test_from_document_populates_every_list_headings_response_field`` in
+        ``tests/sage/test_utilities.py`` fails closed if a field is added to
+        ListHeadingsResponse but not wired through this factory.
+        """
+        return cls(
+            document_id=doc.id,
+            title=doc.title,
+            headings=headings,
+        )
 
 
 class AssertionFailure(BaseModel):
