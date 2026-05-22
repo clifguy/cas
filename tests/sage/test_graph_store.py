@@ -12,9 +12,16 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import Document, TagsPatch, UpdateMetadataRequest
+from sage.models.enums import (
+    EdgeType,
+    PipelineStatus,
+    RationaleKind,
+    ResolutionPolicy,
+    SourceType,
+)
+from sage.models.schemas import Document, Edge, TagsPatch, UpdateMetadataRequest
 from sage.services.identity import generate_document_id
+from sage.storage.graph_store import GraphStore
 from sage.storage.migrations import (
     BACKFILL_PLAN,
     _backfill_document_tags_apply,
@@ -280,13 +287,6 @@ async def test_bh_008_indexed_at_populated_after_indexing(graph_store):
 # terminate cleanly in both cases; otherwise a single edge write whose
 # source or target happens to touch such a shape loops forever in the
 # recursive CTE, consuming the executor thread past any client timeout.
-
-from sage.models.enums import (  # noqa: E402 -- grouped with the lineage-recursion test section below
-    EdgeType,
-)
-from sage.models.schemas import (  # noqa: E402 -- grouped with the lineage-recursion test section below
-    Edge,
-)
 
 
 def _make_doc(doc_id: str) -> Document:
@@ -666,3 +666,107 @@ async def test_t0078_backfill_plan_includes_document_tags():
     """The BACKFILL_PLAN registry must include the document_tags backfill."""
     names = [b.name for b in BACKFILL_PLAN]
     assert "document_tags" in names, names
+
+
+# ---------------------------------------------------------------------------
+# T-0123: Exhaustive-fields closure test for ``GraphStore._row_to_edge``.
+#
+# ``_row_to_edge`` is the single owning factory for the
+# ``sqlite3.Row -> Edge`` projection (sage/storage/graph_store.py). Per the
+# *CAS Projection-Point Audit Conventions* steering document (cas vault,
+# doc_type=steering_document), every projection point owes a closure pair:
+# a single owning factory and an exhaustive-fields test that fails closed
+# when a field is added to the destination model but is not wired through
+# the factory. This test installs the second half of the pair.
+# ---------------------------------------------------------------------------
+
+
+def _edge_row_with_every_edge_field() -> sqlite3.Row:
+    """Build a ``sqlite3.Row`` with every column consumed by
+    ``GraphStore._row_to_edge`` set to a distinct non-default sentinel.
+
+    A real ``sqlite3.Row`` is used (rather than a ``dict`` stand-in) so
+    that ``row.keys()`` and column lookup semantics match the production
+    factory's expectations exactly, including the defensive
+    ``"<col>" in keys`` guards for the optional CTE-stripped columns.
+
+    Every field has a non-default value:
+
+    - Optional columns (``resolution_policy``, ``source_valid_from_version``,
+      ``target_valid_from_version``, ``valid_until_version``,
+      ``retracted_edge_id``, ``notes``, ``rationale``) are populated, not
+      left null, so an unread column trips ``value is not None``.
+    - ``rationale_kind`` is set to ``version_chain`` rather than the
+      ``manual`` default so a regression that hard-codes the default would
+      be caught structurally.
+    - ``edge_type`` is ``references`` (a ``transitive_both`` edge type)
+      paired with ``resolution_policy='transitive_both'`` so the policy
+      sentinel is itself a coherent value for the chosen edge type.
+    """
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            """
+            SELECT
+                ? AS id,
+                ? AS source_id,
+                ? AS target_id,
+                ? AS edge_type,
+                ? AS resolution_policy,
+                ? AS source_valid_from_version,
+                ? AS target_valid_from_version,
+                ? AS valid_until_version,
+                ? AS retracted_edge_id,
+                ? AS created_at,
+                ? AS notes,
+                ? AS rationale,
+                ? AS rationale_kind
+            """,
+            (
+                # Edge ids validate as UUIDs (sage/models/schemas.py:57),
+                # whereas document ids use the ``_id()`` short-hash form.
+                str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000001)),
+                _id("doc_source"),
+                _id("doc_target"),
+                EdgeType.REFERENCES.value,
+                ResolutionPolicy.TRANSITIVE_BOTH.value,
+                _id("doc_source_anchor"),
+                _id("doc_target_anchor"),
+                _id("doc_tombstone"),
+                str(uuid.UUID(int=0xED9E0000_0000_0000_0000_000000000002)),
+                datetime(2026, 5, 21, 10, 30, tzinfo=timezone.utc).isoformat(),
+                "sentinel notes",
+                "sentinel rationale",
+                RationaleKind.VERSION_CHAIN.value,
+            ),
+        )
+        row = cursor.fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return row
+
+
+def test_row_to_edge_populates_every_edge_field():
+    """T-0123 (F4 closure pair, T1): every ``Edge`` field is populated by
+    ``GraphStore._row_to_edge`` from a sentinel row dict whose columns are
+    all non-default. Iterates ``Edge.model_fields`` so the assertion grows
+    automatically when a field is added to ``Edge``; if the new field is
+    not wired through ``_row_to_edge``, the loop trips the assertion.
+    """
+    row = _edge_row_with_every_edge_field()
+    edge = GraphStore._row_to_edge(row)
+    for field_name, field_info in Edge.model_fields.items():
+        value = getattr(edge, field_name)
+        annotation = field_info.annotation
+        # Match the cohort scaffolding idiom even though no current Edge
+        # field is list- or dict-typed; the branch is forward defense for
+        # future field additions.
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"Edge.{field_name} not populated by _row_to_edge "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, f"Edge.{field_name} not populated by _row_to_edge"

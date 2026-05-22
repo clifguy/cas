@@ -1889,6 +1889,26 @@ class GraphStore:
 
     @staticmethod
     def _row_to_edge(row: sqlite3.Row) -> Edge:
+        """Build an ``Edge`` from a ``sqlite3.Row`` (T-0123).
+
+        Single owner of the row-dict -> ``Edge`` projection per the *CAS
+        Projection-Point Audit Conventions* steering document (cas vault,
+        doc_type=steering_document). The exhaustive-fields test
+        ``test_row_to_edge_populates_every_edge_field`` in
+        ``tests/sage/test_graph_store.py`` fails closed if a field is added
+        to ``Edge`` but not wired through this factory.
+
+        The duplicate CTE-row construction path at
+        ``sage/services/graph_ops.py`` is an architecturally excluded
+        site (BH-101: per-row ``model_validate`` cost on the traversal
+        hot path); its parity guarantee with this canonical factory is
+        the subject of T-0124.
+
+        Defensive ``"<col>" in row.keys()`` guards for
+        ``resolution_policy``, ``rationale_kind``, the three anchor
+        columns, and ``retracted_edge_id`` accommodate CTE projections
+        that strip optional columns from the row dict.
+        """
         keys = row.keys()
         policy_value = row["resolution_policy"] if "resolution_policy" in keys else None
         rationale_kind_value = row["rationale_kind"] if "rationale_kind" in keys else "manual"
