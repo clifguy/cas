@@ -211,6 +211,7 @@ def _make_document(
     tags: list[str],
     tier3_metadata: dict | None = None,
     source_path: str = "synthetic.md",
+    pipeline_status: str = "abstraction_complete",
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -228,7 +229,7 @@ def _make_document(
         tags=tags,
         tier3_metadata=tier3_metadata,
         lifecycle_status="active",
-        pipeline_status="abstraction_complete",
+        pipeline_status=pipeline_status,
     )
 
 
@@ -240,6 +241,7 @@ async def _seed_document(
     doc_type: str,
     tags: list[str],
     tier3_metadata: dict | None = None,
+    pipeline_status: str = "abstraction_complete",
 ) -> str:
     """Insert a target document directly into the graph store (no ingestion).
 
@@ -254,6 +256,7 @@ async def _seed_document(
         doc_type=doc_type,
         tags=tags,
         tier3_metadata=tier3_metadata,
+        pipeline_status=pipeline_status,
     )
     await svc.graph_store.insert_document(doc)
     return doc_id
@@ -695,6 +698,65 @@ async def test_t7_disabled_pattern_skips_matches(tmp_path, monkeypatch):
         assert ticket_inbound == []
     finally:
         await svc.graph_store.close()
+
+
+# ---------------------------------------------------------------------------
+# T8 -- T-0150 family: failed-pipeline target still resolves
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_t8_failed_pipeline_target_still_resolves(tmp_path, services):
+    """T-0150 family: a pipeline_status=FAILED target must remain resolvable.
+
+    The chain-identity argument from T-0150 applies here too: tags,
+    tier3_metadata, and doc_type are populated by adapters at ingest time,
+    BEFORE the abstraction pipeline runs. A document whose abstraction
+    failed still carries valid identifier-resolution metadata and should
+    remain a valid mention target. The BH-020 default-exclude at the
+    SQL boundary silently drops such targets before the Python-level
+    active-lifecycle gate at identifier_mention_inference.py:150 sees
+    them, causing identifier mentions to resolve to None (silent omission
+    of the references edge).
+
+    Precondition: vault seeded with one ticket-shaped target document at
+    lifecycle_status=active, pipeline_status=FAILED. Source markdown
+    mentions the ticket id.
+
+    Expected: post-fix, one references edge from the source to the
+    failed-but-active target. Pre-fix, zero edges (target filtered out).
+    """
+    failed_ticket_id = _doc_id("ticket_0150_failed")
+    await _seed_document(
+        services,
+        doc_id=failed_ticket_id,
+        title="T-0150: Synthetic failed-abstraction ticket target",
+        doc_type="ticket",
+        tags=["ticket"],
+        tier3_metadata={"ticket_id": "T-0150"},
+        pipeline_status="failed",
+    )
+    src_path = _write_md(
+        tmp_path,
+        "ticket_t_0150_failed_target_reference.md",
+        "# Ticket body\n\nThis ticket references T-0150 (whose abstraction failed).\n",
+    )
+
+    src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    # Anti-coincidental-pass: target_id must specifically be the failed
+    # ticket's id. Pre-fix, len(edges) == 0 because the failed target is
+    # invisible to _resolve_identifier's query_documents call (BH-020
+    # default-exclude fires at the SQL boundary).
+    assert len(edges) == 1, (
+        f"Expected one references edge to the failed-pipeline target T-0150, "
+        f"got {len(edges)} edges. Pre-fix this would be 0 (silent omission)."
+    )
+    edge = edges[0]
+    assert edge.target_id == failed_ticket_id
+    assert edge.source_id == src_doc_id
+    assert edge.edge_type == EdgeType.REFERENCES
+    assert edge.rationale_kind == RationaleKind.REFERENCES_MENTION
 
 
 # ---------------------------------------------------------------------------

@@ -397,6 +397,7 @@ async def plan_batch_edges(
         filters={"lifecycle_status": "active"},
         limit=10_000_000,
         offset=0,
+        default_exclude_failed=False,
     )
 
     chain_dim_pairs: set[tuple[str | None, str | None]] = {
@@ -417,6 +418,7 @@ async def plan_batch_edges(
             filters=filters or None,
             limit=10_000_000,
             offset=0,
+            default_exclude_failed=False,
         )
         for doc in docs:
             if doc.id in seen_ids:

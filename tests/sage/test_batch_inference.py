@@ -771,6 +771,7 @@ def _make_doc(
     version_label: str | None,
     tags: list[str] | None = None,
     lifecycle_status: str = "active",
+    pipeline_status: PipelineStatus = PipelineStatus.ABSTRACTION_COMPLETE,
 ) -> Document:
     """Construct a Document with the fields plan_batch_edges reads off."""
     import hashlib
@@ -794,7 +795,7 @@ def _make_doc(
         last_modified_by="testuser",
         updated_at=now,
         projected_at=now,
-        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        pipeline_status=pipeline_status,
     )
 
 
@@ -838,7 +839,14 @@ class _RecordingGraphStore:
         offset=None,
         default_exclude_failed: bool = True,
     ):
-        self.query_documents_calls.append({"filters": filters, "limit": limit, "offset": offset})
+        self.query_documents_calls.append(
+            {
+                "filters": filters,
+                "limit": limit,
+                "offset": offset,
+                "default_exclude_failed": default_exclude_failed,
+            }
+        )
         return await self._inner.query_documents(
             filters=filters,
             limit=limit,
@@ -1067,6 +1075,136 @@ async def test_bi_004_plan_batch_edges_no_versioned_items_skips_chain_candidate_
     # scan items, Pass B should fire zero times. Total queries == 1.
     assert len(recording.query_documents_calls) == 1
     assert recording.query_documents_calls[0]["filters"] == {"lifecycle_status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_bi_006_plan_batch_edges_includes_failed_active_predecessor(graph_store):
+    """T-0150: a failed+active predecessor must surface as a chain candidate.
+
+    The chain-identity fields are set at ingest time before abstraction,
+    so a pipeline_status=FAILED document still carries valid chain
+    identity. Pre-fix, both query_documents passes inherit the BH-020
+    default-exclude and silently drop the failed predecessor; the engine
+    then writes the new arrival's supersedes edge to the wrong target.
+
+    Precondition: vault has v1 (active, abstraction_complete) and v2
+    (active, FAILED) sharing chain identity, plus the existing v2 -> v1
+    supersedes edge. Scan batch has v3.
+
+    Expected: plan.edges contains exactly one new supersedes edge from
+    v3 to *v2* (not v1). plan.removals stays empty.
+    """
+    v1 = _make_doc(
+        "claim_set_v1_t0150",
+        title="Claim-Set-T0150",
+        project="PV06",
+        doc_type="patent_draft",
+        version_label="v1",
+        tags=["PV06"],
+        lifecycle_status="active",
+    )
+    v2 = _make_doc(
+        "claim_set_v2_t0150",
+        title="Claim-Set-T0150",
+        project="PV06",
+        doc_type="patent_draft",
+        version_label="v2",
+        tags=["PV06"],
+        lifecycle_status="active",
+        pipeline_status=PipelineStatus.FAILED,
+    )
+    await graph_store.insert_document(v1)
+    await graph_store.insert_document(v2)
+    seeded = _make_supersedes_edge(source_id=v2.id, target_id=v1.id)
+    await graph_store.insert_edge(seeded)
+
+    scan_items = [
+        InferenceItem(
+            "/scan/f3",
+            False,
+            ParsedMetadata(
+                "Claim-Set-T0150",
+                codes=["PV06"],
+                version="v3",
+                doc_type="patent_draft",
+                project="PV06",
+            ),
+        ),
+    ]
+    vault_services = SimpleNamespace(graph_store=graph_store)
+
+    plan = await plan_batch_edges(scan_items=scan_items, vault_services=vault_services)
+
+    supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
+    assert len(supersedes) == 1
+    edge = supersedes[0]
+    assert edge.source_ref == "/scan/f3"
+    # Anti-coincidental-pass: must target v2 (failed predecessor), not v1.
+    # Pre-fix, this assertion fails with target_ref == v1.id, confirming
+    # the silent chain corruption.
+    assert edge.target_ref == v2.id, (
+        f"Expected v3 to supersede v2 (the failed predecessor), got target_ref="
+        f"{edge.target_ref!r}. v1={v1.id!r} v2={v2.id!r}."
+    )
+    assert plan.removals == []
+
+
+@pytest.mark.asyncio
+async def test_bi_007_plan_batch_edges_passes_default_exclude_failed_false_on_both_passes(
+    graph_store,
+):
+    """T-0150: both query_documents passes must opt out of BH-020.
+
+    Structural spy assertion complementing BI-006. BI-006's behavioral
+    output (an active+failed predecessor surfacing) passes if *either*
+    Pass A or Pass B is individually fixed, because the post-fix
+    candidate surfaces through whichever pass got the kwarg. This test
+    enforces the two-site discipline by spying on every
+    query_documents call plan_batch_edges issues and asserting
+    default_exclude_failed=False is passed on each.
+
+    A scan with a versioned item ensures both Pass A and Pass B fire
+    (per BI-004's optimization characterization).
+    """
+    seed = _make_doc(
+        "spy_seed",
+        title="Spy-Chain",
+        project="PV06",
+        doc_type="patent_draft",
+        version_label="v1",
+        tags=["PV06"],
+        lifecycle_status="active",
+    )
+    await graph_store.insert_document(seed)
+
+    scan_items = [
+        InferenceItem(
+            "/scan/spy_v2",
+            False,
+            ParsedMetadata(
+                "Spy-Chain",
+                codes=["PV06"],
+                version="v2",
+                doc_type="patent_draft",
+                project="PV06",
+            ),
+        ),
+    ]
+    recording = _RecordingGraphStore(graph_store)
+    vault_services = SimpleNamespace(graph_store=recording)
+
+    await plan_batch_edges(scan_items=scan_items, vault_services=vault_services)
+
+    # Expect 2 calls: Pass A (lifecycle_status=active) and Pass B
+    # (project + doc_type targeted). Both must opt out of BH-020.
+    assert len(recording.query_documents_calls) == 2
+    for i, call in enumerate(recording.query_documents_calls):
+        assert call["default_exclude_failed"] is False, (
+            f"query_documents call #{i} (filters={call['filters']!r}) did not pass "
+            f"default_exclude_failed=False; got {call['default_exclude_failed']!r}. "
+            f"plan_batch_edges must opt out of BH-020 at both call sites so "
+            f"failed-but-chain-identity-valid predecessors reach the Python gate."
+        )
 
 
 # ---------------------------------------------------------------------------
