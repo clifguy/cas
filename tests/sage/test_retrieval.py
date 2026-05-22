@@ -1809,11 +1809,16 @@ async def test_bh_075_catalog_no_chunk_content_or_scores(
         assert hit.document.lifecycle_status is not None
 
 
-async def test_bh_076_catalog_excludes_failed_pipeline(
+async def test_bh_076_catalog_includes_failed_pipeline(
     graph_store,
     retrieval_service,
 ):
-    """Catalog mode excludes failed pipeline documents."""
+    """Catalog mode includes failed-pipeline documents (T-0148).
+
+    Catalog is filter-only document enumeration; visibility is a property of
+    the document, not of the query. Pre-T-0148 this test asserted exclusion;
+    the BH-020 default-exclude has been narrowed to scoring modes only.
+    """
     doc_ok = _make_doc(_id("doc_ok"))
     doc_fail = _make_doc(
         _id("doc_fail"),
@@ -1827,15 +1832,15 @@ async def test_bh_076_catalog_excludes_failed_pipeline(
 
     result_ids = {h.document.id for h in response.results}
     assert _id("doc_ok") in result_ids
-    assert _id("doc_fail") not in result_ids
-    assert response.total_available == 1
+    assert _id("doc_fail") in result_ids
+    assert response.total_available == 2
 
 
 async def test_bh_077_catalog_no_filters_returns_all(
     graph_store,
     retrieval_service,
 ):
-    """Catalog mode with no filters returns all non-failed documents."""
+    """Catalog mode with no filters returns all documents, including failed (T-0148)."""
     await _seed_catalog_docs(graph_store)
     # Add one failed doc
     doc_fail = _make_doc(_id("doc_fail"), pipeline_status=PipelineStatus.FAILED)
@@ -1844,8 +1849,131 @@ async def test_bh_077_catalog_no_filters_returns_all(
     request = DiscoverRequest(mode=RetrievalMode.CATALOG)
     response = await retrieval_service.discover(request)
 
-    assert response.total_available == 5  # 5 healthy, 1 failed excluded
-    assert len(response.results) == 5
+    assert response.total_available == 6  # 5 healthy + 1 failed all returned by catalog
+    assert len(response.results) == 6
+
+
+# ---------------------------------------------------------------------------
+# T-0148: Mode-scoped BH-020 -- catalog enumerates failed; scoring excludes
+# ---------------------------------------------------------------------------
+
+
+async def test_t_0148_catalog_returns_failed_pipeline_doc_by_default(
+    graph_store,
+    retrieval_service,
+):
+    """Catalog mode returns failed-pipeline docs without an explicit filter.
+
+    The headline behaviour change: an active document whose pipeline status
+    is FAILED is enumerable by catalog mode. Pre-T-0148 it was silently
+    excluded at the storage layer.
+    """
+    doc_ok = _make_doc(_id("t0148_ok"))
+    doc_fail = _make_doc(_id("t0148_fail"), pipeline_status=PipelineStatus.FAILED)
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_fail)
+
+    request = DiscoverRequest(mode=RetrievalMode.CATALOG)
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert _id("t0148_ok") in result_ids
+    assert _id("t0148_fail") in result_ids
+    assert response.total_available == 2
+
+
+async def test_t_0148_catalog_explicit_pipeline_status_filter_still_narrows(
+    graph_store,
+    retrieval_service,
+):
+    """Catalog mode still honours an explicit pipeline_status filter (T-0148).
+
+    The default-exclude moved; positive selection via an explicit filter
+    must continue to work the same way it always did.
+    """
+    doc_ok = _make_doc(_id("t0148_ok2"))
+    doc_fail = _make_doc(_id("t0148_fail2"), pipeline_status=PipelineStatus.FAILED)
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_fail)
+
+    request = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        scope=RetrievalScope.FILTERED,
+        filters=RetrievalFilters(pipeline_status="abstraction_complete"),
+    )
+    response = await retrieval_service.discover(request)
+
+    result_ids = {h.document.id for h in response.results}
+    assert result_ids == {_id("t0148_ok2")}
+    assert response.total_available == 1
+
+
+async def test_t_0148_semantic_still_excludes_failed_by_default(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """Semantic mode still excludes failed-pipeline docs by default (T-0148).
+
+    Guards the asymmetry: relaxing catalog must not regress scoring-mode
+    behaviour. Chunks are indexed for the failed doc so its exclusion is
+    *because* of the pipeline filter, not because LanceDB has nothing to
+    score (anti-coincidental-pass setup, mirroring test_bh_020).
+    """
+    doc_ok = _make_doc(_id("t0148_sem_ok"))
+    doc_fail = _make_doc(_id("t0148_sem_fail"), pipeline_status=PipelineStatus.FAILED)
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_fail)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("t0148_sem_ok"),
+        [("Section 1", "This document discusses patent claims and prior art.")],
+    )
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        _id("t0148_sem_fail"),
+        [("Section 1", "This document discusses patent claims and prior art.")],
+    )
+
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="patent claims")
+    response = await retrieval_service.discover(request)
+
+    doc_ids = [h.document.id for h in response.results]
+    assert _id("t0148_sem_ok") in doc_ids
+    assert _id("t0148_sem_fail") not in doc_ids
+
+
+async def test_t_0148_storage_query_documents_default_exclude_failed_flag(
+    graph_store,
+):
+    """Storage layer honours the default_exclude_failed flag at both settings (T-0148).
+
+    Pins the storage contract directly, independent of the retrieval
+    service. Both settings exercised in one test so the assertion shape
+    is anti-coincidental: a refactor that drops the gate entirely would
+    fail one half; a refactor that hard-codes True would fail the other.
+    """
+    doc_ok = _make_doc(_id("t0148_store_ok"))
+    doc_fail = _make_doc(_id("t0148_store_fail"), pipeline_status=PipelineStatus.FAILED)
+    await graph_store.insert_document(doc_ok)
+    await graph_store.insert_document(doc_fail)
+
+    # Default behaviour preserved: failed doc excluded.
+    docs_default, total_default = await graph_store.query_documents()
+    default_ids = {d.id for d in docs_default}
+    assert _id("t0148_store_ok") in default_ids
+    assert _id("t0148_store_fail") not in default_ids
+    assert total_default == 1
+
+    # Flag flipped off: failed doc surfaces.
+    docs_all, total_all = await graph_store.query_documents(default_exclude_failed=False)
+    all_ids = {d.id for d in docs_all}
+    assert _id("t0148_store_ok") in all_ids
+    assert _id("t0148_store_fail") in all_ids
+    assert total_all == 2
 
 
 async def test_bh_078_catalog_total_available_independent_of_page(

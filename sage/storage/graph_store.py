@@ -477,6 +477,8 @@ class GraphStore:
         offset: int = 0,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        *,
+        default_exclude_failed: bool = True,
     ) -> tuple[list[Document], int]:
         """Query documents with SQL predicates. Returns (docs, total_count).
 
@@ -484,8 +486,16 @@ class GraphStore:
         pipeline_status, tags (list[str], AND semantics), document_ids (list[str]),
         tier3 (dict[str, object], AND semantics, pushed into SQL as
         ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates per
-        T-0075). Failed-pipeline documents are excluded by default
-        unless pipeline_status is explicitly set.
+        T-0075).
+
+        ``default_exclude_failed`` (default ``True``) controls the BH-020
+        default-exclude clause: when the caller does not pass an explicit
+        ``pipeline_status`` filter, failed-pipeline documents are dropped.
+        Per T-0148 the retrieval service's catalog mode passes ``False``
+        so that filter-only enumeration sees every document; scoring
+        modes (semantic, keyword) and all non-retrieval callers inherit
+        ``True``. An explicit ``pipeline_status`` filter is honoured at
+        both flag settings.
 
         Tier3 keys must match ``[A-Za-z0-9_]+``; an offending key raises
         ``ValueError`` before any SQL is built. The service layer
@@ -506,6 +516,7 @@ class GraphStore:
                 offset,
                 sort_by,
                 sort_order,
+                default_exclude_failed,
             )
 
     def _query_documents_sync(
@@ -515,13 +526,17 @@ class GraphStore:
         offset: int,
         sort_by: str | None,
         sort_order: str | None,
+        default_exclude_failed: bool,
     ) -> tuple[list[Document], int]:
         conn = self._get_connection()
         where_clauses: list[str] = []
         params: list[object] = []
 
-        # Default: exclude failed pipeline unless explicitly filtering for it
-        if not filters or "pipeline_status" not in filters:
+        # T-0148: BH-020 default-exclude is mode-scoped at the service
+        # boundary; catalog mode passes default_exclude_failed=False so
+        # filter-only enumeration sees failed-pipeline docs. Scoring
+        # modes and all non-retrieval callers inherit True.
+        if default_exclude_failed and (not filters or "pipeline_status" not in filters):
             where_clauses.append("pipeline_status != ?")
             params.append("failed")
 

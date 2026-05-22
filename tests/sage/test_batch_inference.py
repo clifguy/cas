@@ -830,9 +830,21 @@ class _RecordingGraphStore:
         self.query_documents_calls: list[dict] = []
         self.get_edges_by_source_calls: list[tuple[str, str | None]] = []
 
-    async def query_documents(self, *, filters=None, limit=None, offset=None):
+    async def query_documents(
+        self,
+        *,
+        filters=None,
+        limit=None,
+        offset=None,
+        default_exclude_failed: bool = True,
+    ):
         self.query_documents_calls.append({"filters": filters, "limit": limit, "offset": offset})
-        return await self._inner.query_documents(filters=filters, limit=limit, offset=offset)
+        return await self._inner.query_documents(
+            filters=filters,
+            limit=limit,
+            offset=offset,
+            default_exclude_failed=default_exclude_failed,
+        )
 
     async def get_edges_by_source(self, source_id, edge_type=None):
         self.get_edges_by_source_calls.append((source_id, edge_type))

@@ -119,6 +119,8 @@ def _make_services(
         offset: int = 0,
         sort_by=None,
         sort_order=None,
+        *,
+        default_exclude_failed: bool = True,
     ):
         """Filter-aware double for GraphStore.query_documents.
 
@@ -127,7 +129,9 @@ def _make_services(
         lifecycle_status, project, doc_type. Other keys are passed
         through (no filter applied) so unrelated callers stay agnostic
         of fixture detail. Pagination is not implemented because no
-        test depends on it.
+        test depends on it. ``default_exclude_failed`` (T-0148) is
+        accepted to match the production signature; this double does
+        not model pipeline_status filtering.
         """
         result = list(docs_pool)
         if filters:
@@ -993,13 +997,17 @@ class _MockGraphState:
         offset: int = 0,
         sort_by=None,
         sort_order=None,
+        *,
+        default_exclude_failed: bool = True,
     ):
         """Filter-aware double mirroring the subset of predicate
         behaviour _build_edge_plan relies on after T-0076's pushdown:
         lifecycle_status, project, doc_type. Returns
         (matching_documents, total_count) like the real signature.
         Pagination is not implemented because no chain-repair test
-        depends on it.
+        depends on it. ``default_exclude_failed`` (T-0148) is accepted
+        to match the production signature; this double does not model
+        pipeline_status filtering.
         """
         result = list(self.docs.values())
         if filters:

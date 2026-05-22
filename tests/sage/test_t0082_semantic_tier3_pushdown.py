@@ -275,11 +275,13 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
     t0082_retrieval_service,
 ):
     """The same tier3 filter applied in semantic mode and catalog mode
-    must return the same document set. T-0082 calls behavior parity
-    between modes the load-bearing assertion -- divergence here means
-    the SQL surface called from ``_content_filters`` has drifted from
-    the one called by ``_catalog``, and one of them is wrong."""
-    await _seed_tier3_vault(graph_store, stub_content_store, stub_embedding_provider)
+    must return the same document set, modulo the T-0148 asymmetry on
+    ``pipeline_status=failed``. T-0082 calls behavior parity between
+    modes the load-bearing assertion -- divergence on any axis other
+    than the deliberate pipeline-status one means the SQL surface
+    called from ``_content_filters`` has drifted from the one called
+    by ``_catalog``, and one of them is wrong."""
+    docs = await _seed_tier3_vault(graph_store, stub_content_store, stub_embedding_provider)
 
     tier3_filter = {"ticket_priority": "high"}
 
@@ -301,7 +303,14 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
 
     semantic_ids = {hit.document.id for hit in semantic_resp.results}
     catalog_ids = {hit.document.id for hit in catalog_resp.results}
-    assert semantic_ids == catalog_ids
+
+    # T-0148: catalog enumerates failed-pipeline docs; semantic still
+    # excludes them by BH-020. The two modes match on every other axis
+    # of the tier3 filter pushdown.
+    failed_id = docs["d_failed"].id
+    assert failed_id in catalog_ids
+    assert failed_id not in semantic_ids
+    assert semantic_ids == catalog_ids - {failed_id}
     # Cross-bind to a non-empty set so an accidental "both empty" pass
     # cannot satisfy this test.
     assert semantic_ids, "expected at least one tier3=high doc; got none"

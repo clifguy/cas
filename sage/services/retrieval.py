@@ -450,12 +450,16 @@ class RetrievalService:
                 sql_filters["tier3"] = request.filters.tier3
 
         with phases.phase("query_documents"):
+            # T-0148: catalog is filter-only enumeration; failed-pipeline
+            # documents are visible unless the caller explicitly filters
+            # them out via ``pipeline_status``.
             docs, total_count = await self._graph.query_documents(
                 filters=sql_filters or None,
                 limit=request.limit,
                 offset=request.offset,
                 sort_by=request.sort_by,
                 sort_order=request.sort_order,
+                default_exclude_failed=False,
             )
 
         hits = [
