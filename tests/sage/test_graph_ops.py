@@ -1445,6 +1445,8 @@ _T0124_RESOLUTION_POLICY = ResolutionPolicy.TRANSITIVE_BOTH.value
 _T0124_RATIONALE_KIND = RationaleKind.VERSION_CHAIN.value
 _T0124_NOTES = "t0124 sentinel notes"
 _T0124_RATIONALE = "t0124 sentinel rationale"
+_T0124_SYNCED_FROM_VERSION = _id("t0124_doc_synced_from_version")
+_T0124_SYNCED_FROM_CONTENT_HASH = "sha256:" + "cd" * 32
 
 
 def _edge_row_with_every_edge_field() -> sqlite3.Row:
@@ -1475,7 +1477,9 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
                 ? AS created_at,
                 ? AS notes,
                 ? AS rationale,
-                ? AS rationale_kind
+                ? AS rationale_kind,
+                ? AS synced_from_version,
+                ? AS synced_from_content_hash
             """,
             (
                 _T0124_EDGE_ID,
@@ -1491,6 +1495,8 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
                 _T0124_NOTES,
                 _T0124_RATIONALE,
                 _T0124_RATIONALE_KIND,
+                _T0124_SYNCED_FROM_VERSION,
+                _T0124_SYNCED_FROM_CONTENT_HASH,
             ),
         )
         row = cursor.fetchone()
@@ -1526,6 +1532,8 @@ def _edge_cte_row_with_every_edge_field() -> dict:
         "notes": _T0124_NOTES,
         "rationale": _T0124_RATIONALE,
         "rationale_kind": _T0124_RATIONALE_KIND,
+        "synced_from_version": _T0124_SYNCED_FROM_VERSION,
+        "synced_from_content_hash": _T0124_SYNCED_FROM_CONTENT_HASH,
     }
 
 
@@ -1556,6 +1564,8 @@ def _build_edge_from_cte_row(representative: dict) -> Edge:
         notes=representative["notes"],
         rationale=representative["rationale"],
         rationale_kind=RationaleKind(representative["rationale_kind"]),
+        synced_from_version=representative.get("synced_from_version"),
+        synced_from_content_hash=representative.get("synced_from_content_hash"),
     )
 
 

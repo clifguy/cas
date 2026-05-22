@@ -439,6 +439,90 @@ async def test_t0080_rationale_kind_backfill_is_idempotent(tmp_path):
         await store2.close()
 
 
+# ── T-0110: synced_from_version / synced_from_content_hash migration ──
+
+
+async def test_t0110_synced_from_columns_added_and_idempotent(tmp_path):
+    """TEST-4. Migration adds ``synced_from_version`` and
+    ``synced_from_content_hash`` to the ``edges`` table on a pre-T-0110
+    -shaped database, populates existing rows with NULL, and re-running
+    the migration is a no-op (no ``OperationalError``, no duplicates).
+
+    Uses ``_build_legacy_db`` which omits every MIGRATION_PLAN-added
+    column, so the two T-0110 columns are guaranteed to be absent pre-
+    migration. This is critical: a fresh DB created via the current
+    ``initialize_storage()`` already has the columns via the
+    ``EDGES_TABLE`` CREATE statement, which would mask a missing
+    ``Migration(...)`` entry.
+    """
+    db_path = tmp_path / "graph.db"
+    _build_legacy_db(db_path)
+    _seed_legacy_row(db_path, doc_id="abc12345_a")
+    _seed_legacy_row(db_path, doc_id="abc12345_b")
+
+    # Seed a legacy edge so the post-migration NULL-on-existing-row
+    # behavior is observable (a table with zero rows would not
+    # discriminate between "column added with NULL default" and
+    # "column added with empty-string default").
+    now = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_type, "
+            "created_at, rationale) VALUES (?, ?, ?, ?, ?, ?)",
+            ("t0110-edge-legacy", "abc12345_a", "abc12345_b", "references", now, None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert "synced_from_version" not in _columns(db_path, "edges")
+    assert "synced_from_content_hash" not in _columns(db_path, "edges")
+
+    store = GraphStore(db_path)
+    await store.initialize(migrate=True)
+    try:
+        cols = _columns(db_path, "edges")
+        assert "synced_from_version" in cols
+        assert "synced_from_content_hash" in cols
+
+        # Existing legacy edge picks up NULLs in both new columns.
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                "SELECT synced_from_version, synced_from_content_hash FROM edges WHERE id = ?",
+                ("t0110-edge-legacy",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row == (None, None)
+    finally:
+        await store.close()
+
+    # Second run is idempotent: no error, columns unchanged, existing
+    # row still NULL.
+    store2 = GraphStore(db_path)
+    await store2.initialize(migrate=True)
+    try:
+        cols = _columns(db_path, "edges")
+        assert "synced_from_version" in cols
+        assert "synced_from_content_hash" in cols
+
+        # No duplicate columns (PRAGMA table_info would return both
+        # entries if SQLite somehow re-added the column; the set-
+        # collapse in _columns hides that, so check count too).
+        conn = sqlite3.connect(str(db_path))
+        try:
+            rows = conn.execute("PRAGMA table_info(edges)").fetchall()
+        finally:
+            conn.close()
+        names = [r[1] for r in rows]
+        assert names.count("synced_from_version") == 1
+        assert names.count("synced_from_content_hash") == 1
+    finally:
+        await store2.close()
+
+
 # ── LanceDB legacy-table builder ───────────────────────────────────
 
 

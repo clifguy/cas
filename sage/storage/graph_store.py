@@ -852,9 +852,10 @@ class GraphStore:
                 id, source_id, target_id, edge_type, resolution_policy,
                 source_valid_from_version, target_valid_from_version,
                 valid_until_version, retracted_edge_id,
-                created_at, notes, rationale, rationale_kind
+                created_at, notes, rationale, rationale_kind,
+                synced_from_version, synced_from_content_hash
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 edge.id,
                 edge.source_id,
@@ -869,6 +870,8 @@ class GraphStore:
                 edge.notes,
                 edge.rationale,
                 edge.rationale_kind.value,
+                edge.synced_from_version,
+                edge.synced_from_content_hash,
             ),
         )
 
@@ -1596,6 +1599,7 @@ class GraphStore:
                 f"e.resolution_policy, e.source_valid_from_version, "
                 f"e.target_valid_from_version, e.valid_until_version, "
                 f"e.retracted_edge_id, "
+                f"e.synced_from_version, e.synced_from_content_hash, "
                 f"1 AS depth "
                 f"FROM edges e "
                 f"WHERE e.{match_col} = ?{type_filter}"
@@ -1610,6 +1614,7 @@ class GraphStore:
                 f"e.resolution_policy, e.source_valid_from_version, "
                 f"e.target_valid_from_version, e.valid_until_version, "
                 f"e.retracted_edge_id, "
+                f"e.synced_from_version, e.synced_from_content_hash, "
                 f"t.depth + 1 AS depth "
                 f"FROM edges e "
                 f"INNER JOIN traversal t ON e.{match_col} = t.doc_id "
@@ -1674,6 +1679,8 @@ class GraphStore:
                     "source_valid_from_version": row["source_valid_from_version"],
                     "target_valid_from_version": row["target_valid_from_version"],
                     "valid_until_version": row["valid_until_version"],
+                    "synced_from_version": row["synced_from_version"],
+                    "synced_from_content_hash": row["synced_from_content_hash"],
                     "depth": row["depth"],
                     "d_title": row["title"],
                     "d_lifecycle_status": row["lifecycle_status"],
@@ -1932,6 +1939,12 @@ class GraphStore:
             notes=row["notes"],
             rationale=row["rationale"],
             rationale_kind=RationaleKind(rationale_kind_value),
+            synced_from_version=(
+                row["synced_from_version"] if "synced_from_version" in keys else None
+            ),
+            synced_from_content_hash=(
+                row["synced_from_content_hash"] if "synced_from_content_hash" in keys else None
+            ),
         )
 
     @staticmethod

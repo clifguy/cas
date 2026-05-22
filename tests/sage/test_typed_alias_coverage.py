@@ -158,7 +158,22 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
 # leading T-NNNN points at the remediation ticket where applicable.
 # ---------------------------------------------------------------------------
 
-KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
+KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
+    # T-0110 ships synced-from provenance as schema-only; hash-format
+    # validation (Sha256Str AfterValidator) is one of the tightenings
+    # explicitly deferred to T-0111 (drift-detection follow-up), which
+    # will define the consumer shape and decide whether to enforce the
+    # `sha256:<64-hex>` form at the Pydantic boundary or accept the bare
+    # hex used by some upstream sources. Until then, the field is bare
+    # `str | None` so callers can write whatever shape their source
+    # produces. Remove this entry when T-0111 lands and tightens.
+    ("Edge", "synced_from_content_hash"): (
+        "T-0111: hash-format validation deferred until drift-detection consumer shape is known"
+    ),
+    ("LinkRequest", "synced_from_content_hash"): (
+        "T-0111: hash-format validation deferred until drift-detection consumer shape is known"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +456,17 @@ def _registered_fastmcp_tools() -> list[Callable]:
 
 
 # Keyed by (qualified_callable_name, param_name). One-line reason values.
-KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
+KNOWN_FASTMCP_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
+    # T-0110: mirrors the Pydantic-side allowlist on Edge / LinkRequest
+    # for the same hash-format-validation deferral. The MCP tool parameter
+    # passes through to LinkRequest unchanged; tightening here without
+    # tightening the model would create asymmetric coverage. Remove this
+    # entry when T-0111 lands and tightens.
+    ("sage.sage_api_tools.sage_link", "synced_from_content_hash"): (
+        "T-0110: hash-format validation deferred to T-0111 (mirrors the "
+        "Edge/LinkRequest entries in KNOWN_VIOLATIONS)"
+    ),
+}
 
 
 # Cache: ``module → {adapter_name → alias_class}`` computed via AST.

@@ -531,6 +531,31 @@ class Edge(BaseModel):
             "and legacy rows take the default `manual`."
         ),
     )
+    synced_from_version: str | None = Field(
+        default=None,
+        description=(
+            "The source-chain version (document id) the content was "
+            "copied or derived from at the moment this edge was "
+            "asserted. Semantically meaningful on `sync_target` (Tier 1, "
+            "populated automatically at re-ingestion when the Tier-1 "
+            "inference subsystem ships) and `derived_from` (Tier 3, "
+            "agent-supplied via sage_link). Distinct from "
+            "`source_valid_from_version`, which records chain-scoped "
+            "edge visibility per CAS-ADR-017 — the two must not be "
+            "conflated. Unset = explicit null; never inferred from chain "
+            "anchors. (T-0110)"
+        ),
+    )
+    synced_from_content_hash: str | None = Field(
+        default=None,
+        description=(
+            "The source document's `source_content_hash` captured at "
+            "the moment this edge was asserted. Optional companion to "
+            "`synced_from_version`; recommended on derivations because "
+            "version labels are reused and can drift from content "
+            "(in-place edits). Unset = explicit null. (T-0110)"
+        ),
+    )
 
 
 class User(BaseModel):
@@ -1299,6 +1324,31 @@ class LinkRequest(BaseModel):
             "unrecognized or absent rationale. Callers should pass this "
             "only when they have stronger provenance information than "
             "the prefix-derivation rule."
+        ),
+    )
+    synced_from_version: str | None = Field(
+        default=None,
+        description=(
+            "The source-chain version (document id) the content was "
+            "copied or derived from at the moment this edge was "
+            "asserted. Semantically meaningful on `sync_target` (Tier 1, "
+            "populated automatically at re-ingestion when the Tier-1 "
+            "inference subsystem ships) and `derived_from` (Tier 3, "
+            "agent-supplied via sage_link). Distinct from "
+            "`source_valid_from_version`, which records chain-scoped "
+            "edge visibility per CAS-ADR-017 — the two must not be "
+            "conflated. Unset = explicit null; never inferred from chain "
+            "anchors. (T-0110)"
+        ),
+    )
+    synced_from_content_hash: str | None = Field(
+        default=None,
+        description=(
+            "The source document's `source_content_hash` captured at "
+            "the moment this edge was asserted. Optional companion to "
+            "`synced_from_version`; recommended on derivations because "
+            "version labels are reused and can drift from content "
+            "(in-place edits). Unset = explicit null. (T-0110)"
         ),
     )
 

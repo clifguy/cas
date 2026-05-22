@@ -248,6 +248,8 @@ class GraphOpsService:
                 notes=request.notes,
                 rationale=request.rationale,
                 rationale_kind=rationale_kind,
+                synced_from_version=request.synced_from_version,
+                synced_from_content_hash=request.synced_from_content_hash,
             )
 
             if request.edge_type == EdgeType.MERGED_FROM:
@@ -697,6 +699,8 @@ class GraphOpsService:
                 notes=representative["notes"],
                 rationale=representative["rationale"],
                 rationale_kind=RationaleKind(representative["rationale_kind"]),
+                synced_from_version=representative.get("synced_from_version"),
+                synced_from_content_hash=representative.get("synced_from_content_hash"),
             )
 
             # Per-type edge counts (deduplicated by edge ID to avoid

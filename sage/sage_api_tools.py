@@ -770,6 +770,8 @@ def register_sage_tools(
         notes: str | None = None,
         rationale: str | None = None,
         rationale_kind: str | None = None,
+        synced_from_version: str | None = None,
+        synced_from_content_hash: str | None = None,
     ) -> dict:
         """Create a typed edge between two documents in the graph.
 
@@ -854,6 +856,21 @@ def register_sage_tools(
                 ``filename_code_match``, ``manual``. When omitted, the
                 value is derived from the rationale text prefix and
                 falls back to ``manual``.
+            synced_from_version: Source-chain version (document id) the
+                content was copied or derived from at the moment this
+                edge is asserted (T-0110). Semantically meaningful on
+                ``sync_target`` (Tier 1, auto-populated at re-ingestion
+                when the Tier-1 inference subsystem ships) and
+                ``derived_from`` (Tier 3, agent-supplied). Distinct
+                from ``source_valid_from_version`` (CAS-ADR-017 chain
+                visibility). Unset = explicit null; never inferred
+                from chain anchors.
+            synced_from_content_hash: Source document's
+                ``source_content_hash`` captured at edge assertion
+                (T-0110). Optional companion to ``synced_from_version``;
+                recommended on derivations because version labels are
+                reused and can drift from content (in-place edits).
+                Unset = explicit null.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -873,6 +890,8 @@ def register_sage_tools(
                 notes=notes,
                 rationale=rationale,
                 rationale_kind=rationale_kind,
+                synced_from_version=synced_from_version,
+                synced_from_content_hash=synced_from_content_hash,
             )
             # T-0079: link_idempotent returns (edge, created). On a
             # duplicate natural-key triple the existing edge is

@@ -727,7 +727,9 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
                 ? AS created_at,
                 ? AS notes,
                 ? AS rationale,
-                ? AS rationale_kind
+                ? AS rationale_kind,
+                ? AS synced_from_version,
+                ? AS synced_from_content_hash
             """,
             (
                 # Edge ids validate as UUIDs (sage/models/schemas.py:57),
@@ -745,6 +747,8 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
                 "sentinel notes",
                 "sentinel rationale",
                 RationaleKind.VERSION_CHAIN.value,
+                _id("doc_synced_from_version"),
+                "sha256:" + "ab" * 32,
             ),
         )
         row = cursor.fetchone()

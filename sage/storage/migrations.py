@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS edges (
     notes TEXT,
     rationale TEXT,
     rationale_kind TEXT NOT NULL DEFAULT 'manual',  -- typed provenance (T-0080)
+    synced_from_version TEXT,         -- source revision copied/derived from (T-0110)
+    synced_from_content_hash TEXT,    -- source content hash at edge assertion (T-0110)
     FOREIGN KEY (source_id) REFERENCES documents(id),
     FOREIGN KEY (target_id) REFERENCES documents(id)
 );
@@ -531,6 +533,22 @@ MIGRATION_PLAN: list[Migration] = [
         "documents",
         "is_chain_head",
         "ALTER TABLE documents ADD COLUMN is_chain_head INTEGER NOT NULL DEFAULT 1;",
+    ),
+    # T-0110: synced-from provenance on sync_target / derived_from edges.
+    # Both nullable; meaningful only for sync_target and derived_from but
+    # stored on the shared edges table. Unset = explicit NULL, never
+    # inferred from chain anchors (source_valid_from_version /
+    # target_valid_from_version), which serve a distinct purpose
+    # (CAS-ADR-017 chain visibility).
+    Migration(
+        "edges",
+        "synced_from_version",
+        "ALTER TABLE edges ADD COLUMN synced_from_version TEXT;",
+    ),
+    Migration(
+        "edges",
+        "synced_from_content_hash",
+        "ALTER TABLE edges ADD COLUMN synced_from_content_hash TEXT;",
     ),
 ]
 
