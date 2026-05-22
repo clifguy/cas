@@ -391,6 +391,57 @@ class DocumentSummary(BaseModel):
             tier3_metadata=doc.tier3_metadata,
         )
 
+    @classmethod
+    def from_traversal_row(cls, row: dict) -> "DocumentSummary":
+        """Build a DocumentSummary from a graph-traversal CTE row dict (T-0118).
+
+        Single owner of the CTE-row → DocumentSummary projection per the
+        *CAS Projection-Point Audit Conventions* steering document (cas
+        vault, doc_type=steering_document). The exhaustive-fields test
+        ``test_from_traversal_row_populates_every_document_summary_field``
+        in ``tests/sage/test_graph_ops.py`` fails closed if a field is
+        added to DocumentSummary but not wired through this factory.
+
+        Sibling to ``from_document``: traversal hits flow through this
+        path on the BH-101 hot path (per the *Projection-Point Closure
+        Cohort — Canonical Decisions* reference document, T-0118 routes
+        directly from the row dict rather than reconstructing a Document
+        per row). The two factories project to the same model from
+        different source shapes; each owns its own exhaustive-fields
+        test.
+
+        Nullable storage-layer columns that may not be present on every
+        CTE row (``d_source_path``, ``d_document_date``,
+        ``d_source_modified_at``, ``d_semantic_abstract``,
+        ``d_tier3_metadata``) are read via ``dict.get`` so older row
+        shapes that pre-date column additions continue to project None
+        without raising; the closure test populates every key non-null
+        so factory-side drift on field additions is still surfaced.
+        """
+        import json
+
+        from sage.utils.date_parsing import parse_document_date
+
+        source_modified_at_raw = row.get("d_source_modified_at")
+        tags_raw = row.get("d_tags")
+        return cls(
+            id=row["doc_id"],
+            title=row["d_title"],
+            lifecycle_status=row["d_lifecycle_status"],
+            source_type=SourceType(row["d_source_type"]),
+            source_path=row.get("d_source_path"),
+            version_label=row["d_version_label"],
+            project=row["d_project"],
+            doc_type=row["d_doc_type"],
+            tags=json.loads(tags_raw) if tags_raw else [],
+            document_date=parse_document_date(row.get("d_document_date")),
+            source_modified_at=(
+                datetime.fromisoformat(source_modified_at_raw) if source_modified_at_raw else None
+            ),
+            semantic_abstract=row.get("d_semantic_abstract"),
+            tier3_metadata=row.get("d_tier3_metadata"),
+        )
+
 
 class Edge(BaseModel):
     id: EdgeIdStr = Field(

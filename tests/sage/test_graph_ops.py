@@ -1740,3 +1740,77 @@ def test_from_traversal_populates_every_traversal_node_field():
             )
         else:
             assert value is not None, f"TraversalNode.{field_name} not populated by from_traversal"
+
+
+# ---------------------------------------------------------------------------
+# T-0118: DocumentSummary.from_traversal_row closure-pair install.
+# Single owning factory consolidates the DocumentSummary construction site at
+# sage/services/graph_ops.py:628, which built DocumentSummary directly from a
+# CTE join row's ``d_*``-prefixed columns bypassing the canonical
+# ``DocumentSummary.from_document`` factory (T-0096). Per the *Projection-Point
+# Closure Cohort — Canonical Decisions (T-0109 Follow-up Set)* reference
+# document, T-0118 routes via a fresh ``from_traversal_row`` classmethod on
+# DocumentSummary (no per-row Document construction on the traversal hot path,
+# yielding two parallel factories each with its own exhaustive-fields test).
+# The exhaustive-fields test below is the structural F4 closure: it iterates
+# DocumentSummary.model_fields and fails closed if a future field is added to
+# the model but not wired through the new factory.
+# ---------------------------------------------------------------------------
+
+
+def _traversal_row_with_every_document_summary_field() -> dict:
+    """Per-ticket sentinel CTE row dict with every ``d_*``-prefixed key set to
+    a distinct non-default value. Local to T-0118; the cohort policy is
+    per-ticket sentinels with no shared module.
+
+    The sentinel includes ``d_semantic_abstract`` and ``d_tier3_metadata``
+    keys even though the production SQL (sage/storage/graph_store.py) does
+    not currently surface those columns. That divergence is by design and
+    out of scope per the T-0118 ticket body ("Refactoring the broader
+    CTE-join column-naming convention" is out of scope). The factory reads
+    these keys defensively via ``dict.get`` so production traversal rows
+    that omit them continue to project ``None`` for the corresponding
+    DocumentSummary fields; the sentinel populates the keys non-null so
+    the closure test detects factory-side drift on field additions
+    independently of when the SQL is extended to carry the new columns.
+    """
+    return {
+        "doc_id": _id("t0118_doc_traversal_sentinel"),
+        "d_title": "T-0118 Traversal Sentinel Title",
+        "d_lifecycle_status": "active",
+        "d_source_type": SourceType.MARKDOWN.value,
+        "d_source_path": "imports/t0118-traversal-sentinel.md",
+        "d_version_label": "v1.0",
+        "d_project": "proj-t0118",
+        "d_doc_type": "ticket",
+        "d_tags": '["alpha", "beta"]',  # JSON-encoded as the production CTE row carries it
+        "d_document_date": "2026-05-15",
+        "d_source_modified_at": datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc).isoformat(),
+        "d_semantic_abstract": "T-0118 sentinel semantic abstract",
+        "d_tier3_metadata": {"ticket_id": "T-0118", "ticket_priority": "high"},
+    }
+
+
+def test_from_traversal_row_populates_every_document_summary_field():
+    """Exhaustive-fields closure: every DocumentSummary field must be
+    populated by ``DocumentSummary.from_traversal_row`` when given a
+    sentinel CTE row dict whose ``d_*`` keys are all set to distinct
+    non-default values. List-typed and dict-typed fields must be truthy
+    (anti-coincidental: an empty default would pass a naive
+    ``is not None`` check). When a future field is added to
+    DocumentSummary without a matching factory update, this test fails
+    closed (T-0118)."""
+    row = _traversal_row_with_every_document_summary_field()
+    summary = DocumentSummary.from_traversal_row(row)
+    for field_name, field_info in DocumentSummary.model_fields.items():
+        value = getattr(summary, field_name)
+        annotation = field_info.annotation
+        if annotation == list[str] or annotation == (dict | None):
+            assert value, (
+                f"DocumentSummary.{field_name} not populated by from_traversal_row "
+                "(empty/falsy default would pass a naive 'is not None' check)"
+            )
+        else:
+            assert value is not None, (
+                f"DocumentSummary.{field_name} not populated by from_traversal_row"
+            )

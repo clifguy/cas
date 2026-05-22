@@ -4,7 +4,6 @@ Covers behavioral tests BH-021, BH-023, BH-031 through BH-037.
 """
 
 import asyncio
-import json
 import logging
 import sqlite3
 import uuid
@@ -27,7 +26,6 @@ from sage.models.enums import (
     PipelineStatus,
     RationaleKind,
     ResolutionPolicy,
-    SourceType,
     TraversalDirection,
 )
 from sage.models.schemas import (
@@ -47,7 +45,6 @@ from sage.models.schemas import (
 )
 from sage.storage.edge_provenance import derive_rationale_kind
 from sage.storage.graph_store import GraphStore, LinkReadContext
-from sage.utils.date_parsing import parse_document_date
 
 logger = logging.getLogger(__name__)
 
@@ -625,23 +622,18 @@ class GraphOpsService:
             representative = rows[0]
             min_depth = min(r["depth"] for r in rows)
 
-            doc_summary = DocumentSummary(
-                id=doc_id,
-                title=representative["d_title"],
-                lifecycle_status=representative["d_lifecycle_status"],
-                source_type=SourceType(representative["d_source_type"]),
-                source_path=representative.get("d_source_path"),
-                version_label=representative["d_version_label"],
-                project=representative["d_project"],
-                doc_type=representative["d_doc_type"],
-                tags=(json.loads(representative["d_tags"]) if representative["d_tags"] else []),
-                document_date=parse_document_date(representative.get("d_document_date")),
-                source_modified_at=(
-                    datetime.fromisoformat(representative["d_source_modified_at"])
-                    if representative.get("d_source_modified_at")
-                    else None
-                ),
-            )
+            # T-0118: route CTE-row -> DocumentSummary projection through
+            # the single owning factory ``DocumentSummary.from_traversal_row``
+            # per the *CAS Projection-Point Audit Conventions* steering
+            # document. Field additions to DocumentSummary are now structurally
+            # guarded by ``test_from_traversal_row_populates_every_document_summary_field``
+            # in tests/sage/test_graph_ops.py; what used to be a hand-written
+            # field-by-field assignment block (vulnerable to F4 drift relative
+            # to ``DocumentSummary.from_document``) is collapsed to a single
+            # factory call. The representative row carries the canonical
+            # ``doc_id`` plus the ``d_*``-prefixed document columns the
+            # traversal CTE supplies (sage/storage/graph_store.py).
+            doc_summary = DocumentSummary.from_traversal_row(representative)
 
             # Read every storage-layer edge field that ``_traverse_sync``
             # carries through its row dict; without this, the CAS-ADR-017
