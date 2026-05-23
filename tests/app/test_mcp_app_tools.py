@@ -909,6 +909,68 @@ class TestSageDiscoverCatalog:
         ids2 = {r["document"]["id"] for r in resp2["results"]}
         assert len(ids1 & ids2) == 0  # No overlap
 
+    async def test_t0157_catalog_edges_through_app_wrapper(self, single_vault):
+        """T-0157: sage_discover(target="edges") wired end-to-end through
+        the app-layer MCP adapter. Confirms the new target dispatch
+        propagates through the same path that doc-target catalog uses
+        and that the response shape arrives at the wire intact.
+        """
+        from sage.models.enums import EdgeType
+        from sage.models.schemas import Document, Edge
+
+        services, _ = single_vault
+        gs = services.graph_store
+        now = datetime.now(timezone.utc)
+
+        def _doc(doc_id):
+            return Document(
+                id=_id(doc_id),
+                title=f"T0157 {doc_id}",
+                source_type=SourceType.MARKDOWN,
+                source_path=f"test/{doc_id}.md",
+                lifecycle_status="active",
+                source_content_hash=_sha(doc_id),
+                adapter_version="0.1.0",
+                created_by="testuser",
+                created_at=now,
+                last_modified_by="testuser",
+                updated_at=now,
+                projected_at=now,
+                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+            )
+
+        await gs.insert_document(_doc("t0157_src"))
+        await gs.insert_document(_doc("t0157_tgt"))
+        await gs.insert_edge(
+            Edge(
+                id=str(uuid.uuid4()),
+                source_id=_id("t0157_src"),
+                target_id=_id("t0157_tgt"),
+                edge_type=EdgeType.REFERENCES,
+                rationale="t0157 app-smoke",
+                created_at=now,
+            )
+        )
+
+        result = _parse(
+            await sage_discover(
+                vault_id="test_vault",
+                mode="catalog",
+                target="edges",
+                filters={"source_id": _id("t0157_src")},
+                response_mode="full",
+            )
+        )
+
+        assert result["mode"] == "catalog"
+        assert result["target"] == "edges"
+        assert result["total_available"] == 1
+        hit = result["results"][0]
+        assert hit["source_id"] == _id("t0157_src")
+        assert hit["target_id"] == _id("t0157_tgt")
+        assert hit["edge_type"] == "references"
+        assert hit["rationale"] == "t0157 app-smoke"
+
     async def _seed_portfolio(self, services, n: int):
         """Seed ``n`` ticket-shaped docs through the graph store."""
         gs = services.graph_store

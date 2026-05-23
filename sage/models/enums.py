@@ -36,9 +36,11 @@ class EdgeType(StrEnum):
     `instantiated_from` models live-tracking derivation (e.g., a checklist
     instantiated from a template that should propagate template updates).
     `retracts` is a meta-edge pointing at an earlier edge instance that the
-    retracting chain now disclaims. `merged_from` is a meta-edge recording
-    that a successor chain absorbs predecessor chains, tombstoning their
-    downstream edges.
+    retracting chain now disclaims. The retracting edge requires the
+    `edge_id` of the edge it disclaims; that id is discoverable via
+    ``sage_discover(target="edges", filters={"source_id": ..., "edge_type": ...})``
+    (T-0157). `merged_from` is a meta-edge recording that a successor chain
+    absorbs predecessor chains, tombstoning their downstream edges.
     """
 
     SUPERSEDES = "supersedes"
@@ -152,6 +154,37 @@ class RetrievalScope(StrEnum):
     AUTHORITATIVE = "authoritative"
     SPECIFIC = "specific"
     FILTERED = "filtered"
+
+
+class RetrievalTarget(StrEnum):
+    """Discriminates whether ``sage_discover`` enumerates documents or edges (T-0157).
+
+    `documents` (default) preserves the historical surface: results are
+    ``DiscoverHit`` rows backed by ``DocumentSummary``. `edges` switches
+    the dispatch to first-class edge enumeration: results are ``EdgeHit``
+    rows carrying ``edge_id``, endpoints, edge_type, anchor versions,
+    rationale, and retraction state. Only valid in combination with
+    ``mode="catalog"``; other modes are rejected at request validation.
+    """
+
+    DOCUMENTS = "documents"
+    EDGES = "edges"
+
+
+class ResponseMode(StrEnum):
+    """Payload depth for ``sage_discover`` results (T-0157, T-0153).
+
+    `light` returns identity columns only and omits rationale, retraction
+    envelope, and other large fields. `full` returns the complete envelope.
+    When unset, ``sage_discover`` applies a default-threshold rule
+    (>5 results → light, otherwise full) so single-item calls keep their
+    contextual richness while bulk enumerations stay inside the MCP inline
+    budget. Canonical name across SAGE surfaces; supersedes the
+    document-target-only ``response_level`` parameter for new callers.
+    """
+
+    LIGHT = "light"
+    FULL = "full"
 
 
 class ResponseLevel(StrEnum):

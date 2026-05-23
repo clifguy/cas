@@ -20,8 +20,10 @@ from sage.models.enums import (
     ReabstractOutcome,
     ResolutionPolicy,
     ResponseLevel,
+    ResponseMode,
     RetrievalMode,
     RetrievalScope,
+    RetrievalTarget,
     SortOrder,
     SourceType,
     StalenessBasis,
@@ -1689,6 +1691,56 @@ class RetrievalFilters(BaseModel):
             "dict is treated as no filter."
         ),
     )
+    # Edge-only filter keys (T-0157). Valid only when the DiscoverRequest
+    # targets edges; document-targeting requests that set these are rejected
+    # at the DiscoverRequest model_validator (mode_parameter_mismatch).
+    source_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Edge-only filter (T-0157). Filter edges by source document "
+            'id. Valid only when target="edges"; document-target '
+            "requests that set this are rejected via "
+            "mode_parameter_mismatch."
+        ),
+    )
+    target_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Edge-only filter (T-0157). Filter edges by target document "
+            'id. Valid only when target="edges". Note: retracts-type '
+            "edges have target_id=NULL and are not selected by this "
+            "filter."
+        ),
+    )
+    edge_type: EdgeType | None = Field(
+        default=None,
+        description=(
+            "Edge-only filter (T-0157). Filter edges by edge_type (e.g., "
+            '"references", "depends_on"). Valid only when target="edges". '
+            "Typed against the SAGE EdgeType enum so a typo like "
+            '"refrences" is rejected at validation time rather than '
+            "silently returning zero rows."
+        ),
+    )
+
+
+# T-0157: document-only filter keys that must NOT be set when target="edges".
+_DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
+    "doc_type",
+    "project",
+    "lifecycle_status",
+    "tags",
+    "document_ids",
+    "pipeline_status",
+    "tier3",
+)
+
+# T-0157: edge-only filter keys that must NOT be set when target="documents".
+_EDGE_ONLY_FILTER_KEYS: tuple[str, ...] = (
+    "source_id",
+    "target_id",
+    "edge_type",
+)
 
 
 class DiscoverRequest(BaseModel):
@@ -1795,6 +1847,10 @@ class DiscoverRequest(BaseModel):
     response_level: ResponseLevel = Field(
         default=ResponseLevel.CHUNKS,
         description=(
+            "Document-target payload selector. Prefer response_mode for "
+            "new callers; response_level is retained for backward "
+            "compatibility and will likely be unified into response_mode "
+            "by a subsequent ticket. "
             'Controls result detail level. "chunks" (default) includes '
             "chunk_content, heading_path, and matched_chunk_count. "
             '"documents" suppresses chunk_content but preserves '
@@ -1817,6 +1873,27 @@ class DiscoverRequest(BaseModel):
         description=(
             "Sort direction for catalog mode results. Optional. Defaults to "
             "ascending when sort_by is specified. Ignored by other modes."
+        ),
+    )
+    target: RetrievalTarget = Field(
+        default=RetrievalTarget.DOCUMENTS,
+        description=(
+            "Selects whether the query enumerates documents (default) or "
+            'edges. "edges" is valid only with mode=catalog and with '
+            "edge-only filter keys (source_id, target_id, edge_type); "
+            "other mode/parameter combinations are rejected via "
+            "mode_parameter_mismatch. (T-0157)"
+        ),
+    )
+    response_mode: ResponseMode | None = Field(
+        default=None,
+        description=(
+            "Canonical payload-depth selector across SAGE surfaces "
+            '(T-0157, T-0153). "light" returns identity columns only; '
+            '"full" returns the complete envelope. When unset, applies a '
+            "default-threshold rule for the edge target (>5 results -> "
+            "light, otherwise full). Currently valid only when "
+            "target=edges; document-target callers use response_level."
         ),
     )
 
@@ -1865,6 +1942,101 @@ class DiscoverRequest(BaseModel):
                     ],
                 },
             )
+
+        # T-0157: target=edges is valid only with mode=catalog.
+        if self.target == RetrievalTarget.EDGES and self.mode != RetrievalMode.CATALOG:
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                ("Target 'edges' is not valid for mode '{mode}'. Allowed: catalog only."),
+                {
+                    "mode": self.mode.value,
+                    "forbidden_param": "target",
+                    "allowed_modes": [RetrievalMode.CATALOG.value],
+                },
+            )
+
+        # T-0157: target=edges rejects document-only filter keys.
+        if self.target == RetrievalTarget.EDGES and self.filters is not None:
+            for key in _DOC_ONLY_FILTER_KEYS:
+                if getattr(self.filters, key) not in (None, [], {}):
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        (
+                            "Filter key 'filters.{key}' is not valid for "
+                            "target 'edges'. Allowed filter keys: "
+                            "source_id, target_id, edge_type."
+                        ),
+                        {
+                            "mode": self.mode.value,
+                            "forbidden_param": f"filters.{key}",
+                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "key": key,
+                        },
+                    )
+
+        # T-0157: target=documents rejects edge-only filter keys.
+        if self.target == RetrievalTarget.DOCUMENTS and self.filters is not None:
+            for key in _EDGE_ONLY_FILTER_KEYS:
+                if getattr(self.filters, key) is not None:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        (
+                            "Filter key 'filters.{key}' is not valid for "
+                            "target 'documents'. Use ``target=\"edges\"`` "
+                            "for edge enumeration. (T-0157)"
+                        ),
+                        {
+                            "mode": self.mode.value,
+                            "forbidden_param": f"filters.{key}",
+                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                            "key": key,
+                        },
+                    )
+
+        # T-0157: target=edges rejects doc-only request parameters. Only
+        # explicitly non-default values are flagged so callers can leave
+        # the other knobs alone without triggering this branch.
+        if self.target == RetrievalTarget.EDGES:
+            edge_forbidden_params: list[tuple[str, object, object]] = [
+                ("query", self.query, None),
+                ("document_id", self.document_id, None),
+                ("heading_path", self.heading_path, None),
+                ("min_relevance", self.min_relevance, None),
+                ("sort_by", self.sort_by, None),
+                ("sort_order", self.sort_order, None),
+                ("include_abstracts", self.include_abstracts, False),
+                ("response_level", self.response_level, ResponseLevel.CHUNKS),
+            ]
+            for name, value, default in edge_forbidden_params:
+                if value != default:
+                    raise PydanticCustomError(
+                        "mode_parameter_mismatch",
+                        ("Parameter '{forbidden_param}' is not valid for target 'edges'. (T-0157)"),
+                        {
+                            "mode": self.mode.value,
+                            "forbidden_param": name,
+                            "allowed_modes": [RetrievalMode.CATALOG.value],
+                        },
+                    )
+
+        # T-0157: response_mode currently applies only to target=edges.
+        # Document-target callers should keep using response_level until
+        # a subsequent ticket unifies the surface.
+        if self.response_mode is not None and self.target == RetrievalTarget.DOCUMENTS:
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                (
+                    "Parameter 'response_mode' is not yet supported for "
+                    "target 'documents'. Use 'response_level' instead. "
+                    "(T-0157)"
+                ),
+                {
+                    "mode": self.mode.value,
+                    "forbidden_param": "response_mode",
+                    "allowed_modes": [RetrievalMode.CATALOG.value],
+                },
+            )
+
         return self
 
 
@@ -1932,12 +2104,98 @@ class DiscoverHit(BaseModel):
         )
 
 
+class EdgeHit(BaseModel):
+    """A single edge enumeration result (T-0157).
+
+    Returned by ``sage_discover`` when ``target="edges"``. Field
+    population depends on ``response_mode``: ``light`` returns only
+    identity columns (``edge_id``, ``source_id``, ``target_id``,
+    ``edge_type``); ``full`` returns the complete envelope including
+    anchor versions, rationale, and retraction state.
+
+    Retraction-state fields disambiguate two perspectives:
+    - ``retracted_edge_id`` is the native column on ``retracts``-type
+      rows: when this row is itself a retracts edge, this field carries
+      the id of the edge being disclaimed.
+    - ``retracted_at`` and ``retracted_by_edge_id`` are computed via
+      LEFT JOIN: when this row is a non-retracts edge that has been
+      disclaimed by a later ``retracts`` edge, these fields carry the
+      timestamp and id of the earliest disclaiming edge.
+
+    Either set may be populated independently; non-retracted regular
+    edges have all three retraction fields null.
+    """
+
+    edge_id: EdgeIdStr = Field(description="UUID of this edge row.")
+    source_id: DocumentIdStr = Field(description="Source document id.")
+    target_id: DocumentIdStr | None = Field(
+        default=None,
+        description=("Target document id. Null for retracts-type edges (CAS-ADR-017)."),
+    )
+    edge_type: EdgeType = Field(description='Edge type (e.g., "references", "retracts").')
+    source_valid_from_version: str | None = Field(
+        default=None,
+        description="Source-chain anchor version (CAS-ADR-017). Omitted in light mode.",
+    )
+    target_valid_from_version: str | None = Field(
+        default=None,
+        description="Target-chain anchor version (CAS-ADR-017). Omitted in light mode.",
+    )
+    rationale: str | None = Field(
+        default=None,
+        description="Human or machine rationale for this edge. Omitted in light mode.",
+    )
+    rationale_kind: str | None = Field(
+        default=None,
+        description=(
+            "Typed provenance discriminator (T-0080: manual, version_chain, "
+            "references_mention, filename_code_match). Omitted in light mode."
+        ),
+    )
+    retracted_edge_id: EdgeIdStr | None = Field(
+        default=None,
+        description=(
+            "Native column. Populated only on retracts-type rows; carries "
+            "the id of the edge being disclaimed by this retracts edge. "
+            "Omitted in light mode."
+        ),
+    )
+    retracted_at: datetime | None = Field(
+        default=None,
+        description=(
+            "Computed. When this edge (a non-retracts row) has been "
+            "disclaimed by a later retracts edge, carries the timestamp "
+            "of the earliest disclaiming edge. Null when this edge is "
+            "still live. Omitted in light mode."
+        ),
+    )
+    retracted_by_edge_id: EdgeIdStr | None = Field(
+        default=None,
+        description=(
+            "Computed. The edge_id of the earliest retracts edge that "
+            "disclaims this row. Null when this edge is still live. "
+            "Omitted in light mode."
+        ),
+    )
+
+
 class DiscoverResponse(BaseModel):
     mode: RetrievalMode = Field(description="The retrieval mode that produced these results.")
-    results: list[DiscoverHit] = Field(
+    target: RetrievalTarget = Field(
+        default=RetrievalTarget.DOCUMENTS,
+        description=(
+            'The result row type. "documents" (default) yields '
+            'DiscoverHit rows; "edges" yields EdgeHit rows. Consumers '
+            "switch on this field to know how to read `results`. "
+            "(T-0157)"
+        ),
+    )
+    results: list[DiscoverHit] | list[EdgeHit] = Field(
         description=(
             "Retrieval hits, ordered by descending relevance "
-            "(semantic/keyword) or by sort_by (catalog)."
+            "(semantic/keyword) or by sort_by (catalog) for documents; "
+            "ordered by edge created_at DESC for edges. Row type is "
+            "discriminated by `target`."
         )
     )
     total_available: int = Field(

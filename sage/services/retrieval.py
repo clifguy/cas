@@ -45,18 +45,33 @@ from sage.instrumentation.timing import (
     QueryTimer,
     _NullPhaseCollector,
 )
-from sage.models.enums import PipelineStatus, ResponseLevel, RetrievalMode, RetrievalScope
+from sage.models.enums import (
+    PipelineStatus,
+    ResponseLevel,
+    ResponseMode,
+    RetrievalMode,
+    RetrievalScope,
+    RetrievalTarget,
+)
 from sage.models.schemas import (
     DiscoverHit,
     DiscoverRequest,
     DiscoverResponse,
     Document,
     DocumentSummary,
+    EdgeHit,
 )
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import EdgeQueryRow, GraphStore
 
 # RRF constant (standard value from the original Reciprocal Rank Fusion paper).
 _RRF_K = 60
+
+# T-0157: when sage_discover(target="edges") is called without an explicit
+# response_mode, results above this threshold default to "light" so bulk
+# enumerations stay inside the MCP inline budget; at or below it, default
+# is "full" so single-item-style calls keep their contextual richness.
+# The 5-item figure comes from T-0153's field-use report.
+_LIGHT_DEFAULT_THRESHOLD = 5
 
 # Filter keys that LanceDB can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
@@ -341,6 +356,15 @@ class RetrievalService:
         """Dispatch to the appropriate retrieval mode handler."""
         request_id = uuid.uuid4().hex[:12]
         with self._query_timer.request(request.mode.value, request_id) as phases:
+            # T-0157: edge enumeration bypasses the document-target post-
+            # processing pipeline. The DiscoverRequest validator already
+            # enforces target=edges <=> mode=catalog and rejects all
+            # document-only knobs, so we can route directly.
+            if request.target == RetrievalTarget.EDGES:
+                response = await self._catalog_edges(request, phases)
+                _apply_catalog_budget_hint(response)
+                return response
+
             if request.mode == RetrievalMode.SEMANTIC:
                 response = await self._semantic(request, phases)
             elif request.mode == RetrievalMode.KEYWORD:
@@ -476,6 +500,93 @@ class RetrievalService:
             mode=RetrievalMode.CATALOG,
             results=hits,
             total_available=total_count,
+        )
+
+    # ------------------------------------------------------------------
+    # Edge enumeration (T-0157)
+    # ------------------------------------------------------------------
+
+    async def _catalog_edges(
+        self,
+        request: DiscoverRequest,
+        phases: PhaseCollector | _NullPhaseCollector,
+    ) -> DiscoverResponse:
+        """Edge enumeration via SQL filter on the edges table.
+
+        Builds an edge-only filter dict from
+        ``RetrievalFilters.{source_id, target_id, edge_type}``, calls
+        ``GraphStore.query_edges``, hydrates the rows into ``EdgeHit``
+        models, and applies the light/full payload selector.
+
+        ``response_mode`` resolution: explicit value wins; if unset, falls
+        back to the default-threshold rule (>5 results -> light, else
+        full). Light strips every field except the identity columns
+        (``edge_id``, ``source_id``, ``target_id``, ``edge_type``); full
+        carries the complete envelope including anchor versions,
+        rationale, native ``retracted_edge_id``, and the computed
+        ``retracted_at`` / ``retracted_by_edge_id`` retraction state.
+        """
+        edge_filters: dict[str, object] = {}
+        if request.filters is not None:
+            if request.filters.source_id:
+                edge_filters["source_id"] = request.filters.source_id
+            if request.filters.target_id:
+                edge_filters["target_id"] = request.filters.target_id
+            if request.filters.edge_type:
+                # EdgeType enum -> SQL string (storage table stores the
+                # string value, not the Python enum object).
+                edge_filters["edge_type"] = request.filters.edge_type.value
+
+        with phases.phase("query_edges"):
+            rows, total_count = await self._graph.query_edges(
+                filters=edge_filters or None,
+                limit=request.limit,
+                offset=request.offset,
+            )
+
+        effective_mode = request.response_mode
+        if effective_mode is None:
+            effective_mode = (
+                ResponseMode.LIGHT if total_count > _LIGHT_DEFAULT_THRESHOLD else ResponseMode.FULL
+            )
+
+        hits: list[EdgeHit] = [self._hydrate_edge_hit(row, effective_mode) for row in rows]
+
+        return DiscoverResponse(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.EDGES,
+            results=hits,
+            total_available=total_count,
+        )
+
+    @staticmethod
+    def _hydrate_edge_hit(row: EdgeQueryRow, mode: ResponseMode) -> EdgeHit:
+        """Project an EdgeQueryRow into an EdgeHit honoring the response mode.
+
+        Light mode strips every field except the identity columns so the
+        wire payload stays compact for bulk enumeration. Full mode
+        carries every field defined on EdgeHit.
+        """
+        edge = row.edge
+        if mode == ResponseMode.LIGHT:
+            return EdgeHit(
+                edge_id=edge.id,
+                source_id=edge.source_id,
+                target_id=edge.target_id,
+                edge_type=edge.edge_type,
+            )
+        return EdgeHit(
+            edge_id=edge.id,
+            source_id=edge.source_id,
+            target_id=edge.target_id,
+            edge_type=edge.edge_type,
+            source_valid_from_version=edge.source_valid_from_version,
+            target_valid_from_version=edge.target_valid_from_version,
+            rationale=edge.rationale,
+            rationale_kind=(edge.rationale_kind.value if edge.rationale_kind is not None else None),
+            retracted_edge_id=edge.retracted_edge_id,
+            retracted_at=row.retracted_at,
+            retracted_by_edge_id=row.retracted_by_edge_id,
         )
 
     # ------------------------------------------------------------------

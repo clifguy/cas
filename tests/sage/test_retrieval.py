@@ -12,6 +12,7 @@ and two-pass abstract-boosted retrieval.
 import hashlib
 import json
 import re
+import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -27,10 +28,13 @@ from sage.api.errors import (
     PipelineIncompleteError,
 )
 from sage.models.enums import (
+    EdgeType,
     PipelineStatus,
     ResponseLevel,
+    ResponseMode,
     RetrievalMode,
     RetrievalScope,
+    RetrievalTarget,
     SourceType,
 )
 from sage.models.schemas import (
@@ -38,6 +42,8 @@ from sage.models.schemas import (
     DiscoverRequest,
     Document,
     DocumentSummary,
+    Edge,
+    EdgeHit,
     RetrievalFilters,
     UpdateMetadataRequest,
 )
@@ -4410,3 +4416,400 @@ def test_from_summary_populates_every_discover_hit_field():
             )
         else:
             assert value is not None, f"DiscoverHit.{field_name} not populated by from_summary"
+
+
+# ---------------------------------------------------------------------------
+# T-0157: Edge enumeration via sage_discover(target="edges")
+# ---------------------------------------------------------------------------
+
+
+async def _seed_edge_fixture(graph_store, *, total_edges: int = 8):
+    """Insert `total_edges` references edges from src to a fan of targets.
+
+    Used by service-layer tests to drive the threshold rule by controlling
+    the result count exactly. Returns the source doc id (canonical form).
+    """
+    src = _id("src_doc")
+    await graph_store.insert_document(_make_doc(src))
+    edge_ids = []
+    for i in range(total_edges):
+        target = _id(f"tgt_doc_{i:03d}")
+        await graph_store.insert_document(_make_doc(target))
+        eid = str(_uuid.uuid4())
+        await graph_store.insert_edge(
+            Edge(
+                id=eid,
+                source_id=src,
+                target_id=target,
+                edge_type=EdgeType.REFERENCES,
+                rationale=f"seeded edge {i}",
+                created_at=datetime.now(timezone.utc) + timedelta(seconds=i),
+            )
+        )
+        edge_ids.append(eid)
+    return src, edge_ids
+
+
+async def test_t0157_catalog_edges_returns_edge_hit_rows(graph_store, retrieval_service):
+    """11. target=edges + mode=catalog returns EdgeHit rows, not DiscoverHit."""
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=3)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        response_mode=ResponseMode.FULL,
+    )
+    resp = await retrieval_service.discover(req)
+
+    assert resp.target == RetrievalTarget.EDGES
+    assert resp.mode == RetrievalMode.CATALOG
+    assert resp.total_available == 3
+    assert len(resp.results) == 3
+    for hit in resp.results:
+        assert isinstance(hit, EdgeHit), (
+            f"target=edges must return EdgeHit rows, got {type(hit).__name__}"
+        )
+        # Full envelope: every required field populated.
+        assert hit.edge_id and hit.source_id == src
+        assert hit.target_id
+        assert hit.edge_type == "references"
+        assert hit.rationale is not None
+        assert hit.rationale_kind is not None
+        # retraction state is null for live edges.
+        assert hit.retracted_at is None
+        assert hit.retracted_by_edge_id is None
+
+
+async def test_t0157_catalog_edges_light_strips_to_identity_columns(graph_store, retrieval_service):
+    """12. response_mode=light returns only the identity columns.
+
+    Anti-coincidental: assert via model_dump(exclude_unset=True) that
+    optional fields are GENUINELY absent (not present-but-null).
+    """
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=2)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        response_mode=ResponseMode.LIGHT,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) == 2
+    for hit in resp.results:
+        dump = hit.model_dump(exclude_unset=True)
+        identity_keys = {"edge_id", "source_id", "target_id", "edge_type"}
+        assert set(dump.keys()) == identity_keys, (
+            f"light must yield exactly identity fields, got {set(dump.keys())}"
+        )
+
+
+async def test_t0157_catalog_edges_full_carries_complete_envelope(graph_store, retrieval_service):
+    """13. response_mode=full carries the complete envelope.
+
+    Anti-coincidental: assert that EVERY full-envelope field is present
+    in the dump — a serializer that silently dropped a field would fail.
+    """
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=1)
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        response_mode=ResponseMode.FULL,
+    )
+    resp = await retrieval_service.discover(req)
+    hit = resp.results[0]
+    dump = hit.model_dump(exclude_unset=True)
+    # Every EdgeHit field must appear in the dump even when its value is null.
+    full_keys = set(EdgeHit.model_fields.keys())
+    assert set(dump.keys()) == full_keys, (
+        f"full envelope must contain every EdgeHit field, missing: {full_keys - set(dump.keys())}"
+    )
+
+
+async def test_t0157_catalog_edges_default_threshold_at_or_below_five_is_full(
+    graph_store, retrieval_service
+):
+    """14. Default-threshold rule: <=5 results -> full envelope."""
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=5)
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        # No explicit response_mode -- threshold rule applies.
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.total_available == 5
+    dump = resp.results[0].model_dump(exclude_unset=True)
+    # Full mode populates every field.
+    assert set(dump.keys()) == set(EdgeHit.model_fields.keys()), (
+        f"5 results (<= threshold) must default to full, got keys: {set(dump.keys())}"
+    )
+
+
+async def test_t0157_catalog_edges_default_threshold_above_five_is_light(
+    graph_store, retrieval_service
+):
+    """15. Default-threshold rule: >5 results -> light envelope.
+
+    Anti-coincidental: the boundary (5 vs 6) catches a threshold whose
+    direction is inverted (`<=5 light` instead of `>5 light`).
+    """
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=6)
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.total_available == 6
+    dump = resp.results[0].model_dump(exclude_unset=True)
+    identity_keys = {"edge_id", "source_id", "target_id", "edge_type"}
+    assert set(dump.keys()) == identity_keys, (
+        f"6 results (> threshold) must default to light, got keys: {set(dump.keys())}"
+    )
+
+
+async def test_t0157_catalog_edges_explicit_response_mode_overrides_threshold(
+    graph_store, retrieval_service
+):
+    """16. Explicit response_mode wins over the default-threshold rule.
+
+    Anti-coincidental: count 10 (above threshold) + explicit full means
+    any output other than full proves the override is ignored.
+    """
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=10)
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        response_mode=ResponseMode.FULL,
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.total_available == 10
+    dump = resp.results[0].model_dump(exclude_unset=True)
+    assert set(dump.keys()) == set(EdgeHit.model_fields.keys()), (
+        f"explicit full must override threshold, got keys: {set(dump.keys())}"
+    )
+
+
+async def test_t0157_catalog_edges_total_available_unpaginated(graph_store, retrieval_service):
+    """17. total_available reports the unpaginated edge count."""
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=20)
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        limit=5,
+        response_mode=ResponseMode.LIGHT,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) == 5
+    assert resp.total_available == 20
+
+
+async def test_t0157_catalog_edges_sort_default_is_created_at_desc(graph_store, retrieval_service):
+    """18. Catalog edges sort by created_at DESC (most recent first).
+
+    Anti-coincidental: insert with explicit out-of-order timestamps; assert
+    response ordering matches timestamp order, not insertion order.
+    """
+    src = _id("sort_src")
+    await graph_store.insert_document(_make_doc(src))
+    targets = [_id(f"sort_tgt_{i}") for i in range(3)]
+    for t in targets:
+        await graph_store.insert_document(_make_doc(t))
+
+    # Insert in order: middle, oldest, newest. After sort: newest, middle, oldest.
+    timestamps = [
+        datetime(2026, 5, 15, tzinfo=timezone.utc),  # middle
+        datetime(2026, 5, 1, tzinfo=timezone.utc),  # oldest
+        datetime(2026, 5, 23, tzinfo=timezone.utc),  # newest
+    ]
+    inserted_ids = []
+    for t, ts in zip(targets, timestamps):
+        eid = str(_uuid.uuid4())
+        await graph_store.insert_edge(
+            Edge(
+                id=eid,
+                source_id=src,
+                target_id=t,
+                edge_type=EdgeType.REFERENCES,
+                created_at=ts,
+            )
+        )
+        inserted_ids.append(eid)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        response_mode=ResponseMode.FULL,
+    )
+    resp = await retrieval_service.discover(req)
+    returned_ids = [r.edge_id for r in resp.results]
+    # Expected order: newest (inserted last, idx 2), middle (idx 0), oldest (idx 1).
+    expected = [inserted_ids[2], inserted_ids[0], inserted_ids[1]]
+    assert returned_ids == expected, (
+        f"results must be ordered by created_at DESC, got insertion order? "
+        f"returned={returned_ids} expected={expected}"
+    )
+
+
+async def test_t0157_target_documents_default_preserves_catalog_behavior(
+    graph_store, retrieval_service
+):
+    """19. Backward compat: catalog without target/response_mode returns
+    documents and matches the historical shape (DiscoverHit, document field).
+    """
+    await graph_store.insert_document(_make_doc(_id("d1"), doc_type="ticket"))
+    await graph_store.insert_document(_make_doc(_id("d2"), doc_type="ticket"))
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        filters=RetrievalFilters(doc_type="ticket"),
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.target == RetrievalTarget.DOCUMENTS
+    assert resp.total_available == 2
+    assert len(resp.results) == 2
+    for hit in resp.results:
+        assert isinstance(hit, DiscoverHit), (
+            f"target=documents must keep returning DiscoverHit, got {type(hit).__name__}"
+        )
+        assert hit.document is not None
+
+
+# ---------------------------------------------------------------------------
+# T-0157: DiscoverRequest validator (mode_parameter_mismatch for new combos)
+# ---------------------------------------------------------------------------
+
+
+def _ctx(exc: ValidationError) -> dict:
+    return exc.errors()[0].get("ctx", {})
+
+
+def test_t0157_target_edges_with_semantic_mode_is_mode_parameter_mismatch():
+    """21. target=edges + mode=semantic raises mode_parameter_mismatch."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="x", target=RetrievalTarget.EDGES)
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == "target"
+    assert err["ctx"]["allowed_modes"] == [RetrievalMode.CATALOG.value]
+
+
+def test_t0157_target_edges_with_keyword_mode_is_mode_parameter_mismatch():
+    """22. target=edges + mode=keyword raises mode_parameter_mismatch."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.KEYWORD, query="x", target=RetrievalTarget.EDGES)
+    assert info.value.errors()[0]["type"] == "mode_parameter_mismatch"
+
+
+def test_t0157_target_edges_with_deterministic_mode_is_mode_parameter_mismatch():
+    """23. target=edges + mode=deterministic raises mode_parameter_mismatch."""
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(
+            mode=RetrievalMode.DETERMINISTIC,
+            document_id=_id("d1"),
+            heading_path="x",
+            target=RetrievalTarget.EDGES,
+        )
+    assert info.value.errors()[0]["type"] == "mode_parameter_mismatch"
+
+
+@pytest.mark.parametrize(
+    "filter_kwargs,key",
+    [
+        ({"doc_type": "ticket"}, "doc_type"),
+        ({"project": "proj"}, "project"),
+        ({"lifecycle_status": "active"}, "lifecycle_status"),
+        ({"pipeline_status": "abstraction_complete"}, "pipeline_status"),
+        ({"tags": ["a"]}, "tags"),
+        ({"document_ids": [_id("d1")]}, "document_ids"),
+        ({"tier3": {"k": "v"}}, "tier3"),
+    ],
+)
+def test_t0157_target_edges_rejects_document_only_filter_keys(filter_kwargs, key):
+    """24. target=edges rejects every document-only filter key with
+    mode_parameter_mismatch carrying the offending key.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.EDGES,
+            filters=RetrievalFilters(**filter_kwargs),
+        )
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == f"filters.{key}"
+
+
+@pytest.mark.parametrize(
+    "filter_kwargs,key",
+    [
+        ({"source_id": _id("d1")}, "source_id"),
+        ({"target_id": _id("d1")}, "target_id"),
+        ({"edge_type": "references"}, "edge_type"),
+    ],
+)
+def test_t0157_target_documents_rejects_edge_only_filter_keys(filter_kwargs, key):
+    """25. target=documents rejects every edge-only filter key.
+    Default target is documents; setting an edge filter without
+    target=edges must error rather than silently ignore.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(**filter_kwargs),
+        )
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == f"filters.{key}"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("query", "anything"),
+        ("document_id", _id("d1")),
+        ("heading_path", "Section 1"),
+        ("min_relevance", 0.5),
+        ("include_abstracts", True),
+        ("response_level", ResponseLevel.DOCUMENTS),
+    ],
+)
+def test_t0157_target_edges_rejects_doc_only_request_parameters(field, value):
+    """26. target=edges rejects every document-only DiscoverRequest parameter
+    that has an explicit non-default value.
+    """
+    kwargs = {"mode": RetrievalMode.CATALOG, "target": RetrievalTarget.EDGES, field: value}
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(**kwargs)
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == field
+
+
+def test_t0157_invalid_target_value_raises_enum_validation_error():
+    """27. target="invalid" rejected at enum coercion, not as a mode mismatch.
+    The error loc must point at the target field so the typed error
+    translator can map it.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, target="invalid")
+    err = info.value.errors()[0]
+    assert err["type"] == "enum"
+    assert err["loc"] == ("target",)
+
+
+def test_t0157_response_mode_with_target_documents_is_mode_parameter_mismatch():
+    """26b. response_mode is currently scoped to target=edges; passing it
+    with target=documents must error rather than silently ignore.
+    """
+    with pytest.raises(ValidationError) as info:
+        DiscoverRequest(mode=RetrievalMode.CATALOG, response_mode=ResponseMode.LIGHT)
+    err = info.value.errors()[0]
+    assert err["type"] == "mode_parameter_mismatch"
+    assert err["ctx"]["forbidden_param"] == "response_mode"

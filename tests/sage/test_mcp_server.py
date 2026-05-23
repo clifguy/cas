@@ -40,6 +40,10 @@ from sage.mcp_server import (
     sage_update_metadata,
     sage_vault_stats,
 )
+from sage.mcp_server import (
+    sage_unlink as _sage_unlink_tool,
+)
+from sage.models.enums import EdgeType as _EdgeType
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 
 
@@ -1131,3 +1135,133 @@ async def test_reabstract_document_not_found(vault_services):
     """sage_reabstract should return document_not_found for unknown doc."""
     result = _parse(await sage_reabstract("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
+
+
+# ---------------------------------------------------------------------------
+# T-0157: First-class edge enumeration via sage_discover(target="edges")
+# ---------------------------------------------------------------------------
+
+
+async def test_t0157_sage_discover_edges_happy_path(vault_services):
+    """28. End-to-end happy path via the MCP tool: target=edges + mode=catalog
+    returns a serialized envelope with target field, results array, and
+    total_available.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+    # supersedes has resolution_policy=none so no anchor version
+    # requirements; using it keeps the fixture small while still
+    # exercising the edge enumeration path.
+    link_result = _parse(
+        await sage_link(
+            "test_vault",
+            doc_a["id"],
+            doc_b["id"],
+            "supersedes",
+            rationale="t0157 fixture",
+        )
+    )
+
+    actual_source = link_result["source_id"]
+    actual_target = link_result["target_id"]
+
+    result = _parse(
+        await sage_discover(
+            "test_vault",
+            mode="catalog",
+            target="edges",
+            filters={"source_id": actual_source},
+            response_mode="full",
+        )
+    )
+    assert result.get("target") == "edges"
+    assert result.get("mode") == "catalog"
+    assert result["total_available"] >= 1, (
+        f"expected at least 1 edge from {actual_source}, got 0. result={result}"
+    )
+    assert isinstance(result["results"], list)
+    hit = result["results"][0]
+    for key in ("edge_id", "source_id", "target_id", "edge_type", "rationale"):
+        assert key in hit, f"full envelope missing {key}: {hit.keys()}"
+    assert hit["source_id"] == actual_source
+    assert hit["target_id"] == actual_target
+    assert hit["edge_type"] == "supersedes"
+
+
+async def test_t0157_sage_discover_edges_light_round_trips_through_serializer(vault_services):
+    """29. Light mode round-trips through serialize(): the envelope keys
+    on the wire match what the model produced.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+    link = _parse(await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes"))
+
+    result = _parse(
+        await sage_discover(
+            "test_vault",
+            mode="catalog",
+            target="edges",
+            filters={"source_id": link["source_id"]},
+            response_mode="light",
+        )
+    )
+    hit = result["results"][0]
+    # serialize() uses exclude_none=True so light rows on the wire should
+    # carry exactly the identity columns. The dict is JSON, not a Pydantic
+    # model, so we check key presence directly.
+    assert set(hit.keys()) == {"edge_id", "source_id", "target_id", "edge_type"}
+
+
+async def test_t0157_sage_discover_edges_target_edges_with_semantic_returns_error(vault_services):
+    """28b. target=edges combined with a non-catalog mode is rejected via
+    the typed mode_parameter_mismatch error envelope.
+    """
+    result = _parse(
+        await sage_discover(
+            "test_vault",
+            mode="semantic",
+            target="edges",
+            query="anything",
+        )
+    )
+    assert result["error"] == "mode_parameter_mismatch", result
+
+
+def test_t0157_sage_discover_docstring_carries_edge_example():
+    """30. sage_discover docstring documents the target="edges" dispatch
+    with a worked example. This is a guard test that fails closed when
+    the cross-tool documentation contract breaks (e.g., a later edit
+    drops the example).
+    """
+    doc = sage_discover.__doc__
+    assert doc is not None
+    assert 'target="edges"' in doc, (
+        "sage_discover docstring must carry a worked example for the "
+        "target='edges' dispatch (T-0157)"
+    )
+
+
+def test_t0157_sage_unlink_docstring_points_at_edge_discovery():
+    """31. sage_unlink docstring references sage_discover(target="edges")
+    as the canonical path to discover edge_id. Guard test.
+    """
+    doc = _sage_unlink_tool.__doc__
+    assert doc is not None
+    assert 'target="edges"' in doc, (
+        "sage_unlink docstring must point at sage_discover(target='edges') "
+        "as the canonical edge_id discovery path (T-0157)"
+    )
+
+
+def test_t0157_retracts_edge_type_docstring_points_at_edge_discovery():
+    """32. EdgeType class docstring documents the discovery path for
+    edge_id when minting a retracts edge. Guard test.
+    """
+    doc = _EdgeType.__doc__
+    assert doc is not None
+    assert 'target="edges"' in doc, (
+        "EdgeType class docstring must point at sage_discover(target='edges') "
+        "for retracts edge_id discovery (T-0157)"
+    )

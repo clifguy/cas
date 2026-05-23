@@ -99,6 +99,25 @@ def _is_tier3_unique_violation(exc: sqlite3.IntegrityError) -> str | None:
     return match.group(1) if match else None
 
 
+@dataclass(frozen=True)
+class EdgeQueryRow:
+    """Edge enumeration result row with computed retraction envelope (T-0157).
+
+    Wraps a hydrated ``Edge`` and adds two fields computed via LEFT JOIN
+    against the earliest ``retracts``-type edge that disclaims this row:
+    ``retracted_at`` carries the timestamp of that disclaiming edge,
+    ``retracted_by_edge_id`` its id. Both are ``None`` when this row is
+    still live (no disclaiming retracts edge exists). For rows that are
+    themselves ``retracts`` edges, these fields are likewise ``None``
+    (a retracts edge isn't itself subject to retraction); the row's own
+    ``edge.retracted_edge_id`` carries the id of the edge it disclaims.
+    """
+
+    edge: Edge
+    retracted_at: datetime | None
+    retracted_by_edge_id: str | None
+
+
 OnConflict = Literal["raise", "noop"]
 
 # Defense-in-depth gate for tier3 keys that get interpolated into the
@@ -1049,6 +1068,105 @@ class GraphStore:
         else:
             rows = conn.execute("SELECT * FROM edges WHERE target_id = ?", (target_id,)).fetchall()
         return [self._row_to_edge(r) for r in rows]
+
+    async def query_edges(
+        self,
+        *,
+        filters: dict[str, object] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[EdgeQueryRow], int]:
+        """Enumerate edges with SQL predicates. Returns (rows, total_count) (T-0157).
+
+        Supported filter keys: ``source_id``, ``target_id``, ``edge_type``.
+        All three are exact-match; multiple keys AND together. An empty
+        or ``None`` filter returns all edges paginated by limit/offset.
+
+        Each row carries the hydrated ``Edge`` plus a computed retraction
+        envelope (``retracted_at``, ``retracted_by_edge_id``) built via
+        LEFT JOIN against the earliest ``retracts``-type edge that
+        disclaims the row. When multiple retracts edges target the same
+        row, the earliest by ``created_at`` wins.
+
+        Ordering: ``edges.created_at DESC`` (most recently created first).
+        """
+        with self._query_timer.measure("query_edges"):
+            return await self._run(self._query_edges_sync, filters, limit, offset)
+
+    def _query_edges_sync(
+        self,
+        filters: dict[str, object] | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[EdgeQueryRow], int]:
+        conn = self._get_connection()
+        where_clauses: list[str] = []
+        params: list[object] = []
+
+        if filters:
+            if "source_id" in filters and filters["source_id"]:
+                where_clauses.append("e.source_id = ?")
+                params.append(filters["source_id"])
+            if "target_id" in filters and filters["target_id"]:
+                where_clauses.append("e.target_id = ?")
+                params.append(filters["target_id"])
+            if "edge_type" in filters and filters["edge_type"]:
+                where_clauses.append("e.edge_type = ?")
+                params.append(filters["edge_type"])
+
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+
+        # Total (unpaginated) count.
+        count_row = conn.execute(
+            f"SELECT COUNT(*) FROM edges e WHERE {where_sql}",  # noqa: S608 -- where_sql built from trusted internal builder; values are ? placeholders
+            params,
+        ).fetchone()
+        total_count = count_row[0]
+
+        # Paged enumeration. The LEFT JOIN against the windowed
+        # retracts-subquery attaches the earliest disclaiming retracts
+        # edge (if any) per row. The window is partitioned by
+        # retracted_edge_id and ordered by created_at ASC, so rn=1 is
+        # always the earliest disclaimer.
+        sql = f"""
+            SELECT
+                e.*,
+                r.id AS retracted_by_edge_id,
+                r.created_at AS retracted_at_iso
+            FROM edges e
+            LEFT JOIN (
+                SELECT
+                    retracted_edge_id,
+                    id,
+                    created_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY retracted_edge_id
+                        ORDER BY created_at ASC
+                    ) AS rn
+                FROM edges
+                WHERE edge_type = 'retracts'
+                  AND retracted_edge_id IS NOT NULL
+            ) r ON r.retracted_edge_id = e.id AND r.rn = 1
+            WHERE {where_sql}
+            ORDER BY e.created_at DESC
+            LIMIT ? OFFSET ?
+        """  # noqa: S608 -- where_sql built from trusted internal builder; values are ? placeholders
+        rows = conn.execute(sql, [*params, limit, offset]).fetchall()
+
+        result: list[EdgeQueryRow] = []
+        for row in rows:
+            edge = self._row_to_edge(row)
+            retracted_at_iso = row["retracted_at_iso"]
+            result.append(
+                EdgeQueryRow(
+                    edge=edge,
+                    retracted_at=(
+                        datetime.fromisoformat(retracted_at_iso) if retracted_at_iso else None
+                    ),
+                    retracted_by_edge_id=row["retracted_by_edge_id"],
+                )
+            )
+        return result, total_count
 
     async def get_supersedes_lineage(self, doc_id: str) -> list[str]:
         """Return doc_id and all supersedes-predecessors (unordered).

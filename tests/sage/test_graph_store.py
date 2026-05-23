@@ -858,3 +858,315 @@ def test_row_to_staging_edge_populates_every_staging_edge_field():
             assert value is not None, (
                 f"StagingEdge.{field_name} not populated by _row_to_staging_edge"
             )
+
+
+# ---------------------------------------------------------------------------
+# T-0157: query_edges enumeration with retraction JOIN
+# ---------------------------------------------------------------------------
+
+
+async def _seed_query_edges_fixture(graph_store) -> dict[str, list[str]]:
+    """Seed a small mixed-edge fixture and return ids by category.
+
+    Layout (12 total edges): 3 references from A, 4 references from B,
+    2 depends_on from B, 2 references into Z (from C, D), 1 references
+    from E. Plus 1 supersedes edge to give a non-references baseline
+    and exercise the edge_type filter discrimination. Plus 1 retracts
+    edge disclaiming one of A's references — for the JOIN trap.
+
+    Returns a dict carrying canonical doc ids and the seeded
+    references edge ids so tests can assert on retraction state.
+    """
+    # Documents
+    docs = ["doc_a", "doc_b", "doc_c", "doc_d", "doc_e", "doc_z", "doc_y"]
+    for d in docs:
+        await graph_store.insert_document(_make_doc(_id(d)))
+
+    edges_by_kind: dict[str, list[str]] = {
+        "a_refs": [],
+        "b_refs": [],
+        "b_depends": [],
+        "into_z": [],
+        "e_refs": [],
+        "supersedes": [],
+    }
+
+    async def _ins(source, target, etype, kind, when=None):
+        eid = str(uuid.uuid4())
+        await graph_store.insert_edge(
+            Edge(
+                id=eid,
+                source_id=_id(source),
+                target_id=_id(target) if target else None,
+                edge_type=EdgeType(etype),
+                created_at=when or datetime.now(timezone.utc),
+            )
+        )
+        edges_by_kind.setdefault(kind, []).append(eid)
+        return eid
+
+    # 3 refs from A
+    await _ins("doc_a", "doc_b", "references", "a_refs")
+    await _ins("doc_a", "doc_c", "references", "a_refs")
+    await _ins("doc_a", "doc_d", "references", "a_refs")
+    # 4 refs from B
+    await _ins("doc_b", "doc_c", "references", "b_refs")
+    await _ins("doc_b", "doc_d", "references", "b_refs")
+    await _ins("doc_b", "doc_e", "references", "b_refs")
+    await _ins("doc_b", "doc_y", "references", "b_refs")
+    # 2 depends_on from B
+    await _ins("doc_b", "doc_z", "depends_on", "b_depends")
+    await _ins("doc_b", "doc_y", "depends_on", "b_depends")
+    # 2 refs into Z
+    await _ins("doc_c", "doc_z", "references", "into_z")
+    await _ins("doc_d", "doc_z", "references", "into_z")
+    # 1 ref from E
+    await _ins("doc_e", "doc_y", "references", "e_refs")
+    # 1 supersedes (non-references discrimination)
+    await _ins("doc_y", "doc_z", "supersedes", "supersedes")
+
+    return edges_by_kind
+
+
+async def test_t0157_query_edges_unfiltered_returns_all_paginated(graph_store):
+    """1. Empty filter returns every edge, paginated. total = unpaginated count."""
+    fixture = await _seed_query_edges_fixture(graph_store)
+    total_seeded = sum(len(v) for v in fixture.values())  # 13
+
+    rows, total = await graph_store.query_edges(limit=10, offset=0)
+    assert total == total_seeded, (
+        f"total_available must equal unpaginated count, got {total} vs seeded {total_seeded}"
+    )
+    assert len(rows) == 10, f"page-1 must return min(limit, total), got {len(rows)}"
+    # Anti-coincidental: assert shape — these are edges, not documents.
+    for r in rows:
+        assert hasattr(r.edge, "edge_type"), "row must hydrate an Edge, not a Document"
+        assert r.edge.edge_type in EdgeType, "edge_type must be a valid EdgeType"
+
+
+async def test_t0157_query_edges_filter_by_source_id(graph_store):
+    """2. source_id filter selects only edges sourced from that document."""
+    await _seed_query_edges_fixture(graph_store)
+
+    rows, total = await graph_store.query_edges(filters={"source_id": _id("doc_a")})
+    assert total == 3, "doc_a sources exactly 3 references in the fixture"
+    assert len(rows) == 3
+    assert all(r.edge.source_id == _id("doc_a") for r in rows)
+
+
+async def test_t0157_query_edges_filter_by_target_id(graph_store):
+    """3. target_id filter selects only edges pointing at that document."""
+    await _seed_query_edges_fixture(graph_store)
+
+    rows, total = await graph_store.query_edges(filters={"target_id": _id("doc_z")})
+    # 2 refs into Z + 1 depends_on into Z + 1 supersedes into Z = 4
+    assert total == 4, f"doc_z is the target of 4 edges in the fixture, got {total}"
+    assert all(r.edge.target_id == _id("doc_z") for r in rows)
+
+
+async def test_t0157_query_edges_filter_by_edge_type(graph_store):
+    """4. edge_type filter selects only edges of that type."""
+    await _seed_query_edges_fixture(graph_store)
+
+    rows, total = await graph_store.query_edges(filters={"edge_type": "depends_on"})
+    assert total == 2, f"fixture seeds 2 depends_on edges, got {total}"
+    assert all(r.edge.edge_type.value == "depends_on" for r in rows)
+
+
+async def test_t0157_query_edges_combined_filters_AND(graph_store):
+    """5. Combined source_id + edge_type filters AND together."""
+    await _seed_query_edges_fixture(graph_store)
+
+    rows, total = await graph_store.query_edges(
+        filters={"source_id": _id("doc_b"), "edge_type": "depends_on"}
+    )
+    # B has 4 references + 2 depends_on; intersection with depends_on = 2.
+    assert total == 2
+    assert all(
+        r.edge.source_id == _id("doc_b") and r.edge.edge_type.value == "depends_on" for r in rows
+    )
+
+
+async def test_t0157_query_edges_pagination_correctness(graph_store):
+    """6. Pagination: offset slices correctly; total reports unpaginated count.
+
+    Anti-coincidental: total > limit when the underlying set is larger than
+    the page — a buggy implementation that derived total from len(results)
+    would compute total <= limit and fail this assertion.
+    """
+    await _seed_query_edges_fixture(graph_store)  # 13 edges
+
+    page1, total1 = await graph_store.query_edges(limit=5, offset=0)
+    page2, total2 = await graph_store.query_edges(limit=5, offset=5)
+    assert total1 == total2 == 13, "total_available must be independent of pagination"
+    assert total1 > 5, "anti-coincidental: total must exceed limit when underlying set is larger"
+    assert len(page1) == 5 and len(page2) == 5
+    ids_p1 = {r.edge.id for r in page1}
+    ids_p2 = {r.edge.id for r in page2}
+    assert ids_p1.isdisjoint(ids_p2), "pages must not overlap"
+
+
+async def test_t0157_query_edges_retraction_state_via_left_join(graph_store):
+    """8. Retraction JOIN: a disclaimed edge surfaces retracted_at and
+    retracted_by_edge_id IN THE SAME RESULT SET as a sibling non-retracted
+    edge that surfaces null for both. The same-result-set assertion is the
+    anti-coincidental guard: a test that only asserts the retracted edge
+    could pass by always returning the same timestamp.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_src")))
+    await graph_store.insert_document(_make_doc(_id("doc_tgt")))
+    await graph_store.insert_document(_make_doc(_id("doc_sibling_tgt")))
+
+    # E1 is the edge that will be retracted.
+    e1_id = str(uuid.uuid4())
+    e1_created = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    await graph_store.insert_edge(
+        Edge(
+            id=e1_id,
+            source_id=_id("doc_src"),
+            target_id=_id("doc_tgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=e1_created,
+        )
+    )
+    # E2 is a sibling edge from the same source that is NOT retracted.
+    e2_id = str(uuid.uuid4())
+    await graph_store.insert_edge(
+        Edge(
+            id=e2_id,
+            source_id=_id("doc_src"),
+            target_id=_id("doc_sibling_tgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime(2026, 1, 1, 12, 5, 0, tzinfo=timezone.utc),
+        )
+    )
+    # R1 is the retracts edge that disclaims E1.
+    r1_id = str(uuid.uuid4())
+    r1_created = datetime(2026, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+    await graph_store.insert_edge(
+        Edge(
+            id=r1_id,
+            source_id=_id("doc_src"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            source_valid_from_version=_id("doc_src"),
+            retracted_edge_id=e1_id,
+            created_at=r1_created,
+        )
+    )
+
+    rows, _ = await graph_store.query_edges(filters={"source_id": _id("doc_src")})
+    by_id = {r.edge.id: r for r in rows}
+    assert e1_id in by_id and e2_id in by_id and r1_id in by_id
+
+    # Disclaimed edge: retracted_at + retracted_by_edge_id populated.
+    disclaimed = by_id[e1_id]
+    assert disclaimed.retracted_at == r1_created, (
+        f"retracted_at must equal disclaiming edge's created_at, got {disclaimed.retracted_at}"
+    )
+    assert disclaimed.retracted_by_edge_id == r1_id
+
+    # Sibling live edge: both null.
+    sibling = by_id[e2_id]
+    assert sibling.retracted_at is None
+    assert sibling.retracted_by_edge_id is None
+
+    # Retracts edge itself: not subject to retraction; both null.
+    retracts_row = by_id[r1_id]
+    assert retracts_row.retracted_at is None, (
+        "a retracts-type edge is not itself retracted by the JOIN"
+    )
+    assert retracts_row.retracted_by_edge_id is None
+    # But its NATIVE column carries the id of the edge it disclaims.
+    assert retracts_row.edge.retracted_edge_id == e1_id
+
+
+async def test_t0157_query_edges_multiple_retracts_earliest_wins(graph_store):
+    """9. Multiple retracts targeting the same edge: earliest by created_at wins.
+
+    The window function ORDER BY created_at ASC + rn=1 picks the earliest.
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_src")))
+    await graph_store.insert_document(_make_doc(_id("doc_tgt")))
+
+    e1_id = str(uuid.uuid4())
+    await graph_store.insert_edge(
+        Edge(
+            id=e1_id,
+            source_id=_id("doc_src"),
+            target_id=_id("doc_tgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+
+    earliest = datetime(2026, 2, 1, 0, 0, 0, tzinfo=timezone.utc)
+    latest = datetime(2026, 3, 1, 0, 0, 0, tzinfo=timezone.utc)
+    r_earliest_id = str(uuid.uuid4())
+    r_latest_id = str(uuid.uuid4())
+    # Insert latest FIRST so any "natural order" implementation would
+    # pick the wrong one. The window must order by created_at, not by
+    # insertion order.
+    await graph_store.insert_edge(
+        Edge(
+            id=r_latest_id,
+            source_id=_id("doc_src"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            source_valid_from_version=_id("doc_src"),
+            retracted_edge_id=e1_id,
+            created_at=latest,
+        )
+    )
+    await graph_store.insert_edge(
+        Edge(
+            id=r_earliest_id,
+            source_id=_id("doc_src"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            source_valid_from_version=_id("doc_src"),
+            retracted_edge_id=e1_id,
+            created_at=earliest,
+        )
+    )
+
+    rows, _ = await graph_store.query_edges(filters={"source_id": _id("doc_src")})
+    disclaimed = next(r for r in rows if r.edge.id == e1_id)
+    assert disclaimed.retracted_at == earliest, "earliest retracts edge must win"
+    assert disclaimed.retracted_by_edge_id == r_earliest_id
+
+
+async def test_t0157_query_edges_null_target_on_retracts_preserved(graph_store):
+    """10. Per CAS-ADR-017 retracts edges have target_id=NULL.
+    query_edges must preserve the null (not coerce or drop the row).
+    """
+    await graph_store.insert_document(_make_doc(_id("doc_src")))
+    await graph_store.insert_document(_make_doc(_id("doc_tgt")))
+
+    e1_id = str(uuid.uuid4())
+    await graph_store.insert_edge(
+        Edge(
+            id=e1_id,
+            source_id=_id("doc_src"),
+            target_id=_id("doc_tgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    r_id = str(uuid.uuid4())
+    await graph_store.insert_edge(
+        Edge(
+            id=r_id,
+            source_id=_id("doc_src"),
+            target_id=None,
+            edge_type=EdgeType.RETRACTS,
+            source_valid_from_version=_id("doc_src"),
+            retracted_edge_id=e1_id,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    rows, _ = await graph_store.query_edges(filters={"edge_type": "retracts"})
+    assert len(rows) == 1
+    assert rows[0].edge.target_id is None
+    assert rows[0].edge.id == r_id

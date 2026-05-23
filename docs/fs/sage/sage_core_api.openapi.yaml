@@ -2321,6 +2321,30 @@ components:
         Deterministic mode always returns chunk content regardless of
         this value.
 
+    RetrievalTarget:
+      type: string
+      enum: [documents, edges]
+      default: documents
+      description: >-
+        Discriminates whether sage_discover enumerates documents or edges
+        (T-0157). "documents" (default) preserves the historical surface:
+        results are DiscoverHit rows. "edges" switches the dispatch to
+        first-class edge enumeration: results are EdgeHit rows carrying
+        edge_id, endpoints, edge_type, anchor versions, rationale, and
+        retraction state. Valid only with mode="catalog"; other modes are
+        rejected at request validation.
+
+    ResponseMode:
+      type: string
+      enum: [light, full]
+      description: >-
+        Payload depth for sage_discover results (T-0157, T-0153). "light"
+        returns identity columns only and omits rationale, retraction
+        envelope, and other large fields. "full" returns the complete
+        envelope. When unset, the dispatch applies a default-threshold
+        rule (>5 results -> light, otherwise full). Canonical name across
+        SAGE surfaces; currently valid only when target="edges".
+
     CatalogSortBy:
       type: string
       enum: [title, doc_type, document_date, lifecycle_status]
@@ -2812,13 +2836,16 @@ components:
           $ref: "#/components/schemas/ResponseLevel"
           default: chunks
           description: >-
-            Controls result detail level. "chunks" (default) includes
-            chunk_content, heading_path, and matched_chunk_count.
-            "documents" suppresses chunk_content but preserves
-            heading_path (best chunk's location) and matched_chunk_count
-            as lightweight context. Applicable to semantic and keyword
-            modes. Ignored by catalog (always document-level) and
-            deterministic (always chunk-level).
+            Document-target payload selector. Prefer response_mode for
+            new callers; response_level is retained for backward
+            compatibility and will likely be unified into response_mode
+            by a subsequent ticket. Controls result detail level.
+            "chunks" (default) includes chunk_content, heading_path, and
+            matched_chunk_count. "documents" suppresses chunk_content
+            but preserves heading_path (best chunk's location) and
+            matched_chunk_count as lightweight context. Applicable to
+            semantic and keyword modes. Ignored by catalog (always
+            document-level) and deterministic (always chunk-level).
         sort_by:
           $ref: "#/components/schemas/CatalogSortBy"
           description: >-
@@ -2830,6 +2857,25 @@ components:
           description: >-
             Sort direction for catalog mode results. Optional. Defaults
             to ascending when sort_by is specified. Ignored by other modes.
+        target:
+          $ref: "#/components/schemas/RetrievalTarget"
+          default: documents
+          description: >-
+            Selects whether the query enumerates documents (default) or
+            edges. "edges" is valid only with mode=catalog and with
+            edge-only filter keys (source_id, target_id, edge_type);
+            other mode/parameter combinations are rejected via
+            mode_parameter_mismatch. (T-0157)
+        response_mode:
+          $ref: "#/components/schemas/ResponseMode"
+          nullable: true
+          description: >-
+            Canonical payload-depth selector across SAGE surfaces
+            (T-0157, T-0153). "light" returns identity columns only;
+            "full" returns the complete envelope. When unset, applies a
+            default-threshold rule for the edge target (>5 results ->
+            light, otherwise full). Currently valid only when
+            target=edges; document-target callers use response_level.
 
     RetrievalFilters:
       type: object
@@ -2865,6 +2911,26 @@ components:
             Filter by pipeline status (e.g., "failed",
             "abstraction_complete"). Overrides the default exclusion
             of failed-pipeline documents.
+        source_id:
+          type: string
+          description: >-
+            Edge-only filter (T-0157). Filter edges by source document
+            id. Valid only when target="edges"; document-target requests
+            that set this are rejected via mode_parameter_mismatch.
+        target_id:
+          type: string
+          description: >-
+            Edge-only filter (T-0157). Filter edges by target document
+            id. Valid only when target="edges". Note: retracts-type edges
+            have target_id=NULL and are not selected by this filter.
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+          description: >-
+            Edge-only filter (T-0157). Filter edges by edge_type (e.g.,
+            "references", "depends_on"). Valid only when target="edges".
+            Typed against the SAGE EdgeType enum so a typo like
+            "refrences" is rejected at validation time rather than
+            silently returning zero rows.
 
     SetLifecycleRequest:
       type: object
@@ -3375,15 +3441,28 @@ components:
     DiscoverResponse:
       type: object
       required: [mode, results]
-      description: Response body for the discover endpoint; carries the retrieval mode used and the ordered list of hits.
+      description: Response body for the discover endpoint; carries the retrieval mode used and the ordered list of hits. Row type in `results` is discriminated by `target` (T-0157).
       properties:
         mode:
           $ref: "#/components/schemas/RetrievalMode"
+        target:
+          $ref: "#/components/schemas/RetrievalTarget"
+          default: documents
+          description: >-
+            The result row type. "documents" (default) yields DiscoverHit
+            rows; "edges" yields EdgeHit rows. Consumers switch on this
+            field to know how to read `results`. (T-0157)
         results:
           type: array
           items:
-            $ref: "#/components/schemas/DiscoverHit"
-          description: Retrieval hits, ordered by descending relevance (semantic/keyword) or by sort_by (catalog).
+            oneOf:
+              - $ref: "#/components/schemas/DiscoverHit"
+              - $ref: "#/components/schemas/EdgeHit"
+          description: >-
+            Retrieval hits, ordered by descending relevance
+            (semantic/keyword) or by sort_by (catalog) for documents;
+            ordered by edge created_at DESC for edges. Row type is
+            discriminated by `target`.
         total_available:
           type: integer
           description: >-
@@ -3439,6 +3518,86 @@ components:
             Present in semantic and keyword modes. A document with many
             matching chunks is a stronger hit than one with a single match
             at a similar peak score. Useful as a reranking signal.
+
+    EdgeHit:
+      type: object
+      description: >-
+        A single edge enumeration result (T-0157). Returned by
+        sage_discover when target="edges". Field population depends on
+        response_mode: "light" returns only identity columns (edge_id,
+        source_id, target_id, edge_type); "full" returns the complete
+        envelope including anchor versions, rationale, and retraction
+        state. Retraction fields disambiguate two perspectives:
+        `retracted_edge_id` is the native column on retracts-type rows
+        (the id of the edge being disclaimed); `retracted_at` and
+        `retracted_by_edge_id` are computed via LEFT JOIN and populate
+        on non-retracts rows that have been disclaimed by a later
+        retracts edge.
+      required: [edge_id, source_id, edge_type]
+      properties:
+        edge_id:
+          type: string
+          description: UUID of this edge row.
+        source_id:
+          type: string
+          description: Source document id.
+        target_id:
+          type: string
+          nullable: true
+          description: >-
+            Target document id. Null for retracts-type edges
+            (CAS-ADR-017).
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+          description: Edge type (e.g., "references", "retracts").
+        source_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Source-chain anchor version (CAS-ADR-017). Omitted in light
+            mode.
+        target_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Target-chain anchor version (CAS-ADR-017). Omitted in light
+            mode.
+        rationale:
+          type: string
+          nullable: true
+          description: >-
+            Human or machine rationale for this edge. Omitted in light
+            mode.
+        rationale_kind:
+          type: string
+          nullable: true
+          description: >-
+            Typed provenance discriminator (T-0080: manual,
+            version_chain, references_mention, filename_code_match).
+            Omitted in light mode.
+        retracted_edge_id:
+          type: string
+          nullable: true
+          description: >-
+            Native column. Populated only on retracts-type rows; carries
+            the id of the edge being disclaimed by this retracts edge.
+            Omitted in light mode.
+        retracted_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Computed. When this edge (a non-retracts row) has been
+            disclaimed by a later retracts edge, carries the timestamp
+            of the earliest disclaiming edge. Null when this edge is
+            still live. Omitted in light mode.
+        retracted_by_edge_id:
+          type: string
+          nullable: true
+          description: >-
+            Computed. The edge_id of the earliest retracts edge that
+            disclaims this row. Null when this edge is still live.
+            Omitted in light mode.
 
     SetLifecycleResponse:
       type: object

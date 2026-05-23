@@ -932,6 +932,13 @@ def register_sage_tools(
         distinct and edge ids do not cross between them; an id minted
         in staging is not valid here once promoted, and vice versa.
 
+        Discovering ``edge_id`` (T-0157): use ``sage_discover`` with
+        ``target="edges"`` to enumerate production edges by
+        ``source_id`` / ``target_id`` / ``edge_type``. Example:
+        ``sage_discover(vault_id=..., mode="catalog", target="edges",
+        filters={"source_id": "...", "edge_type": "..."})``. The
+        returned ``edge_id`` is the value to pass here.
+
         Error modes:
         - ``edge_not_found`` (404): no production edge with that id.
 
@@ -1109,8 +1116,10 @@ def register_sage_tools(
         include_abstracts: bool = False,
         min_relevance: float | None = None,
         response_level: str = "chunks",
+        target: str = "documents",
+        response_mode: str | None = None,
     ) -> dict:
-        """Search for documents using semantic, keyword, catalog, or deterministic retrieval.
+        """Search for documents or edges; semantic, keyword, catalog, or deterministic retrieval.
 
         Modes:
             semantic: Vector + optional BM25 fusion. Requires query.
@@ -1120,20 +1129,49 @@ def register_sage_tools(
                 Best for deterministic enumeration by tags, doc_type, or other metadata.
             deterministic: Exact heading path extraction. Requires document_id + heading_path.
 
+        Edge enumeration (T-0157):
+            When ``target="edges"`` (only valid with ``mode="catalog"``),
+            results are edge rows rather than document rows. Filter by any
+            subset of ``{"source_id": ..., "target_id": ..., "edge_type": ...}``;
+            an empty filter returns all edges in the vault, paginated. Each
+            row carries the edge id (required for ``sage_unlink`` and the
+            ``retracts`` edge_type), endpoints, edge_type, anchor versions,
+            rationale, and retraction state (``retracted_at`` plus the id
+            of the disclaiming retracts edge, when applicable). Use
+            ``response_mode="light"`` to strip to identity columns; ``full``
+            to carry the complete envelope. Default obeys a threshold rule:
+            ``light`` when more than 5 results would be returned, otherwise
+            ``full``.
+
+            Example::
+
+                sage_discover(
+                    vault_id="cas",
+                    mode="catalog",
+                    target="edges",
+                    filters={"source_id": "<doc_id>", "edge_type": "references"},
+                    response_mode="full",
+                )
+
         Args:
             vault_id: Target vault identifier.
             mode: Retrieval mode (semantic, keyword, catalog, deterministic). Default: semantic.
             query: Search query text (required for semantic/keyword modes).
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
-            filters: Scope filters with optional keys: doc_type, project,
+            filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,
-                tier3. The ``tier3`` key takes a dict of field-name to
-                expected-value pairs that match against each document's
-                ``tier3_metadata`` (T-0004). Equality is exact; ``null``
-                in the expected value matches documents whose stored
-                field is null or absent. All pairs AND together.
-                Example: ``{"doc_type": "failure_record", "tier3":
-                {"severity": "high", "fix_commit": null}}``.
+                tier3. Edge-target keys (only when ``target="edges"``):
+                source_id, target_id, edge_type. The ``tier3`` key takes a
+                dict of field-name to expected-value pairs that match
+                against each document's ``tier3_metadata`` (T-0004).
+                Equality is exact; ``null`` in the expected value matches
+                documents whose stored field is null or absent. All pairs
+                AND together. Mixing document-only and edge-only keys is
+                rejected via ``mode_parameter_mismatch``.
+                Example (documents): ``{"doc_type": "failure_record",
+                "tier3": {"severity": "high", "fix_commit": null}}``.
+                Example (edges): ``{"source_id": "...", "edge_type":
+                "references"}``.
             document_id: Target document (required for deterministic mode).
             heading_path: Heading path prefix (required for deterministic mode).
             limit: Maximum results (1-100). Default: 10.
@@ -1148,9 +1186,25 @@ def register_sage_tools(
                 (no filtering). For semantic mode (cosine similarity), scores range 0-1;
                 reasonable thresholds are 0.3-0.5. Does not apply to catalog or
                 deterministic modes which have no relevance scores.
-            response_level: Result detail level ("chunks" or "documents"). "documents"
-                suppresses chunk_content and heading_path, returning document metadata
-                and relevance scores only. Default: "chunks".
+            response_level: Document-target result detail level
+                ("chunks" or "documents"). "documents" suppresses
+                chunk_content and heading_path, returning document
+                metadata and relevance scores only. Default: "chunks".
+                Prefer ``response_mode`` for new callers;
+                ``response_level`` is retained for backward compatibility
+                and is expected to be unified by a subsequent ticket.
+            target: Result row type. "documents" (default) preserves the
+                historical surface; "edges" enumerates production edges
+                via filter on ``source_id`` / ``target_id`` /
+                ``edge_type`` and is valid only with ``mode="catalog"``.
+                See the *Edge enumeration* section above. (T-0157)
+            response_mode: Edge-target payload selector. "light" returns
+                identity columns only (``edge_id``, endpoints, edge_type);
+                "full" carries the complete envelope. When unset, defaults
+                to "light" for more than 5 results and "full" otherwise.
+                Currently valid only when ``target="edges"``;
+                document-target callers should keep using
+                ``response_level``. (T-0157, T-0153)
 
         Catalog budget hint (T-0091):
             Catalog responses include a ``hints`` field carrying
@@ -1199,6 +1253,8 @@ def register_sage_tools(
                 heading_path=heading_path,
                 limit=limit,
                 offset=offset,
+                target=target,
+                response_mode=response_mode,
                 use_hybrid=use_hybrid,
                 use_abstract_prefilter=use_abstract_prefilter,
                 include_abstracts=include_abstracts,
