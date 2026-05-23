@@ -270,6 +270,68 @@ async def test_bulk_update_metadata_tier3_schema_violation_per_item_error(
 
 
 # ---------------------------------------------------------------------------
+# 5b. T-0151: doc_type change paired with tier3 ops in one bulk item
+#     surfaces tier3_doc_type_change_stale_keys per-item; neighbor commits.
+#     Anti-coincidental: storage-probe on the failing doc confirms it is
+#     unchanged; the new error must fire pre-write.
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_update_metadata_doc_type_change_stale_keys_per_item_error(
+    graph_store, bulk_metadata_service
+):
+    doc_a = _id("doc_t151_a")
+    doc_b = _id("doc_t151_b")
+    await _insert_with_state(
+        graph_store,
+        doc_a,
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+    )
+    await _insert_with_state(
+        graph_store,
+        doc_b,
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0002"},
+    )
+
+    response = await bulk_metadata_service.bulk_update_metadata(
+        BulkMetadataRequest(
+            items=[
+                # Reclassifying without unsetting the legacy keys -- should fail.
+                BulkMetadataItem(
+                    document_id=doc_a,
+                    doc_type="failure_record",
+                    tier3_metadata=Tier3Patch(set={"severity": "high"}),
+                ),
+                # Neighbor with only a tier3 patch -- should succeed.
+                BulkMetadataItem(
+                    document_id=doc_b,
+                    tier3_metadata=Tier3Patch(set={"ticket_priority": "low"}),
+                ),
+            ]
+        ),
+        modified_by="testuser",
+    )
+
+    assert response.error_count == 1
+    assert response.success_count == 1
+    failing = response.results[0]
+    assert failing.status == "error"
+    assert failing.error["error"] == "tier3_doc_type_change_stale_keys"
+    assert failing.error["detail"]["stale_keys"] == ["ticket_id", "ticket_priority"]
+    assert failing.error["detail"]["previous_doc_type"] == "ticket"
+    assert failing.error["detail"]["new_doc_type"] == "failure_record"
+
+    # Anti-coincidental storage probes.
+    stored_a = await graph_store.get_document(doc_a)
+    assert stored_a.doc_type == "ticket"
+    assert stored_a.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+    stored_b = await graph_store.get_document(doc_b)
+    assert stored_b.tier3_metadata == {"ticket_id": "T-0002", "ticket_priority": "low"}
+
+
+# ---------------------------------------------------------------------------
 # 6. Unknown document_id surfaces document_not_found per-item; neighbor
 #    still commits.
 # ---------------------------------------------------------------------------

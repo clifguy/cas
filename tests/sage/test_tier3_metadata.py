@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from sage.api.errors import (
+    Tier3DocTypeChangeStaleKeysError,
     Tier3SchemaViolationError,
     Tier3UnsetConflictError,
     VaultConfigValidationError,
@@ -397,6 +398,184 @@ async def test_update_metadata_with_changing_doc_type_uses_new_schema(
     fresh = await graph_store.get_document(initial.document.id)
     assert fresh.doc_type == "failure_record"
     assert fresh.tier3_metadata == {"severity": "high"}
+
+
+# ---------------------------------------------------------------------------
+# T-0151: doc_type change paired with tier3 ops must reject when merged
+# tier3 carries keys absent from the new doc_type's schema. The caller is
+# told the exact `unset` list needed; storage is untouched.
+# ---------------------------------------------------------------------------
+
+
+async def test_update_metadata_doc_type_change_with_stale_keys_rejects_before_write(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """TS-1: stale keys raise Tier3DocTypeChangeStaleKeysError; storage
+    unchanged. Anti-coincidental: re-read confirms no commit happened."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+        )
+    )
+
+    with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(
+                doc_type="failure_record",
+                tier3_metadata=Tier3Patch(set={"severity": "high"}),
+            ),
+            modified_by="tester",
+        )
+    assert excinfo.value.code == "tier3_doc_type_change_stale_keys"
+    assert excinfo.value.detail["previous_doc_type"] == "ticket"
+    assert excinfo.value.detail["new_doc_type"] == "failure_record"
+    assert excinfo.value.detail["stale_keys"] == ["ticket_id", "ticket_priority"]
+
+    # Anti-coincidental storage probe: the row must be unchanged.
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "ticket"
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+
+
+async def test_update_metadata_tier3_only_patch_does_not_trigger_stale_keys_check(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
+):
+    """TS-3: no doc_type change in the request -- the new pre-check must
+    not fire even when the set value violates the existing schema. The
+    existing tier3_schema_violation path is what catches the bad value."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001"},
+        )
+    )
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(
+                tier3_metadata=Tier3Patch(set={"ticket_priority": "purple"}),
+            ),
+            modified_by="tester",
+        )
+    # Anti-coincidental: assert the OLD code fired, not the new one.
+    assert excinfo.value.code == "tier3_schema_violation"
+    assert not isinstance(excinfo.value, Tier3DocTypeChangeStaleKeysError)
+
+
+async def test_update_metadata_doc_type_set_to_current_value_does_not_trigger_stale_keys_check(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """TS-4: explicitly setting doc_type to its current value is a no-op
+    for the type; the new pre-check must use equality vs. presence."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001"},
+        )
+    )
+
+    await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(
+            doc_type="ticket",
+            tier3_metadata=Tier3Patch(set={"ticket_priority": "high"}),
+        ),
+        modified_by="tester",
+    )
+
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "ticket"
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+
+
+async def test_update_metadata_doc_type_change_to_no_schema_doc_type_rejects_stale_keys(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """TS-4b: broadened scope -- when the new doc_type has no metadata_schema,
+    every merged key is stale. Caller is told exactly what to unset rather
+    than receiving the less-actionable no-schema variant of
+    tier3_schema_violation."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+        )
+    )
+
+    with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(
+                doc_type="misc",
+                tier3_metadata=Tier3Patch(set={"orphan": "value"}),
+            ),
+            modified_by="tester",
+        )
+    assert excinfo.value.detail["new_doc_type"] == "misc"
+    # All merged keys are stale because misc has no metadata_schema.
+    assert excinfo.value.detail["stale_keys"] == [
+        "orphan",
+        "ticket_id",
+        "ticket_priority",
+    ]
+
+    # Anti-coincidental storage probe.
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "ticket"
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+
+
+async def test_update_metadata_doc_type_change_falls_through_to_schema_validator(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """TS-6: caller correctly unsets stale keys but supplies a value that
+    violates the new schema's enum. The new pre-check passes (no stale
+    keys); the existing tier3_schema_violation path fires. Proves the
+    pre-check does not swallow downstream validation."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001"},
+        )
+    )
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(
+                doc_type="failure_record",
+                tier3_metadata=Tier3Patch(
+                    set={"severity": "purple"},  # not in failure_record enum
+                    unset=["ticket_id"],
+                ),
+            ),
+            modified_by="tester",
+        )
+    assert excinfo.value.code == "tier3_schema_violation"
+    assert not isinstance(excinfo.value, Tier3DocTypeChangeStaleKeysError)
+    assert excinfo.value.detail["doc_type"] == "failure_record"
+    # Storage unchanged (pre-write validation).
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "ticket"
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001"}
 
 
 async def test_update_metadata_with_no_tier3_leaves_stored_value_untouched(

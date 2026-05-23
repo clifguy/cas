@@ -2971,7 +2971,13 @@ components:
         validated against the resolved doc_type's `metadata_schema`
         after applying the patch in memory; an individually-valid
         patch that produces an invalid merged dict returns 400
-        `tier3_schema_violation`.
+        `tier3_schema_violation`. When the same call also changes
+        `doc_type`, any merged keys not present in the new schema's
+        `properties` raise 400 `tier3_doc_type_change_stale_keys`
+        before schema validation runs; the error's `detail.stale_keys`
+        names the keys the caller must add to `unset`. A new doc_type
+        with no `metadata_schema` allows no keys, so every merged key
+        is stale.
       properties:
         set:
           type: object

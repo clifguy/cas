@@ -428,6 +428,14 @@ def register_sage_tools(
         - ``tier3_schema_violation`` (400): the merged tier3 dict failed
           validation against the doc_type's metadata_schema, or the
           doc_type has no metadata_schema declared.
+        - ``tier3_doc_type_change_stale_keys`` (400): the call changes
+          ``doc_type`` AND supplies a ``tier3_metadata`` patch, and the
+          merged tier3 dict carries keys that are not in the new
+          doc_type's metadata_schema properties. Detail carries
+          ``previous_doc_type``, ``new_doc_type``, and ``stale_keys`` —
+          the exact list the caller must add to ``unset``. A new
+          doc_type with no ``metadata_schema`` allows no keys, so every
+          merged key is stale.
         - ``legacy_form`` (400): caller passed the deprecated bare-list
           form for ``tags`` or bare-dict form for ``tier3_metadata``.
           Detail names the new ops-object shape.
@@ -677,9 +685,10 @@ def register_sage_tools(
         ``document_not_found`` (404), ``invalid_doc_type`` (400),
         ``tag_add_conflict`` / ``tag_remove_conflict`` /
         ``tag_patch_overlap`` (400), ``tier3_unset_conflict`` /
-        ``tier3_patch_overlap`` / ``patch_empty`` (400), and
-        ``tier3_schema_violation`` (400). See ``sage_update_metadata``
-        for detail-envelope shape.
+        ``tier3_patch_overlap`` / ``patch_empty`` (400),
+        ``tier3_schema_violation`` (400), and
+        ``tier3_doc_type_change_stale_keys`` (400). See
+        ``sage_update_metadata`` for detail-envelope shape.
 
         Batch-level error modes (surfaced as the tool's error envelope):
         ``legacy_form`` (a per-item ``tags`` is a bare list or per-item

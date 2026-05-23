@@ -12,6 +12,7 @@ from sage.api.errors import (
     SAGEError,
     TagAddConflictError,
     TagRemoveConflictError,
+    Tier3DocTypeChangeStaleKeysError,
     Tier3SchemaViolationError,
     Tier3UnsetConflictError,
 )
@@ -106,6 +107,30 @@ class MetadataService:
                 merged = self._apply_tier3_patch(
                     document_id, effective_dt, doc.tier3_metadata, request.tier3_metadata
                 )
+                # T-0151: when the call changes doc_type AND supplies a
+                # Tier3Patch, surface stale legacy keys explicitly so the
+                # caller knows exactly which keys to add to `unset`. The
+                # post-merge `_validate_tier3` would otherwise raise a
+                # generic tier3_schema_violation that conflates "your
+                # patch is wrong for the new schema" with "you forgot to
+                # unset legacy keys." A no-schema new doc_type means
+                # every merged key is stale (zero allowed properties).
+                if request.doc_type is not None and request.doc_type != doc.doc_type:
+                    validator = self._config.tier3_validator(effective_dt)
+                    allowed: set[str] = (
+                        set(validator.schema.get("properties", {}).keys())
+                        if validator is not None
+                        else set()
+                    )
+                    stale = [k for k in merged if k not in allowed]
+                    if stale:
+                        raise Tier3DocTypeChangeStaleKeysError(
+                            document_id=document_id,
+                            previous_doc_type=doc.doc_type or "",
+                            new_doc_type=request.doc_type,
+                            stale_keys=stale,
+                            merged_tier3_keys=list(merged.keys()),
+                        )
                 self._validate_tier3(effective_dt, merged)
                 updates["tier3_metadata"] = merged
 

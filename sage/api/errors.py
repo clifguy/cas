@@ -152,6 +152,47 @@ class Tier3SchemaViolationError(SAGEError):
         )
 
 
+class Tier3DocTypeChangeStaleKeysError(SAGEError):
+    """400: doc_type is being changed in the same call as a tier3_metadata
+    ops object, and the merged tier3 dict carries keys that are not in the
+    new doc_type's metadata_schema properties (T-0151).
+
+    The post-merge `_validate_tier3` call would catch this as a generic
+    `tier3_schema_violation` (additionalProperties: false fires on the first
+    stale key), but the caller cannot tell from that error whether their
+    patch is wrong for the new schema or whether they merely forgot to
+    `unset` the legacy keys. This error is raised before validation runs
+    and names the exact list of keys the caller must add to `unset` to
+    satisfy the new schema. When the new doc_type has no metadata_schema,
+    every merged key is stale by definition.
+    """
+
+    def __init__(
+        self,
+        document_id: str,
+        previous_doc_type: str,
+        new_doc_type: str,
+        stale_keys: list[str],
+        merged_tier3_keys: list[str],
+    ) -> None:
+        super().__init__(
+            "tier3_doc_type_change_stale_keys",
+            (
+                f"Cannot change doc_type from {previous_doc_type!r} to "
+                f"{new_doc_type!r} without also unsetting stale tier3_metadata "
+                f"keys: {sorted(stale_keys)!r}"
+            ),
+            400,
+            {
+                "document_id": document_id,
+                "previous_doc_type": previous_doc_type,
+                "new_doc_type": new_doc_type,
+                "stale_keys": sorted(stale_keys),
+                "merged_tier3_keys": sorted(merged_tier3_keys),
+            },
+        )
+
+
 class Tier3UniqueConstraintViolation(SAGEError):
     """409: tier3_metadata field value collides with the declared uniqueness
     constraint (CAS-ADR-031, T-0115).
