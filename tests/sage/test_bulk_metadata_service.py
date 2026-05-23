@@ -332,6 +332,129 @@ async def test_bulk_update_metadata_doc_type_change_stale_keys_per_item_error(
 
 
 # ---------------------------------------------------------------------------
+# 5c. T-0156: doc_type change with no Tier3Patch and stale stored keys
+#     surfaces tier3_doc_type_change_stale_keys per-item; neighbor commits.
+#     Locks in parity with the single-item path -- bulk_update_metadata is
+#     a thin loop over update_metadata.
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_update_metadata_doc_type_change_no_tier3_patch_stale_keys_per_item_error(
+    graph_store, bulk_metadata_service
+):
+    doc_a = _id("doc_t156_a")
+    doc_b = _id("doc_t156_b")
+    await _insert_with_state(
+        graph_store,
+        doc_a,
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+    )
+    await _insert_with_state(
+        graph_store,
+        doc_b,
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0002"},
+    )
+
+    response = await bulk_metadata_service.bulk_update_metadata(
+        BulkMetadataRequest(
+            items=[
+                # T-0156 Wart 1: doc_type change with no Tier3Patch but
+                # stale stored keys -- must reject.
+                BulkMetadataItem(
+                    document_id=doc_a,
+                    doc_type="failure_record",
+                ),
+                # Neighbor with only a tier3 patch -- should succeed.
+                BulkMetadataItem(
+                    document_id=doc_b,
+                    tier3_metadata=Tier3Patch(set={"ticket_priority": "low"}),
+                ),
+            ]
+        ),
+        modified_by="testuser",
+    )
+
+    assert response.error_count == 1
+    assert response.success_count == 1
+    failing = response.results[0]
+    assert failing.status == "error"
+    assert failing.error["error"] == "tier3_doc_type_change_stale_keys"
+    assert failing.error["detail"]["stale_keys"] == ["ticket_id", "ticket_priority"]
+    assert failing.error["detail"]["previous_doc_type"] == "ticket"
+    assert failing.error["detail"]["new_doc_type"] == "failure_record"
+
+    # Anti-coincidental storage probes.
+    stored_a = await graph_store.get_document(doc_a)
+    assert stored_a.doc_type == "ticket"
+    assert stored_a.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+    stored_b = await graph_store.get_document(doc_b)
+    assert stored_b.tier3_metadata == {"ticket_id": "T-0002", "ticket_priority": "low"}
+
+
+# ---------------------------------------------------------------------------
+# 5d. T-0156 Wart 2: doc_type change to no-schema target with Tier3Patch
+#     that unsets every legacy key (empty merged dict) succeeds per-item.
+#     A bad neighbor confirms per-item isolation.
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_update_metadata_doc_type_change_to_no_schema_unset_all_per_item_success(
+    graph_store, bulk_metadata_service
+):
+    doc_ok = _id("doc_t156_w2_ok")
+    doc_bad = _id("doc_t156_w2_bad")
+    await _insert_with_state(
+        graph_store,
+        doc_ok,
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+    )
+    await _insert_with_state(
+        graph_store,
+        doc_bad,
+        doc_type="ticket",
+        tier3_metadata={"ticket_id": "T-0002", "ticket_priority": "high"},
+    )
+
+    response = await bulk_metadata_service.bulk_update_metadata(
+        BulkMetadataRequest(
+            items=[
+                # Reclassify to no-schema doc_type while unsetting every
+                # legacy key -- T-0156 Wart 2 should let this through.
+                BulkMetadataItem(
+                    document_id=doc_ok,
+                    doc_type="misc",
+                    tier3_metadata=Tier3Patch(unset=["ticket_id", "ticket_priority"]),
+                ),
+                # Bad neighbor: reclassify without unsetting -- stale keys
+                # rejection per item, isolation from the success above.
+                BulkMetadataItem(
+                    document_id=doc_bad,
+                    doc_type="misc",
+                ),
+            ]
+        ),
+        modified_by="testuser",
+    )
+
+    assert response.success_count == 1
+    assert response.error_count == 1
+    assert response.results[0].status == "success"
+    assert response.results[1].status == "error"
+    assert response.results[1].error["error"] == "tier3_doc_type_change_stale_keys"
+
+    # Anti-coincidental storage probes.
+    stored_ok = await graph_store.get_document(doc_ok)
+    assert stored_ok.doc_type == "misc"
+    assert stored_ok.tier3_metadata == {}
+    stored_bad = await graph_store.get_document(doc_bad)
+    assert stored_bad.doc_type == "ticket"
+    assert stored_bad.tier3_metadata == {"ticket_id": "T-0002", "ticket_priority": "high"}
+
+
+# ---------------------------------------------------------------------------
 # 6. Unknown document_id surfaces document_not_found per-item; neighbor
 #    still commits.
 # ---------------------------------------------------------------------------

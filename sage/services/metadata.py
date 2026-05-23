@@ -98,24 +98,36 @@ class MetadataService:
                 updates["doc_type"] = request.doc_type
             if request.document_date is not None:
                 updates["document_date"] = request.document_date
-            if request.tier3_metadata is not None:
+            # T-0156 Wart 1: a doc_type change must revalidate the stored
+            # tier3 against the new schema even when no Tier3Patch was
+            # supplied -- otherwise stored keys from the old doc_type
+            # silently survive against the new one. So the validation
+            # block runs whenever the caller supplies a patch OR the
+            # doc_type is actually changing.
+            is_doc_type_change = request.doc_type is not None and request.doc_type != doc.doc_type
+            if request.tier3_metadata is not None or is_doc_type_change:
                 # Resolve against the post-update doc_type: when the caller
                 # also changes doc_type in the same request, validation
                 # uses the new doc_type so the stored tier3 conforms to
                 # the schema of its new owner.
                 effective_dt = request.doc_type if request.doc_type is not None else doc.doc_type
-                merged = self._apply_tier3_patch(
-                    document_id, effective_dt, doc.tier3_metadata, request.tier3_metadata
-                )
-                # T-0151: when the call changes doc_type AND supplies a
-                # Tier3Patch, surface stale legacy keys explicitly so the
-                # caller knows exactly which keys to add to `unset`. The
-                # post-merge `_validate_tier3` would otherwise raise a
-                # generic tier3_schema_violation that conflates "your
-                # patch is wrong for the new schema" with "you forgot to
-                # unset legacy keys." A no-schema new doc_type means
-                # every merged key is stale (zero allowed properties).
-                if request.doc_type is not None and request.doc_type != doc.doc_type:
+                if request.tier3_metadata is not None:
+                    merged = self._apply_tier3_patch(
+                        document_id, effective_dt, doc.tier3_metadata, request.tier3_metadata
+                    )
+                else:
+                    # No patch supplied: validate the stored dict as-is
+                    # against the new doc_type (Wart 1 no-patch path).
+                    merged = dict(doc.tier3_metadata or {})
+                # T-0151: when the call changes doc_type, surface stale
+                # legacy keys explicitly so the caller knows exactly which
+                # keys to add to `unset`. The post-merge `_validate_tier3`
+                # would otherwise raise a generic tier3_schema_violation
+                # that conflates "your patch is wrong for the new schema"
+                # with "you forgot to unset legacy keys." A no-schema new
+                # doc_type means every merged key is stale (zero allowed
+                # properties). T-0156 broadened this to the no-patch path.
+                if is_doc_type_change:
                     validator = self._config.tier3_validator(effective_dt)
                     allowed: set[str] = (
                         set(validator.schema.get("properties", {}).keys())
@@ -132,7 +144,11 @@ class MetadataService:
                             merged_tier3_keys=list(merged.keys()),
                         )
                 self._validate_tier3(effective_dt, merged)
-                updates["tier3_metadata"] = merged
+                # Write discipline: only persist a new tier3 dict when the
+                # caller actually supplied a patch. A doc_type-only change
+                # that revalidates the stored dict must not rewrite it.
+                if request.tier3_metadata is not None:
+                    updates["tier3_metadata"] = merged
 
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).
@@ -275,11 +291,16 @@ class MetadataService:
 
         Raises Tier3SchemaViolationError when the doc_type has no
         metadata_schema declared (strict no-loose-mode per T-0004) or
-        when the payload fails the schema.
+        when the payload fails the schema. T-0156: an empty merged dict
+        trivially satisfies a no-schema doc_type and is accepted, so a
+        caller reclassifying to a no-schema target can unset every
+        legacy key without then tripping the no-schema raise.
         """
         dt_key = doc_type or ""
         validator = self._config.tier3_validator(dt_key)
         if validator is None:
+            if not tier3:
+                return
             raise Tier3SchemaViolationError(
                 doc_type=dt_key,
                 path="",

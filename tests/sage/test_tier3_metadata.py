@@ -100,6 +100,15 @@ def _config_dict_with_tier3(tmp_vault_dir: Path) -> dict:
                     },
                 },
                 {"value": "misc", "label": "Miscellaneous"},
+                {
+                    "value": "bare_record",
+                    "label": "Bare Record",
+                    "metadata_schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {},
+                    },
+                },
             ]
         },
         "lifecycle": {
@@ -250,6 +259,35 @@ async def test_ingest_with_no_schema_doc_type_rejects_tier3(tmp_vault_dir, tier3
     assert excinfo.value.code == "tier3_schema_violation"
     assert excinfo.value.detail["doc_type"] == "misc"
     assert "no metadata_schema declared" in excinfo.value.detail["message"]
+
+
+async def test_ingest_with_no_schema_doc_type_and_empty_tier3_passes(
+    tmp_vault_dir, tier3_ingestion_service, graph_store
+):
+    """T-0156: an explicit empty tier3 dict against a no-schema doc_type
+    is accepted at ingest, mirroring the MetadataService Wart 2 carve-out
+    so the ingest-vs-update behavior stays symmetric. Anti-coincidental:
+    the doc is actually created (the carve-out is a `return`, not a swap
+    of the error class). Storage probe confirms the row exists and the
+    no-tier3 case round-trips as None or an empty dict."""
+    _write_md(tmp_vault_dir, "empty.md", "# Empty\n\nBody.")
+
+    request = IngestRequest(
+        source="empty.md",
+        adapter=SourceType.MARKDOWN,
+        metadata={"doc_type": "misc"},
+        tier3_metadata={},
+    )
+
+    result = await tier3_ingestion_service.ingest(request)
+    assert result.document.doc_type == "misc"
+
+    # Anti-coincidental storage probe: the row must actually exist.
+    fresh = await graph_store.get_document(result.document.id)
+    assert fresh.doc_type == "misc"
+    # Storage may normalize {} to None or keep it as {}; either is fine
+    # for a no-schema doc_type because there's nothing to validate.
+    assert not fresh.tier3_metadata  # both None and {} satisfy `not`
 
 
 async def test_ingest_with_invalid_tier3_rejects_with_path(tmp_vault_dir, tier3_ingestion_service):
@@ -576,6 +614,195 @@ async def test_update_metadata_doc_type_change_falls_through_to_schema_validator
     fresh = await graph_store.get_document(initial.document.id)
     assert fresh.doc_type == "ticket"
     assert fresh.tier3_metadata == {"ticket_id": "T-0001"}
+
+
+# ---------------------------------------------------------------------------
+# T-0156: close the two reconciliation gaps left open by T-0151.
+#
+# Wart 1: a doc_type change with no Tier3Patch must still revalidate the
+# stored tier3 against the new schema. T-0151 added the stale-keys
+# pre-check inside the `if request.tier3_metadata is not None:` guard, so
+# the gap is the no-patch path -- stored stale keys silently survived.
+#
+# Wart 2: an empty merged tier3 dict must be accepted against a no-schema
+# doc_type. _validate_tier3 used to raise the no-schema variant of
+# tier3_schema_violation unconditionally when the validator was None,
+# blocking reclassification to no-schema via `Tier3Patch.unset` of every
+# key.
+# ---------------------------------------------------------------------------
+
+
+async def test_update_metadata_doc_type_change_no_tier3_patch_with_stale_stored_keys_rejects(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0156 Wart 1 primary: doc_type change with no Tier3Patch and stale
+    stored keys raises Tier3DocTypeChangeStaleKeysError pre-write. Anti-
+    coincidental probe: storage unchanged. Specific error code (not a
+    generic tier3_schema_violation) -- the caller is told which keys to
+    unset, mirroring the T-0151 error envelope."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+        )
+    )
+
+    with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(doc_type="failure_record"),
+            modified_by="tester",
+        )
+    assert excinfo.value.code == "tier3_doc_type_change_stale_keys"
+    assert excinfo.value.detail["previous_doc_type"] == "ticket"
+    assert excinfo.value.detail["new_doc_type"] == "failure_record"
+    assert excinfo.value.detail["stale_keys"] == ["ticket_id", "ticket_priority"]
+    assert excinfo.value.detail["merged_tier3_keys"] == ["ticket_id", "ticket_priority"]
+
+    # Anti-coincidental storage probe.
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "ticket"
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+
+
+async def test_update_metadata_doc_type_change_no_tier3_patch_with_empty_stored_passes(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0156 Wart 1 happy path + Wart 2 happy path: doc_type change to a
+    no-schema target with empty stored tier3 and no Tier3Patch must
+    succeed. Anti-coincidental: doc_type flipped on disk AND stored
+    tier3 was not overwritten by an empty merged dict (write discipline)."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "bare_record"},
+            # No tier3_metadata at ingest -- stored as None.
+        )
+    )
+    stored_before = await graph_store.get_document(initial.document.id)
+    assert stored_before.doc_type == "bare_record"
+
+    await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(doc_type="misc"),
+        modified_by="tester",
+    )
+
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "misc"
+    # Write discipline: tier3 was not supplied, so the merged dict must
+    # not have been written back -- whatever was stored before survives.
+    assert fresh.tier3_metadata == stored_before.tier3_metadata
+
+
+async def test_update_metadata_doc_type_change_to_no_schema_with_unset_all_succeeds(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0156 Wart 2 primary: reclassify to a no-schema doc_type while
+    unsetting every legacy tier3 key. The merged dict is {}; the new
+    doc_type has no schema. This must succeed. Without the fix, the
+    call raises tier3_schema_violation with the 'no metadata_schema
+    declared' message -- that pre-fix shape is the negative-baseline
+    probe."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+        )
+    )
+
+    await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(
+            doc_type="misc",
+            tier3_metadata=Tier3Patch(unset=["ticket_id", "ticket_priority"]),
+        ),
+        modified_by="tester",
+    )
+
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "misc"
+    assert fresh.tier3_metadata == {}
+
+
+async def test_update_metadata_doc_type_change_to_no_schema_with_nonempty_merged_still_rejects(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0156 Wart 2 anti-coincidental: the empty-dict carve-out must not
+    loosen rejection for non-empty payloads against no-schema doc_types.
+    The doc_type-change path's stale-keys pre-check fires first because
+    the new doc_type has no allowed properties (allowed == set()), so a
+    non-empty merged dict surfaces Tier3DocTypeChangeStaleKeysError --
+    NOT Tier3SchemaViolationError. This pins down ordering."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "ticket"},
+            tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
+        )
+    )
+
+    with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(
+                doc_type="misc",
+                tier3_metadata=Tier3Patch(unset=["ticket_id"]),
+            ),
+            modified_by="tester",
+        )
+    assert excinfo.value.detail["new_doc_type"] == "misc"
+    assert excinfo.value.detail["stale_keys"] == ["ticket_priority"]
+
+    # Anti-coincidental storage probe.
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "ticket"
+    assert fresh.tier3_metadata == {"ticket_id": "T-0001", "ticket_priority": "high"}
+
+
+async def test_update_metadata_no_doc_type_change_set_against_no_schema_still_rejects(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0156 Wart 2 scope guard: the empty-dict carve-out in
+    _validate_tier3 must not silently allow tier3 set-ops against
+    no-schema doc_types in the non-doc-type-change path. A Tier3Patch
+    with set ops produces a non-empty merged dict, which must still
+    raise tier3_schema_violation with the no-schema-declared message."""
+    _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="doc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            # No tier3 at ingest -- misc has no schema.
+        )
+    )
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await tier3_metadata_service.update_metadata(
+            initial.document.id,
+            UpdateMetadataRequest(
+                tier3_metadata=Tier3Patch(set={"foo": "bar"}),
+            ),
+            modified_by="tester",
+        )
+    assert excinfo.value.code == "tier3_schema_violation"
+    assert excinfo.value.detail["doc_type"] == "misc"
+    assert "no metadata_schema declared" in excinfo.value.detail["message"]
+
+    # Anti-coincidental storage probe.
+    fresh = await graph_store.get_document(initial.document.id)
+    assert fresh.doc_type == "misc"
 
 
 async def test_update_metadata_with_no_tier3_leaves_stored_value_untouched(

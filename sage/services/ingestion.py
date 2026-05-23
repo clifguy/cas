@@ -1074,10 +1074,16 @@ class IngestionService:
         """Validate a tier3_metadata payload against the resolved doc_type's
         metadata_schema. Raises ``Tier3SchemaViolationError`` when the
         doc_type has no schema declared (strict no-loose-mode) or when the
-        payload fails validation.
+        payload fails validation. T-0156: an explicit empty dict against
+        a no-schema doc_type is accepted as trivially valid — mirrors the
+        carve-out in ``MetadataService._validate_tier3`` so the
+        ingest-vs-update behavior stays symmetric for the
+        empty-merged-against-no-schema configuration.
         """
         validator = self._config.tier3_validator(resolved_doc_type)
         if validator is None:
+            if not tier3:
+                return
             raise Tier3SchemaViolationError(
                 doc_type=resolved_doc_type,
                 path="",
