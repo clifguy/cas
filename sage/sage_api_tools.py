@@ -510,6 +510,7 @@ def register_sage_tools(
         document_id: str,
         action: str,
         new_version_id: str | None = None,
+        dry_run: bool = False,
     ) -> dict:
         """Execute a lifecycle state transition on a document.
 
@@ -568,6 +569,25 @@ def register_sage_tools(
           with ``new_version_id`` whose content hash matches the
           predecessor.
 
+        Dry-run mode (T-0152):
+        Set ``dry_run=true`` to validate the request and compute the
+        post-transition state without persisting. The response is the
+        same ``SetLifecycleResponse`` envelope as a real run, augmented
+        with ``dry_run: true`` at the top level. No ``updated_at``
+        advance, no ``lifecycle_status`` flip on the persisted document,
+        no chunk-store sync. Same validators run in the same order, so a
+        dry-run that returns success means the real call will succeed
+        modulo race conditions on shared state. For ``action="supersede"``,
+        the would-be edge surfaces in ``created_edge`` populated with the
+        nil-UUID sentinel id ``00000000-0000-0000-0000-000000000000`` so a
+        caller that mistakes it for a real edge id fails loudly on lookup;
+        no ``supersedes`` edge is persisted. The per-document lock is
+        still acquired so the preview is consistent with concurrent
+        mutations. Worked example: ``sage_set_lifecycle(vault_id="v",
+        document_id="d", action="archive", dry_run=True)`` returns the
+        would-be document with ``lifecycle_status="archived"``; storage
+        is byte-identical to pre-call.
+
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier (the
@@ -590,6 +610,11 @@ def register_sage_tools(
                 not yet been ingested, prefer
                 ``sage_ingest(..., supersedes_document_id=<predecessor_id>)``,
                 which ingests and supersedes atomically.
+            dry_run: T-0152. When True, run all validators and compute
+                the post-transition state, but do NOT persist. For
+                ``supersede``, the would-be edge surfaces in
+                ``created_edge`` with the nil-UUID sentinel id
+                ``00000000-0000-0000-0000-000000000000``. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -597,7 +622,11 @@ def register_sage_tools(
             if new_version_id is not None:
                 new_version_id = _DOCUMENT_ID_ADAPTER.validate_python(new_version_id)
             v = get_vault(vault_id)
-            request = SetLifecycleRequest(action=action, new_version_id=new_version_id)
+            request = SetLifecycleRequest(
+                action=action,
+                new_version_id=new_version_id,
+                dry_run=dry_run,
+            )
             response = await v.lifecycle_service.set_lifecycle(document_id, request)
             return serialize(response)
         except (SAGEError, ValueError) as e:

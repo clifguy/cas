@@ -44,6 +44,7 @@ from sage.mcp_server import (
     sage_unlink as _sage_unlink_tool,
 )
 from sage.models.enums import EdgeType as _EdgeType
+from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 
 
@@ -458,6 +459,123 @@ async def test_set_lifecycle_unknown_action(vault_services):
 
     result = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode"))
     assert result["error"] == "invalid_action"
+
+
+# T-0162: dry_run rollout closes the asymmetry with the bulk variant.
+# The service layer (LifecycleService.set_lifecycle) and the
+# SetLifecycleRequest/Response schemas already carry dry_run; these
+# tests pin the MCP wrapper plumbing.
+
+
+async def test_set_lifecycle_dry_run_archive_returns_dry_run_true_and_leaves_state(
+    vault_services,
+):
+    """T-0162 T1: dry_run=True returns dry_run=True and the would-be
+    archived state, but the persisted document is still active.
+
+    Paired with test_set_lifecycle_real_run_archive_... (positive
+    control): together they catch both directions of wrapper bugs (drop
+    dry_run vs. hardcode dry_run=True)."""
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    response = _parse(await sage_set_lifecycle("test_vault", doc_id, "archive", dry_run=True))
+
+    assert response["dry_run"] is True
+    assert response["document"]["lifecycle_status"] == "archived"  # would-be
+
+    persisted = _parse(await sage_get_document("test_vault", doc_id))
+    assert persisted["lifecycle_status"] == "active", (
+        "dry_run=True must not persist the lifecycle transition; "
+        "the wrapper is dropping dry_run on the floor if this fails."
+    )
+
+
+async def test_set_lifecycle_real_run_archive_returns_dry_run_false_and_changes_state(
+    vault_services,
+):
+    """T-0162 T2: positive control for T1. Without dry_run, the wrapper
+    must persist the transition and echo dry_run=False."""
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    response = _parse(await sage_set_lifecycle("test_vault", doc_id, "archive"))
+
+    assert response["dry_run"] is False
+    persisted = _parse(await sage_get_document("test_vault", doc_id))
+    assert persisted["lifecycle_status"] == "archived"
+
+
+async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persists_nothing(
+    vault_services,
+):
+    """T-0162 T3: dry-run supersede populates created_edge with the
+    nil-UUID sentinel id, leaves the predecessor active, and persists
+    no supersedes edge.
+
+    Anti-coincidental-pass: the sage_traverse zero-edge assertion guards
+    against a wrapper that echoes dry_run=True in the envelope but
+    actually persists the supersede. The sentinel id is asserted against
+    the imported constant, not a literal."""
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    response = _parse(
+        await sage_set_lifecycle(
+            "test_vault",
+            doc_a["id"],
+            "supersede",
+            new_version_id=doc_b["id"],
+            dry_run=True,
+        )
+    )
+
+    assert response["dry_run"] is True
+    assert response["created_edge"] is not None
+    assert response["created_edge"]["id"] == _DRY_RUN_SENTINEL_EDGE_ID
+    assert response["created_edge"]["source_id"] == doc_b["id"]
+    assert response["created_edge"]["target_id"] == doc_a["id"]
+
+    persisted = _parse(await sage_get_document("test_vault", doc_a["id"]))
+    assert persisted["lifecycle_status"] == "active"
+
+    traversal = _parse(
+        await sage_traverse(
+            "test_vault",
+            doc_b["id"],
+            edge_type="supersedes",
+            direction="outbound",
+        )
+    )
+    # sage_traverse returns {start_id, nodes: [...]} where nodes is the
+    # set of reachable documents (zero on dry-run since no edge exists).
+    assert traversal["nodes"] == [], (
+        "dry_run=True supersede must not persist a supersedes edge; "
+        f"sage_traverse from {doc_b['id']} returned {traversal['nodes']!r}."
+    )
+
+
+async def test_set_lifecycle_dry_run_invalid_action_error_envelope_matches_real_run(
+    vault_services,
+):
+    """T-0162 T4: same-validator paired check. invalid_action error
+    envelope must be identical whether dry_run is set or not — confirms
+    dry_run does not skip or alter validators."""
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    real = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode"))
+    dry = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode", dry_run=True))
+
+    assert real["error"] == "invalid_action"
+    assert dry["error"] == "invalid_action"
+    # Full envelope equality is stricter than a detail-only check — any
+    # divergence (extra field, different message) on the dry-run path
+    # fails the test. invalid_action carries no detail payload in this
+    # vault, but the envelope-equality guard would catch a future change
+    # that started populating one only on the real path.
+    assert real == dry
 
 
 # ---------------------------------------------------------------------------

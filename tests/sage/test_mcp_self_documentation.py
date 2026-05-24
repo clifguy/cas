@@ -134,6 +134,36 @@ def test_set_lifecycle_action_docstring_points_at_vault_config():
     )
 
 
+def test_set_lifecycle_signature_exposes_dry_run():
+    """T-0162 — sage_set_lifecycle must expose ``dry_run: bool = False`` at the wrapper.
+
+    The dry-run rollout (T-0152) shipped on every other mutation tool
+    but skipped the single-form ``sage_set_lifecycle`` wrapper. The
+    underlying ``SetLifecycleRequest`` already carries ``dry_run`` and
+    ``LifecycleService.set_lifecycle`` honors it; the gap was at the
+    MCP boundary.
+
+    Structural assertion: parameter present, annotation identity-equal
+    to ``bool`` (not ``isinstance(annotation, type) and issubclass``),
+    default ``False``. Replacing the annotation with ``str`` or moving
+    the default to ``True`` fails the test.
+    """
+    sig = inspect.signature(sage_set_lifecycle)
+    assert "dry_run" in sig.parameters, (
+        "sage_set_lifecycle is missing the dry_run parameter; "
+        "the wrapper must expose dry_run to close the T-0152 rollout gap."
+    )
+    param = sig.parameters["dry_run"]
+    assert param.annotation is bool, (
+        f"sage_set_lifecycle.dry_run annotation is {param.annotation!r}; "
+        "expected ``bool``. Every other mutation MCP wrapper uses ``bool = False``."
+    )
+    assert param.default is False, (
+        f"sage_set_lifecycle.dry_run default is {param.default!r}; "
+        "expected ``False`` to preserve real-run as the default behavior."
+    )
+
+
 def test_discover_filters_args_documents_closed_key_set():
     """T1.5 — sage_discover.filters Args docstring must list the closed key set.
 
