@@ -135,7 +135,15 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
 # removing it from the tool) or replaced with a justification for
 # permanent divergence. The test fails on stale entries (drift
 # remediated but allowlist not pruned). Drained to empty by T-0062.
-KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {}
+KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
+    # T-0155: ``document_id`` is an MCP-only alias for ``start_id`` on
+    # sage_traverse, added to unify document-ID parameter naming across
+    # MCP tools after a field report. The HTTP API surface is explicitly
+    # out of scope per the ticket (HTTP callers see the OpenAPI schema
+    # and don't suffer the same field-name guessing cost). Permanent
+    # divergence by design, not pending remediation.
+    ("sage_core", "sage_traverse"): frozenset({"document_id"}),
+}
 
 
 # (surface_name, operation_id) -> justification for OpenAPI

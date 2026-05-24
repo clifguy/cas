@@ -920,6 +920,53 @@ class SyncedFromVersionNotInSourceChain(SAGEError):
         )
 
 
+class AmbiguousDocumentIdentifierError(SAGEError):
+    """400: caller supplied both the canonical parameter and an alias
+    for the same logical document identifier (T-0155).
+
+    Some MCP tools accept the canonical name ``document_id`` as an alias
+    for a tool-specific name (e.g., ``sage_traverse`` accepts both
+    ``start_id`` and ``document_id``). Supplying both is treated as
+    ambiguous — even when the values are equal — to keep the call-shape
+    contract simple: exactly one must be supplied.
+    """
+
+    def __init__(self, tool: str, canonical: str, alias: str) -> None:
+        super().__init__(
+            "ambiguous_document_identifier",
+            (f"{tool}: supply exactly one of {canonical!r} or {alias!r}; both were provided."),
+            400,
+            {
+                "tool": tool,
+                "supplied": [canonical, alias],
+            },
+        )
+
+
+class MissingDocumentIdentifierError(SAGEError):
+    """400: caller supplied neither the canonical parameter nor any
+    accepted alias for the document identifier (T-0155).
+
+    Companion to :class:`AmbiguousDocumentIdentifierError`. Distinct
+    from ``document_not_found`` (404) and from a downstream Pydantic
+    ``ValidationError``: this code fires before the service layer is
+    invoked, when no document identifier was supplied at all. The
+    ``accepted`` detail enumerates every parameter name the tool will
+    take so the caller learns the alias without trial-and-error.
+    """
+
+    def __init__(self, tool: str, accepted: list[str]) -> None:
+        super().__init__(
+            "missing_document_identifier",
+            (f"{tool}: a document identifier is required. Supply exactly one of: {accepted!r}."),
+            400,
+            {
+                "tool": tool,
+                "accepted": list(accepted),
+            },
+        )
+
+
 # Field-annotation strings used in InvalidFilterShapeError detail (T-0092).
 # Kept as a small lookup rather than introspected from RetrievalFilters because
 # Pydantic v2's stringified annotations for ``str | None`` shapes are noisy

@@ -12,7 +12,9 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter, ValidationError
 
 from sage.api.errors import (
+    AmbiguousDocumentIdentifierError,
     LegacyFormError,
+    MissingDocumentIdentifierError,
     SAGEError,
     translate_validation_error,
 )
@@ -575,7 +577,11 @@ def register_sage_tools(
                 vault's ``lifecycle.transitions`` table as a valid
                 action from the document's current state. See
                 ``sage_get_vault_config`` for the authoritative list.
-            new_version_id: The successor document's id. Required when
+            new_version_id: The successor document's id (a ``documents.id``
+                value — the same shape as ``document_id`` on other tools;
+                T-0155). The ``document_id``/``new_version_id`` pair is a
+                semantic distinction, not a naming inconsistency; both
+                endpoints carry document ids. Required when
                 ``action="supersede"`` (a ``supersedes`` edge is created
                 from ``new_version_id`` -> ``document_id``); forbidden
                 for all other actions. The successor must already exist
@@ -940,10 +946,16 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            source_id: Source document identifier.
-            target_id: Target document identifier. Required for all edge
-                types except `retracts` (which uses `retracted_edge_id`);
-                pass null for `retracts` edges.
+            source_id: Source document identifier (a ``documents.id``
+                value — the same shape as ``document_id`` on other
+                tools; T-0155). The ``source_id``/``target_id`` pair is a
+                semantic distinction, not a naming inconsistency; both
+                endpoints carry document ids.
+            target_id: Target document identifier (a ``documents.id``
+                value — the same shape as ``document_id`` on other
+                tools; T-0155). Required for all edge types except
+                ``retracts`` (which uses ``retracted_edge_id``); pass
+                null for ``retracts`` edges.
             edge_type: Edge type (supersedes, derived_from, covers, references,
                 bundles_with, depends_on, instantiated_from, retracts,
                 merged_from).
@@ -1104,11 +1116,12 @@ def register_sage_tools(
     @mcp.tool()
     async def sage_traverse(
         vault_id: str,
-        start_id: str,
+        start_id: str | None = None,
         edge_type: str | None = None,
         direction: str = "outbound",
         depth: int = 3,
         debug: bool = False,
+        document_id: str | None = None,
     ) -> dict:
         """Walk the document graph from a starting document.
 
@@ -1137,7 +1150,10 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            start_id: Starting document identifier.
+            start_id: Starting document identifier. Alias: ``document_id`` (T-0155).
+                Supply exactly one of ``start_id`` or ``document_id``. The
+                response key remains ``start_id`` regardless of which input
+                form was used.
             edge_type: Filter by edge type (optional). When omitted,
                 traversal returns edges of all types.
             direction: Traversal direction (outbound, inbound, both). Default: outbound.
@@ -1147,13 +1163,39 @@ def register_sage_tools(
                 `retracts_applied`, `tombstone_applied`) explaining why
                 each candidate edge was surfaced or suppressed. Default:
                 false (zero overhead when disabled).
+            document_id: Alias for ``start_id`` (T-0155). Either parameter
+                is accepted; supply exactly one. Supplying both — even with
+                equal values — returns ``ambiguous_document_identifier``.
         """
         try:
+            # T-0155: validate each id-bearing parameter by its literal
+            # name (so the typed-alias conformance gate in
+            # tests/sage/test_typed_alias_coverage.py sees a
+            # _DOCUMENT_ID_ADAPTER.validate_python(<param>) call for
+            # each), then resolve the alias to a single value, then
+            # surface the tool-specific ambiguous/missing errors before
+            # any service call so callers don't see a downstream
+            # document_not_found for an empty input.
+            if start_id is not None:
+                start_id = _DOCUMENT_ID_ADAPTER.validate_python(start_id)
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if start_id is not None and document_id is not None:
+                raise AmbiguousDocumentIdentifierError(
+                    tool="sage_traverse",
+                    canonical="start_id",
+                    alias="document_id",
+                )
+            if start_id is None and document_id is None:
+                raise MissingDocumentIdentifierError(
+                    tool="sage_traverse",
+                    accepted=["start_id", "document_id"],
+                )
+            resolved_start_id = start_id if start_id is not None else document_id
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            start_id = _DOCUMENT_ID_ADAPTER.validate_python(start_id)
             v = get_vault(vault_id)
             request = TraverseRequest(
-                start_id=start_id,
+                start_id=resolved_start_id,
                 edge_type=edge_type,
                 direction=direction,
                 depth=depth,

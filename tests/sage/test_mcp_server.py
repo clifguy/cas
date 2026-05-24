@@ -1290,3 +1290,183 @@ def test_t0157_retracts_edge_type_docstring_points_at_edge_discovery():
         "EdgeType class docstring must point at sage_discover(target='edges') "
         "for retracts edge_id discovery (T-0157)"
     )
+
+
+# ---------------------------------------------------------------------------
+# T-0155: document_id alias on sage_traverse + docstring clarification on sage_link
+# ---------------------------------------------------------------------------
+#
+# Per T-0155, MCP tools should converge on `document_id` as the canonical
+# parameter name for "the document being operated on". sage_traverse historically
+# uses `start_id`; this section verifies that `document_id` is accepted as an
+# alias (both forms work, exactly one must be supplied). sage_link keeps its
+# semantic `source_id`/`target_id` distinction; the docstring is clarified to
+# state both are `documents.id` values.
+
+
+async def test_t0155_traverse_accepts_document_id_alias(vault_services):
+    """T1. sage_traverse accepts `document_id` as a keyword alias for
+    `start_id`. Happy path: alias resolves to the same traversal result
+    as the canonical name.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+
+    result = _parse(await sage_traverse(vault_id="test_vault", document_id=doc_a["id"]))
+    # Response shape unchanged: `start_id` remains the response key.
+    assert result["start_id"] == doc_a["id"]
+    assert len(result["nodes"]) == 1
+    # Asserting the *correct* neighbor (doc_b) defeats any coincidental pass
+    # where the alias was dropped and the function defaulted to some other id.
+    assert result["nodes"][0]["document"]["id"] == doc_b["id"]
+
+
+async def test_t0155_traverse_accepts_start_id_kwarg(vault_services):
+    """T2. sage_traverse continues to accept `start_id` as a keyword
+    argument after the alias is added. Back-compat guard.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+
+    result = _parse(await sage_traverse(vault_id="test_vault", start_id=doc_a["id"]))
+    assert result["start_id"] == doc_a["id"]
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["document"]["id"] == doc_b["id"]
+
+
+async def test_t0155_traverse_accepts_start_id_positional(vault_services):
+    """T3. sage_traverse continues to accept `start_id` positionally
+    after the alias is added. Back-compat guard for the form used by
+    the vast majority of existing tests.
+    """
+    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    await asyncio.sleep(0.3)
+    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+
+    result = _parse(await sage_traverse("test_vault", doc_a["id"]))
+    assert result["start_id"] == doc_a["id"]
+    assert len(result["nodes"]) == 1
+    assert result["nodes"][0]["document"]["id"] == doc_b["id"]
+
+
+async def test_t0155_traverse_rejects_both_kwargs(vault_services):
+    """T4. sage_traverse rejects supplying both `start_id` and
+    `document_id` (even with equal values). Strict ambiguity rule:
+    exactly one must be supplied.
+    """
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    result = _parse(
+        await sage_traverse(
+            vault_id="test_vault",
+            start_id=doc["id"],
+            document_id=doc["id"],
+        )
+    )
+    assert result["error"] == "ambiguous_document_identifier"
+    # Detail must name both parameter names verbatim, so callers can
+    # see which fields are in conflict.
+    assert "start_id" in result["detail"]["supplied"]
+    assert "document_id" in result["detail"]["supplied"]
+
+
+async def test_t0155_traverse_rejects_missing_identifier(vault_services):
+    """T5. sage_traverse rejects neither `start_id` nor `document_id`
+    being supplied. Specific code (not a downstream `document_not_found`
+    or generic ValidationError) confirms the validation branch fired.
+    """
+    result = _parse(await sage_traverse(vault_id="test_vault"))
+    assert result["error"] == "missing_document_identifier"
+    # Detail must enumerate the accepted parameter names so the caller
+    # learns the alias without trial-and-error.
+    assert "start_id" in result["detail"]["accepted"]
+    assert "document_id" in result["detail"]["accepted"]
+
+
+async def test_t0155_traverse_rejects_positional_plus_alias_kwarg(vault_services):
+    """T6. sage_traverse rejects positional `start_id` plus keyword
+    `document_id`. Mixing the two forms of the same logical argument
+    is treated as the both-supplied case, not as silent precedence.
+    """
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.3)
+
+    result = _parse(await sage_traverse("test_vault", doc["id"], document_id=doc["id"]))
+    assert result["error"] == "ambiguous_document_identifier"
+    assert "start_id" in result["detail"]["supplied"]
+    assert "document_id" in result["detail"]["supplied"]
+
+
+def test_t0155_traverse_docstring_documents_alias():
+    """T7. sage_traverse docstring documents the `document_id` alias
+    inline on the `start_id` Args entry (not just in prose elsewhere).
+    Guard test: ensures the ticket's docstring requirement lands at
+    the parameter site where an MCP caller browsing the schema will
+    see it.
+    """
+    import re
+    import textwrap
+
+    doc = sage_traverse.__doc__
+    assert doc is not None
+    dedented = textwrap.dedent(doc)
+    # Anchor the match to the start_id: line of the Args section: the
+    # word document_id must appear on the same line where start_id is
+    # being described. A loose `"document_id" in doc` would pass
+    # coincidentally if document_id appeared in unrelated prose.
+    assert re.search(r"start_id:[^\n]*document_id", dedented), (
+        "sage_traverse docstring must document `document_id` as an alias "
+        "inline on the start_id Args entry (T-0155)"
+    )
+
+
+def test_t0155_link_docstring_clarifies_endpoint_shape():
+    """T8. sage_link docstring's Args section describes `source_id`
+    and `target_id` as `documents.id` / `document_id` values. Guard
+    against the docstring update being skipped or being only in the
+    prose body, missing the per-parameter Args entries.
+    """
+    import re
+    import textwrap
+
+    doc = sage_link.__doc__
+    assert doc is not None
+    dedented = textwrap.dedent(doc)
+    # Each Args entry for source_id and target_id must carry the
+    # shape clarification on its own line.
+    assert re.search(r"source_id:[^\n]*(document_id|documents\.id)", dedented), (
+        "sage_link Args entry for source_id must clarify it is a "
+        "documents.id / document_id value (T-0155)"
+    )
+    assert re.search(r"target_id:[^\n]*(document_id|documents\.id)", dedented), (
+        "sage_link Args entry for target_id must clarify it is a "
+        "documents.id / document_id value (T-0155)"
+    )
+
+
+def test_t0155_set_lifecycle_docstring_clarifies_new_version_id_shape():
+    """T9. sage_set_lifecycle docstring's Args section describes
+    `new_version_id` as a `documents.id` / `document_id` value.
+    Parallel-pattern guard: `new_version_id` is a semantic-role
+    document-id parameter analogous to source_id/target_id on
+    sage_link; the same docstring clarification applies (T-0155
+    principle, surfaced via F4 review).
+    """
+    import re
+    import textwrap
+
+    from sage.mcp_server import sage_set_lifecycle
+
+    doc = sage_set_lifecycle.__doc__
+    assert doc is not None
+    dedented = textwrap.dedent(doc)
+    assert re.search(r"new_version_id:[^\n]*(document_id|documents\.id)", dedented), (
+        "sage_set_lifecycle Args entry for new_version_id must clarify "
+        "it is a documents.id / document_id value (T-0155)"
+    )
