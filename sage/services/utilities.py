@@ -38,6 +38,8 @@ from sage.api.errors import (
     DocumentNotFoundError,
     NoProjectionError,
     PathTraversalDeniedError,
+    WritePathExistsError,
+    WritePathInvalidError,
 )
 from sage.config import VaultConfig
 from sage.models.schemas import (
@@ -56,6 +58,30 @@ logger = logging.getLogger(__name__)
 
 
 _MAX_CANDIDATE_MATCHES = 10
+
+
+def _validate_write_to_path(write_to_path: str) -> None:
+    """Verify write_to_path is an absolute path with a writable parent directory.
+
+    Mirrors the path-validation discipline of
+    ``sage.services.documents._deliver_to_path``: absolute-path check,
+    target-must-not-exist check, parent-directory must-exist /
+    must-be-dir / must-be-writable check. Raises the same typed errors
+    so MCP and REST callers see a consistent envelope across the two
+    write-to-disk surfaces.
+    """
+    target = Path(write_to_path)
+    if not target.is_absolute():
+        raise WritePathInvalidError(write_to_path, "path must be absolute")
+    if target.exists():
+        raise WritePathExistsError(write_to_path)
+    parent = target.parent
+    if not parent.exists():
+        raise WritePathInvalidError(write_to_path, f"parent directory does not exist: {parent}")
+    if not parent.is_dir():
+        raise WritePathInvalidError(write_to_path, f"parent is not a directory: {parent}")
+    if not os.access(parent, os.W_OK):
+        raise WritePathInvalidError(write_to_path, f"parent directory is not writable: {parent}")
 
 
 def _rank_candidate_matches(
@@ -194,25 +220,56 @@ class UtilitiesService:
     # read_projection
     # ------------------------------------------------------------------
 
-    async def read_projection(self, document_id: str) -> ReadProjectionResponse:
+    async def read_projection(
+        self, document_id: str, write_to_path: str | None = None
+    ) -> ReadProjectionResponse:
         """Read a document's full projection text with metadata.
 
-        Returns the complete projection (reconstructed from stored chunks)
-        directly, equivalent to uploading the source document.
+        Two delivery modes:
+        - write_to_path=None (default): return the complete projection
+          inline in ``projection_text``, equivalent to uploading the
+          source document.
+        - write_to_path=/abs/path: SAGE writes the projection text bytes
+          to the given absolute path. The response carries ``written_to``
+          and ``content_size``; ``projection_text`` is null.
+
+        The write_to_path mode mirrors ``DocumentsService.get_document_with_content``
+        delivery and replaces the per-T-0176-audit-removed
+        ``export_projection`` MCP tool, whose pre-existing storage_root-
+        relative semantics remain on the REST surface.
 
         Args:
             document_id: Document to read.
+            write_to_path: Optional absolute filesystem path to write
+                the projection text to. Must not already exist; parent
+                directory must exist and be writable.
 
         Returns:
-            ReadProjectionResponse with metadata and full projection text.
+            ReadProjectionResponse with metadata and either inline
+            projection text or write-delivery metadata.
 
         Raises:
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
+            WritePathInvalidError: write_to_path is not absolute or its
+                parent does not exist / is not writable.
+            WritePathExistsError: write_to_path target already exists.
         """
         doc, projection_text = await self._get_projection_text(document_id)
 
-        return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
+        if write_to_path is None:
+            return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
+
+        # write-to-disk delivery: validate path, write, return metadata-only response.
+        _validate_write_to_path(write_to_path)
+        data = projection_text.encode("utf-8")
+        Path(write_to_path).write_bytes(data)
+
+        response = ReadProjectionResponse.from_document(doc, projection_text=projection_text)
+        response.projection_text = None
+        response.written_to = write_to_path
+        response.content_size = len(data)
+        return response
 
     # ------------------------------------------------------------------
     # read_section

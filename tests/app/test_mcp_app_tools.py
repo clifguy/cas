@@ -26,15 +26,14 @@ from sage.mcp_init import initialize_services
 from sage.mcp_server import (
     app_batch_ingest,
     app_scan_directory,
-    sage_confirm_staging_edge,
     sage_discover,
-    sage_dismiss_staging_edge,
     sage_hash_check,
     sage_ingest,
     sage_list_staging_edges,
     sage_list_vaults,
     sage_pending_metadata,
     sage_unlink,
+    sage_update_staging_edge,
     sage_vault_stats,
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
@@ -427,11 +426,11 @@ class TestStagingEdgeActions:
         return r1["id"], r2["id"]
 
     async def test_mcp_010_confirm_moves_to_production(self, single_vault):
-        """sage_confirm_staging_edge promotes to production."""
+        """sage_update_staging_edge(action='confirm') promotes to production."""
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_confirm_staging_edge("test_vault", _STG_TEST))
+        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "confirm"))
         assert result["confirmed"] is True
         assert "production_edge_id" in result
 
@@ -440,20 +439,37 @@ class TestStagingEdgeActions:
         assert listing["count"] == 0
 
     async def test_mcp_011_dismiss_deletes(self, single_vault):
-        """sage_dismiss_staging_edge deletes from staging."""
+        """sage_update_staging_edge(action='dismiss') deletes from staging."""
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_dismiss_staging_edge("test_vault", _STG_TEST))
+        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "dismiss"))
         assert result["dismissed"] is True
 
         listing = _parse(await sage_list_staging_edges("test_vault"))
         assert listing["count"] == 0
 
     async def test_mcp_012_nonexistent_returns_error(self, single_vault):
-        """Confirm/dismiss non-existent staging edge returns error."""
-        result = _parse(await sage_confirm_staging_edge("test_vault", _GONE_001))
+        """sage_update_staging_edge against non-existent edge returns error."""
+        result = _parse(await sage_update_staging_edge("test_vault", _GONE_001, "confirm"))
         assert "error" in result
+
+    async def test_invalid_action_returns_error(self, single_vault):
+        """sage_update_staging_edge with action outside {confirm, dismiss}
+        returns a structured error (the action enum is enforced inside the
+        tool, not silently passed through to the service layer)."""
+        services, config = single_vault
+        await self._setup_staging(services)
+
+        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "approve"))
+        assert "error" in result
+        assert "invalid_action" in result["message"]
+
+        # Anti-coincidental-pass: the staging edge must still exist
+        # (the dispatch must not silently fall through to one of the
+        # branches on an invalid action).
+        listing = _parse(await sage_list_staging_edges("test_vault"))
+        assert listing["count"] == 1
 
     async def test_t0079_confirm_with_existing_production_edge_is_idempotent(self, single_vault):
         """T-0079: if a production edge with the same natural-key triple
@@ -482,7 +498,7 @@ class TestStagingEdgeActions:
             )
         )
 
-        result = _parse(await sage_confirm_staging_edge("test_vault", _STG_TEST))
+        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "confirm"))
         # The promotion is idempotent: no error surfaced.
         assert result["confirmed"] is True
         assert "production_edge_id" in result
@@ -508,31 +524,34 @@ class TestEdgeIdValidation:
     """
 
     @pytest.mark.parametrize(
-        "tool",
-        [sage_unlink, sage_confirm_staging_edge, sage_dismiss_staging_edge],
-        ids=["sage_unlink", "sage_confirm_staging_edge", "sage_dismiss_staging_edge"],
+        "tool_fn",
+        [
+            lambda v, e: sage_unlink(v, e),
+            lambda v, e: sage_update_staging_edge(v, e, "confirm"),
+            lambda v, e: sage_update_staging_edge(v, e, "dismiss"),
+        ],
+        ids=[
+            "sage_unlink",
+            "sage_update_staging_edge_confirm",
+            "sage_update_staging_edge_dismiss",
+        ],
     )
     @pytest.mark.parametrize(
         "bad_input",
         ["not-a-uuid", "", "12345", "deadbeef-dead-beef"],
         ids=["random_text", "empty", "digits", "truncated_uuid"],
     )
-    async def test_invalid_uuid_rejected(self, single_vault, tool, bad_input):
-        result = _parse(await tool("test_vault", bad_input))
+    async def test_invalid_uuid_rejected(self, single_vault, tool_fn, bad_input):
+        result = _parse(await tool_fn("test_vault", bad_input))
         assert "error" in result
         assert "edge id must be a UUID" in result["message"]
 
     @pytest.mark.parametrize(
-        "tool,setup_required",
-        [
-            (sage_confirm_staging_edge, True),
-            (sage_dismiss_staging_edge, True),
-        ],
-        ids=["sage_confirm_staging_edge", "sage_dismiss_staging_edge"],
+        "action",
+        ["confirm", "dismiss"],
+        ids=["confirm", "dismiss"],
     )
-    async def test_non_canonical_uuid_normalized_to_lookup(
-        self, single_vault, tool, setup_required
-    ):
+    async def test_non_canonical_uuid_normalized_to_lookup(self, single_vault, action):
         """A staging edge created with canonical id X is found by URN-prefixed lookup."""
         services, _config = single_vault
         # Set up the staging edge with the canonical id
@@ -553,7 +572,7 @@ class TestEdgeIdValidation:
 
         # Call with URN-prefixed (non-canonical) input — should normalize and succeed
         non_canonical = f"urn:uuid:{canonical}"
-        result = _parse(await tool("test_vault", non_canonical))
+        result = _parse(await sage_update_staging_edge("test_vault", non_canonical, action))
         # Either confirmed=True or dismissed=True; the absence of "error" proves
         # the non-canonical input was normalized before the storage lookup.
         assert "error" not in result, f"non-canonical input not normalized: {result}"
@@ -806,8 +825,7 @@ class TestMCPConventions:
             "sage_vault_stats",
             "sage_hash_check",
             "sage_list_staging_edges",
-            "sage_confirm_staging_edge",
-            "sage_dismiss_staging_edge",
+            "sage_update_staging_edge",
             "sage_pending_metadata",
         ]
         app_tools = ["app_scan_directory", "app_batch_ingest"]

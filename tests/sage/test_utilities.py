@@ -565,6 +565,14 @@ def _doc_with_every_document_field() -> Document:
     )
 
 
+# Fields populated by the service-layer write_to_path branch
+# (UtilitiesService.read_projection), not the from_document factory.
+# Skipping them in the exhaustive test mirrors the analogous discipline
+# for DocumentWithContent's delivery fields, which are also populated
+# post-factory.
+_READ_PROJECTION_DELIVERY_FIELDS = {"written_to", "content_size"}
+
+
 # T1: ReadProjectionResponse exhaustive fields — the keystone F4 closure.
 def test_from_document_populates_every_read_projection_response_field():
     doc = _doc_with_every_document_field()
@@ -572,6 +580,8 @@ def test_from_document_populates_every_read_projection_response_field():
     # Three-branch closure-test idiom (T-0144). ReadProjectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadProjectionResponse.model_fields.items():
+        if field_name in _READ_PROJECTION_DELIVERY_FIELDS:
+            continue
         value = getattr(response, field_name)
         annotation = field_info.annotation
         default = field_info.default

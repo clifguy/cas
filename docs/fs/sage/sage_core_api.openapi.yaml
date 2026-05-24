@@ -5307,7 +5307,7 @@ components:
 
     ReadProjectionResponse:
       type: object
-      required: [document_id, title, lifecycle_status, source_path, projection_text]
+      required: [document_id, title, lifecycle_status, source_path]
       description: Response body for the read-projection endpoint; returns the canonical text projection for a document along with identifying metadata.
       properties:
         document_id:
@@ -5332,8 +5332,19 @@ components:
           description: Vault-local path to the document's source file.
         projection_text:
           type: string
+          nullable: true
           description: >-
-            Full canonical projection text reassembled from stored chunks.
+            Full canonical projection text reassembled from stored chunks. Populated when the read returns the projection inline. Null when the caller supplied write_to_path and the projection bytes were delivered to disk instead.
+        written_to:
+          type: string
+          nullable: true
+          description: >-
+            Absolute path where SAGE wrote the projection text. Populated only when the request specified write_to_path. Equals the caller-supplied value.
+        content_size:
+          type: integer
+          nullable: true
+          description: >-
+            Byte count of the projection text written to disk. Populated only when the request specified write_to_path.
 
     ReadSectionResponse:
       type: object

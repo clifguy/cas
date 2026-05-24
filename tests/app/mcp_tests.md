@@ -220,20 +220,22 @@ identical to the Edge Review tab in the CAS Application.
 
 ---
 
-## 5. sage_confirm_staging_edge / sage_dismiss_staging_edge
+## 5. sage_update_staging_edge
 
-### TEST-APP-MCP-010: sage_confirm_staging_edge moves edge to production
+### TEST-APP-MCP-010: sage_update_staging_edge(action="confirm") moves edge to production
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-011
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_confirm_staging_edge(vault_id, edge_id)` moves the specified
-staging edge to the production edge table. Returns the newly created production
-edge.
+**Decision:** `sage_update_staging_edge(vault_id, edge_id, action="confirm")`
+moves the specified staging edge to the production edge table. Returns the newly
+created production edge. (Consolidated from the pre-audit
+`sage_confirm_staging_edge` / `sage_dismiss_staging_edge` pair per the SAGE MCP
+Tool Surface steering doc v3 audit.)
 
 **Precondition:** Staging edge with known ID exists.
 
-**Input:** Call `sage_confirm_staging_edge("test_vault", "<staging-edge-id>")`.
+**Input:** Call `sage_update_staging_edge("test_vault", "<staging-edge-id>", "confirm")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -244,17 +246,17 @@ edge.
 **Rationale:** MCP clients can confirm edges during conversational review
 workflows without switching to the web UI.
 
-### TEST-APP-MCP-011: sage_dismiss_staging_edge deletes from staging
+### TEST-APP-MCP-011: sage_update_staging_edge(action="dismiss") deletes from staging
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-012
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_dismiss_staging_edge(vault_id, edge_id)` deletes the staging
-edge. Returns a confirmation object (not the deleted edge).
+**Decision:** `sage_update_staging_edge(vault_id, edge_id, action="dismiss")`
+deletes the staging edge. Returns a confirmation object (not the deleted edge).
 
 **Precondition:** Staging edge with known ID exists.
 
-**Input:** Call `sage_dismiss_staging_edge("test_vault", "<staging-edge-id>")`.
+**Input:** Call `sage_update_staging_edge("test_vault", "<staging-edge-id>", "dismiss")`.
 
 **Expected:**
 - Returns valid JSON string with confirmation (e.g., `{ "dismissed": true }`)
@@ -264,17 +266,18 @@ edge. Returns a confirmation object (not the deleted edge).
 **Rationale:** Symmetric with confirm. MCP clients can dismiss false-positive
 suggestions conversationally.
 
-### TEST-APP-MCP-012: Confirm/dismiss non-existent staging edge returns error
+### TEST-APP-MCP-012: sage_update_staging_edge against non-existent edge returns error
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-013
 **Category:** mcp_tool, error_handling
 
-**Decision:** Confirming or dismissing a staging edge that does not exist returns
-a structured error JSON with "not_found" code.
+**Decision:** Updating (confirming or dismissing) a staging edge that does not
+exist returns a structured error JSON with "not_found" code. Invalid `action`
+outside `{"confirm", "dismiss"}` returns `invalid_action`.
 
 **Precondition:** No staging edge with ID "gone-001".
 
-**Input:** Call `sage_confirm_staging_edge("test_vault", "gone-001")`.
+**Input:** Call `sage_update_staging_edge("test_vault", "gone-001", "confirm")`.
 
 **Expected:**
 - Returns valid JSON string

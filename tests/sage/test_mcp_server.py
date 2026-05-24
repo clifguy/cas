@@ -25,7 +25,6 @@ from sage.mcp_init import initialize_services
 from sage.mcp_server import (
     sage_check_preconditions,
     sage_discover,
-    sage_export_projection,
     sage_get_document,
     sage_ingest,
     sage_link,
@@ -33,7 +32,6 @@ from sage.mcp_server import (
     sage_reabstract,
     sage_read_projection,
     sage_refresh_views,
-    sage_register_user,
     sage_reload_vault,
     sage_set_lifecycle,
     sage_traverse,
@@ -579,18 +577,6 @@ async def test_set_lifecycle_dry_run_invalid_action_error_envelope_matches_real_
 
 
 # ---------------------------------------------------------------------------
-# User registration
-# ---------------------------------------------------------------------------
-
-
-async def test_register_user(vault_services):
-    result = _parse(await sage_register_user("test_vault", "test_agent", "agent"))
-    assert result["display_name"] == "test_agent"
-    assert result["type"] == "agent"
-    assert "id" in result
-
-
-# ---------------------------------------------------------------------------
 # Graph operations: link
 # ---------------------------------------------------------------------------
 
@@ -1078,28 +1064,6 @@ async def test_discover_semantic_happy_path_unchanged(vault_services):
 
 
 # ---------------------------------------------------------------------------
-# Utilities: export_projection
-# ---------------------------------------------------------------------------
-
-
-async def test_export_projection(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
-
-    result = _parse(await sage_export_projection("test_vault", doc["id"], "exports/out.md"))
-    assert result["document_id"] == doc["id"]
-    assert "exports/out.md" in result["output_path"]
-
-
-async def test_export_projection_path_traversal(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    await asyncio.sleep(0.5)
-
-    result = _parse(await sage_export_projection("test_vault", doc["id"], "../../etc/passwd"))
-    assert result["error"] == "path_traversal_denied"
-
-
-# ---------------------------------------------------------------------------
 # Utilities: read_projection
 # ---------------------------------------------------------------------------
 
@@ -1113,11 +1077,64 @@ async def test_read_projection(vault_services):
     assert "projection_text" in result
     assert len(result["projection_text"]) > 0
     assert "title" in result
+    # write_to_path was not requested, so delivery fields stay null
+    assert result.get("written_to") is None
+    assert result.get("content_size") is None
 
 
 async def test_read_projection_not_found(vault_services):
     result = _parse(await sage_read_projection("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
+
+
+async def test_read_projection_write_to_path_writes_file_and_returns_metadata(
+    vault_services, tmp_path
+):
+    """T-0176: sage_read_projection(write_to_path=...) writes the projection
+    text bytes to the absolute path and returns metadata only (no inline
+    text). Replaces the pre-audit sage_export_projection MCP tool.
+    """
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    target = tmp_path / "out.md"
+
+    result = _parse(await sage_read_projection("test_vault", doc["id"], write_to_path=str(target)))
+
+    assert result["document_id"] == doc["id"]
+    assert result["written_to"] == str(target)
+    assert result["content_size"] > 0
+    # write-mode response must not double-ship the text inline
+    assert result.get("projection_text") is None
+    # Anti-coincidental-pass: the file must actually exist and have
+    # non-empty contents matching the reported size.
+    assert target.exists()
+    written = target.read_bytes()
+    assert len(written) == result["content_size"]
+    assert len(written) > 0
+
+
+async def test_read_projection_write_to_path_existing_target_errors(vault_services, tmp_path):
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    target = tmp_path / "existing.md"
+    target.write_text("pre-existing")
+
+    result = _parse(await sage_read_projection("test_vault", doc["id"], write_to_path=str(target)))
+
+    assert result["error"] == "write_path_exists"
+    # File must not have been clobbered.
+    assert target.read_text() == "pre-existing"
+
+
+async def test_read_projection_write_to_path_relative_errors(vault_services):
+    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+
+    result = _parse(
+        await sage_read_projection("test_vault", doc["id"], write_to_path="relative.md")
+    )
+
+    assert result["error"] == "write_path_invalid"
 
 
 # ---------------------------------------------------------------------------

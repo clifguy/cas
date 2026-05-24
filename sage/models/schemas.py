@@ -2895,8 +2895,29 @@ class ReadProjectionResponse(BaseModel):
         ),
     )
     source_path: str = Field(description="Vault-local path to the document's source file.")
-    projection_text: str = Field(
-        description="Full canonical projection text reassembled from stored chunks."
+    projection_text: str | None = Field(
+        default=None,
+        description=(
+            "Full canonical projection text reassembled from stored chunks. "
+            "Populated when the read returns the projection inline. Null when "
+            "the caller supplied write_to_path and the projection bytes were "
+            "delivered to disk instead."
+        ),
+    )
+    written_to: str | None = Field(
+        default=None,
+        description=(
+            "Absolute path where SAGE wrote the projection text. Populated "
+            "only when the request specified write_to_path. Equals the "
+            "caller-supplied value."
+        ),
+    )
+    content_size: int | None = Field(
+        default=None,
+        description=(
+            "Byte count of the projection text written to disk. Populated "
+            "only when the request specified write_to_path."
+        ),
     )
 
     @classmethod
@@ -2908,7 +2929,10 @@ class ReadProjectionResponse(BaseModel):
         doc_type=steering_document). The exhaustive-fields test
         ``test_from_document_populates_every_read_projection_response_field``
         in ``tests/sage/test_utilities.py`` fails closed if a field is added
-        to ReadProjectionResponse but not wired through this factory.
+        to ReadProjectionResponse but not wired through this factory --
+        except the optional ``written_to`` / ``content_size`` delivery
+        fields, which are populated by the service layer's write_to_path
+        branch (UtilitiesService.read_projection), not the factory.
         """
         return cls(
             document_id=doc.id,

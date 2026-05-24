@@ -127,6 +127,15 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
         "sage_core",
         "sage_reabstract",
     ): "Agent-only abstraction refresh; no HTTP route by design.",
+    (
+        "sage_core",
+        "sage_update_staging_edge",
+    ): (
+        "MCP-only consolidation of confirm_staging_edge + dismiss_staging_edge "
+        "per the SAGE MCP Tool Surface steering doc v3 audit. REST exposes the "
+        "two operations separately (BE-011, BE-012); MCP collapses them via the "
+        "action parameter."
+    ),
 }
 
 # (surface_name, tool_name) -> set of MCP argument names that
@@ -143,6 +152,14 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # and don't suffer the same field-name guessing cost). Permanent
     # divergence by design, not pending remediation.
     ("sage_core", "sage_traverse"): frozenset({"document_id"}),
+    # SAGE MCP Tool Surface steering doc v3 audit: write_to_path was
+    # added to sage_read_projection (MCP) as the consolidated home for
+    # the write-to-disk delivery mode that previously lived on
+    # sage_export_projection. The REST surface keeps export_projection
+    # as its own discrete endpoint (storage_root-relative semantics);
+    # the MCP-side write_to_path is an absolute-path mode mirroring
+    # sage_get_document. Permanent divergence by design.
+    ("sage_core", "sage_read_projection"): frozenset({"write_to_path"}),
 }
 
 
@@ -151,6 +168,40 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
 # operations are exposed via MCP.
 HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ("sage_core", "eval_retrieval"): "HTTP-only retrieval evaluation harness.",
+    (
+        "sage_core",
+        "register_user",
+    ): (
+        "REST-only per the SAGE MCP Tool Surface steering doc (v3 audit): user "
+        "registration is a CAS App account-creation concern. Agents pass ad-hoc "
+        "`created_by` strings per CAS-ADR-021 and do not need an MCP path."
+    ),
+    (
+        "sage_core",
+        "confirm_staging_edge",
+    ): (
+        "REST keeps the operation as a discrete endpoint (BE-011); MCP collapses "
+        "confirm+dismiss into sage_update_staging_edge(action=...) per the SAGE "
+        "MCP Tool Surface steering doc v3 audit."
+    ),
+    (
+        "sage_core",
+        "dismiss_staging_edge",
+    ): (
+        "REST keeps the operation as a discrete endpoint (BE-012); MCP collapses "
+        "confirm+dismiss into sage_update_staging_edge(action=...) per the SAGE "
+        "MCP Tool Surface steering doc v3 audit."
+    ),
+    (
+        "sage_core",
+        "export_projection",
+    ): (
+        "REST keeps export_projection (storage_root-relative write semantics); "
+        "MCP folds the write-to-disk capability into "
+        "sage_read_projection(write_to_path=...) (absolute-path semantics, "
+        "mirroring sage_get_document) per the SAGE MCP Tool Surface steering "
+        "doc v3 audit."
+    ),
     (
         "sage_core",
         "get_editors",

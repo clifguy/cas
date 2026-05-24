@@ -1126,39 +1126,6 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_register_user(
-        vault_id: str,
-        display_name: str,
-        type: str,
-    ) -> dict:
-        """Register a new human or agent user in the vault.
-
-        The user id returned can be used as the ``created_by`` value
-        on subsequent ingest calls and is recorded as the actor on
-        lifecycle and edge mutations. Registration is the canonical
-        attribution source; ad-hoc strings in ``created_by`` will be
-        accepted but are not linked to a registered user record.
-
-        Args:
-            vault_id: Target vault identifier.
-            display_name: User display name. Stored verbatim; not
-                required to be unique.
-            type: User type. Must be one of ``human`` or ``agent``.
-                The distinction is informational (attribution audit)
-                and does not gate any tool's behavior.
-        """
-        try:
-            from sage.models.schemas import RegisterUserRequest
-
-            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            v = get_vault(vault_id)
-            request = RegisterUserRequest(display_name=display_name, type=type)
-            user = await v.user_service.register_user(request)
-            return serialize(user)
-        except (SAGEError, ValueError) as e:
-            return error_response(e)
-
-    @mcp.tool()
     async def sage_link(
         vault_id: str,
         source_id: str,
@@ -1469,9 +1436,10 @@ def register_sage_tools(
         """Delete a production edge from the graph.
 
         For staging-table edges (pre-confirmation), use
-        ``sage_dismiss_staging_edge`` instead. The two tables are
-        distinct and edge ids do not cross between them; an id minted
-        in staging is not valid here once promoted, and vice versa.
+        ``sage_update_staging_edge(action="dismiss")`` instead. The two
+        tables are distinct and edge ids do not cross between them; an
+        id minted in staging is not valid here once promoted, and vice
+        versa.
 
         Discovering ``edge_id`` (T-0157): use ``sage_discover`` with
         ``target="edges"`` to enumerate production edges by
@@ -1909,43 +1877,29 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_export_projection(
+    async def sage_read_projection(
         vault_id: str,
         document_id: str,
-        output_path: str,
+        write_to_path: str | None = None,
     ) -> dict:
-        """Export a document's projection text to a Markdown file.
-
-        Error modes:
-        - ``document_not_found`` (404): no document with that id.
-        - ``no_projection`` (404): the document has no stored
-          projection to export.
-        - ``path_traversal_denied`` (400): ``output_path`` resolves
-          outside the vault's ``storage_root``. SAGE refuses to write
-          projection text to non-vault locations.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier.
-            output_path: Target file path (relative to storage_root or absolute,
-                must resolve within storage_root).
-        """
-        try:
-            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
-            v = get_vault(vault_id)
-            response = await v.utilities_service.export_projection(document_id, output_path)
-            return serialize(response)
-        except (SAGEError, ValueError) as e:
-            return error_response(e)
-
-    @mcp.tool()
-    async def sage_read_projection(vault_id: str, document_id: str) -> dict:
         """Read a document's full text into context with metadata header.
 
-        Returns the complete projection (reconstructed from stored chunks)
-        as readable text, equivalent to uploading the document. Use this
-        instead of sage_discover when you need to read an entire document.
+        Two delivery modes:
+        - default: returns the complete projection (reconstructed from
+          stored chunks) inline as ``projection_text``, equivalent to
+          uploading the document. Use this instead of ``sage_discover``
+          when you need the whole document.
+        - ``write_to_path=/abs/path``: SAGE writes the projection text
+          to the given absolute path. The response carries ``written_to``
+          and ``content_size``; ``projection_text`` is null. Preferred
+          for large projections that would exceed the MCP tool-result
+          inline budget. Mirrors ``sage_get_document(write_to_path=...)``.
+
+        Replaces the pre-audit ``sage_export_projection`` MCP tool, which
+        was folded into this write_to_path mode per the *SAGE MCP Tool
+        Surface* steering doc v3 audit. The REST surface retains the
+        original ``export_projection`` endpoint (storage_root-relative
+        semantics).
 
         Error modes:
         - ``document_not_found`` (404): no document with that id.
@@ -1954,16 +1908,26 @@ def register_sage_tools(
           the document is awaiting reabstraction). Inspect
           ``pipeline_status`` via ``sage_get_document``; if recoverable,
           ``sage_reabstract`` may restore the projection.
+        - ``write_path_exists`` (409): ``write_to_path`` target already
+          exists.
+        - ``write_path_invalid`` (400): ``write_to_path`` is not
+          absolute, or its parent directory is missing / not writable.
 
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier.
+            write_to_path: Absolute filesystem path. When set, SAGE
+                writes the projection text to this path and returns
+                metadata only. The target must not exist; its parent
+                must exist and be writable.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
-            response = await v.utilities_service.read_projection(document_id)
+            response = await v.utilities_service.read_projection(
+                document_id, write_to_path=write_to_path
+            )
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -2361,55 +2325,51 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_confirm_staging_edge(vault_id: str, edge_id: str) -> dict:
-        """Confirm a staging edge: move it to the production edge table.
+    async def sage_update_staging_edge(vault_id: str, edge_id: str, action: str) -> dict:
+        """Confirm or dismiss a staging edge.
 
-        The staging row is deleted and a new production edge is
-        inserted with the same source, target, and edge_type. The
-        returned edge carries the production ``edge_id``, which is
-        distinct from the staging id passed in -- staging and production
-        tables do not share an id space.
+        Dispatches by ``action``:
+
+        - ``action="confirm"``: promote the staging edge to production.
+          The staging row is deleted and a new production edge is
+          inserted with the same source, target, and edge_type. The
+          returned envelope carries the production ``edge_id``, which is
+          distinct from the staging id passed in -- staging and production
+          tables do not share an id space.
+        - ``action="dismiss"``: delete the staging edge without creating
+          a production edge. The reviewer's judgment that the inferred
+          edge is wrong. The underlying inference rule is not re-applied
+          for the same (source, target, edge_type) combination during
+          the current ingest cycle, but a future re-ingest that re-triggers
+          the same inference rule will re-stage the candidate.
+
+        Replaces the pre-audit ``sage_confirm_staging_edge`` and
+        ``sage_dismiss_staging_edge`` MCP tools, which were collapsed into
+        this single parameter-dispatched form per the *SAGE MCP Tool
+        Surface* steering doc v3 audit.
 
         Error modes:
         - ``staging_edge_not_found`` (404): the id is unknown
           (already confirmed, already dismissed, or never existed).
+        - ``invalid_action`` (400): ``action`` is not one of
+          ``"confirm"`` or ``"dismiss"``.
 
         Args:
             vault_id: Target vault identifier.
             edge_id: Staging edge identifier (from
                 ``sage_list_staging_edges``).
+            action: One of ``"confirm"`` or ``"dismiss"``.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
+            if action not in ("confirm", "dismiss"):
+                raise ValueError(
+                    f"invalid_action: action must be 'confirm' or 'dismiss', got {action!r}"
+                )
             v = get_vault(vault_id)
-            return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
-        except (SAGEError, ValueError) as e:
-            return error_response(e)
-
-    @mcp.tool()
-    async def sage_dismiss_staging_edge(vault_id: str, edge_id: str) -> dict:
-        """Dismiss a staging edge: delete it without creating a production edge.
-
-        The reviewer's judgment that the inferred edge is wrong. The
-        staging row is removed and the underlying inference rule is
-        not re-applied for the same (source, target, edge_type)
-        combination during the current ingest cycle, but a future
-        re-ingest that re-triggers the same inference rule will
-        re-stage the candidate.
-
-        Error modes:
-        - ``staging_edge_not_found`` (404): the id is unknown.
-
-        Args:
-            vault_id: Target vault identifier.
-            edge_id: Staging edge identifier (from
-                ``sage_list_staging_edges``).
-        """
-        try:
-            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
-            v = get_vault(vault_id)
+            if action == "confirm":
+                return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
             return serialize(await v.staging_edges_service.dismiss_staging_edge(edge_id))
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -2640,14 +2600,12 @@ def register_sage_tools(
         "sage_bulk_set_lifecycle": sage_bulk_set_lifecycle,
         "sage_bulk_link": sage_bulk_link,
         "sage_bulk_update_metadata": sage_bulk_update_metadata,
-        "sage_register_user": sage_register_user,
         "sage_link": sage_link,
         "sage_unlink": sage_unlink,
         "sage_check_preconditions": sage_check_preconditions,
         "sage_traverse": sage_traverse,
         "sage_chain": sage_chain,
         "sage_discover": sage_discover,
-        "sage_export_projection": sage_export_projection,
         "sage_read_projection": sage_read_projection,
         "sage_read_section": sage_read_section,
         "sage_list_headings": sage_list_headings,
@@ -2659,8 +2617,7 @@ def register_sage_tools(
         "sage_vault_stats": sage_vault_stats,
         "sage_hash_check": sage_hash_check,
         "sage_list_staging_edges": sage_list_staging_edges,
-        "sage_confirm_staging_edge": sage_confirm_staging_edge,
-        "sage_dismiss_staging_edge": sage_dismiss_staging_edge,
+        "sage_update_staging_edge": sage_update_staging_edge,
         "sage_pending_metadata": sage_pending_metadata,
         "sage_admin_migrate_vault": sage_admin_migrate_vault,
         "sage_admin_detect_drift": sage_admin_detect_drift,
