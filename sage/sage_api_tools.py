@@ -1404,6 +1404,8 @@ def register_sage_tools(
         response_level: str | None = None,
         target: str = "documents",
         response_mode: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> dict:
         """Search for documents or edges; semantic, keyword, catalog, or deterministic retrieval.
 
@@ -1522,6 +1524,16 @@ def register_sage_tools(
                 returns the complete envelope. When unset, edges apply
                 the >5-results default-threshold rule; documents
                 preserve full-equivalent behavior unconditionally.
+            sort_by: Sort key for catalog mode results. One of:
+                "title", "doc_type", "document_date",
+                "lifecycle_status". Ignored by semantic, keyword, and
+                deterministic modes. Default: unset -- catalog falls
+                back to active-lifecycle-first then ``document_date``
+                descending. (T-0174)
+            sort_order: Sort direction for catalog mode results. One
+                of: "asc", "desc". Ignored by semantic, keyword, and
+                deterministic modes. Default: unset -- ascending when
+                ``sort_by`` is specified. (T-0174)
 
         Catalog budget hint (T-0091):
             Catalog responses include a ``hints`` field carrying
@@ -1577,6 +1589,8 @@ def register_sage_tools(
                 include_abstracts=include_abstracts,
                 min_relevance=min_relevance,
                 response_level=response_level,
+                sort_by=sort_by,
+                sort_order=sort_order,
             )
             response = await v.retrieval_service.discover(request)
             return serialize(response)

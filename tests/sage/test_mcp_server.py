@@ -911,6 +911,56 @@ async def test_discover_semantic(vault_services):
     assert isinstance(result["results"], list)
 
 
+async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services):
+    """T-0174: sort_by / sort_order on the MCP wrapper must reach DiscoverRequest.
+
+    Ingest two documents with distinct titles, then verify that asc and desc
+    sort_order values produce reversed orderings. Catches the wrapper silently
+    dropping either parameter on the floor.
+    """
+    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await sage_ingest("test_vault", "test/second.md", "markdown")
+    await asyncio.sleep(0.3)
+
+    asc_result = _parse(
+        await sage_discover(
+            "test_vault",
+            mode="catalog",
+            sort_by="title",
+            sort_order="asc",
+            limit=10,
+        )
+    )
+    desc_result = _parse(
+        await sage_discover(
+            "test_vault",
+            mode="catalog",
+            sort_by="title",
+            sort_order="desc",
+            limit=10,
+        )
+    )
+
+    titles_asc = [hit["document"]["title"] for hit in asc_result["results"]]
+    titles_desc = [hit["document"]["title"] for hit in desc_result["results"]]
+
+    # Precondition guard: both seeded docs surfaced so the ordering
+    # assertions below are non-trivial.
+    assert len(titles_asc) == 2
+    assert "Sample Document" in titles_asc
+    assert "Second Document" in titles_asc
+
+    # Proves sort_by="title" reached DiscoverRequest. Default catalog
+    # ordering is lifecycle_status then document_date desc; on two
+    # freshly-ingested same-status docs it does not deterministically
+    # alphabetize.
+    assert titles_asc == sorted(titles_asc)
+
+    # Proves sort_order reached DiscoverRequest. If sort_order were dropped,
+    # both calls would reduce to the same request and this would fail.
+    assert titles_asc == list(reversed(titles_desc))
+
+
 async def test_discover_deterministic(vault_services):
     doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
