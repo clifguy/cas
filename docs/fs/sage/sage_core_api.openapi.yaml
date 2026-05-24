@@ -2588,6 +2588,45 @@ components:
             failure_class from a single catalog/semantic/keyword pass
             without follow-up get_document round-trips.
 
+    DocumentSummaryLight:
+      type: object
+      description: >-
+        Stripped DocumentSummary returned by `sage_discover` with
+        `target="documents", mode="catalog", response_mode="light"`
+        (T-0158). Carries only the identity columns plus the two fields
+        most callers need for triage (doc_type and tier3_metadata).
+        Other DocumentSummary fields (source_type, source_path,
+        version_label, project, tags, document_date, source_modified_at,
+        semantic_abstract) are intentionally absent to keep bulk catalog
+        enumerations inside the MCP inline-output budget. Callers who
+        need the omitted fields pass `response_mode="full"` (returns
+        DocumentSummary) or fall back to `sage_get_document` per id.
+      required:
+        - id
+        - title
+        - lifecycle_status
+      properties:
+        id:
+          type: string
+          description: Unique document identifier.
+        title:
+          type: string
+          description: Human-readable document title.
+        lifecycle_status:
+          type: string
+          description: Current lifecycle state of the document (active, archived, etc.).
+        doc_type:
+          type: string
+          nullable: true
+          description: Vault-domain document type from the doc_types vocabulary; null when not classified.
+        tier3_metadata:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: >-
+            Typed per-doc_type metadata (CAS-ADR-028). Opaque dict whose
+            key set is determined by the document's doc_type tier3 schema.
+
     Edge:
       type: object
       description: >-
@@ -2839,17 +2878,19 @@ components:
             returned result count below the requested limit.
         response_level:
           $ref: "#/components/schemas/ResponseLevel"
-          default: chunks
+          nullable: true
           description: >-
-            Document-target payload selector. Prefer response_mode for
-            new callers; response_level is retained for backward
-            compatibility and will likely be unified into response_mode
-            by a subsequent ticket. Controls result detail level.
-            "chunks" (default) includes chunk_content, heading_path, and
-            matched_chunk_count. "documents" suppresses chunk_content
-            but preserves heading_path (best chunk's location) and
-            matched_chunk_count as lightweight context. Applicable to
-            semantic and keyword modes. Ignored by catalog (always
+            [DEPRECATED] Use `response_mode` instead (T-0158).
+            `response_level` is retained for backward compatibility and
+            will be removed in a subsequent ticket. Equivalence:
+            `response_level="chunks"` is equivalent to
+            `response_mode="full"`; `response_level="documents"` is
+            equivalent to `response_mode="light"` (chunk content
+            suppressed, surrounding DocumentSummary still full).
+            Passing `response_mode` and `response_level` together
+            raises `mode_parameter_mismatch`. When unset (default),
+            legacy behavior applies: chunk content included on semantic
+            and keyword modes; ignored by catalog (returns
             document-level) and deterministic (always chunk-level).
         sort_by:
           $ref: "#/components/schemas/CatalogSortBy"
@@ -2876,11 +2917,19 @@ components:
           nullable: true
           description: >-
             Canonical payload-depth selector across SAGE surfaces
-            (T-0157, T-0153). "light" returns identity columns only;
-            "full" returns the complete envelope. When unset, applies a
-            default-threshold rule for the edge target (>5 results ->
-            light, otherwise full). Currently valid only when
-            target=edges; document-target callers use response_level.
+            (T-0157, T-0158, T-0153). Semantics by target and mode:
+            (edges) `light` returns identity columns only (edge_id,
+            endpoints, edge_type); `full` carries the complete
+            envelope; default obeys a >5-results threshold rule.
+            (documents+catalog) `light` returns a stripped
+            DocumentSummaryLight; `full` returns the full
+            DocumentSummary; the threshold rule does NOT apply --
+            default is full-equivalent. (documents+semantic/keyword)
+            `light` suppresses chunk_content (equivalent to legacy
+            `response_level="documents"`); `full` includes it.
+            (documents+deterministic) ignored; deterministic always
+            returns chunk content. Passing `response_mode` and
+            `response_level` together raises `mode_parameter_mismatch`.
 
     RetrievalFilters:
       type: object
@@ -3495,7 +3544,15 @@ components:
       required: [document]
       properties:
         document:
-          $ref: "#/components/schemas/DocumentSummary"
+          description: >-
+            Compact summary of the matching document. Returns
+            DocumentSummaryLight (stripped) when the request set
+            `target="documents", mode="catalog",
+            response_mode="light"` (T-0158); DocumentSummary (full)
+            otherwise.
+          oneOf:
+            - $ref: "#/components/schemas/DocumentSummary"
+            - $ref: "#/components/schemas/DocumentSummaryLight"
         chunk_content:
           type: string
           description: >-

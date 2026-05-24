@@ -60,6 +60,7 @@ from sage.models.schemas import (
     DiscoverResponse,
     Document,
     DocumentSummary,
+    DocumentSummaryLight,
     EdgeHit,
 )
 from sage.storage.graph_store import EdgeQueryRow, GraphStore
@@ -381,7 +382,11 @@ class RetrievalService:
 
                 if not request.include_abstracts:
                     for hit in response.results:
-                        hit.document.semantic_abstract = None
+                        # DocumentSummaryLight (T-0158) has no
+                        # semantic_abstract field by design; skip the
+                        # null-out so the assignment doesn't raise.
+                        if isinstance(hit.document, DocumentSummary):
+                            hit.document.semantic_abstract = None
 
             # T-0091: surface a recommended_limit hint when a catalog
             # response would bust the Claude Code MCP inline ceiling.
@@ -482,7 +487,7 @@ class RetrievalService:
 
         hits = [
             DiscoverHit.from_summary(
-                DocumentSummary.from_document(doc),
+                self._project_doc_summary(doc, request.response_mode),
                 chunk_content=None,
                 heading_path=None,
                 relevance_score=None,
@@ -495,6 +500,24 @@ class RetrievalService:
             results=hits,
             total_available=total_count,
         )
+
+    @staticmethod
+    def _project_doc_summary(
+        doc: Document, response_mode: ResponseMode | None
+    ) -> DocumentSummary | DocumentSummaryLight:
+        """Project a Document to DocumentSummary or DocumentSummaryLight (T-0158).
+
+        ``response_mode="light"`` returns the stripped variant carrying
+        only id, title, doc_type, lifecycle_status, and tier3_metadata;
+        every other value (including unset) returns the full
+        DocumentSummary. The default-threshold rule that applies to
+        edges (>5 results -> light) is intentionally NOT applied here:
+        document-target callers retain full-equivalent defaults unless
+        they explicitly pass ``response_mode="light"``.
+        """
+        if response_mode == ResponseMode.LIGHT:
+            return DocumentSummaryLight.from_document(doc)
+        return DocumentSummary.from_document(doc)
 
     # ------------------------------------------------------------------
     # Edge enumeration (T-0157)
@@ -891,9 +914,19 @@ class RetrievalService:
 
             summary = DocumentSummary.from_document(doc)
 
-            # BH-084/085: suppress chunk_content when response_level=documents;
-            # heading_path preserved as cheap "why this matched" context.
-            include_content = request.response_level != ResponseLevel.DOCUMENTS
+            # BH-084/085 + T-0158: suppress chunk_content when light is
+            # requested via either parameter; heading_path preserved as
+            # cheap "why this matched" context. response_mode takes
+            # precedence; the mutual-exclusion check in DiscoverRequest
+            # rejects requests that set both. When neither is set,
+            # response_level defaults to CHUNKS-equivalent (chunks
+            # included).
+            if request.response_mode is not None:
+                include_content = request.response_mode == ResponseMode.FULL
+            else:
+                include_content = (
+                    request.response_level or ResponseLevel.CHUNKS
+                ) != ResponseLevel.DOCUMENTS
             # Mask the synthetic header chunk's marker heading_path (T-0038)
             # so users never see the internal sentinel string.
             visible_heading_path = (

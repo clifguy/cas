@@ -1149,7 +1149,7 @@ def register_sage_tools(
         use_abstract_prefilter: bool = True,
         include_abstracts: bool = False,
         min_relevance: float | None = None,
-        response_level: str = "chunks",
+        response_level: str | None = None,
         target: str = "documents",
         response_mode: str | None = None,
     ) -> dict:
@@ -1187,6 +1187,31 @@ def register_sage_tools(
                     response_mode="full",
                 )
 
+        Response-mode semantics across targets (T-0158):
+            ``response_mode`` is the canonical payload-depth selector for both
+            targets. Behavior matrix:
+
+            - ``target="documents", mode="catalog"``: ``light`` returns a
+              stripped ``DocumentSummaryLight`` carrying only id, title,
+              doc_type, lifecycle_status, and tier3_metadata; ``full``
+              returns the complete ``DocumentSummary``. The edge-side
+              >5-results default-to-light rule does NOT apply --
+              document-target defaults remain full-equivalent unless
+              ``response_mode="light"`` is passed explicitly.
+            - ``target="documents", mode="semantic"`` or ``"keyword"``:
+              ``light`` suppresses ``chunk_content`` but preserves the full
+              ``DocumentSummary`` (equivalent to the legacy
+              ``response_level="documents"``); ``full`` includes
+              ``chunk_content`` (equivalent to legacy
+              ``response_level="chunks"``).
+            - ``target="documents", mode="deterministic"``:
+              ``response_mode`` is ignored. Deterministic always returns
+              chunk content.
+            - ``target="edges"``: see the *Edge enumeration* section above.
+
+            Passing ``response_mode`` and ``response_level`` together on
+            ``target="documents"`` raises ``mode_parameter_mismatch``.
+
         Args:
             vault_id: Target vault identifier.
             mode: Retrieval mode (semantic, keyword, catalog, deterministic). Default: semantic.
@@ -1220,25 +1245,31 @@ def register_sage_tools(
                 (no filtering). For semantic mode (cosine similarity), scores range 0-1;
                 reasonable thresholds are 0.3-0.5. Does not apply to catalog or
                 deterministic modes which have no relevance scores.
-            response_level: Document-target result detail level
-                ("chunks" or "documents"). "documents" suppresses
-                chunk_content and heading_path, returning document
-                metadata and relevance scores only. Default: "chunks".
-                Prefer ``response_mode`` for new callers;
-                ``response_level`` is retained for backward compatibility
-                and is expected to be unified by a subsequent ticket.
+            response_level: [DEPRECATED] Use ``response_mode`` instead
+                (T-0158). Document-target result detail level
+                ("chunks" or "documents"). Equivalence:
+                ``response_level="chunks"`` matches
+                ``response_mode="full"``; ``response_level="documents"``
+                matches ``response_mode="light"`` (semantic/keyword
+                modes only). Passing ``response_mode`` and
+                ``response_level`` together raises
+                ``mode_parameter_mismatch``. Default: unset (legacy
+                chunk-included behavior on semantic/keyword).
             target: Result row type. "documents" (default) preserves the
                 historical surface; "edges" enumerates production edges
                 via filter on ``source_id`` / ``target_id`` /
                 ``edge_type`` and is valid only with ``mode="catalog"``.
                 See the *Edge enumeration* section above. (T-0157)
-            response_mode: Edge-target payload selector. "light" returns
-                identity columns only (``edge_id``, endpoints, edge_type);
-                "full" carries the complete envelope. When unset, defaults
-                to "light" for more than 5 results and "full" otherwise.
-                Currently valid only when ``target="edges"``;
-                document-target callers should keep using
-                ``response_level``. (T-0157, T-0153)
+            response_mode: Canonical payload-depth selector across SAGE
+                surfaces (T-0157, T-0158, T-0153). See the
+                *Response-mode semantics across targets* section above
+                for the full behavior matrix. "light" returns the
+                stripped shape (DocumentSummaryLight for
+                catalog+documents, identity columns for edges,
+                chunk_content-suppressed for semantic/keyword); "full"
+                returns the complete envelope. When unset, edges apply
+                the >5-results default-threshold rule; documents
+                preserve full-equivalent behavior unconditionally.
 
         Catalog budget hint (T-0091):
             Catalog responses include a ``hints`` field carrying

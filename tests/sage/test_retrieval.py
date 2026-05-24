@@ -4804,12 +4804,351 @@ def test_t0157_invalid_target_value_raises_enum_validation_error():
     assert err["loc"] == ("target",)
 
 
-def test_t0157_response_mode_with_target_documents_is_mode_parameter_mismatch():
-    """26b. response_mode is currently scoped to target=edges; passing it
-    with target=documents must error rather than silently ignore.
+# ---------------------------------------------------------------------------
+# T-0158: response_mode unified across sage_discover targets;
+# response_level deprecated.
+# ---------------------------------------------------------------------------
+
+
+def test_t0158_response_mode_light_accepted_with_target_documents():
+    """T-0158: response_mode=light + target=documents is now accepted
+    (was rejected in T-0157 by design)."""
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
+    )
+    assert req.response_mode == ResponseMode.LIGHT
+    assert req.target == RetrievalTarget.DOCUMENTS
+    assert req.response_level is None
+
+
+def test_t0158_response_mode_full_accepted_with_target_documents():
+    """T-0158: response_mode=full + target=documents is now accepted."""
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.FULL,
+    )
+    assert req.response_mode == ResponseMode.FULL
+
+
+def test_t0158_response_mode_and_response_level_together_raises_mode_parameter_mismatch():
+    """T-0158: passing both response_mode and response_level on
+    target=documents must raise mode_parameter_mismatch, with detail
+    naming the conflicting parameter.
+
+    Anti-coincidental: assert ctx["conflicting_with"] explicitly so the
+    error is wired through the new mutual-exclusion branch (not, e.g.,
+    re-routed through the T-0157 edge-target rejection).
     """
     with pytest.raises(ValidationError) as info:
-        DiscoverRequest(mode=RetrievalMode.CATALOG, response_mode=ResponseMode.LIGHT)
+        DiscoverRequest(
+            mode=RetrievalMode.SEMANTIC,
+            query="x",
+            response_mode=ResponseMode.LIGHT,
+            response_level=ResponseLevel.DOCUMENTS,
+        )
     err = info.value.errors()[0]
     assert err["type"] == "mode_parameter_mismatch"
     assert err["ctx"]["forbidden_param"] == "response_mode"
+    assert err["ctx"]["conflicting_with"] == "response_level"
+
+
+def test_t0158_response_mode_unset_with_target_documents_preserves_defaults():
+    """T-0158: when neither response_mode nor response_level is passed,
+    the request builds and response_level defaults to None (unset)."""
+    req = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="x")
+    assert req.response_mode is None
+    assert req.response_level is None
+
+
+async def test_t0158_catalog_documents_light_returns_stripped_summary(
+    graph_store, retrieval_service
+):
+    """T-0158: catalog + target=documents + response_mode=light returns
+    a stripped DocumentSummaryLight carrying only id, title, doc_type,
+    lifecycle_status, tier3_metadata.
+
+    Anti-coincidental: seed a doc with non-trivial source_path / tags /
+    document_date / semantic_abstract / version_label, then assert each
+    of those fields is ABSENT from the returned model (not present-but-
+    null). An implementation that accepts response_mode=light but
+    ignores it in _catalog would return full DocumentSummary and the
+    absence checks would fail.
+    """
+    from sage.models.schemas import DocumentSummaryLight
+
+    doc = _make_doc(
+        _id("light_doc"),
+        doc_type="adr",
+        tags=["t1", "t2"],
+        document_date="2026-05-23",
+        semantic_abstract="LLM abstract text.",
+        version_label="v1",
+        tier3_metadata={"ticket_id": "T-0158"},
+    )
+    await graph_store.insert_document(doc)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
+        filters=RetrievalFilters(doc_type="adr"),
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) >= 1
+    hit = next(h for h in resp.results if h.document.id == doc.id)
+    assert isinstance(hit.document, DocumentSummaryLight)
+    light_keys = set(DocumentSummaryLight.model_fields.keys())
+    dump_keys = set(hit.document.model_dump().keys())
+    assert dump_keys == light_keys, (
+        f"light shape must expose exactly the DocumentSummaryLight fields, got {dump_keys}"
+    )
+    # Concrete absence checks for the stripped fields.
+    forbidden = {
+        "source_type",
+        "source_path",
+        "version_label",
+        "project",
+        "tags",
+        "document_date",
+        "source_modified_at",
+        "semantic_abstract",
+    }
+    assert forbidden.isdisjoint(dump_keys), (
+        f"light shape must drop {forbidden & dump_keys} from DocumentSummary"
+    )
+    # The light fields that DO survive must carry the seeded values.
+    assert hit.document.id == doc.id
+    assert hit.document.title == doc.title
+    assert hit.document.doc_type == "adr"
+    assert hit.document.lifecycle_status == "active"
+    assert hit.document.tier3_metadata == {"ticket_id": "T-0158"}
+
+
+async def test_t0158_catalog_documents_full_returns_current_summary(graph_store, retrieval_service):
+    """T-0158: catalog + target=documents + response_mode=full returns
+    the current DocumentSummary unchanged.
+
+    Anti-coincidental: seed a doc with every nullable field populated,
+    assert every DocumentSummary field appears in the dump. An
+    implementation that returned DocumentSummaryLight for catalog+
+    documents unconditionally would lose source_path / tags / etc.
+    """
+    doc = _make_doc(
+        _id("full_doc"),
+        doc_type="adr",
+        tags=["t1", "t2"],
+        document_date="2026-05-23",
+        semantic_abstract="LLM abstract text.",
+        version_label="v1",
+        tier3_metadata={"ticket_id": "T-0158"},
+        source_modified_at=datetime(2026, 5, 23, tzinfo=timezone.utc),
+        project="CAS",
+    )
+    await graph_store.insert_document(doc)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.FULL,
+        filters=RetrievalFilters(doc_type="adr"),
+        include_abstracts=True,
+    )
+    resp = await retrieval_service.discover(req)
+    hit = next(h for h in resp.results if h.document.id == doc.id)
+    assert isinstance(hit.document, DocumentSummary)
+    dump_keys = set(hit.document.model_dump().keys())
+    assert dump_keys == set(DocumentSummary.model_fields.keys()), (
+        f"full shape must contain every DocumentSummary field, missing: "
+        f"{set(DocumentSummary.model_fields.keys()) - dump_keys}"
+    )
+    # Anti-coincidental concrete checks: non-trivial fields must round-trip.
+    assert hit.document.source_path == doc.source_path
+    assert hit.document.tags == ["t1", "t2"]
+    assert hit.document.semantic_abstract == "LLM abstract text."
+    assert hit.document.version_label == "v1"
+    assert hit.document.project == "CAS"
+
+
+async def test_t0158_semantic_response_mode_light_suppresses_chunk_content(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """T-0158: semantic + response_mode=light suppresses chunk_content
+    but preserves heading_path, matched_chunk_count, and the surrounding
+    full DocumentSummary (the catalog stripped-summary shape does NOT
+    apply to semantic/keyword).
+
+    Anti-coincidental: assert hit.document is a DocumentSummary (not
+    Light) -- catches an implementation that misroutes semantic+light
+    through the stripped-summary projection.
+    """
+    await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
+    req = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_mode=ResponseMode.LIGHT,
+        limit=10,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) > 0
+    for hit in resp.results:
+        assert hit.chunk_content is None
+        assert hit.heading_path is not None
+        assert hit.matched_chunk_count is not None
+        assert hit.matched_chunk_count >= 1
+        assert isinstance(hit.document, DocumentSummary)
+
+
+async def test_t0158_semantic_response_mode_full_includes_chunk_content(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """T-0158: semantic + response_mode=full includes chunk_content
+    (equivalent to legacy response_level=chunks).
+    """
+    await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
+    req = DiscoverRequest(
+        mode=RetrievalMode.SEMANTIC,
+        query="integration",
+        response_mode=ResponseMode.FULL,
+        limit=10,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) > 0
+    for hit in resp.results:
+        assert hit.chunk_content is not None and hit.chunk_content != ""
+
+
+async def test_t0158_keyword_response_mode_light_suppresses_chunk_content(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """T-0158: keyword + response_mode=light mirror of the semantic
+    light-mode test.
+    """
+    await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
+    req = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="integration",
+        response_mode=ResponseMode.LIGHT,
+        limit=10,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) > 0
+    for hit in resp.results:
+        assert hit.chunk_content is None
+        assert hit.heading_path is not None
+        assert isinstance(hit.document, DocumentSummary)
+
+
+async def test_t0158_keyword_response_mode_full_includes_chunk_content(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+):
+    """T-0158: keyword + response_mode=full includes chunk_content."""
+    await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
+    req = DiscoverRequest(
+        mode=RetrievalMode.KEYWORD,
+        query="integration",
+        response_mode=ResponseMode.FULL,
+        limit=10,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) > 0
+    for hit in resp.results:
+        assert hit.chunk_content is not None and hit.chunk_content != ""
+
+
+async def test_t0158_deterministic_response_mode_light_returns_chunk_content(
+    graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
+):
+    """T-0158: deterministic mode ignores response_mode (always returns
+    chunk content).
+
+    Anti-coincidental: ensures an implementation that uniformly applies
+    light->suppress-chunks doesn't accidentally strip deterministic
+    output.
+    """
+    doc_id = _id("det_doc")
+    doc = _make_doc(doc_id)
+    await graph_store.insert_document(doc)
+    await _index_doc_chunks(
+        stub_content_store,
+        seeded_embedding_provider,
+        doc_id,
+        [("Section 1", "Deterministic mode integration body.")],
+    )
+    req = DiscoverRequest(
+        mode=RetrievalMode.DETERMINISTIC,
+        document_id=doc_id,
+        heading_path="Section 1",
+        response_mode=ResponseMode.LIGHT,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) >= 1
+    for hit in resp.results:
+        assert hit.chunk_content is not None and hit.chunk_content != ""
+
+
+async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_above_threshold(
+    graph_store, retrieval_service
+):
+    """T-0158: catalog + target=documents with neither response_mode nor
+    response_level set must return full DocumentSummary shape even when
+    the result count exceeds the edge-side >5 default-light threshold.
+
+    Anti-coincidental: seeds 6 docs (above the threshold) and asserts
+    the returned hits carry full DocumentSummary instances populated
+    with the non-trivial fields. An implementation that copied the
+    >5-default-light rule from _catalog_edges into _catalog would
+    return DocumentSummaryLight and the isinstance check would fail.
+    """
+    for i in range(6):
+        d = _make_doc(
+            _id(f"threshold_doc_{i}"),
+            doc_type="adr",
+            tags=[f"t{i}"],
+            semantic_abstract=f"Abstract {i}",
+        )
+        await graph_store.insert_document(d)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        filters=RetrievalFilters(doc_type="adr"),
+        limit=20,
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.total_available >= 6
+    for hit in resp.results:
+        assert isinstance(hit.document, DocumentSummary), (
+            "catalog+documents default must return full DocumentSummary "
+            "regardless of result count; the >5-default-light rule is "
+            "edge-only by design."
+        )
+        # Confirm full-shape fields are populated (sanity).
+        assert hit.document.source_type is not None
+
+
+def test_t0158_response_level_field_description_starts_with_deprecated_marker():
+    """T-0158: the response_level Field description must lead with the
+    explicit '[DEPRECATED]' marker. Anti-coincidental: matches case-
+    sensitive on the literal marker so the test fails closed if a
+    maintenance change softens it back to a soft nudge.
+    """
+    desc = DiscoverRequest.model_fields["response_level"].description
+    assert desc is not None
+    assert desc.startswith("[DEPRECATED]"), (
+        f"response_level description must lead with '[DEPRECATED]'; got: {desc[:40]!r}"
+    )

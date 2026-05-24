@@ -446,6 +446,51 @@ class DocumentSummary(BaseModel):
         )
 
 
+class DocumentSummaryLight(BaseModel):
+    """Stripped DocumentSummary returned by ``sage_discover`` with
+    ``target="documents", mode="catalog", response_mode="light"`` (T-0158).
+
+    Carries only the identity columns plus the two fields most callers
+    need for triage (``doc_type`` and ``tier3_metadata``). Other
+    DocumentSummary fields (source_type, source_path, version_label,
+    project, tags, document_date, source_modified_at, semantic_abstract)
+    are intentionally absent to keep bulk catalog enumerations inside
+    the MCP inline-output budget. Callers who need the omitted fields
+    pass ``response_mode="full"`` (returns ``DocumentSummary``) or fall
+    back to ``sage_get_document`` per id.
+    """
+
+    id: DocumentIdStr = Field(description="Unique document identifier.")
+    title: str = Field(description="Human-readable document title.")
+    lifecycle_status: str = Field(
+        description="Current lifecycle state of the document (active, archived, etc.)."
+    )
+    doc_type: str | None = Field(
+        default=None,
+        description=(
+            "Vault-domain document type from the doc_types vocabulary; null when not classified."
+        ),
+    )
+    tier3_metadata: dict | None = Field(
+        default=None,
+        description=(
+            "Typed per-doc_type metadata (CAS-ADR-028). Opaque dict whose "
+            "key set is determined by the document's doc_type tier3 schema."
+        ),
+    )
+
+    @classmethod
+    def from_document(cls, doc: "Document") -> "DocumentSummaryLight":
+        """Build a DocumentSummaryLight from a Document (T-0158)."""
+        return cls(
+            id=doc.id,
+            title=doc.title,
+            lifecycle_status=doc.lifecycle_status,
+            doc_type=doc.doc_type,
+            tier3_metadata=doc.tier3_metadata,
+        )
+
+
 class Edge(BaseModel):
     id: EdgeIdStr = Field(
         description=(
@@ -1880,19 +1925,20 @@ class DiscoverRequest(BaseModel):
             "returned result count below the requested limit."
         ),
     )
-    response_level: ResponseLevel = Field(
-        default=ResponseLevel.CHUNKS,
+    response_level: ResponseLevel | None = Field(
+        default=None,
         description=(
-            "Document-target payload selector. Prefer response_mode for "
-            "new callers; response_level is retained for backward "
-            "compatibility and will likely be unified into response_mode "
-            "by a subsequent ticket. "
-            'Controls result detail level. "chunks" (default) includes '
-            "chunk_content, heading_path, and matched_chunk_count. "
-            '"documents" suppresses chunk_content but preserves '
-            "heading_path (best chunk's location) and "
-            "matched_chunk_count as lightweight context. Applicable to "
-            "semantic and keyword modes. Ignored by catalog (always "
+            "[DEPRECATED] Use `response_mode` instead (T-0158). "
+            "`response_level` is retained for backward compatibility and "
+            "will be removed in a subsequent ticket. Equivalence: "
+            '`response_level="chunks"` is equivalent to '
+            '`response_mode="full"`; `response_level="documents"` is '
+            'equivalent to `response_mode="light"` (chunk content '
+            "suppressed, surrounding DocumentSummary still full). "
+            "Passing `response_mode` and `response_level` together "
+            "raises `mode_parameter_mismatch`. When unset (default), "
+            "legacy behavior applies: chunk content included on semantic "
+            "and keyword modes; ignored by catalog (returns "
             "document-level) and deterministic (always chunk-level)."
         ),
     )
@@ -1925,11 +1971,19 @@ class DiscoverRequest(BaseModel):
         default=None,
         description=(
             "Canonical payload-depth selector across SAGE surfaces "
-            '(T-0157, T-0153). "light" returns identity columns only; '
-            '"full" returns the complete envelope. When unset, applies a '
-            "default-threshold rule for the edge target (>5 results -> "
-            "light, otherwise full). Currently valid only when "
-            "target=edges; document-target callers use response_level."
+            "(T-0157, T-0158, T-0153). Semantics by target and mode: "
+            "(edges) `light` returns identity columns only (edge_id, "
+            "endpoints, edge_type); `full` carries the complete "
+            "envelope; default obeys a >5-results threshold rule. "
+            "(documents+catalog) `light` returns a stripped "
+            "DocumentSummaryLight; `full` returns the full "
+            "DocumentSummary; the threshold rule does NOT apply -- "
+            "default is full-equivalent. (documents+semantic/keyword) "
+            "`light` suppresses chunk_content (equivalent to legacy "
+            '`response_level="documents"`); `full` includes it. '
+            "(documents+deterministic) ignored; deterministic always "
+            "returns chunk content. Passing `response_mode` and "
+            "`response_level` together raises `mode_parameter_mismatch`."
         ),
     )
 
@@ -2041,7 +2095,7 @@ class DiscoverRequest(BaseModel):
                 ("sort_by", self.sort_by, None),
                 ("sort_order", self.sort_order, None),
                 ("include_abstracts", self.include_abstracts, False),
-                ("response_level", self.response_level, ResponseLevel.CHUNKS),
+                ("response_level", self.response_level, None),
             ]
             for name, value, default in edge_forbidden_params:
                 if value != default:
@@ -2055,21 +2109,32 @@ class DiscoverRequest(BaseModel):
                         },
                     )
 
-        # T-0157: response_mode currently applies only to target=edges.
-        # Document-target callers should keep using response_level until
-        # a subsequent ticket unifies the surface.
-        if self.response_mode is not None and self.target == RetrievalTarget.DOCUMENTS:
+        # T-0158: response_mode and response_level are mutually exclusive
+        # for target=documents. The two parameters now resolve to the same
+        # payload-depth selector via a precedence rule in the retrieval
+        # service; allowing both together would let a caller request a
+        # conflicting shape (e.g., response_mode=light + response_level=chunks).
+        if (
+            self.response_mode is not None
+            and self.response_level is not None
+            and self.target == RetrievalTarget.DOCUMENTS
+        ):
             raise PydanticCustomError(
                 "mode_parameter_mismatch",
                 (
-                    "Parameter 'response_mode' is not yet supported for "
-                    "target 'documents'. Use 'response_level' instead. "
-                    "(T-0157)"
+                    "Parameters 'response_mode' and 'response_level' are "
+                    "mutually exclusive. Use 'response_mode' (preferred); "
+                    "'response_level' is deprecated. (T-0158)"
                 ),
                 {
                     "mode": self.mode.value,
                     "forbidden_param": "response_mode",
-                    "allowed_modes": [RetrievalMode.CATALOG.value],
+                    "conflicting_with": "response_level",
+                    "allowed_modes": [
+                        RetrievalMode.CATALOG.value,
+                        RetrievalMode.SEMANTIC.value,
+                        RetrievalMode.KEYWORD.value,
+                    ],
                 },
             )
 
@@ -2079,7 +2144,14 @@ class DiscoverRequest(BaseModel):
 class DiscoverHit(BaseModel):
     """A single retrieval result. Fields populated depend on the retrieval mode."""
 
-    document: DocumentSummary = Field(description="Compact summary of the matching document.")
+    document: DocumentSummary | DocumentSummaryLight = Field(
+        description=(
+            "Compact summary of the matching document. Returns "
+            "DocumentSummaryLight (stripped) when the request set "
+            '`target="documents", mode="catalog", response_mode="light"` '
+            "(T-0158); DocumentSummary (full) otherwise."
+        )
+    )
     chunk_content: str | None = Field(
         default=None,
         description=(
@@ -2115,7 +2187,7 @@ class DiscoverHit(BaseModel):
     @classmethod
     def from_summary(
         cls,
-        document: "DocumentSummary",
+        document: "DocumentSummary | DocumentSummaryLight",
         *,
         chunk_content: str | None = None,
         heading_path: str | None = None,
@@ -2130,6 +2202,11 @@ class DiscoverHit(BaseModel):
         ``test_from_summary_populates_every_discover_hit_field`` in
         ``tests/sage/test_retrieval.py`` fails closed if a field is added to
         DiscoverHit but not wired through this factory.
+
+        ``document`` accepts either the full ``DocumentSummary`` or the
+        stripped ``DocumentSummaryLight`` (T-0158). The light variant is
+        only returned by the catalog+documents+response_mode=light path;
+        every other path supplies a full ``DocumentSummary``.
         """
         return cls(
             document=document,
