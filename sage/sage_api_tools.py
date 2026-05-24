@@ -742,6 +742,14 @@ def register_sage_tools(
         in order, each holding the per-document lock and a per-item
         SQLite transaction.
 
+        Each per-item entry in ``items`` is validated using the full
+        ``sage_set_lifecycle`` precondition surface — see that tool's
+        docstring for the inherited rules (vault-config-defined action
+        vocabulary, ``invalid_lifecycle_transition`` from the current
+        state, the ``supersede`` chain-head and identical-content guards,
+        ``pipeline_incomplete`` on ``complete``, etc.). Item-level errors
+        do NOT roll back earlier or later items (CAS-ADR-029).
+
         **The batch is NOT atomic.** A per-item SAGEError surfaces in the
         response's per-item error envelope but does not roll back earlier-
         or-later successful items. The tool returns a successful response
@@ -754,7 +762,9 @@ def register_sage_tools(
         vault, or invalid ``response_mode`` value).
 
         Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero.
+        ``results`` array and all counts are zero. Callers building bulk
+        operations programmatically may pass ``items=[]`` without
+        special-casing the call site.
 
         Performance: a bulk call is observably faster than N sequential
         ``sage_set_lifecycle`` calls because MCP framing overhead and
@@ -777,12 +787,13 @@ def register_sage_tools(
                 error so the response stays inside the MCP inline-output
                 budget (default 24 KiB; configurable per process via
                 ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries carry the full structured error
-                envelope regardless of mode. When unset, the default-
-                resolution rule mirrors ``sage_discover`` (T-0157):
-                batches with more than 5 items default to ``"light"``,
-                smaller batches default to ``"full"``. Invalid values
-                surface as an ``internal_error`` envelope before any
-                per-item work runs.
+                envelope regardless of mode. When unset, ``response_mode``
+                defaults to ``"light"`` when ``len(items) > 5``, otherwise
+                ``"full"``. The threshold is fixed at the constant
+                ``LIGHT_DEFAULT_THRESHOLD = 5`` (defined in
+                ``sage.services.lifecycle``); pass ``response_mode``
+                explicitly to override. Invalid values surface as an
+                ``internal_error`` envelope before any per-item work runs.
             dry_run: T-0152 / T-0163. When True, every item runs as
                 a dry-run — validators execute, the would-be
                 projection of the post-state is computed, and each
@@ -837,6 +848,14 @@ def register_sage_tools(
         raising (T-0079). Items are processed in order, each under the
         process-wide ``_link_lock`` and a per-item SQLite transaction.
 
+        Each per-item entry in ``items`` is validated using the full
+        ``sage_link`` precondition surface — see that tool's docstring
+        for the inherited rules (document existence, edge-type
+        registry-declared anchor policy per CAS-ADR-017, ``merged_from``
+        chain-head invariant, ``retracted_edge_id`` shape, natural-key
+        idempotency per T-0079, etc.). Item-level errors do NOT roll
+        back earlier or later items (CAS-ADR-029).
+
         **The batch is NOT atomic.** A per-item SAGEError surfaces in the
         response's per-item error envelope but does not roll back earlier-
         or-later successful items. The tool returns a successful response
@@ -849,7 +868,9 @@ def register_sage_tools(
         ``response_mode`` value).
 
         Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero.
+        ``results`` array and all counts are zero. Callers building bulk
+        operations programmatically may pass ``items=[]`` without
+        special-casing the call site.
 
         Performance: a bulk call is observably faster than N sequential
         ``sage_link`` calls because MCP framing overhead and inter-call
@@ -912,10 +933,12 @@ def register_sage_tools(
                 mode. ``created`` and ``existing_rationale`` are
                 preserved under light because they are the only signals
                 callers have for the natural-key idempotency outcome.
-                When unset, the default-resolution rule mirrors the
-                sibling bulk tools: batches with more than 5 items
-                default to ``"light"``, smaller batches default to
-                ``"full"``. Invalid values surface as an
+                When unset, ``response_mode`` defaults to ``"light"``
+                when ``len(items) > 5``, otherwise ``"full"``. The
+                threshold is fixed at the constant
+                ``LIGHT_DEFAULT_THRESHOLD = 5`` (defined in
+                ``sage.services.graph_ops``); pass ``response_mode``
+                explicitly to override. Invalid values surface as an
                 ``internal_error`` envelope before any per-item work
                 runs.
             dry_run: T-0152 / T-0163. When True, every item runs as a
@@ -966,6 +989,15 @@ def register_sage_tools(
         ``sage_update_metadata``; items are processed in order, each
         holding the per-document lock and a per-item SQLite transaction.
 
+        Each per-item entry in ``items`` is validated using the full
+        ``sage_update_metadata`` precondition surface — see that tool's
+        docstring for the inherited rules (document existence, tag and
+        tier3 patch grammar per CAS-ADR-028, doc_type validation,
+        tier3 schema enforcement against the resolved doc_type,
+        ``metadata_confirmed=true`` side-effect per CAS-ADR-021, etc.).
+        Item-level errors do NOT roll back earlier or later items
+        (CAS-ADR-029).
+
         **The batch is NOT atomic.** A per-item SAGEError surfaces in the
         response's per-item error envelope but does not roll back earlier-
         or-later successful items. The tool returns a successful response
@@ -983,7 +1015,9 @@ def register_sage_tools(
         leaves the metadata-review queue if it was there).
 
         Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero.
+        ``results`` array and all counts are zero. Callers building bulk
+        operations programmatically may pass ``items=[]`` without
+        special-casing the call site.
 
         Tags patch shape (per item ``tags``)::
 
@@ -1039,12 +1073,13 @@ def register_sage_tools(
                 error so the response stays inside the MCP inline-output
                 budget (default 24 KiB; configurable per process via
                 ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries carry the full structured error
-                envelope regardless of mode. When unset, the default-
-                resolution rule mirrors ``sage_discover`` (T-0157):
-                batches with more than 5 items default to ``"light"``,
-                smaller batches default to ``"full"``. Invalid values
-                surface as an ``internal_error`` envelope before any
-                per-item work runs.
+                envelope regardless of mode. When unset, ``response_mode``
+                defaults to ``"light"`` when ``len(items) > 5``, otherwise
+                ``"full"``. The threshold is fixed at the constant
+                ``LIGHT_DEFAULT_THRESHOLD = 5`` (defined in
+                ``sage.services.metadata``); pass ``response_mode``
+                explicitly to override. Invalid values surface as an
+                ``internal_error`` envelope before any per-item work runs.
             dry_run: T-0152 / T-0163. When True, every item runs as
                 a dry-run — validators execute, the would-be
                 projection of the post-state is computed, and each
