@@ -17,6 +17,7 @@ from sage.api.errors import (
     Tier3UnsetConflictError,
 )
 from sage.config import VaultConfig
+from sage.models.enums import LIGHT_DEFAULT_THRESHOLD, ResponseMode
 from sage.models.schemas import (
     BulkMetadataItemResult,
     BulkMetadataRequest,
@@ -198,7 +199,26 @@ class MetadataService:
         MCP calls comes from eliminating per-call MCP framing overhead
         and asyncio scheduling between items; the per-document lock and
         the per-item SQLite transaction are unchanged.
+
+        ``request.response_mode`` (T-0153) controls per-item payload
+        depth. ``light`` drops the per-item ``document`` body from
+        success entries; failure entries always carry the full structured
+        error envelope. When unset, the default-resolution rule mirrors
+        ``sage_discover``: batches with more than
+        ``LIGHT_DEFAULT_THRESHOLD`` items default to ``light``, smaller
+        batches default to ``full``.
         """
+        # T-0153: resolve the effective response_mode (mirror
+        # ``RetrievalService._edges``). Driven by ``len(items)`` because
+        # the bulk endpoint's blast radius is known up front.
+        effective_mode = request.response_mode
+        if effective_mode is None:
+            effective_mode = (
+                ResponseMode.LIGHT
+                if len(request.items) > LIGHT_DEFAULT_THRESHOLD
+                else ResponseMode.FULL
+            )
+
         results: list[BulkMetadataItemResult] = []
         for item in request.items:
             single = UpdateMetadataRequest(
@@ -217,7 +237,12 @@ class MetadataService:
                     BulkMetadataItemResult(
                         document_id=item.document_id,
                         status="success",
-                        document=doc,
+                        # T-0153 light mode: drop the document body. The
+                        # caller already knows the document_id (they
+                        # passed it); the body's primary bloat field
+                        # (semantic_abstract) is what the field report
+                        # called out as overflowing the inline budget.
+                        document=(doc if effective_mode == ResponseMode.FULL else None),
                     )
                 )
             except SAGEError as exc:

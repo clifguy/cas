@@ -582,6 +582,7 @@ def register_sage_tools(
     async def sage_bulk_set_lifecycle(
         vault_id: str,
         items: list[dict],
+        response_mode: str | None = None,
     ) -> dict:
         """Apply lifecycle transitions to many documents in one call.
 
@@ -599,8 +600,8 @@ def register_sage_tools(
         ``BulkLifecycleItemResult.status`` and the aggregate
         ``success_count`` / ``error_count`` fields. The tool returns an
         error envelope only when up-front validation rejects the call
-        (invalid ``vault_id`` shape, malformed ``items`` shape, or
-        unknown vault).
+        (invalid ``vault_id`` shape, malformed ``items`` shape, unknown
+        vault, or invalid ``response_mode`` value).
 
         Empty ``items`` is valid: the response carries an empty
         ``results`` array and all counts are zero.
@@ -618,16 +619,31 @@ def register_sage_tools(
                 Shape validation runs up front; a single malformed item
                 rejects the entire batch before any per-item work
                 executes.
+            response_mode: Per-item payload depth (T-0153). ``"full"``
+                returns each success item's complete ``document`` body
+                (including the potentially-large ``semantic_abstract``);
+                ``"light"`` strips the per-item ``document`` field
+                entirely, returning only identity + status + warnings +
+                error so the response stays inside the MCP inline-output
+                budget. Failure entries carry the full structured error
+                envelope regardless of mode. When unset, the default-
+                resolution rule mirrors ``sage_discover`` (T-0157):
+                batches with more than 5 items default to ``"light"``,
+                smaller batches default to ``"full"``. Invalid values
+                surface as an ``internal_error`` envelope before any
+                per-item work runs.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             # Up-front shape validation across the whole batch: rejecting
             # the request here (rather than per-item inside the service
             # loop) guarantees that a malformed item produces an error
-            # envelope without committing any partial state.
+            # envelope without committing any partial state. The
+            # ``response_mode`` ValueError from Pydantic enum validation
+            # rides this same up-front rejection path (T-0153).
             validated_items = [BulkLifecycleItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
-            request = BulkLifecycleRequest(items=validated_items)
+            request = BulkLifecycleRequest(items=validated_items, response_mode=response_mode)
             response = await v.lifecycle_service.bulk_set_lifecycle(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
@@ -637,6 +653,7 @@ def register_sage_tools(
     async def sage_bulk_update_metadata(
         vault_id: str,
         items: list[dict],
+        response_mode: str | None = None,
     ) -> dict:
         """Apply metadata patches to many documents in one call.
 
@@ -657,7 +674,8 @@ def register_sage_tools(
         ``success_count`` / ``error_count`` fields. The tool returns an
         error envelope only when up-front validation rejects the call
         (invalid ``vault_id`` shape, malformed ``items`` shape, per-item
-        ``legacy_form`` shape, or unknown vault).
+        ``legacy_form`` shape, unknown vault, or invalid
+        ``response_mode`` value).
 
         Per CAS-ADR-021, every successful per-item patch sets
         ``metadata_confirmed=true`` on the target document (the document
@@ -694,7 +712,8 @@ def register_sage_tools(
         ``legacy_form`` (a per-item ``tags`` is a bare list or per-item
         ``tier3_metadata`` is a bare key/value dict; detail names the new
         ops-object shape), ``unknown_vault``, and ``internal_error``
-        (malformed ``vault_id`` / ``items`` shape).
+        (malformed ``vault_id`` / ``items`` shape, or invalid
+        ``response_mode``).
 
         Performance: a bulk call is observably faster than N sequential
         ``sage_update_metadata`` calls because MCP framing overhead and
@@ -711,6 +730,19 @@ def register_sage_tools(
                 tier3_metadata?: Tier3Patch}``. Shape validation runs up
                 front; a single malformed item rejects the entire batch
                 before any per-item work executes.
+            response_mode: Per-item payload depth (T-0153). ``"full"``
+                returns each success item's complete ``document`` body
+                (including the potentially-large ``semantic_abstract``);
+                ``"light"`` strips the per-item ``document`` field
+                entirely, returning only identity + status + warnings +
+                error so the response stays inside the MCP inline-output
+                budget. Failure entries carry the full structured error
+                envelope regardless of mode. When unset, the default-
+                resolution rule mirrors ``sage_discover`` (T-0157):
+                batches with more than 5 items default to ``"light"``,
+                smaller batches default to ``"full"``. Invalid values
+                surface as an ``internal_error`` envelope before any
+                per-item work runs.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -727,10 +759,12 @@ def register_sage_tools(
             # Up-front shape validation across the whole batch: rejecting
             # the request here (rather than per-item inside the service
             # loop) guarantees that a malformed item produces an error
-            # envelope without committing any partial state.
+            # envelope without committing any partial state. The
+            # ``response_mode`` ValueError from Pydantic enum validation
+            # rides this same up-front rejection path (T-0153).
             validated_items = [BulkMetadataItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
-            request = BulkMetadataRequest(items=validated_items)
+            request = BulkMetadataRequest(items=validated_items, response_mode=response_mode)
             response = await v.metadata_service.bulk_update_metadata(request, v.config.vault.owner)
             return serialize(response)
         except (SAGEError, ValueError) as e:

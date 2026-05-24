@@ -2338,12 +2338,17 @@ components:
       type: string
       enum: [light, full]
       description: >-
-        Payload depth for sage_discover results (T-0157, T-0153). "light"
-        returns identity columns only and omits rationale, retraction
-        envelope, and other large fields. "full" returns the complete
-        envelope. When unset, the dispatch applies a default-threshold
-        rule (>5 results -> light, otherwise full). Canonical name across
-        SAGE surfaces; currently valid only when target="edges".
+        Canonical payload-depth selector across SAGE surfaces (T-0157,
+        T-0153). "light" omits large per-item fields and returns only
+        identity/status; "full" returns the complete envelope. When
+        unset, surfaces that honor this parameter apply their own
+        default-resolution rule (sage_discover edges and the bulk
+        mutation tools both default to "light" when their result/batch
+        size exceeds LIGHT_DEFAULT_THRESHOLD, otherwise "full"). Per-
+        surface light-mode shape varies: sage_discover(target="edges")
+        keeps edge identity columns; the bulk mutation tools drop the
+        per-item document body entirely. Failure entries always carry
+        the full structured error envelope regardless of mode.
 
     CatalogSortBy:
       type: string
@@ -3661,6 +3666,19 @@ components:
             per-document lock and its own SQLite transaction; the batch
             as a whole is NOT atomic (CAS-ADR-029). A bad item does not
             roll back earlier-or-later successful items.
+        response_mode:
+          $ref: "#/components/schemas/ResponseMode"
+          nullable: true
+          description: >-
+            Per-item payload depth (T-0153). "full" returns each
+            success item's complete `document` body (including the
+            potentially-large `semantic_abstract`); "light" strips the
+            per-item `document` field entirely, returning only identity
+            + status + warnings + error so the response stays inside
+            the MCP inline-output budget. Failure entries carry the
+            full structured error envelope regardless of mode. When
+            unset, batches with more than 5 items default to "light",
+            smaller batches default to "full".
 
     BulkLifecycleItemResult:
       type: object
@@ -3681,7 +3699,8 @@ components:
           $ref: "#/components/schemas/Document"
           description: >-
             The updated document record when `status=success`. Absent
-            on error entries.
+            on error entries. Also absent on success entries when the
+            request's `response_mode=light` (T-0153).
         warnings:
           type: array
           items:
@@ -3780,6 +3799,19 @@ components:
             per-document lock and its own SQLite transaction; the batch
             as a whole is NOT atomic (CAS-ADR-029). A bad item does not
             roll back earlier-or-later successful items.
+        response_mode:
+          $ref: "#/components/schemas/ResponseMode"
+          nullable: true
+          description: >-
+            Per-item payload depth (T-0153). "full" returns each
+            success item's complete `document` body (including the
+            potentially-large `semantic_abstract`); "light" strips the
+            per-item `document` field entirely, returning only identity
+            + status + warnings + error so the response stays inside
+            the MCP inline-output budget. Failure entries carry the
+            full structured error envelope regardless of mode. When
+            unset, batches with more than 5 items default to "light",
+            smaller batches default to "full".
 
     BulkMetadataItemResult:
       type: object
@@ -3800,7 +3832,8 @@ components:
           $ref: "#/components/schemas/Document"
           description: >-
             The updated document record when `status=success`. Absent
-            on error entries.
+            on error entries. Also absent on success entries when the
+            request's `response_mode=light` (T-0153).
         warnings:
           type: array
           items:

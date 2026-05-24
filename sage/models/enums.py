@@ -187,6 +187,24 @@ class ResponseMode(StrEnum):
     FULL = "full"
 
 
+# Shared threshold for the response_mode default-resolution rule. When a
+# caller does not pass response_mode on a ``ResponseMode``-aware surface,
+# result/batch size > this value defaults to LIGHT (so bulk enumerations
+# stay inside the MCP inline-output budget); at or below it, default is
+# FULL (so single-item-style calls keep their contextual richness).
+#
+# Originally tied to T-0157's edge-enumeration default; T-0153 extends
+# the same rule to the bulk mutation tools (``sage_bulk_update_metadata``
+# and ``sage_bulk_set_lifecycle``). The 5-item figure comes from T-0153's
+# field-use report (a 28-item bulk_update_metadata batch overflowed the
+# MCP inline budget by returning a full ``semantic_abstract`` per item).
+#
+# The scope of this default is per-surface (see T-0158's "Scope of the
+# threshold-default stance" design note for why the rule is NOT applied
+# to ``sage_discover`` document-target results).
+LIGHT_DEFAULT_THRESHOLD = 5
+
+
 class ResponseLevel(StrEnum):
     """Controls the detail level of discover results.
 

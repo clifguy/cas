@@ -889,6 +889,20 @@ class BulkLifecycleRequest(BaseModel):
             "roll back earlier-or-later successful items."
         ),
     )
+    response_mode: ResponseMode | None = Field(
+        default=None,
+        description=(
+            'Per-item payload depth (T-0153). "full" returns each '
+            "success item's complete `document` body (including the "
+            'potentially-large `semantic_abstract`); "light" strips the '
+            "per-item `document` field entirely, returning only identity "
+            "+ status + warnings + error so the response stays inside "
+            "the MCP inline-output budget. Failure entries carry the "
+            "full structured error envelope regardless of mode. When "
+            'unset, batches with more than 5 items default to "light", '
+            'smaller batches default to "full".'
+        ),
+    )
 
 
 class BulkLifecycleItemResult(BaseModel):
@@ -906,7 +920,11 @@ class BulkLifecycleItemResult(BaseModel):
     )
     document: Document | None = Field(
         default=None,
-        description=("The updated document record when `status=success`. Absent on error entries."),
+        description=(
+            "The updated document record when `status=success`. Absent on "
+            "error entries. Also absent on success entries when the "
+            "request's `response_mode=light` (T-0153)."
+        ),
     )
     warnings: list[str] | None = Field(
         default=None,
@@ -1162,6 +1180,20 @@ class BulkMetadataRequest(BaseModel):
             "roll back earlier-or-later successful items."
         ),
     )
+    response_mode: ResponseMode | None = Field(
+        default=None,
+        description=(
+            'Per-item payload depth (T-0153). "full" returns each '
+            "success item's complete `document` body (including the "
+            'potentially-large `semantic_abstract`); "light" strips the '
+            "per-item `document` field entirely, returning only identity "
+            "+ status + warnings + error so the response stays inside "
+            "the MCP inline-output budget. Failure entries carry the "
+            "full structured error envelope regardless of mode. When "
+            'unset, batches with more than 5 items default to "light", '
+            'smaller batches default to "full".'
+        ),
+    )
 
 
 class BulkMetadataItemResult(BaseModel):
@@ -1179,7 +1211,11 @@ class BulkMetadataItemResult(BaseModel):
     )
     document: Document | None = Field(
         default=None,
-        description="The updated document record when `status=success`. Absent on error entries.",
+        description=(
+            "The updated document record when `status=success`. Absent on "
+            "error entries. Also absent on success entries when the "
+            "request's `response_mode=light` (T-0153)."
+        ),
     )
     warnings: list[str] | None = Field(
         default=None,

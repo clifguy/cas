@@ -93,7 +93,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.4",
+      "version": "0.5",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.26",
+  "substrate_version": "1.27",
   "revision_history": [
+    {
+      "version": "1.27",
+      "date": "2026-05-23",
+      "summary": "Add response_mode parameter to bulk mutation tools (T-0153, follow-up to T-0157). Six changes to sage_core_api.openapi.yaml: (1) BulkLifecycleRequest gains an optional response_mode property ($ref to the existing ResponseMode component, nullable) selecting per-item payload depth on the bulk lifecycle endpoint. (2) BulkMetadataRequest gains the same optional response_mode property on the bulk metadata endpoint. (3) BulkLifecycleItemResult.document description extended to note that the field is absent on success entries when response_mode=light, in addition to its existing absence on error entries. (4) BulkMetadataItemResult.document description extended the same way. (5) ResponseMode component description rewritten to reflect its cross-surface scope (previously phrased as edges-only on sage_discover); the per-surface light-mode shape distinction is now explicit. (6) MCP tool surface: sage_bulk_set_lifecycle and sage_bulk_update_metadata both gain response_mode: str|None=None signature parameter and corresponding docstring sections; the parameter forwards into the Request model where Pydantic enforces the enum. Service layer (sage/services/lifecycle.py, sage/services/metadata.py): both bulk methods resolve effective_mode via len(items) > LIGHT_DEFAULT_THRESHOLD when response_mode is unset, then skip populating the per-item document field on success entries when mode is LIGHT; failure entries continue to carry the full structured error envelope regardless of mode. Constant hoist: _LIGHT_DEFAULT_THRESHOLD moved from sage/services/retrieval.py to sage/models/enums.py as the public LIGHT_DEFAULT_THRESHOLD, importable by services that honor the same default-resolution rule. The threshold-default stance for bulk endpoints is deliberately the opposite of T-0158's decision for sage_discover documents: bulk endpoints are batch-by-construction (the >5 case is the surface's primary use case, not an ambient-caller shape change), so the threshold-default automatically engages on the bulk surface where T-0158 keeps it off the documents-discover surface. Tests at tests/sage/test_sage_bulk_set_lifecycle.py, test_sage_bulk_update_metadata.py, test_bulk_lifecycle_router.py, and test_bulk_metadata_router.py each gain nine cases (T1 explicit light strips document and semantic_abstract; T2 explicit full preserves them; T3 default above threshold returns light; T4 default at-or-below threshold returns full; T5 error envelope intact in light; T6 error envelope intact in full; T7 mixed-result batch in light; T8 invalid response_mode rejected up front with no per-item state change; T9 empty batch with explicit light). The OpenAPI conformance suite (test_openapi_conformance.py) passes for the T-0153 description surface."
+    },
     {
       "version": "0.1",
       "date": "2026-03-30",

@@ -18,7 +18,13 @@ from sage.api.errors import (
     SAGEError,
 )
 from sage.config import TransitionTable, VaultConfig, build_transition_table
-from sage.models.enums import TERMINAL_PIPELINE_STATUSES, EdgeType, ResolutionPolicy
+from sage.models.enums import (
+    LIGHT_DEFAULT_THRESHOLD,
+    TERMINAL_PIPELINE_STATUSES,
+    EdgeType,
+    ResolutionPolicy,
+    ResponseMode,
+)
 from sage.models.schemas import (
     BulkLifecycleItemResult,
     BulkLifecycleRequest,
@@ -168,7 +174,29 @@ class LifecycleService:
         MCP calls comes from eliminating per-call MCP framing overhead
         and asyncio scheduling between items; the per-document lock and
         the per-item SQLite transaction are unchanged.
+
+        ``request.response_mode`` (T-0153) controls per-item payload
+        depth. ``light`` drops the per-item ``document`` body from
+        success entries; failure entries always carry the full structured
+        error envelope. When unset, the default-resolution rule mirrors
+        ``sage_discover``: batches with more than
+        ``LIGHT_DEFAULT_THRESHOLD`` items default to ``light``, smaller
+        batches default to ``full``.
         """
+        # T-0153: resolve the effective response_mode the same way
+        # ``RetrievalService._edges`` does, but driven by ``len(items)``
+        # instead of ``total_count``. The default-threshold rule is
+        # courtesy for the human-readable single-item call; the bulk
+        # endpoint exists precisely for the case where ``full`` becomes
+        # ruinous (28-item batch in the field report ~79K chars).
+        effective_mode = request.response_mode
+        if effective_mode is None:
+            effective_mode = (
+                ResponseMode.LIGHT
+                if len(request.items) > LIGHT_DEFAULT_THRESHOLD
+                else ResponseMode.FULL
+            )
+
         results: list[BulkLifecycleItemResult] = []
         for item in request.items:
             single = SetLifecycleRequest(action=item.action, new_version_id=item.new_version_id)
@@ -178,7 +206,13 @@ class LifecycleService:
                     BulkLifecycleItemResult(
                         document_id=item.document_id,
                         status="success",
-                        document=response.document,
+                        # T-0153 light mode: drop the document body. The
+                        # caller already knows the document_id (they
+                        # passed it); the body's primary bloat field
+                        # (semantic_abstract) and the rest are stripped.
+                        document=(
+                            response.document if effective_mode == ResponseMode.FULL else None
+                        ),
                         warnings=response.warnings,
                     )
                 )

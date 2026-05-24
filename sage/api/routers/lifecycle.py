@@ -79,7 +79,13 @@ async def set_lifecycle(
         "(CAS-ADR-029): a per-item SAGEError surfaces in the response's "
         "per-item error envelope while earlier-or-later successful items "
         "remain committed. The endpoint returns 200 even when some items "
-        "fail; check ``success_count`` / ``error_count`` on the response."
+        "fail; check ``success_count`` / ``error_count`` on the response. "
+        "Request body accepts an optional ``response_mode`` (``light`` | "
+        "``full``) per T-0153: ``light`` drops the per-item ``document`` "
+        "body from success entries to stay within the inline-output "
+        "budget; failure entries always carry the full structured error "
+        "envelope. When unset, batches with more than 5 items default to "
+        "``light``, smaller batches default to ``full``."
     ),
     responses={
         404: {

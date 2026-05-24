@@ -46,6 +46,7 @@ from sage.instrumentation.timing import (
     _NullPhaseCollector,
 )
 from sage.models.enums import (
+    LIGHT_DEFAULT_THRESHOLD,
     PipelineStatus,
     ResponseLevel,
     ResponseMode,
@@ -65,13 +66,6 @@ from sage.storage.graph_store import EdgeQueryRow, GraphStore
 
 # RRF constant (standard value from the original Reciprocal Rank Fusion paper).
 _RRF_K = 60
-
-# T-0157: when sage_discover(target="edges") is called without an explicit
-# response_mode, results above this threshold default to "light" so bulk
-# enumerations stay inside the MCP inline budget; at or below it, default
-# is "full" so single-item-style calls keep their contextual richness.
-# The 5-item figure comes from T-0153's field-use report.
-_LIGHT_DEFAULT_THRESHOLD = 5
 
 # Filter keys that LanceDB can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
@@ -547,7 +541,7 @@ class RetrievalService:
         effective_mode = request.response_mode
         if effective_mode is None:
             effective_mode = (
-                ResponseMode.LIGHT if total_count > _LIGHT_DEFAULT_THRESHOLD else ResponseMode.FULL
+                ResponseMode.LIGHT if total_count > LIGHT_DEFAULT_THRESHOLD else ResponseMode.FULL
             )
 
         hits: list[EdgeHit] = [self._hydrate_edge_hit(row, effective_mode) for row in rows]
