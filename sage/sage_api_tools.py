@@ -19,7 +19,7 @@ from sage.api.errors import (
     translate_validation_error,
 )
 from sage.mcp_init import SAGEServices
-from sage.models.enums import SourceType
+from sage.models.enums import EdgeType, RationaleKind, RetrievalMode, SourceType
 from sage.models.schemas import (
     BulkLifecycleItem,
     BulkLifecycleRequest,
@@ -651,7 +651,8 @@ def register_sage_tools(
                 ``"light"`` strips the per-item ``document`` field
                 entirely, returning only identity + status + warnings +
                 error so the response stays inside the MCP inline-output
-                budget. Failure entries carry the full structured error
+                budget (default 24 KiB; configurable per process via
+                ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries carry the full structured error
                 envelope regardless of mode. When unset, the default-
                 resolution rule mirrors ``sage_discover`` (T-0157):
                 batches with more than 5 items default to ``"light"``,
@@ -777,7 +778,8 @@ def register_sage_tools(
                 ``"light"`` strips the per-item ``document`` field
                 entirely, returning only identity + status + warnings +
                 error so the response stays inside the MCP inline-output
-                budget. Failure entries carry the full structured error
+                budget (default 24 KiB; configurable per process via
+                ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries carry the full structured error
                 envelope regardless of mode. When unset, the default-
                 resolution rule mirrors ``sage_discover`` (T-0157):
                 batches with more than 5 items default to ``"light"``,
@@ -863,13 +865,13 @@ def register_sage_tools(
         vault_id: str,
         source_id: str,
         target_id: str | None,
-        edge_type: str,
+        edge_type: EdgeType,
         source_valid_from_version: str | None = None,
         target_valid_from_version: str | None = None,
         retracted_edge_id: str | None = None,
         notes: str | None = None,
         rationale: str | None = None,
-        rationale_kind: str | None = None,
+        rationale_kind: RationaleKind | None = None,
         synced_from_version: str | None = None,
         synced_from_content_hash: str | None = None,
         dry_run: bool = False,
@@ -887,8 +889,12 @@ def register_sage_tools(
         lifecycle states are already correct.
 
         Per CAS-ADR-017, each edge type has a registry-declared
-        resolution_policy that dictates which anchor fields are required
-        or forbidden:
+        ``resolution_policy`` (one of: ``none``, ``transitive_source``,
+        ``transitive_both``, ``TBD``) that dictates which anchor fields
+        are required or forbidden. The policy is **not** a caller-supplied
+        parameter — it is fixed per edge_type in the edge registry —
+        but understanding it is necessary to know which anchor fields
+        the call must carry:
 
         - `none` (supersedes, retracts, merged_from): meta-edges; no
           anchor fields. `retracts` additionally takes a one-sided
@@ -896,10 +902,40 @@ def register_sage_tools(
           and `retracted_edge_id` (the edge being retracted) instead of
           a `target_id`.
         - `transitive_source` (derived_from): requires
-          `source_valid_from_version`; no target anchor.
+          `source_valid_from_version`; no target anchor. The anchor
+          marks which version of the source chain this derivation is
+          valid from, for chain-scoped traversal visibility per
+          CAS-ADR-017. For whole-document derivations the convention is
+          to set ``source_valid_from_version`` equal to ``source_id``
+          itself — the edge is "valid from the source as it exists
+          right now."
         - `transitive_both` (covers, references, bundles_with,
           depends_on, instantiated_from): requires both
           `source_valid_from_version` and `target_valid_from_version`.
+
+        Canonical example — agent-asserted ``derived_from`` (e.g., a
+        deliverable that traces to its template)::
+
+            sage_link(
+                vault_id="cas",
+                source_id="<deliverable_id>",
+                target_id="<template_id>",
+                edge_type="derived_from",
+                source_valid_from_version="<deliverable_id>",
+                rationale="Template authored by ...",
+            )
+
+        ``merged_from`` chain-head precondition: the source must be the
+        chain head — i.e., must have **no outbound supersedes edge**.
+        Absorption into a stale predecessor is incoherent; the merge
+        target should be the currently authoritative head, not a node
+        that has already been superseded. Attempting ``merged_from``
+        from a mid-chain source returns
+        ``merged_from_validation``. When the source is mid-chain and a
+        content-reuse edge is what's actually wanted, use
+        ``derived_from`` instead (its anchor field
+        ``source_valid_from_version`` captures the chain-visibility
+        semantics that ``merged_from`` lacks).
 
         Anchors must lie in the supersedes lineage of their respective
         endpoint. Violations surface as 400 errors:
@@ -1260,7 +1296,7 @@ def register_sage_tools(
     @mcp.tool()
     async def sage_discover(
         vault_id: str,
-        mode: str = "semantic",
+        mode: RetrievalMode = RetrievalMode.SEMANTIC,
         query: str | None = None,
         scope: str = "all",
         filters: dict | None = None,
