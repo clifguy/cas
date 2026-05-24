@@ -37,6 +37,7 @@ from sage.models.schemas import (
     DocumentSummary,
     Edge,
     LinkRequest,
+    LinkResponse,
     PreconditionCheck,
     PreconditionResult,
     ResolutionPathEntry,
@@ -45,6 +46,7 @@ from sage.models.schemas import (
     TraverseResponse,
     UnlinkResponse,
 )
+from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.edge_provenance import derive_rationale_kind
 from sage.storage.graph_store import GraphStore, LinkReadContext
 
@@ -148,7 +150,7 @@ class GraphOpsService:
     # Link (BH-031, BH-032, CAS-ADR-017)
     # ------------------------------------------------------------------
 
-    async def link(self, request: LinkRequest) -> Edge:
+    async def link(self, request: LinkRequest) -> LinkResponse:
         """Create a typed edge between two documents.
 
         Applies the CAS-ADR-017 write-time invariant: the effective
@@ -162,9 +164,13 @@ class GraphOpsService:
         exists (T-0079 unique constraint). For idempotent semantics
         (no-op on duplicate, return existing edge), use
         ``link_idempotent``.
+
+        T-0152: ``request.dry_run`` makes the call a preview — same
+        validators run, but no edge is inserted. The response carries
+        the would-be edge with the nil-UUID sentinel id and
+        ``dry_run=True``.
         """
-        edge, _ = await self._link_impl(request, on_conflict="raise")
-        return edge
+        return await self._link_impl(request, on_conflict="raise")
 
     async def link_idempotent(self, request: LinkRequest) -> tuple[Edge, bool]:
         """Idempotent variant of ``link``. Returns ``(edge, created)``.
@@ -176,18 +182,33 @@ class GraphOpsService:
         on a no-op; existing provenance is preserved (per the SAGE
         single-source-of-truth principle: the first rationale is canonical).
 
-        Used by the ``sage_link`` MCP tool (which signals ``created`` to
-        callers) and by ``batch_inference.resolve_and_execute`` (which
-        relies on idempotency for re-ingest of auto-inferred edges).
-        """
-        return await self._link_impl(request, on_conflict="noop")
+        Used by ``batch_inference.resolve_and_execute`` and
+        ``identifier_mention_inference`` (which rely on idempotency for
+        re-ingest of auto-inferred edges) and by the ``sage_link`` MCP
+        tool (which wraps the tuple in a ``LinkResponse`` to surface
+        ``existing_rationale`` and the ``dry_run`` echo).
 
-    async def _link_impl(self, request: LinkRequest, *, on_conflict: str) -> tuple[Edge, bool]:
+        T-0152: when ``request.dry_run`` is True, the T-0079 natural-key
+        pre-check is performed in the application layer so the dry-run
+        path surfaces the no-op outcome without ever touching storage.
+        The would-be edge on the create path carries the nil-UUID
+        sentinel id.
+        """
+        response = await self._link_impl(request, on_conflict="noop")
+        return response.edge, response.created
+
+    async def _link_impl(self, request: LinkRequest, *, on_conflict: str) -> LinkResponse:
         """Shared implementation used by ``link`` and ``link_idempotent``.
 
         ``on_conflict="raise"`` lets the storage-layer IntegrityError
         propagate. ``on_conflict="noop"`` translates it into a return of
         the pre-existing edge with ``created=False``.
+
+        T-0152: honors ``request.dry_run``. When True, runs every
+        validator and the T-0079 natural-key pre-check, then returns
+        either a ``LinkResponse`` for the no-op path (if an edge
+        already exists) or for the would-be-create path (with the
+        nil-UUID sentinel id). No persistence.
         """
         policy = self._edge_type_registry.policy_for(request.edge_type)
 
@@ -263,11 +284,50 @@ class GraphOpsService:
                         synced_from_version=request.synced_from_version,
                     )
 
+            # T-0152: T-0079 natural-key pre-check — DRY-RUN ONLY. The
+            # storage uniqueness constraint never fires on dry-run
+            # (no insert happens), so without this pre-check a dry-run
+            # would silently report ``created=True`` for what would
+            # actually be a real-run no-op. Real-run does not need
+            # this pre-check: the IntegrityError path below already
+            # handles the dup case correctly (and adding the read
+            # here on every real-run link broke the T-0079 executor-
+            # submission bound). Note: ``target_id`` may be null on
+            # retracts edges; the natural-key triple is meaningless
+            # for those (T-0079 constraint allows null target_id), so
+            # skip even in dry-run.
+            if request.dry_run and request.target_id is not None:
+                existing = await self._store.find_edge_by_natural_key(
+                    request.source_id,
+                    request.target_id,
+                    request.edge_type.value,
+                )
+                if existing is not None:
+                    if on_conflict == "noop":
+                        return LinkResponse(
+                            edge=existing,
+                            created=False,
+                            existing_rationale=existing.rationale,
+                            dry_run=True,
+                        )
+                    # on_conflict="raise" path: real-run would hit
+                    # IntegrityError on insert; dry-run preserves
+                    # that contract by raising synchronously here so
+                    # callers see the same shape of outcome.
+                    raise sqlite3.IntegrityError(
+                        "UNIQUE constraint would fail: edges natural key "
+                        f"({request.source_id}, {request.target_id}, "
+                        f"{request.edge_type.value})"
+                    )
+
             # T-0080: prefer the caller-supplied rationale_kind; otherwise
             # derive from the rationale-text prefix and fall back to MANUAL.
             rationale_kind = request.rationale_kind or derive_rationale_kind(request.rationale)
+            # T-0152: mint the sentinel id on dry-run so callers can
+            # never mistake the preview edge for a persisted one.
+            edge_id = _DRY_RUN_SENTINEL_EDGE_ID if request.dry_run else str(uuid.uuid4())
             edge = Edge(
-                id=str(uuid.uuid4()),
+                id=edge_id,
                 source_id=request.source_id,
                 target_id=request.target_id,
                 edge_type=request.edge_type,
@@ -283,6 +343,17 @@ class GraphOpsService:
                 synced_from_version=request.synced_from_version,
                 synced_from_content_hash=request.synced_from_content_hash,
             )
+
+            # T-0152: dry-run returns the would-be edge without writing.
+            # All validators above have already run in the same order
+            # as a real run.
+            if request.dry_run:
+                return LinkResponse(
+                    edge=edge,
+                    created=True,
+                    existing_rationale=None,
+                    dry_run=True,
+                )
 
             if request.edge_type == EdgeType.MERGED_FROM:
                 # merge_atomic is transaction-critical (couples the
@@ -306,12 +377,27 @@ class GraphOpsService:
                             request.edge_type.value,
                         )
                         if existing is not None:
-                            return existing, False
+                            return LinkResponse(
+                                edge=existing,
+                                created=False,
+                                existing_rationale=existing.rationale,
+                                dry_run=False,
+                            )
                     raise
-                return edge, True
+                return LinkResponse(
+                    edge=edge,
+                    created=True,
+                    existing_rationale=None,
+                    dry_run=False,
+                )
 
             stored_edge, created = await self._store.insert_edge(edge, on_conflict=on_conflict)
-            return stored_edge, created
+            return LinkResponse(
+                edge=stored_edge,
+                created=created,
+                existing_rationale=stored_edge.rationale if not created else None,
+                dry_run=False,
+            )
 
     def _validate_link_request_shape(self, request: LinkRequest, policy: ResolutionPolicy) -> None:
         """Enforce the policy-keyed field-shape invariant.
@@ -540,13 +626,32 @@ class GraphOpsService:
     # Unlink (delete production edge)
     # ------------------------------------------------------------------
 
-    async def unlink(self, edge_id: str) -> UnlinkResponse:
-        """Delete a production edge by ID."""
+    async def unlink(self, edge_id: str, dry_run: bool = False) -> UnlinkResponse:
+        """Delete a production edge by ID (or preview the deletion on dry-run).
+
+        T-0152: when ``dry_run`` is True, runs the same edge-existence
+        validator (raising EdgeNotFoundError when absent) but skips
+        ``delete_edge``. The response carries ``deleted=False``,
+        ``dry_run=True``, and ``preview_edge`` set to the edge that
+        would have been deleted.
+        """
         edge = await self._store.get_edge(edge_id)
         if edge is None:
             raise EdgeNotFoundError(edge_id)
+        if dry_run:
+            return UnlinkResponse(
+                deleted=False,
+                edge_id=edge_id,
+                dry_run=True,
+                preview_edge=edge,
+            )
         await self._store.delete_edge(edge_id)
-        return UnlinkResponse(deleted=True, edge_id=edge_id)
+        return UnlinkResponse(
+            deleted=True,
+            edge_id=edge_id,
+            dry_run=False,
+            preview_edge=None,
+        )
 
     # ------------------------------------------------------------------
     # Check preconditions (BH-023, BH-033 through BH-036)

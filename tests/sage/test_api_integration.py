@@ -223,10 +223,15 @@ async def test_link_201(app, client):
     )
     assert resp3.status_code == 201
     body = resp3.json()
-    assert body["source_id"] == doc_id_a
-    assert body["target_id"] == doc_id_b
-    assert body["edge_type"] == "references"
-    assert "id" in body
+    # T-0152: link router now returns LinkResponse wrapper; edge
+    # fields live under "edge".
+    assert body["dry_run"] is False
+    assert body["created"] is True
+    edge = body["edge"]
+    assert edge["source_id"] == doc_id_a
+    assert edge["target_id"] == doc_id_b
+    assert edge["edge_type"] == "references"
+    assert "id" in edge
 
 
 async def test_link_self_referential_400(client):

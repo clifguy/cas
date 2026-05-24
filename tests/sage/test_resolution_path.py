@@ -99,15 +99,17 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    covers = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
     return covers.id
 
 
@@ -248,24 +250,28 @@ async def test_cr_040_debug_records_retracts_applied(graph_store, graph_ops_serv
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    covers = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
-    retracts_edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a7"),
-            target_id=None,
-            edge_type=EdgeType.RETRACTS,
-            retracted_edge_id=covers.id,
-            source_valid_from_version=_id("a7"),
+    ).edge
+    retracts_edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a7"),
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                retracted_edge_id=covers.id,
+                source_valid_from_version=_id("a7"),
+            )
         )
-    )
+    ).edge
 
     out = await graph_ops_service.traverse(
         TraverseRequest(
@@ -309,15 +315,17 @@ async def test_cr_041_debug_records_tombstone_applied(graph_store, graph_ops_ser
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    covers = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
 
     # c1 merged_from a8: tombstones the covers edge with valid_until=a8.
     await _seed_docs(graph_store, _id("c1"))
@@ -389,15 +397,17 @@ async def test_cr_042_resolution_path_preserves_event_order(graph_store, graph_o
             target_valid_from_version=_id("b2"),
         )
     )
-    covers_ac = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("c1"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("c1"),
+    covers_ac = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("c1"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("c1"),
+            )
         )
-    )
+    ).edge
 
     # Retract covers_ac anchored at a3 (in lineage of any a-chain query).
     await graph_ops_service.link(

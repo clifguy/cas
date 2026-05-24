@@ -28,6 +28,7 @@ from sage.models.schemas import (
     TagsPatch,
     Tier3Patch,
     UpdateMetadataRequest,
+    UpdateMetadataResponse,
 )
 from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.storage.graph_store import GraphStore
@@ -52,7 +53,7 @@ class MetadataService:
         document_id: str,
         request: UpdateMetadataRequest,
         modified_by: str,
-    ) -> Document:
+    ) -> UpdateMetadataResponse:
         """Partial update of mutable metadata fields with patch semantics.
 
         Scalar fields (``title``, ``version_label``, ``project``,
@@ -65,6 +66,12 @@ class MetadataService:
         existing tier3 key overwrites without error. The merged
         tier3 dict is validated against the resolved doc_type's
         metadata_schema after applying the patch in memory.
+
+        Returns:
+            ``UpdateMetadataResponse`` wrapping the post-patch document
+            and a ``dry_run`` echo (T-0152). On a real run, ``document``
+            is the persisted row; on a dry-run, ``document`` is the
+            computed post-patch state with no ``updated_at`` advance.
 
         Raises:
             DocumentNotFoundError: document_id does not exist.
@@ -151,6 +158,16 @@ class MetadataService:
                 if request.tier3_metadata is not None:
                     updates["tier3_metadata"] = merged
 
+            # T-0152: dry-run branches BEFORE the persistence call and
+            # BEFORE stamping updated_at / metadata_confirmed. The
+            # computed `updates` dict already represents the would-be
+            # post-patch state for every persisted field; applying it
+            # to a shallow copy of the in-memory doc gives the preview
+            # with byte-identical semantics to the real-run output.
+            if request.dry_run:
+                preview = doc.model_copy(update=updates)
+                return UpdateMetadataResponse(document=preview, dry_run=True)
+
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).
             updates["metadata_confirmed"] = True
@@ -173,7 +190,7 @@ class MetadataService:
                 if chunk_updates:
                     await self._content.update_chunk_metadata(document_id, chunk_updates)
 
-            return doc
+            return UpdateMetadataResponse(document=doc, dry_run=False)
 
     async def bulk_update_metadata(
         self,
@@ -230,9 +247,13 @@ class MetadataService:
                 authority_scope=item.authority_scope,
                 document_date=item.document_date,
                 tier3_metadata=item.tier3_metadata,
+                # T-0152: propagate envelope dry_run to each per-item
+                # call. Per-item override is not supported; the
+                # envelope is the single source of truth for the batch.
+                dry_run=request.dry_run,
             )
             try:
-                doc = await self.update_metadata(item.document_id, single, modified_by)
+                response = await self.update_metadata(item.document_id, single, modified_by)
                 results.append(
                     BulkMetadataItemResult(
                         document_id=item.document_id,
@@ -242,7 +263,9 @@ class MetadataService:
                         # passed it); the body's primary bloat field
                         # (semantic_abstract) is what the field report
                         # called out as overflowing the inline budget.
-                        document=(doc if effective_mode == ResponseMode.FULL else None),
+                        document=(
+                            response.document if effective_mode == ResponseMode.FULL else None
+                        ),
                     )
                 )
             except SAGEError as exc:
@@ -259,6 +282,10 @@ class MetadataService:
             success_count=success_count,
             error_count=len(results) - success_count,
             total=len(results),
+            # T-0152: envelope echo so callers can confirm the batch ran
+            # as a preview even when every item's per-item response_mode
+            # was light (and the per-item documents are absent).
+            dry_run=request.dry_run,
         )
 
     @staticmethod

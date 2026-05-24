@@ -112,15 +112,17 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    covers = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
     return covers.id
 
 
@@ -135,13 +137,15 @@ async def test_cr_029_merged_from_accepts_chain_first_and_chain_head(
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("c1"),
-            target_id=_id("a8"),
-            edge_type=EdgeType.MERGED_FROM,
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("c1"),
+                target_id=_id("a8"),
+                edge_type=EdgeType.MERGED_FROM,
+            )
         )
-    )
+    ).edge
 
     assert edge.edge_type == EdgeType.MERGED_FROM
     assert edge.resolution_policy == ResolutionPolicy.NONE
@@ -225,13 +229,15 @@ async def test_cr_032_merged_from_tombstones_atomically(graph_store, graph_ops_s
     sup_edge_before = await graph_store.get_edge(sup_edge_id)
     assert sup_edge_before.valid_until_version is None
 
-    merged = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("c1"),
-            target_id=_id("a8"),
-            edge_type=EdgeType.MERGED_FROM,
+    merged = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("c1"),
+                target_id=_id("a8"),
+                edge_type=EdgeType.MERGED_FROM,
+            )
         )
-    )
+    ).edge
 
     # The covers edge now carries valid_until_version = a8.
     covers_after = await graph_store.get_edge(covers_id)

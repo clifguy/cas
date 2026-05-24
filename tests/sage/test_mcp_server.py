@@ -274,6 +274,8 @@ async def test_update_metadata_partial(vault_services):
     doc_id = ingest_result["id"]
     pre_patch_tags = set(_parse(await sage_get_document("test_vault", doc_id))["tags"])
 
+    # T-0152: sage_update_metadata now returns UpdateMetadataResponse
+    # ({document, dry_run}); unwrap before asserting on document fields.
     result = _parse(
         await sage_update_metadata(
             "test_vault",
@@ -283,9 +285,11 @@ async def test_update_metadata_partial(vault_services):
             doc_type="note",
         )
     )
-    assert result["title"] == "Renamed Document"
-    assert set(result["tags"]) == pre_patch_tags | {"alpha", "beta"}
-    assert result["doc_type"] == "note"
+    assert result["dry_run"] is False
+    doc = result["document"]
+    assert doc["title"] == "Renamed Document"
+    assert set(doc["tags"]) == pre_patch_tags | {"alpha", "beta"}
+    assert doc["doc_type"] == "note"
 
 
 async def test_update_metadata_sets_document_date(vault_services):
@@ -297,6 +301,7 @@ async def test_update_metadata_sets_document_date(vault_services):
     ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
+    # T-0152: wrapper response.
     updated = _parse(
         await sage_update_metadata(
             "test_vault",
@@ -304,7 +309,7 @@ async def test_update_metadata_sets_document_date(vault_services):
             document_date="2026-04-28",
         )
     )
-    assert updated["document_date"] == "2026-04-28"
+    assert updated["document"]["document_date"] == "2026-04-28"
 
     fetched = _parse(await sage_get_document("test_vault", doc_id))
     assert fetched["document_date"] == "2026-04-28"
@@ -331,8 +336,9 @@ async def test_update_metadata_tags_add_only(vault_services):
     )
     doc_id = ingest_result["id"]
 
+    # T-0152: wrapper response.
     result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"add": ["gamma"]}))
-    assert set(result["tags"]) == {"alpha", "beta", "gamma"}
+    assert set(result["document"]["tags"]) == {"alpha", "beta", "gamma"}
 
 
 async def test_update_metadata_tags_remove_only(vault_services):
@@ -343,8 +349,9 @@ async def test_update_metadata_tags_remove_only(vault_services):
     )
     doc_id = ingest_result["id"]
 
+    # T-0152: wrapper response.
     result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"remove": ["alpha"]}))
-    assert result["tags"] == ["beta"]
+    assert result["document"]["tags"] == ["beta"]
 
 
 async def test_update_metadata_tags_add_and_remove(vault_services):
@@ -353,10 +360,11 @@ async def test_update_metadata_tags_add_and_remove(vault_services):
     )
     doc_id = ingest_result["id"]
 
+    # T-0152: wrapper response.
     result = _parse(
         await sage_update_metadata("test_vault", doc_id, tags={"add": ["new"], "remove": ["old"]})
     )
-    assert set(result["tags"]) == {"keep", "new"}
+    assert set(result["document"]["tags"]) == {"keep", "new"}
 
 
 async def test_update_metadata_tags_add_conflict(vault_services):
@@ -483,10 +491,14 @@ async def test_link_creates_edge(vault_services):
             rationale="test link",
         )
     )
-    assert result["source_id"] == doc_a["id"]
-    assert result["target_id"] == doc_b["id"]
-    assert result["edge_type"] == "supersedes"
-    assert "id" in result
+    # T-0152: sage_link now returns LinkResponse-shaped {edge, created,
+    # existing_rationale, dry_run}; unwrap edge for field assertions.
+    assert result["dry_run"] is False
+    edge = result["edge"]
+    assert edge["source_id"] == doc_a["id"]
+    assert edge["target_id"] == doc_b["id"]
+    assert edge["edge_type"] == "supersedes"
+    assert "id" in edge
 
 
 async def test_link_self_referential_error(vault_services):
@@ -519,7 +531,8 @@ async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
         )
     )
     assert result.get("error") is None, result
-    assert result["rationale_kind"] == "version_chain"
+    # T-0152: wrapper response.
+    assert result["edge"]["rationale_kind"] == "version_chain"
 
 
 async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services):
@@ -541,7 +554,8 @@ async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services
         )
     )
     assert result.get("error") is None, result
-    assert result["rationale_kind"] == "version_chain"
+    # T-0152: wrapper response.
+    assert result["edge"]["rationale_kind"] == "version_chain"
 
 
 async def test_t0080_sage_link_defaults_to_manual(vault_services):
@@ -562,7 +576,8 @@ async def test_t0080_sage_link_defaults_to_manual(vault_services):
         )
     )
     assert result.get("error") is None, result
-    assert result["rationale_kind"] == "manual"
+    # T-0152: wrapper response.
+    assert result["edge"]["rationale_kind"] == "manual"
 
 
 async def test_link_idempotent_returns_created_flag(vault_services):
@@ -581,9 +596,11 @@ async def test_link_idempotent_returns_created_flag(vault_services):
             rationale="original rationale",
         )
     )
+    # T-0152: wrapper-level fields (created, existing_rationale, dry_run)
+    # remain at the top level; edge fields live under result["edge"].
     assert first["created"] is True
-    assert "existing_rationale" not in first
-    original_edge_id = first["id"]
+    assert first.get("existing_rationale") is None
+    original_edge_id = first["edge"]["id"]
 
     second = _parse(
         await sage_link(
@@ -595,7 +612,7 @@ async def test_link_idempotent_returns_created_flag(vault_services):
         )
     )
     assert second["created"] is False
-    assert second["id"] == original_edge_id
+    assert second["edge"]["id"] == original_edge_id
     # The pre-existing rationale is surfaced so callers can detect drift.
     assert second["existing_rationale"] == "original rationale"
 
@@ -668,10 +685,12 @@ async def test_link_transitive_both_requires_anchors(vault_services):
             target_valid_from_version=doc_b["id"],
         )
     )
-    assert result["edge_type"] == "covers"
-    assert result["resolution_policy"] == "transitive_both"
-    assert result["source_valid_from_version"] == doc_a["id"]
-    assert result["target_valid_from_version"] == doc_b["id"]
+    # T-0152: wrapper response.
+    edge = result["edge"]
+    assert edge["edge_type"] == "covers"
+    assert edge["resolution_policy"] == "transitive_both"
+    assert edge["source_valid_from_version"] == doc_a["id"]
+    assert edge["target_valid_from_version"] == doc_b["id"]
 
 
 async def test_link_retracts_round_trip(vault_services):
@@ -692,7 +711,9 @@ async def test_link_retracts_round_trip(vault_services):
             target_valid_from_version=doc_b["id"],
         )
     )
-    assert "id" in covers
+    # T-0152: wrapper response.
+    assert "id" in covers["edge"]
+    covers_edge_id = covers["edge"]["id"]
 
     # Bad retracted_edge_id -> retract_target_not_edge
     # Use a valid-shape UUID that doesn't exist in the store; the runtime
@@ -720,13 +741,15 @@ async def test_link_retracts_round_trip(vault_services):
             None,
             "retracts",
             source_valid_from_version=doc_a["id"],
-            retracted_edge_id=covers["id"],
+            retracted_edge_id=covers_edge_id,
         )
     )
-    assert retract["edge_type"] == "retracts"
-    assert retract["resolution_policy"] == "none"
-    assert retract["retracted_edge_id"] == covers["id"]
-    assert "target_id" not in retract or retract.get("target_id") is None
+    # T-0152: wrapper response.
+    retract_edge = retract["edge"]
+    assert retract_edge["edge_type"] == "retracts"
+    assert retract_edge["resolution_policy"] == "none"
+    assert retract_edge["retracted_edge_id"] == covers_edge_id
+    assert retract_edge.get("target_id") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1163,8 +1186,9 @@ async def test_t0157_sage_discover_edges_happy_path(vault_services):
         )
     )
 
-    actual_source = link_result["source_id"]
-    actual_target = link_result["target_id"]
+    # T-0152: sage_link returns wrapper; edge fields live under "edge".
+    actual_source = link_result["edge"]["source_id"]
+    actual_target = link_result["edge"]["target_id"]
 
     result = _parse(
         await sage_discover(
@@ -1203,7 +1227,8 @@ async def test_t0157_sage_discover_edges_light_round_trips_through_serializer(va
             "test_vault",
             mode="catalog",
             target="edges",
-            filters={"source_id": link["source_id"]},
+            # T-0152: sage_link returns wrapper; source_id is under "edge".
+            filters={"source_id": link["edge"]["source_id"]},
             response_mode="light",
         )
     )

@@ -174,16 +174,18 @@ async def test_bh_031_duplicate_edges_now_blocked(graph_store, graph_ops_service
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
-    edge1 = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
-            rationale="First rationale",
+    edge1 = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.REFERENCES,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_b"),
+                rationale="First rationale",
+            )
         )
-    )
+    ).edge
     with pytest.raises(_sqlite3.IntegrityError):
         await graph_ops_service.link(
             LinkRequest(
@@ -213,15 +215,17 @@ async def test_bh_032_edge_auto_generated_id(graph_store, graph_ops_service):
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.REFERENCES,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_b"),
+            )
         )
-    )
+    ).edge
 
     assert edge.id
     assert isinstance(edge.id, str)
@@ -543,46 +547,54 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
     await graph_store.insert_document(_make_doc(_id("doc_c")))
 
     # Two distinct covers edges that can each be retracted.
-    covers_b = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
+    covers_b = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_b"),
+            )
         )
-    )
-    covers_c = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_c"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_c"),
+    ).edge
+    covers_c = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_c"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_c"),
+            )
         )
-    )
+    ).edge
 
     # Retract both: both retracts edges share source_id=doc_a,
     # target_id=NULL, edge_type='retracts'. Under SQLite NULL-distinct
     # semantics this is legal.
-    retract_b = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=None,
-            edge_type=EdgeType.RETRACTS,
-            source_valid_from_version=_id("doc_a"),
-            retracted_edge_id=covers_b.id,
+    retract_b = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                source_valid_from_version=_id("doc_a"),
+                retracted_edge_id=covers_b.id,
+            )
         )
-    )
-    retract_c = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=None,
-            edge_type=EdgeType.RETRACTS,
-            source_valid_from_version=_id("doc_a"),
-            retracted_edge_id=covers_c.id,
+    ).edge
+    retract_c = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                source_valid_from_version=_id("doc_a"),
+                retracted_edge_id=covers_c.id,
+            )
         )
-    )
+    ).edge
     assert retract_b.id != retract_c.id
 
 
@@ -739,13 +751,15 @@ async def test_t0111_supersedes_without_synced_from_still_succeeds(graph_store, 
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.SUPERSEDES,
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.SUPERSEDES,
+            )
         )
-    )
+    ).edge
     assert edge.edge_type == EdgeType.SUPERSEDES
     assert edge.synced_from_version is None
     assert edge.synced_from_content_hash is None
@@ -765,15 +779,17 @@ async def test_t0111_chain_membership_accepts_predecessor_version(graph_store, g
     # chain_ids = [v1, v2, v3]; v3 is the head, v2 is the middle.
     await graph_store.insert_document(_make_doc(_id("consumer")))
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("consumer"),
-            target_id=chain_ids[2],  # head
-            edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=_id("consumer"),
-            synced_from_version=chain_ids[1],  # middle, in chain
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("consumer"),
+                target_id=chain_ids[2],  # head
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=_id("consumer"),
+                synced_from_version=chain_ids[1],  # middle, in chain
+            )
         )
-    )
+    ).edge
     assert edge.synced_from_version == chain_ids[1]
 
 
@@ -783,15 +799,17 @@ async def test_t0111_chain_membership_accepts_tail_version(graph_store, graph_op
     chain_ids = await _create_linear_chain(graph_store, count=3)
     await graph_store.insert_document(_make_doc(_id("consumer")))
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("consumer"),
-            target_id=chain_ids[2],
-            edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=_id("consumer"),
-            synced_from_version=chain_ids[0],  # tail, also in chain
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("consumer"),
+                target_id=chain_ids[2],
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=_id("consumer"),
+                synced_from_version=chain_ids[0],  # tail, also in chain
+            )
         )
-    )
+    ).edge
     assert edge.synced_from_version == chain_ids[0]
 
 
@@ -1319,15 +1337,17 @@ async def test_unlink_deletes_existing_edge(graph_store, graph_ops_service):
     await graph_store.insert_document(doc_a)
     await graph_store.insert_document(doc_b)
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("doc_a"),
-            target_id=_id("doc_b"),
-            edge_type=EdgeType.REFERENCES,
-            source_valid_from_version=_id("doc_a"),
-            target_valid_from_version=_id("doc_b"),
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("doc_a"),
+                target_id=_id("doc_b"),
+                edge_type=EdgeType.REFERENCES,
+                source_valid_from_version=_id("doc_a"),
+                target_valid_from_version=_id("doc_b"),
+            )
         )
-    )
+    ).edge
 
     result = await graph_ops_service.unlink(edge.id)
     assert result.deleted is True

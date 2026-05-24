@@ -6,11 +6,11 @@ from sage.api.dependencies import get_graph_ops_service, get_vault_id
 from sage.models.schemas import (
     ChainRequest,
     ChainResponse,
-    Edge,
     EdgeIdStr,
     ErrorResponse,
     FunctionIdStr,
     LinkRequest,
+    LinkResponse,
     PreconditionResult,
     TraverseRequest,
     TraverseResponse,
@@ -24,7 +24,7 @@ router = APIRouter(tags=["Graph Operations"])
 
 @router.post(
     "/edges",
-    response_model=Edge,
+    response_model=LinkResponse,
     status_code=201,
     responses={
         400: {
@@ -69,7 +69,7 @@ async def link(
     request: LinkRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
-) -> Edge:
+) -> LinkResponse:
     return await service.link(request)
 
 
@@ -87,10 +87,15 @@ async def link(
 )
 async def unlink(
     edge_id: EdgeIdStr,
+    dry_run: bool = False,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> UnlinkResponse:
-    return await service.unlink(edge_id)
+    # T-0152: dry_run is a query parameter (DELETE endpoints have no
+    # body; the schema-side convention used for other tools doesn't
+    # apply). When true, the edge-existence check still runs and
+    # raises edge_not_found, but no delete is performed.
+    return await service.unlink(edge_id, dry_run=dry_run)
 
 
 @router.get(

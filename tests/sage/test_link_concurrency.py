@@ -193,7 +193,8 @@ async def test_link_serializes_concurrent_calls(graph_store, graph_ops_service, 
     )
 
     assert len(results) == 4
-    assert all(r.id for r in results)
+    # T-0152: link() now returns LinkResponse; unwrap to verify edges.
+    assert all(r.edge.id for r in results)
     assert active["peak"] == 1, (
         f"expected only one link call in-flight at a time under the lock, "
         f"peak overlap was {active['peak']}"

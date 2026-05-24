@@ -163,14 +163,16 @@ async def test_t2_omitted_attributes_default_to_none_and_persist_as_null(
     await graph_store.insert_document(_make_doc(src))
     await graph_store.insert_document(_make_doc(tgt))
 
-    created = await graph_ops_service.link(
-        LinkRequest(
-            source_id=src,
-            target_id=tgt,
-            edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=src,
+    created = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=src,
+                target_id=tgt,
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=src,
+            )
         )
-    )
+    ).edge
     assert created.synced_from_version is None
     assert created.synced_from_content_hash is None
 
@@ -220,15 +222,17 @@ async def test_t3_one_attribute_set_other_null_no_coupled_enforcement(
     await graph_store.insert_document(_make_doc(src))
     await graph_store.insert_document(_make_doc(tgt))
 
-    created = await graph_ops_service.link(
-        LinkRequest(
-            source_id=src,
-            target_id=tgt,
-            edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=src,
-            synced_from_version=synced_from,
+    created = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=src,
+                target_id=tgt,
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=src,
+                synced_from_version=synced_from,
+            )
         )
-    )
+    ).edge
     assert created.synced_from_version == synced_from
     assert created.synced_from_content_hash is None
 

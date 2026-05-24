@@ -35,6 +35,7 @@ from sage.models.schemas import (
     SetLifecycleResponse,
 )
 from sage.services._bulk_envelope import sage_error_to_envelope
+from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -73,7 +74,14 @@ class LifecycleService:
     async def set_lifecycle(
         self, document_id: str, request: SetLifecycleRequest
     ) -> SetLifecycleResponse:
-        """Execute a lifecycle state transition.
+        """Execute a lifecycle state transition (or preview it on dry-run).
+
+        T-0152: when ``request.dry_run`` is True, runs every validator in
+        the same order as a real run but skips the persistence call
+        (``update_document`` / ``supersede_atomic``) and the chunk-store
+        sync. The response carries the would-be document and, for
+        ``supersede``, a would-be ``created_edge`` with sentinel id
+        ``<dry-run>`` (the real id is non-deterministic at commit time).
 
         Raises:
             DocumentNotFoundError: document_id does not exist.
@@ -103,6 +111,8 @@ class LifecycleService:
 
             to_state, creates_edge = result
 
+            created_edge: Edge | None = None
+
             # Supersede-specific validation (BH-016, BH-017) and atomic commit.
             # The lifecycle flip and the supersedes edge insert run in a
             # single SQLite transaction so a mid-operation failure cannot
@@ -120,28 +130,46 @@ class LifecycleService:
                     "lifecycle_status": to_state,
                     "updated_at": now.isoformat(),
                 }
+                # T-0152: on dry-run, build the would-be edge with a
+                # sentinel id so callers can never mistake it for a
+                # persisted edge. On real-run, mint the real uuid up
+                # front so it can be returned alongside the document.
+                edge_id = _DRY_RUN_SENTINEL_EDGE_ID if request.dry_run else str(uuid.uuid4())
                 edge = Edge(
-                    id=str(uuid.uuid4()),
+                    id=edge_id,
                     source_id=request.new_version_id,
                     target_id=document_id,
                     edge_type=EdgeType.SUPERSEDES,
                     resolution_policy=ResolutionPolicy.NONE,
                     created_at=now,
                 )
-                updated_doc = await self._store.supersede_atomic(
-                    document_id, predecessor_updates, edge
-                )
+                if request.dry_run:
+                    # Compute the would-be predecessor without persisting.
+                    updated_doc = doc.model_copy(update=predecessor_updates)
+                    created_edge = edge
+                else:
+                    updated_doc = await self._store.supersede_atomic(
+                        document_id, predecessor_updates, edge
+                    )
+                    created_edge = edge
             else:
                 # Non-supersede actions: single-row update is naturally atomic.
                 now = datetime.now(timezone.utc).isoformat()
                 updates = {"lifecycle_status": to_state, "updated_at": now}
-                updated_doc = await self._store.update_document(document_id, updates)
+                if request.dry_run:
+                    updated_doc = doc.model_copy(update=updates)
+                else:
+                    updated_doc = await self._store.update_document(document_id, updates)
 
             # Sync the new lifecycle_status to the chunk store so LanceDB
             # pre-filter pushdown (T-0077) stays accurate after the
             # transition. Best-effort: legacy wiring that omits
             # content_store falls through as a no-op.
-            if self._content is not None:
+            #
+            # T-0152: skipped on dry-run — the chunk-store sync is a
+            # persistence side effect and must not run when the caller
+            # asked for a preview.
+            if self._content is not None and not request.dry_run:
                 await self._content.update_chunk_metadata(
                     document_id, {"lifecycle_status": to_state}
                 )
@@ -157,6 +185,8 @@ class LifecycleService:
             return SetLifecycleResponse(
                 document=updated_doc,
                 warnings=warnings if warnings else None,
+                dry_run=request.dry_run,
+                created_edge=created_edge,
             )
 
     async def bulk_set_lifecycle(self, request: BulkLifecycleRequest) -> BulkLifecycleResponse:
@@ -199,7 +229,13 @@ class LifecycleService:
 
         results: list[BulkLifecycleItemResult] = []
         for item in request.items:
-            single = SetLifecycleRequest(action=item.action, new_version_id=item.new_version_id)
+            single = SetLifecycleRequest(
+                action=item.action,
+                new_version_id=item.new_version_id,
+                # T-0152: propagate envelope dry_run to each per-item
+                # call. Per-item override is not supported.
+                dry_run=request.dry_run,
+            )
             try:
                 response = await self.set_lifecycle(item.document_id, single)
                 results.append(
@@ -230,6 +266,10 @@ class LifecycleService:
             success_count=success_count,
             error_count=len(results) - success_count,
             total=len(results),
+            # T-0152: envelope echo so callers can confirm the batch ran
+            # as a preview even when every per-item document was
+            # dropped under light response_mode.
+            dry_run=request.dry_run,
         )
 
     def prepare_supersede(

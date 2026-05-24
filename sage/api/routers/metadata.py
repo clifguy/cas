@@ -9,10 +9,10 @@ from sage.api.dependencies import get_metadata_service, get_vault_id
 from sage.models.schemas import (
     BulkMetadataRequest,
     BulkMetadataResponse,
-    Document,
     DocumentIdStr,
     ErrorResponse,
     UpdateMetadataRequest,
+    UpdateMetadataResponse,
     VaultIdStr,
 )
 from sage.services.metadata import MetadataService
@@ -22,7 +22,7 @@ router = APIRouter(tags=["Document Metadata"])
 
 @router.patch(
     "/documents/{document_id}/metadata",
-    response_model=Document,
+    response_model=UpdateMetadataResponse,
     responses={
         400: {
             "model": ErrorResponse,
@@ -43,7 +43,7 @@ async def update_metadata(
     request: UpdateMetadataRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     metadata_service: MetadataService = Depends(get_metadata_service),
-) -> Document:
+) -> UpdateMetadataResponse:
     # In Phase 1, use vault owner as modifier. In production, extract from auth.
     return await metadata_service.update_metadata(document_id, request, modified_by="system")
 

@@ -33,6 +33,7 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestRequest,
     LinkRequest,
+    LinkResponse,
     SetLifecycleRequest,
     Sha256Str,
     TraverseRequest,
@@ -362,6 +363,7 @@ def register_sage_tools(
         authority_scope: str | None = None,
         document_date: str | None = None,
         tier3_metadata: dict | None = None,
+        dry_run: bool = False,
     ) -> dict:
         """Patch mutable metadata fields on a document.
 
@@ -444,6 +446,20 @@ def register_sage_tools(
         the caller should adjust its model of the document state rather
         than blindly re-issue.
 
+        Dry-run mode (T-0152):
+        Set ``dry_run=true`` to validate the patch and compute the
+        post-patch state without persisting. The response is wrapped:
+        ``{"document": <post-patch document>, "dry_run": true}``. No
+        ``updated_at`` advance, no ``metadata_confirmed`` flip, no
+        chunk-store sync. Same validators run in the same order, so a
+        dry-run that returns success means the real call will succeed
+        modulo race conditions on shared state. The per-document lock
+        is still acquired so the preview is consistent with concurrent
+        mutations. Worked example: ``sage_update_metadata(vault_id="v",
+        document_id="d", tier3_metadata={"set": {"severity": "high"}},
+        dry_run=True)`` returns the would-be document with the patched
+        tier3 dict; storage is byte-identical to pre-call.
+
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier.
@@ -457,6 +473,8 @@ def register_sage_tools(
             document_date: Document calendar date (YYYY-MM-DD).
             tier3_metadata: Tier-3 patch object ``{set?, unset?}``.
                 See above.
+            dry_run: T-0152. When True, run all validators and compute
+                the post-patch state, but do NOT persist. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -475,11 +493,12 @@ def register_sage_tools(
                 authority_scope=authority_scope,
                 document_date=document_date,
                 tier3_metadata=tier3_metadata,
+                dry_run=dry_run,
             )
-            doc = await v.metadata_service.update_metadata(
+            response = await v.metadata_service.update_metadata(
                 document_id, request, v.config.vault.owner
             )
-            return serialize(doc)
+            return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -583,6 +602,7 @@ def register_sage_tools(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
+        dry_run: bool = False,
     ) -> dict:
         """Apply lifecycle transitions to many documents in one call.
 
@@ -632,6 +652,16 @@ def register_sage_tools(
                 smaller batches default to ``"full"``. Invalid values
                 surface as an ``internal_error`` envelope before any
                 per-item work runs.
+            dry_run: T-0152. When True, every item runs as a dry-run —
+                validators execute, post-state is computed, but no
+                persistence occurs. Envelope-level only; per-item
+                override is not supported. **Limitation:** each item's
+                dry-run is evaluated against the committed state at
+                batch start; no item's would-be effects are visible to
+                subsequent items. For full preview accuracy under
+                sequential dependencies (e.g., item N supersedes a
+                document and item N+1 tries to mutate it), dry-run
+                each item separately. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -643,7 +673,11 @@ def register_sage_tools(
             # rides this same up-front rejection path (T-0153).
             validated_items = [BulkLifecycleItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
-            request = BulkLifecycleRequest(items=validated_items, response_mode=response_mode)
+            request = BulkLifecycleRequest(
+                items=validated_items,
+                response_mode=response_mode,
+                dry_run=dry_run,
+            )
             response = await v.lifecycle_service.bulk_set_lifecycle(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
@@ -654,6 +688,7 @@ def register_sage_tools(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
+        dry_run: bool = False,
     ) -> dict:
         """Apply metadata patches to many documents in one call.
 
@@ -743,6 +778,16 @@ def register_sage_tools(
                 smaller batches default to ``"full"``. Invalid values
                 surface as an ``internal_error`` envelope before any
                 per-item work runs.
+            dry_run: T-0152. When True, every item runs as a dry-run —
+                validators execute, post-state is computed, but no
+                persistence occurs. Envelope-level only; per-item
+                override is not supported. **Limitation:** each item's
+                dry-run is evaluated against the committed state at
+                batch start; no item's would-be effects are visible to
+                subsequent items. For full preview accuracy under
+                sequential dependencies (e.g., item N adds tag X and
+                item N+1 tries to add the same tag), dry-run each item
+                separately. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -764,7 +809,11 @@ def register_sage_tools(
             # rides this same up-front rejection path (T-0153).
             validated_items = [BulkMetadataItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
-            request = BulkMetadataRequest(items=validated_items, response_mode=response_mode)
+            request = BulkMetadataRequest(
+                items=validated_items,
+                response_mode=response_mode,
+                dry_run=dry_run,
+            )
             response = await v.metadata_service.bulk_update_metadata(request, v.config.vault.owner)
             return serialize(response)
         except (SAGEError, ValueError) as e:
@@ -817,6 +866,7 @@ def register_sage_tools(
         rationale_kind: str | None = None,
         synced_from_version: str | None = None,
         synced_from_content_hash: str | None = None,
+        dry_run: bool = False,
     ) -> dict:
         """Create a typed edge between two documents in the graph.
 
@@ -872,6 +922,22 @@ def register_sage_tools(
         is preserved as canonical provenance. To intentionally replace
         an edge, ``sage_unlink`` it first.
 
+        Dry-run mode (T-0152):
+        Set ``dry_run=true`` to validate the request and compute the
+        would-be edge without persisting. The response shape is
+        identical to a real-run response (``{edge, created,
+        existing_rationale, dry_run}``); ``dry_run=true`` is echoed and
+        the would-be ``edge.id`` is the nil-UUID sentinel
+        ``00000000-0000-0000-0000-000000000000``. The T-0079 natural-key
+        pre-check runs in dry-run too, so a preview on a (source,
+        target, edge_type) that already has an edge returns
+        ``created=false`` with the existing edge id and rationale —
+        same shape as the real-run no-op path. Worked example:
+        ``sage_link(vault_id="v", source_id="a", target_id="b",
+        edge_type="references", source_valid_from_version="a",
+        target_valid_from_version="b", dry_run=True)`` returns the
+        would-be edge; no edge row is inserted.
+
         Args:
             vault_id: Target vault identifier.
             source_id: Source document identifier.
@@ -916,6 +982,9 @@ def register_sage_tools(
                 recommended on derivations because version labels are
                 reused and can drift from content (in-place edits).
                 Unset = explicit null.
+            dry_run: T-0152. When True, validate the request and
+                compute the would-be edge without persisting.
+                Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -941,24 +1010,27 @@ def register_sage_tools(
                 rationale_kind=rationale_kind,
                 synced_from_version=synced_from_version,
                 synced_from_content_hash=synced_from_content_hash,
+                dry_run=dry_run,
             )
             # T-0079: link_idempotent returns (edge, created). On a
             # duplicate natural-key triple the existing edge is
             # returned with created=False and the caller's rationale
-            # is discarded. The MCP response surfaces both signals so
-            # callers can detect drift and inspect the canonical
-            # rationale.
+            # is discarded. T-0152: wrap in LinkResponse so the
+            # dry_run echo and the existing_rationale field have a
+            # typed home.
             edge, created = await v.graph_ops_service.link_idempotent(request)
-            payload = serialize(edge)
-            payload["created"] = created
-            if not created:
-                payload["existing_rationale"] = edge.rationale
-            return payload
+            response = LinkResponse(
+                edge=edge,
+                created=created,
+                existing_rationale=edge.rationale if not created else None,
+                dry_run=dry_run,
+            )
+            return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
     @mcp.tool()
-    async def sage_unlink(vault_id: str, edge_id: str) -> dict:
+    async def sage_unlink(vault_id: str, edge_id: str, dry_run: bool = False) -> dict:
         """Delete a production edge from the graph.
 
         For staging-table edges (pre-confirmation), use
@@ -976,15 +1048,24 @@ def register_sage_tools(
         Error modes:
         - ``edge_not_found`` (404): no production edge with that id.
 
+        Dry-run mode (T-0152):
+        Set ``dry_run=true`` to confirm the edge exists and preview
+        what would be deleted without persisting. The response carries
+        ``deleted=false``, ``dry_run=true``, and ``preview_edge``
+        populated with the would-be-deleted edge. A missing edge_id
+        raises the same ``edge_not_found`` error as a real-run.
+
         Args:
             vault_id: Target vault identifier.
             edge_id: Production edge identifier.
+            dry_run: T-0152. When True, preview the deletion without
+                persisting. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             v = get_vault(vault_id)
-            result = await v.graph_ops_service.unlink(edge_id)
+            result = await v.graph_ops_service.unlink(edge_id, dry_run=dry_run)
             return serialize(result)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -1598,6 +1679,7 @@ def register_sage_tools(
         access_control_defaults: dict | None = None,
         retrieval_health: dict | None = None,
         force: bool = False,
+        dry_run: bool = False,
     ) -> dict:
         """Update vault configuration at the section level.
 
@@ -1629,6 +1711,19 @@ def register_sage_tools(
           fails schema validation, or the request attempts to change
           ``vault.id``.
 
+        Dry-run mode (T-0152):
+        Set ``dry_run=true`` to validate the merged config and preview
+        which sections would change, without writing yaml or reloading
+        the registry. The response carries ``status="previewed"``,
+        ``dry_run=true``, ``warnings`` (always populated when present —
+        dry-run NEVER raises ``destructive_config_change``), and a
+        ``preview.changed_sections`` list naming the top-level sections
+        that would change. ``force`` is a no-op on dry-run. Worked
+        example: ``sage_update_vault_config(vault_id="v",
+        document_types={"doc_types": [...]}, dry_run=True)`` returns
+        the destructive-change warnings (if any) so the caller can
+        decide whether to follow up with ``force=True`` on a real run.
+
         Args:
             vault_id: Target vault identifier.
             vault: Replacement for the vault identity section.
@@ -1642,6 +1737,9 @@ def register_sage_tools(
             retrieval_health: Replacement for the retrieval_health section.
             force: When True, proceed even if the update would orphan
                 existing documents. Default False.
+            dry_run: T-0152. When True, preview the change without
+                persisting; never raises destructive_config_change.
+                Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1656,6 +1754,7 @@ def register_sage_tools(
                 abstraction=abstraction,
                 access_control_defaults=access_control_defaults,
                 retrieval_health=retrieval_health,
+                dry_run=dry_run,
             )
             return serialize(
                 await services.vault_config_service.update_config(vault_id, body, force)

@@ -30,6 +30,7 @@ from sage.models.schemas import (
     HealthIndicators,
     UpdateVaultConfigRequest,
     UpdateVaultConfigResponse,
+    VaultConfigPreview,
     VaultStatsResponse,
 )
 from sage.storage.graph_store import GraphStore
@@ -142,6 +143,14 @@ class VaultConfigService:
         If the merged config removes a doc_type or lifecycle state that
         still has documents attached, raises DestructiveConfigChangeError
         unless ``force`` is True.
+
+        T-0152: when ``body.dry_run`` is True, runs the merge, schema
+        validation, vault.id-change check, and destructive-change
+        detection, but skips ``_write_config_yaml`` and
+        ``_registry_service.reload``. Dry-run NEVER raises
+        ``DestructiveConfigChangeError``; warnings are always returned
+        in the response body so the caller can decide whether to
+        retry with ``force=True``. ``force`` is a no-op on dry-run.
         """
         if self._registry_service is None:
             raise RuntimeError(
@@ -153,7 +162,11 @@ class VaultConfigService:
         old_config = self._config
 
         merged = old_config.model_dump()
-        body_dict = body.model_dump(exclude_none=True)
+        # T-0152: exclude `dry_run` from the body dict — it's a request
+        # control field, not a config section. (`_ALL_SECTIONS` filtering
+        # below would skip it anyway, but excluding here keeps `merged`
+        # clean for the section-diff computation.)
+        body_dict = body.model_dump(exclude_none=True, exclude={"dry_run"})
         for section in _ALL_SECTIONS:
             if section in body_dict:
                 merged[section] = body_dict[section]
@@ -166,6 +179,27 @@ class VaultConfigService:
         new_config = _validate_config(merged)
 
         warnings = await _check_destructive_changes(old_config, new_config, self._store)
+
+        # T-0152: dry-run path — compute the section-level diff and
+        # return the preview without writing yaml or reloading the
+        # registry. dry-run never raises DestructiveConfigChangeError;
+        # warnings (if any) appear in the response body so the caller
+        # can decide whether to follow up with a real-run + force.
+        if body.dry_run:
+            old_dump = old_config.model_dump()
+            changed_sections = [
+                section
+                for section in _ALL_SECTIONS
+                if section in body_dict and merged[section] != old_dump.get(section)
+            ]
+            return UpdateVaultConfigResponse(
+                status="previewed",
+                vault_id=vault_id,
+                warnings=warnings,
+                dry_run=True,
+                preview=VaultConfigPreview(changed_sections=changed_sections),
+            )
+
         if warnings and not force:
             raise DestructiveConfigChangeError(warnings)
 
@@ -178,4 +212,6 @@ class VaultConfigService:
             status="updated",
             vault_id=vault_id,
             warnings=warnings,
+            dry_run=False,
+            preview=None,
         )

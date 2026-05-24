@@ -109,24 +109,28 @@ async def _seed_retract_setup(graph_store, graph_ops_service, retract_anchor: st
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    covers = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    covers = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
-    retracts_edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=retract_anchor,
-            target_id=None,
-            edge_type=EdgeType.RETRACTS,
-            retracted_edge_id=covers.id,
-            source_valid_from_version=retract_anchor,
+    ).edge
+    retracts_edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=retract_anchor,
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                retracted_edge_id=covers.id,
+                source_valid_from_version=retract_anchor,
+            )
         )
-    )
+    ).edge
     return covers, retracts_edge
 
 
@@ -339,14 +343,16 @@ async def test_cr_053_retracts_suppresses_transitive_target_edge(graph_store, mi
     await _seed_docs(graph_store, _id("a3"), _id("b1"), _id("b2"))
     await _seed_supersedes_chain(graph_store, [_id("b1"), _id("b2")])
 
-    auth = await service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.AUTHORITATIVE_FOR,
-            target_valid_from_version=_id("b2"),
+    auth = (
+        await service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.AUTHORITATIVE_FOR,
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
 
     # Baseline: without a retract, the edge surfaces outbound from a3.
     baseline = await service.traverse(

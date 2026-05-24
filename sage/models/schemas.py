@@ -873,6 +873,20 @@ class SetLifecycleRequest(BaseModel):
             "this operation does not create it."
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: When true, run all validators and compute the "
+            "post-transition state, but do NOT persist. The response "
+            "carries the would-be `document` and `dry_run=true`; for "
+            "`supersede`, the would-be `created_edge` is also populated "
+            "with the nil-UUID sentinel id "
+            "`00000000-0000-0000-0000-000000000000` so a caller that "
+            "mistakes it for a real edge id fails loudly on lookup. "
+            "The per-document lock is still acquired so the preview is "
+            "consistent with concurrent mutations."
+        ),
+    )
 
 
 class SetLifecycleResponse(BaseModel):
@@ -890,6 +904,26 @@ class SetLifecycleResponse(BaseModel):
             "document's pipeline_status is non-terminal at the time of the "
             "lifecycle transition. Absent or empty when there are no "
             "warnings."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`; in that "
+            "case no state was written and `document` carries the "
+            "computed post-transition state without the persisted "
+            "`updated_at` advance."
+        ),
+    )
+    created_edge: Edge | None = Field(
+        default=None,
+        description=(
+            "T-0152: Populated only when `action=supersede`. On a real "
+            "run, this is the `supersedes` edge that was created "
+            "atomically with the lifecycle flip. On a dry-run, this is "
+            "the would-be edge with the nil-UUID sentinel `id` "
+            "`00000000-0000-0000-0000-000000000000`; the real `id` is "
+            "non-deterministic and assigned at commit time."
         ),
     )
 
@@ -946,6 +980,20 @@ class BulkLifecycleRequest(BaseModel):
             "full structured error envelope regardless of mode. When "
             'unset, batches with more than 5 items default to "light", '
             'smaller batches default to "full".'
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: When true, every item runs in dry-run mode — "
+            "validators execute, post-state is computed, but no "
+            "persistence occurs. Per-item override is not supported. "
+            "**Limitation:** each item's dry-run is evaluated against "
+            "the committed state at batch start; no item's would-be "
+            "effects are visible to subsequent items. For full preview "
+            "accuracy under sequential dependencies (e.g., item N "
+            "supersedes a document and item N+1 tries to mutate it), "
+            "dry-run each item separately."
         ),
     )
 
@@ -1011,6 +1059,15 @@ class BulkLifecycleResponse(BaseModel):
     total: int = Field(
         ge=0,
         description="Total items processed; equals `len(results)`.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`. Every "
+            "per-item result reflects the dry-run path: success items "
+            "carry the would-be post-state document (subject to "
+            "`response_mode`), and no state was written."
+        ),
     )
 
 
@@ -1158,6 +1215,17 @@ class UpdateMetadataRequest(BaseModel):
             "against the resolved doc_type's metadata_schema. See Tier3Patch."
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: When true, run all validators and compute the "
+            "post-patch state, but do NOT persist. The response carries "
+            "the would-be `document` and `dry_run=true`; no chunk-store "
+            "sync, no `metadata_confirmed` flip, no `updated_at` advance. "
+            "The per-document lock is still acquired so the preview is "
+            "consistent with concurrent mutations."
+        ),
+    )
 
 
 class BulkMetadataItem(BaseModel):
@@ -1239,6 +1307,20 @@ class BulkMetadataRequest(BaseModel):
             'smaller batches default to "full".'
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: When true, every item runs in dry-run mode — "
+            "validators execute, post-state is computed, but no "
+            "persistence occurs. Per-item override is not supported. "
+            "**Limitation:** each item's dry-run is evaluated against "
+            "the committed state at batch start; no item's would-be "
+            "effects are visible to subsequent items. For full preview "
+            "accuracy under sequential dependencies (e.g., item N adds "
+            "tag X and item N+1 tries to add the same tag), dry-run "
+            "each item separately."
+        ),
+    )
 
 
 class BulkMetadataItemResult(BaseModel):
@@ -1291,6 +1373,39 @@ class BulkMetadataResponse(BaseModel):
     success_count: int = Field(ge=0, description="Number of items with `status=success`.")
     error_count: int = Field(ge=0, description="Number of items with `status=error`.")
     total: int = Field(ge=0, description="Total items processed; equals `len(results)`.")
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`. Every "
+            "per-item result reflects the dry-run path: success items "
+            "carry the would-be post-patch document (subject to "
+            "`response_mode`), and no state was written."
+        ),
+    )
+
+
+class UpdateMetadataResponse(BaseModel):
+    """T-0152 wrapper for single-item `update_metadata`.
+
+    Promotes the bare-Document return so the dry-run flag has a home.
+    The `document` field is the post-patch state — persisted on a real
+    run, computed in memory on a dry-run.
+    """
+
+    document: Document = Field(
+        description=(
+            "The updated document record. On a real run, this is what "
+            "was persisted (with `updated_at` advanced and "
+            "`metadata_confirmed=true`). On a dry-run, this is the "
+            "computed post-patch state without those side effects."
+        )
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`; in that case no state was written."
+        ),
+    )
 
 
 class RegisterUserRequest(BaseModel):
@@ -1437,15 +1552,82 @@ class LinkRequest(BaseModel):
             "unset = explicit null. (T-0110 schema; T-0111 typed)"
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: When true, run all validators (including the "
+            "T-0079 natural-key pre-check) and compute the would-be "
+            "edge, but do NOT persist. The response carries the "
+            "would-be `edge` with the nil-UUID sentinel id "
+            "`00000000-0000-0000-0000-000000000000` (or the existing "
+            "edge id on a natural-key collision, with `created=false`) "
+            "and `dry_run=true`. The process-wide `_link_lock` is still "
+            "acquired so the preview is consistent with concurrent link "
+            "writes."
+        ),
+    )
+
+
+class LinkResponse(BaseModel):
+    """T-0152 wrapper for `sage_link` return.
+
+    Promotes the previously-hand-constructed `{edge, created, ...}`
+    dict to a real schema so the dry-run flag has a home.
+    """
+
+    edge: Edge = Field(
+        description=(
+            "The edge record. On a real run, this is the persisted edge "
+            "(with `created=true`) or the existing edge that was matched "
+            "by the natural-key idempotency check (with `created=false`). "
+            "On a dry-run, this is the would-be edge with the nil-UUID "
+            "sentinel id `00000000-0000-0000-0000-000000000000` (or the "
+            "existing edge id on a natural-key hit)."
+        )
+    )
+    created: bool = Field(
+        description=(
+            "True iff a new edge would be (or was) created. False on "
+            "the natural-key idempotency path where an edge already "
+            "exists for `(source, target, edge_type)`."
+        )
+    )
+    existing_rationale: str | None = Field(
+        default=None,
+        description=(
+            "When `created=false`, the rationale stored on the existing "
+            "edge that satisfied the idempotency check. Null otherwise."
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`; in that case no state was written."
+        ),
+    )
 
 
 class UnlinkResponse(BaseModel):
-    """Returned after deleting a production edge."""
+    """Returned after deleting (or previewing the deletion of) a production edge."""
 
-    deleted: Literal[True] = Field(
-        description="Discriminator confirming the unlink succeeded; always true."
+    deleted: bool = Field(
+        description=("True on a successful real-run deletion. False on a dry-run preview (T-0152).")
     )
-    edge_id: EdgeIdStr = Field(description="Id of the edge that was deleted.")
+    edge_id: EdgeIdStr = Field(description="Id of the edge that was (or would be) deleted.")
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the unlink call set `dry_run=true`; in "
+            "that case no state was written and `preview_edge` carries "
+            "the edge that would be deleted."
+        ),
+    )
+    preview_edge: Edge | None = Field(
+        default=None,
+        description=(
+            "T-0152: On a dry-run, the existing edge that would be deleted. Null on a real-run."
+        ),
+    )
 
 
 class ResolutionPathEntry(BaseModel):
@@ -3026,6 +3208,21 @@ class UpdateVaultConfigRequest(BaseModel):
             "vault_config.yaml. Omit to leave unchanged."
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: When true, validate the merged config and compute "
+            "destructive-change warnings, but do NOT write the yaml or "
+            "reload the registry. The response carries "
+            "`status='previewed'`, `dry_run=true`, `warnings` (always "
+            "populated when present), and a `preview` listing which "
+            "top-level sections would change. **On dry-run, `force` is "
+            "a no-op**: dry-run never raises `destructive_config_change`; "
+            "warnings are always returned in the response body so the "
+            "caller can plan a follow-up real-run with `force=true` if "
+            "appropriate."
+        ),
+    )
 
 
 class CreateVaultRequest(BaseModel):
@@ -3040,18 +3237,56 @@ class CreateVaultRequest(BaseModel):
     )
 
 
-class UpdateVaultConfigResponse(BaseModel):
-    """Returned after a successful vault config update."""
+class VaultConfigPreview(BaseModel):
+    """T-0152: structural diff of a would-be vault config update.
 
-    status: Literal["updated"] = Field(
-        description="Discriminator confirming the vault config was updated; always 'updated'."
+    Populated only on dry-run responses; lists which top-level sections
+    of the vault config would change if the request were committed.
+    """
+
+    changed_sections: list[str] = Field(
+        description=(
+            "Names of the top-level config sections (e.g., "
+            "`document_types`, `lifecycle`, `source_adapters`) whose "
+            "merged value differs from the currently-persisted value. "
+            "Empty list when the request is a no-op (every supplied "
+            "section is byte-identical to the current state)."
+        )
     )
-    vault_id: VaultIdStr = Field(description="Id of the vault whose config was updated.")
+
+
+class UpdateVaultConfigResponse(BaseModel):
+    """Returned after a vault config update (real-run or dry-run preview)."""
+
+    status: Literal["updated", "previewed"] = Field(
+        description=(
+            "`updated` on a successful real-run write. `previewed` on a "
+            "dry-run preview (T-0152); no yaml or registry state was "
+            "modified."
+        )
+    )
+    vault_id: VaultIdStr = Field(
+        description="Id of the vault whose config was (or would be) updated."
+    )
     warnings: list[str] = Field(
         description=(
-            "Destructive-change warnings (only populated when force=true was "
-            "used to override 409 rejection)."
+            "Destructive-change warnings. Populated when `force=true` "
+            "was used on a real-run to override the 409 rejection, OR "
+            "when `dry_run=true` returned a preview that would trip "
+            "destructive-change detection (T-0152: dry-run always "
+            "surfaces warnings in the response body rather than raising)."
         )
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`; in that "
+            "case no yaml or registry state was modified."
+        ),
+    )
+    preview: VaultConfigPreview | None = Field(
+        default=None,
+        description=("T-0152: Structural diff populated on dry-run; null on a real-run."),
     )
 
 

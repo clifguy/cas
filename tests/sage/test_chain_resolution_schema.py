@@ -83,15 +83,17 @@ async def _seed(graph_store, *doc_ids: str) -> None:
 async def test_cr_001_transitive_both_valid(graph_store, graph_ops_service):
     await _seed(graph_store, _id("a3"), _id("b2"))
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_BOTH
     assert edge.source_valid_from_version == _id("a3")
@@ -198,14 +200,16 @@ async def test_cr_004_source_anchor_outside_lineage(graph_store, graph_ops_servi
 async def test_cr_005_transitive_source_stores_null_target_anchor(graph_store, graph_ops_service):
     await _seed(graph_store, _id("patent_v3"), _id("uspto_template_v2"))
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("patent_v3"),
-            target_id=_id("uspto_template_v2"),
-            edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=_id("patent_v3"),
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("patent_v3"),
+                target_id=_id("uspto_template_v2"),
+                edge_type=EdgeType.DERIVED_FROM,
+                source_valid_from_version=_id("patent_v3"),
+            )
         )
-    )
+    ).edge
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_SOURCE
     assert edge.source_valid_from_version == _id("patent_v3")
@@ -271,25 +275,29 @@ async def test_cr_007_supersedes_with_anchors_rejected(graph_store, graph_ops_se
 
 async def test_cr_008_retracts_shape_accepted(graph_store, graph_ops_service):
     await _seed(graph_store, _id("a3"), _id("b2"), _id("a7"))
-    covers = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    covers = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
 
-    edge = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a7"),
-            target_id=None,
-            edge_type=EdgeType.RETRACTS,
-            retracted_edge_id=covers.id,
-            source_valid_from_version=_id("a7"),
+    edge = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a7"),
+                target_id=None,
+                edge_type=EdgeType.RETRACTS,
+                retracted_edge_id=covers.id,
+                source_valid_from_version=_id("a7"),
+            )
         )
-    )
+    ).edge
 
     assert edge.resolution_policy == ResolutionPolicy.NONE
     assert edge.target_id is None
@@ -376,15 +384,17 @@ async def test_cr_011_non_retracts_missing_target_rejected(graph_store, graph_op
 async def test_cr_012_resolution_policy_frozen_on_row(graph_store, graph_ops_service):
     await _seed(graph_store, _id("a3"), _id("b2"))
 
-    created = await graph_ops_service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.COVERS,
-            source_valid_from_version=_id("a3"),
-            target_valid_from_version=_id("b2"),
+    created = (
+        await graph_ops_service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.COVERS,
+                source_valid_from_version=_id("a3"),
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
 
     # Round-trip through the DB: the policy column is populated and
     # re-reads as TRANSITIVE_BOTH regardless of any in-memory registry
@@ -474,14 +484,16 @@ async def test_cr_046_transitive_target_valid(graph_store, minimal_config):
         )
     )
 
-    edge = await service.link(
-        LinkRequest(
-            source_id=_id("a3"),
-            target_id=_id("b2"),
-            edge_type=EdgeType.AUTHORITATIVE_FOR,
-            target_valid_from_version=_id("b2"),
+    edge = (
+        await service.link(
+            LinkRequest(
+                source_id=_id("a3"),
+                target_id=_id("b2"),
+                edge_type=EdgeType.AUTHORITATIVE_FOR,
+                target_valid_from_version=_id("b2"),
+            )
         )
-    )
+    ).edge
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_TARGET
     assert edge.source_valid_from_version is None
