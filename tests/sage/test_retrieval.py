@@ -4972,6 +4972,140 @@ async def test_t0158_catalog_documents_full_returns_current_summary(graph_store,
     assert hit.document.project == "CAS"
 
 
+async def test_t0160_catalog_documents_light_empty_result_does_not_crash(
+    graph_store, retrieval_service
+):
+    """T-0160: catalog + target=documents + response_mode=light with zero
+    matching rows returns an empty response envelope without exception.
+
+    Pins the empty-result branch that the ticket calls out as the path
+    that worked pre-fix. Guards against a future refactor that would,
+    for example, call the post-filter mutation loop or the budget-hint
+    helper unconditionally on empty result lists.
+    """
+    # Seed one non-matching doc so the graph store isn't trivially empty;
+    # filter asks for ticket, doc is adr.
+    other = _make_doc(_id("other_doc"), doc_type="adr")
+    await graph_store.insert_document(other)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
+        filters=RetrievalFilters(doc_type="ticket", lifecycle_status="active"),
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.results == []
+    assert resp.total_available == 0
+    assert resp.mode == RetrievalMode.CATALOG
+    assert resp.target == RetrievalTarget.DOCUMENTS
+
+
+async def test_t0160_catalog_documents_light_nonempty_does_not_crash_on_post_projection_mutation(
+    graph_store, retrieval_service
+):
+    """T-0160: catalog + target=documents + response_mode=light with one
+    or more matching rows does NOT raise ``ValueError`` from the
+    post-filter ``hit.document.semantic_abstract = None`` mutation site
+    at ``sage/services/retrieval.py``.
+
+    Anti-coincidental: the seeded Document carries a populated
+    ``semantic_abstract`` (plus every other field DocumentSummaryLight
+    strips) so the projection must produce a DocumentSummaryLight whose
+    post-projection mutation, if unguarded, would raise
+    ``"DocumentSummaryLight" object has no field "semantic_abstract"``.
+    ``include_abstracts`` is left at its default (False) so the
+    post-filter loop actually iterates ``response.results``. Removing
+    the ``isinstance(hit.document, DocumentSummary)`` guard at the
+    mutation site makes ``discover`` raise on the await, failing this
+    test on the call line.
+    """
+    doc = _make_doc(
+        _id("t0160_doc"),
+        doc_type="ticket",
+        lifecycle_status="active",
+        tags=["regression", "t-0160"],
+        document_date="2026-05-23",
+        semantic_abstract="LLM abstract for T-0160 regression doc.",
+        version_label="v1",
+        tier3_metadata={
+            "ticket_id": "T-0160",
+            "ticket_type": "fix",
+            "ticket_priority": "high",
+        },
+        source_modified_at=datetime(2026, 5, 23, tzinfo=timezone.utc),
+        project="CAS",
+    )
+    await graph_store.insert_document(doc)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
+        filters=RetrievalFilters(doc_type="ticket", lifecycle_status="active"),
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.total_available >= 1
+    hit = next(h for h in resp.results if h.document.id == doc.id)
+    from sage.models.schemas import DocumentSummaryLight
+
+    assert isinstance(hit.document, DocumentSummaryLight)
+    assert not isinstance(hit.document, DocumentSummary)
+    assert "semantic_abstract" not in hit.document.model_dump().keys()
+    assert hit.document.tier3_metadata == {
+        "ticket_id": "T-0160",
+        "ticket_type": "fix",
+        "ticket_priority": "high",
+    }
+
+
+async def test_t0160_catalog_documents_light_explicit_include_abstracts_false_does_not_crash(
+    graph_store, retrieval_service
+):
+    """T-0160: same regression as the default-include_abstracts test,
+    but with ``include_abstracts=False`` set explicitly on the request.
+
+    Pins the contract: post-projection mutation safety must hold
+    regardless of whether the caller relies on the default or passes
+    the parameter explicitly. Future-proofs against a default flip
+    that would otherwise make the companion test stop exercising the
+    post-filter loop.
+    """
+    doc = _make_doc(
+        _id("t0160_explicit_doc"),
+        doc_type="ticket",
+        lifecycle_status="active",
+        tags=["regression", "t-0160"],
+        document_date="2026-05-23",
+        semantic_abstract="LLM abstract for T-0160 explicit-flag doc.",
+        version_label="v1",
+        tier3_metadata={
+            "ticket_id": "T-0160",
+            "ticket_type": "fix",
+            "ticket_priority": "high",
+        },
+        source_modified_at=datetime(2026, 5, 23, tzinfo=timezone.utc),
+        project="CAS",
+    )
+    await graph_store.insert_document(doc)
+
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
+        filters=RetrievalFilters(doc_type="ticket", lifecycle_status="active"),
+        include_abstracts=False,
+    )
+    resp = await retrieval_service.discover(req)
+    assert resp.total_available >= 1
+    hit = next(h for h in resp.results if h.document.id == doc.id)
+    from sage.models.schemas import DocumentSummaryLight
+
+    assert isinstance(hit.document, DocumentSummaryLight)
+    assert not isinstance(hit.document, DocumentSummary)
+    assert "semantic_abstract" not in hit.document.model_dump().keys()
+
+
 async def test_t0158_semantic_response_mode_light_suppresses_chunk_content(
     graph_store,
     stub_content_store,
