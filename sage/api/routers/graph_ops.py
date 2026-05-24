@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_graph_ops_service, get_vault_id
 from sage.models.schemas import (
+    BulkLinkRequest,
+    BulkLinkResponse,
     ChainRequest,
     ChainResponse,
     EdgeIdStr,
@@ -71,6 +73,46 @@ async def link(
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> LinkResponse:
     return await service.link(request)
+
+
+@router.post(
+    "/edges/bulk",
+    response_model=BulkLinkResponse,
+    description=(
+        "Create many edges in one call (T-0165, CAS-ADR-029). Each item "
+        "is dispatched through the idempotent variant of `link`: a "
+        "duplicate natural-key triple (source_id, target_id, edge_type) "
+        "returns the existing edge with `created=false` rather than "
+        "raising (T-0079). Items are processed in order under the "
+        "process-wide link lock and per-item SQLite transactions. The "
+        "batch is NOT atomic (CAS-ADR-029): a per-item SAGEError "
+        "surfaces in the response's per-item error envelope while "
+        "earlier-or-later successful items remain committed. The "
+        "endpoint returns 200 even when some items fail; check "
+        "`success_count` / `error_count` on the response. Request body "
+        "accepts an optional `response_mode` (`light` | `full`) per "
+        "T-0153 / T-0158: `light` drops the per-item `edge` body from "
+        "success entries to stay within the inline-output budget; "
+        "failure entries always carry the full structured error "
+        "envelope. The `created` and `existing_rationale` fields are "
+        "preserved under `light` because they are the only signals "
+        "callers have for the natural-key idempotency outcome. When "
+        "unset, batches with more than 5 items default to `light`, "
+        "smaller batches default to `full`."
+    ),
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def bulk_link(
+    request: BulkLinkRequest,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: GraphOpsService = Depends(get_graph_ops_service),
+) -> BulkLinkResponse:
+    return await service.bulk_link(request)
 
 
 @router.delete(

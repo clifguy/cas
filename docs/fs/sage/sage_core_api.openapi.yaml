@@ -792,6 +792,74 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/edges/bulk:
+    post:
+      operationId: bulk_link
+      summary: Create many graph edges in one call.
+      description: >-
+        Third `sage_bulk_*` operation per CAS-ADR-029 (T-0165). Each
+        item carries the same fields as a single `link` call and is
+        dispatched through the idempotent variant: a duplicate
+        natural-key triple (`source_id`, `target_id`, `edge_type`)
+        returns the existing edge with `created=false` rather than
+        raising (T-0079). Items are processed in order under the
+        process-wide link lock and per-item SQLite transactions.
+
+
+        **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
+        the response's per-item error envelope but does not roll back
+        earlier-or-later successful items. The endpoint returns HTTP 200
+        even when some items fail; callers must inspect each
+        `BulkLinkItemResult.status` and the aggregate `success_count` /
+        `error_count` fields. HTTP 404 is reserved for the unknown-vault
+        case; HTTP 422 covers request-body shape validation.
+
+
+        Per-item error codes are identical to single-item `link` (e.g.
+        `self_referential_edge`, `edge_anchor_policy_violation`,
+        `retract_target_not_edge`, `document_not_found`,
+        `tbd_policy_edge`, `merged_from_validation`,
+        `synced_from_inapplicable_edge_type`,
+        `synced_from_version_not_in_source_chain`). Each surfaces as a
+        per-item error envelope inside the response rather than as a
+        batch-level 400.
+
+
+        Empty `items` is valid: the response carries an empty `results`
+        array and all counts are zero.
+
+
+        The performance win versus N sequential `link` calls comes from
+        eliminating per-call HTTP/MCP framing overhead and inter-call
+        asyncio scheduling; the process-wide `_link_lock` and per-item
+        transaction semantics are unchanged.
+      tags: [Graph]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkLinkRequest"
+      responses:
+        "200":
+          description: >-
+            Batch processed. The response carries per-item outcomes
+            (success or error envelope) and aggregate counts. A 200
+            does NOT mean every item succeeded; check `error_count`
+            and each `BulkLinkItemResult.status`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkLinkResponse"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/traverse:
     post:
       operationId: traverse
@@ -3961,6 +4029,221 @@ components:
             carry the would-be projection of the post-transition
             document (subject to `response_mode`) and a `changes` block
             (T-0163) enumerating field-level deltas, and no state was
+            written.
+
+    BulkLinkItem:
+      type: object
+      required: [source_id, edge_type]
+      description: >-
+        One edge-creation request inside a bulk batch (T-0165). Mirrors
+        `LinkRequest` field-for-field except for the envelope-level
+        `dry_run` (which lives on `BulkLinkRequest` and is propagated to
+        each item; per-item override is not supported per CAS-ADR-029).
+      properties:
+        source_id:
+          type: string
+          description: Origin document ID.
+        target_id:
+          type: string
+          nullable: true
+          description: >-
+            Target document ID. Must be null on `retracts` edges;
+            required for every other edge type.
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+        source_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Source-chain anchor (same semantics as
+            `LinkRequest.source_valid_from_version`).
+        target_valid_from_version:
+          type: string
+          nullable: true
+          description: >-
+            Target-chain anchor (same semantics as
+            `LinkRequest.target_valid_from_version`).
+        retracted_edge_id:
+          type: string
+          nullable: true
+          description: >-
+            Required for `retracts` edges; null for every other edge
+            type.
+        notes:
+          type: string
+          nullable: true
+          description: Optional annotation.
+        rationale:
+          type: string
+          nullable: true
+          description: Decision rationale for creating this relationship.
+        rationale_kind:
+          $ref: "#/components/schemas/RationaleKind"
+          nullable: true
+          description: >-
+            Optional explicit discriminator (CAS-ADR-019 / T-0080). Same
+            semantics as `LinkRequest.rationale_kind`.
+        synced_from_version:
+          type: string
+          nullable: true
+          description: >-
+            T-0110 / T-0111 provenance field. Same semantics as
+            `LinkRequest.synced_from_version`.
+        synced_from_content_hash:
+          type: string
+          nullable: true
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: >-
+            T-0110 / T-0111 provenance field. Same semantics as
+            `LinkRequest.synced_from_content_hash`.
+
+    BulkLinkRequest:
+      type: object
+      required: [items]
+      description: >-
+        Request body for `POST /sage_vaults/{vault_id}/edges/bulk`.
+        Carries an ordered list of per-item link requests. The list
+        may be empty; the response then has an empty `results` array.
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BulkLinkItem"
+          description: >-
+            Items processed in order. Each item runs under the
+            process-wide `_link_lock` and a per-item SQLite transaction;
+            the batch as a whole is NOT atomic (CAS-ADR-029). A bad
+            item does not roll back earlier-or-later successful items.
+        response_mode:
+          $ref: "#/components/schemas/ResponseMode"
+          nullable: true
+          description: >-
+            Per-item payload depth (T-0153 / T-0158). "full" returns
+            each success item's complete `edge` body (the persisted
+            edge, or the would-be edge under dry-run); "light" strips
+            the per-item `edge` field entirely, returning only identity
+            + status + created + existing_rationale + error so the
+            response stays inside the MCP inline-output budget. Failure
+            entries carry the full structured error envelope regardless
+            of mode. When unset, batches with more than 5 items default
+            to "light", smaller batches default to "full".
+        dry_run:
+          type: boolean
+          default: false
+          description: >-
+            T-0152 / T-0163: When true, every item runs in dry-run
+            mode — validators execute (including the T-0079 natural-key
+            pre-check), the would-be projection of the edge is
+            computed, and each per-item result carries the would-be
+            `edge` with the nil-UUID sentinel id (or the existing edge
+            id on a natural-key hit, with `created=false`). No
+            persistence occurs. Note: link is an edge mutation, not a
+            document field mutation, so the change surface is the
+            per-item `edge` field (subject to `response_mode`) rather
+            than a separate `changes` block (T-0163). Envelope-level
+            only; per-item override is not supported. **Limitation:**
+            each item's dry-run is evaluated against the committed
+            state at batch start; no item's would-be effects are
+            visible to subsequent items. For full preview accuracy
+            under sequential dependencies (e.g., item N creates an
+            edge and item N+1 references it via retracted_edge_id),
+            dry-run each item separately.
+
+    BulkLinkItemResult:
+      type: object
+      required: [source_id, edge_type, status]
+      description: Outcome record for a single item inside a bulk-link response (T-0165).
+      properties:
+        source_id:
+          type: string
+          description: Echoed from the request item for caller correlation.
+        target_id:
+          type: string
+          nullable: true
+          description: >-
+            Echoed from the request item for caller correlation. Null
+            on `retracts` items (where the request also carries null).
+        edge_type:
+          $ref: "#/components/schemas/EdgeType"
+        status:
+          type: string
+          enum: [success, error]
+          description: >-
+            `success` if the per-item link committed (real-run) or
+            would have committed (dry-run); `error` if the item raised
+            a SAGEError and the batch continued with the next item.
+        edge:
+          $ref: "#/components/schemas/Edge"
+          description: >-
+            The edge record when `status=success`. Absent on error
+            entries. Also absent on success entries when the request's
+            `response_mode=light` (T-0153). On a real run this is the
+            persisted edge (with `created=true`) or the existing edge
+            that satisfied the natural-key idempotency check (with
+            `created=false`). On a dry-run this is the would-be edge
+            with the nil-UUID sentinel id (or the existing edge id on
+            a natural-key hit).
+        created:
+          type: boolean
+          nullable: true
+          description: >-
+            T-0079 idempotency flag. True iff a new edge was (or would
+            be) created for this item; false on the natural-key
+            idempotency path where an edge already exists for
+            `(source, target, edge_type)`. Null on error entries.
+        existing_rationale:
+          type: string
+          nullable: true
+          description: >-
+            When `created=false`, the rationale stored on the existing
+            edge that satisfied the idempotency check. Null on
+            create-path successes and on error entries. Preserved
+            under `response_mode=light` so callers can distinguish the
+            no-op outcome from a fresh insert without the full `edge`
+            body.
+        error:
+          type: object
+          description: >-
+            Error envelope when `status=error`. Shape matches the MCP
+            `error_response` envelope: `{error: <code>, message: <text>,
+            detail: <dict>}` where `detail` is present iff the
+            underlying SAGEError carries one.
+
+    BulkLinkResponse:
+      type: object
+      required: [results, success_count, error_count, total]
+      description: >-
+        Response body for the bulk-link endpoint (T-0165). Carries
+        per-item outcomes plus aggregate counts. Aggregate counts are
+        redundant with iterating `results` and exist for caller
+        ergonomics.
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BulkLinkItemResult"
+          description: Per-item outcomes in request order.
+        success_count:
+          type: integer
+          minimum: 0
+          description: Number of items with `status=success`.
+        error_count:
+          type: integer
+          minimum: 0
+          description: Number of items with `status=error`.
+        total:
+          type: integer
+          minimum: 0
+          description: Total items processed; equals `len(results)`.
+        dry_run:
+          type: boolean
+          default: false
+          description: >-
+            T-0152: True when the request set `dry_run=true`. Every
+            per-item result reflects the dry-run path: success items
+            carry the would-be edge (subject to `response_mode`) with
+            the nil-UUID sentinel id on the create path or the
+            existing edge id on a natural-key hit, and no state was
             written.
 
     BulkMetadataItem:

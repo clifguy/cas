@@ -1739,6 +1739,217 @@ class LinkResponse(BaseModel):
     )
 
 
+class BulkLinkItem(BaseModel):
+    """One edge-creation request inside a bulk batch (T-0165).
+
+    Mirrors ``LinkRequest`` field-for-field except for the envelope-level
+    ``dry_run`` (which lives on ``BulkLinkRequest`` and is propagated to
+    each item; per-item override is not supported per CAS-ADR-029).
+    """
+
+    model_config = {"extra": "forbid"}
+
+    source_id: DocumentIdStr = Field(description="Origin document ID.")
+    target_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Target document ID. Must be null on `retracts` edges; required "
+            "for every other edge type."
+        ),
+    )
+    edge_type: EdgeType = Field(description="Typed relationship between source and target.")
+    source_valid_from_version: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Source-chain anchor (same semantics as `LinkRequest.source_valid_from_version`)."
+        ),
+    )
+    target_valid_from_version: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Target-chain anchor (same semantics as `LinkRequest.target_valid_from_version`)."
+        ),
+    )
+    retracted_edge_id: EdgeIdStr | None = Field(
+        default=None,
+        description="Required for `retracts` edges; null for every other edge type.",
+    )
+    notes: str | None = Field(default=None, description="Optional annotation.")
+    rationale: str | None = Field(
+        default=None,
+        description="Decision rationale for creating this relationship.",
+    )
+    rationale_kind: RationaleKind | None = Field(
+        default=None,
+        description=(
+            "Optional explicit discriminator (CAS-ADR-019 / T-0080). Same "
+            "semantics as `LinkRequest.rationale_kind`."
+        ),
+    )
+    synced_from_version: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "T-0110 / T-0111 provenance field. Same semantics as `LinkRequest.synced_from_version`."
+        ),
+    )
+    synced_from_content_hash: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "T-0110 / T-0111 provenance field. Same semantics as "
+            "`LinkRequest.synced_from_content_hash`."
+        ),
+    )
+
+
+class BulkLinkRequest(BaseModel):
+    """Request body for the bulk-link endpoint (T-0165).
+
+    Carries an ordered list of per-item edge-creation requests. The list
+    may be empty; the response then has an empty ``results`` array.
+    """
+
+    items: list[BulkLinkItem] = Field(
+        description=(
+            "Items processed in order. Each item runs under the process-"
+            "wide `_link_lock` and a per-item SQLite transaction; the "
+            "batch as a whole is NOT atomic (CAS-ADR-029). A bad item "
+            "does not roll back earlier-or-later successful items."
+        ),
+    )
+    response_mode: ResponseMode | None = Field(
+        default=None,
+        description=(
+            'Per-item payload depth (T-0153 / T-0158). "full" returns '
+            "each success item's complete `edge` body (the persisted "
+            'edge, or the would-be edge under dry-run); "light" strips '
+            "the per-item `edge` field entirely, returning only "
+            "identity + status + created + existing_rationale + error so "
+            "the response stays inside the MCP inline-output budget. "
+            "Failure entries carry the full structured error envelope "
+            "regardless of mode. When unset, batches with more than 5 "
+            'items default to "light", smaller batches default to "full".'
+        ),
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152 / T-0163: When true, every item runs in dry-run "
+            "mode — validators execute (including the T-0079 natural-key "
+            "pre-check), the would-be projection of the edge is computed, "
+            "and each per-item result carries the would-be `edge` with "
+            "the nil-UUID sentinel id (or the existing edge id on a "
+            "natural-key hit, with `created=false`). No persistence "
+            "occurs. Note: link is an edge mutation, not a document "
+            "field mutation, so the change surface is the per-item "
+            "`edge` field (subject to `response_mode`) rather than a "
+            "separate `changes` block (T-0163). Envelope-level only; "
+            "per-item override is not supported. **Limitation:** each "
+            "item's dry-run is evaluated against the committed state at "
+            "batch start; no item's would-be effects are visible to "
+            "subsequent items. For full preview accuracy under "
+            "sequential dependencies (e.g., item N creates an edge and "
+            "item N+1 references it via retracted_edge_id), dry-run "
+            "each item separately."
+        ),
+    )
+
+
+class BulkLinkItemResult(BaseModel):
+    """Outcome record for a single item inside a bulk-link response (T-0165)."""
+
+    source_id: DocumentIdStr = Field(
+        description="Echoed from the request item for caller correlation."
+    )
+    target_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Echoed from the request item for caller correlation. Null on "
+            "`retracts` items (where the request also carries null)."
+        ),
+    )
+    edge_type: EdgeType = Field(description="Echoed from the request item for caller correlation.")
+    status: Literal["success", "error"] = Field(
+        description=(
+            "`success` if the per-item link committed (real-run) or would "
+            "have committed (dry-run); `error` if the item raised a "
+            "SAGEError and the batch continued with the next item."
+        )
+    )
+    edge: Edge | None = Field(
+        default=None,
+        description=(
+            "The edge record when `status=success`. Absent on error "
+            "entries. Also absent on success entries when the request's "
+            "`response_mode=light` (T-0153). On a real run this is the "
+            "persisted edge (with `created=true`) or the existing edge "
+            "that satisfied the natural-key idempotency check (with "
+            "`created=false`). On a dry-run this is the would-be edge "
+            "with the nil-UUID sentinel id (or the existing edge id on a "
+            "natural-key hit)."
+        ),
+    )
+    created: bool | None = Field(
+        default=None,
+        description=(
+            "T-0079 idempotency flag. True iff a new edge was (or would "
+            "be) created for this item; false on the natural-key "
+            "idempotency path where an edge already exists for "
+            "`(source, target, edge_type)`. Null on error entries."
+        ),
+    )
+    existing_rationale: str | None = Field(
+        default=None,
+        description=(
+            "When `created=false`, the rationale stored on the existing "
+            "edge that satisfied the idempotency check. Null on "
+            "create-path successes and on error entries. Preserved under "
+            "`response_mode=light` so callers can distinguish the no-op "
+            "outcome from a fresh insert without the full `edge` body."
+        ),
+    )
+    error: dict | None = Field(
+        default=None,
+        description=(
+            "Error envelope when `status=error`. Shape matches the MCP "
+            "`error_response` envelope: `{error: <code>, message: <text>, "
+            "detail: <dict>}` where `detail` is present iff the "
+            "underlying SAGEError carries one."
+        ),
+    )
+
+
+class BulkLinkResponse(BaseModel):
+    """Response body for the bulk-link endpoint (T-0165).
+
+    Carries per-item outcomes plus aggregate counts. Aggregate counts are
+    redundant with iterating ``results`` and exist for caller ergonomics.
+    """
+
+    results: list[BulkLinkItemResult] = Field(description="Per-item outcomes in request order.")
+    success_count: int = Field(
+        ge=0,
+        description="Number of items with `status=success`.",
+    )
+    error_count: int = Field(
+        ge=0,
+        description="Number of items with `status=error`.",
+    )
+    total: int = Field(
+        ge=0,
+        description="Total items processed; equals `len(results)`.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "T-0152: True when the request set `dry_run=true`. Every "
+            "per-item result reflects the dry-run path: success items "
+            "carry the would-be edge (subject to `response_mode`) with "
+            "the nil-UUID sentinel id on the create path or the existing "
+            "edge id on a natural-key hit, and no state was written."
+        ),
+    )
+
+
 class UnlinkResponse(BaseModel):
     """Returned after deleting (or previewing the deletion of) a production edge."""
 

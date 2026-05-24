@@ -16,6 +16,7 @@ from sage.api.errors import (
     MergedFromValidationError,
     PipelineIncompleteError,
     RetractTargetNotEdgeError,
+    SAGEError,
     SelfReferentialEdgeError,
     SyncedFromInapplicableEdgeType,
     SyncedFromVersionNotInSourceChain,
@@ -24,13 +25,18 @@ from sage.api.errors import (
 from sage.config import VaultConfig
 from sage.models.edge_registry import EdgeTypeRegistry
 from sage.models.enums import (
+    LIGHT_DEFAULT_THRESHOLD,
     EdgeType,
     PipelineStatus,
     RationaleKind,
     ResolutionPolicy,
+    ResponseMode,
     TraversalDirection,
 )
 from sage.models.schemas import (
+    BulkLinkItemResult,
+    BulkLinkRequest,
+    BulkLinkResponse,
     ChainEntry,
     ChainRequest,
     ChainResponse,
@@ -46,6 +52,7 @@ from sage.models.schemas import (
     TraverseResponse,
     UnlinkResponse,
 )
+from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.edge_provenance import derive_rationale_kind
 from sage.storage.graph_store import GraphStore, LinkReadContext
@@ -196,6 +203,105 @@ class GraphOpsService:
         """
         response = await self._link_impl(request, on_conflict="noop")
         return response.edge, response.created
+
+    async def bulk_link(self, request: BulkLinkRequest) -> BulkLinkResponse:
+        """Apply one edge-creation request per item (T-0165).
+
+        Each item is dispatched through ``link_idempotent`` so the
+        per-item natural-key idempotency contract (T-0079) is preserved:
+        a duplicate request returns the existing edge with
+        ``created=False`` and ``existing_rationale`` populated, rather
+        than raising. The batch is NOT atomic (CAS-ADR-029): a SAGEError
+        raised by one item is wrapped into the per-item error envelope
+        and does not roll back earlier-or-later successful items.
+        Anything outside the SAGEError hierarchy is treated as a
+        programmer or infrastructure bug and propagates out of the batch.
+
+        The performance win versus N sequential ``sage_link`` MCP calls
+        comes from eliminating per-call MCP framing overhead and the
+        asyncio scheduling between items; the process-wide ``_link_lock``
+        and the per-item SQLite transaction are unchanged.
+
+        ``request.response_mode`` (T-0153) controls per-item payload
+        depth. ``light`` drops the per-item ``edge`` body from success
+        entries; failure entries always carry the full structured error
+        envelope. The ``created`` and ``existing_rationale`` fields are
+        preserved under light because they are the only signals callers
+        have for the natural-key idempotency outcome. When unset, the
+        default-resolution rule mirrors the sibling bulk tools: batches
+        with more than ``LIGHT_DEFAULT_THRESHOLD`` items default to
+        ``light``, smaller batches default to ``full``.
+        """
+        # T-0153: resolve the effective response_mode by batch size, the
+        # same rule the sibling bulk mutation tools use. Batches that
+        # cross the threshold default to light so the response stays
+        # inside the MCP inline-output budget; smaller batches keep the
+        # full edge body for human-readable debugging.
+        effective_mode = request.response_mode
+        if effective_mode is None:
+            effective_mode = (
+                ResponseMode.LIGHT
+                if len(request.items) > LIGHT_DEFAULT_THRESHOLD
+                else ResponseMode.FULL
+            )
+
+        results: list[BulkLinkItemResult] = []
+        for item in request.items:
+            per_item_request = LinkRequest(
+                source_id=item.source_id,
+                target_id=item.target_id,
+                edge_type=item.edge_type,
+                source_valid_from_version=item.source_valid_from_version,
+                target_valid_from_version=item.target_valid_from_version,
+                retracted_edge_id=item.retracted_edge_id,
+                notes=item.notes,
+                rationale=item.rationale,
+                rationale_kind=item.rationale_kind,
+                synced_from_version=item.synced_from_version,
+                synced_from_content_hash=item.synced_from_content_hash,
+                # T-0152: propagate envelope dry_run to each per-item
+                # call. Per-item override is not supported (CAS-ADR-029).
+                dry_run=request.dry_run,
+            )
+            try:
+                edge, created = await self.link_idempotent(per_item_request)
+                results.append(
+                    BulkLinkItemResult(
+                        source_id=item.source_id,
+                        target_id=item.target_id,
+                        edge_type=item.edge_type,
+                        status="success",
+                        # T-0153 light mode: drop the edge body. Caller
+                        # still has source_id/target_id/edge_type echoed,
+                        # plus the created flag and existing_rationale,
+                        # which are the only natural-key idempotency
+                        # signals.
+                        edge=(edge if effective_mode == ResponseMode.FULL else None),
+                        created=created,
+                        existing_rationale=(edge.rationale if not created else None),
+                    )
+                )
+            except SAGEError as exc:
+                results.append(
+                    BulkLinkItemResult(
+                        source_id=item.source_id,
+                        target_id=item.target_id,
+                        edge_type=item.edge_type,
+                        status="error",
+                        error=sage_error_to_envelope(exc),
+                    )
+                )
+        success_count = sum(1 for r in results if r.status == "success")
+        return BulkLinkResponse(
+            results=results,
+            success_count=success_count,
+            error_count=len(results) - success_count,
+            total=len(results),
+            # T-0152: envelope echo so callers can confirm the batch ran
+            # as a preview even when every per-item edge was dropped
+            # under light response_mode.
+            dry_run=request.dry_run,
+        )
 
     async def _link_impl(self, request: LinkRequest, *, on_conflict: str) -> LinkResponse:
         """Shared implementation used by ``link`` and ``link_idempotent``.

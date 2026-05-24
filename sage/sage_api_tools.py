@@ -23,6 +23,8 @@ from sage.models.enums import EdgeType, RationaleKind, RetrievalMode, SourceType
 from sage.models.schemas import (
     BulkLifecycleItem,
     BulkLifecycleRequest,
+    BulkLinkItem,
+    BulkLinkRequest,
     BulkMetadataItem,
     BulkMetadataRequest,
     ChainRequest,
@@ -756,6 +758,137 @@ def register_sage_tools(
                 dry_run=dry_run,
             )
             response = await v.lifecycle_service.bulk_set_lifecycle(request)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def sage_bulk_link(
+        vault_id: str,
+        items: list[dict],
+        response_mode: str | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Create many edges in one call (T-0165, CAS-ADR-029).
+
+        Third ``sage_bulk_*`` operation. Each item carries the same
+        fields as a single ``sage_link`` call (``source_id``,
+        ``target_id``, ``edge_type``, anchor fields, ``retracted_edge_id``,
+        ``rationale``, ``rationale_kind``, ``notes``, ``synced_from_*``)
+        and is dispatched through the idempotent variant: a duplicate
+        natural-key triple (``source_id``, ``target_id``, ``edge_type``)
+        returns the existing edge with ``created=false`` rather than
+        raising (T-0079). Items are processed in order, each under the
+        process-wide ``_link_lock`` and a per-item SQLite transaction.
+
+        **The batch is NOT atomic.** A per-item SAGEError surfaces in the
+        response's per-item error envelope but does not roll back earlier-
+        or-later successful items. The tool returns a successful response
+        envelope (not an error envelope) when at least one item is
+        processed, even if some items failed; callers must inspect each
+        ``BulkLinkItemResult.status`` and the aggregate ``success_count``
+        / ``error_count`` fields. The tool returns an error envelope only
+        when up-front validation rejects the call (invalid ``vault_id``
+        shape, malformed ``items`` shape, unknown vault, or invalid
+        ``response_mode`` value).
+
+        Empty ``items`` is valid: the response carries an empty
+        ``results`` array and all counts are zero.
+
+        Performance: a bulk call is observably faster than N sequential
+        ``sage_link`` calls because MCP framing overhead and inter-call
+        asyncio scheduling are eliminated; the process-wide ``_link_lock``
+        and per-item SQLite transaction are unchanged.
+
+        Per-item error modes (surfaced inside the response envelope, same
+        codes as ``sage_link``): ``self_referential_edge`` (400),
+        ``document_not_found`` (404), ``tbd_policy_edge`` (400),
+        ``edge_anchor_policy_violation`` (400),
+        ``retract_target_not_edge`` (400), ``merged_from_validation``
+        (400), ``synced_from_inapplicable_edge_type`` (400),
+        ``synced_from_version_not_in_source_chain`` (404). See
+        ``sage_link`` for detail-envelope shape.
+
+        Worked example. To create three references edges and a fourth
+        depends_on edge in one call::
+
+            sage_bulk_link(
+                vault_id="cas",
+                items=[
+                    {"source_id": "a1b2c3d4_doc_a",
+                     "target_id": "e5f6a7b8_doc_b",
+                     "edge_type": "references",
+                     "source_valid_from_version": "a1b2c3d4_doc_a",
+                     "target_valid_from_version": "e5f6a7b8_doc_b",
+                     "rationale": "doc A cites doc B"},
+                    ...
+                ],
+            )
+
+        On a dry-run (``dry_run=True``), every per-item ``edge.id``
+        carries the nil-UUID sentinel ``00000000-0000-0000-0000-000000000000``
+        on the create path, or the existing edge's real id on a natural-
+        key hit (with ``created=false``). The envelope echoes
+        ``dry_run=True`` and no edges are persisted.
+
+        Args:
+            vault_id: Target vault identifier.
+            items: List of per-item link requests. Each item must
+                conform to the ``BulkLinkItem`` shape:
+                ``{source_id: str, target_id: str | null, edge_type: str,
+                source_valid_from_version: str | null,
+                target_valid_from_version: str | null,
+                retracted_edge_id: str | null, notes: str | null,
+                rationale: str | null, rationale_kind: str | null,
+                synced_from_version: str | null,
+                synced_from_content_hash: str | null}``. Shape
+                validation runs up front; a single malformed item
+                rejects the entire batch before any per-item work
+                executes.
+            response_mode: Per-item payload depth (T-0153 / T-0158).
+                ``"full"`` returns each success item's complete ``edge``
+                body; ``"light"`` strips the per-item ``edge`` field
+                entirely, returning only ``source_id`` / ``target_id`` /
+                ``edge_type`` / ``status`` / ``created`` /
+                ``existing_rationale`` / ``error`` so the response stays
+                inside the MCP inline-output budget. Failure entries
+                carry the full structured error envelope regardless of
+                mode. ``created`` and ``existing_rationale`` are
+                preserved under light because they are the only signals
+                callers have for the natural-key idempotency outcome.
+                When unset, the default-resolution rule mirrors the
+                sibling bulk tools: batches with more than 5 items
+                default to ``"light"``, smaller batches default to
+                ``"full"``. Invalid values surface as an
+                ``internal_error`` envelope before any per-item work
+                runs.
+            dry_run: T-0152 / T-0163. When True, every item runs as a
+                dry-run — validators execute (including the T-0079
+                natural-key pre-check), the would-be projection of the
+                edge is computed, and each per-item ``edge.id`` carries
+                the sentinel (or the existing edge id on a natural-key
+                hit). No persistence occurs. Envelope-level only;
+                per-item override is not supported. **Limitation:** each
+                item's dry-run is evaluated against the committed state
+                at batch start; no item's would-be effects are visible
+                to subsequent items. Default False.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            # Up-front shape validation across the whole batch: rejecting
+            # the request here (rather than per-item inside the service
+            # loop) guarantees that a malformed item produces an error
+            # envelope without committing any partial state. The
+            # ``response_mode`` ValueError from Pydantic enum validation
+            # rides this same up-front rejection path (T-0153).
+            validated_items = [BulkLinkItem.model_validate(it) for it in items]
+            v = get_vault(vault_id)
+            request = BulkLinkRequest(
+                items=validated_items,
+                response_mode=response_mode,
+                dry_run=dry_run,
+            )
+            response = await v.graph_ops_service.bulk_link(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -2334,6 +2467,7 @@ def register_sage_tools(
         "sage_update_metadata": sage_update_metadata,
         "sage_set_lifecycle": sage_set_lifecycle,
         "sage_bulk_set_lifecycle": sage_bulk_set_lifecycle,
+        "sage_bulk_link": sage_bulk_link,
         "sage_bulk_update_metadata": sage_bulk_update_metadata,
         "sage_register_user": sage_register_user,
         "sage_link": sage_link,
