@@ -367,3 +367,182 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
     assert after_real.documents[initial.document.id]["project"] == "new_project"
     # Chunk pushdown changed.
     assert after_real.chunk_metadata != before.chunk_metadata
+
+
+# ---------------------------------------------------------------------------
+# (D) T-0163 `changes` block — dry-run deltas
+# ---------------------------------------------------------------------------
+
+
+async def test_dry_run_changes_lists_scalar_deltas(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
+):
+    """T-0163: dry-run with scalar patches surfaces one FieldChange per
+    changed field with the bare field name as `path` and the actual
+    pre/post values as before/after."""
+    _write_md(tmp_vault_dir, "scalars.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="scalars.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc", "project": "alpha", "title": "Old"},
+        )
+    )
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    response = await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(title="New", project="beta", dry_run=True),
+        modified_by="tester",
+    )
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    assert response.changes is not None
+    # Sorted by path for determinism: project < title.
+    paths = [c.path for c in response.changes]
+    assert paths == ["project", "title"]
+    by_path = {c.path: c for c in response.changes}
+    assert by_path["title"].before == "Old"
+    assert by_path["title"].after == "New"
+    assert by_path["project"].before == "alpha"
+    assert by_path["project"].after == "beta"
+    assert_state_unchanged(before, after)
+
+
+async def test_dry_run_changes_enumerates_tier3_per_key(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
+):
+    """T-0163: tier3 changes enumerate per-key with dotted paths. An
+    unset key surfaces as `after=None`; a set-to-new-value surfaces with
+    the pre value in `before`. Lumping the whole tier3 dict into one
+    entry would fail this test."""
+    _write_md(tmp_vault_dir, "fr.md", "# FR\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="fr.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "failure_record"},
+            tier3_metadata={"severity": "low", "fix_commit": "abc123"},
+        )
+    )
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    response = await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(
+            tier3_metadata=Tier3Patch(set={"severity": "high"}, unset=["fix_commit"]),
+            dry_run=True,
+        ),
+        modified_by="tester",
+    )
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    assert response.changes is not None
+    by_path = {c.path: c for c in response.changes}
+    # Per-key entries with dotted paths, not a single tier3_metadata entry.
+    assert set(by_path.keys()) == {
+        "tier3_metadata.severity",
+        "tier3_metadata.fix_commit",
+    }
+    assert by_path["tier3_metadata.severity"].before == "low"
+    assert by_path["tier3_metadata.severity"].after == "high"
+    assert by_path["tier3_metadata.fix_commit"].before == "abc123"
+    assert by_path["tier3_metadata.fix_commit"].after is None
+    # Sorted by path.
+    assert [c.path for c in response.changes] == [
+        "tier3_metadata.fix_commit",
+        "tier3_metadata.severity",
+    ]
+    assert_state_unchanged(before, after)
+
+
+async def test_dry_run_changes_tags_uses_full_before_after_lists(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
+):
+    """T-0163: tags change uses full ordered before/after lists, not the
+    patch ops shape (so callers don't have to round-trip the patch
+    semantics to compute the post-state)."""
+    _write_md(tmp_vault_dir, "tagdoc.md", "# Tagdoc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="tagdoc.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc", "tags": ["a", "b"]},
+        )
+    )
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    response = await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(tags=TagsPatch(add=["c"], remove=["a"]), dry_run=True),
+        modified_by="tester",
+    )
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    assert response.changes is not None
+    assert len(response.changes) == 1
+    change = response.changes[0]
+    assert change.path == "tags"
+    # Full lists, not the patch shape: before is the existing ordered
+    # list, after is the post-patch ordered list (survivors + appends).
+    assert change.before == ["a", "b"]
+    assert change.after == ["b", "c"]
+    assert_state_unchanged(before, after)
+
+
+async def test_real_run_changes_block_absent(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0163: real-run responses carry `changes=None`. A non-None
+    `changes` value unambiguously means 'this was a dry-run.'"""
+    _write_md(tmp_vault_dir, "realrun.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="realrun.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc", "title": "Old"},
+        )
+    )
+
+    response = await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(title="New"),  # dry_run defaults to False
+        modified_by="tester",
+    )
+    assert response.dry_run is False
+    assert response.changes is None
+    # Sanity: real-run still applied the change.
+    assert response.document.title == "New"
+
+
+async def test_dry_run_empty_actionable_patch_changes_block_is_none(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
+):
+    """T-0163: a dry-run that updates no caller-supplied fields (e.g., a
+    bare-confirmation call with no scalars or patches) carries
+    `changes=None`, matching the real-run-absence pattern. Codifies the
+    `None` choice for the empty-changes boundary."""
+    _write_md(tmp_vault_dir, "empty.md", "# Doc\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="empty.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+        )
+    )
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    response = await tier3_metadata_service.update_metadata(
+        initial.document.id,
+        UpdateMetadataRequest(dry_run=True),
+        modified_by="tester",
+    )
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    # No caller-supplied field changes → `changes is None`, not [].
+    assert response.changes is None
+    assert_state_unchanged(before, after)

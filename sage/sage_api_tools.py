@@ -448,19 +448,35 @@ def register_sage_tools(
         the caller should adjust its model of the document state rather
         than blindly re-issue.
 
-        Dry-run mode (T-0152):
+        Dry-run mode (T-0152, T-0163):
         Set ``dry_run=true`` to validate the patch and compute the
-        post-patch state without persisting. The response is wrapped:
-        ``{"document": <post-patch document>, "dry_run": true}``. No
+        would-be projection of the post-patch state without persisting.
+        The response is wrapped: ``{"document": <would-be post-patch
+        document>, "dry_run": true, "changes": [...]}``. No
         ``updated_at`` advance, no ``metadata_confirmed`` flip, no
         chunk-store sync. Same validators run in the same order, so a
         dry-run that returns success means the real call will succeed
         modulo race conditions on shared state. The per-document lock
         is still acquired so the preview is consistent with concurrent
-        mutations. Worked example: ``sage_update_metadata(vault_id="v",
+        mutations.
+
+        ``changes`` (T-0163) enumerates the field-level deltas the
+        patch would persist on a real run as a list of
+        ``{path, before, after}`` entries (``FieldChange`` shape).
+        Scalar field changes use the bare field name as ``path``;
+        tier3 changes enumerate per-key with dotted paths (e.g.,
+        ``tier3_metadata.severity``); tags carry the full ordered
+        before/after lists in ``before``/``after``. Entries are
+        sorted by ``path`` for determinism. Populated only on dry-run;
+        ``changes=null`` on real-run responses and on dry-runs that
+        touch no caller-supplied fields.
+
+        Worked example: ``sage_update_metadata(vault_id="v",
         document_id="d", tier3_metadata={"set": {"severity": "high"}},
         dry_run=True)`` returns the would-be document with the patched
-        tier3 dict; storage is byte-identical to pre-call.
+        tier3 dict plus ``changes=[{path: "tier3_metadata.severity",
+        before: <old>, after: "high"}]``; storage is byte-identical
+        to pre-call.
 
         Args:
             vault_id: Target vault identifier.
@@ -475,8 +491,11 @@ def register_sage_tools(
             document_date: Document calendar date (YYYY-MM-DD).
             tier3_metadata: Tier-3 patch object ``{set?, unset?}``.
                 See above.
-            dry_run: T-0152. When True, run all validators and compute
-                the post-patch state, but do NOT persist. Default False.
+            dry_run: T-0152 / T-0163. When True, run all validators
+                and compute the would-be projection of the post-patch
+                state, but do NOT persist. The response carries a
+                ``changes`` block enumerating field-level deltas (see
+                "Dry-run mode" above). Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -569,24 +588,37 @@ def register_sage_tools(
           with ``new_version_id`` whose content hash matches the
           predecessor.
 
-        Dry-run mode (T-0152):
+        Dry-run mode (T-0152, T-0163):
         Set ``dry_run=true`` to validate the request and compute the
-        post-transition state without persisting. The response is the
-        same ``SetLifecycleResponse`` envelope as a real run, augmented
-        with ``dry_run: true`` at the top level. No ``updated_at``
-        advance, no ``lifecycle_status`` flip on the persisted document,
-        no chunk-store sync. Same validators run in the same order, so a
-        dry-run that returns success means the real call will succeed
-        modulo race conditions on shared state. For ``action="supersede"``,
-        the would-be edge surfaces in ``created_edge`` populated with the
-        nil-UUID sentinel id ``00000000-0000-0000-0000-000000000000`` so a
-        caller that mistakes it for a real edge id fails loudly on lookup;
-        no ``supersedes`` edge is persisted. The per-document lock is
-        still acquired so the preview is consistent with concurrent
-        mutations. Worked example: ``sage_set_lifecycle(vault_id="v",
-        document_id="d", action="archive", dry_run=True)`` returns the
-        would-be document with ``lifecycle_status="archived"``; storage
-        is byte-identical to pre-call.
+        would-be projection of the post-transition state without
+        persisting. The response is the same ``SetLifecycleResponse``
+        envelope as a real run, augmented with ``dry_run: true`` at
+        the top level and a ``changes`` block enumerating field-level
+        deltas. No ``updated_at`` advance, no ``lifecycle_status``
+        flip on the persisted document, no chunk-store sync. Same
+        validators run in the same order, so a dry-run that returns
+        success means the real call will succeed modulo race
+        conditions on shared state. For ``action="supersede"``, the
+        would-be edge surfaces in ``created_edge`` populated with the
+        nil-UUID sentinel id ``00000000-0000-0000-0000-000000000000``
+        so a caller that mistakes it for a real edge id fails loudly
+        on lookup; no ``supersedes`` edge is persisted. The
+        per-document lock is still acquired so the preview is
+        consistent with concurrent mutations.
+
+        ``changes`` (T-0163) carries a single ``FieldChange`` entry
+        for ``lifecycle_status`` when the action changes state
+        (skipped on no-op transitions). The would-be ``supersedes``
+        edge stays in ``created_edge`` and is NOT duplicated in
+        ``changes`` — edge mutations are a separate concept from
+        document field-level deltas. Populated only on dry-run;
+        ``changes=null`` on real-run responses.
+
+        Worked example: ``sage_set_lifecycle(vault_id="v",
+        document_id="d", action="archive", dry_run=True)`` returns
+        the would-be document with ``lifecycle_status="archived"``
+        plus ``changes=[{path: "lifecycle_status", before: "active",
+        after: "archived"}]``; storage is byte-identical to pre-call.
 
         Args:
             vault_id: Target vault identifier.
@@ -610,11 +642,16 @@ def register_sage_tools(
                 not yet been ingested, prefer
                 ``sage_ingest(..., supersedes_document_id=<predecessor_id>)``,
                 which ingests and supersedes atomically.
-            dry_run: T-0152. When True, run all validators and compute
-                the post-transition state, but do NOT persist. For
-                ``supersede``, the would-be edge surfaces in
-                ``created_edge`` with the nil-UUID sentinel id
-                ``00000000-0000-0000-0000-000000000000``. Default False.
+            dry_run: T-0152 / T-0163. When True, run all validators
+                and compute the would-be projection of the
+                post-transition state, but do NOT persist. The
+                response carries a ``changes`` block with a single
+                ``lifecycle_status`` entry when the action changes
+                state (see "Dry-run mode" above). For ``supersede``,
+                the would-be edge surfaces in ``created_edge`` with
+                the nil-UUID sentinel id
+                ``00000000-0000-0000-0000-000000000000`` (not
+                duplicated in ``changes``). Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -688,16 +725,20 @@ def register_sage_tools(
                 smaller batches default to ``"full"``. Invalid values
                 surface as an ``internal_error`` envelope before any
                 per-item work runs.
-            dry_run: T-0152. When True, every item runs as a dry-run —
-                validators execute, post-state is computed, but no
-                persistence occurs. Envelope-level only; per-item
-                override is not supported. **Limitation:** each item's
-                dry-run is evaluated against the committed state at
-                batch start; no item's would-be effects are visible to
-                subsequent items. For full preview accuracy under
-                sequential dependencies (e.g., item N supersedes a
-                document and item N+1 tries to mutate it), dry-run
-                each item separately. Default False.
+            dry_run: T-0152 / T-0163. When True, every item runs as
+                a dry-run — validators execute, the would-be
+                projection of the post-state is computed, and each
+                per-item result carries a ``changes`` block
+                enumerating field-level deltas (preserved under
+                ``response_mode=light``). No persistence occurs.
+                Envelope-level only; per-item override is not
+                supported. **Limitation:** each item's dry-run is
+                evaluated against the committed state at batch start;
+                no item's would-be effects are visible to subsequent
+                items. For full preview accuracy under sequential
+                dependencies (e.g., item N supersedes a document and
+                item N+1 tries to mutate it), dry-run each item
+                separately. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -815,15 +856,19 @@ def register_sage_tools(
                 smaller batches default to ``"full"``. Invalid values
                 surface as an ``internal_error`` envelope before any
                 per-item work runs.
-            dry_run: T-0152. When True, every item runs as a dry-run —
-                validators execute, post-state is computed, but no
-                persistence occurs. Envelope-level only; per-item
-                override is not supported. **Limitation:** each item's
-                dry-run is evaluated against the committed state at
-                batch start; no item's would-be effects are visible to
-                subsequent items. For full preview accuracy under
-                sequential dependencies (e.g., item N adds tag X and
-                item N+1 tries to add the same tag), dry-run each item
+            dry_run: T-0152 / T-0163. When True, every item runs as
+                a dry-run — validators execute, the would-be
+                projection of the post-state is computed, and each
+                per-item result carries a ``changes`` block
+                enumerating field-level deltas (preserved under
+                ``response_mode=light``). No persistence occurs.
+                Envelope-level only; per-item override is not
+                supported. **Limitation:** each item's dry-run is
+                evaluated against the committed state at batch start;
+                no item's would-be effects are visible to subsequent
+                items. For full preview accuracy under sequential
+                dependencies (e.g., item N adds tag X and item N+1
+                tries to add the same tag), dry-run each item
                 separately. Default False.
         """
         try:
@@ -993,21 +1038,29 @@ def register_sage_tools(
         is preserved as canonical provenance. To intentionally replace
         an edge, ``sage_unlink`` it first.
 
-        Dry-run mode (T-0152):
+        Dry-run mode (T-0152, T-0163):
         Set ``dry_run=true`` to validate the request and compute the
-        would-be edge without persisting. The response shape is
-        identical to a real-run response (``{edge, created,
-        existing_rationale, dry_run}``); ``dry_run=true`` is echoed and
-        the would-be ``edge.id`` is the nil-UUID sentinel
-        ``00000000-0000-0000-0000-000000000000``. The T-0079 natural-key
-        pre-check runs in dry-run too, so a preview on a (source,
-        target, edge_type) that already has an edge returns
-        ``created=false`` with the existing edge id and rationale —
-        same shape as the real-run no-op path. Worked example:
-        ``sage_link(vault_id="v", source_id="a", target_id="b",
-        edge_type="references", source_valid_from_version="a",
-        target_valid_from_version="b", dry_run=True)`` returns the
-        would-be edge; no edge row is inserted.
+        would-be projection of the edge without persisting. The
+        response shape is identical to a real-run response
+        (``{edge, created, existing_rationale, dry_run}``);
+        ``dry_run=true`` is echoed and the would-be ``edge.id`` is
+        the nil-UUID sentinel ``00000000-0000-0000-0000-000000000000``.
+        The T-0079 natural-key pre-check runs in dry-run too, so a
+        preview on a (source, target, edge_type) that already has an
+        edge returns ``created=false`` with the existing edge id and
+        rationale — same shape as the real-run no-op path.
+
+        Note: link is an edge mutation, not a document field
+        mutation, so the change surface is the existing ``edge``
+        field (with the nil-UUID sentinel) rather than a separate
+        ``changes`` block (T-0163). ``LinkResponse`` does not carry
+        a ``changes`` field.
+
+        Worked example: ``sage_link(vault_id="v", source_id="a",
+        target_id="b", edge_type="references",
+        source_valid_from_version="a", target_valid_from_version="b",
+        dry_run=True)`` returns the would-be edge; no edge row is
+        inserted.
 
         Args:
             vault_id: Target vault identifier.
@@ -1060,8 +1113,9 @@ def register_sage_tools(
                 reused and can drift from content (in-place edits).
                 Unset = explicit null.
             dry_run: T-0152. When True, validate the request and
-                compute the would-be edge without persisting.
-                Default False.
+                compute the would-be projection of the edge without
+                persisting. No separate ``changes`` block (T-0163);
+                the would-be edge is the change surface. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1125,18 +1179,28 @@ def register_sage_tools(
         Error modes:
         - ``edge_not_found`` (404): no production edge with that id.
 
-        Dry-run mode (T-0152):
+        Dry-run mode (T-0152, T-0163):
         Set ``dry_run=true`` to confirm the edge exists and preview
-        what would be deleted without persisting. The response carries
-        ``deleted=false``, ``dry_run=true``, and ``preview_edge``
-        populated with the would-be-deleted edge. A missing edge_id
-        raises the same ``edge_not_found`` error as a real-run.
+        the would-be projection of what would be deleted without
+        persisting. The response carries ``deleted=false``,
+        ``dry_run=true``, and ``preview_edge`` populated with the
+        would-be-deleted edge. A missing edge_id raises the same
+        ``edge_not_found`` error as a real-run.
+
+        Note: unlink is an edge mutation, not a document field
+        mutation, so the change surface is the existing
+        ``preview_edge`` field rather than a separate ``changes``
+        block (T-0163). ``UnlinkResponse`` does not carry a
+        ``changes`` field.
 
         Args:
             vault_id: Target vault identifier.
             edge_id: Production edge identifier.
-            dry_run: T-0152. When True, preview the deletion without
-                persisting. Default False.
+            dry_run: T-0152. When True, preview the would-be
+                projection of the deletion without persisting; the
+                edge surfaces in ``preview_edge``. No separate
+                ``changes`` block (T-0163); ``preview_edge`` is the
+                change surface. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1818,15 +1882,24 @@ def register_sage_tools(
           fails schema validation, or the request attempts to change
           ``vault.id``.
 
-        Dry-run mode (T-0152):
+        Dry-run mode (T-0152, T-0163):
         Set ``dry_run=true`` to validate the merged config and preview
-        which sections would change, without writing yaml or reloading
-        the registry. The response carries ``status="previewed"``,
-        ``dry_run=true``, ``warnings`` (always populated when present —
-        dry-run NEVER raises ``destructive_config_change``), and a
-        ``preview.changed_sections`` list naming the top-level sections
-        that would change. ``force`` is a no-op on dry-run. Worked
-        example: ``sage_update_vault_config(vault_id="v",
+        the would-be projection of which sections would change,
+        without writing yaml or reloading the registry. The response
+        carries ``status="previewed"``, ``dry_run=true``, ``warnings``
+        (always populated when present — dry-run NEVER raises
+        ``destructive_config_change``), and a
+        ``preview.changed_sections`` list naming the top-level
+        sections that would change. ``force`` is a no-op on dry-run.
+
+        Note: vault-config updates are a config mutation, not a
+        document field mutation, so the change surface is the
+        existing ``preview.changed_sections`` list rather than a
+        separate ``changes`` block (T-0163).
+        ``UpdateVaultConfigResponse`` does not carry a ``changes``
+        field.
+
+        Worked example: ``sage_update_vault_config(vault_id="v",
         document_types={"doc_types": [...]}, dry_run=True)`` returns
         the destructive-change warnings (if any) so the caller can
         decide whether to follow up with ``force=True`` on a real run.
@@ -1844,9 +1917,11 @@ def register_sage_tools(
             retrieval_health: Replacement for the retrieval_health section.
             force: When True, proceed even if the update would orphan
                 existing documents. Default False.
-            dry_run: T-0152. When True, preview the change without
-                persisting; never raises destructive_config_change.
-                Default False.
+            dry_run: T-0152. When True, preview the would-be
+                projection of the change without persisting; never
+                raises destructive_config_change. The change surface
+                is the existing ``preview.changed_sections`` field;
+                no separate ``changes`` block (T-0163). Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

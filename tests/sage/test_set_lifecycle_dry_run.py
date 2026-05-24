@@ -298,3 +298,82 @@ async def test_supersede_dry_run_persists_no_edge(
     assert_state_unchanged(before, after)
     edges = await graph_store.get_edges_by_source(_id("doc_no_edge_new"), "supersedes")
     assert edges == []
+
+
+# ---------------------------------------------------------------------------
+# (D) T-0163 `changes` block — dry-run deltas
+# ---------------------------------------------------------------------------
+
+
+async def test_dry_run_changes_lifecycle_status(graph_store, lifecycle_service, stub_content_store):
+    """T-0163: a non-supersede dry-run carries exactly one FieldChange
+    entry for `lifecycle_status` with the actual before/after values."""
+    doc = _make_doc(_id("doc_changes_archive"))
+    await graph_store.insert_document(doc)
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    response = await lifecycle_service.set_lifecycle(
+        _id("doc_changes_archive"),
+        SetLifecycleRequest(action="archive", dry_run=True),
+    )
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    assert response.changes is not None
+    assert len(response.changes) == 1
+    change = response.changes[0]
+    assert change.path == "lifecycle_status"
+    assert change.before == "active"
+    assert change.after == "archived"
+    assert_state_unchanged(before, after)
+
+
+async def test_supersede_dry_run_changes_lifecycle_status_only_no_edge_in_changes(
+    graph_store, lifecycle_service, stub_content_store
+):
+    """T-0163: supersede dry-run's `changes` carries only the
+    predecessor's `lifecycle_status` delta. The would-be edge surfaces
+    in `created_edge` (existing T-0152 surface) and is NOT duplicated
+    in `changes`. Edge mutations and field-level deltas are separate
+    contracts."""
+    doc_old = _make_doc(_id("doc_changes_old"))
+    doc_new = _make_doc(_id("doc_changes_new"))
+    await graph_store.insert_document(doc_old)
+    await graph_store.insert_document(doc_new)
+
+    response = await lifecycle_service.set_lifecycle(
+        _id("doc_changes_old"),
+        SetLifecycleRequest(
+            action="supersede",
+            new_version_id=_id("doc_changes_new"),
+            dry_run=True,
+        ),
+    )
+
+    assert response.dry_run is True
+    # Edge surfaces in created_edge (existing T-0152 surface).
+    assert response.created_edge is not None
+    assert response.created_edge.id == DRY_RUN_SENTINEL_EDGE_ID
+    # changes carries the lifecycle_status delta — and ONLY that.
+    assert response.changes is not None
+    assert len(response.changes) == 1
+    assert response.changes[0].path == "lifecycle_status"
+    # No synthetic "edge" entry in changes — that would muddle the contract.
+    paths = [c.path for c in response.changes]
+    assert "edge" not in paths
+    assert "created_edge" not in paths
+
+
+async def test_real_run_changes_block_absent(graph_store, lifecycle_service, stub_content_store):
+    """T-0163: real-run set_lifecycle responses carry `changes=None`."""
+    doc = _make_doc(_id("doc_realrun_archive"))
+    await graph_store.insert_document(doc)
+
+    response = await lifecycle_service.set_lifecycle(
+        _id("doc_realrun_archive"),
+        SetLifecycleRequest(action="archive"),  # dry_run defaults to False
+    )
+    assert response.dry_run is False
+    assert response.changes is None
+    # Sanity: real-run still applied the transition.
+    assert response.document.lifecycle_status == "archived"

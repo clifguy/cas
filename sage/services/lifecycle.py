@@ -31,6 +31,7 @@ from sage.models.schemas import (
     BulkLifecycleResponse,
     Document,
     Edge,
+    FieldChange,
     SetLifecycleRequest,
     SetLifecycleResponse,
 )
@@ -182,11 +183,29 @@ class LifecycleService:
                     f"lifecycle transition completed but pipeline is still in progress."
                 )
 
+            # T-0163: on dry-run, compute the field-level lifecycle_status
+            # delta. Real-run responses carry `changes=None`. Skipped if
+            # the action is a no-op (e.g., to_state == current state),
+            # matching the real-run-absence pattern. The would-be
+            # `supersedes` edge stays in `created_edge` and is NOT
+            # duplicated in `changes` — edge mutations are a separate
+            # concept from document field-level deltas.
+            changes: list[FieldChange] | None = None
+            if request.dry_run and to_state != doc.lifecycle_status:
+                changes = [
+                    FieldChange(
+                        path="lifecycle_status",
+                        before=doc.lifecycle_status,
+                        after=to_state,
+                    )
+                ]
+
             return SetLifecycleResponse(
                 document=updated_doc,
                 warnings=warnings if warnings else None,
                 dry_run=request.dry_run,
                 created_edge=created_edge,
+                changes=changes,
             )
 
     async def bulk_set_lifecycle(self, request: BulkLifecycleRequest) -> BulkLifecycleResponse:
@@ -250,6 +269,12 @@ class LifecycleService:
                             response.document if effective_mode == ResponseMode.FULL else None
                         ),
                         warnings=response.warnings,
+                        # T-0163: propagate the per-item changes block
+                        # from the single-item service. Populated only
+                        # on dry-run; small enough to survive light
+                        # mode, so the response_mode gate above does
+                        # not apply.
+                        changes=response.changes,
                     )
                 )
             except SAGEError as exc:

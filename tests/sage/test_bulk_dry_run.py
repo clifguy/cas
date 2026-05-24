@@ -224,3 +224,201 @@ async def test_bulk_metadata_dry_run_mixed_results_same_shape_as_real(
     assert dry.results[1].status == "error"
     assert dry.results[1].error["error"] == "document_not_found"
     assert_state_unchanged(before, after)
+
+
+# ---------------------------------------------------------------------------
+# (G) T-0163 `changes` block — per-item dry-run deltas
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_update_metadata_dry_run_per_item_changes_populated(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
+):
+    """T-0163: each per-item dry-run success carries a `changes` block
+    derived from that item's patch. Item N's changes match item N's
+    patch, not item N+1's — verifies the bulk wrapper passes the
+    per-item changes through, not a shared/lumped value."""
+    _write_md(tmp_vault_dir, "alpha.md", "# Alpha\n\nBody.")
+    _write_md(tmp_vault_dir, "beta.md", "# Beta\n\nBody.")
+    alpha = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="alpha.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc", "title": "Alpha Old", "tags": ["a"]},
+        )
+    )
+    beta = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="beta.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc", "project": "old_proj"},
+        )
+    )
+
+    before = await state_snapshot(graph_store, stub_content_store)
+
+    response = await tier3_metadata_service.bulk_update_metadata(
+        BulkMetadataRequest(
+            items=[
+                BulkMetadataItem(
+                    document_id=alpha.document.id,
+                    title="Alpha New",
+                ),
+                BulkMetadataItem(
+                    document_id=beta.document.id,
+                    project="new_proj",
+                ),
+            ],
+            response_mode=ResponseMode.FULL,
+            dry_run=True,
+        ),
+        modified_by="tester",
+    )
+
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    assert response.success_count == 2
+    # Item 0 changes only the title; item 1 changes only the project.
+    assert response.results[0].changes is not None
+    assert len(response.results[0].changes) == 1
+    assert response.results[0].changes[0].path == "title"
+    assert response.results[0].changes[0].before == "Alpha Old"
+    assert response.results[0].changes[0].after == "Alpha New"
+    assert response.results[1].changes is not None
+    assert len(response.results[1].changes) == 1
+    assert response.results[1].changes[0].path == "project"
+    assert response.results[1].changes[0].before == "old_proj"
+    assert response.results[1].changes[0].after == "new_proj"
+    assert_state_unchanged(before, after)
+
+
+async def test_bulk_set_lifecycle_dry_run_per_item_changes_populated(
+    graph_store, lifecycle_service, stub_content_store
+):
+    """T-0163: each per-item lifecycle dry-run carries a one-entry
+    `changes` block for `lifecycle_status`."""
+    doc_a = _make_doc(_id("doc_bulk_changes_a"))
+    doc_b = _make_doc(_id("doc_bulk_changes_b"))
+    await graph_store.insert_document(doc_a)
+    await graph_store.insert_document(doc_b)
+
+    before = await state_snapshot(graph_store, stub_content_store)
+    response = await lifecycle_service.bulk_set_lifecycle(
+        BulkLifecycleRequest(
+            items=[
+                BulkLifecycleItem(document_id=_id("doc_bulk_changes_a"), action="archive"),
+                BulkLifecycleItem(document_id=_id("doc_bulk_changes_b"), action="complete"),
+            ],
+            response_mode=ResponseMode.FULL,
+            dry_run=True,
+        )
+    )
+    after = await state_snapshot(graph_store, stub_content_store)
+
+    assert response.dry_run is True
+    assert response.success_count == 2
+    # Item 0: archive — lifecycle_status: active -> archived.
+    assert response.results[0].changes is not None
+    assert len(response.results[0].changes) == 1
+    assert response.results[0].changes[0].path == "lifecycle_status"
+    assert response.results[0].changes[0].before == "active"
+    assert response.results[0].changes[0].after == "archived"
+    # Item 1: complete — lifecycle_status: active -> completed.
+    assert response.results[1].changes is not None
+    assert len(response.results[1].changes) == 1
+    assert response.results[1].changes[0].path == "lifecycle_status"
+    assert response.results[1].changes[0].before == "active"
+    assert response.results[1].changes[0].after == "completed"
+    assert_state_unchanged(before, after)
+
+
+async def test_bulk_dry_run_changes_preserved_under_response_mode_light(
+    graph_store, lifecycle_service, stub_content_store
+):
+    """T-0163: `changes` is preserved under `response_mode=light`. With
+    a 6-item batch the default is LIGHT (LIGHT_DEFAULT_THRESHOLD=5), so
+    per-item `document` is dropped but `changes` survives — it's small
+    and is the most useful summary for dry-run callers.
+
+    Anti-coincidental: the test asserts `document is None` in the same
+    place, proving light mode actually fired (the changes-preservation
+    claim would be vacuous if light mode silently downgraded to FULL)."""
+    docs = []
+    for i in range(6):
+        d = _make_doc(_id(f"doc_light_{i}"))
+        await graph_store.insert_document(d)
+        docs.append(d)
+
+    response = await lifecycle_service.bulk_set_lifecycle(
+        BulkLifecycleRequest(
+            items=[
+                BulkLifecycleItem(document_id=_id(f"doc_light_{i}"), action="archive")
+                for i in range(6)
+            ],
+            # response_mode=None → default-resolution rule applies; 6 > 5 → LIGHT.
+            dry_run=True,
+        )
+    )
+
+    assert response.dry_run is True
+    assert response.success_count == 6
+    for item in response.results:
+        # Light mode dropped the document body (proves light fired).
+        assert item.document is None
+        # But changes survived — that's the T-0163 contract.
+        assert item.changes is not None
+        assert len(item.changes) == 1
+        assert item.changes[0].path == "lifecycle_status"
+        assert item.changes[0].after == "archived"
+
+
+async def test_bulk_set_lifecycle_real_run_per_item_changes_absent(
+    graph_store, lifecycle_service, stub_content_store
+):
+    """T-0163: real-run bulk lifecycle responses carry `changes=None`
+    on every per-item result."""
+    doc = _make_doc(_id("doc_bulk_realrun"))
+    await graph_store.insert_document(doc)
+
+    response = await lifecycle_service.bulk_set_lifecycle(
+        BulkLifecycleRequest(
+            items=[BulkLifecycleItem(document_id=_id("doc_bulk_realrun"), action="archive")],
+            response_mode=ResponseMode.FULL,
+        )
+    )
+
+    assert response.dry_run is False
+    assert response.results[0].changes is None
+    # Sanity: real-run actually applied the change.
+    assert response.results[0].document.lifecycle_status == "archived"
+
+
+async def test_bulk_update_metadata_real_run_per_item_changes_absent(
+    tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
+):
+    """T-0163: real-run bulk metadata responses carry `changes=None`
+    on every per-item result."""
+    _write_md(tmp_vault_dir, "real.md", "# Real\n\nBody.")
+    initial = await tier3_ingestion_service.ingest(
+        IngestRequest(
+            source="real.md",
+            adapter=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+        )
+    )
+
+    response = await tier3_metadata_service.bulk_update_metadata(
+        BulkMetadataRequest(
+            items=[
+                BulkMetadataItem(document_id=initial.document.id, tags=TagsPatch(add=["realtag"]))
+            ],
+            response_mode=ResponseMode.FULL,
+        ),
+        modified_by="tester",
+    )
+
+    assert response.dry_run is False
+    assert response.results[0].changes is None
+    # Sanity: real-run actually applied the change.
+    assert "realtag" in response.results[0].document.tags

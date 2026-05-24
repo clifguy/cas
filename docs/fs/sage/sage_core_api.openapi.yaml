@@ -1979,12 +1979,15 @@ paths:
           in: query
           required: false
           description: >-
-            T-0152: When true, confirm the edge exists and preview the
-            deletion without persisting. The response carries
-            `deleted=false`, `dry_run=true`, and `preview_edge`
-            populated with the would-be-deleted edge. A missing
-            edge_id raises the same `edge_not_found` error as a
-            real-run.
+            T-0152 / T-0163: When true, confirm the edge exists and
+            preview the would-be projection of the deletion without
+            persisting. The response carries `deleted=false`,
+            `dry_run=true`, and `preview_edge` populated with the
+            would-be-deleted edge. A missing edge_id raises the same
+            `edge_not_found` error as a real-run. Note: unlink is an
+            edge mutation, not a document field mutation, so the
+            change surface is the existing `preview_edge` field rather
+            than a separate `changes` block (T-0163).
           schema:
             type: boolean
             default: false
@@ -3027,15 +3030,18 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: When true, run all validators and compute the
-            post-transition state, but do NOT persist. The response
-            carries the would-be `document` and `dry_run=true`; for
-            `supersede`, the would-be `created_edge` is also populated
-            with the nil-UUID sentinel id
+            T-0152 / T-0163: When true, run all validators and compute
+            the would-be projection of the post-transition state, but
+            do NOT persist. The response carries the would-be
+            `document`, `dry_run=true`, and a `changes` block (T-0163)
+            with a single `lifecycle_status` entry when the action
+            changes state; for `supersede`, the would-be `created_edge`
+            is also populated with the nil-UUID sentinel id
             `00000000-0000-0000-0000-000000000000` so a caller that
-            mistakes it for a real edge id fails loudly on lookup. The
-            per-document lock is still acquired so the preview is
-            consistent with concurrent mutations.
+            mistakes it for a real edge id fails loudly on lookup
+            (not duplicated in `changes`). The per-document lock is
+            still acquired so the preview is consistent with
+            concurrent mutations.
 
     UpdateMetadataRequest:
       type: object
@@ -3081,12 +3087,16 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: When true, run all validators and compute the
-            post-patch state, but do NOT persist. The response carries
-            the would-be `document` and `dry_run=true`; no chunk-store
-            sync, no `metadata_confirmed` flip, no `updated_at`
-            advance. The per-document lock is still acquired so the
-            preview is consistent with concurrent mutations.
+            T-0152 / T-0163: When true, run all validators and compute
+            the would-be projection of the post-patch state, but do NOT
+            persist. The response carries the would-be `document`,
+            `dry_run=true`, and a `changes` block (T-0163) enumerating
+            field-level deltas (scalar fields by bare name; tier3 keys
+            as dotted paths; tags as full before/after lists); no
+            chunk-store sync, no `metadata_confirmed` flip, no
+            `updated_at` advance. The per-document lock is still
+            acquired so the preview is consistent with concurrent
+            mutations.
 
     TagsPatch:
       type: object
@@ -3416,13 +3426,16 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: When true, run all validators (including the
-            T-0079 natural-key pre-check) and compute the would-be
-            edge, but do NOT persist. The response carries the
-            would-be `edge` with the nil-UUID sentinel id
+            T-0152 / T-0163: When true, run all validators (including
+            the T-0079 natural-key pre-check) and compute the would-be
+            projection of the edge, but do NOT persist. The response
+            carries the would-be `edge` with the nil-UUID sentinel id
             `00000000-0000-0000-0000-000000000000` (or the existing
             edge id on a natural-key collision, with `created=false`)
-            and `dry_run=true`. The process-wide `_link_lock` is still
+            and `dry_run=true`. Note: link is an edge mutation, not a
+            document field mutation, so the change surface is the
+            existing `edge` field rather than a separate `changes`
+            block (T-0163). The process-wide `_link_lock` is still
             acquired so the preview is consistent with concurrent link
             writes.
 
@@ -3710,6 +3723,37 @@ components:
             disclaims this row. Null when this edge is still live.
             Omitted in light mode.
 
+    FieldChange:
+      type: object
+      additionalProperties: false
+      required: [path]
+      description: >-
+        T-0163: A single field-level delta inside a dry-run response.
+        Used by `UpdateMetadataResponse`, `SetLifecycleResponse`,
+        `BulkLifecycleItemResult`, and `BulkMetadataItemResult` to
+        enumerate the would-be deltas a dry-run would persist on a
+        real run. `path` uses dotted notation for nested keys
+        (`title`, `lifecycle_status`, `tier3_metadata.severity`,
+        `tags`). Collection fields like `tags` carry the full ordered
+        before/after lists. `before` is `null` when the path was
+        absent before the patch; `after` is `null` when the path is
+        removed by the patch. Populated only on dry-run responses.
+      properties:
+        path:
+          type: string
+          description: >-
+            Dotted path to the changed field (e.g., `title`,
+            `lifecycle_status`, `tier3_metadata.severity`, `tags`).
+        before:
+          description: >-
+            Pre-patch value at `path`, or null if the path was absent
+            before the patch. Type matches the underlying field
+            (string, list, object, etc.).
+        after:
+          description: >-
+            Would-be post-patch value at `path`, or null if the path is
+            removed by the patch. Type matches the underlying field.
+
     SetLifecycleResponse:
       type: object
       description: >-
@@ -3735,8 +3779,21 @@ components:
           description: >-
             T-0152: True when the request set `dry_run=true`; in that
             case no state was written and `document` carries the
-            computed post-transition state without the persisted
-            `updated_at` advance.
+            would-be projection of the post-transition state without
+            the persisted `updated_at` advance.
+        changes:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/FieldChange"
+          description: >-
+            T-0163: Field-level deltas the transition would persist on a
+            real run. Populated only when `dry_run=true`; null on
+            real-run responses. For lifecycle transitions, contains a
+            single entry for `lifecycle_status` when the action changes
+            state. The would-be `supersedes` edge surfaces in
+            `created_edge` and is NOT duplicated in `changes` (edge
+            mutations are a separate concept from field-level deltas).
         created_edge:
           $ref: "#/components/schemas/Edge"
           nullable: true
@@ -3807,15 +3864,19 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: When true, every item runs in dry-run mode —
-            validators execute, post-state is computed, but no
-            persistence occurs. Per-item override is not supported.
-            **Limitation:** each item's dry-run is evaluated against
-            the committed state at batch start; no item's would-be
-            effects are visible to subsequent items. For full preview
-            accuracy under sequential dependencies (e.g., item N
-            supersedes a document and item N+1 tries to mutate it),
-            dry-run each item separately.
+            T-0152 / T-0163: When true, every item runs in dry-run
+            mode — validators execute, the would-be projection of the
+            post-state is computed, and each per-item result carries a
+            `changes` block (T-0163) with a single `lifecycle_status`
+            entry on state-changing transitions (preserved under
+            `response_mode=light`). No persistence occurs. Per-item
+            override is not supported. **Limitation:** each item's
+            dry-run is evaluated against the committed state at batch
+            start; no item's would-be effects are visible to
+            subsequent items. For full preview accuracy under
+            sequential dependencies (e.g., item N supersedes a
+            document and item N+1 tries to mutate it), dry-run each
+            item separately.
 
     BulkLifecycleItemResult:
       type: object
@@ -3853,6 +3914,18 @@ components:
             `error_response` envelope: `{error: <code>, message: <text>,
             detail: <dict>}` where `detail` is present iff the
             underlying SAGEError carries one.
+        changes:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/FieldChange"
+          description: >-
+            T-0163: Field-level deltas the per-item transition would
+            persist on a real run. Populated only when the envelope's
+            `dry_run=true` and the per-item transition succeeds; null
+            on real-run responses, error entries, and no-op
+            transitions. Preserved under `response_mode=light` (it's
+            small and is the most useful summary for dry-run callers).
 
     BulkLifecycleResponse:
       type: object
@@ -3885,8 +3958,10 @@ components:
           description: >-
             T-0152: True when the request set `dry_run=true`. Every
             per-item result reflects the dry-run path: success items
-            carry the would-be post-state document (subject to
-            `response_mode`), and no state was written.
+            carry the would-be projection of the post-transition
+            document (subject to `response_mode`) and a `changes` block
+            (T-0163) enumerating field-level deltas, and no state was
+            written.
 
     BulkMetadataItem:
       type: object
@@ -3961,9 +4036,12 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: When true, every item runs in dry-run mode —
-            validators execute, post-state is computed, but no
-            persistence occurs. Per-item override is not supported.
+            T-0152 / T-0163: When true, every item runs in dry-run
+            mode — validators execute, the would-be projection of the
+            post-state is computed, and each per-item result carries a
+            `changes` block (T-0163) enumerating field-level deltas
+            (preserved under `response_mode=light`). No persistence
+            occurs. Per-item override is not supported.
             **Limitation:** each item's dry-run is evaluated against
             the committed state at batch start; no item's would-be
             effects are visible to subsequent items. For full preview
@@ -4007,6 +4085,20 @@ components:
             `error_response` envelope: `{error: <code>, message: <text>,
             detail: <dict>}` where `detail` is present iff the
             underlying SAGEError carries one.
+        changes:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/FieldChange"
+          description: >-
+            T-0163: Field-level deltas the per-item patch would persist
+            on a real run. Populated only when the envelope's
+            `dry_run=true` and the per-item patch succeeds; null on
+            real-run responses, error entries, and patches that touch
+            no caller-supplied fields. Tier3 changes enumerate per-key
+            with dotted paths (e.g., `tier3_metadata.severity`); tags
+            carry the full ordered before/after lists. Preserved under
+            `response_mode=light`.
 
     BulkMetadataResponse:
       type: object
@@ -4039,8 +4131,9 @@ components:
           description: >-
             T-0152: True when the request set `dry_run=true`. Every
             per-item result reflects the dry-run path: success items
-            carry the would-be post-patch document (subject to
-            `response_mode`), and no state was written.
+            carry the would-be projection of the post-patch document
+            (subject to `response_mode`) and a `changes` block (T-0163)
+            enumerating field-level deltas, and no state was written.
 
     UpdateMetadataResponse:
       type: object
@@ -4049,7 +4142,7 @@ components:
         T-0152 wrapper for single-item `update_metadata`. Promotes the
         bare-Document return so the dry-run flag has a home. The
         `document` field is the post-patch state — persisted on a real
-        run, computed in memory on a dry-run.
+        run, computed in memory on a dry-run (the "would-be projection").
       properties:
         document:
           $ref: "#/components/schemas/Document"
@@ -4057,13 +4150,29 @@ components:
             The updated document record. On a real run, this is what
             was persisted (with `updated_at` advanced and
             `metadata_confirmed=true`). On a dry-run, this is the
-            computed post-patch state without those side effects.
+            would-be projection of the post-patch state without those
+            side effects.
         dry_run:
           type: boolean
           default: false
           description: >-
             T-0152: True when the request set `dry_run=true`; in that
-            case no state was written.
+            case no state was written and `document` carries the
+            would-be projection of the post-patch state.
+        changes:
+          type: array
+          nullable: true
+          items:
+            $ref: "#/components/schemas/FieldChange"
+          description: >-
+            T-0163: Field-level deltas the patch would persist on a
+            real run. Populated only when `dry_run=true`; null on
+            real-run responses and on dry-runs that touch no
+            caller-supplied fields. Scalar field changes use the bare
+            field name as `path`; tier3 changes enumerate per-key with
+            dotted paths (e.g., `tier3_metadata.severity`); tags carry
+            the full ordered before/after lists in `before`/`after`.
+            Entries are sorted by `path` for determinism.
 
     LinkResponse:
       type: object
@@ -4100,7 +4209,12 @@ components:
           default: false
           description: >-
             T-0152: True when the request set `dry_run=true`; in that
-            case no state was written.
+            case no state was written and `edge` carries the would-be
+            projection of the edge that would be persisted (nil-UUID
+            sentinel id, or the existing edge id on a natural-key hit).
+            Note: link is an edge mutation, not a document field
+            mutation, so the change surface is the existing `edge`
+            field rather than a separate `changes` block (T-0163).
 
     IngestResponse:
       type: object
@@ -4691,13 +4805,17 @@ components:
           type: boolean
           default: false
           description: >-
-            T-0152: When true, validate the merged config and compute
-            destructive-change warnings, but do NOT write the yaml or
-            reload the registry. The response carries
+            T-0152 / T-0163: When true, validate the merged config and
+            compute the would-be projection of which sections would
+            change plus destructive-change warnings, but do NOT write
+            the yaml or reload the registry. The response carries
             `status='previewed'`, `dry_run=true`, `warnings` (always
             populated when present), and a `preview` listing which
-            top-level sections would change. **On dry-run, `force` is
-            a no-op**: dry-run never raises
+            top-level sections would change. Note: vault-config updates
+            are a config mutation, not a document field mutation, so
+            the change surface is the existing `preview.changed_sections`
+            field rather than a separate `changes` block (T-0163).
+            **On dry-run, `force` is a no-op**: dry-run never raises
             `destructive_config_change`; warnings are always returned
             in the response body so the caller can plan a follow-up
             real-run with `force=true` if appropriate.
@@ -4732,13 +4850,19 @@ components:
           default: false
           description: >-
             T-0152: True when the request set `dry_run=true`; in that
-            case no yaml or registry state was modified.
+            case no yaml or registry state was modified and `preview`
+            carries the would-be projection of the config sections that
+            would change. Note: vault-config updates are a config
+            mutation, not a document field mutation, so the change
+            surface is the existing `preview` field rather than a
+            separate `changes` block (T-0163).
         preview:
           $ref: "#/components/schemas/VaultConfigPreview"
           nullable: true
           description: >-
             T-0152: Structural diff populated on dry-run; null on a
-            real-run.
+            real-run. This is the would-be projection of the config
+            sections that would change.
 
     VaultConfigPreview:
       type: object
@@ -5427,7 +5551,11 @@ components:
           description: >-
             T-0152: True when the unlink call set `dry_run=true`; in
             that case no state was written and `preview_edge` carries
-            the edge that would be deleted.
+            the would-be projection of the edge that would be deleted.
+            Note: unlink is an edge mutation, not a document field
+            mutation, so the change surface is the existing
+            `preview_edge` field rather than a separate `changes`
+            block (T-0163).
         preview_edge:
           $ref: "#/components/schemas/Edge"
           nullable: true

@@ -24,6 +24,7 @@ from sage.models.schemas import (
     BulkMetadataResponse,
     Document,
     ExtractedField,
+    FieldChange,
     PendingMetadataItem,
     TagsPatch,
     Tier3Patch,
@@ -33,6 +34,61 @@ from sage.models.schemas import (
 from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+
+
+def _compute_metadata_changes(pre_doc: Document, updates: dict) -> list[FieldChange]:
+    """T-0163: derive field-level deltas for a dry-run update_metadata response.
+
+    `updates` is the post-patch dict the service is about to apply (or
+    would apply on a real run). For each entry:
+
+    - `tags` (if present in `updates`): one FieldChange with full ordered
+      before/after lists. Skipped if before == after (a no-op patch).
+    - `tier3_metadata` (if present in `updates`): one FieldChange per
+      key that differs between `pre_doc.tier3_metadata` and the merged
+      post-patch dict. Newly-set keys use `before=None`; unset keys use
+      `after=None`. `path` is `tier3_metadata.<key>`.
+    - All other keys (scalars): one FieldChange each, using the bare
+      field name as `path`. Skipped if before == after.
+
+    Returns the changes list sorted by `path` for determinism. Empty
+    list is a legitimate return — callers translate it to `None` to
+    match the real-run absence pattern.
+    """
+    changes: list[FieldChange] = []
+    for key, after in updates.items():
+        if key == "tier3_metadata":
+            before_dict = pre_doc.tier3_metadata or {}
+            after_dict = after or {}
+            all_keys = set(before_dict) | set(after_dict)
+            for k in all_keys:
+                b = before_dict.get(k)
+                a = after_dict.get(k)
+                # absent vs present matters even when value is None
+                pre_present = k in before_dict
+                post_present = k in after_dict
+                if pre_present and post_present and b == a:
+                    continue
+                changes.append(
+                    FieldChange(
+                        path=f"tier3_metadata.{k}",
+                        before=b,
+                        after=a,
+                    )
+                )
+        elif key == "tags":
+            before_tags = list(pre_doc.tags or [])
+            after_tags = list(after or [])
+            if before_tags == after_tags:
+                continue
+            changes.append(FieldChange(path="tags", before=before_tags, after=after_tags))
+        else:
+            before = getattr(pre_doc, key, None)
+            if before == after:
+                continue
+            changes.append(FieldChange(path=key, before=before, after=after))
+    changes.sort(key=lambda c: c.path)
+    return changes
 
 
 class MetadataService:
@@ -164,9 +220,22 @@ class MetadataService:
             # post-patch state for every persisted field; applying it
             # to a shallow copy of the in-memory doc gives the preview
             # with byte-identical semantics to the real-run output.
+            #
+            # T-0163: also compute the field-level deltas (`changes`)
+            # the patch would persist. Dry-run only; real-run responses
+            # carry `changes=None`. `None` (not `[]`) on a dry-run with
+            # no caller-supplied field changes (e.g., a doc_type-only
+            # revalidation that touches no `updates` keys, or a pure
+            # `metadata_confirmed` flip) — matches the real-run-absence
+            # pattern.
             if request.dry_run:
                 preview = doc.model_copy(update=updates)
-                return UpdateMetadataResponse(document=preview, dry_run=True)
+                changes = _compute_metadata_changes(doc, updates)
+                return UpdateMetadataResponse(
+                    document=preview,
+                    dry_run=True,
+                    changes=changes if changes else None,
+                )
 
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).
@@ -266,6 +335,12 @@ class MetadataService:
                         document=(
                             response.document if effective_mode == ResponseMode.FULL else None
                         ),
+                        # T-0163: propagate the per-item changes block
+                        # from the single-item service. Populated only
+                        # on dry-run; small enough to survive light
+                        # mode, so the response_mode gate above does
+                        # not apply.
+                        changes=response.changes,
                     )
                 )
             except SAGEError as exc:
