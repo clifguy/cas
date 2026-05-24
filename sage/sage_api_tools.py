@@ -1188,17 +1188,66 @@ def register_sage_tools(
                 rationale="Template authored by ...",
             )
 
-        ``merged_from`` chain-head precondition: the source must be the
-        chain head — i.e., must have **no outbound supersedes edge**.
-        Absorption into a stale predecessor is incoherent; the merge
-        target should be the currently authoritative head, not a node
-        that has already been superseded. Attempting ``merged_from``
-        from a mid-chain source returns
+        ``merged_from`` chain-head precondition: **both** endpoints
+        must be chain heads — i.e., neither ``source_id`` nor
+        ``target_id`` may have an outbound ``supersedes`` edge.
+        Absorption into a stale predecessor (source-side rule) and
+        merging into an already-superseded node (target-side rule,
+        symmetric) are both incoherent; the merge endpoints should be
+        the currently authoritative heads, not nodes that have already
+        been superseded. Attempting ``merged_from`` from a mid-chain
+        source OR into a mid-chain target returns
         ``merged_from_validation``. When the source is mid-chain and a
         content-reuse edge is what's actually wanted, use
         ``derived_from`` instead (its anchor field
         ``source_valid_from_version`` captures the chain-visibility
         semantics that ``merged_from`` lacks).
+
+        Document existence: both ``source_id`` and (when set)
+        ``target_id`` must reference documents that currently exist in
+        the vault. A missing endpoint raises ``document_not_found``.
+        Self-referential edges (``source_id == target_id``) are
+        rejected with ``self_referential_edge``; no edge_type allows a
+        node to point at itself.
+
+        ``retracts`` field-presence rules (closed-form): a ``retracts``
+        edge requires ``source_valid_from_version`` (the anchor in the
+        retracting chain), forbids ``target_valid_from_version`` (which
+        must be null), and requires ``retracted_edge_id`` to reference
+        an existing edge in the same vault. Violations surface as
+        ``edge_anchor_policy_violation`` (anchor required/forbidden) or
+        ``retract_target_not_edge`` (``retracted_edge_id`` does not
+        name a known edge).
+
+        ``synced_from_*`` field applicability (closed list): the
+        ``synced_from_version`` and ``synced_from_content_hash``
+        parameters are accepted **only** on ``edge_type="derived_from"``
+        and ``edge_type="sync_target"``. Any other ``edge_type`` with
+        either field set raises
+        ``synced_from_inapplicable_edge_type``. The fields are not
+        merely ignored on inapplicable types — they are a structural
+        error.
+
+        ``synced_from_version`` chain-membership (T-0111): when set,
+        the value must be a member of the **target document's**
+        ``supersedes`` chain (i.e., the target itself or any
+        predecessor of the target reachable by walking outbound
+        ``supersedes`` edges from the target). Out-of-chain values
+        raise ``synced_from_version_not_in_source_chain``. The check
+        runs only when ``synced_from_version`` is non-null and the
+        edge_type permits the field per the closed-list rule above.
+
+        TBD-policy edge types (CAS-ADR-017): two values appear in the
+        ``EdgeType`` enum but are reserved-and-not-implemented:
+        ``authoritative_for`` and ``sync_target``. Both have
+        ``resolution_policy=TBD`` in the edge registry; every
+        ``sage_link`` call carrying either type raises
+        ``tbd_policy_edge`` unconditionally. Callers should not select
+        these values until a future ADR retires the TBD policy. (The
+        ``synced_from_*`` field-applicability rule above lists
+        ``sync_target`` as a legitimate carrier of those fields for
+        forward compatibility; this does not unblock ``sync_target``
+        link creation today.)
 
         Anchors must lie in the supersedes lineage of their respective
         endpoint. Violations surface as 400 errors:
@@ -1208,15 +1257,31 @@ def register_sage_tools(
           not in the endpoint's supersedes lineage. Anchor values are
           ``documents.id`` strings, not version labels -- passing a
           version label (e.g. ``"v9.0"``) returns this code with a
-          ``does not reference a known document`` detail.
+          ``does not reference a known document`` detail. Also raised
+          for ``retracts`` edges when ``source_valid_from_version`` is
+          missing or ``target_valid_from_version`` is set.
+        - ``document_not_found``: ``source_id`` or (when set)
+          ``target_id`` does not reference an existing document in
+          this vault.
+        - ``self_referential_edge``: ``source_id`` and ``target_id``
+          resolve to the same document. No edge_type permits a node
+          to point at itself.
         - ``retract_target_not_edge``: the value supplied to
-          ``retracted_edge_id`` is not a known edge id.
+          ``retracted_edge_id`` is not a known edge id in this vault.
         - ``merged_from_validation``: a ``merged_from`` edge violates
-          the merge-tombstone invariants.
-        - ``tbd_policy_edge``: the requested edge_type has no shipped
-          resolution policy and cannot be created.
-        - ``self_referential_edge``: source and target resolve to the
-          same document.
+          the merge-tombstone invariants -- either ``source_id`` or
+          ``target_id`` is mid-chain (has an outbound ``supersedes``
+          edge).
+        - ``synced_from_inapplicable_edge_type``:
+          ``synced_from_version`` or ``synced_from_content_hash`` was
+          set on an ``edge_type`` other than ``derived_from`` or
+          ``sync_target``.
+        - ``synced_from_version_not_in_source_chain`` (T-0111):
+          ``synced_from_version`` was set but the named document is
+          not a member of the target's ``supersedes`` chain.
+        - ``tbd_policy_edge``: the requested edge_type has
+          ``resolution_policy=TBD`` and cannot be created. Currently
+          ``authoritative_for`` and ``sync_target`` (CAS-ADR-017).
 
         Idempotency (T-0079): the edges table carries a UNIQUE
         constraint on ``(source_id, target_id, edge_type)``. Re-calling
@@ -1277,7 +1342,9 @@ def register_sage_tools(
                 lineage (a `documents.id`, not a version label string).
                 Required only for `transitive_both` edges.
             retracted_edge_id: Edge-id of the edge instance being
-                retracted. Required (and valid only) on `retracts` edges.
+                retracted. Required (and valid only) on `retracts`
+                edges; must reference an existing edge in this vault
+                (``retract_target_not_edge`` otherwise).
             notes: Free-text notes about the edge.
             rationale: Rationale for creating this edge.
             rationale_kind: Optional explicit provenance discriminator
@@ -1288,16 +1355,29 @@ def register_sage_tools(
                 falls back to ``manual``.
             synced_from_version: Source-chain version (document id) the
                 content was copied or derived from at the moment this
-                edge is asserted (T-0110). Semantically meaningful on
-                ``sync_target`` (Tier 1, auto-populated at re-ingestion
-                when the Tier-1 inference subsystem ships) and
-                ``derived_from`` (Tier 3, agent-supplied). Distinct
-                from ``source_valid_from_version`` (CAS-ADR-017 chain
+                edge is asserted (T-0110). Accepted **only** on
+                ``edge_type="derived_from"`` and
+                ``edge_type="sync_target"``; any other edge_type with
+                this field set raises
+                ``synced_from_inapplicable_edge_type``. When set, the
+                value must be a member of the target's ``supersedes``
+                chain (T-0111) — out-of-chain values raise
+                ``synced_from_version_not_in_source_chain``.
+                Semantically meaningful on ``sync_target`` (Tier 1,
+                auto-populated at re-ingestion when the Tier-1
+                inference subsystem ships) and ``derived_from`` (Tier
+                3, agent-supplied). Distinct from
+                ``source_valid_from_version`` (CAS-ADR-017 chain
                 visibility). Unset = explicit null; never inferred
                 from chain anchors.
             synced_from_content_hash: Source document's
                 ``source_content_hash`` captured at edge assertion
-                (T-0110). Optional companion to ``synced_from_version``;
+                (T-0110). Accepted **only** on
+                ``edge_type="derived_from"`` and
+                ``edge_type="sync_target"`` (same closed list as
+                ``synced_from_version``;
+                ``synced_from_inapplicable_edge_type`` otherwise).
+                Optional companion to ``synced_from_version``;
                 recommended on derivations because version labels are
                 reused and can drift from content (in-place edits).
                 Unset = explicit null.
