@@ -148,6 +148,42 @@ def register_sage_tools(
         metadata_confirmed=false until a reviewer confirms via
         sage_update_metadata.
 
+        Trio-field inheritance on supersede (CAS-ADR-021): when
+        ``supersedes_document_id`` is set and the caller omits any of
+        ``doc_type``, ``project``, or ``authority_scope`` from
+        ``metadata``, the omitted fields inherit from the predecessor's
+        value (when non-None). A caller who *wants* to change one of
+        these trio fields on a supersede must pass the new value
+        explicitly in ``metadata``; otherwise the predecessor's value
+        carries forward silently. No error is raised either way --
+        inheritance is the documented default, override is the
+        opt-in.
+
+        Tier3 uniqueness (CAS-ADR-031, T-0115): doc_types declaring a
+        ``unique`` constraint in their ``metadata_schema`` (see
+        ``document_types.doc_types[].metadata_schema`` in
+        ``sage_get_vault_config``) enforce per-vault uniqueness on the
+        named tier3 field at ingest time. In the ``cas`` vault,
+        ``ticket.ticket_id`` is the live example: re-ingesting a
+        document with a ticket_id already in use raises
+        ``tier3_unique_constraint_violation``. Uniqueness is checked
+        in the same SQLite transaction as the row insert, so the
+        existing document is never disturbed.
+
+        ``pipeline_status`` outcomes (per CAS-ADR-021): the terminal
+        status observed by a poll of ``sage_get_document`` depends on
+        vault config and runtime outcome. ``abstraction_complete`` is
+        the caller-authoritative happy path: projection + indexing +
+        abstraction all succeed, ``metadata_confirmed=true``.
+        ``abstraction_skipped`` is the deferred-abstraction branch:
+        the vault has ``abstraction.enabled=false`` in its config (or
+        the projection produced empty text); Stages 1-2 ran but Stage
+        3 was bypassed. ``failed`` is the catch-all for any
+        Stage-1/2/3 exception; the document persists with
+        ``pipeline_error`` populated. Inspect
+        ``abstraction.enabled`` in ``sage_get_vault_config`` to know
+        which terminal state to expect on a given vault.
+
         Error modes:
         - ``adapter_not_found`` (400): ``adapter`` is not an enabled
           adapter on this vault. See
@@ -173,6 +209,15 @@ def register_sage_tools(
           Pointer to the offending field; empty when the doc_type has
           no schema), ``message``, and ``instance`` (the payload that
           failed).
+        - ``tier3_unique_constraint_violation`` (409): the resolved
+          doc_type declares a ``unique`` constraint on a tier3 field
+          (see ``document_types.doc_types[].metadata_schema`` in
+          ``sage_get_vault_config``) and ``tier3_metadata`` supplied a
+          value already in use by another document. Detail carries
+          ``doc_type``, ``field``, ``colliding_value``, and
+          ``existing_document_id``. ``force=true`` does NOT override
+          this -- uniqueness is independent of content-hash
+          deduplication (CAS-ADR-031, T-0115).
 
         Args:
             vault_id: Target vault identifier.
@@ -183,7 +228,16 @@ def register_sage_tools(
                 authoritative file after ingestion; the path passed here
                 is temporary and can be deleted by the caller.
             adapter: Source format adapter (markdown, docx, pdf, email, onenote, teams_chat).
-            config: Adapter-specific configuration (optional).
+            config: Adapter-specific configuration (optional). Each
+                adapter declares its own required-config schema; this
+                payload is **not** a SAGE-wide shape. Inspect
+                ``source_adapters.adapters[].config`` in
+                ``sage_get_vault_config`` for the per-adapter
+                required-config shape on the target vault. Caller-
+                supplied keys are deep-merged over the vault's
+                adapter-config defaults at ingest time; unknown keys
+                are rejected by the adapter when it validates the
+                merged payload.
             created_by: Creator name. Defaults to vault owner.
             force: Allow re-ingestion of duplicate content.
             supersedes_document_id: When provided, the ingested document
@@ -195,7 +249,9 @@ def register_sage_tools(
                 CAS-ADR-021, the trio fields (doc_type, project,
                 authority_scope) inherit from the predecessor when the
                 caller omits them and the predecessor's value is
-                non-None.
+                non-None; to override any trio field on a supersede,
+                pass the new value explicitly in ``metadata``. See
+                "Trio-field inheritance on supersede" above.
             needs_review: When true, the document enters the
                 metadata-review queue (metadata_confirmed=false) and
                 filename inference fills in fields the caller did not
