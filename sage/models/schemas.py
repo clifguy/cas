@@ -3466,7 +3466,7 @@ class HealthIndicators(BaseModel):
 
 class VaultStatsResponse(BaseModel):
     total_documents: int = Field(description="Total number of documents in the vault.")
-    by_lifecycle_state: dict[str, int] = Field(description="Document count per lifecycle state.")
+    by_lifecycle_status: dict[str, int] = Field(description="Document count per lifecycle status.")
     by_doc_type: dict[str, int] = Field(description="Document count per doc_type.")
     by_source_adapter: dict[str, int] = Field(description="Document count per source_type adapter.")
     total_edges: int = Field(description="Total number of production edges in the vault graph.")

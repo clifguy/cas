@@ -358,7 +358,7 @@ class TestVaultStatistics:
         body = resp.json()
 
         assert body["total_documents"] == 2
-        assert isinstance(body["by_lifecycle_state"], dict)
+        assert isinstance(body["by_lifecycle_status"], dict)
         assert isinstance(body["by_doc_type"], dict)
         assert isinstance(body["by_source_adapter"], dict)
         assert body["total_edges"] == 1
@@ -420,7 +420,7 @@ class TestVaultStatistics:
         assert body["staging_edge_count"] == 0
         assert body["lancedb_chunk_count"] == 0
         assert body["last_ingestion_at"] is None
-        assert body["by_lifecycle_state"] == {}
+        assert body["by_lifecycle_status"] == {}
         assert body["by_doc_type"] == {}
 
     async def test_be_006_stats_nonexistent_vault(self, multi_client):

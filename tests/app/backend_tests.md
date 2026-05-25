@@ -76,7 +76,7 @@ not cached.
 - 200 response
 - Body includes:
   - `total_documents` (integer)
-  - `by_lifecycle_state` (object: state -> count)
+  - `by_lifecycle_status` (object: status -> count)
   - `by_doc_type` (object: type -> count)
   - `by_source_adapter` (object: adapter -> count)
   - `total_edges` (integer)

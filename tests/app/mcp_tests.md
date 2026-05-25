@@ -84,7 +84,7 @@ including health indicator counts. Mirrors the HTTP stats endpoint response.
 - Returns valid JSON string
 - Parsed result includes:
   - `total_documents` (integer)
-  - `by_lifecycle_state`, `by_doc_type`, `by_source_adapter` (objects)
+  - `by_lifecycle_status`, `by_doc_type`, `by_source_adapter` (objects)
   - `total_edges`, `by_edge_type` (integer, object)
   - `staging_edge_count` (integer)
   - `lancedb_size_bytes`, `sqlite_size_bytes` (integers)

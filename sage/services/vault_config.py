@@ -92,7 +92,7 @@ class VaultConfigService:
 
         return VaultStatsResponse(
             total_documents=total_documents,
-            by_lifecycle_state=by_lifecycle,
+            by_lifecycle_status=by_lifecycle,
             by_doc_type=by_doc_type,
             by_source_adapter=by_source_adapter,
             total_edges=total_edges,

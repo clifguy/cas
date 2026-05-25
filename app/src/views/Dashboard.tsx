@@ -52,7 +52,7 @@ export default function Dashboard() {
         <StatGroupLabel>Documents</StatGroupLabel>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
           <CountCard value={stats.total_documents} label="Total" />
-          <BreakdownCard label="By Lifecycle" data={stats.by_lifecycle_state} linkParam="lifecycle_status" />
+          <BreakdownCard label="By Lifecycle" data={stats.by_lifecycle_status} linkParam="lifecycle_status" />
           <BreakdownCard label="By Doc Type" data={stats.by_doc_type} formatKey={k => k.replace(/_/g, ' ')} linkParam="doc_type" />
           <BreakdownCard label="By Source Adapter" data={stats.by_source_adapter} />
         </div>

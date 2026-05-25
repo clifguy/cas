@@ -4950,7 +4950,7 @@ components:
       type: object
       required:
         - total_documents
-        - by_lifecycle_state
+        - by_lifecycle_status
         - by_doc_type
         - by_source_adapter
         - total_edges
@@ -4965,11 +4965,11 @@ components:
         total_documents:
           type: integer
           description: Total number of documents in the vault.
-        by_lifecycle_state:
+        by_lifecycle_status:
           type: object
           additionalProperties:
             type: integer
-          description: Document count per lifecycle state.
+          description: Document count per lifecycle status.
         by_doc_type:
           type: object
           additionalProperties:

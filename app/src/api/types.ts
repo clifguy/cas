@@ -34,7 +34,7 @@ export interface AdapterInfo {
 
 export interface VaultStats {
   total_documents: number;
-  by_lifecycle_state: Record<string, number>;
+  by_lifecycle_status: Record<string, number>;
   by_doc_type: Record<string, number>;
   by_source_adapter: Record<string, number>;
   total_edges: number;

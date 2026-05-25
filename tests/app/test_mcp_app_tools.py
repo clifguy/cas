@@ -275,7 +275,7 @@ class TestSageVaultStats:
 
         result = _parse(await sage_vault_stats("test_vault"))
         assert result["total_documents"] >= 1
-        assert "by_lifecycle_state" in result
+        assert "by_lifecycle_status" in result
         assert "by_doc_type" in result
         assert "by_source_adapter" in result
         assert "total_edges" in result
