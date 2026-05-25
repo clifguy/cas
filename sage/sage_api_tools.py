@@ -2464,6 +2464,31 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    # -------------------------------------------------------------------
+    # SAGE admin / maintenance API tools (CAS-ADR-029)
+    #
+    # Family-shared preconditions for every ``sage_admin_*`` tool below:
+    #
+    # 1. ``vault_id`` is validated through the ``VaultIdStr`` typed alias
+    #    (``_VAULT_ID_ADAPTER.validate_python``) before any vault lookup.
+    #    Inputs that violate the typed-alias shape raise a structured
+    #    ``ValueError`` rather than reaching the registry. See the CAS
+    #    Typed-Alias Boundary Conventions for the shared validation
+    #    contract.
+    #
+    # 2. The targeted vault must have been initialized with a
+    #    ``registry_service``; otherwise ``v.maintenance_service`` is
+    #    ``None`` and the tool raises ``RuntimeError``. This is primarily
+    #    a test-fixture concern (production vault construction wires
+    #    ``registry_service`` by default), but agents and integration
+    #    tests that build vaults directly without the registry will hit
+    #    this error rather than a silent no-op. The maintenance/admin
+    #    API surface is governed by CAS-ADR-029.
+    #
+    # Per-tool docstrings cross-reference this block rather than
+    # repeating these two rules inline.
+    # -------------------------------------------------------------------
+
     @mcp.tool()
     async def sage_admin_migrate_vault(vault_id: str) -> dict:
         """Apply pending schema migrations to a single vault in the running session.
