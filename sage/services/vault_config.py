@@ -111,7 +111,31 @@ class VaultConfigService:
         )
 
     async def hash_check(self, body: HashCheckRequest) -> dict[str, HashCheckMatch]:
-        """Bulk hash existence check against the graph store."""
+        """Bulk hash existence check against the graph store.
+
+        Returns a dict keyed by each input hash, carrying a
+        ``HashCheckMatch`` envelope with ``exists`` and (when matched)
+        the ``document_id`` of the storing document.
+
+        Empty-list short-circuit:
+        ``body.hashes == []`` short-circuits to an empty result dict
+        without consulting the graph store (the early return below).
+        The empty response is indistinguishable from "every queried
+        hash is unknown" without inspecting the request; callers that
+        branch on result emptiness should also branch on input
+        emptiness.
+
+        Malformed hashes:
+        This service does NOT validate the format of input hash
+        strings. The ``sage_hash_check`` MCP wrapper constructs
+        ``HashCheckRequest`` via ``model_construct`` to round-trip
+        the bare-hex form ``sage_ingest`` emits, so malformed entries
+        (truncated hex, non-hex characters, wrong length) reach
+        ``find_documents_by_hashes`` as-is, miss every row, and
+        surface in the result with ``exists=False`` indistinguishable
+        from well-formed-but-unknown hashes. Callers that need a
+        "valid format" precondition must enforce it before calling.
+        """
         if not body.hashes:
             return {}
 

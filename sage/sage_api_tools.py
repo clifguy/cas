@@ -2458,7 +2458,9 @@ def register_sage_tools(
         document's id and source_path. Used by the scan-and-batch-
         ingest flow to identify already-ingested files without
         re-hashing on the SAGE side. The response is a dict keyed by
-        input hash; missing hashes are simply absent from the result.
+        input hash; missing hashes are simply absent from the result
+        (see *Malformed hashes* below for the caveat that makes the
+        absent-vs-present distinction load-bearing).
 
         Hash format: the canonical request form is the prefixed
         ``sha256:<hex>``, matching ``ContentHashStr``. The MCP
@@ -2467,10 +2469,42 @@ def register_sage_tools(
         rewriting them, so callers can round-trip ingest results
         directly. Output document records carry the prefixed form.
 
+        Vault id validation:
+        ``vault_id`` is validated through the ``VaultIdStr`` typed
+        alias before dispatch. A value that is not a registered
+        vault id surfaces an ``unknown_vault`` error envelope; do
+        not assume the parameter is forwarded raw.
+
+        Empty-list short-circuit:
+        Passing ``hashes=[]`` short-circuits to an empty result dict
+        at the service layer (``VaultConfigService.hash_check``,
+        ``sage/services/vault_config.py:115-116``) without consulting
+        the graph store. The empty response is indistinguishable from
+        "every queried hash is unknown" without inspecting the
+        request payload; callers that branch on result emptiness
+        should also branch on input emptiness.
+
+        Malformed hashes:
+        Hash strings are accepted through ``HashCheckRequest.model_construct``
+        (see ``sage/sage_api_tools.py:2290-2295``), which bypasses
+        Pydantic validation so the bare-hex form ``sage_ingest`` emits
+        can round-trip without rewriting. The consequence is that
+        malformed inputs (truncated hex, non-hex characters, wrong
+        length) are NOT rejected with a validation error: they reach
+        the graph-store lookup as-is, miss every row, and surface in
+        the result as ``exists=False`` entries indistinguishable from
+        well-formed-but-unknown hashes. Callers that rely on a "valid
+        format implies in-store" assumption must pre-validate input
+        shape themselves.
+
         Args:
-            vault_id: Target vault identifier.
+            vault_id: Target vault identifier. See *Vault id
+                validation* above for the typed-alias enforcement.
             hashes: List of content hash strings. Accepts both
-                ``sha256:<hex>`` and bare hex for each entry.
+                ``sha256:<hex>`` and bare hex for each entry. An empty
+                list short-circuits per *Empty-list short-circuit*;
+                malformed entries silently surface as ``exists=False``
+                per *Malformed hashes*.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
