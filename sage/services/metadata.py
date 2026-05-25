@@ -123,6 +123,21 @@ class MetadataService:
         tier3 dict is validated against the resolved doc_type's
         metadata_schema after applying the patch in memory.
 
+        Empty-call confirmation-flip semantics (CAS-ADR-021):
+        A call carrying only ``document_id`` and ``modified_by`` -- with
+        every patch field on ``request`` (``title``, ``version_label``,
+        ``project``, ``tags``, ``doc_type``, ``authority_scope``,
+        ``document_date``, ``tier3_metadata``) None -- is a
+        **pure-confirmation flip**, not a no-op. It succeeds and:
+        flips ``metadata_confirmed`` to True (the document leaves the
+        metadata-review queue), advances ``updated_at``, and stamps
+        ``last_modified_by``. This is intentional under CAS-ADR-021's
+        caller-authoritative semantics: invoking ``update_metadata`` IS
+        the confirmation signal, independent of whether any field-patch
+        accompanies it. See the implementation comment at
+        ``updates["metadata_confirmed"] = True`` for the line where the
+        flip is stamped.
+
         Returns:
             ``UpdateMetadataResponse`` wrapping the post-patch document
             and a ``dry_run`` echo (T-0152). On a real run, ``document``

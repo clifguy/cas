@@ -440,6 +440,35 @@ def register_sage_tools(
         under ``document_types.doc_types`` in the vault config; query
         ``sage_get_vault_config`` for the authoritative list.
 
+        Empty-call confirmation-flip semantics (CAS-ADR-021):
+        A call carrying only ``vault_id``, ``document_id``, and (implicit)
+        ``modified_by`` -- with every field-patch parameter (``title``,
+        ``version_label``, ``project``, ``tags``, ``doc_type``,
+        ``authority_scope``, ``document_date``, ``tier3_metadata``) omitted
+        or None -- is a **pure-confirmation flip**, not a no-op. It
+        succeeds and: flips ``metadata_confirmed`` to True (the document
+        leaves the metadata-review queue), advances ``updated_at``, and
+        stamps ``last_modified_by``. This is intentional under
+        CAS-ADR-021's caller-authoritative semantics: the caller's
+        decision to invoke this tool IS the confirmation signal,
+        independent of whether any field-patch parameter accompanies it.
+
+        Compound-risk warning (FastMCP silent-drop interaction):
+        FastMCP's ``ArgModelBase`` silently drops unknown JSON-RPC kwargs
+        at the MCP framework boundary (see
+        ``.venv/lib/python3.14/site-packages/mcp/server/fastmcp/utilities/func_metadata.py``).
+        This compounds with the empty-call confirmation-flip behavior: a
+        caller who misspells a kwarg name (e.g., types ``patch={...}``
+        instead of the declared ``tier3_metadata={...}``) reduces their
+        call to the all-None code path and silently triggers the
+        confirmation flip with no semantic edit. The MCP envelope
+        returns success; nothing in the response signals that the
+        intended edit was dropped. **If your response indicates success
+        but the document state did not change as expected, check for a
+        misspelled parameter name -- unknown kwargs are silently dropped
+        at the MCP framework boundary, which can reduce your call to
+        the empty-call confirmation flip.**
+
         See CAS-ADR-028 for the ingest-vs-update shape asymmetry
         rationale: ``sage_ingest`` still takes ``tags`` as a list and
         ``tier3_metadata`` as a dict (creation supplies full state);
