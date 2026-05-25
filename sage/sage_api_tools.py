@@ -2017,8 +2017,64 @@ def register_sage_tools(
         symlink views are for human Finder/file-browser navigation;
         no SAGE tool consumes them.
 
+        ``doc_type=None`` exclusion (BH-048):
+        Documents whose ``doc_type`` is null are silently excluded from
+        the ``by_doc_type/`` view -- no ``by_doc_type/<null>/`` directory
+        is created and no symlink to the source file appears under
+        ``by_doc_type/``. The asymmetric sibling ``by_lifecycle/`` never
+        drops: every document has a non-null ``lifecycle_status``, so
+        every document is represented under ``by_lifecycle/<status>/``.
+        A document that exists in the graph but never lands under
+        ``by_doc_type/`` is the diagnostic signal that its ``doc_type``
+        is unset -- patch via ``sage_update_metadata(doc_type=...)`` and
+        re-call ``sage_refresh_views`` to populate the missing bucket.
+
+        Wipe-then-rebuild is NOT atomic:
+        The implementation first removes ``{storage_root}/views/`` in
+        its entirety and then rebuilds the ``by_doc_type/`` and
+        ``by_lifecycle/`` subtrees from the current document list. A
+        failure mid-rebuild (e.g., filesystem permission denial,
+        symlink target missing) leaves ``views/`` partially regenerated
+        with no rollback to the prior state. Recovery is a re-call of
+        ``sage_refresh_views`` once the underlying cause is addressed;
+        the next successful call wipes the partial tree and rebuilds
+        cleanly. Callers must not treat the on-disk state as a
+        transactional snapshot of the graph between calls.
+
+        Empty-vault no-op (``views_generated=0``):
+        On a vault with zero documents (or zero documents that bucket
+        into any non-empty category), the wipe step still runs:
+        ``{storage_root}/views/`` is removed if present and is NOT
+        recreated. The response carries ``views_generated=0``. This
+        is the same response shape as a successful regeneration over
+        an empty graph; callers cannot distinguish "vault is empty"
+        from "every document was filtered out" from the response
+        alone. Check vault population via ``sage_vault_stats`` if
+        the distinction matters.
+
+        Common preconditions:
+
+        - ``vault_id`` is validated against ``VaultIdStr`` at the MCP
+          boundary (per CAS Typed-Alias Boundary Conventions); a
+          malformed value (empty string, non-slug shape) fails with
+          ``invalid_vault_id`` before any vault lookup runs.
+        - ``vault_id`` must name a vault registered with the running
+          MCP server; an unregistered value fails with ``unknown_vault``.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
+          typed-alias validation at the boundary. The alias enforces a
+          non-empty slug-shaped identifier; malformed inputs are caught
+          here rather than at a downstream lookup.
+        - ``unknown_vault`` (404): ``vault_id`` did not resolve to a
+          registered vault. The error detail enumerates the available
+          vaults at the time of the call.
+
         Args:
-            vault_id: Target vault identifier.
+            vault_id: Target vault identifier. Validated against
+                ``VaultIdStr`` (typed-alias boundary check; see
+                ``invalid_vault_id`` above) before the registered-vault
+                lookup (see ``unknown_vault``).
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
