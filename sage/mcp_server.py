@@ -276,8 +276,82 @@ async def sage_reload_vault(vault_id: str) -> dict:
     database changes (FastAPI server, another MCP client, direct DB writes)
     leave the current MCP session with stale data.
 
+    Scope of "reload" (per-vault, NOT stack-wide):
+    Only the target vault's ``vault_config.yaml`` is re-read from disk.
+    The SAGE-stack-wide config (``sage/config.yaml``, governing the
+    abstraction-provider singleton per CAS-ADR-030) is captured at
+    process startup and is NOT re-read on per-vault reload. Edits to
+    stack config require a process restart to take effect; callers
+    can verify the in-memory stack config via ``sage_get_stack_config``.
+
+    Reload is NOT atomic -- partial-failure window:
+    The flow is close-old-graph-store, then construct new services,
+    then reassign the registry slot. If construction raises after the
+    old graph store is closed (see the schema-migration / duplicate-edge
+    / abstraction-provider rows below), the registry continues to point
+    at the **closed** old services for the lifetime of the process.
+    Every subsequent tool call against the vault hits the closed-graph-store
+    error path. Recovery options: (a) a second successful reload after
+    fixing the underlying cause (which itself races the same window),
+    or (b) a process restart. This is a docstring-level disclosure of
+    a runtime atomicity gap that JSON Schema cannot express; a
+    structural fix that wraps the reload in a restore-old-services-on-failure
+    block is tracked separately as T-0183.
+
+    In-flight SQLite transactions are silently rolled back:
+    ``graph_store.close()`` shuts down the executor (waiting for queued
+    tasks) then closes each SQLite connection. Connections holding
+    open transactions are rolled back by SQLite's implicit-close
+    semantics -- no explicit ROLLBACK is issued, no notification to
+    any caller. A long-running query racing with reload is silently
+    truncated.
+
+    No pipeline-quiescence precondition:
+    Stage 2-3 background tasks dispatched by ``IngestionService.ingest``
+    with ``wait_for_pipeline=False`` may still be running at reload time.
+    The reload closes the graph store out from under them; the tasks
+    fail and are stamped ``pipeline_status=failed`` (and
+    ``pipeline_error="<closed>"``) on the new graph store with no
+    record of the in-flight work in the prior store. The MCP-side
+    ``sage_ingest`` always uses ``wait_for_pipeline=True`` so this is
+    primarily a hazard for HTTP / FastAPI callers that pass
+    ``wait_for_pipeline=False`` explicitly.
+
+    Error modes:
+    - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
+      typed-alias validation at the boundary (per CAS Typed-Alias
+      Boundary Conventions). The alias enforces a non-empty
+      slug-shaped identifier; malformed inputs are caught here rather
+      than at a downstream lookup.
+    - ``unknown_vault`` (404): ``vault_id`` did not validate as a
+      registered vault. The error detail enumerates the available
+      vaults at the time of the call.
+    - ``schema_migration_required`` (409): the vault's ``graph.db``
+      has pending ALTER TABLE migrations or backfills, so the new
+      graph store cannot ``initialize(migrate=False)``. **Compounds
+      with the non-atomicity gap above** -- the old graph store has
+      already been closed by the time this raises. Run
+      ``sage_admin_migrate_vault`` to apply pending migrations
+      before retrying the reload.
+    - ``duplicate_edges_present`` (409): the vault's ``edges`` or
+      ``staging_edges`` table has duplicate rows on the natural-key
+      triple ``(source_id, target_id, edge_type)``, so UNIQUE index
+      creation fails during ``GraphStore.initialize()``. **Compounds
+      with the non-atomicity gap.** Run ``scripts/dedup_edges.py`` to
+      dedupe the offending table before retrying the reload.
+    - Abstraction-provider build failure: reload constructs the
+      abstraction provider from the **current in-memory stack config**
+      (see scope note above). A stack config with
+      ``provider="qwen3-mlx"`` and ``model=None`` raises ``ValueError``
+      during the build, with the same atomicity consequence as the
+      structured errors above. Verify the in-memory stack config via
+      ``sage_get_stack_config`` before reloading if you suspect drift.
+
     Args:
-        vault_id: Target vault identifier.
+        vault_id: Target vault identifier. Validated against
+            ``VaultIdStr`` (typed-alias boundary check; see
+            ``invalid_vault_id`` above) before the registered-vault
+            lookup.
     """
     try:
         vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
