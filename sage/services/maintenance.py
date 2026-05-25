@@ -158,7 +158,32 @@ class MaintenanceService:
         activate a declaration while collisions remain (CAS-ADR-031 §5);
         existing index state for a colliding declaration is preserved
         (no implicit DROP) so a previously-clean activation is not
-        silently torn down.
+        silently torn down. The returned MigrationReport carries both
+        ``tier3_uniqueness_activations`` (successful installs) and
+        ``tier3_uniqueness_collisions`` (refused activations) -- callers
+        must inspect both even on a no-op migration path, because the
+        tier3 scan runs every call regardless of whether columns_added
+        or backfills_applied are non-empty.
+
+        Migration is NOT atomic with the post-migration reload:
+        On the migrate-needed branch the sequence is
+        ``self._graph_store.close()`` -> ``fresh = GraphStore(...)`` ->
+        ``fresh.initialize(migrate=True)`` -> ``fresh.close()`` ->
+        ``self._registry_service.reload(...)``. If
+        ``fresh.initialize(migrate=True)`` raises (a faulty
+        MIGRATION_PLAN ALTER TABLE, a BACKFILL_PLAN failure, or a
+        Tier3UniqueIndexBlockedError surfaced via initialize-time
+        index creation), the original graph_store is already closed
+        and the registry has not yet been reloaded -- in-memory state
+        is corrupted, with the registry slot pointing at closed
+        services. Recovery options: (a) re-issue migrate_vault after
+        fixing the underlying cause (races the same window), or
+        (b) a process restart. T-0183 closed the atomicity hazard on
+        the inner ``_registry_service.reload`` step itself, but the
+        outer pre-reload migration sequence remains non-atomic; the
+        structural fix is tracked as T-0201. See ``sage_reload_vault``
+        for the in-place reload atomicity disclosure that this
+        sequence inherits.
         """
         pending_alters, pending_bfs = _detect_pending_work(self._db_path)
 

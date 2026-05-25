@@ -2499,6 +2499,11 @@ def register_sage_tools(
         if any are pending, then reloads the vault in this MCP process's
         registry so subsequent operations observe the new schema.
 
+        Common preconditions:
+        See the ``sage_admin_*`` family preconditions block above for
+        shared rules (``vault_id`` typed-alias validation,
+        ``maintenance_service`` wiring requirement).
+
         Idempotent: a re-call against an already-migrated vault returns
         a MigrationReport with empty ``columns_added`` and
         ``backfills_applied`` lists and no error; the registry reload is
@@ -2510,6 +2515,76 @@ def register_sage_tools(
         hold imports of the same vault directory. Cross-process
         staleness requires the caller to restart any other open MCP
         sessions to observe the new schema.
+
+        Migration is NOT atomic -- partial-failure window:
+        On the migrate-needed path the flow is close-old-graph-store,
+        then construct a fresh GraphStore over the same db_path solely
+        to run ``initialize(migrate=True)``, close that fresh store,
+        then ask the registry to reload the vault. If
+        ``fresh.initialize(migrate=True)`` raises (or the subsequent
+        reload raises -- see the inherited reload-atomicity row below)
+        after ``self._graph_store.close()`` has already returned, the
+        in-memory state is corrupted: the registry holds services
+        whose graph_store is closed, and every subsequent tool call
+        against the vault hits the closed-graph-store error path.
+        Recovery options: (a) re-issue the migration after fixing the
+        underlying cause (which itself races the same window), or
+        (b) a process restart. This mirrors the ``sage_reload_vault``
+        atomicity hazard documented under T-0180; the structural fix
+        for the outer pre-reload migration sequence is tracked as
+        T-0201.
+
+        T-0115 tier3 uniqueness activation (CAS-ADR-031):
+        After the schema-migration step settles, every ``unique_keys``
+        declaration in vault config is scanned. Clean declarations get
+        partial UNIQUE indexes installed under
+        ``(doc_type, json_extract(tier3_metadata, '$.<field>'))``;
+        declarations whose existing data violates the constraint are
+        recorded in MigrationReport's ``tier3_uniqueness_collisions``
+        list, the substrate refuses to activate the index (see
+        ``Tier3UniqueIndexBlockedError`` in the Error modes block
+        below), and any previously-clean partial index for that
+        declaration is preserved (no implicit DROP). Successfully
+        activated declarations are listed in
+        ``tier3_uniqueness_activations``. **Callers must inspect both
+        fields** -- a MigrationReport with empty ``columns_added`` and
+        ``backfills_applied`` may still carry tier3 activations or
+        collisions from this scan. The ``unique_keys`` vocabulary
+        lives in vault config; query ``sage_get_vault_config`` for the
+        authoritative declarations.
+
+        Inherited post-migration reload-atomicity:
+        After the migration step the call invokes
+        ``_registry_service.reload(...)``. Per T-0183 the reload itself
+        is now atomic (the registry restores the prior services on
+        failure), but T-0183 closes only the inner reload step; the
+        outer migration-then-reload sequence remains non-atomic per
+        the row above. See ``sage_reload_vault`` for the in-place
+        reload atomicity disclosures; see T-0201 for the open
+        structural fix that extends T-0183 to wrap the outer sequence.
+
+        Error modes:
+        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``schema_migration_required`` (409): raised when a downstream
+          operation detects pending migrations without ``--migrate``;
+          this tool's purpose is precisely to clear that state, but
+          chained operations triggered post-migration may surface it
+          if a second migration is queued behind the first.
+        - MIGRATION_PLAN errors (500): individual ALTER TABLE
+          statements in ``MIGRATION_PLAN`` may fail at
+          ``fresh.initialize(migrate=True)``; the error surface depends
+          on the offending DDL (SQLite ``OperationalError`` rewrapped
+          as the SAGEError envelope). Compounds with the migration-
+          atomicity gap above.
+        - BACKFILL_PLAN errors (500): individual ``BACKFILL_PLAN``
+          entries may fail at the post-schema-update backfill step;
+          same compound behavior as MIGRATION_PLAN errors.
+        - ``Tier3UniqueIndexBlockedError`` (RuntimeError): a tier3
+          ``unique_keys`` declaration's underlying data violates the
+          requested constraint, so the partial UNIQUE index cannot be
+          installed. The collision report is captured in the returned
+          MigrationReport's ``tier3_uniqueness_collisions`` field per
+          the T-0115 row above; the substrate does not auto-resolve.
 
         Args:
             vault_id: Target vault identifier.
