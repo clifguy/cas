@@ -2054,8 +2054,8 @@ class GraphStore:
     def _insert_user_sync(self, user: User) -> None:
         conn = self._get_connection()
         conn.execute(
-            "INSERT INTO users (id, display_name, type, created_at) VALUES (?, ?, ?, ?)",
-            (user.id, user.display_name, user.type.value, user.created_at.isoformat()),
+            "INSERT INTO users (id, display_name, user_type, created_at) VALUES (?, ?, ?, ?)",
+            (user.id, user.display_name, user.user_type.value, user.created_at.isoformat()),
         )
         conn.commit()
 
@@ -2227,6 +2227,6 @@ class GraphStore:
         return User(
             id=row["id"],
             display_name=row["display_name"],
-            type=UserType(row["type"]),
+            user_type=UserType(row["user_type"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )

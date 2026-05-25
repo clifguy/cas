@@ -62,12 +62,12 @@ async def client(app):
 async def test_register_user_201(client):
     resp = await client.post(
         "/sage_vaults/test_vault/users",
-        json={"display_name": "new_agent", "type": "agent"},
+        json={"display_name": "new_agent", "user_type": "agent"},
     )
     assert resp.status_code == 201
     body = resp.json()
     assert body["display_name"] == "new_agent"
-    assert body["type"] == "agent"
+    assert body["user_type"] == "agent"
     assert "id" in body
 
 

@@ -173,7 +173,7 @@ USERS_TABLE = """\
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('human', 'agent')),
+    user_type TEXT NOT NULL CHECK(user_type IN ('human', 'agent')),
     created_at TEXT NOT NULL
 );
 """
@@ -654,6 +654,16 @@ MIGRATION_PLAN: list[Migration] = [
         "edges",
         "synced_from_content_hash",
         "ALTER TABLE edges ADD COLUMN synced_from_content_hash TEXT;",
+    ),
+    # T-0171: rename users.type -> users.user_type to eliminate collision
+    # with the Python builtin and disambiguate the wire shape. Detected by
+    # column-presence on the NEW column name (user_type). SQLite >= 3.25
+    # supports ALTER TABLE RENAME COLUMN and propagates the new name into
+    # the existing CHECK constraint automatically.
+    Migration(
+        "users",
+        "user_type",
+        "ALTER TABLE users RENAME COLUMN type TO user_type;",
     ),
 ]
 

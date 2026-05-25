@@ -18,7 +18,7 @@ class UserService:
         """Auto-register vault owner from config (BH-009).
 
         Reads vault.owner from config and creates a user record with
-        type=human. Idempotent: returns existing user if already present.
+        user_type=human. Idempotent: returns existing user if already present.
         """
         owner_name = self._config.vault.owner
         existing = await self._store.get_user_by_display_name(owner_name)
@@ -28,7 +28,7 @@ class UserService:
         user = User(
             id=str(uuid.uuid4()),
             display_name=owner_name,
-            type=UserType.HUMAN,
+            user_type=UserType.HUMAN,
             created_at=datetime.now(timezone.utc),
         )
         await self._store.insert_user(user)
@@ -39,7 +39,7 @@ class UserService:
         user = User(
             id=str(uuid.uuid4()),
             display_name=request.display_name,
-            type=request.type,
+            user_type=request.user_type,
             created_at=datetime.now(timezone.utc),
         )
         await self._store.insert_user(user)

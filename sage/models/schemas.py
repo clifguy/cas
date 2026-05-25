@@ -670,7 +670,7 @@ class User(BaseModel):
     display_name: str = Field(
         description="Human-readable name for the user (shown in audit logs and UIs)."
     )
-    type: UserType = Field(description="Actor type for provenance and access control.")
+    user_type: UserType = Field(description="Actor type for provenance and access control.")
     created_at: datetime = Field(description="Timestamp when the user was registered.")
 
 
@@ -1534,7 +1534,7 @@ class UpdateMetadataResponse(BaseModel):
 
 class RegisterUserRequest(BaseModel):
     display_name: str = Field(description="Human-readable name for the user or agent.")
-    type: UserType = Field(description="Actor type for provenance and access control.")
+    user_type: UserType = Field(description="Actor type for provenance and access control.")
 
 
 class SetEditorsRequest(BaseModel):

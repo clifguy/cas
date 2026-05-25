@@ -1046,7 +1046,7 @@ paths:
         not linked to a registered user record.
 
 
-        The `type` field (`human` or `agent`) is informational
+        The `user_type` field (`human` or `agent`) is informational
         (attribution audit) and does not gate any operation's behavior.
       tags: [Access Control]
       parameters:
@@ -2833,7 +2833,7 @@ components:
       required:
         - id
         - display_name
-        - type
+        - user_type
         - created_at
       properties:
         id:
@@ -2842,7 +2842,7 @@ components:
         display_name:
           type: string
           description: Human-readable name for the user (shown in audit logs and UIs).
-        type:
+        user_type:
           $ref: "#/components/schemas/UserType"
         created_at:
           type: string
@@ -3565,13 +3565,13 @@ components:
 
     RegisterUserRequest:
       type: object
-      required: [display_name, type]
+      required: [display_name, user_type]
       description: Request body for the user-registration endpoint.
       properties:
         display_name:
           type: string
           description: Human-readable name for the user or agent.
-        type:
+        user_type:
           $ref: "#/components/schemas/UserType"
 
     SetEditorsRequest:
