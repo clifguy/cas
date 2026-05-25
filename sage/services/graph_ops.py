@@ -244,6 +244,13 @@ class GraphOpsService:
         on a no-op; existing provenance is preserved (per the SAGE
         single-source-of-truth principle: the first rationale is canonical).
 
+        Per-item validation surface:
+        See ``link`` for the full precondition enumeration —
+        ``link_idempotent`` inherits all validators via the shared
+        ``_link_impl`` body and is identical to ``link`` on every
+        precondition except the natural-key duplicate (which becomes
+        a no-op rather than an integrity error).
+
         Used by ``batch_inference.resolve_and_execute`` and
         ``identifier_mention_inference`` (which rely on idempotency for
         re-ingest of auto-inferred edges) and by the ``sage_link`` MCP
