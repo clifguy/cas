@@ -2493,17 +2493,69 @@ def register_sage_tools(
         this single parameter-dispatched form per the *SAGE MCP Tool
         Surface* steering doc v3 audit.
 
+        ``vault_id`` typed-alias validation:
+        ``vault_id`` is validated through the ``VaultIdStr`` typed alias
+        before any service-layer dispatch. Empty strings, whitespace-only
+        strings, and other shape violations surface as
+        ``invalid_vault_id`` before the registry lookup runs.
+
+        ``edge_id`` typed-alias validation:
+        ``edge_id`` is validated through the ``EdgeIdStr`` typed alias
+        before any service-layer dispatch. Shape violations surface as
+        ``invalid_edge_id`` before the staging-row lookup runs.
+
+        Confirm idempotency on natural-key collision (T-0079):
+        On ``action="confirm"``, if the staging edge's natural-key triple
+        ``(source_id, target_id, edge_type)`` already exists in the
+        production edges table -- for example, because a parallel
+        ``sage_link`` call or an earlier auto-inference path already
+        created the production edge -- confirm silently returns the
+        existing production edge's id rather than raising
+        ``IntegrityError``. The staging row is consumed in either case
+        (this is the ``on_conflict="noop"`` insert path in
+        ``StagingEdgesService.confirm_staging_edge``; see
+        ``sage/services/staging_edges.py``). A caller observing the
+        response cannot distinguish "I caused the production edge to be
+        created" from "someone else already created it; I just consumed
+        my staging row" -- both surface as a successful confirm with a
+        populated ``production_edge_id``.
+
+        Insert-then-delete atomicity gap:
+        The confirm path sequences ``insert_edge`` followed by
+        ``delete_staging_edge`` without wrapping the pair in a single
+        transaction. If the delete fails after the insert succeeds, the
+        staging row persists alongside the new production edge; the
+        natural-key triple then exists in both tables until a subsequent
+        confirm consumes the orphaned staging row (which is itself a
+        T-0079 silent-idempotent no-op per the rule above). Callers
+        building provenance over staging-edge promotion should treat
+        confirm as "at-least-once" for the production-edge insert and
+        rely on the natural-key UNIQUE constraint plus T-0079 idempotency
+        to absorb retries.
+
         Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` failed
+          ``VaultIdStr`` typed-alias validation.
+        - ``invalid_edge_id`` (400): ``edge_id`` failed
+          ``EdgeIdStr`` typed-alias validation.
         - ``staging_edge_not_found`` (404): the id is unknown
           (already confirmed, already dismissed, or never existed).
         - ``invalid_action`` (400): ``action`` is not one of
           ``"confirm"`` or ``"dismiss"``.
 
         Args:
-            vault_id: Target vault identifier.
+            vault_id: Target vault identifier. Validated through
+                ``VaultIdStr`` (see the ``vault_id`` typed-alias
+                validation paragraph above).
             edge_id: Staging edge identifier (from
-                ``sage_list_staging_edges``).
-            action: One of ``"confirm"`` or ``"dismiss"``.
+                ``sage_list_staging_edges``). Validated through
+                ``EdgeIdStr`` (see the ``edge_id`` typed-alias
+                validation paragraph above).
+            action: One of ``"confirm"`` or ``"dismiss"``. On
+                ``"confirm"``, behavior on a natural-key collision is
+                governed by the T-0079 confirm-idempotency paragraph
+                above, and the insert/delete pair is not atomic per the
+                atomicity-gap paragraph above.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

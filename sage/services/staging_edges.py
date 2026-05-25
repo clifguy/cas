@@ -34,6 +34,31 @@ class StagingEdgesService:
 
         Mints a new production-edge UUID, copies source/target/edge_type
         from the staging record, sequences insert + delete.
+
+        Confirm idempotency on natural-key collision (T-0079):
+        If the staging edge's natural-key triple
+        ``(source_id, target_id, edge_type)`` already exists in the
+        production edges table -- for example, because a parallel
+        ``GraphOpsService.link`` call or an earlier auto-inference path
+        already created the production edge -- the underlying
+        ``insert_edge`` invocation passes ``on_conflict="noop"``, which
+        returns the existing production edge's id rather than raising
+        ``IntegrityError``. The staging row is then consumed in either
+        case. Callers cannot distinguish "this confirm caused the
+        production edge to be created" from "the production edge
+        pre-existed; this confirm only consumed the staging row" by
+        inspecting the response.
+
+        Insert-then-delete atomicity gap:
+        ``insert_edge`` and ``delete_staging_edge`` are sequenced without
+        a wrapping transaction. If the delete fails after the insert
+        succeeds, the staging row persists alongside the production edge;
+        the natural-key triple then exists in both tables until a
+        subsequent confirm consumes the orphaned staging row (which is
+        itself a T-0079 silent-idempotent no-op per the rule above).
+        Callers should treat confirm as "at-least-once" for the
+        production-edge insert and rely on the natural-key UNIQUE
+        constraint plus T-0079 idempotency to absorb retries.
         """
         staging = await self._store.get_staging_edge(edge_id)
         if staging is None:
