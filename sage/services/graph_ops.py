@@ -166,6 +166,61 @@ class GraphOpsService:
         the policy, and any chain-scoped anchor must sit in the
         supersedes lineage of its endpoint document.
 
+        Document existence:
+        Both ``request.source_id`` and (when set) ``request.target_id``
+        must reference documents that currently exist in the vault.
+        Missing endpoints raise ``DocumentNotFoundError``.
+
+        Self-referential edges forbidden:
+        ``source_id == target_id`` is rejected with
+        ``SelfReferentialEdgeError`` for every edge type — no edge_type
+        permits a node to point at itself.
+
+        ``merged_from`` chain-head requirement:
+        Both endpoints must be chain heads: neither ``source_id`` nor
+        ``target_id`` may have an outbound ``supersedes`` edge.
+        Mid-chain on either side raises ``MergedFromValidationError``.
+        When the source is mid-chain and content-reuse is what's
+        actually wanted, use ``derived_from`` instead — its anchor
+        field ``source_valid_from_version`` captures the
+        chain-visibility semantics that ``merged_from`` lacks.
+
+        ``retracts`` field-presence rules:
+        A ``retracts`` edge requires ``source_valid_from_version`` (the
+        anchor in the retracting chain), forbids
+        ``target_valid_from_version`` (must be null), and requires
+        ``retracted_edge_id`` to reference an existing edge in the same
+        vault. Violations surface as ``EdgeAnchorPolicyViolationError``
+        (anchor required/forbidden) or ``RetractTargetNotEdgeError``
+        (``retracted_edge_id`` does not name a known edge).
+
+        ``synced_from_*`` field applicability (closed list):
+        ``synced_from_version`` and ``synced_from_content_hash`` are
+        accepted only on ``edge_type="derived_from"`` and
+        ``edge_type="sync_target"``. Any other edge_type with either
+        field set raises ``SyncedFromInapplicableEdgeType``. The fields
+        are not silently ignored on inapplicable types — they are a
+        structural error.
+
+        ``synced_from_version`` chain-membership (T-0111):
+        When set, ``synced_from_version`` must be a member of the
+        target document's ``supersedes`` chain (the target itself or
+        any predecessor reachable by walking outbound ``supersedes``
+        edges). Out-of-chain values raise
+        ``SyncedFromVersionNotInSourceChain``. The check runs only
+        when ``synced_from_version`` is non-null and the edge_type
+        permits the field per the closed list above.
+
+        TBD-policy edge types (CAS-ADR-017):
+        Two values appear in the ``EdgeType`` enum but are
+        reserved-and-not-implemented: ``authoritative_for`` and
+        ``sync_target``. Both have ``resolution_policy=TBD`` in the
+        edge registry; every ``link`` call carrying either type raises
+        ``TBDPolicyEdgeError`` unconditionally. The ``synced_from_*``
+        closed list above lists ``sync_target`` as a legitimate carrier
+        of those fields for forward compatibility; this does not
+        unblock ``sync_target`` link creation today.
+
         Raises ``sqlite3.IntegrityError`` if an edge with the same
         natural-key triple (source_id, target_id, edge_type) already
         exists (T-0079 unique constraint). For idempotent semantics
@@ -217,6 +272,19 @@ class GraphOpsService:
         Anything outside the SAGEError hierarchy is treated as a
         programmer or infrastructure bug and propagates out of the batch.
 
+        Per-item validation surface:
+        Each item inherits the full ``link`` precondition surface —
+        document existence, ``merged_from`` chain-head requirement,
+        ``retracts`` field-presence rules, ``synced_from_*``
+        applicability and chain-membership, TBD-policy unconditional
+        rejection, and the CAS-ADR-017 anchor policy per edge_type.
+        See ``GraphOpsService.link`` for the full enumeration.
+
+        Empty ``items`` is valid: the response carries an empty
+        ``results`` array and all counts are zero. Callers building
+        bulk operations programmatically may pass ``items=[]`` without
+        special-casing the call site.
+
         The performance win versus N sequential ``sage_link`` MCP calls
         comes from eliminating per-call MCP framing overhead and the
         asyncio scheduling between items; the process-wide ``_link_lock``
@@ -229,7 +297,7 @@ class GraphOpsService:
         preserved under light because they are the only signals callers
         have for the natural-key idempotency outcome. When unset, the
         default-resolution rule mirrors the sibling bulk tools: batches
-        with more than ``LIGHT_DEFAULT_THRESHOLD`` items default to
+        with more than ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to
         ``light``, smaller batches default to ``full``.
         """
         # T-0153: resolve the effective response_mode by batch size, the

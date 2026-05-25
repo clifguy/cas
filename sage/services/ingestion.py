@@ -411,6 +411,51 @@ class IngestionService:
         regardless of this flag (BH-129): the version chain must be
         complete when the call returns.
 
+        Trio-field inheritance on supersede (CAS-ADR-021):
+        When ``request.predecessor_id`` is set and the caller omits any
+        of ``doc_type``, ``project``, or ``authority_scope`` from
+        ``request.metadata``, the omitted fields silently inherit from
+        the predecessor's value (when non-None). A caller who wants to
+        change one of these trio fields on a supersede must pass the
+        new value explicitly in ``metadata``; otherwise the
+        predecessor's value carries forward without comment. No error
+        is raised either way — inheritance is the documented default,
+        override is the opt-in.
+
+        Tier3 uniqueness (CAS-ADR-031, T-0115):
+        Doc types declaring a ``unique`` constraint in their
+        ``metadata_schema`` (see
+        ``document_types.doc_types[].metadata_schema`` in vault config)
+        enforce per-vault uniqueness on the named tier3 field at ingest
+        time. Uniqueness is checked in the same SQLite transaction as
+        the row insert, so a collision leaves the existing document
+        undisturbed and raises ``Tier3UniqueConstraintViolation`` with
+        ``doc_type``, ``field``, ``colliding_value``, and
+        ``existing_document_id`` in the detail envelope. The check is
+        independent of content-hash deduplication: ``request.force=True``
+        does NOT override a tier3 uniqueness violation.
+
+        Adapter-specific config validation:
+        Each ``SourceType`` adapter declares its own required-config
+        schema; ``request.config`` is adapter-specific and validated
+        against that schema during projection. Per-adapter required
+        keys live in vault config under ``source_adapters.adapters``.
+
+        ``pipeline_status`` terminal-state outcomes (CAS-ADR-021):
+        The terminal status observed by a poll of ``get_document``
+        depends on vault config and runtime outcome.
+        ``PipelineStatus.abstraction_complete`` is the happy path:
+        projection + indexing + abstraction all succeed and
+        ``metadata_confirmed=True`` is set per caller-authoritative
+        semantics. ``PipelineStatus.abstraction_skipped`` is the
+        deferred-abstraction branch: the vault has
+        ``abstraction.enabled=False`` in its config (or the projection
+        produced empty text), so Stages 1-2 ran but Stage 3 was
+        bypassed. ``PipelineStatus.failed`` is the catch-all for any
+        Stage-1/2/3 exception; the document persists with
+        ``pipeline_error`` populated. Inspect ``abstraction.enabled``
+        in vault config to know which terminal state to expect.
+
         Returns:
             IngestResult with the document and whether it was newly created.
             When `wait_for_pipeline` is False the document's
@@ -425,6 +470,10 @@ class IngestionService:
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: predecessor is not active.
             IdenticalContentSupersedeError: new content matches predecessor.
+            Tier3UniqueConstraintViolation: ``tier3_metadata`` carried a
+                value already in use on a doc_type with a ``unique``
+                constraint (CAS-ADR-031, T-0115). ``force=True`` does
+                not override.
         """
         adapter = self._adapters.get(request.source_type)
         if adapter is None:

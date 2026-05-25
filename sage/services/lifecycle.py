@@ -219,6 +219,19 @@ class LifecycleService:
         as a programmer or infrastructure bug and propagates out of the
         batch.
 
+        Per-item validation surface:
+        Each item inherits the full ``LifecycleService.set_lifecycle``
+        precondition surface — vault-config-defined action vocabulary,
+        ``InvalidLifecycleTransitionError`` from the current state, the
+        ``supersede`` chain-head and identical-content guards,
+        ``PipelineIncompleteError`` on ``complete``, etc. See
+        ``LifecycleService.set_lifecycle`` for the full enumeration.
+
+        Empty ``items`` is valid: the response carries an empty
+        ``results`` array and all counts are zero. Callers building
+        bulk operations programmatically may pass ``items=[]`` without
+        special-casing the call site.
+
         The performance win versus N sequential ``sage_set_lifecycle``
         MCP calls comes from eliminating per-call MCP framing overhead
         and asyncio scheduling between items; the per-document lock and
@@ -229,8 +242,8 @@ class LifecycleService:
         success entries; failure entries always carry the full structured
         error envelope. When unset, the default-resolution rule mirrors
         ``sage_discover``: batches with more than
-        ``LIGHT_DEFAULT_THRESHOLD`` items default to ``light``, smaller
-        batches default to ``full``.
+        ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
+        smaller batches default to ``full``.
         """
         # T-0153: resolve the effective response_mode the same way
         # ``RetrievalService._edges`` does, but driven by ``len(items)``

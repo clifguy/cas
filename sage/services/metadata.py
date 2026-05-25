@@ -290,11 +290,24 @@ class MetadataService:
         as a programmer or infrastructure bug and propagates out of the
         batch.
 
+        Per-item validation surface:
+        Each item inherits the full ``MetadataService.update_metadata``
+        precondition surface — document existence, the tag and tier3
+        patch grammar per CAS-ADR-028, doc_type validation, tier3
+        schema enforcement against the resolved doc_type, and the
+        empty-call confirmation-flip side-effect per CAS-ADR-021. See
+        ``MetadataService.update_metadata`` for the full enumeration.
+
         Per-item patch semantics (tags, tier3_metadata, scalar fields)
         are identical to single-item ``update_metadata`` (CAS-ADR-028).
         The bulk method is a thin loop around the single-item code path
         and reuses its patch validators, merge-and-validate-tier3 step,
         and locking discipline.
+
+        Empty ``items`` is valid: the response carries an empty
+        ``results`` array and all counts are zero. Callers building
+        bulk operations programmatically may pass ``items=[]`` without
+        special-casing the call site.
 
         The performance win versus N sequential ``sage_update_metadata``
         MCP calls comes from eliminating per-call MCP framing overhead
@@ -306,8 +319,8 @@ class MetadataService:
         success entries; failure entries always carry the full structured
         error envelope. When unset, the default-resolution rule mirrors
         ``sage_discover``: batches with more than
-        ``LIGHT_DEFAULT_THRESHOLD`` items default to ``light``, smaller
-        batches default to ``full``.
+        ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
+        smaller batches default to ``full``.
         """
         # T-0153: resolve the effective response_mode (mirror
         # ``RetrievalService._edges``). Driven by ``len(items)`` because
