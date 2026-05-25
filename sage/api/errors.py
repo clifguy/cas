@@ -632,6 +632,28 @@ class ReabstractAlreadyInFlightError(SAGEError):
         )
 
 
+class ReabstractDocumentAlreadyInFlightError(SAGEError):
+    """409: a per-document reabstract is already running for this document_id.
+
+    Single-flight per document: a second concurrent caller against the same
+    document receives this structured error with the start_time of the
+    running operation rather than dispatching a parallel background task.
+    Concurrent reabstract calls against different document_ids in the
+    same vault continue to run in parallel.
+    """
+
+    def __init__(self, document_id: str, start_time: datetime) -> None:
+        super().__init__(
+            "reabstract_document_already_in_flight",
+            (
+                f"A reabstract is already running on document "
+                f"{document_id!r}; started at {start_time.isoformat()}."
+            ),
+            409,
+            {"document_id": document_id, "start_time": start_time.isoformat()},
+        )
+
+
 class DestructiveConfigChangeError(SAGEError):
     """409: vault config update would orphan existing documents.
 

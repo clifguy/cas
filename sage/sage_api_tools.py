@@ -2733,18 +2733,16 @@ def register_sage_tools(
         ``sage_reabstract`` returns a document with the new abstract
         in place will observe stale state.
 
-        No per-document single-flight lock:
-        Repeated ``sage_reabstract`` calls against the same
+        Per-document single-flight lock:
+        Concurrent ``sage_reabstract`` calls against the same
         ``document_id`` while a prior reabstract is still in-flight
-        dispatch additional parallel background tasks; the later
-        background writer wins via ``_locks.lock(document_id)`` on the
-        final document update, but earlier tasks' completed work is
-        silently overwritten. Callers receive no contention signal in
-        the ``reabstract_started`` response. Debounce repeated calls
-        client-side (e.g., wait for ``pipeline_status`` to leave
-        ``abstraction_in_progress`` before re-issuing). The structural
-        fix (per-document single-flight lock at dispatch time) is
-        T-0202; this docstring discloses the gap as-is.
+        produce a structured 409
+        (``reabstract_document_already_in_flight``) rather than
+        dispatching a parallel background task. The reservation is
+        released when the background task reaches terminal state
+        (``abstraction_complete`` or ``failed``). Concurrent calls
+        against different document_ids in the same vault continue to
+        run in parallel.
 
         Process-crash stuck-state recovery:
         The background task's exception handler catches Python-level
@@ -2770,6 +2768,10 @@ def register_sage_tools(
         - ``document_not_found`` (404): no document with that id.
         - ``no_projection`` (404): the document has no stored chunks
           to abstract from.
+        - ``reabstract_document_already_in_flight`` (409): a reabstract
+          is already running on this ``document_id``. ``detail`` carries
+          ``document_id`` and the ISO 8601 ``start_time`` of the
+          in-flight call.
 
         Note: error modes above are raised synchronously and reported
         in the call's response envelope. Background-task failures

@@ -1707,6 +1707,53 @@ async def test_reabstract_document_not_found(vault_services):
     assert result["error"] == "document_not_found"
 
 
+async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_services):
+    """A second sage_reabstract call against the same document_id while the
+    first is mid-flight must return the structured 409 error envelope
+    (no exception propagated past the MCP boundary).
+    """
+    from datetime import datetime
+
+    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    for _ in range(200):
+        doc = _parse(await sage_get_document("test_vault", doc_id))
+        if doc.get("pipeline_status") in {
+            "indexing_complete",
+            "abstraction_in_progress",
+            "abstraction_complete",
+            "abstraction_skipped",
+        }:
+            break
+        await asyncio.sleep(0.05)
+
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def gated_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        entered.set()
+        await gate.wait()
+        return "gated abstract"
+
+    vault_services.ingestion_service._abstraction.generate_abstract = gated_abstract
+
+    first = _parse(await sage_reabstract("test_vault", doc_id))
+    assert first.get("status") == "reabstract_started"
+
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+    try:
+        second = _parse(await sage_reabstract("test_vault", doc_id))
+        assert second["error"] == "reabstract_document_already_in_flight"
+        assert second["detail"]["document_id"] == doc_id
+        # detail["start_time"] is an ISO 8601 string; just confirm it parses.
+        datetime.fromisoformat(second["detail"]["start_time"])
+    finally:
+        gate.set()
+        await asyncio.sleep(0.3)
+
+
 # ---------------------------------------------------------------------------
 # T-0157: First-class edge enumeration via sage_discover(target="edges")
 # ---------------------------------------------------------------------------

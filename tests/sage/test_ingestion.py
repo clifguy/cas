@@ -1313,6 +1313,214 @@ async def test_reabstract_no_projection_raises_error(
 
 
 # ---------------------------------------------------------------------------
+# Per-document single-flight lock for ``IngestionService.reabstract``: covers
+# contention (second concurrent call raises 409), per-document independence
+# (parallel calls against different docs both proceed), and reservation
+# cleanup on both success and failure terminal states.
+# ---------------------------------------------------------------------------
+
+
+async def test_reabstract_second_concurrent_call_raises_in_flight_error(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """A second reabstract against the same document_id while the first is
+    mid-flight must raise ReabstractDocumentAlreadyInFlightError (409).
+    """
+    import asyncio
+
+    from sage.api.errors import ReabstractDocumentAlreadyInFlightError
+
+    _create_test_file(tmp_vault_dir, "samples/sf1.md", "# SF1\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/sf1.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+
+    # Gate the abstraction provider so the first background task hangs
+    # mid-generation, holding its reservation in the in-flight set.
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def gated_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        entered.set()
+        await gate.wait()
+        return "gated abstract"
+
+    ingestion_service._abstraction.generate_abstract = gated_abstract
+
+    window_before = datetime.now(timezone.utc)
+    first_response = await ingestion_service.reabstract(doc_id)
+    assert first_response["status"] == "reabstract_started"
+    window_after = datetime.now(timezone.utc)
+
+    # Wait until the background task is actually inside generate_abstract.
+    # Without this barrier the second call could race ahead of the
+    # background task's reservation hand-off (currently None, but kept as
+    # a structural safeguard against future refactors of the dispatch).
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+
+    try:
+        with pytest.raises(ReabstractDocumentAlreadyInFlightError) as excinfo:
+            await ingestion_service.reabstract(doc_id)
+
+        err = excinfo.value
+        assert err.code == "reabstract_document_already_in_flight"
+        assert err.status_code == 409
+        assert err.detail["document_id"] == doc_id
+        observed_start = datetime.fromisoformat(err.detail["start_time"])
+        assert window_before <= observed_start <= window_after
+    finally:
+        # Release the gate so the background task can clean up its
+        # reservation and not leak into the next test in the session.
+        gate.set()
+        await asyncio.sleep(0.3)
+
+
+async def test_reabstract_parallel_calls_different_documents_both_succeed(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """Two reabstracts against different document_ids must both succeed
+    even when the first is mid-flight. The lock is per-document, not
+    per-vault.
+    """
+    import asyncio
+
+    _create_test_file(tmp_vault_dir, "samples/sf2a.md", "# SF2A\n\nContent.")
+    _create_test_file(tmp_vault_dir, "samples/sf2b.md", "# SF2B\n\nDifferent content.")
+    result_a = await ingestion_service.ingest(
+        IngestRequest(source="samples/sf2a.md", source_type=SourceType.MARKDOWN)
+    )
+    result_b = await ingestion_service.ingest(
+        IngestRequest(source="samples/sf2b.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_a, doc_b = result_a.document.id, result_b.document.id
+    assert doc_a != doc_b
+
+    gate = asyncio.Event()
+    enter_count = {"n": 0}
+
+    async def gated_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        enter_count["n"] += 1
+        await gate.wait()
+        return "gated abstract"
+
+    ingestion_service._abstraction.generate_abstract = gated_abstract
+
+    response_a = await ingestion_service.reabstract(doc_a)
+    response_b = await ingestion_service.reabstract(doc_b)
+
+    assert response_a["status"] == "reabstract_started"
+    assert response_a["document_id"] == doc_a
+    assert response_b["status"] == "reabstract_started"
+    assert response_b["document_id"] == doc_b
+
+    # Allow both background tasks to reach the gate, then release them so
+    # cleanup runs and both reservations are popped.
+    for _ in range(40):
+        if enter_count["n"] >= 2:
+            break
+        await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.sleep(0.5)
+
+    doc_a_state = await graph_store.get_document(doc_a)
+    doc_b_state = await graph_store.get_document(doc_b)
+    assert doc_a_state.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert doc_b_state.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+async def test_reabstract_succeeds_again_after_prior_reabstract_completes(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """After a reabstract reaches ABSTRACTION_COMPLETE the reservation
+    must be released so a subsequent reabstract against the same document
+    can proceed.
+    """
+    import asyncio
+
+    _create_test_file(tmp_vault_dir, "samples/sf3.md", "# SF3\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/sf3.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+
+    async def fast_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        return "T3 abstract"
+
+    ingestion_service._abstraction.generate_abstract = fast_abstract
+
+    first = await ingestion_service.reabstract(doc_id)
+    assert first["status"] == "reabstract_started"
+
+    # Poll for the background task's terminal stamp before re-issuing.
+    for _ in range(40):
+        doc = await graph_store.get_document(doc_id)
+        if doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("First reabstract did not reach ABSTRACTION_COMPLETE")
+
+    second = await ingestion_service.reabstract(doc_id)
+    assert second["status"] == "reabstract_started"
+
+    await asyncio.sleep(0.5)
+
+
+async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
+    tmp_vault_dir,
+    ingestion_service_failing_llm,
+    graph_store,
+):
+    """After a reabstract's background task transitions to FAILED the
+    reservation must still be released so a subsequent reabstract can
+    proceed.
+    """
+    import asyncio
+
+    from sage.adapters.stubs import StubAbstractionProvider
+
+    _create_test_file(tmp_vault_dir, "samples/sf4.md", "# SF4\n\nContent.")
+
+    # Ingest under the working stub so the projection lands cleanly,
+    # then swap to the failing provider for the reabstract call.
+    failing_provider = ingestion_service_failing_llm._abstraction
+    ingestion_service_failing_llm._abstraction = StubAbstractionProvider()
+    result = await ingestion_service_failing_llm.ingest(
+        IngestRequest(source="samples/sf4.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+    ingestion_service_failing_llm._abstraction = failing_provider
+
+    first = await ingestion_service_failing_llm.reabstract(doc_id)
+    assert first["status"] == "reabstract_started"
+
+    for _ in range(40):
+        doc = await graph_store.get_document(doc_id)
+        if doc.pipeline_status == PipelineStatus.FAILED:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("First reabstract did not reach FAILED")
+
+    # Swap back to a working provider so the second call has a chance
+    # to dispatch without immediately re-failing; the assertion is only
+    # that the synchronous prefix returns started_status (which proves
+    # the reservation was released).
+    ingestion_service_failing_llm._abstraction = StubAbstractionProvider()
+    second = await ingestion_service_failing_llm.reabstract(doc_id)
+    assert second["status"] == "reabstract_started"
+
+    await asyncio.sleep(0.5)
+
+
+# ---------------------------------------------------------------------------
 # BH-131, BH-132, BH-133: Adapter-emitted tags merge into document.tags
 # ---------------------------------------------------------------------------
 #

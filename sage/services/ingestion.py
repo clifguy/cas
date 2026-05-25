@@ -39,6 +39,7 @@ from sage.api.errors import (
     DuplicateContentError,
     IdenticalContentSupersedeError,
     NoProjectionError,
+    ReabstractDocumentAlreadyInFlightError,
     SourceFileNotFoundError,
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
@@ -292,6 +293,11 @@ class IngestionService:
         # legacy call sites that don't yet pass it still construct; inference
         # silently no-ops when absent.
         self._graph_ops_service = graph_ops_service
+
+        # Per-document reabstract single-flight tracker. Membership ==
+        # "reabstract is currently in flight for this document_id"; the
+        # value is the start_time embedded in the 409 raised on contention.
+        self._reabstract_in_flight: dict[str, datetime] = {}
 
         # Build the vault's FilenameParser once per service instance (CAS-ADR-015).
         # Only active when the vault's metadata_extraction block declares a
@@ -1026,6 +1032,8 @@ class IngestionService:
         Raises:
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
+            ReabstractDocumentAlreadyInFlightError: A reabstract is already
+                running for this document_id.
         """
         doc = await self._store.get_document(document_id)
         if doc is None:
@@ -1034,15 +1042,32 @@ class IngestionService:
         if not await self._content_store.has_chunks(document_id):
             raise NoProjectionError(document_id)
 
-        # Mark in-progress before dispatching background work
-        async with self._locks.lock(document_id):
-            await self._store.update_document(
-                document_id,
-                {
-                    "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
+        # Per-document single-flight: synchronous check + reservation
+        # write within the same scheduling slice (no await between them),
+        # so two callers cannot both pass the membership test.
+        if document_id in self._reabstract_in_flight:
+            raise ReabstractDocumentAlreadyInFlightError(
+                document_id, self._reabstract_in_flight[document_id]
             )
+        start_time = datetime.now(timezone.utc)
+        self._reabstract_in_flight[document_id] = start_time
+
+        # Mark in-progress before dispatching background work. If the
+        # status write fails, drop the reservation so future calls can
+        # proceed (otherwise the orphan reservation would permanently
+        # 409 every subsequent reabstract against this document).
+        try:
+            async with self._locks.lock(document_id):
+                await self._store.update_document(
+                    document_id,
+                    {
+                        "pipeline_status": PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+        except Exception:
+            self._reabstract_in_flight.pop(document_id, None)
+            raise
 
         asyncio.create_task(self._reabstract_background(document_id, doc.doc_type))
 
@@ -1067,37 +1092,42 @@ class IngestionService:
         """
         await asyncio.sleep(0.1)
         try:
-            chunks = await self._content_store.get_all_chunks(document_id)
-            # Exclude the synthetic header chunk (T-0038) from the
-            # reconstituted projection text so its title/source/tags
-            # restatement does not feed back into the abstraction prompt.
-            body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
-            projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
-            abstract = await self._generate_abstract_text(projection_text, doc_type)
-            now = datetime.now(timezone.utc)
-            async with self._locks.lock(document_id):
-                await self._store.update_document(
-                    document_id,
-                    {
-                        "semantic_abstract": abstract,
-                        "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-                        "updated_at": now.isoformat(),
-                    },
-                )
+            try:
+                chunks = await self._content_store.get_all_chunks(document_id)
+                # Exclude the synthetic header chunk (T-0038) from the
+                # reconstituted projection text so its title/source/tags
+                # restatement does not feed back into the abstraction prompt.
+                body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+                projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
+                abstract = await self._generate_abstract_text(projection_text, doc_type)
+                now = datetime.now(timezone.utc)
+                async with self._locks.lock(document_id):
+                    await self._store.update_document(
+                        document_id,
+                        {
+                            "semantic_abstract": abstract,
+                            "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
+                            "updated_at": now.isoformat(),
+                        },
+                    )
 
-            # Refresh the synthetic header chunk so the new abstract is
-            # indexed for retrieval (T-0038).
-            await self._refresh_header_chunk(document_id)
-        except Exception:
-            logger.exception("Background reabstract failed for document %s", document_id)
-            async with self._locks.lock(document_id):
-                await self._store.update_document(
-                    document_id,
-                    {
-                        "pipeline_status": PipelineStatus.FAILED.value,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                )
+                # Refresh the synthetic header chunk so the new abstract is
+                # indexed for retrieval (T-0038).
+                await self._refresh_header_chunk(document_id)
+            except Exception:
+                logger.exception("Background reabstract failed for document %s", document_id)
+                async with self._locks.lock(document_id):
+                    await self._store.update_document(
+                        document_id,
+                        {
+                            "pipeline_status": PipelineStatus.FAILED.value,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+        finally:
+            # Release the per-document single-flight reservation regardless of
+            # whether the background task succeeded or terminated in FAILED.
+            self._reabstract_in_flight.pop(document_id, None)
 
     @staticmethod
     def _resolve_doc_type_for_tier3(
