@@ -24,6 +24,7 @@ from sage.api.errors import SAGEError
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
+    sage_admin_migrate_vault,
     sage_check_preconditions,
     sage_discover,
     sage_get_document,
@@ -37,6 +38,7 @@ from sage.mcp_server import (
     sage_set_lifecycle,
     sage_traverse,
     sage_update_metadata,
+    sage_update_vault_config,
     sage_vault_stats,
 )
 from sage.mcp_server import (
@@ -1462,6 +1464,201 @@ def _copy_dict(d: dict) -> dict:
     import copy as _copy
 
     return _copy.deepcopy(d)
+
+
+# ---------------------------------------------------------------------------
+# Outer-sequence atomicity at the MCP envelope surface: verifies the
+# restructured service methods (yaml-write+reload rollback;
+# build-new-first migration) are wired through the MCP envelope,
+# mirroring the inner-reload reload-failure surface tests above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir, monkeypatch):
+    """Parallel to ``vault_services`` but wires a real ``VaultRegistryService``
+    into the services bundle so calls that need ``_registry_service`` -- such
+    as ``sage_update_vault_config`` and ``sage_admin_migrate_vault`` -- can
+    reach the registry-reload code path. Also installs stub providers via
+    ``SAGE_TEST_STUB_PROVIDERS=1`` and a ``content_store_factory`` so reload
+    paths don't try to build LanceDB.
+    """
+    from sage.services.vault_registry import VaultRegistryService
+
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    registry_service = VaultRegistryService(_mcp._vaults, initialize_services)
+    services = await initialize_services(
+        config,
+        registry_service=registry_service,
+        content_store_factory=lambda _brain: StubContentStore(),
+    )
+    _mcp._vaults["test_vault"] = services
+
+    yield services
+
+    await asyncio.sleep(0.1)
+    # Re-read the registry at teardown -- a successful migrate or reload
+    # swaps the slot, and the local ``services`` binding becomes stale.
+    current = _mcp._vaults.get("test_vault")
+    if current is not None:
+        await current.graph_store.close()
+    _mcp._vaults.pop("test_vault", None)
+
+
+async def test_sage_update_vault_config_atomicity_via_mcp_surface(
+    vault_services_with_registry, monkeypatch, tmp_path, tmp_vault_dir
+):
+    """C1: an MCP ``sage_update_vault_config`` call that fails at the
+    inner reload step rolls back the on-disk yaml and leaves the registry
+    slot identity unchanged.
+
+    Trap (anti-coincidental): the registry-preservation half of this
+    assertion is already guaranteed by the inner-reload build-new-first
+    contract. The trap that *only* the outer-sequence rollback satisfies
+    is the yaml-rollback half -- a write-first, reload-second
+    implementation persists the new yaml on disk even when the reload
+    raises.
+    """
+    import yaml as _yaml
+
+    import sage.mcp_init as _mcp_init
+
+    # Isolate yaml writes to a tmp dir; otherwise the MCP path touches
+    # ``~/sage_vaults/test_vault/vault_config.yaml`` on the live host.
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", tmp_path / "sage_vaults")
+
+    # First, seed the on-disk yaml with a known state via a successful
+    # MCP call. After this call the registry slot is freshly swapped by
+    # the reload step, so ``old`` below captures the post-seed services.
+    seed_result = _parse(
+        await sage_update_vault_config(
+            vault_id="test_vault",
+            vault={
+                "id": "test_vault",
+                "name": "MCP Pre Failure",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            },
+        )
+    )
+    assert "error" not in seed_result, seed_result
+
+    config_path = tmp_path / "sage_vaults" / "test_vault" / "vault_config.yaml"
+    pre_call_dict = _yaml.safe_load(config_path.read_text())
+    assert pre_call_dict["vault"]["name"] == "MCP Pre Failure"
+
+    old = _mcp._vaults["test_vault"]
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated reload failure for outer-sequence atomicity MCP test",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+    monkeypatch.setattr(_mcp, "initialize_services", failing_initialize_services)
+
+    result = _parse(
+        await sage_update_vault_config(
+            vault_id="test_vault",
+            vault={
+                "id": "test_vault",
+                "name": "MCP Should Not Persist",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            },
+        )
+    )
+
+    assert result.get("error") == "schema_migration_required"
+    assert "simulated reload failure" in result["message"]
+
+    # Registry slot identity unchanged (inner-reload build-new-first
+    # contract).
+    assert _mcp._vaults["test_vault"] is old
+
+    # Yaml rolled back (outer-sequence atomicity at the MCP surface).
+    post_call_dict = _yaml.safe_load(config_path.read_text())
+    assert post_call_dict == pre_call_dict, (
+        "MCP-path yaml-rollback failed: on-disk yaml carries the failed call's body. "
+        f"Expected name={pre_call_dict['vault']['name']!r}, "
+        f"got name={post_call_dict['vault']['name']!r}."
+    )
+
+
+async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
+    vault_services_with_registry, monkeypatch
+):
+    """C2: an MCP ``sage_admin_migrate_vault`` call whose post-migration
+    reload fails returns a structured error envelope and leaves the
+    original graph_store live in the registry.
+
+    Trap (anti-coincidental): a close-then-migrate sequence runs
+    ``self._graph_store.close()`` before fresh-handle migration, so by
+    the time the reload-failure propagates to the MCP envelope,
+    ``_executor`` on the registry's graph_store is None. Deferring the
+    close into reload's success path keeps the live graph_store
+    initialized; the live graph_store assertion is the trap.
+    """
+    import sage.mcp_init as _mcp_init
+    from sage.storage.graph_store import GraphStore as _RealGraphStore
+    from sage.storage.migrations import Migration
+
+    # Force fake pending work so migrate_vault enters the migration branch.
+    fake_pending = [
+        Migration(
+            table="documents",
+            column="synthetic_pending_column_c2",
+            ddl="ALTER TABLE documents ADD COLUMN synthetic_pending_column_c2 TEXT",
+        )
+    ]
+    monkeypatch.setattr(
+        "sage.services.maintenance.pending_migrations",
+        lambda conn, plan=None: fake_pending,
+    )
+
+    # Migration succeeds via no-op fresh-handle subclass; failure must
+    # arrive at the reload step, not the migration.
+    class NoOpFreshGraphStore(_RealGraphStore):
+        async def initialize(self, migrate: bool = False) -> None:
+            return None
+
+    monkeypatch.setattr("sage.services.maintenance.GraphStore", NoOpFreshGraphStore)
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated post-migration reload failure for MCP atomicity test",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+    monkeypatch.setattr(_mcp, "initialize_services", failing_initialize_services)
+
+    old = _mcp._vaults["test_vault"]
+    assert old.graph_store._executor is not None
+
+    result = _parse(await sage_admin_migrate_vault(vault_id="test_vault"))
+
+    assert result.get("error") == "schema_migration_required"
+    assert "simulated post-migration reload failure" in result["message"]
+
+    # Registry slot identity unchanged and graph_store still live: the
+    # outer migration-then-reload sequence wrapped the close in reload's
+    # success path.
+    assert _mcp._vaults["test_vault"] is old
+    assert old.graph_store._executor is not None, (
+        "live graph_store was closed before the MCP-surface reload failure"
+    )
+    assert old.graph_store._all_connections, (
+        "live graph_store has no live connections after MCP-surface reload failure"
+    )
 
 
 # ---------------------------------------------------------------------------

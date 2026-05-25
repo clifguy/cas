@@ -15,6 +15,7 @@ registry state stays encapsulated in the registry service.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +37,7 @@ from sage.models.schemas import (
 from sage.storage.graph_store import GraphStore
 from sage.vault_management import (
     _ALL_SECTIONS,
+    _atomic_write_bytes,
     _check_destructive_changes,
     _validate_config,
     _write_config_yaml,
@@ -44,6 +46,8 @@ from sage.vault_management import (
 
 if TYPE_CHECKING:
     from sage.services.vault_registry import VaultRegistryService
+
+logger = logging.getLogger(__name__)
 
 
 class VaultConfigService:
@@ -228,9 +232,37 @@ class VaultConfigService:
             raise DestructiveConfigChangeError(warnings)
 
         config_path = config_path_for_vault(vault_id)
+        # Snapshot the pre-write bytes so a reload failure below can
+        # restore the on-disk yaml byte-for-byte. Snapshotting bytes
+        # (rather than re-serializing the model) preserves the shape of
+        # the original yaml even when caller body sections differ in
+        # field-completeness from a model_dump round-trip.
+        old_yaml_bytes = config_path.read_bytes() if config_path.exists() else None
+
         _write_config_yaml(config_path, merged)
 
-        await self._registry_service.reload(vault_id, new_config)
+        try:
+            await self._registry_service.reload(vault_id, new_config)
+        except BaseException:
+            # Roll back the yaml so on-disk state continues to match the
+            # in-memory registry, which still holds the old services per
+            # reload_vault_in_registry's build-new-first guarantee. The
+            # original exception is the one that propagates -- rollback
+            # failures are logged and swallowed so they cannot mask the
+            # cause.
+            try:
+                if old_yaml_bytes is not None:
+                    _atomic_write_bytes(config_path, old_yaml_bytes)
+                else:
+                    config_path.unlink(missing_ok=True)
+            except BaseException:
+                logger.exception(
+                    "rollback of vault_config.yaml failed after reload "
+                    "failure for vault_id=%s; on-disk yaml may diverge "
+                    "from in-memory state",
+                    vault_id,
+                )
+            raise
 
         return UpdateVaultConfigResponse(
             status="updated",

@@ -5,6 +5,7 @@ sage/services/) so vault creation and update behavior is defined in one
 place. Default-config generation lives on VaultRegistryService.
 """
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -60,6 +61,24 @@ def _write_config_yaml(config_path: Path, config_dict: dict) -> None:
         Path(tmp_path).replace(config_path)
     except BaseException:
         Path(tmp_path).unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` via temp-file + rename so a crash
+    mid-write leaves either the prior file or the new file on disk,
+    never a truncated intermediate. Mirrors ``_write_config_yaml``'s
+    atomicity at the byte level so yaml-rollback uses the same shape of
+    operation as the original write.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".yaml.tmp")
+    try:
+        os.write(fd, data)
+        os.close(fd)
+        Path(tmp).replace(path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
         raise
 
 

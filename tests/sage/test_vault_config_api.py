@@ -354,6 +354,299 @@ async def test_update_config_failed_reload_keeps_old_services_in_registry(
 
 
 # ---------------------------------------------------------------------------
+# Outer-sequence atomicity: yaml-write + reload rolls back on reload failure
+# so the full ``update_config`` call is transactional w.r.t. both the on-disk
+# yaml and the in-memory registry slot.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def isolated_vault_client(monkeypatch, tmp_path, minimal_vault_config_dict, tmp_vault_dir):
+    """Isolated FastAPI client whose vault_config.yaml lives under tmp_path.
+
+    Redirects the module-level ``_VAULTS_ROOT`` in ``sage.vault_management``
+    to a temp dir so atomicity assertions inspect the test's own yaml file
+    rather than the user's real ``~/sage_vaults/test_vault/vault_config.yaml``.
+    Yields ``(client, app, isolated_root)``.
+    """
+    isolated_root = tmp_path / "sage_vaults"
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    app = create_app(config=config)
+    await _initialize_services(app, config)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client, app, isolated_root
+
+    await asyncio.sleep(0.1)
+    for services in app.state.vault_registry.values():
+        await services.graph_store.close()
+
+
+async def _seed_initial_yaml(client, tmp_vault_dir, name: str = "Initial Name") -> None:
+    """PUT a benign config update so ``vault_config.yaml`` exists on disk
+    with a known shape before the atomicity test fires its failure-inducing PUT.
+    """
+    resp = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": name,
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_update_config_rolls_back_yaml_on_reload_failure(
+    isolated_vault_client, tmp_vault_dir, monkeypatch
+):
+    """A1: when ``_registry_service.reload`` raises, the on-disk
+    ``vault_config.yaml`` is restored to its pre-PUT state.
+
+    Trap (anti-coincidental): a yaml-write-then-reload implementation
+    persists the new bytes regardless of whether reload succeeds. The
+    post-call dict-equality assertion is the trap — it must fail against
+    a write-first implementation and pass only when the reload call is
+    wrapped in a rollback handler that restores the pre-call bytes.
+    """
+    import yaml as _yaml
+
+    import sage.mcp_init as _mcp_init
+    from sage.api.errors import SAGEError
+
+    client, app, isolated_root = isolated_vault_client
+
+    await _seed_initial_yaml(client, tmp_vault_dir, name="Initial Name")
+
+    config_path = isolated_root / "test_vault" / "vault_config.yaml"
+    pre_call_dict = _yaml.safe_load(config_path.read_text())
+    assert pre_call_dict["vault"]["name"] == "Initial Name"
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated reload failure for outer-sequence atomicity test",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Should Not Persist",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            }
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "schema_migration_required"
+
+    post_call_dict = _yaml.safe_load(config_path.read_text())
+    assert post_call_dict == pre_call_dict, (
+        "yaml-rollback failed: on-disk yaml does not match the pre-PUT state. "
+        f"Expected name={pre_call_dict['vault']['name']!r}, "
+        f"got name={post_call_dict['vault']['name']!r}."
+    )
+
+
+async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
+    isolated_vault_client, tmp_vault_dir, monkeypatch
+):
+    """A2: yaml rollback fires even when the inner allocator (i.e.
+    ``UserService.bootstrap_owner``, which runs late inside
+    ``initialize_services``) raises.
+
+    Distinguishes "rollback wired only to outer reload surface" from
+    "rollback wired to anything that can raise post-yaml-write."
+
+    Trap (anti-coincidental): a rollback that catches only the surface
+    ``reload`` call (and not the underlying allocator) would let the
+    late-stage failure leak through with the new yaml on disk.
+    """
+    import yaml as _yaml
+
+    from sage.api.errors import SAGEError
+    from sage.services.user_service import UserService
+
+    client, app, isolated_root = isolated_vault_client
+
+    await _seed_initial_yaml(client, tmp_vault_dir, name="Pre Late Failure")
+
+    config_path = isolated_root / "test_vault" / "vault_config.yaml"
+    pre_call_dict = _yaml.safe_load(config_path.read_text())
+    assert pre_call_dict["vault"]["name"] == "Pre Late Failure"
+
+    async def raising_bootstrap(self):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated late-stage failure inside initialize_services",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Late Failure Should Not Persist",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            }
+        },
+    )
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "schema_migration_required"
+
+    post_call_dict = _yaml.safe_load(config_path.read_text())
+    assert post_call_dict == pre_call_dict, (
+        "yaml-rollback did not fire on late-stage allocator failure. "
+        f"Expected name={pre_call_dict['vault']['name']!r}, "
+        f"got name={post_call_dict['vault']['name']!r}."
+    )
+
+
+async def test_update_config_happy_path_writes_new_yaml_and_swaps_registry(
+    isolated_vault_client, tmp_vault_dir
+):
+    """A3: when the reload succeeds, the new yaml IS persisted and the
+    registry slot is a fresh services instance.
+
+    Paired with A1/A2 to prove the rollback path fires on failure and only
+    on failure. Without this guard a buggy "always rollback" implementation
+    would pass A1/A2 but break the happy path.
+    """
+    import yaml as _yaml
+
+    client, app, isolated_root = isolated_vault_client
+
+    await _seed_initial_yaml(client, tmp_vault_dir, name="Before Success")
+
+    config_path = isolated_root / "test_vault" / "vault_config.yaml"
+    pre_call_services = app.state.vault_registry["test_vault"]
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "After Success",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    post_call_dict = _yaml.safe_load(config_path.read_text())
+    assert post_call_dict["vault"]["name"] == "After Success", (
+        "happy-path yaml not persisted; a buggy always-rollback would surface here"
+    )
+
+    # Registry slot replaced with a freshly-initialized services bundle.
+    assert app.state.vault_registry["test_vault"] is not pre_call_services
+
+
+async def test_update_config_rollback_failure_does_not_mask_original_exception(
+    isolated_vault_client, tmp_vault_dir, monkeypatch
+):
+    """A4: if the rollback write itself fails, the ORIGINAL reload
+    exception is the one that propagates (mirrors the
+    initialize_services "cleanup does not mask original exception"
+    discipline).
+
+    Trap (anti-coincidental): a naive ``raise rollback_exc from original``
+    surfaces the rollback exception (OSError) instead of the original
+    (SAGEError). The status-code/code assertion is the trap.
+    """
+    import sage.mcp_init as _mcp_init
+    from sage.api.errors import SAGEError
+
+    client, app, isolated_root = isolated_vault_client
+
+    await _seed_initial_yaml(client, tmp_vault_dir, name="Pre Rollback Failure")
+
+    # First, force the reload step to fail with the ORIGINAL code we want
+    # surfaced.
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="ORIGINAL: reload failed for outer-sequence atomicity test",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+
+    # Second, force the rollback's ``_atomic_write_bytes`` call to fail.
+    # The rollback path writes the snapshotted old bytes via this helper;
+    # making it raise simulates an I/O error during rollback (disk full,
+    # permission revoked, etc.). The initial-write call uses
+    # ``_write_config_yaml`` and is untouched by this monkeypatch.
+    import sage.services.vault_config as _vc_module
+
+    rollback_calls = {"n": 0}
+
+    def failing_atomic_write_bytes(path, data):
+        rollback_calls["n"] += 1
+        raise OSError("ROLLBACK FAILURE: simulated I/O error during yaml rollback")
+
+    monkeypatch.setattr(_vc_module, "_atomic_write_bytes", failing_atomic_write_bytes)
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Triggers Rollback Failure",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            }
+        },
+    )
+
+    # The ORIGINAL SAGEError (reload failure) must be the one surfaced —
+    # not the rollback's OSError. Status code 409 and the SAGEError code
+    # field carry that signal.
+    assert resp.status_code == 409, (
+        f"expected original SAGEError to propagate as 409; got {resp.status_code}. "
+        f"Response: {resp.text}"
+    )
+    assert resp.json()["code"] == "schema_migration_required", (
+        "original SAGEError was masked by the rollback OSError; the "
+        "rollback exception-handler must log and swallow, not re-raise"
+    )
+
+    # The rollback should have been attempted exactly once (so the
+    # exception net actually hit it, not skipped past it).
+    assert rollback_calls["n"] == 1, (
+        f"expected exactly 1 _atomic_write_bytes rollback call; got {rollback_calls['n']}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /sage_vaults (create)
 # ---------------------------------------------------------------------------
 
@@ -396,6 +689,123 @@ async def test_create_vault_400_invalid(client):
     )
     assert resp.status_code == 400
     assert resp.json()["code"] == "vault_config_validation_error"
+
+
+# ---------------------------------------------------------------------------
+# Outer-sequence atomicity for create_vault: yaml-write + service allocation
+# rolls back so a failed creation leaves no orphan yaml on disk and no half-
+# registered vault in memory. Same shape of guarantee as update_config's
+# rollback wrap, applied to the create path.
+# ---------------------------------------------------------------------------
+
+
+async def test_create_vault_rolls_back_yaml_on_initialize_failure(
+    app, client, tmp_path, monkeypatch
+):
+    """D1: when ``_initialize_services`` raises after ``_write_config_yaml``
+    has written the new vault's yaml, the on-disk yaml is unlinked and the
+    vault is NOT registered.
+
+    Trap (anti-coincidental): a write-first, then-allocate-then-register
+    sequence leaves orphan yaml on disk when the allocator raises. The
+    not-on-disk assertion is the trap.
+    """
+    from sage.api.errors import SAGEError
+
+    # Isolate the vault-yaml path to tmp_path so the assertion does not
+    # depend on the user's real ~/sage_vaults/ tree.
+    isolated_root = tmp_path / "sage_vaults"
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
+
+    new_vault_id = "atomicity_create_target"
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated allocator failure for create_vault atomicity",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(
+        app.state.vault_registry_service,
+        "_initialize_services",
+        failing_initialize_services,
+    )
+
+    config = VaultRegistryService.get_default_config(
+        new_vault_id, "Atomicity Create Target", "testuser"
+    )
+    config["vault"]["storage_root"] = str(tmp_path / new_vault_id / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / new_vault_id / "brain")
+
+    resp = await client.post("/sage_vaults", json={"config": config})
+
+    # (a) Error surfaces with the original allocator code.
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "schema_migration_required"
+
+    # (b) No orphan yaml on disk at the would-be vault path.
+    expected_yaml = isolated_root / new_vault_id / "vault_config.yaml"
+    assert not expected_yaml.exists(), (
+        f"create_vault left orphan yaml at {expected_yaml} after a failed "
+        "allocator call; the outer-sequence rollback did not fire"
+    )
+
+    # (c) Vault not registered.
+    assert new_vault_id not in app.state.vault_registry
+
+
+async def test_create_vault_rolls_back_when_bootstrap_owner_fails_post_register(
+    app, client, tmp_path, monkeypatch
+):
+    """D2: when ``bootstrap_owner`` raises after the new services are
+    already in the registry, both the registry entry and the on-disk yaml
+    are rolled back; the user can re-issue create_vault cleanly.
+
+    Trap (anti-coincidental): a write-then-allocate-then-register-then-
+    bootstrap sequence with no rollback leaves the vault half-registered
+    (services live in the registry, but no owner bootstrapped) and the
+    yaml on disk. Both asserts must hold.
+    """
+    from sage.api.errors import SAGEError
+    from sage.services.user_service import UserService
+
+    isolated_root = tmp_path / "sage_vaults"
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
+
+    new_vault_id = "atomicity_bootstrap_target"
+
+    async def raising_bootstrap(self):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated late-stage bootstrap_owner failure",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+
+    config = VaultRegistryService.get_default_config(
+        new_vault_id, "Atomicity Bootstrap Target", "testuser"
+    )
+    config["vault"]["storage_root"] = str(tmp_path / new_vault_id / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / new_vault_id / "brain")
+
+    resp = await client.post("/sage_vaults", json={"config": config})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "schema_migration_required"
+
+    expected_yaml = isolated_root / new_vault_id / "vault_config.yaml"
+    assert not expected_yaml.exists(), (
+        "create_vault left orphan yaml after bootstrap_owner failed; "
+        "rollback must fire on post-register failures too"
+    )
+
+    assert new_vault_id not in app.state.vault_registry, (
+        "create_vault left a half-registered vault in the registry after "
+        "bootstrap_owner failed; the registry entry must be removed alongside "
+        "the yaml rollback"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -342,6 +342,191 @@ async def test_no_resource_warning_on_post_migration_teardown(tmp_path, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# Outer-sequence atomicity: migrate_vault keeps self._graph_store live on
+# migration / reload failure. Extends the inner-reload build-new-first
+# guarantee outward over the close-migrate-reload sequence.
+# ---------------------------------------------------------------------------
+
+
+async def test_migrate_vault_keeps_graph_store_open_when_migration_fails(
+    post_migration_vault, monkeypatch
+):
+    """B1: when the fresh-handle migration raises, the original
+    ``self._graph_store`` stays initialized and the registry slot is
+    unchanged. The exception propagates with no partial state.
+
+    Trap (anti-coincidental): a close-then-migrate sequence runs
+    ``await self._graph_store.close()`` BEFORE constructing the fresh
+    handle, so on migration failure ``self._graph_store._executor is None``.
+    A build-new-first sequence defers the close into the reload success
+    path; the live graph_store remains initialized when migration fails.
+    The ``_executor is not None`` assertion is the structural trap.
+    """
+    from sage.api.errors import SAGEError
+    from sage.storage.graph_store import GraphStore as _RealGraphStore
+    from sage.storage.migrations import Migration
+
+    registry, services, registry_service = post_migration_vault
+
+    # Establish baseline: the live graph_store is initialized.
+    assert services.graph_store._executor is not None
+    assert services.graph_store._all_connections
+
+    # Force _detect_pending_work to report fake pending work so
+    # migrate_vault enters the migration branch even though the live db is
+    # already fully migrated.
+    fake_pending = [
+        Migration(
+            table="documents",
+            column="synthetic_pending_column_b1",
+            ddl="ALTER TABLE documents ADD COLUMN synthetic_pending_column_b1 TEXT",
+        )
+    ]
+    monkeypatch.setattr(
+        "sage.services.maintenance.pending_migrations",
+        lambda conn, plan=None: fake_pending,
+    )
+
+    # The fresh-handle's ``initialize(migrate=True)`` call goes through the
+    # ``GraphStore`` binding in ``sage.services.maintenance``'s module
+    # namespace. Replace just that binding with a subclass that raises on
+    # migrate=True. The original ``services.graph_store`` was constructed
+    # earlier through a different module path, so it is unaffected by the
+    # monkeypatch.
+    class FailingFreshGraphStore(_RealGraphStore):
+        async def initialize(self, migrate: bool = False) -> None:
+            if migrate:
+                raise SAGEError(
+                    code="schema_migration_required",
+                    message="simulated migration failure for outer-sequence atomicity test",
+                    status_code=409,
+                )
+            await super().initialize(migrate=migrate)
+
+    monkeypatch.setattr("sage.services.maintenance.GraphStore", FailingFreshGraphStore)
+
+    # Build a maintenance service against the live graph_store.
+    maintenance = MaintenanceService(
+        vault_id=services.config.vault.id,
+        db_path=Path(services.config.vault.brain_root) / "graph.db",
+        graph_store=services.graph_store,
+        config=services.config,
+        registry_service=registry_service,
+    )
+
+    pre_call_services = registry[services.config.vault.id]
+
+    with pytest.raises(SAGEError, match="simulated migration failure for outer-sequence"):
+        await maintenance.migrate_vault()
+
+    # (a) The original graph_store stays live. A close-then-migrate
+    # sequence would have run ``close()`` before the failure point,
+    # leaving ``_executor=None`` and ``_all_connections=[]``. Build-new-
+    # first leaves the live store untouched on the migration-failure path.
+    assert services.graph_store._executor is not None, (
+        "self._graph_store was closed before the migration failure; "
+        "build-new-first ordering not enforced"
+    )
+    assert services.graph_store._all_connections, (
+        "self._graph_store has no live connections; close() was called"
+    )
+
+    # (b) Registry slot identity unchanged.
+    assert registry[services.config.vault.id] is pre_call_services
+
+
+async def test_migrate_vault_keeps_graph_store_open_when_post_migration_reload_fails(
+    post_migration_vault, monkeypatch
+):
+    """B2: after migration succeeds on disk, if the subsequent registry
+    reload fails, ``self._graph_store`` stays live and the registry slot is
+    unchanged. The inner-reload build-new-first guarantee leaves the old
+    services installed on reload failure, and the outer-sequence wrap
+    ensures that old graph_store has not been pre-emptively closed.
+
+    Trap (anti-coincidental): a close-then-migrate-then-reload sequence
+    closes ``self._graph_store`` BEFORE invoking reload, so a reload
+    failure leaves the registry slot pointing at services with a closed
+    graph_store. Deferring the close into reload's success path leaves
+    the live store open on the reload-failure path.
+    """
+    from sage.api.errors import SAGEError
+    from sage.storage.graph_store import GraphStore as _RealGraphStore
+    from sage.storage.migrations import Migration
+
+    registry, services, registry_service = post_migration_vault
+
+    assert services.graph_store._executor is not None
+
+    # Force fake pending work so migrate_vault enters the migration branch.
+    fake_pending = [
+        Migration(
+            table="documents",
+            column="synthetic_pending_column_b2",
+            ddl="ALTER TABLE documents ADD COLUMN synthetic_pending_column_b2 TEXT",
+        )
+    ]
+    monkeypatch.setattr(
+        "sage.services.maintenance.pending_migrations",
+        lambda conn, plan=None: fake_pending,
+    )
+
+    # Migration step succeeds via a no-op fresh-handle subclass: skip the
+    # DDL but pretend to initialize. We want the failure to come from the
+    # POST-migration reload step, not the migration itself.
+    class NoOpFreshGraphStore(_RealGraphStore):
+        async def initialize(self, migrate: bool = False) -> None:
+            # Synthetic-pending entries above don't reflect real schema
+            # work; skip applying them.
+            return None
+
+    monkeypatch.setattr("sage.services.maintenance.GraphStore", NoOpFreshGraphStore)
+
+    # Inject the reload failure via the standard idiom: monkeypatch
+    # ``initialize_services`` at both possible call sites. ``reload_vault_in_registry``
+    # imports it from ``sage.mcp_init``, so that is the primary site.
+    import sage.mcp_init as _mcp_init
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated post-migration reload failure for outer-sequence atomicity",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+
+    maintenance = MaintenanceService(
+        vault_id=services.config.vault.id,
+        db_path=Path(services.config.vault.brain_root) / "graph.db",
+        graph_store=services.graph_store,
+        config=services.config,
+        registry_service=registry_service,
+    )
+
+    pre_call_services = registry[services.config.vault.id]
+
+    with pytest.raises(SAGEError, match="simulated post-migration reload failure"):
+        await maintenance.migrate_vault()
+
+    # (a) The original graph_store stays live across the reload-failure path.
+    # A close-then-migrate sequence would have run ``self._graph_store.close()``
+    # before fresh.initialize, so by the time reload raised, _executor was None.
+    assert services.graph_store._executor is not None, (
+        "self._graph_store was closed before the post-migration reload; "
+        "the close must defer to reload's success path"
+    )
+    assert services.graph_store._all_connections, (
+        "self._graph_store has no live connections after reload failure"
+    )
+
+    # (b) Registry slot identity unchanged: the inner-reload build-new-first
+    # guarantee preserves the old SAGEServices reference when
+    # initialize_services raises.
+    assert registry[services.config.vault.id] is pre_call_services
+
+
+# ---------------------------------------------------------------------------
 # T-0111: MaintenanceService.detect_drift
 # ---------------------------------------------------------------------------
 

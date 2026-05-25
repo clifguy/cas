@@ -2301,25 +2301,17 @@ def register_sage_tools(
         if external processes edited ``vault_config.yaml`` outside
         this MCP server.
 
-        Reload-atomicity gap on the outer write+reload sequence:
-        A real-run update walks ``_write_config_yaml(...)`` first and
-        then ``_registry_service.reload(...)``. The reload step itself
-        is atomic with respect to the registry slot per T-0183 (the
-        new services are built first; the old services remain
-        installed if construction fails — see ``sage_reload_vault``
-        for the inner-reload guarantees and the recovery recipe).
-        **The outer yaml-write + reload sequence is NOT atomic**: if
-        the reload step fails (schema-migration required, duplicate
-        edges, abstraction-provider build failure, etc.), the on-disk
-        ``vault_config.yaml`` has already been overwritten with the
-        new merged config while the in-memory registry continues to
-        serve the **old** config. Subsequent tool calls see the old
-        vocabulary; a manual ``sage_reload_vault`` after addressing
-        the underlying failure is required to reconcile disk and
-        memory. The reload-atomicity sibling row for
-        ``sage_reload_vault`` itself is documented in the T-0180
-        audit; T-0183 closed the inner step's atomicity, not the
-        outer sequence.
+        Reload atomicity:
+        A real-run update writes ``vault_config.yaml`` to disk and
+        then invokes ``_registry_service.reload(...)``. The whole
+        sequence is atomic with respect to the registry slot and the
+        on-disk yaml: the reload builds new services before tearing
+        down the old, and if any step raises (schema-migration
+        required, duplicate edges, abstraction-provider build failure,
+        etc.) the yaml is rolled back to its pre-call bytes and the
+        registry continues to serve the previous config. Callers see
+        the original exception; no manual ``sage_reload_vault`` is
+        required to reconcile disk and memory after a failed update.
 
         Compound-risk warning (FastMCP silent-drop interaction):
         FastMCP's ``ArgModelBase`` silently drops unknown JSON-RPC
@@ -2855,23 +2847,19 @@ def register_sage_tools(
         staleness requires the caller to restart any other open MCP
         sessions to observe the new schema.
 
-        Migration is NOT atomic -- partial-failure window:
-        On the migrate-needed path the flow is close-old-graph-store,
-        then construct a fresh GraphStore over the same db_path solely
-        to run ``initialize(migrate=True)``, close that fresh store,
-        then ask the registry to reload the vault. If
-        ``fresh.initialize(migrate=True)`` raises (or the subsequent
-        reload raises -- see the inherited reload-atomicity row below)
-        after ``self._graph_store.close()`` has already returned, the
-        in-memory state is corrupted: the registry holds services
-        whose graph_store is closed, and every subsequent tool call
-        against the vault hits the closed-graph-store error path.
-        Recovery options: (a) re-issue the migration after fixing the
-        underlying cause (which itself races the same window), or
-        (b) a process restart. This mirrors the ``sage_reload_vault``
-        atomicity hazard documented under T-0180; the structural fix
-        for the outer pre-reload migration sequence is tracked as
-        T-0201.
+        Migration atomicity:
+        On the migrate-needed path the flow applies the schema work
+        through a fresh ``GraphStore`` while the original graph_store
+        stays open, then invokes the registry reload to swap in fresh
+        services backed by the migrated schema. If
+        ``fresh.initialize(migrate=True)`` raises (faulty
+        ``MIGRATION_PLAN`` ALTER TABLE, ``BACKFILL_PLAN`` failure,
+        ``Tier3UniqueIndexBlockedError`` surfaced at initialize-time
+        index creation), the original graph_store is untouched and the
+        registry view remains live. If the post-migration reload
+        raises, the migration is durable on disk and the registry
+        continues to serve the pre-migration services; the operator
+        can re-issue the reload after addressing the underlying cause.
 
         T-0115 tier3 uniqueness activation (CAS-ADR-031):
         After the schema-migration step settles, every ``unique_keys``
@@ -2891,16 +2879,6 @@ def register_sage_tools(
         collisions from this scan. The ``unique_keys`` vocabulary
         lives in vault config; query ``sage_get_vault_config`` for the
         authoritative declarations.
-
-        Inherited post-migration reload-atomicity:
-        After the migration step the call invokes
-        ``_registry_service.reload(...)``. Per T-0183 the reload itself
-        is now atomic (the registry restores the prior services on
-        failure), but T-0183 closes only the inner reload step; the
-        outer migration-then-reload sequence remains non-atomic per
-        the row above. See ``sage_reload_vault`` for the in-place
-        reload atomicity disclosures; see T-0201 for the open
-        structural fix that extends T-0183 to wrap the outer sequence.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.

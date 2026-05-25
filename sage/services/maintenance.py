@@ -144,11 +144,15 @@ class MaintenanceService:
         report without touching the running graph_store -- the
         idempotent no-op path.
 
-        Otherwise: close the running graph_store, open a fresh one
-        solely for migration, run ``initialize(migrate=True)``, close
-        it, then ask the VaultRegistryService to reload the vault so the
-        registry holds a freshly-initialized SAGEServices bundle whose
-        graph_store carries the post-migration schema.
+        Otherwise: open a fresh GraphStore alongside the running one,
+        run ``initialize(migrate=True)`` through it, close the fresh
+        handle, then ask the VaultRegistryService to reload the vault.
+        The reload builds new services before tearing down the old, so
+        the running graph_store stays live until the new bundle is
+        ready. If the migration step raises, the original graph_store
+        is untouched; if the reload raises, the migration is durable
+        on disk and the registry continues to serve the prior
+        services.
 
         T-0115: after the schema migration step settles, scan every
         ``unique_keys`` declaration in vault config. For each declared
@@ -164,26 +168,6 @@ class MaintenanceService:
         must inspect both even on a no-op migration path, because the
         tier3 scan runs every call regardless of whether columns_added
         or backfills_applied are non-empty.
-
-        Migration is NOT atomic with the post-migration reload:
-        On the migrate-needed branch the sequence is
-        ``self._graph_store.close()`` -> ``fresh = GraphStore(...)`` ->
-        ``fresh.initialize(migrate=True)`` -> ``fresh.close()`` ->
-        ``self._registry_service.reload(...)``. If
-        ``fresh.initialize(migrate=True)`` raises (a faulty
-        MIGRATION_PLAN ALTER TABLE, a BACKFILL_PLAN failure, or a
-        Tier3UniqueIndexBlockedError surfaced via initialize-time
-        index creation), the original graph_store is already closed
-        and the registry has not yet been reloaded -- in-memory state
-        is corrupted, with the registry slot pointing at closed
-        services. Recovery options: (a) re-issue migrate_vault after
-        fixing the underlying cause (races the same window), or
-        (b) a process restart. T-0183 closed the atomicity hazard on
-        the inner ``_registry_service.reload`` step itself, but the
-        outer pre-reload migration sequence remains non-atomic; the
-        structural fix is tracked as T-0201. See ``sage_reload_vault``
-        for the in-place reload atomicity disclosure that this
-        sequence inherits.
         """
         pending_alters, pending_bfs = _detect_pending_work(self._db_path)
 
@@ -193,11 +177,24 @@ class MaintenanceService:
         backfills_applied = [b.name for b in pending_bfs]
 
         if columns_added or backfills_applied:
-            await self._graph_store.close()
+            # Build-new-first: apply the migration through a fresh handle
+            # while self._graph_store stays open. SQLite WAL mode permits
+            # an idle reader connection to coexist with a brief EXCLUSIVE
+            # lock for ALTER TABLE, so the original graph_store does not
+            # need to be torn down pre-migration. If fresh.initialize
+            # raises, self._graph_store is untouched and the registry
+            # view remains live.
             fresh = GraphStore(self._db_path)
-            await fresh.initialize(migrate=True)
-            await fresh.close()
+            try:
+                await fresh.initialize(migrate=True)
+            finally:
+                await fresh.close()
 
+            # Migration is durable on disk. The registry reload builds new
+            # services first and only tears down self._graph_store on
+            # success (per reload_vault_in_registry's atomicity contract);
+            # if reload raises, the old services -- including
+            # self._graph_store -- remain installed.
             await self._registry_service.reload(self._vault_id, self._config)
 
         activations, collisions = await self._activate_tier3_uniqueness()

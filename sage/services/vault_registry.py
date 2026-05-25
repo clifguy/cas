@@ -13,6 +13,7 @@ SAGEServices bundles.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -26,10 +27,13 @@ from sage.models.schemas import (
     VaultSummary,
 )
 from sage.vault_management import (
+    _atomic_write_bytes,
     _validate_config,
     _write_config_yaml,
     config_path_for_vault,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
@@ -152,21 +156,53 @@ class VaultRegistryService:
         Path(config.vault.storage_root).expanduser().mkdir(parents=True, exist_ok=True)
         Path(config.vault.brain_root).expanduser().mkdir(parents=True, exist_ok=True)
 
+        # Snapshot the pre-write yaml bytes (almost always None, since this
+        # path runs only for a vault_id absent from the registry) so a
+        # failure below can restore the on-disk state without leaving an
+        # orphan yaml in place.
+        old_yaml_bytes = config_path.read_bytes() if config_path.exists() else None
         _write_config_yaml(config_path, body.config)
 
         # CAS-ADR-030: thread the stack-built abstraction provider through.
         from sage.mcp_init import build_stack_abstraction_provider, get_stack_config
 
         stack_provider = build_stack_abstraction_provider(get_stack_config())
-        services = await self._initialize_services(
-            config,
-            config_path=config_path,
-            registry_service=self,
-            abstraction_provider=stack_provider,
-        )
-        self._registry[vault_id] = services
 
-        await services.user_service.bootstrap_owner()
+        try:
+            services = await self._initialize_services(
+                config,
+                config_path=config_path,
+                registry_service=self,
+                abstraction_provider=stack_provider,
+            )
+            self._registry[vault_id] = services
+            await services.user_service.bootstrap_owner()
+        except BaseException:
+            # Roll back the registry entry and any services that were
+            # constructed before the failure point, so the user can retry
+            # create_vault cleanly. The original exception propagates;
+            # rollback failures log and are swallowed.
+            registered = self._registry.pop(vault_id, None)
+            if registered is not None:
+                try:
+                    await registered.graph_store.close()
+                except BaseException:
+                    logger.exception(
+                        "graph_store close failed during create_vault rollback for vault_id=%s",
+                        vault_id,
+                    )
+            try:
+                if old_yaml_bytes is None:
+                    config_path.unlink(missing_ok=True)
+                else:
+                    _atomic_write_bytes(config_path, old_yaml_bytes)
+            except BaseException:
+                logger.exception(
+                    "rollback of vault_config.yaml failed after create_vault "
+                    "failure for vault_id=%s; orphan yaml may exist on disk",
+                    vault_id,
+                )
+            raise
 
         return self._build_vault_summary(config, services)
 
