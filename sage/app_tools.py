@@ -120,18 +120,110 @@ def register_app_tools(
         staging-edge table for review via
         ``sage_list_staging_edges``.
 
+        Divergence from ``sage_ingest`` (hard-coded ``needs_review=True``):
+        This tool's behavior differs from ``sage_ingest``'s in that
+        every document it ingests lands with
+        ``metadata_confirmed=False`` and is added to the
+        metadata-review queue, regardless of caller intent. The
+        ``sage_ingest`` default is the opposite (caller-authoritative
+        metadata, ``metadata_confirmed=True``). This is intentional
+        per CAS-ADR-021: the batch flow is a confirmation-queue
+        feeder by design — callers curate filenames/metadata
+        up-front, then a human (or follow-up agent) confirms each
+        record via ``sage_update_metadata``. See ``sage_ingest`` for
+        the contrasting caller-authoritative default.
+
+        Divergence from ``sage_ingest`` (filename parsing always runs):
+        Because ``needs_review=True`` is hard-coded (see above), the
+        vault's ``FilenameParser`` always runs on every file. It may
+        populate ``date``, ``project``, ``codes``, ``version``, and
+        ``doc_type`` from the filename when the caller omits those
+        keys from ``parsed_metadata`` — the exact fields the parser
+        extracts are vault-config-defined under
+        ``metadata_extraction.filename_extraction.segment_fields``
+        (see ``sage_get_vault_config``). The historical claim in the
+        ``files`` parameter description that omitting ``parsed_metadata``
+        leaves "no other fields pre-populated" is structurally false
+        for any vault that declares a filename pattern. Call
+        ``sage_parse_filename`` first if you want to preview the
+        parser's output before ingest. See ``sage_ingest`` for the
+        contrasting default (filename parsing only runs when
+        ``needs_review=True`` is opted into).
+
+        Per-file failure isolation (CAS-ADR-029):
+        The batch is NOT atomic. Per-file exceptions are caught into
+        ``summary.errors[]`` as ``{filename, message}`` entries (with
+        ``summary.error_count`` advancing in lockstep); the batch
+        continues with the remaining files and post-ingest edge
+        inference still runs across whatever did insert. Earlier or
+        later items are not rolled back. Mirrors the
+        ``sage_bulk_link`` / ``sage_bulk_set_lifecycle`` /
+        ``sage_bulk_update_metadata`` atomicity contract.
+
+        Predecessor auto-archive on Tier-1 supersedes inference:
+        When ``infer_edges=True`` and post-ingest edge inference
+        creates a Tier-1 ``supersedes`` edge via version-chain
+        inference, the target document silently transitions from
+        ``active`` to ``archived`` as part of edge execution — no
+        explicit ``sage_set_lifecycle(action="archive")`` call is
+        required and none surfaces in the response. Lifecycle
+        transition failures during this phase are collected as
+        warnings in ``summary.edge_warnings`` only; they do not raise
+        and do not appear in ``summary.errors``.
+
+        Tier-1 provenance-gate downgrade:
+        Tier-1 ``supersedes`` adds are gated on provenance: if any
+        existing edge in a candidate version chain has a non-
+        ``version_chain`` rationale (e.g., a human-curated
+        ``manual_review`` edge in the same chain), the entire group's
+        Tier-1 adds are silently downgraded to Tier-2 (deposited in
+        the staging-edge table for review via
+        ``sage_list_staging_edges`` rather than landing as production
+        edges; the predecessor auto-archive above does NOT fire on a
+        downgraded group). The production-vs-staging outcome of a
+        batch is therefore rule-dependent on the vault's prior edge
+        graph, not deterministic from the input files alone.
+
+        Per-file precondition surface inherited from ``sage_ingest``:
+        Every per-file ingest runs the full ``sage_ingest``
+        precondition pipeline. Failures surface as entries in
+        ``summary.errors[]`` (per the per-file isolation contract
+        above) and include — by inherited shape from ``sage_ingest``
+        — ``adapter_not_found``, ``document_not_found``,
+        ``source_file_not_found``, ``identical_content_supersede``,
+        ``duplicate_content``, ``supersede_target_not_active``,
+        ``tier3_unique_constraint_violation``, and
+        ``tier3_schema_violation``. See ``sage_ingest`` for the
+        authoritative per-file precondition surface. Mirrors the
+        bulk-tool cross-reference pattern established by
+        ``sage_bulk_link`` / ``sage_bulk_set_lifecycle`` /
+        ``sage_bulk_update_metadata``.
+
         Error modes:
+        - ``unknown_vault`` (400): ``vault_id`` is not a registered
+          vault on this SAGE instance. Call ``sage_list_vaults`` for
+          the registered set. This is a batch-boundary check (raised
+          before any per-file work begins); per-file failures do not
+          surface here, they accumulate in ``summary.errors[]``.
         - ``empty_file_list`` (string in response): ``files`` was
           empty. Choose at least one file or skip the call.
 
         Args:
             vault_id: Target vault identifier.
             files: List of file objects. Each has: ``file_path`` (str),
-                ``adapter`` (str), and optional ``parsed_metadata``
-                (dict with ``title``, ``date``, ``project``, ``codes``,
-                ``version``, ``doc_type``). When ``parsed_metadata``
-                is omitted, the stem of ``file_path`` is used as the
-                title and no other fields are pre-populated.
+                ``adapter`` (str — closed ``SourceType`` vocabulary:
+                ``markdown``, ``docx``, ``xlsx``, ``pdf``; the vault's
+                actually-enabled subset is whatever appears under
+                ``source_adapters.adapters`` in
+                ``sage_get_vault_config``), and optional
+                ``parsed_metadata`` (dict with ``title``, ``date``,
+                ``project``, ``codes``, ``version``, ``doc_type``).
+                When ``parsed_metadata`` is omitted, the stem of
+                ``file_path`` is used as the title; the vault's
+                ``FilenameParser`` still runs and may populate the
+                remaining fields from the filename (see "Divergence
+                from ``sage_ingest`` (filename parsing always runs)"
+                above; call ``sage_parse_filename`` to preview).
             infer_edges: When True (default), run two-phase edge inference
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle

@@ -123,6 +123,65 @@ class BatchIngestService:
     ) -> IngestSummary:
         """Execute the three-phase batch ingestion pipeline.
 
+        Hard-coded ``needs_review=True`` (CAS-ADR-021):
+        Every per-file ``IngestRequest`` issued by this service sets
+        ``needs_review=True`` unconditionally, regardless of caller
+        intent. Every document this service ingests therefore lands
+        with ``metadata_confirmed=False`` and is added to the
+        metadata-review queue — the opposite of
+        ``IngestionService.ingest``'s caller-authoritative default.
+        This is intentional under CAS-ADR-021: the CAS bulk-ingest
+        workflow surfaces inferred values for human confirmation, so
+        it explicitly opts every document into the confirmation
+        queue. See the inline comment at the ``IngestRequest``
+        construction site for the line where the flip is stamped.
+
+        Filename parsing always runs (consequence of the above):
+        Because ``needs_review=True`` is hard-coded, the vault's
+        ``FilenameParser`` runs on every file regardless of the
+        contents of ``FileDescriptor.parsed_metadata``. It may
+        populate ``date``, ``project``, ``codes``, ``version``, and
+        ``doc_type`` from the filename when the caller omits those
+        keys — the exact fields the parser extracts are
+        vault-config-defined under
+        ``metadata_extraction.filename_extraction.segment_fields``.
+        Callers wanting a no-filename-parser ingest path must call
+        ``IngestionService.ingest`` directly with
+        ``needs_review=False``.
+
+        Per-file failure isolation (CAS-ADR-029):
+        The batch is NOT atomic. Per-file exceptions are caught into
+        ``IngestSummary.errors`` as ``{filename, message}`` entries
+        (with ``error_count`` advancing in lockstep); the batch
+        continues with the remaining files and Phase 3 edge
+        execution still runs across whatever did insert. Earlier or
+        later items are not rolled back. Mirrors the bulk-tool
+        atomicity contract used by ``sage_bulk_*`` operations.
+
+        Predecessor auto-archive on Tier-1 supersedes inference:
+        When ``infer_edges=True`` and Phase 3 edge resolution
+        creates a Tier-1 ``supersedes`` edge via version-chain
+        inference, the target document silently transitions from
+        ``active`` to ``archived`` as part of edge execution — no
+        explicit lifecycle-transition call is required and none
+        surfaces in the summary. Lifecycle transition failures
+        during this phase are collected as warnings in
+        ``IngestSummary.edge_warnings`` only; they do not raise and
+        do not appear in ``IngestSummary.errors``.
+
+        Tier-1 provenance-gate downgrade:
+        Tier-1 ``supersedes`` adds are gated on provenance: if any
+        existing edge in a candidate version chain has a
+        non-``version_chain`` rationale (e.g., a human-curated
+        ``manual_review`` edge in the same chain), the entire
+        group's Tier-1 adds are silently downgraded to Tier-2
+        (deposited in the staging-edge table for review rather than
+        landing as production edges; the predecessor auto-archive
+        above does NOT fire on a downgraded group). The
+        production-vs-staging outcome of a batch is therefore
+        rule-dependent on the vault's prior edge graph, not
+        deterministic from the input ``FileDescriptor`` list alone.
+
         Args:
             files: Neutral file descriptors to ingest.
             vault_services: SAGE service bundle for the target vault.
