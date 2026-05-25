@@ -253,7 +253,7 @@ jobs:
 
       - name: Bootstrap cas vault for SAGE
         run: |
-          mkdir -p ~/sage_vaults/cas
+          mkdir -p ~/sage_vaults/cas/sources/imports
           cp tests/fixtures/ci_cas_vault_config.yaml ~/sage_vaults/cas/vault_config.yaml
 
       - name: Run Playwright e2e

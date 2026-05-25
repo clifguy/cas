@@ -10,6 +10,7 @@ source file provenance (source_modified_at), and document date metadata
 import hashlib
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -541,6 +542,38 @@ async def test_bh_057_imports_dir_created_on_demand(
 
     assert result.is_new is True
 
+    assert imports_dir.exists()
+    assert (imports_dir / "fresh.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Regression: _ensure_vault_local creates missing storage_root parent
+# ---------------------------------------------------------------------------
+
+
+async def test_ensure_vault_local_creates_missing_sources_parent(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """Regression guard: on a fresh vault where the storage_root parent
+    (``sources/``) has not yet been created on disk, importing an
+    external file must succeed by creating the tree end-to-end rather
+    than raising ``FileNotFoundError`` from the ``imports/`` mkdir."""
+    sources_dir = tmp_vault_dir / "sources"
+    shutil.rmtree(sources_dir)
+    assert not sources_dir.exists()
+
+    external_file = tmp_path / "fresh.md"
+    external_file.write_text("# Fresh\n\nNew content.\n")
+
+    request = IngestRequest(
+        source=str(external_file),
+        source_type=SourceType.MARKDOWN,
+    )
+    result = await ingestion_service.ingest(request)
+
+    assert result.is_new is True
+    assert sources_dir.exists()
+    imports_dir = sources_dir / "imports"
     assert imports_dir.exists()
     assert (imports_dir / "fresh.md").exists()
 

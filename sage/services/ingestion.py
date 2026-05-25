@@ -368,7 +368,7 @@ class IngestionService:
             pass  # external file -- fall through to import
 
         imports_dir = storage_root / "imports"
-        imports_dir.mkdir(exist_ok=True)
+        imports_dir.mkdir(parents=True, exist_ok=True)
 
         dest = imports_dir / source_path.name
         if dest.exists():
