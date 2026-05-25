@@ -2613,15 +2613,56 @@ def register_sage_tools(
         operator attention; current edges are absent from the report.
 
         Hash is the authoritative comparator; ``synced_from_version``
-        is a display key. See ``StalenessBasis`` for the four-bucket
-        classification (``content_drift``, ``chain_advanced_no_content_change``,
-        ``recorded_null``, ``chain_nonlinear``).
+        is a display key.
 
         Replaces the manual hand-walk phase of the verbatim-sync and
         terminology-remediation workflows.
 
+        Common preconditions (CAS-ADR-029):
+        See the ``sage_admin_*`` family preconditions block above for
+        shared rules (``vault_id`` typed-alias validation,
+        ``maintenance_service`` wiring requirement).
+
+        ``StalenessBasis`` bucket semantics (T-0111):
+        Each ``DriftEntry`` carries a ``staleness_basis`` field
+        classifying why the edge surfaced. Callers interpret a
+        DriftReport against these four buckets without leaving this
+        docstring:
+
+        - ``content_drift``: the recorded ``synced_from_content_hash``
+          differs from the current chain-head hash. Load-bearing
+          "stale, act now" signal — re-sync the dependent artifact.
+        - ``chain_advanced_no_content_change``: the chain has advanced
+          past the recorded version, but the head's content hash
+          still matches what was recorded. Informational — the
+          provenance pointer is behind but the bytes are equivalent.
+        - ``recorded_null``: the edge predates the T-0110 provenance
+          columns (neither ``synced_from_version`` nor
+          ``synced_from_content_hash`` is recorded). Informational —
+          back-filling the provenance is optional cleanup, not a
+          drift signal.
+        - ``chain_nonlinear``: the source's supersedes chain forks
+          (more than one head). Data-quality flag, not a drift
+          signal; the chain must be reconciled before drift can be
+          assessed against it. ``current_head_*`` fields are null on
+          these entries; ``competing_head_count`` is populated.
+
+        Error modes:
+        - ``vault_not_found`` (404): no vault registered with the
+          given ``vault_id`` in this MCP process.
+        - ``chain_nonlinear`` (surfaced as ``DriftEntry`` rows, not
+          an envelope error): chain forks are reported in-band per
+          the bucket above rather than as a top-level failure, so
+          one forked chain does not mask drift on other edges in the
+          same vault.
+        - Graph-store query failures (500): unexpected SQLite errors
+          while walking provenance edges or resolving chain heads
+          propagate as opaque server errors. These are infrastructure
+          conditions, not caller bugs; retrying is appropriate.
+
         Args:
-            vault_id: Target vault identifier.
+            vault_id: Target vault identifier. See the
+                ``sage_admin_*`` family preconditions block above.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
