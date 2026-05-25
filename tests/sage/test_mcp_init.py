@@ -13,7 +13,7 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.config import VaultConfig
-from sage.mcp_init import initialize_services
+from tests.sage.conftest import initialize_services_for_test
 
 # ---------------------------------------------------------------------------
 # DI-001: Injected embedding_provider is used by all services
@@ -26,18 +26,14 @@ async def test_di_001_injected_embedding_provider(minimal_vault_config_dict, tmp
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     stub_embed = StubEmbeddingProvider()
 
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         embedding_provider=stub_embed,
-    )
-
-    try:
+    ) as services:
         # The stub should be the exact instance wired into services
         assert services.ingestion_service._embedding is stub_embed
         assert services.retrieval_service._embedding is stub_embed
         assert services.utilities_service._embedding is stub_embed
-    finally:
-        await services.graph_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -51,15 +47,11 @@ async def test_di_002_injected_abstraction_provider(minimal_vault_config_dict, t
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     stub_abstract = StubAbstractionProvider()
 
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         abstraction_provider=stub_abstract,
-    )
-
-    try:
+    ) as services:
         assert services.ingestion_service._abstraction is stub_abstract
-    finally:
-        await services.graph_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -73,17 +65,13 @@ async def test_di_003_injected_content_store(minimal_vault_config_dict, tmp_vaul
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     stub_cs = StubContentStore()
 
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store=stub_cs,
-    )
-
-    try:
+    ) as services:
         assert services.ingestion_service._content_store is stub_cs
         assert services.retrieval_service._content is stub_cs
         assert services.utilities_service._content is stub_cs
-    finally:
-        await services.graph_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -98,14 +86,12 @@ async def test_di_004_all_overrides(minimal_vault_config_dict, tmp_vault_dir):
     stub_abstract = StubAbstractionProvider()
     stub_cs = StubContentStore()
 
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         embedding_provider=stub_embed,
         abstraction_provider=stub_abstract,
         content_store=stub_cs,
-    )
-
-    try:
+    ) as services:
         assert services.ingestion_service._embedding is stub_embed
         assert services.ingestion_service._abstraction is stub_abstract
         assert services.ingestion_service._content_store is stub_cs
@@ -113,8 +99,6 @@ async def test_di_004_all_overrides(minimal_vault_config_dict, tmp_vault_dir):
         assert services.retrieval_service._content is stub_cs
         assert services.utilities_service._embedding is stub_embed
         assert services.utilities_service._content is stub_cs
-    finally:
-        await services.graph_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -139,9 +123,9 @@ async def test_di_005_no_overrides_constructs_real_providers(
     monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
     config = VaultConfig.model_validate(minimal_vault_config_dict)
 
-    services = await initialize_services(config, abstraction_provider=StubAbstractionProvider())
-
-    try:
+    async with initialize_services_for_test(
+        config, abstraction_provider=StubAbstractionProvider()
+    ) as services:
         from sage.adapters.content_store_lancedb import LanceDBContentStore
         from sage.adapters.embedding_nomic import NomicEmbeddingProvider
 
@@ -150,8 +134,6 @@ async def test_di_005_no_overrides_constructs_real_providers(
 
         assert isinstance(embed, NomicEmbeddingProvider)
         assert isinstance(cs, LanceDBContentStore)
-    finally:
-        await services.graph_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -164,20 +146,16 @@ async def test_di_006_services_functional_with_stubs(minimal_vault_config_dict, 
     without errors (smoke test)."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
 
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
         content_store=StubContentStore(),
-    )
-
-    try:
+    ) as services:
         # Bootstrap owner should have run during init
         owner = await services.graph_store.get_user_by_display_name(config.vault.owner)
         assert owner is not None
         assert owner.display_name == config.vault.owner
-    finally:
-        await services.graph_store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -214,12 +192,8 @@ async def test_di_008_enabled_true_uses_injected_stack_provider(
 
     sentinel = StubAbstractionProvider()  # any AbstractionProvider works
 
-    services = await initialize_services(config, abstraction_provider=sentinel)
-
-    try:
+    async with initialize_services_for_test(config, abstraction_provider=sentinel) as services:
         assert services.ingestion_service._abstraction is sentinel
-    finally:
-        await services.graph_store.close()
 
 
 async def test_di_009_enabled_false_substitutes_stub_even_when_provider_injected(
@@ -243,13 +217,9 @@ async def test_di_009_enabled_false_substitutes_stub_even_when_provider_injected
     sentinel = StubAbstractionProvider()
     sentinel.marker = "would-have-been-stack-provider"  # type: ignore[attr-defined]
 
-    services = await initialize_services(config, abstraction_provider=sentinel)
-
-    try:
+    async with initialize_services_for_test(config, abstraction_provider=sentinel) as services:
         wired = services.ingestion_service._abstraction
         assert isinstance(wired, StubAbstractionProvider)
         # Anti-coincidence: must NOT be the injected sentinel.
         assert wired is not sentinel
         assert getattr(wired, "marker", None) is None
-    finally:
-        await services.graph_store.close()

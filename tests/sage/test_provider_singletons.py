@@ -33,7 +33,7 @@ from sage.adapters.embedding_nomic import (
 )
 from sage.adapters.stubs import StubEmbeddingProvider
 from sage.config import VaultConfig
-from sage.mcp_init import initialize_services
+from tests.sage.conftest import initialize_services_for_test
 
 # ── Capability gates (whether the underlying model packages are available) ──
 
@@ -229,10 +229,10 @@ async def test_initialize_services_shares_embedding_provider_across_vaults(tmp_p
     from sage.adapters.stubs import StubAbstractionProvider
 
     stub_abstract = StubAbstractionProvider()
-    services_a = await initialize_services(cfg_a, abstraction_provider=stub_abstract)
-    services_b = await initialize_services(cfg_b, abstraction_provider=stub_abstract)
-
-    try:
+    async with (
+        initialize_services_for_test(cfg_a, abstraction_provider=stub_abstract) as services_a,
+        initialize_services_for_test(cfg_b, abstraction_provider=stub_abstract) as services_b,
+    ):
         embed_a = services_a.ingestion_service._embedding
         embed_b = services_b.ingestion_service._embedding
         assert isinstance(embed_a, NomicEmbeddingProvider)
@@ -244,9 +244,6 @@ async def test_initialize_services_shares_embedding_provider_across_vaults(tmp_p
         assert services_a.retrieval_service._embedding is embed_a
         assert services_a.utilities_service._embedding is embed_a
         assert services_b.retrieval_service._embedding is embed_a
-    finally:
-        await services_a.graph_store.close()
-        await services_b.graph_store.close()
 
 
 async def test_initialize_services_explicit_override_bypasses_singleton(tmp_path):
@@ -263,10 +260,7 @@ async def test_initialize_services_explicit_override_bypasses_singleton(tmp_path
     cfg = VaultConfig.model_validate(_build_vault_config_dict(brain, sources, "vault_override"))
 
     stub = StubEmbeddingProvider()
-    services = await initialize_services(cfg, embedding_provider=stub)
-    try:
+    async with initialize_services_for_test(cfg, embedding_provider=stub) as services:
         assert services.ingestion_service._embedding is stub
         assert services.retrieval_service._embedding is stub
         assert services.utilities_service._embedding is stub
-    finally:
-        await services.graph_store.close()

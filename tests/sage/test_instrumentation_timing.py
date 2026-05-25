@@ -436,25 +436,22 @@ def test_vault_timing_thread_flushes_periodically(caplog):
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
         flush_thread.start()
-        # Two intervals worth of waiting should produce at least one summary
-        # for *this* timer (one carrying our pre-loaded `get_document` count).
-        # Under CI load, a leaked VaultTimingThread from another fixture
-        # (e.g., `initialize_services` in an earlier test that left a vault
-        # running) can flush its own summary into this caplog window first;
-        # filter to the summary carrying our expected key rather than
-        # asserting on `summaries[0]`.
+        # Poll for patience under CI load (the interval is 50 ms but CI
+        # scheduling jitter can stretch the wait). The autouse
+        # _stop_leaked_vault_timing_threads fixture in tests/sage/conftest.py
+        # ensures no earlier test's VaultTimingThread is still flushing
+        # into this caplog window, so summaries[0] is this timer's
+        # summary — no need to filter by suppressed key.
         deadline = time.monotonic() + 1.0
-        matching: list[dict] = []
+        summaries: list[dict] = []
         while time.monotonic() < deadline:
-            matching = [
-                p
-                for p in _payloads(caplog, "sage.storage.timing")
-                if p.get("summary") is True and "get_document" in p.get("suppressed", {})
+            summaries = [
+                p for p in _payloads(caplog, "sage.storage.timing") if p.get("summary") is True
             ]
-            if matching:
+            if summaries:
                 break
             time.sleep(0.05)
         flush_thread.stop(timeout=1.0)
 
-    assert len(matching) >= 1, "expected at least one summary record from the flusher"
-    assert matching[0]["suppressed"]["get_document"] == 2
+    assert len(summaries) >= 1, "expected at least one summary record from the flusher"
+    assert summaries[0]["suppressed"]["get_document"] == 2
