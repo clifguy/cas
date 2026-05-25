@@ -93,7 +93,6 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "RationaleKind",
     "ReabstractOutcome",
     "ResolutionPolicy",
-    "ResponseLevel",
     "ResponseMode",
     "RetrievalMode",
     "RetrievalScope",

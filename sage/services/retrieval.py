@@ -48,7 +48,6 @@ from sage.instrumentation.timing import (
 from sage.models.enums import (
     LIGHT_DEFAULT_THRESHOLD,
     PipelineStatus,
-    ResponseLevel,
     ResponseMode,
     RetrievalMode,
     RetrievalScope,
@@ -914,19 +913,11 @@ class RetrievalService:
 
             summary = DocumentSummary.from_document(doc)
 
-            # BH-084/085 + T-0158: suppress chunk_content when light is
-            # requested via either parameter; heading_path preserved as
-            # cheap "why this matched" context. response_mode takes
-            # precedence; the mutual-exclusion check in DiscoverRequest
-            # rejects requests that set both. When neither is set,
-            # response_level defaults to CHUNKS-equivalent (chunks
-            # included).
-            if request.response_mode is not None:
-                include_content = request.response_mode == ResponseMode.FULL
-            else:
-                include_content = (
-                    request.response_level or ResponseLevel.CHUNKS
-                ) != ResponseLevel.DOCUMENTS
+            # BH-084/085 + T-0158 + T-0169: suppress chunk_content when
+            # response_mode=light; heading_path preserved as cheap "why
+            # this matched" context. When response_mode is unset, default
+            # is full-equivalent (chunk content included).
+            include_content = request.response_mode != ResponseMode.LIGHT
             # Mask the synthetic header chunk's marker heading_path (T-0038)
             # so users never see the internal sentinel string.
             visible_heading_path = (

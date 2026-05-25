@@ -19,7 +19,6 @@ from sage.models.enums import (
     RationaleKind,
     ReabstractOutcome,
     ResolutionPolicy,
-    ResponseLevel,
     ResponseMode,
     RetrievalMode,
     RetrievalScope,
@@ -2454,23 +2453,6 @@ class DiscoverRequest(BaseModel):
             "returned result count below the requested limit."
         ),
     )
-    response_level: ResponseLevel | None = Field(
-        default=None,
-        description=(
-            "[DEPRECATED] Use `response_mode` instead (T-0158). "
-            "`response_level` is retained for backward compatibility and "
-            "will be removed in a subsequent ticket. Equivalence: "
-            '`response_level="chunks"` is equivalent to '
-            '`response_mode="full"`; `response_level="documents"` is '
-            'equivalent to `response_mode="light"` (chunk content '
-            "suppressed, surrounding DocumentSummary still full). "
-            "Passing `response_mode` and `response_level` together "
-            "raises `mode_parameter_mismatch`. When unset (default), "
-            "legacy behavior applies: chunk content included on semantic "
-            "and keyword modes; ignored by catalog (returns "
-            "document-level) and deterministic (always chunk-level)."
-        ),
-    )
     sort_by: CatalogSortBy | None = Field(
         default=None,
         description=(
@@ -2500,19 +2482,17 @@ class DiscoverRequest(BaseModel):
         default=None,
         description=(
             "Canonical payload-depth selector across SAGE surfaces "
-            "(T-0157, T-0158, T-0153). Semantics by target and mode: "
-            "(edges) `light` returns identity columns only (edge_id, "
-            "endpoints, edge_type); `full` carries the complete "
-            "envelope; default obeys a >5-results threshold rule. "
-            "(documents+catalog) `light` returns a stripped "
+            "(T-0157, T-0158, T-0153, T-0169). Semantics by target and "
+            "mode: (edges) `light` returns identity columns only "
+            "(edge_id, endpoints, edge_type); `full` carries the "
+            "complete envelope; default obeys a >5-results threshold "
+            "rule. (documents+catalog) `light` returns a stripped "
             "DocumentSummaryLight; `full` returns the full "
             "DocumentSummary; the threshold rule does NOT apply -- "
             "default is full-equivalent. (documents+semantic/keyword) "
-            "`light` suppresses chunk_content (equivalent to legacy "
-            '`response_level="documents"`); `full` includes it. '
+            "`light` suppresses chunk_content; `full` includes it. "
             "(documents+deterministic) ignored; deterministic always "
-            "returns chunk content. Passing `response_mode` and "
-            "`response_level` together raises `mode_parameter_mismatch`."
+            "returns chunk content."
         ),
     )
 
@@ -2624,7 +2604,6 @@ class DiscoverRequest(BaseModel):
                 ("sort_by", self.sort_by, None),
                 ("sort_order", self.sort_order, None),
                 ("include_abstracts", self.include_abstracts, False),
-                ("response_level", self.response_level, None),
             ]
             for name, value, default in edge_forbidden_params:
                 if value != default:
@@ -2637,35 +2616,6 @@ class DiscoverRequest(BaseModel):
                             "allowed_modes": [RetrievalMode.CATALOG.value],
                         },
                     )
-
-        # T-0158: response_mode and response_level are mutually exclusive
-        # for target=documents. The two parameters now resolve to the same
-        # payload-depth selector via a precedence rule in the retrieval
-        # service; allowing both together would let a caller request a
-        # conflicting shape (e.g., response_mode=light + response_level=chunks).
-        if (
-            self.response_mode is not None
-            and self.response_level is not None
-            and self.target == RetrievalTarget.DOCUMENTS
-        ):
-            raise PydanticCustomError(
-                "mode_parameter_mismatch",
-                (
-                    "Parameters 'response_mode' and 'response_level' are "
-                    "mutually exclusive. Use 'response_mode' (preferred); "
-                    "'response_level' is deprecated. (T-0158)"
-                ),
-                {
-                    "mode": self.mode.value,
-                    "forbidden_param": "response_mode",
-                    "conflicting_with": "response_level",
-                    "allowed_modes": [
-                        RetrievalMode.CATALOG.value,
-                        RetrievalMode.SEMANTIC.value,
-                        RetrievalMode.KEYWORD.value,
-                    ],
-                },
-            )
 
         return self
 

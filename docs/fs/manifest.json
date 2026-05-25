@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.30",
+  "substrate_version": "1.31",
   "revision_history": [
+    {
+      "version": "1.31",
+      "date": "2026-05-24",
+      "summary": "Complete `response_level` retirement on sage_discover (T-0169, follow-up to T-0158). Three changes to sage_core_api.openapi.yaml: (1) the ResponseLevel enum component is deleted; (2) the DiscoverRequest.response_level property is deleted; (3) the DiscoverRequest.response_mode property description is rewritten to drop the legacy-equivalence clauses (now (`response_level=documents` is equivalent to `response_mode=light`) and the mutual-exclusion-with-response_level sentence. Pydantic mirror in sage/models/schemas.py: the `response_level: ResponseLevel | None` field is removed from DiscoverRequest; the T-0158 mutual-exclusion validator branch (response_mode + response_level on target=documents → mode_parameter_mismatch) is removed; the response_level entry is dropped from the edge-forbidden-params tuple in the same validator. sage/models/enums.py: the ResponseLevel StrEnum is deleted; the ResponseMode docstring drops the closing 'supersedes the document-target-only response_level parameter for new callers' sentence. sage/services/retrieval.py: the include_content fallback that resolved request.response_level when response_mode was unset is removed; the simplified resolution is `include_content = request.response_mode != ResponseMode.LIGHT`. sage/sage_api_tools.py: sage_discover MCP tool drops the `response_level: str | None = None` parameter, the corresponding DiscoverRequest kwarg pass-through, and the response_level Args docstring entry; the response_mode docstring section is rewritten to drop the legacy-equivalence text and the mutual-exclusion sentence. Tests at tests/sage/test_retrieval.py: three tests are deleted (test_t0158_response_mode_and_response_level_together_raises_mode_parameter_mismatch, test_t0158_response_level_field_description_starts_with_deprecated_marker, test_bh_084_semantic_response_level_documents, test_bh_085_keyword_response_level_documents) and the remaining response_level-shaped tests are rewritten to use ResponseMode.LIGHT / ResponseMode.FULL; the ResponseLevel import is removed and the response_level tuple member is removed from test_t0157_target_edges_rejects_doc_only_request_parameters. tests/sage/test_openapi_conformance.py: 'ResponseLevel' is removed from YAML_ONLY_FORWARD_DECLARATIONS. tests/sage/behavioral_tests.md: BH-084 through BH-088 and BH-104 are rewritten to use response_mode vocabulary. mode_parameter_mismatch error path stays in place for all other T-0157 forbidden-param combinations; only the response_mode-vs-response_level branch is removed. Removes the retirement-policy ambiguity flagged as the 2026-05-23 parameter-naming audit's Drift 2 finding."
+    },
     {
       "version": "1.30",
       "date": "2026-05-24",

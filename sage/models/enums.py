@@ -172,15 +172,14 @@ class RetrievalTarget(StrEnum):
 
 
 class ResponseMode(StrEnum):
-    """Payload depth for ``sage_discover`` results (T-0157, T-0153).
+    """Payload depth for ``sage_discover`` results (T-0157, T-0153, T-0169).
 
     `light` returns identity columns only and omits rationale, retraction
     envelope, and other large fields. `full` returns the complete envelope.
     When unset, ``sage_discover`` applies a default-threshold rule
     (>5 results → light, otherwise full) so single-item calls keep their
     contextual richness while bulk enumerations stay inside the MCP inline
-    budget. Canonical name across SAGE surfaces; supersedes the
-    document-target-only ``response_level`` parameter for new callers.
+    budget. Canonical name across SAGE surfaces.
     """
 
     LIGHT = "light"
@@ -203,23 +202,6 @@ class ResponseMode(StrEnum):
 # threshold-default stance" design note for why the rule is NOT applied
 # to ``sage_discover`` document-target results).
 LIGHT_DEFAULT_THRESHOLD = 5
-
-
-class ResponseLevel(StrEnum):
-    """Controls the detail level of discover results.
-
-    `chunks` (default) includes `chunk_content`, `heading_path`, and
-    `matched_chunk_count` on each hit. `documents` suppresses
-    `chunk_content` but preserves `heading_path` (best-scoring chunk's
-    location, cheap "why this matched" context), `relevance_score`, and
-    `matched_chunk_count`. Applicable to semantic and keyword modes.
-    Catalog mode always returns document-level results regardless of this
-    value. Deterministic mode always returns chunk content regardless of
-    this value.
-    """
-
-    CHUNKS = "chunks"
-    DOCUMENTS = "documents"
 
 
 class CatalogSortBy(StrEnum):

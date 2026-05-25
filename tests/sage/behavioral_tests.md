@@ -1840,22 +1840,23 @@ result order.
 
 ## Document-Level Response Mode
 
-### TEST-SAGE-BH-084: Semantic search with response_level=documents omits chunk content
+### TEST-SAGE-BH-084: Semantic search with response_mode=light omits chunk content
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_mode)
 **Category:** retrieval
 
-**Decision:** When `response_level="documents"`, semantic search returns one
+**Decision:** When `response_mode="light"`, semantic search returns one
 `DiscoverHit` per matched document with `chunk_content=None`. The `heading_path`
 of the best-scoring chunk is preserved as cheap "why this matched" context.
 The `document` summary, `relevance_score`, and `matched_chunk_count` are preserved.
 This reduces payload size for callers that need ranked document lists without
-chunk text.
+chunk text. (T-0169 retired the legacy `response_level` parameter in favor of
+the canonical cross-surface `response_mode`.)
 
 **Precondition:** Vault with 3 indexed documents (doc_a, doc_b, doc_c),
 each with at least one chunk containing the word "integration".
 
-**Input:** `discover(mode="semantic", query="integration", response_level="documents")`
+**Input:** `discover(mode="semantic", query="integration", response_mode="light")`
 
 **Expected:**
 - All returned hits have `chunk_content is None`.
@@ -1871,19 +1872,19 @@ when the caller will fetch document details separately. The heading path provide
 a one-line "why this matched" without the text payload.
 
 
-### TEST-SAGE-BH-085: Keyword search with response_level=documents omits chunk content
+### TEST-SAGE-BH-085: Keyword search with response_mode=light omits chunk content
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_mode)
 **Category:** retrieval
 
-**Decision:** `response_level="documents"` applies to keyword mode identically
+**Decision:** `response_mode="light"` applies to keyword mode identically
 to semantic mode. BM25 results are deduplicated by document (existing behavior)
 and `chunk_content` is suppressed. `heading_path` and `matched_chunk_count`
-are preserved.
+are preserved. (T-0169 retired the legacy `response_level` parameter.)
 
 **Precondition:** Vault with 3 indexed documents, each containing the word "protocol".
 
-**Input:** `discover(mode="keyword", query="protocol", response_level="documents")`
+**Input:** `discover(mode="keyword", query="protocol", response_mode="light")`
 
 **Expected:**
 - All returned hits have `chunk_content is None`.
@@ -1893,24 +1894,25 @@ are preserved.
 - Each hit's `document` field is a valid `DocumentSummary`.
 
 **Rationale:** Keyword mode shares the same `_results_to_hits()` pipeline as
-semantic mode; `response_level` should apply uniformly to both search modes.
+semantic mode; `response_mode` should apply uniformly to both search modes.
 
 
-### TEST-SAGE-BH-086: response_level=documents preserves relevance scores and ordering
+### TEST-SAGE-BH-086: response_mode=light preserves relevance scores and ordering
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_mode)
 **Category:** retrieval
 
-**Decision:** Document-level responses preserve the same relevance scores,
-result ordering, heading paths, and matched chunk counts as chunk-level
-responses. The only difference is the suppression of `chunk_content`.
+**Decision:** Light responses preserve the same relevance scores, result
+ordering, heading paths, and matched chunk counts as full responses. The
+only difference is the suppression of `chunk_content`. (T-0169 retired the
+legacy `response_level` parameter.)
 
 **Precondition:** Vault with 3 indexed documents with varying relevance to
 the query "claim construction methodology".
 
 **Input:**
-1. `discover(mode="semantic", query="claim construction methodology", response_level="chunks")`
-2. `discover(mode="semantic", query="claim construction methodology", response_level="documents")`
+1. `discover(mode="semantic", query="claim construction methodology", response_mode="full")`
+2. `discover(mode="semantic", query="claim construction methodology", response_mode="light")`
 
 **Expected:**
 - Both responses return the same documents in the same order.
@@ -1918,54 +1920,59 @@ the query "claim construction methodology".
 - Response 1 has non-null `chunk_content` on each hit.
 - Response 2 has null `chunk_content` on each hit.
 
-**Rationale:** `response_level` is a presentation concern, not a retrieval
+**Rationale:** `response_mode` is a presentation concern, not a retrieval
 concern. Changing the response shape must not alter scoring or ranking behavior.
 
 
-### TEST-SAGE-BH-087: response_level=chunks (default) preserves current behavior
+### TEST-SAGE-BH-087: response_mode unset preserves chunk content on semantic/keyword
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_mode)
 **Category:** retrieval
 
-**Decision:** `response_level` defaults to `"chunks"`, preserving backward
-compatibility. Omitting the parameter produces the same response shape as
-before the feature was added.
+**Decision:** When `response_mode` is unset, semantic and keyword retrieval
+default to full-equivalent behavior: chunk content included. (T-0169 retired
+the legacy `response_level` parameter; the default-when-unset behavior matches
+what `response_level="chunks"` previously produced.)
 
 **Precondition:** Vault with at least 1 indexed document containing searchable content.
 
-**Input:** `discover(mode="semantic", query="integration")` (no response_level specified)
+**Input:** `discover(mode="semantic", query="integration")` (no response_mode specified)
 
 **Expected:**
 - At least one hit has non-null `chunk_content`.
 - At least one hit has non-null `heading_path`.
-- Behavior is identical to an explicit `response_level="chunks"`.
+- Behavior is identical to an explicit `response_mode="full"`.
 
-**Rationale:** Backward compatibility. Existing callers (frontend Search view,
-MCP tool) must not be affected by the addition of this parameter.
+**Rationale:** Backward compatibility for callers that omit the parameter
+(frontend Search view, MCP tool). The default produces the same chunk-included
+shape that existed before `response_mode` was added.
 
 
-### TEST-SAGE-BH-088: response_level ignored by catalog mode
+### TEST-SAGE-BH-088: response_mode=full ignored by catalog mode for chunk content
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_level)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (discover, response_mode)
 **Category:** retrieval
 
-**Decision:** Catalog mode always returns document-level metadata without
-chunk content, regardless of the `response_level` value. The parameter is
-accepted but has no effect.
+**Decision:** Catalog mode never emits chunk content regardless of
+`response_mode`. The parameter still selects between full and stripped
+`DocumentSummary` shapes on catalog (per T-0158), but chunk-level fields
+remain `None` either way. (T-0169 retired the legacy `response_level`
+parameter.)
 
 **Precondition:** Vault with 3 non-failed documents.
 
-**Input:** `discover(mode="catalog", response_level="chunks")`
+**Input:** `discover(mode="catalog", response_mode="full")`
 
 **Expected:**
 - All returned hits have `chunk_content is None`.
 - All returned hits have `heading_path is None`.
 - All returned hits have `relevance_score is None`.
-- Response is identical to `discover(mode="catalog")` without `response_level`.
+- Response is identical (in chunk-content terms) to `discover(mode="catalog")`
+  without `response_mode`.
 
 **Rationale:** Catalog mode operates on the SQLite documents table and never
-touches the content store. Applying `response_level` would be a no-op;
-accepting the parameter silently avoids forcing callers to branch on mode.
+touches the content store. `response_mode=full` cannot conjure chunks that
+were never retrieved.
 
 
 ---
@@ -2310,27 +2317,29 @@ retrieval modes.
 dashboard. Agents browsing the catalog should see abstracts inline.
 
 
-### TEST-SAGE-BH-104: Document-level response mode preserves semantic_abstract
+### TEST-SAGE-BH-104: response_mode=light preserves semantic_abstract
 
 **Artifact:** `sage/models/schemas.py` (DocumentSummary), `sage/services/retrieval.py`
-**Category:** retrieval, abstraction, response_level
+**Category:** retrieval, abstraction, response_mode
 
-**Decision:** When `response_level = documents` (chunk content suppressed),
+**Decision:** When `response_mode = light` (chunk content suppressed),
 `semantic_abstract` is still present on the `DocumentSummary`. The abstract is
 document-level metadata, not chunk content, so it is never suppressed.
+(T-0169 retired the legacy `response_level` parameter in favor of the
+canonical cross-surface `response_mode`.)
 
 **Precondition:** A document with `semantic_abstract` is indexed with chunks.
 
-**Input:** `discover(mode: semantic, query: <matching query>, response_level: documents)`
+**Input:** `discover(mode: semantic, query: <matching query>, response_mode: light)`
 
 **Expected:**
-- `DiscoverHit.chunk_content` is `None` (suppressed by response_level).
+- `DiscoverHit.chunk_content` is `None` (suppressed by response_mode=light).
 - `DiscoverHit.document.semantic_abstract` equals the stored abstract (preserved).
 
-**Rationale:** The `response_level=documents` mode exists for bandwidth
-optimization when callers need only document identity and metadata. The
-abstract is metadata, not content, so suppressing it would defeat its purpose
-as an orientation aid.
+**Rationale:** The `response_mode=light` mode exists for bandwidth optimization
+when callers need only document identity and metadata. The abstract is
+metadata, not content, so suppressing it would defeat its purpose as an
+orientation aid.
 
 
 ### TEST-SAGE-BH-105: Abstract prefilter boosts documents whose abstract matches query

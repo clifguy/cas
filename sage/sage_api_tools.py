@@ -1702,7 +1702,6 @@ def register_sage_tools(
         use_abstract_prefilter: bool = True,
         include_abstracts: bool = False,
         min_relevance: float | None = None,
-        response_level: str | None = None,
         target: str = "documents",
         response_mode: str | None = None,
         sort_by: str | None = None,
@@ -1755,17 +1754,11 @@ def register_sage_tools(
               ``response_mode="light"`` is passed explicitly.
             - ``target="documents", mode="semantic"`` or ``"keyword"``:
               ``light`` suppresses ``chunk_content`` but preserves the full
-              ``DocumentSummary`` (equivalent to the legacy
-              ``response_level="documents"``); ``full`` includes
-              ``chunk_content`` (equivalent to legacy
-              ``response_level="chunks"``).
+              ``DocumentSummary``; ``full`` includes ``chunk_content``.
             - ``target="documents", mode="deterministic"``:
               ``response_mode`` is ignored. Deterministic always returns
               chunk content.
             - ``target="edges"``: see the *Edge enumeration* section above.
-
-            Passing ``response_mode`` and ``response_level`` together on
-            ``target="documents"`` raises ``mode_parameter_mismatch``.
 
         Args:
             vault_id: Target vault identifier.
@@ -1800,16 +1793,6 @@ def register_sage_tools(
                 (no filtering). For semantic mode (cosine similarity), scores range 0-1;
                 reasonable thresholds are 0.3-0.5. Does not apply to catalog or
                 deterministic modes which have no relevance scores.
-            response_level: [DEPRECATED] Use ``response_mode`` instead
-                (T-0158). Document-target result detail level
-                ("chunks" or "documents"). Equivalence:
-                ``response_level="chunks"`` matches
-                ``response_mode="full"``; ``response_level="documents"``
-                matches ``response_mode="light"`` (semantic/keyword
-                modes only). Passing ``response_mode`` and
-                ``response_level`` together raises
-                ``mode_parameter_mismatch``. Default: unset (legacy
-                chunk-included behavior on semantic/keyword).
             target: Result row type. "documents" (default) preserves the
                 historical surface; "edges" enumerates production edges
                 via filter on ``source_id`` / ``target_id`` /
@@ -1889,7 +1872,6 @@ def register_sage_tools(
                 use_abstract_prefilter=use_abstract_prefilter,
                 include_abstracts=include_abstracts,
                 min_relevance=min_relevance,
-                response_level=response_level,
                 sort_by=sort_by,
                 sort_order=sort_order,
             )

@@ -2390,21 +2390,6 @@ components:
         Controls which documents are eligible for retrieval, independent
         of mode.
 
-    ResponseLevel:
-      type: string
-      enum: [chunks, documents]
-      default: chunks
-      description: >-
-        Controls the detail level of discover results. "chunks" (default)
-        includes chunk_content, heading_path, and matched_chunk_count on
-        each hit. "documents" suppresses chunk_content but preserves
-        heading_path (best-scoring chunk's location, cheap "why this
-        matched" context), relevance_score, and matched_chunk_count.
-        Applicable to semantic and keyword modes. Catalog mode always
-        returns document-level results regardless of this value.
-        Deterministic mode always returns chunk content regardless of
-        this value.
-
     RetrievalTarget:
       type: string
       enum: [documents, edges]
@@ -2960,22 +2945,6 @@ components:
             precision; the filter is applied after ranking and before
             limit is applied, so weak-match suppression may reduce the
             returned result count below the requested limit.
-        response_level:
-          $ref: "#/components/schemas/ResponseLevel"
-          nullable: true
-          description: >-
-            [DEPRECATED] Use `response_mode` instead (T-0158).
-            `response_level` is retained for backward compatibility and
-            will be removed in a subsequent ticket. Equivalence:
-            `response_level="chunks"` is equivalent to
-            `response_mode="full"`; `response_level="documents"` is
-            equivalent to `response_mode="light"` (chunk content
-            suppressed, surrounding DocumentSummary still full).
-            Passing `response_mode` and `response_level` together
-            raises `mode_parameter_mismatch`. When unset (default),
-            legacy behavior applies: chunk content included on semantic
-            and keyword modes; ignored by catalog (returns
-            document-level) and deterministic (always chunk-level).
         sort_by:
           $ref: "#/components/schemas/CatalogSortBy"
           description: >-
@@ -3001,19 +2970,17 @@ components:
           nullable: true
           description: >-
             Canonical payload-depth selector across SAGE surfaces
-            (T-0157, T-0158, T-0153). Semantics by target and mode:
-            (edges) `light` returns identity columns only (edge_id,
-            endpoints, edge_type); `full` carries the complete
-            envelope; default obeys a >5-results threshold rule.
-            (documents+catalog) `light` returns a stripped
+            (T-0157, T-0158, T-0153, T-0169). Semantics by target and
+            mode: (edges) `light` returns identity columns only
+            (edge_id, endpoints, edge_type); `full` carries the
+            complete envelope; default obeys a >5-results threshold
+            rule. (documents+catalog) `light` returns a stripped
             DocumentSummaryLight; `full` returns the full
             DocumentSummary; the threshold rule does NOT apply --
             default is full-equivalent. (documents+semantic/keyword)
-            `light` suppresses chunk_content (equivalent to legacy
-            `response_level="documents"`); `full` includes it.
+            `light` suppresses chunk_content; `full` includes it.
             (documents+deterministic) ignored; deterministic always
-            returns chunk content. Passing `response_mode` and
-            `response_level` together raises `mode_parameter_mismatch`.
+            returns chunk content.
 
     RetrievalFilters:
       type: object

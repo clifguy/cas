@@ -30,7 +30,6 @@ from sage.api.errors import (
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
-    ResponseLevel,
     ResponseMode,
     RetrievalMode,
     RetrievalScope,
@@ -2346,127 +2345,60 @@ async def _seed_response_level_docs(graph_store, content_store, embedding_provid
         )
 
 
-async def test_bh_084_semantic_response_level_documents(
+async def test_bh_086_response_mode_full_vs_light_preserves_scores_and_order(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """Semantic search with response_level=documents omits chunk content but
-    preserves heading_path and matched_chunk_count."""
+    """response_mode=light produces the same scores, order, heading paths,
+    and matched_chunk_counts as response_mode=full; only chunk_content
+    differs (T-0169 retirement of response_level)."""
     await _seed_response_level_docs(
         graph_store,
         stub_content_store,
         seeded_embedding_provider,
     )
 
-    request = DiscoverRequest(
+    full_request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="integration",
-        response_level=ResponseLevel.DOCUMENTS,
+        response_mode=ResponseMode.FULL,
         limit=10,
     )
-    response = await retrieval_service.discover(request)
-
-    assert len(response.results) > 0
-    for hit in response.results:
-        assert hit.chunk_content is None
-        # heading_path preserved as "why this matched" context
-        assert hit.heading_path is not None
-        assert hit.relevance_score is not None
-        assert hit.relevance_score > 0
-        assert hit.matched_chunk_count is not None
-        assert hit.matched_chunk_count >= 1
-        assert hit.document.id is not None
-        assert hit.document.title is not None
-
-
-async def test_bh_085_keyword_response_level_documents(
-    graph_store,
-    stub_content_store,
-    seeded_embedding_provider,
-    retrieval_service,
-):
-    """Keyword search with response_level=documents omits chunk content but
-    preserves heading_path and matched_chunk_count."""
-    await _seed_response_level_docs(
-        graph_store,
-        stub_content_store,
-        seeded_embedding_provider,
-    )
-
-    request = DiscoverRequest(
-        mode=RetrievalMode.KEYWORD,
-        query="integration",
-        response_level=ResponseLevel.DOCUMENTS,
-        limit=10,
-    )
-    response = await retrieval_service.discover(request)
-
-    assert len(response.results) > 0
-    for hit in response.results:
-        assert hit.chunk_content is None
-        assert hit.heading_path is not None
-        assert hit.relevance_score is not None
-        assert hit.relevance_score > 0
-        assert hit.matched_chunk_count is not None
-        assert hit.matched_chunk_count >= 1
-        assert hit.document.id is not None
-
-
-async def test_bh_086_response_level_documents_preserves_scores_and_order(
-    graph_store,
-    stub_content_store,
-    seeded_embedding_provider,
-    retrieval_service,
-):
-    """response_level=documents produces the same scores, order, heading paths,
-    and matched_chunk_counts as chunks mode."""
-    await _seed_response_level_docs(
-        graph_store,
-        stub_content_store,
-        seeded_embedding_provider,
-    )
-
-    chunks_request = DiscoverRequest(
+    light_request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="integration",
-        response_level=ResponseLevel.CHUNKS,
-        limit=10,
-    )
-    docs_request = DiscoverRequest(
-        mode=RetrievalMode.SEMANTIC,
-        query="integration",
-        response_level=ResponseLevel.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
         limit=10,
     )
 
-    chunks_response = await retrieval_service.discover(chunks_request)
-    docs_response = await retrieval_service.discover(docs_request)
+    full_response = await retrieval_service.discover(full_request)
+    light_response = await retrieval_service.discover(light_request)
 
     # Same documents in same order
-    chunks_ids = [h.document.id for h in chunks_response.results]
-    docs_ids = [h.document.id for h in docs_response.results]
-    assert chunks_ids == docs_ids
+    full_ids = [h.document.id for h in full_response.results]
+    light_ids = [h.document.id for h in light_response.results]
+    assert full_ids == light_ids
 
     # Same scores
-    chunks_scores = [h.relevance_score for h in chunks_response.results]
-    docs_scores = [h.relevance_score for h in docs_response.results]
-    assert chunks_scores == docs_scores
+    full_scores = [h.relevance_score for h in full_response.results]
+    light_scores = [h.relevance_score for h in light_response.results]
+    assert full_scores == light_scores
 
     # Same heading paths
-    chunks_headings = [h.heading_path for h in chunks_response.results]
-    docs_headings = [h.heading_path for h in docs_response.results]
-    assert chunks_headings == docs_headings
+    full_headings = [h.heading_path for h in full_response.results]
+    light_headings = [h.heading_path for h in light_response.results]
+    assert full_headings == light_headings
 
     # Same matched_chunk_counts
-    chunks_counts = [h.matched_chunk_count for h in chunks_response.results]
-    docs_counts = [h.matched_chunk_count for h in docs_response.results]
-    assert chunks_counts == docs_counts
+    full_counts = [h.matched_chunk_count for h in full_response.results]
+    light_counts = [h.matched_chunk_count for h in light_response.results]
+    assert full_counts == light_counts
 
-    # Chunks response has content; documents response does not
-    assert any(h.chunk_content is not None for h in chunks_response.results)
-    assert all(h.chunk_content is None for h in docs_response.results)
+    # Full response has content; light response does not
+    assert any(h.chunk_content is not None for h in full_response.results)
+    assert all(h.chunk_content is None for h in light_response.results)
 
 
 async def test_bh_084_multi_chunk_matched_chunk_count(
@@ -2494,7 +2426,7 @@ async def test_bh_084_multi_chunk_matched_chunk_count(
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="integration",
-        response_level=ResponseLevel.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
         limit=10,
     )
     response = await retrieval_service.discover(request)
@@ -2537,7 +2469,7 @@ async def test_matched_chunk_count_content_only_not_metadata(
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="integration",
-        response_level=ResponseLevel.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
         limit=10,
     )
     response = await retrieval_service.discover(request)
@@ -2609,20 +2541,21 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
     assert target_hit.relevance_score > distractor_hit.relevance_score
 
 
-async def test_bh_087_response_level_chunks_default(
+async def test_bh_087_response_mode_unset_preserves_chunk_content(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """Default response_level (omitted) preserves current chunk behavior."""
+    """Default response_mode (omitted) preserves chunk content on
+    semantic/keyword (post-T-0169 response_level retirement)."""
     await _seed_response_level_docs(
         graph_store,
         stub_content_store,
         seeded_embedding_provider,
     )
 
-    # No response_level specified -- should default to chunks
+    # No response_mode specified -- should default to chunks-equivalent
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="integration",
@@ -2641,19 +2574,20 @@ async def test_bh_087_response_level_chunks_default(
         assert hit.matched_chunk_count >= 1
 
 
-async def test_bh_088_response_level_ignored_by_catalog(
+async def test_bh_088_response_mode_full_ignored_by_catalog_chunk_content(
     graph_store,
     retrieval_service,
 ):
-    """Catalog mode ignores response_level; always returns document-level."""
+    """Catalog mode never emits chunk_content regardless of response_mode
+    (post-T-0169 response_level retirement)."""
     for doc_id in (_id("cat_a"), _id("cat_b")):
         doc = _make_doc(doc_id, doc_type="patent_draft")
         await graph_store.insert_document(doc)
 
-    # Explicitly request chunks -- catalog should still return no chunk content
+    # Explicitly request full -- catalog should still return no chunk content
     request = DiscoverRequest(
         mode=RetrievalMode.CATALOG,
-        response_level=ResponseLevel.CHUNKS,
+        response_mode=ResponseMode.FULL,
         limit=10,
     )
     response = await retrieval_service.discover(request)
@@ -3187,13 +3121,14 @@ async def test_t0091_conformance_full_ticket_portfolio_fits_inline_at_default_li
 
 
 # BH-104: Document-level response mode preserves semantic_abstract
-async def test_bh_104_response_level_documents_preserves_abstract(
+async def test_bh_104_response_mode_light_preserves_abstract(
     graph_store,
     stub_content_store,
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """response_level=documents suppresses chunk_content but preserves semantic_abstract."""
+    """response_mode=light suppresses chunk_content but preserves
+    semantic_abstract (post-T-0169 response_level retirement)."""
     abstract_text = "Overview of insulin pump safety requirements."
     doc = _make_doc(_id("rl_doc"), semantic_abstract=abstract_text)
     await graph_store.insert_document(doc)
@@ -3208,7 +3143,7 @@ async def test_bh_104_response_level_documents_preserves_abstract(
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
         query="insulin pump safety",
-        response_level=ResponseLevel.DOCUMENTS,
+        response_mode=ResponseMode.LIGHT,
         include_abstracts=True,
     )
     response = await retrieval_service.discover(request)
@@ -3216,7 +3151,7 @@ async def test_bh_104_response_level_documents_preserves_abstract(
     hits_by_id = {h.document.id: h for h in response.results}
     assert _id("rl_doc") in hits_by_id
     hit = hits_by_id[_id("rl_doc")]
-    # chunk_content suppressed by response_level=documents
+    # chunk_content suppressed by response_mode=light
     assert hit.chunk_content is None
     # semantic_abstract preserved because include_abstracts=True
     assert hit.document.semantic_abstract == abstract_text
@@ -4777,7 +4712,6 @@ def test_t0157_target_documents_rejects_edge_only_filter_keys(filter_kwargs, key
         ("heading_path", "Section 1"),
         ("min_relevance", 0.5),
         ("include_abstracts", True),
-        ("response_level", ResponseLevel.DOCUMENTS),
     ],
 )
 def test_t0157_target_edges_rejects_doc_only_request_parameters(field, value):
@@ -4805,8 +4739,8 @@ def test_t0157_invalid_target_value_raises_enum_validation_error():
 
 
 # ---------------------------------------------------------------------------
-# T-0158: response_mode unified across sage_discover targets;
-# response_level deprecated.
+# T-0158 / T-0169: response_mode unified across sage_discover targets;
+# response_level retired.
 # ---------------------------------------------------------------------------
 
 
@@ -4820,7 +4754,6 @@ def test_t0158_response_mode_light_accepted_with_target_documents():
     )
     assert req.response_mode == ResponseMode.LIGHT
     assert req.target == RetrievalTarget.DOCUMENTS
-    assert req.response_level is None
 
 
 def test_t0158_response_mode_full_accepted_with_target_documents():
@@ -4833,34 +4766,12 @@ def test_t0158_response_mode_full_accepted_with_target_documents():
     assert req.response_mode == ResponseMode.FULL
 
 
-def test_t0158_response_mode_and_response_level_together_raises_mode_parameter_mismatch():
-    """T-0158: passing both response_mode and response_level on
-    target=documents must raise mode_parameter_mismatch, with detail
-    naming the conflicting parameter.
-
-    Anti-coincidental: assert ctx["conflicting_with"] explicitly so the
-    error is wired through the new mutual-exclusion branch (not, e.g.,
-    re-routed through the T-0157 edge-target rejection).
-    """
-    with pytest.raises(ValidationError) as info:
-        DiscoverRequest(
-            mode=RetrievalMode.SEMANTIC,
-            query="x",
-            response_mode=ResponseMode.LIGHT,
-            response_level=ResponseLevel.DOCUMENTS,
-        )
-    err = info.value.errors()[0]
-    assert err["type"] == "mode_parameter_mismatch"
-    assert err["ctx"]["forbidden_param"] == "response_mode"
-    assert err["ctx"]["conflicting_with"] == "response_level"
-
-
 def test_t0158_response_mode_unset_with_target_documents_preserves_defaults():
-    """T-0158: when neither response_mode nor response_level is passed,
-    the request builds and response_level defaults to None (unset)."""
+    """T-0158: when response_mode is not passed, the request builds with
+    response_mode defaulting to None (unset). (T-0169: response_level
+    field has been removed from DiscoverRequest.)"""
     req = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="x")
     assert req.response_mode is None
-    assert req.response_level is None
 
 
 async def test_t0158_catalog_documents_light_returns_stripped_summary(
@@ -5144,9 +5055,7 @@ async def test_t0158_semantic_response_mode_full_includes_chunk_content(
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """T-0158: semantic + response_mode=full includes chunk_content
-    (equivalent to legacy response_level=chunks).
-    """
+    """T-0158: semantic + response_mode=full includes chunk_content."""
     await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
     req = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
@@ -5238,9 +5147,9 @@ async def test_t0158_deterministic_response_mode_light_returns_chunk_content(
 async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_above_threshold(
     graph_store, retrieval_service
 ):
-    """T-0158: catalog + target=documents with neither response_mode nor
-    response_level set must return full DocumentSummary shape even when
-    the result count exceeds the edge-side >5 default-light threshold.
+    """T-0158: catalog + target=documents with response_mode unset must
+    return full DocumentSummary shape even when the result count
+    exceeds the edge-side >5 default-light threshold.
 
     Anti-coincidental: seeds 6 docs (above the threshold) and asserts
     the returned hits carry full DocumentSummary instances populated
@@ -5275,14 +5184,10 @@ async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_abov
         assert hit.document.source_type is not None
 
 
-def test_t0158_response_level_field_description_starts_with_deprecated_marker():
-    """T-0158: the response_level Field description must lead with the
-    explicit '[DEPRECATED]' marker. Anti-coincidental: matches case-
-    sensitive on the literal marker so the test fails closed if a
-    maintenance change softens it back to a soft nudge.
+def test_t0169_response_level_field_removed_from_discover_request():
+    """T-0169: the response_level Field has been removed from
+    DiscoverRequest. Anti-coincidental: assert the absence of the
+    field rather than rely on a [DEPRECATED] marker that no longer
+    exists.
     """
-    desc = DiscoverRequest.model_fields["response_level"].description
-    assert desc is not None
-    assert desc.startswith("[DEPRECATED]"), (
-        f"response_level description must lead with '[DEPRECATED]'; got: {desc[:40]!r}"
-    )
+    assert "response_level" not in DiscoverRequest.model_fields
