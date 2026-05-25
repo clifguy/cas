@@ -2616,10 +2616,11 @@ def register_sage_tools(
         vault_id: str,
         document_id: str,
     ) -> dict:
-        """Re-run abstraction on an existing document. Reconstructs
-        projection text from stored chunks, generates a new
-        density-proportional semantic abstract, and writes it back
-        to the document node.
+        """Re-run abstraction on an existing document (fire-and-forget).
+        Reconstructs projection text from stored chunks and dispatches
+        a new density-proportional semantic abstract as a background
+        task; the abstract is written to the document node by that
+        background task, not by this call.
 
         The generation uses the SAGE stack's currently-configured
         abstraction provider and model (see ``abstraction`` in
@@ -2630,14 +2631,78 @@ def register_sage_tools(
         to the abstraction model (or the prompt template), not a
         re-issue of this tool.
 
+        Fire-and-forget semantics (caller-expectation-mismatch class):
+        This tool does NOT return when the new abstract is persisted.
+        It validates the document, flips
+        ``pipeline_status=abstraction_in_progress``, dispatches the
+        abstraction work in an ``asyncio.create_task`` background task,
+        and returns immediately with::
+
+            {"status": "reabstract_started",
+             "document_id": "<id>",
+             "dispatched_at": "<iso8601 timestamp>"}
+
+        The background task is what generates the abstract, persists
+        ``semantic_abstract``, and flips ``pipeline_status`` to
+        ``abstraction_complete`` (success) or ``failed`` (error). To
+        observe terminal state, poll ``sage_get_document`` and read
+        ``pipeline_status``; the call is complete when that field is
+        no longer ``abstraction_in_progress``. Any caller that assumes
+        ``sage_reabstract`` returns a document with the new abstract
+        in place will observe stale state.
+
+        No per-document single-flight lock:
+        Repeated ``sage_reabstract`` calls against the same
+        ``document_id`` while a prior reabstract is still in-flight
+        dispatch additional parallel background tasks; the later
+        background writer wins via ``_locks.lock(document_id)`` on the
+        final document update, but earlier tasks' completed work is
+        silently overwritten. Callers receive no contention signal in
+        the ``reabstract_started`` response. Debounce repeated calls
+        client-side (e.g., wait for ``pipeline_status`` to leave
+        ``abstraction_in_progress`` before re-issuing). The structural
+        fix (per-document single-flight lock at dispatch time) is
+        T-0202; this docstring discloses the gap as-is.
+
+        Process-crash stuck-state recovery:
+        The background task's exception handler catches Python-level
+        ``Exception`` and stamps ``pipeline_status=failed``, but a
+        process-level kill (``SIGKILL``, OOM kill, kernel panic) during
+        background reabstract leaves the document stuck in
+        ``pipeline_status=abstraction_in_progress`` with no terminal
+        stamp. Recovery after such a crash: after process restart,
+        enumerate documents with
+        ``sage_discover(mode="catalog", filters={"pipeline_status":
+        "abstraction_in_progress"})`` and re-issue ``sage_reabstract``
+        against each stuck id.
+
         Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
+          typed-alias validation at the boundary (per CAS Typed-Alias
+          Boundary Conventions). The alias enforces a non-empty
+          slug-shaped identifier; malformed inputs are caught here
+          rather than at a downstream lookup.
+        - ``invalid_document_id`` (400): ``document_id`` failed
+          ``DocumentIdStr`` typed-alias validation at the boundary
+          (per CAS Typed-Alias Boundary Conventions).
         - ``document_not_found`` (404): no document with that id.
         - ``no_projection`` (404): the document has no stored chunks
           to abstract from.
 
+        Note: error modes above are raised synchronously and reported
+        in the call's response envelope. Background-task failures
+        (abstraction provider error, content-store read failure, etc.)
+        are NOT surfaced in this tool's response; they manifest as
+        ``pipeline_status=failed`` and a populated ``pipeline_error``
+        field on the document, observable via ``sage_get_document``.
+
         Args:
-            vault_id: Target vault identifier.
-            document_id: Document to re-abstract.
+            vault_id: Target vault identifier. See ``invalid_vault_id``
+                in Error modes.
+            document_id: Document to re-abstract. See
+                ``invalid_document_id`` in Error modes; the fire-and-
+                forget dispatch and polling recipe are described in
+                "Fire-and-forget semantics" above.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
