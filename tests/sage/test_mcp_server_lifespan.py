@@ -62,6 +62,9 @@ class _FakeServices:
     def __init__(self, config: VaultConfig) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore()
+        # T-0183: reload_vault_in_registry reads old.timing_thread to stop it
+        # after a successful build. None is the no-timing-thread sentinel.
+        self.timing_thread = None
 
 
 @pytest.fixture
@@ -250,12 +253,15 @@ async def test_sage_reload_vault_threads_registry_service_into_initialize_servic
         captured.append(kwargs)
         return _CountingServices(config)
 
-    monkeypatch.setattr("sage.mcp_server.initialize_services", capturing_init)
+    # T-0183: sage_reload_vault now delegates to reload_vault_in_registry
+    # (in sage.mcp_init), which calls initialize_services and
+    # build_stack_abstraction_provider from its own module namespace.
+    monkeypatch.setattr("sage.mcp_init.initialize_services", capturing_init)
     # build_stack_abstraction_provider would otherwise construct a real
     # Qwen3 process; replace with a sentinel since the reload path only
     # forwards it through initialize_services (which is itself stubbed).
     monkeypatch.setattr(
-        "sage.mcp_server.build_stack_abstraction_provider",
+        "sage.mcp_init.build_stack_abstraction_provider",
         lambda _cfg: object(),
     )
 

@@ -282,6 +282,77 @@ async def test_update_config_preserves_other_sections(client):
     assert updated["source_adapters"] == original["source_adapters"]
 
 
+async def test_update_config_failed_reload_keeps_old_services_in_registry(
+    app, client, tmp_vault_dir, monkeypatch
+):
+    """T-0183 FastAPI atomicity: a failed PUT-config reload leaves
+    ``app.state.vault_registry[vault_id]`` pointing at the still-functional
+    old services.
+
+    The PUT-config path writes the new YAML to disk, then calls
+    ``VaultRegistryService.reload`` → ``reload_vault_in_registry`` →
+    ``initialize_services``. With T-0183's build-new-first ordering inside
+    ``reload_vault_in_registry``, a failure in ``initialize_services``
+    propagates with the registry untouched. The old graph store stays open;
+    subsequent reads work; the caller can retry the PUT after fixing the
+    underlying cause.
+
+    Trap (anti-coincidental, parallel to N1 in tests/sage/test_mcp_server.py
+    for the MCP path): a literal try/restore wrap around the OLD close-old-
+    first ordering would re-install the (closed) old reference, passing the
+    identity check but failing the still-functional check. Both must hold.
+    """
+    import sage.mcp_init as _mcp_init
+    from sage.api.errors import SAGEError
+
+    # Capture the live services bundle BEFORE the failed PUT
+    old = app.state.vault_registry["test_vault"]
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated reload failure for T-0183 FastAPI atomicity test",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config",
+        json={
+            "vault": {
+                "id": "test_vault",
+                "name": "Reload-Failure Sentinel",
+                "owner": "testuser",
+                "storage_root": str(tmp_vault_dir / "sources"),
+                "brain_root": str(tmp_vault_dir / "brain"),
+                "visibility": "personal",
+            }
+        },
+    )
+
+    # (a) Error response, not 200
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "schema_migration_required"
+
+    # (b) Registry slot still points at the SAME object (identity check)
+    assert app.state.vault_registry["test_vault"] is old
+
+    # (c) Old services are still FUNCTIONAL — graph store is not closed.
+    # Use the same closure-detection idiom as
+    # tests/sage/test_mcp_server.py::test_reload_vault_closes_old_graph_store
+    # (which inverts these assertions for the success path). A behavioural
+    # check like `await old.graph_store.list_all_documents()` would pass
+    # coincidentally because close() does not break read paths — fresh
+    # threads transparently open new SQLite connections.
+    assert old.graph_store._executor is not None, (
+        "old graph_store was closed; build-new-first ordering not enforced"
+    )
+    assert old.graph_store._all_connections, (
+        "old graph_store has no live connections; close() was called"
+    )
+
+
 # ---------------------------------------------------------------------------
 # POST /sage_vaults (create)
 # ---------------------------------------------------------------------------

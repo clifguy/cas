@@ -48,6 +48,7 @@ from sage.mcp_init import (
     get_stack_config,
     initialize_services,
     load_stack_config_or_default,
+    reload_vault_in_registry,
     set_stack_config,
 )
 from sage.models.schemas import VaultIdStr
@@ -284,19 +285,18 @@ async def sage_reload_vault(vault_id: str) -> dict:
     stack config require a process restart to take effect; callers
     can verify the in-memory stack config via ``sage_get_stack_config``.
 
-    Reload is NOT atomic -- partial-failure window:
-    The flow is close-old-graph-store, then construct new services,
-    then reassign the registry slot. If construction raises after the
-    old graph store is closed (see the schema-migration / duplicate-edge
-    / abstraction-provider rows below), the registry continues to point
-    at the **closed** old services for the lifetime of the process.
-    Every subsequent tool call against the vault hits the closed-graph-store
-    error path. Recovery options: (a) a second successful reload after
-    fixing the underlying cause (which itself races the same window),
-    or (b) a process restart. This is a docstring-level disclosure of
-    a runtime atomicity gap that JSON Schema cannot express; a
-    structural fix that wraps the reload in a restore-old-services-on-failure
-    block is tracked separately as T-0183.
+    Reload is atomic with respect to the registry slot (T-0183):
+    Internally this delegates to ``reload_vault_in_registry``, which
+    builds the new services first and only tears down the old services
+    on success. If construction raises (schema migration, duplicate edges,
+    abstraction-provider build failure, etc.), the registry slot is left
+    pointing at the **still-functional** old services — graph store still
+    open, timing thread still running — and an error envelope is returned
+    describing the failure. The caller can retry the reload after
+    addressing the underlying cause. Partial-allocation cleanup of the
+    failed new services is best-effort inside ``initialize_services``
+    (timing thread is stopped, graph store is closed, any internally-
+    constructed content store is released).
 
     In-flight SQLite transactions are silently rolled back:
     ``graph_store.close()`` shuts down the executor (waiting for queued
@@ -317,7 +317,8 @@ async def sage_reload_vault(vault_id: str) -> dict:
     primarily a hazard for HTTP / FastAPI callers that pass
     ``wait_for_pipeline=False`` explicitly.
 
-    Error modes:
+    Error modes (registry slot is preserved on all failure paths; the old
+    services remain installed and functional, and the caller can retry):
     - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
       typed-alias validation at the boundary (per CAS Typed-Alias
       Boundary Conventions). The alias enforces a non-empty
@@ -328,23 +329,20 @@ async def sage_reload_vault(vault_id: str) -> dict:
       vaults at the time of the call.
     - ``schema_migration_required`` (409): the vault's ``graph.db``
       has pending ALTER TABLE migrations or backfills, so the new
-      graph store cannot ``initialize(migrate=False)``. **Compounds
-      with the non-atomicity gap above** -- the old graph store has
-      already been closed by the time this raises. Run
+      graph store cannot ``initialize(migrate=False)``. Run
       ``sage_admin_migrate_vault`` to apply pending migrations
       before retrying the reload.
     - ``duplicate_edges_present`` (409): the vault's ``edges`` or
       ``staging_edges`` table has duplicate rows on the natural-key
       triple ``(source_id, target_id, edge_type)``, so UNIQUE index
-      creation fails during ``GraphStore.initialize()``. **Compounds
-      with the non-atomicity gap.** Run ``scripts/dedup_edges.py`` to
-      dedupe the offending table before retrying the reload.
+      creation fails during ``GraphStore.initialize()``. Run
+      ``scripts/dedup_edges.py`` to dedupe the offending table before
+      retrying the reload.
     - Abstraction-provider build failure: reload constructs the
       abstraction provider from the **current in-memory stack config**
       (see scope note above). A stack config with
       ``provider="qwen3-mlx"`` and ``model=None`` raises ``ValueError``
-      during the build, with the same atomicity consequence as the
-      structured errors above. Verify the in-memory stack config via
+      during the build. Verify the in-memory stack config via
       ``sage_get_stack_config`` before reloading if you suspect drift.
 
     Args:
@@ -372,24 +370,22 @@ async def sage_reload_vault(vault_id: str) -> dict:
     else:
         config = old_services.config
 
-    # Tear down old services
-    await old_services.graph_store.close()
-
-    # Reinitialize, preserving the config_path so a subsequent reload can
-    # also re-read from disk, and the content_store_factory so hermetic
-    # lifespan tests keep their stub ContentStore across reload. The
-    # stack-wide abstraction provider is built once at lifespan startup
-    # (CAS-ADR-030) and threaded through here so the reload doesn't
-    # construct a second Qwen3 process.
-    stack_provider = build_stack_abstraction_provider(get_stack_config())
-    new_services = await initialize_services(
-        config,
-        config_path=config_path,
-        content_store_factory=old_services.content_store_factory,
-        abstraction_provider=stack_provider,
-        registry_service=_vault_registry_service,
-    )
-    _vaults[vault_id] = new_services
+    # T-0183: delegate to the registry-aware reload. ``reload_vault_in_registry``
+    # builds new services first; only on success does it stop the old timing
+    # thread, close the old graph store, and install the new services in the
+    # registry. On failure the exception propagates here with the registry
+    # untouched, so ``_vaults[vault_id]`` continues to point at the still-
+    # functional old services and the caller can retry.
+    try:
+        new_services = await reload_vault_in_registry(
+            _vaults,
+            vault_id,
+            config,
+            config_path=config_path,
+            registry_service=_vault_registry_service,
+        )
+    except (SAGEError, ValueError) as e:
+        return _error_response(e)
 
     # Return confirmation with basic stats
     total_docs = len(await new_services.graph_store.list_all_documents())

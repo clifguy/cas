@@ -45,6 +45,8 @@ from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
+_logger = logging.getLogger(__name__)
+
 _TIMING_LOGGER_NAMES = (
     "sage.storage.timing",
     "sage.content.timing",
@@ -272,15 +274,27 @@ async def initialize_services(
 ) -> SAGEServices:
     """Initialize all SAGE services for a vault configuration.
 
+    Transactional: if any construction step raises, partially-allocated
+    resources (timing thread, graph store, internally-constructed content
+    store) are released on a best-effort basis before the original
+    exception propagates. Cleanup-time exceptions are logged but never
+    re-raised — the caller sees only the original failure. This is the
+    structural counterpart to T-0183 AC2's atomicity guarantee in
+    ``reload_vault_in_registry``.
+
     Args:
         config: Loaded and validated vault configuration.
         content_store: Optional override (default: LanceDBContentStore).
+            When supplied, the caller owns the lifecycle — cleanup on
+            failure does NOT close it.
         content_store_factory: Optional callable invoked with the vault's
             ``brain_root`` to build a ContentStore. Used by hermetic
             lifespan tests to substitute ``StubContentStore`` without
             mutating module state. Ignored if ``content_store`` is also
             passed; stored on the returned ``SAGEServices`` so reload
-            paths reuse the same factory.
+            paths reuse the same factory. When this factory builds the
+            content store, the caller owns the lifecycle — cleanup on
+            failure does NOT close it.
         embedding_provider: Optional override (default: NomicEmbeddingProvider).
         abstraction_provider: Optional override (default: from config).
         migrate: If True, apply any pending schema migrations to the graph
@@ -297,151 +311,195 @@ async def initialize_services(
     Returns:
         SAGEServices dataclass with all services ready to use.
     """
-    brain_root = Path(config.vault.brain_root).expanduser()
-    brain_root.mkdir(parents=True, exist_ok=True)
+    # Transactional cleanup handles for the build-fails-midway path (T-0183).
+    # Only resources THIS function constructed are tracked here; resources
+    # passed in by the caller (explicit content_store, factory-built
+    # content_store) are owned by the caller and not closed on cleanup.
+    timing_thread: VaultTimingThread | None = None
+    graph_store: GraphStore | None = None
+    content_store_owned_here: ContentStore | None = None
 
-    storage_timer, content_timer, retrieval_timer, timing_thread, _timing_handler = (
-        _build_vault_timers(config.timing, brain_root)
-    )
+    try:
+        brain_root = Path(config.vault.brain_root).expanduser()
+        brain_root.mkdir(parents=True, exist_ok=True)
 
-    graph_store = GraphStore(brain_root / "graph.db", query_timer=storage_timer)
-    await graph_store.initialize(migrate=migrate)
-
-    lock_manager = DocumentLockManager()
-
-    # Content store: explicit instance > factory > production LanceDB.
-    if content_store is None:
-        if content_store_factory is not None:
-            content_store = content_store_factory(brain_root)
-        else:
-            content_store = LanceDBContentStore(
-                brain_root,
-                migrate=migrate,
-                query_timer=content_timer,
-            )
-
-    # Embedding provider: injected or production Nomic. CI sets
-    # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
-    # services via this path don't each load the ~270MB nomic model
-    # into a 7 GB Linux runner (T-0018). Tests that exercise the real
-    # adapter (@requires_embedding in test_adapters.py) construct
-    # NomicEmbeddingProvider directly and are unaffected.
-    if embedding_provider is None:
-        if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
-            from sage.adapters.stubs import StubEmbeddingProvider
-
-            embedding_provider = StubEmbeddingProvider()
-        else:
-            embedding_provider = get_nomic_embedding_provider()
-
-    # Abstraction provider: post CAS-ADR-030 / T-0103, the factory dispatch
-    # lives in build_stack_abstraction_provider (stack scope). The per-vault
-    # path here only consults the vault-scope opt-out. Precedence:
-    #   1. vault.abstraction.enabled is False        -> Stub (ADR-011 opt-in)
-    #   2. abstraction_provider injected             -> use injection
-    #   3. SAGE_TEST_STUB_PROVIDERS=1                -> Stub (belt-and-suspenders
-    #      for tests that don't go through stack startup)
-    #   4. no injection, env var unset               -> raise (production path
-    #      must thread the stack-built provider through)
-    if not config.abstraction.enabled:
-        abstraction_provider = StubAbstractionProvider()
-    elif abstraction_provider is None:
-        if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
-            abstraction_provider = StubAbstractionProvider()
-        else:
-            raise ValueError(
-                "initialize_services requires an `abstraction_provider` "
-                "injection in production (post CAS-ADR-030: the provider "
-                "is built once at SAGE process startup via "
-                "build_stack_abstraction_provider and passed into every "
-                "vault's initialize_services call). Tests that want a "
-                "Stub may set SAGE_TEST_STUB_PROVIDERS=1 or pass "
-                "StubAbstractionProvider() explicitly."
-            )
-
-    # Source adapters
-    source_adapters = {
-        SourceType.MARKDOWN: MarkdownAdapter(),
-        SourceType.DOCX: DocxAdapter(),
-        SourceType.XLSX: XlsxAdapter(),
-        SourceType.PDF: PdfAdapter(),
-    }
-
-    # Services
-    user_service = UserService(graph_store, config)
-    lifecycle_service = LifecycleService(graph_store, lock_manager, config, content_store)
-    metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
-    documents_service = DocumentsService(graph_store, config)
-    # T-0129: GraphOpsService is constructed before IngestionService so the
-    # ingestion pipeline can run identifier_mention inference (which writes
-    # edges via link_idempotent) inside its Stage-2 → Stage-3 transition.
-    graph_ops_service = GraphOpsService(graph_store, config)
-    ingestion_service = IngestionService(
-        graph_store=graph_store,
-        lock_manager=lock_manager,
-        content_store=content_store,
-        embedding_provider=embedding_provider,
-        abstraction_provider=abstraction_provider,
-        config=config,
-        source_adapters=source_adapters,
-        lifecycle_service=lifecycle_service,
-        graph_ops_service=graph_ops_service,
-    )
-    retrieval_service = RetrievalService(
-        graph_store=graph_store,
-        content_store=content_store,
-        embedding_provider=embedding_provider,
-        config=config,
-        query_timer=retrieval_timer,
-    )
-    utilities_service = UtilitiesService(
-        graph_store=graph_store,
-        content_store=content_store,
-        embedding_provider=embedding_provider,
-        config=config,
-    )
-    staging_edges_service = StagingEdgesService(graph_store)
-    vault_config_service = VaultConfigService(graph_store, content_store, config, registry_service)
-    # CAS-ADR-029: only construct the maintenance service when a registry
-    # service is available, since migrate_vault closes-and-reopens via
-    # registry_service.reload(...).
-    # T-0089: ingestion_service is wired through so reabstract_deferred can
-    # reuse the in-process AbstractionProvider (F-8 budget rule); ordering
-    # matters -- ingestion_service is constructed above this block.
-    maintenance_service: MaintenanceService | None = None
-    if registry_service is not None:
-        maintenance_service = MaintenanceService(
-            vault_id=config.vault.id,
-            db_path=brain_root / "graph.db",
-            graph_store=graph_store,
-            config=config,
-            registry_service=registry_service,
-            ingestion_service=ingestion_service,
+        storage_timer, content_timer, retrieval_timer, timing_thread, _timing_handler = (
+            _build_vault_timers(config.timing, brain_root)
         )
 
-    # Bootstrap vault owner
-    await user_service.bootstrap_owner()
+        graph_store = GraphStore(brain_root / "graph.db", query_timer=storage_timer)
+        await graph_store.initialize(migrate=migrate)
 
-    return SAGEServices(
-        config=config,
-        graph_store=graph_store,
-        content_store=content_store,
-        lock_manager=lock_manager,
-        user_service=user_service,
-        lifecycle_service=lifecycle_service,
-        metadata_service=metadata_service,
-        documents_service=documents_service,
-        ingestion_service=ingestion_service,
-        graph_ops_service=graph_ops_service,
-        retrieval_service=retrieval_service,
-        utilities_service=utilities_service,
-        staging_edges_service=staging_edges_service,
-        vault_config_service=vault_config_service,
-        maintenance_service=maintenance_service,
-        config_path=config_path,
-        content_store_factory=content_store_factory,
-        timing_thread=timing_thread,
-    )
+        lock_manager = DocumentLockManager()
+
+        # Content store: explicit instance > factory > production LanceDB.
+        # Only the LanceDB path (constructed inside this function with no
+        # external handle) is tracked for cleanup. Caller-supplied and
+        # factory-supplied stores remain the caller's responsibility.
+        if content_store is None:
+            if content_store_factory is not None:
+                content_store = content_store_factory(brain_root)
+            else:
+                content_store = LanceDBContentStore(
+                    brain_root,
+                    migrate=migrate,
+                    query_timer=content_timer,
+                )
+                content_store_owned_here = content_store
+
+        # Embedding provider: injected or production Nomic. CI sets
+        # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
+        # services via this path don't each load the ~270MB nomic model
+        # into a 7 GB Linux runner (T-0018). Tests that exercise the real
+        # adapter (@requires_embedding in test_adapters.py) construct
+        # NomicEmbeddingProvider directly and are unaffected.
+        if embedding_provider is None:
+            if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
+                from sage.adapters.stubs import StubEmbeddingProvider
+
+                embedding_provider = StubEmbeddingProvider()
+            else:
+                embedding_provider = get_nomic_embedding_provider()
+
+        # Abstraction provider: post CAS-ADR-030 / T-0103, the factory dispatch
+        # lives in build_stack_abstraction_provider (stack scope). The per-vault
+        # path here only consults the vault-scope opt-out. Precedence:
+        #   1. vault.abstraction.enabled is False        -> Stub (ADR-011 opt-in)
+        #   2. abstraction_provider injected             -> use injection
+        #   3. SAGE_TEST_STUB_PROVIDERS=1                -> Stub (belt-and-suspenders
+        #      for tests that don't go through stack startup)
+        #   4. no injection, env var unset               -> raise (production path
+        #      must thread the stack-built provider through)
+        if not config.abstraction.enabled:
+            abstraction_provider = StubAbstractionProvider()
+        elif abstraction_provider is None:
+            if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
+                abstraction_provider = StubAbstractionProvider()
+            else:
+                raise ValueError(
+                    "initialize_services requires an `abstraction_provider` "
+                    "injection in production (post CAS-ADR-030: the provider "
+                    "is built once at SAGE process startup via "
+                    "build_stack_abstraction_provider and passed into every "
+                    "vault's initialize_services call). Tests that want a "
+                    "Stub may set SAGE_TEST_STUB_PROVIDERS=1 or pass "
+                    "StubAbstractionProvider() explicitly."
+                )
+
+        # Source adapters
+        source_adapters = {
+            SourceType.MARKDOWN: MarkdownAdapter(),
+            SourceType.DOCX: DocxAdapter(),
+            SourceType.XLSX: XlsxAdapter(),
+            SourceType.PDF: PdfAdapter(),
+        }
+
+        # Services
+        user_service = UserService(graph_store, config)
+        lifecycle_service = LifecycleService(graph_store, lock_manager, config, content_store)
+        metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
+        documents_service = DocumentsService(graph_store, config)
+        # T-0129: GraphOpsService is constructed before IngestionService so the
+        # ingestion pipeline can run identifier_mention inference (which writes
+        # edges via link_idempotent) inside its Stage-2 → Stage-3 transition.
+        graph_ops_service = GraphOpsService(graph_store, config)
+        ingestion_service = IngestionService(
+            graph_store=graph_store,
+            lock_manager=lock_manager,
+            content_store=content_store,
+            embedding_provider=embedding_provider,
+            abstraction_provider=abstraction_provider,
+            config=config,
+            source_adapters=source_adapters,
+            lifecycle_service=lifecycle_service,
+            graph_ops_service=graph_ops_service,
+        )
+        retrieval_service = RetrievalService(
+            graph_store=graph_store,
+            content_store=content_store,
+            embedding_provider=embedding_provider,
+            config=config,
+            query_timer=retrieval_timer,
+        )
+        utilities_service = UtilitiesService(
+            graph_store=graph_store,
+            content_store=content_store,
+            embedding_provider=embedding_provider,
+            config=config,
+        )
+        staging_edges_service = StagingEdgesService(graph_store)
+        vault_config_service = VaultConfigService(
+            graph_store, content_store, config, registry_service
+        )
+        # CAS-ADR-029: only construct the maintenance service when a registry
+        # service is available, since migrate_vault closes-and-reopens via
+        # registry_service.reload(...).
+        # T-0089: ingestion_service is wired through so reabstract_deferred can
+        # reuse the in-process AbstractionProvider (F-8 budget rule); ordering
+        # matters -- ingestion_service is constructed above this block.
+        maintenance_service: MaintenanceService | None = None
+        if registry_service is not None:
+            maintenance_service = MaintenanceService(
+                vault_id=config.vault.id,
+                db_path=brain_root / "graph.db",
+                graph_store=graph_store,
+                config=config,
+                registry_service=registry_service,
+                ingestion_service=ingestion_service,
+            )
+
+        # Bootstrap vault owner
+        await user_service.bootstrap_owner()
+
+        return SAGEServices(
+            config=config,
+            graph_store=graph_store,
+            content_store=content_store,
+            lock_manager=lock_manager,
+            user_service=user_service,
+            lifecycle_service=lifecycle_service,
+            metadata_service=metadata_service,
+            documents_service=documents_service,
+            ingestion_service=ingestion_service,
+            graph_ops_service=graph_ops_service,
+            retrieval_service=retrieval_service,
+            utilities_service=utilities_service,
+            staging_edges_service=staging_edges_service,
+            vault_config_service=vault_config_service,
+            maintenance_service=maintenance_service,
+            config_path=config_path,
+            content_store_factory=content_store_factory,
+            timing_thread=timing_thread,
+        )
+    except BaseException:
+        # T-0183 AC2 + Risk: release partially-allocated resources without
+        # masking the original exception. BaseException (not Exception) is
+        # deliberate — KeyboardInterrupt and asyncio.CancelledError between
+        # _build_vault_timers and the return statement would otherwise leak
+        # the timing thread and graph store. Each cleanup is wrapped in its
+        # own try/except so a cleanup-time failure does not skip the rest
+        # nor mask the original. The original exception propagates via the
+        # bare `raise` at the end.
+        if timing_thread is not None:
+            try:
+                timing_thread.stop(timeout=1.0)
+            except Exception:
+                _logger.exception("initialize_services cleanup: failed to stop timing_thread")
+        if graph_store is not None:
+            try:
+                await graph_store.close()
+            except Exception:
+                _logger.exception("initialize_services cleanup: failed to close graph_store")
+        if content_store_owned_here is not None:
+            try:
+                close = getattr(content_store_owned_here, "close", None)
+                if close is not None:
+                    result = close()
+                    if hasattr(result, "__await__"):
+                        await result
+            except Exception:
+                _logger.exception("initialize_services cleanup: failed to close content_store")
+        raise
 
 
 async def reload_vault_in_registry(
@@ -451,26 +509,44 @@ async def reload_vault_in_registry(
     config_path: Path | None = None,
     registry_service: "VaultRegistryService | None" = None,
 ) -> SAGEServices:
-    """Close old services for a vault and reinitialize from a new config.
+    """Atomically swap a vault's services in the registry (T-0183).
 
-    Used by the PUT config endpoint after writing updated YAML.
-    Parallels the MCP server's sage_reload_vault tool. Carries any
-    ``content_store_factory`` from the predecessor services forward so
-    hermetic-lifespan-test setups survive reload.
+    Build-new-first ordering: constructs the new services completely, then
+    closes the old services and installs the new ones in the registry. If
+    new-service construction raises, the registry is left unchanged — the
+    old services remain installed and functional (graph store still open,
+    timing thread still running). The caller can retry the reload after
+    addressing the underlying cause; the exception propagates with no
+    rollback ceremony required.
+
+    Partial-allocation cleanup inside ``initialize_services`` is best-effort
+    (see ``initialize_services``'s transactional cleanup block).
+
+    Used by:
+    - ``VaultRegistryService.reload`` (FastAPI PUT-config endpoint).
+    - ``sage_reload_vault`` MCP tool (via delegation).
+
+    Carries the predecessor's ``content_store_factory`` and (when the caller
+    does not supply one) ``config_path`` forward so hermetic-lifespan-test
+    setups survive reload and on-disk YAML edits round-trip correctly.
     """
     old = registry.get(vault_id)
     content_store_factory = None
-    if old:
-        if old.timing_thread is not None:
-            old.timing_thread.stop(timeout=1.0)
-        await old.graph_store.close()
+    if old is not None:
         if config_path is None:
             config_path = old.config_path
         content_store_factory = old.content_store_factory
+
     # CAS-ADR-030: thread the stack-built abstraction provider through.
     # Falls back to the default stack config when no lifespan has run
     # (test paths that exercise reload directly).
     stack_provider = build_stack_abstraction_provider(get_stack_config())
+
+    # T-0183: build new BEFORE touching old. If initialize_services raises,
+    # ``old`` remains installed in the registry and fully functional. The
+    # exception propagates; partial-allocation cleanup inside
+    # initialize_services releases timing_thread / graph_store /
+    # internally-constructed content_store on the failed path.
     new_services = await initialize_services(
         config,
         config_path=config_path,
@@ -478,5 +554,11 @@ async def reload_vault_in_registry(
         content_store_factory=content_store_factory,
         abstraction_provider=stack_provider,
     )
+
+    # New services built successfully — safe to tear down old and install new.
+    if old is not None:
+        if old.timing_thread is not None:
+            old.timing_thread.stop(timeout=1.0)
+        await old.graph_store.close()
     registry[vault_id] = new_services
     return new_services

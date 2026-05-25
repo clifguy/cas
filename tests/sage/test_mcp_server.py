@@ -20,6 +20,7 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
+from sage.api.errors import SAGEError
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
@@ -1246,6 +1247,168 @@ async def test_reload_vault_sees_external_changes(vault_services):
     # Fresh services should see both documents
     stats_after = _parse(await sage_vault_stats("test_vault"))
     assert stats_after["total_documents"] == 2
+
+
+async def test_reload_vault_failure_keeps_old_services_in_registry(vault_services, monkeypatch):
+    """T-0183 AC2: a failed reload leaves _vaults pointing at functional old services.
+
+    Trap (anti-coincidental): a literal try/restore that re-installs the (closed)
+    old reference would pass the identity check but fail the "graph store still
+    open" assertion. Both checks must hold.
+    """
+    import sage.mcp_init as _mcp_init
+
+    old = _mcp._vaults["test_vault"]
+
+    async def failing_initialize_services(*args, **kwargs):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated failure for T-0183 atomicity test",
+            status_code=409,
+        )
+
+    # Patch both call sites so the test exercises the failure path whether
+    # sage_reload_vault still has the inline initialize_services call (pre-refactor)
+    # or delegates to reload_vault_in_registry which uses sage.mcp_init's binding
+    # (post-refactor).
+    monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
+    monkeypatch.setattr(_mcp, "initialize_services", failing_initialize_services)
+
+    result = _parse(await sage_reload_vault("test_vault"))
+
+    # (a) Error envelope returned, not an exception
+    assert result.get("error") == "schema_migration_required"
+    assert "simulated failure" in result["message"]
+
+    # (b) Registry slot still points at the SAME object (identity check)
+    assert _mcp._vaults["test_vault"] is old
+
+    # (c) The old services are still FUNCTIONAL — graph store is not closed.
+    # Match the idiom used by test_reload_vault_closes_old_graph_store (above)
+    # for the closure detection: _executor goes to None and _all_connections
+    # is cleared by GraphStore.close(). The trap: a behavioural check like
+    # `await old.graph_store.list_all_documents()` would pass coincidentally
+    # because the underlying SQLite file is still on disk and a fresh thread
+    # would simply open a new connection — close() does not break read paths.
+    assert old.graph_store._executor is not None, (
+        "old graph_store was closed; restore-on-failure did not preserve it"
+    )
+    assert old.graph_store._all_connections, (
+        "old graph_store has no live connections; close() was called"
+    )
+
+
+async def test_reload_vault_failure_releases_partially_allocated_resources(
+    vault_services, monkeypatch
+):
+    """T-0183 AC2 + Risk: a failed reload must not leak background threads.
+
+    `_build_vault_timers` calls `flusher.start()` before initialize_services
+    returns. If initialize_services raises after that point without
+    transactional cleanup, the new vault's timing thread runs forever.
+
+    This test asserts that the failed reload does not increase the count of
+    live `sage-timing-flush` threads.
+    """
+    import threading
+
+    def _count_timing_threads() -> int:
+        return sum(1 for t in threading.enumerate() if t.name.startswith("sage-timing-flush"))
+
+    pre_count = _count_timing_threads()
+
+    # Patch UserService.bootstrap_owner to raise inside initialize_services.
+    # That method runs AFTER timing thread + graph store + content store have
+    # been constructed, so this exercises the late-stage cleanup path.
+    from sage.services.user_service import UserService
+
+    async def raising_bootstrap(self):
+        raise SAGEError(
+            code="schema_migration_required",
+            message="simulated late-stage failure for T-0183 cleanup test",
+            status_code=409,
+        )
+
+    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+
+    result = _parse(await sage_reload_vault("test_vault"))
+
+    # (a) Error envelope returned
+    assert result.get("error") == "schema_migration_required"
+
+    # (b) No new timing threads leaked from the failed partial initialization.
+    # Brief grace period for thread.join() inside cleanup to complete.
+    await asyncio.sleep(0.1)
+    post_count = _count_timing_threads()
+    assert post_count <= pre_count, (
+        f"Timing thread leaked on failed reload: pre={pre_count}, post={post_count}"
+    )
+
+
+async def test_reload_vault_stops_old_timing_thread(vault_services, monkeypatch):
+    """T-0183 AC3 (reconciliation): MCP reload path now stops the old vault's
+    timing thread on success (parity with the FastAPI path via
+    reload_vault_in_registry).
+
+    Trap (anti-coincidental): the current inline MCP code skips
+    timing_thread.stop() entirely; only the registry version stops it. After
+    delegation, both paths must stop the thread. The assert_called_once_with
+    is the trap.
+    """
+    from unittest.mock import MagicMock
+
+    # The fixture's services may or may not have a real timing_thread (depends
+    # on TimingConfig defaults). Install a fake we can observe regardless.
+    fake_thread = MagicMock()
+    fake_thread.stop = MagicMock()
+    _mcp._vaults["test_vault"].timing_thread = fake_thread
+
+    result = _parse(await sage_reload_vault("test_vault"))
+    assert result["reloaded"] is True
+
+    fake_thread.stop.assert_called_once_with(timeout=1.0)
+
+
+async def test_reload_vault_preserves_content_store_factory_across_two_reloads(
+    minimal_vault_config_dict, tmp_vault_dir
+):
+    """T-0183 AC3 (reconciliation): content_store_factory survives across
+    multiple successive reloads.
+
+    Trap (anti-coincidental): a single-reload test would pass against the
+    pre-refactor inline code (which already carries factory forward). The
+    second reload is the trap — it verifies the factory survives the
+    delegation path twice in a row (i.e., the new code reads factory from old
+    on every reload, not just once).
+    """
+
+    def my_factory(_brain_root):
+        return StubContentStore()
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    services = await initialize_services(
+        config,
+        content_store_factory=my_factory,
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
+    _mcp._vaults["factory_vault"] = services
+    try:
+        assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
+
+        # First reload
+        result1 = _parse(await sage_reload_vault("factory_vault"))
+        assert result1["reloaded"] is True
+        assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
+
+        # Second reload — the real anti-coincidental check
+        result2 = _parse(await sage_reload_vault("factory_vault"))
+        assert result2["reloaded"] is True
+        assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
+        assert isinstance(_mcp._vaults["factory_vault"].content_store, StubContentStore)
+    finally:
+        await _mcp._vaults["factory_vault"].graph_store.close()
+        _mcp._vaults.pop("factory_vault", None)
 
 
 async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_vault_dir, tmp_path):

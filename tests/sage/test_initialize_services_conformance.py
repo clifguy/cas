@@ -185,7 +185,15 @@ async def _drive_mcp_reload(
     tmp_path: Path,
     minimal_vault_config_dict: dict,
 ) -> list[dict]:
-    """Drive sage.mcp_server.sage_reload_vault."""
+    """Drive sage.mcp_server.sage_reload_vault.
+
+    T-0183: sage_reload_vault now delegates to
+    ``sage.mcp_init.reload_vault_in_registry``, which calls
+    ``initialize_services`` from its own module namespace and builds the
+    stack abstraction provider locally. The driver therefore patches both
+    in ``sage.mcp_init`` (the post-T-0183 call site), not in
+    ``sage.mcp_server``.
+    """
     vault_root = tmp_path / "vault_root"
     vault_root.mkdir()
     config_path = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
@@ -203,11 +211,11 @@ async def _drive_mcp_reload(
         captured.append(kwargs)
         return _FakeServices(config)
 
-    monkeypatch.setattr("sage.mcp_server.initialize_services", capturing_init)
-    # build_stack_abstraction_provider would otherwise construct an
-    # AbstractionProvider; the reload path only forwards the result into
-    # initialize_services (already stubbed), so a sentinel suffices.
-    monkeypatch.setattr("sage.mcp_server.build_stack_abstraction_provider", lambda _cfg: object())
+    # T-0183: post-delegation, the live call to initialize_services and
+    # build_stack_abstraction_provider happens inside reload_vault_in_registry
+    # (sage.mcp_init), not at the import binding in sage.mcp_server.
+    monkeypatch.setattr("sage.mcp_init.initialize_services", capturing_init)
+    monkeypatch.setattr("sage.mcp_init.build_stack_abstraction_provider", lambda _cfg: object())
 
     await mcp_server.sage_reload_vault("vault_a")
     return captured
