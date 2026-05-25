@@ -2075,15 +2075,89 @@ def register_sage_tools(
         vault should construct the dict directly against the vault config
         schema.
 
+        Config dict structure:
+        The ``config`` parameter is opaque at the MCP boundary (the
+        signature accepts ``dict``); its required shape lives in
+        ``docs/fs/sage/vault_config.schema.json``. Six top-level
+        sections are required -- ``vault``, ``document_types``,
+        ``lifecycle``, ``source_adapters``, ``metadata_extraction``,
+        ``edge_inference`` -- and three are optional --
+        ``abstraction``, ``access_control_defaults``,
+        ``retrieval_health``. Missing required sections (or malformed
+        sub-section payloads) surface as ``vault_config_validation_error``
+        at validation time. Construct against the schema directly, or
+        start from ``VaultRegistryService.get_default_config`` and
+        edit the returned dict.
+
+        Stack abstraction provider dependency (CAS-ADR-030):
+        The new vault silently inherits the running SAGE process's
+        stack-wide abstraction provider singleton, built once at
+        process startup from ``sage/config.yaml``. There is no
+        per-vault provider override on this tool; the ``abstraction``
+        section in the vault config governs only enable/disable and
+        per-vault parameters, not provider identity. Callers that
+        want a different provider for a new vault must edit the
+        stack config and restart the SAGE process before calling
+        ``sage_create_vault``; verify the in-memory stack config via
+        ``sage_get_stack_config`` if you suspect drift.
+
+        Partial-failure non-atomicity:
+        Vault creation runs five sequential steps -- (1) config
+        directory creation, (2) ``vault_config.yaml`` write, (3) service
+        initialization (graph store, content store, abstraction
+        provider wiring), (4) registry insertion, (5) owner bootstrap
+        via ``UserService.bootstrap_owner`` -- with no rollback across
+        step boundaries. A failure mid-sequence (disk error during step
+        2, schema-migration error during step 3, provider build failure
+        during step 3, etc.) leaves the filesystem and the in-memory
+        registry in an intermediate state: ``~/sage_vaults/{vault_id}/``
+        may exist with a partial ``vault_config.yaml`` while the
+        registry has no entry for the vault. Recovery: manually remove
+        ``~/sage_vaults/{vault_id}/`` and call ``sage_create_vault``
+        again.
+
+        ``bootstrap_owner`` side effect:
+        Step 5 of the create sequence creates the owner user (per the
+        vault config's ``access_control_defaults.owner`` value or
+        equivalent) via ``UserService.bootstrap_owner``. This is a
+        silent state mutation -- the response carries only the
+        ``VaultSummary`` projection (id, name, storage_root, plus the
+        echoed config dict), with no field indicating that the owner
+        row was inserted. The owner row is required for subsequent
+        access-controlled operations on the new vault.
+
+        Eager tier3 validator cache build:
+        ``VaultConfig.model_post_init`` builds a JSON Schema validator
+        for every doc_type that declares a ``metadata_schema`` (per
+        CAS-ADR-031) at config construction time, not at first ingest.
+        A malformed ``document_types.doc_types[].metadata_schema``
+        payload (e.g., a non-Draft 2020-12 schema, an unresolvable
+        ``$ref``) surfaces at create time as part of
+        ``vault_config_validation_error`` rather than deferred to the
+        first ``sage_ingest`` call that would have used the validator.
+        This is intentional: catching schema authoring errors at vault
+        create time is cheaper than catching them on the first ingest
+        whose ``tier3_metadata`` happens to exercise the offending
+        doc_type.
+
         Error modes:
         - ``vault_already_exists`` (409): a vault with that
           ``vault_id`` is already registered.
         - ``vault_config_validation_error`` (400): the supplied
-          config fails schema validation.
+          config fails schema validation. Covers missing or malformed
+          top-level sections (see "Config dict structure" above) and
+          malformed ``document_types.doc_types[].metadata_schema``
+          payloads caught by the eager tier3 validator cache build
+          (see "Eager tier3 validator cache build" above).
 
         Args:
             config: Full vault config dict. Must validate against the
-                vault config schema.
+                vault config schema at
+                ``docs/fs/sage/vault_config.schema.json`` -- six
+                required top-level sections plus three optional. See
+                "Config dict structure" above for the section list and
+                "Eager tier3 validator cache build" for the
+                doc_type-schema validation that runs at create time.
         """
         try:
             summary = await vault_registry_service.create_vault(CreateVaultRequest(config=config))
