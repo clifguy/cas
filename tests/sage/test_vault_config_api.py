@@ -158,7 +158,7 @@ async def _ingest_note_doc(client, tmp_vault_dir):
         "/sage_vaults/test_vault/documents",
         json={
             "source": "test/sample.md",
-            "adapter": "markdown",
+            "source_type": "markdown",
             "metadata": {"doc_type": "note"},
         },
     )

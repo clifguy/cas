@@ -39,7 +39,7 @@ async def _ingest_markdown(ingestion_service, tmp_vault_dir, rel_path: str, sour
     target.write_text(source_text)
 
     result = await ingestion_service.ingest(
-        IngestRequest(source=rel_path, adapter=SourceType.MARKDOWN),
+        IngestRequest(source=rel_path, source_type=SourceType.MARKDOWN),
     )
     await asyncio.sleep(0.5)
     return result.document

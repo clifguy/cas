@@ -56,7 +56,7 @@ class TestStreamResponseShape:
             files=[
                 IngestFileItem(
                     file_path="/tmp/probe.md",
-                    adapter="markdown",
+                    source_type="markdown",
                     parsed_metadata=ParsedMetadata(title="probe"),
                 )
             ],

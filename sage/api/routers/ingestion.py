@@ -17,9 +17,9 @@ router = APIRouter(tags=["Ingestion"])
         400: {
             "model": ErrorResponse,
             "description": (
-                "`adapter_not_found`: `adapter` is not an enabled adapter on "
-                "this vault. See `source_adapters.adapters` in the vault "
-                "config."
+                "`adapter_not_found`: `source_type` is not an enabled "
+                "adapter on this vault. See `source_adapters.adapters` in "
+                "the vault config."
             ),
         },
         404: {

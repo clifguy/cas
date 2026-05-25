@@ -64,10 +64,10 @@ export default function Ingest() {
     abortRef.current = controller;
 
     const ingestFiles = selected
-      .filter(f => f.adapter !== null)
+      .filter(f => f.source_type !== null)
       .map(f => ({
         file_path: f.file_path,
-        adapter: f.adapter!,
+        source_type: f.source_type!,
         parsed_metadata: f.parsed_metadata,
       }));
 
@@ -236,7 +236,7 @@ export default function Ingest() {
                       />
                     </td>
                     <td style={tdStyle}>{filename}</td>
-                    <td style={tdStyle}>{f.adapter ?? '-'}</td>
+                    <td style={tdStyle}>{f.source_type ?? '-'}</td>
                     <td style={tdStyle}>{f.parsed_metadata.doc_type ?? '-'}</td>
                     <td style={tdStyle}>{f.parsed_metadata.version ?? '-'}</td>
                     <td style={tdStyle}>{f.parsed_metadata.project ?? '-'}</td>

@@ -360,7 +360,7 @@ class TestVaultStatistics:
         assert body["total_documents"] == 2
         assert isinstance(body["by_lifecycle_status"], dict)
         assert isinstance(body["by_doc_type"], dict)
-        assert isinstance(body["by_source_adapter"], dict)
+        assert isinstance(body["by_source_type"], dict)
         assert body["total_edges"] == 1
         assert isinstance(body["by_edge_type"], dict)
         assert body["staging_edge_count"] == 1

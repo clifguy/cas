@@ -66,7 +66,7 @@ the vault copy does not have that flag after ingest.
 **Input:**
 - External source file (outside `storage_root`) with `UF_HIDDEN` set
   via `os.chflags`.
-- `ingest(IngestRequest(source=<absolute_path>, adapter="markdown"))`.
+- `ingest(IngestRequest(source=<absolute_path>, source_type="markdown"))`.
 
 **Expected:**
 - Source file still has `UF_HIDDEN` (unchanged).
@@ -149,7 +149,7 @@ is a no-op and ingestion completes normally.
 
 **Input:**
 - External source file with default flags and no extended attributes.
-- `ingest(IngestRequest(source=<absolute_path>, adapter="markdown"))`.
+- `ingest(IngestRequest(source=<absolute_path>, source_type="markdown"))`.
 
 **Expected:**
 - Ingestion completes successfully; `result.is_new is True`.

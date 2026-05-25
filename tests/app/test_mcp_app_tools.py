@@ -277,7 +277,7 @@ class TestSageVaultStats:
         assert result["total_documents"] >= 1
         assert "by_lifecycle_status" in result
         assert "by_doc_type" in result
-        assert "by_source_adapter" in result
+        assert "by_source_type" in result
         assert "total_edges" in result
         assert "staging_edge_count" in result
         assert "health" in result
@@ -663,7 +663,7 @@ class TestAppScanDirectory:
         files = result["files"]
         md = [f for f in files if f["file_path"].endswith(".md")]
         assert len(md) == 1
-        assert md[0]["adapter"] == "markdown"
+        assert md[0]["source_type"] == "markdown"
         assert md[0]["sage_status"] == "new"
         assert "parsed_metadata" in md[0]
         pm = md[0]["parsed_metadata"]
@@ -722,7 +722,7 @@ class TestAppBatchIngest:
                 [
                     {
                         "file_path": str(v1),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Patent",
                             "codes": ["PV06"],
@@ -732,7 +732,7 @@ class TestAppBatchIngest:
                     },
                     {
                         "file_path": str(v2),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Patent",
                             "codes": ["PV06"],
@@ -763,8 +763,8 @@ class TestAppBatchIngest:
             await app_batch_ingest(
                 "test_vault",
                 [
-                    {"file_path": str(good), "adapter": "markdown"},
-                    {"file_path": "/nonexistent/bad.md", "adapter": "markdown"},
+                    {"file_path": str(good), "source_type": "markdown"},
+                    {"file_path": "/nonexistent/bad.md", "source_type": "markdown"},
                 ],
             )
         )
@@ -804,7 +804,7 @@ class TestMCPConventions:
             await app_batch_ingest(
                 "test_vault",
                 [
-                    {"file_path": str(sources / "sample.md"), "adapter": "markdown"},
+                    {"file_path": str(sources / "sample.md"), "source_type": "markdown"},
                 ],
             ),
         ]

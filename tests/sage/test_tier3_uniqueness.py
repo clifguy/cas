@@ -481,7 +481,7 @@ async def test_t7_supersession_with_shared_identifier_succeeds(
     first = await unique_keys_ingestion_service.ingest(
         IngestRequest(
             source="ticket_v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "medium"},
         )
@@ -491,7 +491,7 @@ async def test_t7_supersession_with_shared_identifier_succeeds(
     successor = await unique_keys_ingestion_service.ingest(
         IngestRequest(
             source="ticket_v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
             supersedes_document_id=first.document.id,
@@ -518,7 +518,7 @@ async def test_t8_second_unrelated_ingest_after_supersession_still_collides(
     first = await unique_keys_ingestion_service.ingest(
         IngestRequest(
             source="t1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "medium"},
         )
@@ -528,7 +528,7 @@ async def test_t8_second_unrelated_ingest_after_supersession_still_collides(
     await unique_keys_ingestion_service.ingest(
         IngestRequest(
             source="t2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
             supersedes_document_id=first.document.id,
@@ -540,7 +540,7 @@ async def test_t8_second_unrelated_ingest_after_supersession_still_collides(
         await unique_keys_ingestion_service.ingest(
             IngestRequest(
                 source="t3.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 metadata={"doc_type": "ticket"},
                 tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "low"},
             )
@@ -650,7 +650,7 @@ async def test_t12_ingestion_service_translates_storage_signal(
     await unique_keys_ingestion_service.ingest(
         IngestRequest(
             source="first.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0042", "ticket_priority": "low"},
         )
@@ -661,7 +661,7 @@ async def test_t12_ingestion_service_translates_storage_signal(
         await unique_keys_ingestion_service.ingest(
             IngestRequest(
                 source="second.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 metadata={"doc_type": "ticket"},
                 tier3_metadata={"ticket_id": "T-0042", "ticket_priority": "high"},
             )

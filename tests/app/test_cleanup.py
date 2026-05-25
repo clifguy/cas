@@ -43,7 +43,7 @@ def _full_scan_result() -> ScanResult:
         file_path="/tmp/2026-03-09_PIM_PV06_Claim-Set_v7.docx",
         file_hash="sha256:" + "a" * 64,
         source_modified_at="2026-03-09T10:00:00+00:00",
-        adapter="docx",
+        source_type="docx",
         parsed_metadata=_full_parsed_metadata(),
         sage_status="new",
     )
@@ -54,7 +54,7 @@ def _sparse_scan_result() -> ScanResult:
         file_path="/tmp/notes.md",
         file_hash="sha256:" + "b" * 64,
         source_modified_at="2026-04-01T12:00:00+00:00",
-        adapter="markdown",
+        source_type="markdown",
         parsed_metadata=_sparse_parsed_metadata(),
         sage_status="new",
     )
@@ -104,7 +104,7 @@ class TestMetadataConversion:
         assert resp.file_path == sr.file_path
         assert resp.file_hash == sr.file_hash
         assert resp.source_modified_at == sr.source_modified_at
-        assert resp.adapter == sr.adapter
+        assert resp.source_type == sr.source_type
         assert resp.sage_status == sr.sage_status
 
         pm = resp.parsed_metadata
@@ -132,7 +132,7 @@ class TestMetadataConversion:
         """CL-005: _to_file_descriptor preserves all metadata fields."""
         item = IngestFileItem(
             file_path="/path/to/doc.docx",
-            adapter="docx",
+            source_type="docx",
             parsed_metadata=ApiParsedMetadata(
                 title="Claim-Set",
                 date="2026-03-09",
@@ -145,7 +145,7 @@ class TestMetadataConversion:
         fd = _to_file_descriptor(item)
 
         assert fd.file_path == "/path/to/doc.docx"
-        assert fd.adapter == "docx"
+        assert fd.source_type == "docx"
         assert fd.parsed_metadata is not None
         assert fd.parsed_metadata.title == "Claim-Set"
         assert fd.parsed_metadata.date == "2026-03-09"
@@ -158,13 +158,13 @@ class TestMetadataConversion:
         """CL-005: _to_file_descriptor handles None parsed_metadata."""
         item = IngestFileItem(
             file_path="/path/to/doc.md",
-            adapter="markdown",
+            source_type="markdown",
             parsed_metadata=None,
         )
         fd = _to_file_descriptor(item)
 
         assert fd.file_path == "/path/to/doc.md"
-        assert fd.adapter == "markdown"
+        assert fd.source_type == "markdown"
         assert fd.parsed_metadata is None
 
     def test_cl_006_round_trip_full(self) -> None:
@@ -178,7 +178,7 @@ class TestMetadataConversion:
         # Step 2: Build IngestFileItem from response (simulating frontend)
         item = IngestFileItem(
             file_path=resp.file_path,
-            adapter=resp.adapter or "",
+            source_type=resp.source_type or "",
             parsed_metadata=resp.parsed_metadata,
         )
 
@@ -203,7 +203,7 @@ class TestMetadataConversion:
         resp = _scan_result_to_response(sr)
         item = IngestFileItem(
             file_path=resp.file_path,
-            adapter=resp.adapter or "",
+            source_type=resp.source_type or "",
             parsed_metadata=resp.parsed_metadata,
         )
         fd = _to_file_descriptor(item)

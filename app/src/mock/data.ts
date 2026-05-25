@@ -113,7 +113,7 @@ export interface ScanResultItem {
   file_path: string;
   file_hash: string;
   source_modified_at: string;
-  adapter: string | null;
+  source_type: string | null;
   parsed_metadata: ParsedMetadataItem;
   sage_status: 'new' | 'modified' | 'unchanged' | 'no_adapter';
 }
@@ -507,7 +507,7 @@ const pimScanResults: ScanResultItem[] = [
     file_path: '/Users/clifguy/pim_inbox/CD-05_ClinicalPathway_v1.docx',
     file_hash: 'sha256:e3b0c44298fc1c149afbf4c8996fb924',
     source_modified_at: '2026-04-05T14:20:00Z',
-    adapter: 'docx',
+    source_type: 'docx',
     parsed_metadata: { title: 'ClinicalPathway', date: null, project: null, codes: ['CD-05'], version: 'v1', doc_type: 'patent_draft' },
     sage_status: 'new',
   },
@@ -515,7 +515,7 @@ const pimScanResults: ScanResultItem[] = [
     file_path: '/Users/clifguy/pim_inbox/PIM_Architecture_Overview_v3.docx',
     file_hash: 'sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
     source_modified_at: '2026-04-06T09:15:00Z',
-    adapter: 'docx',
+    source_type: 'docx',
     parsed_metadata: { title: 'Architecture Overview', date: null, project: 'PIM', codes: [], version: 'v3', doc_type: 'technical_disclosure' },
     sage_status: 'modified',
   },
@@ -523,7 +523,7 @@ const pimScanResults: ScanResultItem[] = [
     file_path: '/Users/clifguy/pim_inbox/PIM_Integration_Catalog.md',
     file_hash: 'sha256:intcat789000111222333444555666777',
     source_modified_at: '2026-03-09T17:00:00Z',
-    adapter: 'markdown',
+    source_type: 'markdown',
     parsed_metadata: { title: 'Integration Catalog', date: null, project: 'PIM', codes: [], version: null, doc_type: 'reference' },
     sage_status: 'unchanged',
   },
@@ -531,7 +531,7 @@ const pimScanResults: ScanResultItem[] = [
     file_path: '/Users/clifguy/pim_inbox/meeting_recording.mp4',
     file_hash: 'sha256:mp4hash000111222333444555666777888',
     source_modified_at: '2026-04-02T16:00:00Z',
-    adapter: null,
+    source_type: null,
     parsed_metadata: { title: 'meeting_recording', date: null, project: null, codes: [], version: null, doc_type: null },
     sage_status: 'no_adapter',
   },
@@ -539,7 +539,7 @@ const pimScanResults: ScanResultItem[] = [
     file_path: '/Users/clifguy/pim_inbox/Q2_Planning_Notes.md',
     file_hash: 'sha256:q2plan000111222333444555666777888',
     source_modified_at: '2026-04-01T10:30:00Z',
-    adapter: 'markdown',
+    source_type: 'markdown',
     parsed_metadata: { title: 'Q2 Planning Notes', date: null, project: null, codes: [], version: null, doc_type: 'meeting_notes' },
     sage_status: 'new',
   },
@@ -547,7 +547,7 @@ const pimScanResults: ScanResultItem[] = [
     file_path: '/Users/clifguy/pim_inbox/Prior_Art_Analysis.pdf',
     file_hash: 'sha256:priorart000111222333444555666777',
     source_modified_at: '2026-03-28T08:45:00Z',
-    adapter: 'pdf',
+    source_type: 'pdf',
     parsed_metadata: { title: 'Prior Art Analysis', date: null, project: null, codes: [], version: null, doc_type: 'reference' },
     sage_status: 'new',
   },

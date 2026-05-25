@@ -249,7 +249,7 @@ async def test_ingest_with_no_schema_doc_type_rejects_tier3(tmp_vault_dir, tier3
 
     request = IngestRequest(
         source="loose.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"doc_type": "misc"},
         tier3_metadata={"anything": 1},
     )
@@ -274,7 +274,7 @@ async def test_ingest_with_no_schema_doc_type_and_empty_tier3_passes(
 
     request = IngestRequest(
         source="empty.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"doc_type": "misc"},
         tier3_metadata={},
     )
@@ -295,7 +295,7 @@ async def test_ingest_with_invalid_tier3_rejects_with_path(tmp_vault_dir, tier3_
 
     request = IngestRequest(
         source="fr.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"doc_type": "failure_record"},
         tier3_metadata={"severity": "purple"},  # not in enum
     )
@@ -317,7 +317,7 @@ async def test_ingest_with_valid_tier3_roundtrips(
 
     request = IngestRequest(
         source="fr.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"doc_type": "failure_record"},
         tier3_metadata={"severity": "high", "fix_commit": None},
     )
@@ -341,7 +341,7 @@ async def test_ingest_pre_insert_validation_does_not_orphan(
         await tier3_ingestion_service.ingest(
             IngestRequest(
                 source="orphan.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 metadata={"doc_type": "failure_record"},
                 tier3_metadata={"severity": 42},  # wrong type
             )
@@ -367,7 +367,7 @@ async def test_update_metadata_patches_tier3_set_unset(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="fr.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "low", "fix_commit": "abc123"},
         )
@@ -392,7 +392,7 @@ async def test_update_metadata_with_tier3_validates_against_doc_type(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="ticket.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -415,7 +415,7 @@ async def test_update_metadata_with_changing_doc_type_uses_new_schema(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -454,7 +454,7 @@ async def test_update_metadata_doc_type_change_with_stale_keys_rejects_before_wr
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
         )
@@ -490,7 +490,7 @@ async def test_update_metadata_tier3_only_patch_does_not_trigger_stale_keys_chec
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -518,7 +518,7 @@ async def test_update_metadata_doc_type_set_to_current_value_does_not_trigger_st
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -549,7 +549,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_doc_type_rejects_sta
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
         )
@@ -589,7 +589,7 @@ async def test_update_metadata_doc_type_change_falls_through_to_schema_validator
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -644,7 +644,7 @@ async def test_update_metadata_doc_type_change_no_tier3_patch_with_stale_stored_
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
         )
@@ -679,7 +679,7 @@ async def test_update_metadata_doc_type_change_no_tier3_patch_with_empty_stored_
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "bare_record"},
             # No tier3_metadata at ingest -- stored as None.
         )
@@ -713,7 +713,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_with_unset_all_succe
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
         )
@@ -746,7 +746,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_with_nonempty_merged
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
         )
@@ -782,7 +782,7 @@ async def test_update_metadata_no_doc_type_change_set_against_no_schema_still_re
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
             # No tier3 at ingest -- misc has no schema.
         )
@@ -812,7 +812,7 @@ async def test_update_metadata_with_no_tier3_leaves_stored_value_untouched(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0042"},
         )
@@ -836,7 +836,7 @@ async def test_update_metadata_tier3_unset_only_removes_named_keys(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="ticket.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "low"},
         )
@@ -861,7 +861,7 @@ async def test_update_metadata_tier3_unset_absent_key_conflict(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="ticket.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -886,7 +886,7 @@ async def test_update_metadata_tier3_set_overwrites_existing_key(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="ticket.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "low"},
         )
@@ -913,7 +913,7 @@ async def test_update_metadata_tier3_post_merge_validation_catches_set_of_unknow
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="fr.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "high"},
         )
@@ -943,7 +943,7 @@ async def _seed_failure_records(tmp_vault_dir, ingestion_service):
     d1 = await ingestion_service.ingest(
         IngestRequest(
             source="f1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "high", "fix_commit": "abc1234"},
         )
@@ -951,7 +951,7 @@ async def _seed_failure_records(tmp_vault_dir, ingestion_service):
     d2 = await ingestion_service.ingest(
         IngestRequest(
             source="f2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "high", "fix_commit": None},
         )
@@ -959,7 +959,7 @@ async def _seed_failure_records(tmp_vault_dir, ingestion_service):
     d3 = await ingestion_service.ingest(
         IngestRequest(
             source="f3.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "low", "fix_commit": None},
         )
@@ -967,7 +967,7 @@ async def _seed_failure_records(tmp_vault_dir, ingestion_service):
     d4 = await ingestion_service.ingest(
         IngestRequest(
             source="t1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-9999", "ticket_priority": "high"},
         )

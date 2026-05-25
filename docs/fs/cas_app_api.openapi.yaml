@@ -264,12 +264,12 @@ components:
           type: string
           format: date-time
           description: File mtime (st_mtime) as an ISO 8601 timestamp.
-        adapter:
+        source_type:
           type: string
           nullable: true
           description: >-
-            Source adapter name matching this extension, or null when no
-            registered adapter handles the extension.
+            Source artifact format matching this extension, or null
+            when no registered adapter handles the extension.
         parsed_metadata:
           $ref: "#/components/schemas/ParsedMetadata"
         sage_status:
@@ -342,15 +342,15 @@ components:
 
     IngestFileItem:
       type: object
-      required: [file_path, adapter]
-      description: One file entry in a batch-ingest request; pairs a path with its adapter and optional caller-supplied parsed metadata.
+      required: [file_path, source_type]
+      description: One file entry in a batch-ingest request; pairs a path with its source_type and optional caller-supplied parsed metadata.
       properties:
         file_path:
           type: string
           description: Absolute file path on disk.
-        adapter:
+        source_type:
           type: string
-          description: Source adapter name to use for this file.
+          description: Source artifact format name to use for this file.
         parsed_metadata:
           $ref: "#/components/schemas/ParsedMetadata"
 

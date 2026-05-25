@@ -172,7 +172,7 @@ def _make_services(
 
 def _fd(
     file_path: str,
-    adapter: str = "markdown",
+    source_type: str = "markdown",
     *,
     title: str | None = None,
     date: str | None = None,
@@ -192,7 +192,7 @@ def _fd(
             version=version,
             doc_type=doc_type,
         )
-    return FileDescriptor(file_path=file_path, adapter=adapter, parsed_metadata=pm)
+    return FileDescriptor(file_path=file_path, source_type=source_type, parsed_metadata=pm)
 
 
 # ---------------------------------------------------------------------------

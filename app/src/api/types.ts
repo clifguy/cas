@@ -36,7 +36,7 @@ export interface VaultStats {
   total_documents: number;
   by_lifecycle_status: Record<string, number>;
   by_doc_type: Record<string, number>;
-  by_source_adapter: Record<string, number>;
+  by_source_type: Record<string, number>;
   total_edges: number;
   by_edge_type: Record<string, number>;
   staging_edge_count: number;
@@ -302,7 +302,7 @@ export interface ScanResultItem {
   file_path: string;
   file_hash: string;
   source_modified_at: string;
-  adapter: string | null;
+  source_type: string | null;
   parsed_metadata: ParsedMetadataItem;
   sage_status: 'new' | 'modified' | 'unchanged' | 'no_adapter';
 }

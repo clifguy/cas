@@ -426,9 +426,9 @@ class IngestionService:
             SupersedeTargetNotActiveError: predecessor is not active.
             IdenticalContentSupersedeError: new content matches predecessor.
         """
-        adapter = self._adapters.get(request.adapter)
+        adapter = self._adapters.get(request.source_type)
         if adapter is None:
-            raise AdapterNotFoundError(request.adapter)
+            raise AdapterNotFoundError(request.source_type)
 
         # Pre-validate the supersede predecessor BEFORE running projection
         # (BH-121, BH-122, BH-124). Fail-fast keeps pipeline work behind
@@ -466,7 +466,7 @@ class IngestionService:
         # on collision. The vault's source_adapters[].config is the authority
         # for adapter behavior across all ingests; the request override is a
         # per-call escape hatch.
-        merged_config = self._merge_adapter_config(request.adapter, request.config)
+        merged_config = self._merge_adapter_config(request.source_type, request.config)
         projection = await adapter.project(storage_root / vault_relative, merged_config)
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
@@ -476,7 +476,7 @@ class IngestionService:
         # needs_review is True, current filename-inference behavior is
         # preserved end-to-end.
         parsed = (
-            self._parse_source_filename(source_path, request.adapter)
+            self._parse_source_filename(source_path, request.source_type)
             if request.needs_review
             else None
         )
@@ -622,7 +622,7 @@ class IngestionService:
             base = dict(
                 id=doc_id,
                 title=resolved_title,
-                source_type=request.adapter,
+                source_type=request.source_type,
                 source_path=vault_relative,
                 lifecycle_status="active",
                 source_content_hash=canonical_hash,

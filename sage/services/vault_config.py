@@ -66,7 +66,7 @@ class VaultConfigService:
         total_documents = await self._store.get_total_document_count()
         by_lifecycle = await self._store.get_document_counts_by_field("lifecycle_status")
         by_doc_type = await self._store.get_document_counts_by_field("doc_type")
-        by_source_adapter = await self._store.get_document_counts_by_field("source_type")
+        by_source_type = await self._store.get_document_counts_by_field("source_type")
         total_edges = await self._store.get_total_edge_count()
         by_edge_type = await self._store.get_edge_counts_by_type()
         staging_count = await self._store.count_staging_edges()
@@ -94,7 +94,7 @@ class VaultConfigService:
             total_documents=total_documents,
             by_lifecycle_status=by_lifecycle,
             by_doc_type=by_doc_type,
-            by_source_adapter=by_source_adapter,
+            by_source_type=by_source_type,
             total_edges=total_edges,
             by_edge_type=by_edge_type,
             staging_edge_count=staging_count,

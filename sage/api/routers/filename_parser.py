@@ -29,7 +29,7 @@ router = APIRouter(tags=["Utilities"])
         400: {
             "model": ErrorResponse,
             "description": (
-                "`adapter_not_found`: `adapter` is not an enabled adapter on this vault."
+                "`adapter_not_found`: `source_type` is not an enabled adapter on this vault."
             ),
         },
         404: {
@@ -43,4 +43,4 @@ async def parse_filename(
     vault_id: VaultIdStr = Depends(get_vault_id),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
 ) -> ParseFilenameResponse:
-    return ingestion_service.parse_filename(request.filename, request.adapter)
+    return ingestion_service.parse_filename(request.filename, request.source_type)

@@ -106,7 +106,7 @@ async def test_uin_001_bsd_hidden_chflag_cleared_on_ingest(
 
     request = IngestRequest(
         source=str(src),  # absolute path forces the external-copy path
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     await ingestion_service.ingest(request)
 
@@ -186,7 +186,7 @@ async def test_uin_004_ingest_succeeds_without_ui_markers(
 
     request = IngestRequest(
         source=str(src),
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 

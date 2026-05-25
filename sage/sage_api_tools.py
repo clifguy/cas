@@ -112,7 +112,7 @@ def register_sage_tools(
     async def sage_ingest(
         vault_id: str,
         source: str,
-        adapter: str,
+        source_type: str,
         config: dict | None = None,
         created_by: str | None = None,
         force: bool = False,
@@ -185,7 +185,7 @@ def register_sage_tools(
         which terminal state to expect on a given vault.
 
         Error modes:
-        - ``adapter_not_found`` (400): ``adapter`` is not an enabled
+        - ``adapter_not_found`` (400): ``source_type`` is not an enabled
           adapter on this vault. See
           ``source_adapters.adapters`` in ``sage_get_vault_config``.
         - ``source_file_not_found`` (404): ``source`` does not resolve
@@ -227,7 +227,9 @@ def register_sage_tools(
                 vault's internal copy at storage_root/source_path is the
                 authoritative file after ingestion; the path passed here
                 is temporary and can be deleted by the caller.
-            adapter: Source format adapter (markdown, docx, pdf, email, onenote, teams_chat).
+            source_type: Source artifact format (markdown, docx, pdf,
+                email, onenote, teams_chat). Determines which source
+                adapter processes the artifact.
             config: Adapter-specific configuration (optional). Each
                 adapter declares its own required-config schema; this
                 payload is **not** a SAGE-wide shape. Inspect
@@ -290,7 +292,7 @@ def register_sage_tools(
             v = get_vault(vault_id)
             request = IngestRequest(
                 source=source,
-                adapter=adapter,
+                source_type=source_type,
                 config=config,
                 created_by=created_by,
                 force=force,
@@ -311,7 +313,7 @@ def register_sage_tools(
     async def sage_parse_filename(
         vault_id: str,
         filename: str,
-        adapter: str,
+        source_type: str,
     ) -> dict:
         """Parse a filename's basename through the vault's
         FilenameParser and return the extracted metadata. Side-effect
@@ -335,21 +337,22 @@ def register_sage_tools(
         pattern and emit a different field set.
 
         Error modes:
-        - ``adapter_not_found`` (400): ``adapter`` is not an enabled
-          adapter on this vault.
+        - ``adapter_not_found`` (400): ``source_type`` is not an
+          enabled adapter on this vault.
 
         Args:
             vault_id: Target vault identifier.
             filename: Filename to parse. The basename is preferred;
                 directory components are stripped before parsing.
-            adapter: Source adapter (markdown, docx, pdf, email,
-                onenote, teams_chat). Must be enabled on the vault.
+            source_type: Source artifact format (markdown, docx, pdf,
+                email, onenote, teams_chat). Must be enabled on the
+                vault.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
-            adapter_enum = SourceType(adapter)
-            response = v.ingestion_service.parse_filename(filename, adapter_enum)
+            source_type_enum = SourceType(source_type)
+            response = v.ingestion_service.parse_filename(filename, source_type_enum)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)

@@ -18,14 +18,14 @@ from sage.models.schemas import (
 
 
 def test_ingest_request_needs_review_default_false():
-    req = IngestRequest(source="docs/example.md", adapter=SourceType.MARKDOWN)
+    req = IngestRequest(source="docs/example.md", source_type=SourceType.MARKDOWN)
     assert req.needs_review is False
 
 
 def test_ingest_request_needs_review_round_trip_true():
     req = IngestRequest(
         source="docs/example.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         needs_review=True,
     )
     dumped = req.model_dump()
@@ -37,17 +37,17 @@ def test_ingest_request_needs_review_round_trip_true():
 def test_ingest_request_needs_review_json_serialization():
     req = IngestRequest(
         source="docs/example.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         needs_review=True,
     )
     payload = json.loads(req.model_dump_json())
     assert payload["needs_review"] is True
 
 
-def test_parse_filename_request_requires_filename_and_adapter():
-    req = ParseFilenameRequest(filename="PV03_CD-2_v1.md", adapter=SourceType.MARKDOWN)
+def test_parse_filename_request_requires_filename_and_source_type():
+    req = ParseFilenameRequest(filename="PV03_CD-2_v1.md", source_type=SourceType.MARKDOWN)
     assert req.filename == "PV03_CD-2_v1.md"
-    assert req.adapter == SourceType.MARKDOWN
+    assert req.source_type == SourceType.MARKDOWN
 
 
 def test_parse_filename_response_accepts_all_null_fields():

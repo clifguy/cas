@@ -685,10 +685,11 @@ class IngestRequest(BaseModel):
             "Path or URI to the source artifact. Resolved relative to the vault's storage_root."
         )
     )
-    adapter: SourceType = Field(
+    source_type: SourceType = Field(
         description=(
-            "Source adapter to use for projection. Must be an enabled "
-            "adapter in the vault's source_adapters configuration."
+            "Source artifact format. Determines which source adapter "
+            "processes the artifact. Must be an enabled adapter in the "
+            "vault's source_adapters configuration."
         )
     )
     config: dict | None = Field(
@@ -794,7 +795,7 @@ class ParseFilenameRequest(BaseModel):
     """Inputs for the side-effect-free filename parser endpoint.
 
     Carries the bare filename (basename, not a full path) and the
-    adapter under whose vault configuration the parse should run.
+    source_type under whose vault configuration the parse should run.
     """
 
     filename: str = Field(
@@ -803,10 +804,11 @@ class ParseFilenameRequest(BaseModel):
             "the parser does not consume directory components."
         )
     )
-    adapter: SourceType = Field(
+    source_type: SourceType = Field(
         description=(
-            "Source adapter whose filename_extraction configuration governs "
-            "the parse. Must be an enabled adapter for the vault."
+            "Source artifact format whose filename_extraction "
+            "configuration governs the parse. Must be an enabled "
+            "source adapter for the vault."
         )
     )
 
@@ -3418,7 +3420,7 @@ class VaultStatsResponse(BaseModel):
     total_documents: int = Field(description="Total number of documents in the vault.")
     by_lifecycle_status: dict[str, int] = Field(description="Document count per lifecycle status.")
     by_doc_type: dict[str, int] = Field(description="Document count per doc_type.")
-    by_source_adapter: dict[str, int] = Field(description="Document count per source_type adapter.")
+    by_source_type: dict[str, int] = Field(description="Document count per source_type.")
     total_edges: int = Field(description="Total number of production edges in the vault graph.")
     by_edge_type: dict[str, int] = Field(description="Edge count per edge_type.")
     staging_edge_count: int = Field(

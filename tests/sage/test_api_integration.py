@@ -79,7 +79,7 @@ async def test_register_user_201(client):
 async def test_ingest_201(client):
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp.status_code == 201
     body = resp.json()
@@ -92,7 +92,7 @@ async def test_ingest_duplicate_409(client):
     # First ingest
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
 
@@ -101,7 +101,7 @@ async def test_ingest_duplicate_409(client):
     # Duplicate ingest
     resp2 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp2.status_code == 409
     body = resp2.json()
@@ -117,7 +117,7 @@ async def test_get_document_200(client):
     # Ingest first
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp.json()["document"]["id"]
 
@@ -141,7 +141,7 @@ async def test_lifecycle_transition_200(client):
     # Ingest
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp.json()["document"]["id"]
 
@@ -158,7 +158,7 @@ async def test_lifecycle_409_invalid_transition(client):
     # Ingest
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp.json()["document"]["id"]
 
@@ -193,7 +193,7 @@ async def test_link_201(app, client):
     """POST /edges creates an edge and returns 201."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
     doc_id_a = resp1.json()["document"]["id"]
@@ -205,7 +205,7 @@ async def test_link_201(app, client):
 
     resp2 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample2.md", "adapter": "markdown"},
+        json={"source": "test/sample2.md", "source_type": "markdown"},
     )
     assert resp2.status_code == 201
     doc_id_b = resp2.json()["document"]["id"]
@@ -238,7 +238,7 @@ async def test_link_self_referential_400(client):
     """POST /edges with same source and target returns 400."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -258,7 +258,7 @@ async def test_check_preconditions_200(client):
     """GET /preconditions/{id} returns precondition result."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -274,7 +274,7 @@ async def test_traverse_200(client):
     """POST /traverse returns traversal result."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -298,7 +298,7 @@ async def test_discover_semantic_200(client):
     # Ingest a document first
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
 
@@ -319,7 +319,7 @@ async def test_discover_deterministic_200(app, client):
     """POST /discover with deterministic mode returns matching chunks."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
     doc_id = resp1.json()["document"]["id"]
@@ -419,7 +419,7 @@ async def test_export_projection_200(app, client):
     # Ingest a document
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
     doc_id = resp1.json()["document"]["id"]
@@ -442,7 +442,7 @@ async def test_export_projection_path_traversal_400(client):
     # Ingest first
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -460,7 +460,7 @@ async def test_read_projection_200(app, client):
     """GET /documents/{id}/projection returns full text and metadata."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
     doc_id = resp1.json()["document"]["id"]
@@ -509,7 +509,7 @@ async def test_open_document_200(client, monkeypatch, tmp_vault_dir):
 
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -545,7 +545,7 @@ async def test_open_document_uses_xdg_open_on_linux(client, monkeypatch):
 
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -569,7 +569,7 @@ async def test_open_document_missing_file_404(client, tmp_vault_dir):
     """If the source file is missing on disk, return content_file_missing (404)."""
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     doc_id = resp1.json()["document"]["id"]
 
@@ -595,7 +595,7 @@ async def test_refresh_views_200(client):
     # Ingest a document so there's something to generate views for
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "adapter": "markdown"},
+        json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
 

@@ -285,7 +285,7 @@ async def _ingest_doc_via_router(client: AsyncClient, source_path: str) -> str:
     """
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": source_path, "adapter": "markdown"},
+        json={"source": source_path, "source_type": "markdown"},
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["document"]["id"]

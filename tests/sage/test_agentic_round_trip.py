@@ -140,7 +140,7 @@ async def client(app):
 
 
 async def _ingest_via_api(client, source: str, body_extra: dict | None = None) -> dict:
-    payload = {"source": source, "adapter": "markdown"}
+    payload = {"source": source, "source_type": "markdown"}
     if body_extra:
         payload.update(body_extra)
     resp = await client.post("/sage_vaults/test_vault/documents", json=payload)
@@ -395,13 +395,13 @@ async def test_bh_129_supersede_atomic_with_ingest_response(
     _seed_file(tmp_vault_dir, "bh129_v2.md", "# V2\n\nRevised content.")
 
     v1 = await ingestion_service.ingest(
-        IngestRequest(source="bh129_v1.md", adapter=_SourceType.MARKDOWN)
+        IngestRequest(source="bh129_v1.md", source_type=_SourceType.MARKDOWN)
     )
 
     v2 = await ingestion_service.ingest(
         IngestRequest(
             source="bh129_v2.md",
-            adapter=_SourceType.MARKDOWN,
+            source_type=_SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
         ),
         wait_for_pipeline=False,
@@ -473,7 +473,7 @@ async def test_bh_130_fire_and_forget_returns_fast(
 
     start = time.monotonic()
     result = await slow_ingestion_service.ingest(
-        IngestRequest(source="bh130_fast.md", adapter=_SourceType.MARKDOWN),
+        IngestRequest(source="bh130_fast.md", source_type=_SourceType.MARKDOWN),
         wait_for_pipeline=False,
     )
     elapsed = time.monotonic() - start
@@ -492,7 +492,7 @@ async def test_bh_130_sync_path_waits_for_pipeline(
 
     start = time.monotonic()
     result = await slow_ingestion_service.ingest(
-        IngestRequest(source="bh130_sync.md", adapter=_SourceType.MARKDOWN),
+        IngestRequest(source="bh130_sync.md", source_type=_SourceType.MARKDOWN),
         wait_for_pipeline=True,
     )
     elapsed = time.monotonic() - start
@@ -514,12 +514,12 @@ async def test_bh_120_supersedes_document_id_happy_path(
     _seed_file(tmp_vault_dir, "bh120_v2.md", "# Version 2\n\nRevised content.")
 
     v1 = await ingestion_service.ingest(
-        IngestRequest(source="bh120_v1.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="bh120_v1.md", source_type=SourceType.MARKDOWN)
     )
     v2 = await ingestion_service.ingest(
         IngestRequest(
             source="bh120_v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
         )
     )
@@ -552,7 +552,7 @@ async def test_bh_121_supersedes_nonexistent_predecessor(
         await ingestion_service.ingest(
             IngestRequest(
                 source="bh121.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 supersedes_document_id=_id("nonexistent_id"),
             )
         )
@@ -575,7 +575,7 @@ async def test_bh_122_supersedes_non_active_predecessor(
     _seed_file(tmp_vault_dir, "bh122_v2.md", "# V2\n\nRevised.")
 
     v1 = await ingestion_service.ingest(
-        IngestRequest(source="bh122_v1.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="bh122_v1.md", source_type=SourceType.MARKDOWN)
     )
     # Archive the predecessor directly (simulating a non-active target).
     await lifecycle_service.set_lifecycle(v1.document.id, SetLifecycleRequest(action="archive"))
@@ -584,7 +584,7 @@ async def test_bh_122_supersedes_non_active_predecessor(
         await ingestion_service.ingest(
             IngestRequest(
                 source="bh122_v2.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 supersedes_document_id=v1.document.id,
             )
         )
@@ -615,14 +615,14 @@ async def test_bh_123_supersedes_identical_content(tmp_vault_dir, graph_store, i
     _seed_file(tmp_vault_dir, "bh123_b.md", body)
 
     v1 = await ingestion_service.ingest(
-        IngestRequest(source="bh123_a.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="bh123_a.md", source_type=SourceType.MARKDOWN)
     )
 
     with pytest.raises(IdenticalContentSupersedeError) as exc_info:
         await ingestion_service.ingest(
             IngestRequest(
                 source="bh123_b.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 supersedes_document_id=v1.document.id,
             )
         )
@@ -656,7 +656,7 @@ async def test_bh_124_validation_before_projection(
         await ingestion_service.ingest(
             IngestRequest(
                 source="bh124_case1.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 supersedes_document_id=_id("bogus_predecessor"),
             )
         )
@@ -666,7 +666,7 @@ async def test_bh_124_validation_before_projection(
     _seed_file(tmp_vault_dir, "bh124_pred.md", "# Predecessor\n\nOriginal.")
     _seed_file(tmp_vault_dir, "bh124_case2.md", "# BH-124 case 2\n\nBody.")
     pred = await ingestion_service.ingest(
-        IngestRequest(source="bh124_pred.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="bh124_pred.md", source_type=SourceType.MARKDOWN)
     )
     await lifecycle_service.set_lifecycle(pred.document.id, SetLifecycleRequest(action="archive"))
 
@@ -674,7 +674,7 @@ async def test_bh_124_validation_before_projection(
         await ingestion_service.ingest(
             IngestRequest(
                 source="bh124_case2.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 supersedes_document_id=pred.document.id,
             )
         )

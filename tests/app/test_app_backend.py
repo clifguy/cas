@@ -623,7 +623,7 @@ class TestScanEndpoint:
         md_files = [f for f in files if f["file_path"].endswith(".md")]
         assert len(md_files) == 1
         md = md_files[0]
-        assert md["adapter"] == "markdown"
+        assert md["source_type"] == "markdown"
         assert md["sage_status"] == "new"
         assert md["parsed_metadata"]["title"] == "Claim-Set"
         assert md["parsed_metadata"]["date"] == "2026-03-09"
@@ -633,7 +633,7 @@ class TestScanEndpoint:
         # .txt file has no adapter
         txt_files = [f for f in files if f["file_path"].endswith(".txt")]
         assert len(txt_files) == 1
-        assert txt_files[0]["adapter"] is None
+        assert txt_files[0]["source_type"] is None
         assert txt_files[0]["sage_status"] == "no_adapter"
 
     async def test_be_019_respects_depth_limit(self, scan_client, tmp_path):
@@ -766,7 +766,7 @@ class TestBatchIngest:
             "/app/ingest",
             json={
                 "vault_id": "pim_health",
-                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+                "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
         assert resp.status_code == 200
@@ -783,7 +783,7 @@ class TestBatchIngest:
             "/app/ingest",
             json={
                 "vault_id": "pim_health",
-                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+                "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
         text = resp.text
@@ -815,7 +815,7 @@ class TestBatchIngest:
             "/app/ingest",
             json={
                 "vault_id": "pim_health",
-                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+                "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
         events = [
@@ -845,7 +845,7 @@ class TestBatchIngest:
                 "files": [
                     {
                         "file_path": str(doc),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Meta Test",
                             "project": "PIM",
@@ -879,8 +879,8 @@ class TestBatchIngest:
             json={
                 "vault_id": "pim_health",
                 "files": [
-                    {"file_path": str(good), "adapter": "markdown"},
-                    {"file_path": "/nonexistent/bad.md", "adapter": "markdown"},
+                    {"file_path": str(good), "source_type": "markdown"},
+                    {"file_path": "/nonexistent/bad.md", "source_type": "markdown"},
                 ],
             },
         )
@@ -929,7 +929,7 @@ class TestBatchIngest:
                 "files": [
                     {
                         "file_path": str(v1),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Claim-Set",
                             "codes": ["PV06"],
@@ -939,7 +939,7 @@ class TestBatchIngest:
                     },
                     {
                         "file_path": str(v2),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Claim-Set",
                             "codes": ["PV06"],
@@ -979,7 +979,7 @@ class TestBatchIngest:
                 "files": [
                     {
                         "file_path": str(v1),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Patent",
                             "codes": ["PV06"],
@@ -989,7 +989,7 @@ class TestBatchIngest:
                     },
                     {
                         "file_path": str(v2),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Patent",
                             "codes": ["PV06"],
@@ -999,7 +999,7 @@ class TestBatchIngest:
                     },
                     {
                         "file_path": str(chk),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Checklist",
                             "codes": ["PV06"],

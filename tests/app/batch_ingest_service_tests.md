@@ -71,7 +71,7 @@ source format.
 
 **Precondition:** Service instantiated.
 
-**Input:** FileDescriptor with file_path, adapter, and parsed_metadata fields.
+**Input:** FileDescriptor with file_path, source_type, and parsed_metadata fields.
 
 **Expected:**
 - File ingested successfully
@@ -175,7 +175,7 @@ currently do this identically.
 **Category:** batch_ingest_service
 
 **Decision:** Files are ingested one at a time in order. Each call uses
-IngestRequest with source=file_path, adapter=SourceType(adapter), and the
+IngestRequest with source=file_path, source_type=SourceType(source_type), and the
 converted metadata dict.
 
 **Precondition:** Three files queued.
@@ -184,7 +184,7 @@ converted metadata dict.
 
 **Expected:**
 - ingestion_service.ingest() called three times in order
-- Each call uses the correct file_path and adapter
+- Each call uses the correct file_path and source_type
 - path_to_id mapping populated for all three
 
 **Rationale:** Sequential ingestion matches existing behavior and allows

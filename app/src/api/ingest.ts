@@ -20,7 +20,7 @@ export async function scanDirectory(
 
 export interface IngestFileItem {
   file_path: string;
-  adapter: string;
+  source_type: string;
   parsed_metadata?: ParsedMetadataItem;
 }
 

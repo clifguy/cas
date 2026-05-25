@@ -30,7 +30,7 @@ def _scan_result_to_response(sr: ScanResult) -> ScanResultResponse:
         file_path=sr.file_path,
         file_hash=sr.file_hash,
         source_modified_at=sr.source_modified_at,
-        adapter=sr.adapter,
+        source_type=sr.source_type,
         parsed_metadata=ParsedMetadata(
             title=pm.title,
             date=pm.date,

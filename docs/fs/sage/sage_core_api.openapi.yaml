@@ -515,9 +515,9 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
           description: >-
-            `adapter_not_found`: `adapter` is not an enabled adapter on
-            this vault. See `source_adapters.adapters` in the vault
-            config.
+            `adapter_not_found`: `source_type` is not an enabled
+            adapter on this vault. See `source_adapters.adapters` in
+            the vault config.
           content:
             application/json:
               schema:
@@ -1814,8 +1814,8 @@ paths:
                 $ref: "#/components/schemas/ParseFilenameResponse"
         "400":
           description: >-
-            `adapter_not_found`: `adapter` is not an enabled adapter
-            on this vault.
+            `adapter_not_found`: `source_type` is not an enabled
+            adapter on this vault.
           content:
             application/json:
               schema:
@@ -3205,10 +3205,10 @@ components:
 
     IngestRequest:
       type: object
-      required: [source, adapter]
+      required: [source, source_type]
       description: >-
         Request body for the ingest endpoint. Identifies the source
-        artifact and adapter to project it through, plus optional
+        artifact and source_type to project it through, plus optional
         caller-authoritative metadata, supersession hints, and
         pipeline-control flags. See CAS-ADR-021 for the metadata
         precedence chain.
@@ -3218,11 +3218,12 @@ components:
           description: >-
             Path or URI to the source artifact. Resolved relative to
             the vault's storage_root.
-        adapter:
+        source_type:
           $ref: "#/components/schemas/SourceType"
           description: >-
-            Source adapter to use for projection. Must be an enabled
-            adapter in the vault's source_adapters configuration.
+            Source artifact format. Determines which source adapter
+            processes the artifact. Must be an enabled adapter in the
+            vault's source_adapters configuration.
         config:
           type: object
           additionalProperties: true
@@ -3314,23 +3315,24 @@ components:
 
     ParseFilenameRequest:
       type: object
-      required: [filename, adapter]
+      required: [filename, source_type]
       description: >-
         Inputs for the side-effect-free filename parser endpoint.
         Carries the bare filename (basename, not a full path) and the
-        adapter under whose vault configuration the parse should run.
+        source_type under whose vault configuration the parse should
+        run.
       properties:
         filename:
           type: string
           description: >-
             Filename to parse. Should be the basename of the source
             file; the parser does not consume directory components.
-        adapter:
+        source_type:
           $ref: "#/components/schemas/SourceType"
           description: >-
-            Source adapter whose filename_extraction configuration
-            governs the parse. Must be an enabled adapter for the
-            vault.
+            Source artifact format whose filename_extraction
+            configuration governs the parse. Must be an enabled
+            source adapter for the vault.
 
     ParseFilenameResponse:
       type: object
@@ -4930,7 +4932,7 @@ components:
         - total_documents
         - by_lifecycle_status
         - by_doc_type
-        - by_source_adapter
+        - by_source_type
         - total_edges
         - by_edge_type
         - staging_edge_count
@@ -4953,11 +4955,11 @@ components:
           additionalProperties:
             type: integer
           description: Document count per doc_type.
-        by_source_adapter:
+        by_source_type:
           type: object
           additionalProperties:
             type: integer
-          description: Document count per source_type adapter.
+          description: Document count per source_type.
         total_edges:
           type: integer
           description: Total number of production edges in the vault graph.

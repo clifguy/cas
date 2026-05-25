@@ -63,7 +63,7 @@ and `doc_type` from the parse result. No caller-supplied metadata is required.
 **Precondition:** Vault has PIM-Health-style `metadata_extraction` config
 with a filename pattern, `known_code_patterns`, and `code_to_doc_type` rules.
 
-**Input:** `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", adapter="markdown"))`
+**Input:** `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.title == "Claim-Set"`
@@ -88,7 +88,7 @@ by the filename parser.
 
 **Precondition:** Same as ME-001.
 
-**Input:** `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", adapter="markdown", metadata={"title": "Custom Title", "project": "OTHER", "version_label": "v99.0"}))`
+**Input:** `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", source_type="markdown", metadata={"title": "Custom Title", "project": "OTHER", "version_label": "v99.0"}))`
 
 **Expected:**
 - `doc.title == "Custom Title"` (caller wins)
@@ -119,7 +119,7 @@ title (e.g., a markdown file whose first H1 differs from the filename stem).
 **Input:**
 - Source file `2026-03-09_PIM_PV06_Claim-Set_v6.md` with first H1
   "A Long Rhetorical Title That Differs From The Filename".
-- `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", adapter="markdown"))`
+- `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.title == "Claim-Set"` (filename parse wins)
@@ -144,7 +144,7 @@ run filename parsing and preserves the adapter's `ProjectionResult.title`.
 
 **Input:**
 - Source file `workflow_notes.md` with first H1 "Session Handoff Notes".
-- `ingest(IngestRequest(source="notes/workflow_notes.md", adapter="markdown"))`
+- `ingest(IngestRequest(source="notes/workflow_notes.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.title == "Session Handoff Notes"` (adapter H1 wins)
@@ -168,7 +168,7 @@ filename parse nor caller metadata yields a doc_type.
 **Precondition:** PIM-Health-style filename pattern. Source filename encodes
 a code that maps to a non-misc doc_type via `code_to_doc_type`.
 
-**Input:** `ingest(IngestRequest(source="refs/2026-02-01_PIM_REF_Glossary_v2.md", adapter="markdown"))`
+**Input:** `ingest(IngestRequest(source="refs/2026-02-01_PIM_REF_Glossary_v2.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.doc_type == "glossary"` (resolved by compound rule: code=REF + title_contains=Glossary)
@@ -191,7 +191,7 @@ stable non-null key.
 **Precondition:** PIM-Health-style pattern; source filename contains no code
 that matches any `code_to_doc_type` rule.
 
-**Input:** `ingest(IngestRequest(source="random/2026-03-01_PIM_Untagged-Note.md", adapter="markdown"))`
+**Input:** `ingest(IngestRequest(source="random/2026-03-01_PIM_Untagged-Note.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.doc_type == "misc"`

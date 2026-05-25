@@ -113,7 +113,7 @@ async def multi_section_doc(listing_services, tmp_vault_dir):
     (test_dir / "multi.md").write_text(MULTI_SECTION_DOC)
 
     result = await ingestion.ingest(
-        IngestRequest(source="test/multi.md", adapter=SourceType.MARKDOWN),
+        IngestRequest(source="test/multi.md", source_type=SourceType.MARKDOWN),
     )
     await asyncio.sleep(0.5)
     return result.document

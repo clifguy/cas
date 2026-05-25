@@ -76,7 +76,7 @@ async def test_bh_018_duplicate_content_409(tmp_vault_dir, graph_store, ingestio
     # First ingest succeeds
     request = IngestRequest(
         source="patents/doc_a.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -103,7 +103,7 @@ async def test_bh_019_force_reingestion(tmp_vault_dir, graph_store, ingestion_se
 
     request = IngestRequest(
         source="patents/doc_force.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result1 = await ingestion_service.ingest(request)
 
@@ -114,7 +114,7 @@ async def test_bh_019_force_reingestion(tmp_vault_dir, graph_store, ingestion_se
     # Force re-ingest
     force_request = IngestRequest(
         source="patents/doc_force.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         force=True,
     )
     result2 = await ingestion_service.ingest(force_request)
@@ -140,7 +140,7 @@ async def test_bh_020_failed_pipeline_marks_document(
 
     request = IngestRequest(
         source="patents/doc_fail.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_failing_llm.ingest(request)
 
@@ -165,7 +165,7 @@ async def test_bh_022_failed_document_visible(
 
     request = IngestRequest(
         source="patents/doc_visible.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_failing_llm.ingest(request)
 
@@ -192,7 +192,7 @@ async def test_bh_024_llm_failure_results_in_failed(
 
     request = IngestRequest(
         source="patents/doc_llm_fail.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_failing_llm.ingest(request)
 
@@ -218,7 +218,7 @@ async def test_bh_025_abstraction_disabled(
 
     request = IngestRequest(
         source="patents/doc_no_abstract.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_no_abstraction.ingest(request)
 
@@ -241,7 +241,7 @@ async def test_bh_026_sequential_pipeline(tmp_vault_dir, graph_store, ingestion_
 
     request = IngestRequest(
         source="patents/doc_seq.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
     doc = result.document
@@ -273,7 +273,7 @@ async def test_bh_049_source_modified_at_set_on_ingest(
 
     request = IngestRequest(
         source="patents/doc_mtime.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -301,7 +301,7 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
 
     request = IngestRequest(
         source="patents/doc_mtime_force.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -314,7 +314,7 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
 
     force_request = IngestRequest(
         source="patents/doc_mtime_force.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         force=True,
     )
     result2 = await ingestion_service.ingest(force_request)
@@ -341,7 +341,7 @@ async def test_bh_051_source_modified_at_round_trip(tmp_vault_dir, graph_store, 
 
     request = IngestRequest(
         source="patents/doc_roundtrip.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -369,7 +369,7 @@ async def test_bh_052_created_at_is_ingestion_time(tmp_vault_dir, graph_store, i
 
     request = IngestRequest(
         source="patents/doc_old.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -405,7 +405,7 @@ async def test_bh_053_external_file_copied_to_imports(
 
     request = IngestRequest(
         source=str(external_file),  # absolute path
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -433,7 +433,7 @@ async def test_bh_054_imported_source_path_is_vault_relative(
 
     request = IngestRequest(
         source=str(external_file),
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -468,7 +468,7 @@ async def test_bh_055_import_name_collision_appends_hash(
 
     request = IngestRequest(
         source=str(external_file),
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -504,7 +504,7 @@ async def test_bh_056_internal_file_not_copied(tmp_vault_dir, graph_store, inges
 
     request = IngestRequest(
         source="patents/internal.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -535,7 +535,7 @@ async def test_bh_057_imports_dir_created_on_demand(
 
     request = IngestRequest(
         source=str(external_file),
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -764,7 +764,7 @@ async def test_bh_062_filename_date_sets_document_date(
 
     request = IngestRequest(
         source="patents/dated_doc.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
     result = await ingestion_service.ingest(request)
@@ -794,7 +794,7 @@ async def test_bh_063_fallback_to_source_modified_at_date(
 
     request = IngestRequest(
         source="patents/no_date_doc.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -850,7 +850,7 @@ async def test_document_date_fallback_uses_vault_timezone(
 
     request = IngestRequest(
         source="patents/late_evening.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await service.ingest(request)
     doc = result.document
@@ -884,7 +884,7 @@ async def test_document_date_fallback_defaults_to_utc(
 
     request = IngestRequest(
         source="patents/utc_default.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
     doc = result.document
@@ -907,7 +907,7 @@ async def test_bh_064_null_when_no_date_sources(tmp_vault_dir, graph_store, inge
     # when no date key is present.
     request = IngestRequest(
         source="patents/no_sources.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
@@ -937,7 +937,7 @@ async def test_bh_065_document_date_round_trip(tmp_vault_dir, graph_store, inges
 
     request = IngestRequest(
         source="patents/date_roundtrip.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
     result = await ingestion_service.ingest(request)
@@ -968,7 +968,7 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
     result1 = await ingestion_service.ingest(
         IngestRequest(
             source="patents/doc_a.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
         )
     )
     assert result1.is_new is True
@@ -978,7 +978,7 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
     result2 = await ingestion_service.ingest(
         IngestRequest(
             source="patents/subfolder/doc_a_copy.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             force=True,
         )
     )
@@ -1008,7 +1008,7 @@ async def test_bh_068_sequential_pipeline_final_status(
 
     request = IngestRequest(
         source="patents/doc_final.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
     doc = result.document
@@ -1052,7 +1052,7 @@ async def test_bh_071_same_content_reuses_existing_import(
 
     request = IngestRequest(
         source=str(external_file),
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         force=True,  # bypass DuplicateContentError to test file handling
     )
     result = await ingestion_service.ingest(request)
@@ -1147,7 +1147,7 @@ async def test_reabstract_returns_immediately_with_started_status(
     the background abstraction to complete."""
     _create_test_file(tmp_vault_dir, "patents/reabs.md", "# Reabstract Test\n\nOriginal content.")
 
-    request = IngestRequest(source="patents/reabs.md", adapter=SourceType.MARKDOWN)
+    request = IngestRequest(source="patents/reabs.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
@@ -1167,7 +1167,7 @@ async def test_reabstract_sets_pipeline_status_in_progress(
     abstraction_in_progress before returning."""
     _create_test_file(tmp_vault_dir, "patents/status.md", "# Status Test\n\nContent.")
 
-    request = IngestRequest(source="patents/status.md", adapter=SourceType.MARKDOWN)
+    request = IngestRequest(source="patents/status.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
@@ -1188,7 +1188,7 @@ async def test_reabstract_background_updates_abstract_on_success(
 
     _create_test_file(tmp_vault_dir, "patents/bgok.md", "# BG OK\n\nOriginal content.")
 
-    request = IngestRequest(source="patents/bgok.md", adapter=SourceType.MARKDOWN)
+    request = IngestRequest(source="patents/bgok.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
     original_abstract = result.document.semantic_abstract
@@ -1230,7 +1230,7 @@ async def test_reabstract_background_sets_failed_on_error(
 
     # Use stub for initial ingest
     ingestion_service_failing_llm._abstraction = StubAbstractionProvider()
-    request = IngestRequest(source="patents/bgfail.md", adapter=SourceType.MARKDOWN)
+    request = IngestRequest(source="patents/bgfail.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service_failing_llm.ingest(request)
     doc_id = result.document.id
 
@@ -1268,7 +1268,7 @@ async def test_reabstract_no_projection_raises_error(
 
     _create_test_file(tmp_vault_dir, "patents/nochunks.md", "# No Chunks\n\nContent.")
 
-    request = IngestRequest(source="patents/nochunks.md", adapter=SourceType.MARKDOWN)
+    request = IngestRequest(source="patents/nochunks.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
@@ -1389,7 +1389,7 @@ async def test_bh_131_adapter_tags_merge_on_new_ingest(
 
     request = IngestRequest(
         source="patents/bh131_a.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"codes": "caller-tag"},
     )
     result = await service.ingest(request)
@@ -1451,7 +1451,7 @@ async def test_bh_131_adapter_tags_merge_on_new_ingest(
     plain_result = await service_plain.ingest(
         IngestRequest(
             source="patents/bh131_plain.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"codes": "caller-tag"},
         )
     )
@@ -1493,7 +1493,7 @@ async def test_bh_132_force_reingest_strips_stale_adapter_tags(
     first = await service.ingest(
         IngestRequest(
             source="patents/bh132.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"codes": "caller-tag"},
         )
     )
@@ -1509,7 +1509,7 @@ async def test_bh_132_force_reingest_strips_stale_adapter_tags(
     second = await service.ingest(
         IngestRequest(
             source="patents/bh132.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             force=True,
             metadata={"codes": "caller-tag"},
         )
@@ -1550,7 +1550,7 @@ async def test_bh_133_byte_identical_reingest_raises_duplicate(
     _create_test_file(tmp_vault_dir, "patents/bh133.md", content="# BH-133\n\nOnly content.")
 
     first = await service.ingest(
-        IngestRequest(source="patents/bh133.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="patents/bh133.md", source_type=SourceType.MARKDOWN)
     )
     assert "template:style:X" in first.document.tags
     original_adapter_version = first.document.adapter_version
@@ -1559,7 +1559,9 @@ async def test_bh_133_byte_identical_reingest_raises_duplicate(
 
     # Same file, no force: must raise DuplicateContentError
     with pytest.raises(DuplicateContentError) as exc_info:
-        await service.ingest(IngestRequest(source="patents/bh133.md", adapter=SourceType.MARKDOWN))
+        await service.ingest(
+            IngestRequest(source="patents/bh133.md", source_type=SourceType.MARKDOWN)
+        )
     assert exc_info.value.detail["existing_document_id"] == first.document.id
 
     # Document state should be unchanged after the rejected re-ingest
@@ -1646,7 +1648,7 @@ async def test_bh_134_empty_projection_text_skips_abstraction(
     )
 
     result = await service.ingest(
-        IngestRequest(source="patents/bh134.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="patents/bh134.md", source_type=SourceType.MARKDOWN)
     )
 
     fetched = await graph_store.get_document(result.document.id)
@@ -1685,7 +1687,7 @@ async def test_bh_134_non_empty_text_still_runs_abstraction(
     )
 
     result = await service.ingest(
-        IngestRequest(source="patents/bh134_ctrl.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="patents/bh134_ctrl.md", source_type=SourceType.MARKDOWN)
     )
 
     fetched = await graph_store.get_document(result.document.id)
@@ -1805,7 +1807,7 @@ async def test_vault_adapter_config_reaches_adapter_at_ingest(
     )
 
     result = await service.ingest(
-        IngestRequest(source="vault_config_docx.docx", adapter=SourceType.DOCX)
+        IngestRequest(source="vault_config_docx.docx", source_type=SourceType.DOCX)
     )
 
     # The Title-styled "CLAIMS" paragraph must be recognized as a heading
@@ -1855,7 +1857,7 @@ async def test_request_config_overrides_vault_adapter_config_on_key_collision(
     result = await service.ingest(
         IngestRequest(
             source="override.docx",
-            adapter=SourceType.DOCX,
+            source_type=SourceType.DOCX,
             config={"heading_style_map": {"Title": 2}},
         )
     )
@@ -1909,7 +1911,7 @@ async def test_request_config_merges_with_vault_adapter_config_no_collision(
     result = await service.ingest(
         IngestRequest(
             source="merge.docx",
-            adapter=SourceType.DOCX,
+            source_type=SourceType.DOCX,
             config={"heading_style_map": {"Subtitle": 1}},
         )
     )
@@ -1950,7 +1952,7 @@ async def test_no_vault_adapter_entry_falls_through_to_request_config(
     result = await service.ingest(
         IngestRequest(
             source="no_vault_entry.docx",
-            adapter=SourceType.DOCX,
+            source_type=SourceType.DOCX,
             config={"heading_style_map": {"Title": 1}},
         )
     )
@@ -1990,7 +1992,9 @@ async def test_no_request_config_and_no_vault_adapter_config_uses_defaults(
         ],
     )
 
-    result = await service.ingest(IngestRequest(source="defaults.docx", adapter=SourceType.DOCX))
+    result = await service.ingest(
+        IngestRequest(source="defaults.docx", source_type=SourceType.DOCX)
+    )
 
     heading_paths = await stub_content_store.get_heading_paths(result.document.id)
     # Heading 1 is in defaults; Title is not.
@@ -2079,7 +2083,7 @@ async def test_embedder_receives_combined_heading_path_and_content(
         ],
     )
 
-    await service.ingest(IngestRequest(source="plain_filename.docx", adapter=SourceType.DOCX))
+    await service.ingest(IngestRequest(source="plain_filename.docx", source_type=SourceType.DOCX))
 
     assert recording_embedder.last_inputs, "embedder was not called"
     # The synthetic header chunk is index 0 (T-0038); the body chunk is
@@ -2144,7 +2148,7 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     )
 
     result = await service.ingest(
-        IngestRequest(source="clean_content.docx", adapter=SourceType.DOCX)
+        IngestRequest(source="clean_content.docx", source_type=SourceType.DOCX)
     )
 
     chunks = await stub_content_store.get_all_chunks(result.document.id)
@@ -2205,7 +2209,7 @@ async def test_empty_content_heading_still_emits_chunk(
     )
 
     result = await service.ingest(
-        IngestRequest(source="empty_heading.docx", adapter=SourceType.DOCX)
+        IngestRequest(source="empty_heading.docx", source_type=SourceType.DOCX)
     )
 
     heading_paths = await stub_content_store.get_heading_paths(result.document.id)

@@ -85,7 +85,7 @@ async def test_ad021_001_default_skips_filename_inference(tmp_vault_dir, pim_ing
 
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"title": "Caller Title"},
     )
     result = await pim_ingestion_service.ingest(request)
@@ -120,7 +120,7 @@ async def test_ad021_002_needs_review_true_runs_filename_inference(
 
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         needs_review=True,
     )
     result = await pim_ingestion_service.ingest(request)
@@ -160,7 +160,7 @@ async def test_ad021_004_chain_inheritance_fills_full_trio(tmp_vault_dir, pim_in
     v1 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
                 "project": "PIM",
@@ -175,7 +175,7 @@ async def test_ad021_004_chain_inheritance_fills_full_trio(tmp_vault_dir, pim_in
     v2 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
         )
     )
@@ -199,7 +199,7 @@ async def test_ad021_005_per_field_inheritance_caller_overrides_one(
     v1 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
                 "project": "PIM",
@@ -211,7 +211,7 @@ async def test_ad021_005_per_field_inheritance_caller_overrides_one(
     v2 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
             metadata={"doc_type": "work_plan"},
         )
@@ -238,7 +238,7 @@ async def test_ad021_006_caller_supplies_all_three_no_inheritance(
     v1 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
                 "project": "PIM",
@@ -250,7 +250,7 @@ async def test_ad021_006_caller_supplies_all_three_no_inheritance(
     v2 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
             metadata={
                 "doc_type": "work_plan",
@@ -281,7 +281,7 @@ async def test_ad021_007_no_predecessor_no_inheritance(tmp_vault_dir, pim_ingest
     await pim_ingestion_service.ingest(
         IngestRequest(
             source="v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
                 "project": "PIM",
@@ -293,7 +293,7 @@ async def test_ad021_007_no_predecessor_no_inheritance(tmp_vault_dir, pim_ingest
     result = await pim_ingestion_service.ingest(
         IngestRequest(
             source="standalone.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
         )
     )
     assert result.document.doc_type == "misc"
@@ -315,7 +315,7 @@ async def test_ad021_008_predecessor_none_does_not_propagate(tmp_vault_dir, pim_
     v1 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "checklist"},
         )
     )
@@ -326,7 +326,7 @@ async def test_ad021_008_predecessor_none_does_not_propagate(tmp_vault_dir, pim_
     v2 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
         )
     )
@@ -366,7 +366,7 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
     v1 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="patents/2026-03-09_PIM_PV06_A_v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             needs_review=True,
             metadata={"authority_scope": "domain"},
         )
@@ -379,7 +379,7 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
     v2 = await pim_ingestion_service.ingest(
         IngestRequest(
             source="patents/Standalone-Note.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
             needs_review=True,
         )
@@ -403,7 +403,7 @@ async def test_ad021_010_caller_tags_list_form(tmp_vault_dir, pim_ingestion_serv
     result = await pim_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"tags": ["PV02", "PV"]},
         )
     )
@@ -422,7 +422,7 @@ async def test_ad021_011_caller_tags_comma_separated_string(tmp_vault_dir, pim_i
     result = await pim_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"tags": "PV,PV02"},
         )
     )
@@ -441,7 +441,7 @@ async def test_ad021_012_caller_tags_single_token_string(tmp_vault_dir, pim_inge
     result = await pim_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"tags": "PV02"},
         )
     )
@@ -461,7 +461,7 @@ async def test_ad021_013_caller_tags_empty_string(tmp_vault_dir, pim_ingestion_s
     result = await pim_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"tags": ""},
         )
     )
@@ -483,7 +483,7 @@ async def test_ad021_014_caller_tags_string_strips_and_filters(
     result = await pim_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"tags": "PV02, , PV"},
         )
     )

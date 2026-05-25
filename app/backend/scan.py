@@ -38,7 +38,7 @@ class ScanResult:
     file_path: str
     file_hash: str
     source_modified_at: str
-    adapter: str | None
+    source_type: str | None
     parsed_metadata: ParsedMetadata
     sage_status: str  # "new", "modified", "unchanged", "no_adapter", "adapter_disabled"
 
@@ -178,7 +178,7 @@ async def scan_directory(
                 file_path=str(path),
                 file_hash=file_hash,
                 source_modified_at=mtime,
-                adapter=adapter,
+                source_type=adapter,
                 parsed_metadata=parsed,
                 sage_status=status,
             )

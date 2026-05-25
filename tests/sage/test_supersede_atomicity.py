@@ -149,7 +149,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
     _seed_file(tmp_vault_dir, "bh136_v2.md", "# V2\n\nRevised.")
 
     v1 = await ingestion_service.ingest(
-        IngestRequest(source="bh136_v1.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="bh136_v1.md", source_type=SourceType.MARKDOWN)
     )
 
     # Force the atomic insert+supersede primitive to raise mid-transaction,
@@ -167,7 +167,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
         await ingestion_service.ingest(
             IngestRequest(
                 source="bh136_v2.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 supersedes_document_id=v1.document.id,
             )
         )
@@ -189,7 +189,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
     v2 = await ingestion_service.ingest(
         IngestRequest(
             source="bh136_v2.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=v1.document.id,
         )
     )

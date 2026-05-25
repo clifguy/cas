@@ -62,7 +62,7 @@ async def test_dry_run_returns_post_patch_document_without_writing(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="fr.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "low", "fix_commit": "abc123"},
         )
@@ -98,7 +98,7 @@ async def test_dry_run_with_tags_patch_does_not_persist(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "tags": ["existing"]},
         )
     )
@@ -133,7 +133,7 @@ async def test_tier3_schema_violation_envelope_identical_under_dry_run(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="t.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001"},
         )
@@ -173,7 +173,7 @@ async def test_tier3_doc_type_change_stale_keys_envelope_identical_under_dry_run
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="d.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
         )
@@ -213,7 +213,7 @@ async def test_invalid_doc_type_envelope_identical_under_dry_run(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="d.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )
@@ -245,7 +245,7 @@ async def test_tag_add_conflict_envelope_identical_under_dry_run(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="d.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "tags": ["already_here"]},
         )
     )
@@ -308,7 +308,7 @@ async def test_dry_run_does_not_advance_updated_at_or_metadata_confirmed(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="d.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )
@@ -340,7 +340,7 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="d.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )
@@ -384,7 +384,7 @@ async def test_dry_run_changes_lists_scalar_deltas(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="scalars.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "project": "alpha", "title": "Old"},
         )
     )
@@ -421,7 +421,7 @@ async def test_dry_run_changes_enumerates_tier3_per_key(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="fr.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "failure_record"},
             tier3_metadata={"severity": "low", "fix_commit": "abc123"},
         )
@@ -468,7 +468,7 @@ async def test_dry_run_changes_tags_uses_full_before_after_lists(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="tagdoc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "tags": ["a", "b"]},
         )
     )
@@ -502,7 +502,7 @@ async def test_real_run_changes_block_absent(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="realrun.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "title": "Old"},
         )
     )
@@ -529,7 +529,7 @@ async def test_dry_run_empty_actionable_patch_changes_block_is_none(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="empty.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )

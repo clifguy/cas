@@ -92,7 +92,7 @@ def archive_prior_fixtures(backend: str) -> int:
 def ingest_one(backend: str, source_path: str, title: str) -> None:
     payload = {
         "source": source_path,
-        "adapter": "markdown",
+        "source_type": "markdown",
         "metadata": {
             "title": title,
             "doc_type": FIXTURE_DOC_TYPE,
@@ -208,7 +208,7 @@ def ingest_maintenance_fixture(backend: str) -> str:
     )
     payload = {
         "source": str(src_path),
-        "adapter": "markdown",
+        "source_type": "markdown",
         "metadata": {
             "title": MAINTENANCE_FIXTURE_TITLE,
             "doc_type": FIXTURE_DOC_TYPE,

@@ -115,7 +115,7 @@ async def ingested_doc(
     )
 
     result = await ingestion.ingest(
-        IngestRequest(source="test/sample.md", adapter=SourceType.MARKDOWN),
+        IngestRequest(source="test/sample.md", source_type=SourceType.MARKDOWN),
     )
 
     # Wait for background pipeline to complete
@@ -321,11 +321,11 @@ async def test_bh041_retrieval_assertions_from_yaml(
     )
 
     result_alpha = await ingestion.ingest(
-        IngestRequest(source="test/alpha.md", adapter=SourceType.MARKDOWN),
+        IngestRequest(source="test/alpha.md", source_type=SourceType.MARKDOWN),
     )
     doc_alpha = result_alpha.document
     result_beta = await ingestion.ingest(
-        IngestRequest(source="test/beta.md", adapter=SourceType.MARKDOWN),
+        IngestRequest(source="test/beta.md", source_type=SourceType.MARKDOWN),
     )
     doc_beta = result_beta.document
 

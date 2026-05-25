@@ -122,7 +122,7 @@ class TestGetIngestStreamingService:
             "/app/ingest",
             json={
                 "vault_id": "pim_health",
-                "files": [{"file_path": str(doc), "adapter": "markdown"}],
+                "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
         assert resp.status_code == 200, resp.text
@@ -143,7 +143,7 @@ class TestGetIngestStreamingService:
             "/app/ingest",
             json={
                 "vault_id": "does_not_exist",
-                "files": [{"file_path": "/tmp/anything.md", "adapter": "markdown"}],
+                "files": [{"file_path": "/tmp/anything.md", "source_type": "markdown"}],
             },
         )
         assert resp.status_code == 404, resp.text

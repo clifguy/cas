@@ -103,13 +103,13 @@ project, codes, version, doc_type.
 **Precondition:** An IngestFileItem with all metadata fields populated.
 
 **Input:** IngestFileItem with:
-- file_path="/path/to/doc.docx", adapter="docx"
+- file_path="/path/to/doc.docx", source_type="docx"
 - parsed_metadata: title="Claim-Set", date="2026-03-09", project="PIM",
   codes=["PV06"], version="v7", doc_type="patent_draft"
 
 **Expected:**
 - FileDescriptor.parsed_metadata has identical field values
-- FileDescriptor.file_path and adapter preserved
+- FileDescriptor.file_path and source_type preserved
 - When parsed_metadata is None, FileDescriptor.parsed_metadata is None
 
 **Rationale:** This conversion bridges the HTTP request model to the service

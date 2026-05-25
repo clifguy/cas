@@ -84,7 +84,7 @@ including health indicator counts. Mirrors the HTTP stats endpoint response.
 - Returns valid JSON string
 - Parsed result includes:
   - `total_documents` (integer)
-  - `by_lifecycle_status`, `by_doc_type`, `by_source_adapter` (objects)
+  - `by_lifecycle_status`, `by_doc_type`, `by_source_type` (objects)
   - `total_edges`, `by_edge_type` (integer, object)
   - `staging_edge_count` (integer)
   - `lancedb_size_bytes`, `sqlite_size_bytes` (integers)
@@ -441,7 +441,7 @@ IngestRequest.metadata for single-call ingestion with metadata.
 
 **Precondition:** Vault initialized. Two valid source files exist.
 
-**Input:** Call `app_batch_ingest("test_vault", [{"file_path": "/path/doc1.md", "adapter": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}}, {"file_path": "/path/doc2.md", "adapter": "markdown"}])`.
+**Input:** Call `app_batch_ingest("test_vault", [{"file_path": "/path/doc1.md", "source_type": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}}, {"file_path": "/path/doc2.md", "source_type": "markdown"}])`.
 
 **Expected:**
 - Returns valid JSON string (blocks until all files processed)

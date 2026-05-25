@@ -72,7 +72,7 @@ def test_update_metadata_rejects_garbage():
 def test_ingest_metadata_document_date_yyyy_mm_dd_accepted():
     req = IngestRequest(
         source="x",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"document_date": "2026-05-05"},
     )
     assert req.metadata["document_date"] == "2026-05-05"
@@ -82,7 +82,7 @@ def test_ingest_metadata_document_date_iso_with_z_rejected():
     with pytest.raises(ValidationError) as excinfo:
         IngestRequest(
             source="x",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"document_date": "2026-05-05T00:00:00Z"},
         )
     assert "document_date" in str(excinfo.value)
@@ -93,7 +93,7 @@ def test_ingest_metadata_date_iso_with_z_rejected():
     with pytest.raises(ValidationError) as excinfo:
         IngestRequest(
             source="x",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"date": "2026-05-05T00:00:00Z"},
         )
     assert "date" in str(excinfo.value)
@@ -147,7 +147,7 @@ def test_ingest_request_rejects_malformed_supersedes_document_id():
     with pytest.raises(ValidationError) as excinfo:
         IngestRequest(
             source="x",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id="bad",
         )
     assert "supersedes_document_id" in str(excinfo.value)
@@ -292,14 +292,14 @@ def test_link_request_synced_from_content_hash_rejects_empty_string():
 def test_ingest_request_accepts_tier3_metadata_dict():
     req = IngestRequest(
         source="foo.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         tier3_metadata={"severity": "high"},
     )
     assert req.tier3_metadata == {"severity": "high"}
 
 
 def test_ingest_request_tier3_metadata_defaults_none():
-    req = IngestRequest(source="foo.md", adapter=SourceType.MARKDOWN)
+    req = IngestRequest(source="foo.md", source_type=SourceType.MARKDOWN)
     assert req.tier3_metadata is None
 
 

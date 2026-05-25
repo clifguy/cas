@@ -271,7 +271,7 @@ def _write_md(tmp_path: Path, filename: str, body: str) -> str:
 
 
 def _fd(file_path: str) -> FileDescriptor:
-    return FileDescriptor(file_path=file_path, adapter="markdown", parsed_metadata=None)
+    return FileDescriptor(file_path=file_path, source_type="markdown", parsed_metadata=None)
 
 
 async def _ingest_and_get_edges(
@@ -794,7 +794,7 @@ async def _ingest_via_sage_ingest_and_get_edges(
     """
     request = IngestRequest(
         source=file_path,
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         force=force,
         needs_review=False,
     )

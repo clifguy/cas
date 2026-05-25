@@ -211,10 +211,10 @@ def register_app_tools(
         Args:
             vault_id: Target vault identifier.
             files: List of file objects. Each has: ``file_path`` (str),
-                ``adapter`` (str — closed ``SourceType`` vocabulary:
-                ``markdown``, ``docx``, ``xlsx``, ``pdf``; the vault's
-                actually-enabled subset is whatever appears under
-                ``source_adapters.adapters`` in
+                ``source_type`` (str — closed ``SourceType``
+                vocabulary: ``markdown``, ``docx``, ``xlsx``, ``pdf``;
+                the vault's actually-enabled subset is whatever
+                appears under ``source_adapters.adapters`` in
                 ``sage_get_vault_config``), and optional
                 ``parsed_metadata`` (dict with ``title``, ``date``,
                 ``project``, ``codes``, ``version``, ``doc_type``).
@@ -262,7 +262,7 @@ def register_app_tools(
                 descriptors.append(
                     FileDescriptor(
                         file_path=f["file_path"],
-                        adapter=f["adapter"],
+                        source_type=f["source_type"],
                         parsed_metadata=parsed,
                     )
                 )

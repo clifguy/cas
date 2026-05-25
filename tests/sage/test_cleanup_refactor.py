@@ -136,7 +136,7 @@ class TestEdgeResultTypeConsistency:
             await app_batch_ingest(
                 "test_vault",
                 [
-                    {"file_path": str(sources / "simple.md"), "adapter": "markdown"},
+                    {"file_path": str(sources / "simple.md"), "source_type": "markdown"},
                 ],
                 infer_edges=False,
             )
@@ -158,7 +158,7 @@ class TestEdgeResultTypeConsistency:
                 [
                     {
                         "file_path": str(sources / "simple.md"),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {"title": "Simple", "doc_type": "note"},
                     },
                 ],
@@ -180,7 +180,7 @@ class TestEdgeResultTypeConsistency:
                 [
                     {
                         "file_path": str(sources / "patent_v1.md"),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Patent",
                             "codes": ["PV06"],
@@ -190,7 +190,7 @@ class TestEdgeResultTypeConsistency:
                     },
                     {
                         "file_path": str(sources / "patent_v2.md"),
-                        "adapter": "markdown",
+                        "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Patent",
                             "codes": ["PV06"],
@@ -303,7 +303,7 @@ class TestIngestResult:
         services, config = vault
         from sage.services.ingestion import IngestResult
 
-        request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN)
+        request = IngestRequest(source="simple.md", source_type=SourceType.MARKDOWN)
         result = await services.ingestion_service.ingest(request)
 
         assert isinstance(result, IngestResult)
@@ -316,12 +316,14 @@ class TestIngestResult:
         services, config = vault
         from sage.services.ingestion import IngestResult
 
-        request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN)
+        request = IngestRequest(source="simple.md", source_type=SourceType.MARKDOWN)
         # First ingest
         await services.ingestion_service.ingest(request)
         await asyncio.sleep(0.2)
         # Force re-ingest
-        force_request = IngestRequest(source="simple.md", adapter=SourceType.MARKDOWN, force=True)
+        force_request = IngestRequest(
+            source="simple.md", source_type=SourceType.MARKDOWN, force=True
+        )
         result = await services.ingestion_service.ingest(force_request)
 
         assert isinstance(result, IngestResult)

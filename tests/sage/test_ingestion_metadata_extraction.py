@@ -214,7 +214,7 @@ async def test_me_001_filename_parse_populates_record(tmp_vault_dir, pim_style_i
 
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
     )
@@ -245,7 +245,7 @@ async def test_me_002_caller_metadata_overrides_filename_parse(
 
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
         metadata={
@@ -284,7 +284,7 @@ async def test_me_003_filename_title_overrides_adapter_title(
 
     request = IngestRequest(
         source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
     )
@@ -336,7 +336,7 @@ async def test_me_004_no_filename_pattern_preserves_adapter_title(
 
     request = IngestRequest(
         source="notes/workflow_notes.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
     )
     result = await no_pattern_ingestion_service.ingest(request)
     doc = result.document
@@ -372,7 +372,7 @@ async def test_me_005_filename_doc_type_is_not_overwritten_by_misc(
 
     request = IngestRequest(
         source="refs/2026-02-01_PIM_REF_Glossary_v2.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
     )
@@ -402,7 +402,7 @@ async def test_me_006_doc_type_defaults_to_misc_when_unresolved(
 
     request = IngestRequest(
         source="random/2026-03-01_PIM_Untagged-Note.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
     )
@@ -439,7 +439,7 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
     md_result = await pim_style_ingestion_service.ingest(
         IngestRequest(
             source="patents/2026-03-09_PIM_PV06_A_v1.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             # ADR-021: filename inference runs only under needs_review=True.
             needs_review=True,
         )
@@ -447,7 +447,7 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
     docx_result = await pim_style_ingestion_service.ingest(
         IngestRequest(
             source="patents/2026-03-09_PIM_PV06_A_v1.docx",
-            adapter=SourceType.DOCX,
+            source_type=SourceType.DOCX,
             needs_review=True,
         )
     )

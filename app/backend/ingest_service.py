@@ -55,7 +55,7 @@ class FileDescriptor:
     """Neutral file descriptor accepted from any caller."""
 
     file_path: str
-    adapter: str
+    source_type: str
     parsed_metadata: ParsedMetadataInput | None = None
 
 
@@ -217,7 +217,7 @@ class BatchIngestService:
                 metadata_dict = _metadata_dict_from_parsed(fd.parsed_metadata)
                 request = IngestRequest(
                     source=fd.file_path,
-                    adapter=SourceType(fd.adapter),
+                    source_type=SourceType(fd.source_type),
                     metadata=metadata_dict,
                     # CAS-ADR-021: SAGE's default is to commit caller-
                     # supplied metadata as authoritative. The CAS bulk-

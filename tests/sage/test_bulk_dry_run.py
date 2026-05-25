@@ -57,7 +57,7 @@ async def test_bulk_update_metadata_envelope_echoes_dry_run(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="a.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "tags": ["seed"]},
         )
     )
@@ -138,7 +138,7 @@ async def test_bulk_metadata_dry_run_does_not_simulate_prior_item_effects(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="doc.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )
@@ -195,7 +195,7 @@ async def test_bulk_metadata_dry_run_mixed_results_same_shape_as_real(
     good = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="good.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )
@@ -243,14 +243,14 @@ async def test_bulk_update_metadata_dry_run_per_item_changes_populated(
     alpha = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="alpha.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "title": "Alpha Old", "tags": ["a"]},
         )
     )
     beta = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="beta.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc", "project": "old_proj"},
         )
     )
@@ -403,7 +403,7 @@ async def test_bulk_update_metadata_real_run_per_item_changes_absent(
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
             source="real.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "misc"},
         )
     )

@@ -121,7 +121,7 @@ async def test_a1_failure_on_new_doc_no_predecessor_leaves_no_record(
 
     request = IngestRequest(
         source="a1.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"title": "Caller Title"},
     )
     with pytest.raises(RuntimeError, match="injected"):
@@ -142,7 +142,7 @@ async def test_a2_failure_on_new_doc_with_predecessor_leaves_no_record_pred_acti
     pred_result = await ingestion_service.ingest(
         IngestRequest(
             source="pred.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"title": "Predecessor"},
         )
     )
@@ -157,7 +157,7 @@ async def test_a2_failure_on_new_doc_with_predecessor_leaves_no_record_pred_acti
 
     request = IngestRequest(
         source="succ.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         supersedes_document_id=pred_id,
         metadata={"title": "Caller Successor Title"},
     )
@@ -190,7 +190,7 @@ async def test_a3_failure_on_force_reingest_leaves_existing_record_unchanged(
     first = await ingestion_service.ingest(
         IngestRequest(
             source="a3.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"title": "Original Title", "doc_type": "note"},
         )
     )
@@ -210,7 +210,7 @@ async def test_a3_failure_on_force_reingest_leaves_existing_record_unchanged(
         await ingestion_service.ingest(
             IngestRequest(
                 source="a3.md",
-                adapter=SourceType.MARKDOWN,
+                source_type=SourceType.MARKDOWN,
                 force=True,
                 metadata={"title": "Mutated Title"},
             )
@@ -247,7 +247,7 @@ async def test_b1_caller_codes_list_form_ingests_cleanly(
 
     request = IngestRequest(
         source="b1.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"codes": ["A", "B"]},
     )
     result = await ingestion_service.ingest(request)
@@ -265,7 +265,7 @@ async def test_b2_caller_codes_string_form_still_ingests(
 
     request = IngestRequest(
         source="b2.md",
-        adapter=SourceType.MARKDOWN,
+        source_type=SourceType.MARKDOWN,
         metadata={"codes": "A, B"},
     )
     result = await ingestion_service.ingest(request)
@@ -323,7 +323,7 @@ async def test_c5_with_predecessor_adapter_tag_merge(
     pred = await service.ingest(
         IngestRequest(
             source="c5_pred.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             metadata={"codes": "pred-tag"},
         )
     )
@@ -332,7 +332,7 @@ async def test_c5_with_predecessor_adapter_tag_merge(
     result = await service.ingest(
         IngestRequest(
             source="c5_succ.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=pred.document.id,
             metadata={"codes": "succ-tag"},
         )
@@ -350,13 +350,13 @@ async def test_c6_metadata_confirmed_with_predecessor_default_true(
     omitted) on the supersede branch."""
     _create_test_file(tmp_vault_dir, "c6_pred.md", content="# pred\n\nbody")
     pred = await ingestion_service.ingest(
-        IngestRequest(source="c6_pred.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="c6_pred.md", source_type=SourceType.MARKDOWN)
     )
     _create_test_file(tmp_vault_dir, "c6_succ.md", content="# succ\n\nbody")
     result = await ingestion_service.ingest(
         IngestRequest(
             source="c6_succ.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=pred.document.id,
         )
     )
@@ -370,10 +370,10 @@ async def test_c6_metadata_confirmed_force_reingest_default_true(
     re-ingest. Force-reingest branch requires same content + force=True."""
     _create_test_file(tmp_vault_dir, "c6_force.md", content="# force\n\nbody")
     first = await ingestion_service.ingest(
-        IngestRequest(source="c6_force.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="c6_force.md", source_type=SourceType.MARKDOWN)
     )
     result = await ingestion_service.ingest(
-        IngestRequest(source="c6_force.md", adapter=SourceType.MARKDOWN, force=True)
+        IngestRequest(source="c6_force.md", source_type=SourceType.MARKDOWN, force=True)
     )
     assert result.document.id == first.document.id
     assert result.document.metadata_confirmed is True
@@ -386,7 +386,7 @@ async def test_c7_doc_type_defaults_to_misc_when_unresolved_with_predecessor_non
     precedence chain resolves it (predecessor has no doc_type either)."""
     _create_test_file(tmp_vault_dir, "c7_pred.md", content="# pred\n\nbody")
     pred = await ingestion_service.ingest(
-        IngestRequest(source="c7_pred.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="c7_pred.md", source_type=SourceType.MARKDOWN)
     )
     assert pred.document.doc_type == "misc"
 
@@ -394,7 +394,7 @@ async def test_c7_doc_type_defaults_to_misc_when_unresolved_with_predecessor_non
     result = await ingestion_service.ingest(
         IngestRequest(
             source="c7_succ.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=pred.document.id,
         )
     )
@@ -442,7 +442,7 @@ async def test_c8_document_date_falls_back_to_vault_local_zone(
     monkeypatch.setattr(ingestion_service._config.vault, "timezone", "America/Los_Angeles")
 
     result = await ingestion_service.ingest(
-        IngestRequest(source="c8.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="c8.md", source_type=SourceType.MARKDOWN)
     )
     assert result.document.document_date == "2026-05-13", (
         f"expected vault-local fallback 2026-05-13, got {result.document.document_date}"
@@ -493,7 +493,7 @@ async def test_d1_new_doc_no_predecessor_single_insert_zero_updates(
     counters = _spy_store_writes(monkeypatch, graph_store)
 
     await ingestion_service.ingest(
-        IngestRequest(source="d1.md", adapter=SourceType.MARKDOWN),
+        IngestRequest(source="d1.md", source_type=SourceType.MARKDOWN),
     )
     assert counters["insert_document"] == 1
     assert counters["insert_with_supersede_atomic"] == 0
@@ -508,7 +508,7 @@ async def test_d2_new_doc_with_predecessor_single_atomic_insert_zero_updates(
     pipeline dispatch."""
     _create_test_file(tmp_vault_dir, "d2_pred.md", content="# pred\n\nbody")
     pred = await ingestion_service.ingest(
-        IngestRequest(source="d2_pred.md", adapter=SourceType.MARKDOWN)
+        IngestRequest(source="d2_pred.md", source_type=SourceType.MARKDOWN)
     )
 
     _create_test_file(tmp_vault_dir, "d2_succ.md", content="# succ\n\nbody")
@@ -519,7 +519,7 @@ async def test_d2_new_doc_with_predecessor_single_atomic_insert_zero_updates(
     await ingestion_service.ingest(
         IngestRequest(
             source="d2_succ.md",
-            adapter=SourceType.MARKDOWN,
+            source_type=SourceType.MARKDOWN,
             supersedes_document_id=pred.document.id,
         ),
     )
@@ -535,13 +535,13 @@ async def test_d3_force_reingest_single_update_zero_extra(
     calls a second update before pipeline dispatch. Same content + force=True
     enters the force-reingest branch."""
     _create_test_file(tmp_vault_dir, "d3.md", content="# d3\n\nbody")
-    await ingestion_service.ingest(IngestRequest(source="d3.md", adapter=SourceType.MARKDOWN))
+    await ingestion_service.ingest(IngestRequest(source="d3.md", source_type=SourceType.MARKDOWN))
 
     monkeypatch.setattr(ingestion_service, "_run_background_pipeline", AsyncMock())
     counters = _spy_store_writes(monkeypatch, graph_store)
 
     await ingestion_service.ingest(
-        IngestRequest(source="d3.md", adapter=SourceType.MARKDOWN, force=True),
+        IngestRequest(source="d3.md", source_type=SourceType.MARKDOWN, force=True),
     )
     assert counters["update_document"] == 1
     assert counters["insert_document"] == 0

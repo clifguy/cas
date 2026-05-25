@@ -100,11 +100,11 @@ class ScanResultResponse(BaseModel):
     file_path: str = Field(description="Absolute file path on disk.")
     file_hash: Sha256Str = Field(description="SHA-256 hex digest of file contents.")
     source_modified_at: str = Field(description="File mtime (st_mtime) as an ISO 8601 timestamp.")
-    adapter: str | None = Field(
+    source_type: str | None = Field(
         default=None,
         description=(
-            "Source adapter name matching this extension, or null when no "
-            "registered adapter handles the extension."
+            "Source artifact format matching this extension, or null "
+            "when no registered adapter handles the extension."
         ),
     )
     parsed_metadata: ParsedMetadata = Field(
@@ -133,7 +133,7 @@ class ScanResponse(BaseModel):
 
 class IngestFileItem(BaseModel):
     file_path: str = Field(description="Absolute file path on disk.")
-    adapter: str = Field(description="Source adapter name to use for this file.")
+    source_type: str = Field(description="Source artifact format name to use for this file.")
     parsed_metadata: ParsedMetadata | None = Field(
         default=None,
         description=(

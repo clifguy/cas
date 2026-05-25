@@ -936,7 +936,7 @@ async def test_t0077_ingest_supersede_syncs_predecessor_chunks(
     v1_path.parent.mkdir(parents=True, exist_ok=True)
     v1_path.write_text("# V1\n\nOriginal body.")
     v1 = await ingestion_service.ingest(
-        IngestRequest(source="t0077_supersede_v1.md", adapter="markdown")
+        IngestRequest(source="t0077_supersede_v1.md", source_type="markdown")
     )
     pred_id = v1.document.id
 
@@ -951,7 +951,7 @@ async def test_t0077_ingest_supersede_syncs_predecessor_chunks(
     await ingestion_service.ingest(
         IngestRequest(
             source="t0077_supersede_v2.md",
-            adapter="markdown",
+            source_type="markdown",
             supersedes_document_id=pred_id,
         )
     )

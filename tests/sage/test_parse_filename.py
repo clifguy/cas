@@ -91,7 +91,7 @@ async def test_ad021_010_parse_returns_parsed_fields(pim_client):
         "/sage_vaults/test_metadata_vault/parse-filename",
         json={
             "filename": "2026-03-09_PIM_PV06_Claim-Set_v6.md",
-            "adapter": "markdown",
+            "source_type": "markdown",
         },
     )
     assert resp.status_code == 200
@@ -125,7 +125,7 @@ async def test_ad021_011_parse_is_side_effect_free(pim_client, pim_app):
             "/sage_vaults/test_metadata_vault/parse-filename",
             json={
                 "filename": "2026-03-09_PIM_PV06_Claim-Set_v6.md",
-                "adapter": "markdown",
+                "source_type": "markdown",
             },
         )
         assert resp.status_code == 200
@@ -148,7 +148,7 @@ async def test_ad021_012_parse_no_pattern_returns_nulls(no_pattern_client):
         "/sage_vaults/test_metadata_vault/parse-filename",
         json={
             "filename": "2026-03-09_PIM_PV06_Claim-Set_v6.md",
-            "adapter": "markdown",
+            "source_type": "markdown",
         },
     )
     assert resp.status_code == 200

@@ -71,7 +71,7 @@ def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
         )
     return FileDescriptor(
         file_path=f.file_path,
-        adapter=f.adapter,
+        source_type=f.source_type,
         parsed_metadata=parsed,
     )
 

@@ -78,7 +78,7 @@ not cached.
   - `total_documents` (integer)
   - `by_lifecycle_status` (object: status -> count)
   - `by_doc_type` (object: type -> count)
-  - `by_source_adapter` (object: adapter -> count)
+  - `by_source_type` (object: source_type -> count)
   - `total_edges` (integer)
   - `by_edge_type` (object: type -> count)
   - `staging_edge_count` (integer)
@@ -565,8 +565,8 @@ POST /app/ingest
 {
   "vault_id": "pim_health",
   "files": [
-    { "path": "/Users/clifguy/pim_inbox/doc1.docx", "adapter": "docx" },
-    { "path": "/Users/clifguy/pim_inbox/doc2.md", "adapter": "markdown" }
+    { "path": "/Users/clifguy/pim_inbox/doc1.docx", "source_type": "docx" },
+    { "path": "/Users/clifguy/pim_inbox/doc2.md", "source_type": "markdown" }
   ]
 }
 ```
@@ -759,7 +759,7 @@ POST /app/ingest
   "files": [
     {
       "file_path": "/Users/clifguy/pim_inbox/2026-03-09_PIM_PV06_Claim-Set_v6.docx",
-      "adapter": "docx",
+      "source_type": "docx",
       "parsed_metadata": {
         "title": "Claim-Set", "date": "2026-03-09", "project": "PIM",
         "codes": ["PV06"], "version": "v6", "doc_type": "patent_draft"
@@ -767,7 +767,7 @@ POST /app/ingest
     },
     {
       "file_path": "/Users/clifguy/pim_inbox/2026-03-09_PIM_PV06_Claim-Set_v7.docx",
-      "adapter": "docx",
+      "source_type": "docx",
       "parsed_metadata": {
         "title": "Claim-Set", "date": "2026-03-09", "project": "PIM",
         "codes": ["PV06"], "version": "v7", "doc_type": "patent_draft"

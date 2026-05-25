@@ -959,7 +959,7 @@ parses it and stores it as `source_modified_at` on the Document.
 **Precondition:** SAGE vault initialized. Source file exists with a known
 modification time (set via `os.utime` for determinism).
 
-**Input:** `ingest(source="test.md", adapter="markdown")`
+**Input:** `ingest(source="test.md", source_type="markdown")`
 
 **Expected:**
 - `doc.source_modified_at` is not None
@@ -981,7 +981,7 @@ file's current `st_mtime`, even if the content hash is unchanged.
 **Precondition:** Document already ingested. Source file touched (mtime updated)
 but content unchanged.
 
-**Input:** `ingest(source="test.md", adapter="markdown", force=True)`
+**Input:** `ingest(source="test.md", source_type="markdown", force=True)`
 
 **Expected:**
 - `doc.source_modified_at` reflects the file's new mtime
@@ -1023,7 +1023,7 @@ fields serve different purposes and are set independently.
 **Precondition:** Source file with mtime set to a date well in the past
 (e.g., 2020-01-01).
 
-**Input:** `ingest(source="old_file.md", adapter="markdown")`
+**Input:** `ingest(source="old_file.md", source_type="markdown")`
 
 **Expected:**
 - `doc.created_at` is close to the current time (within 5 seconds)
@@ -1061,7 +1061,7 @@ level.
 **Precondition:** Vault initialized. Source file lives in a directory
 outside `storage_root` (e.g., a Cowork session upload directory).
 
-**Input:** `ingest(source="<absolute path outside storage_root>", adapter="markdown")`
+**Input:** `ingest(source="<absolute path outside storage_root>", source_type="markdown")`
 
 **Expected:**
 - Ingestion succeeds with `is_new=true`.
@@ -1086,7 +1086,7 @@ vault.
 
 **Precondition:** Vault initialized. Source file outside `storage_root`.
 
-**Input:** `ingest(source="<absolute external path>", adapter="markdown")`
+**Input:** `ingest(source="<absolute external path>", source_type="markdown")`
 
 **Expected:**
 - `doc.source_path == "imports/<filename>"`.
@@ -1110,7 +1110,7 @@ existing file is left untouched.
 some content. A second external file named `report.md` with different
 content is being ingested.
 
-**Input:** `ingest(source="<external>/report.md", adapter="markdown")`
+**Input:** `ingest(source="<external>/report.md", source_type="markdown")`
 
 **Expected:**
 - `doc.source_path` matches `imports/report_<8-char-hash>.md`.
@@ -1135,7 +1135,7 @@ not created or touched.
 
 **Precondition:** A file exists at `{storage_root}/patents/internal.md`.
 
-**Input:** `ingest(source="patents/internal.md", adapter="markdown")`
+**Input:** `ingest(source="patents/internal.md", source_type="markdown")`
 
 **Expected:**
 - `doc.source_path == "patents/internal.md"` (the original relative path).
@@ -1158,7 +1158,7 @@ pre-exist in the vault layout.
 **Precondition:** Vault initialized; `{storage_root}/imports/` does not
 exist. External source file ready for ingest.
 
-**Input:** `ingest(source="<external>/fresh.md", adapter="markdown")`
+**Input:** `ingest(source="<external>/fresh.md", source_type="markdown")`
 
 **Expected:**
 - `{storage_root}/imports/` exists after ingestion.
@@ -1297,7 +1297,7 @@ timestamp) and `created_at` (SAGE ingestion timestamp).
 
 **Precondition:** SAGE vault initialized. Source file exists.
 
-**Input:** `ingest(source="test.md", adapter="markdown", metadata={"date": "2026-04-10"})`
+**Input:** `ingest(source="test.md", source_type="markdown", metadata={"date": "2026-04-10"})`
 
 **Expected:**
 - `doc.document_date == "2026-04-10"`
@@ -1325,7 +1325,7 @@ has a document_date.
 **Precondition:** SAGE vault initialized. Source file exists with a known
 modification time (set via `os.utime` for determinism, e.g., 2025-06-15).
 
-**Input:** `ingest(source="PIM_PV07_checklist_v1.md", adapter="markdown")`
+**Input:** `ingest(source="PIM_PV07_checklist_v1.md", source_type="markdown")`
 (no `date` key in metadata)
 
 **Expected:**
@@ -1351,7 +1351,7 @@ adapters that do not provide filesystem metadata.
 **Precondition:** SAGE vault initialized. Stub adapter that returns no
 `source_modified_at` in ProjectionResult.metadata.
 
-**Input:** `ingest(source="api_content", adapter="markdown")` with no `date`
+**Input:** `ingest(source="api_content", source_type="markdown")` with no `date`
 in metadata and adapter providing no source_modified_at.
 
 **Expected:**
