@@ -470,10 +470,17 @@ class IngestionService:
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: predecessor is not active.
             IdenticalContentSupersedeError: new content matches predecessor.
+            SourceFileNotFoundError: ``request.source`` does not resolve to
+                a readable file on disk.
             Tier3UniqueConstraintViolation: ``tier3_metadata`` carried a
                 value already in use on a doc_type with a ``unique``
                 constraint (CAS-ADR-031, T-0115). ``force=True`` does
                 not override.
+            Tier3SchemaViolationError: ``request.tier3_metadata`` failed
+                validation against the resolved doc_type's
+                ``metadata_schema``, or the doc_type has no
+                ``metadata_schema`` declared and a non-empty payload was
+                supplied.
         """
         adapter = self._adapters.get(request.source_type)
         if adapter is None:

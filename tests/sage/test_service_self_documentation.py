@@ -119,6 +119,48 @@ def test_ingestion_ingest_docstring_documents_pipeline_status_terminal_states():
     )
 
 
+def test_ingestion_ingest_docstring_documents_source_file_not_found():
+    """``IngestionService.ingest`` must name ``SourceFileNotFoundError``.
+
+    The class is raised directly inside ``ingest()`` when ``request.source``
+    does not resolve to a readable file. Callers need it named in the
+    ``Raises:`` block so they can catch it without reading source.
+
+    Anti-coincidental-pass: deleting the line that names the error class
+    from the ``Raises:`` block drops the substring entirely and fails
+    this assertion.
+    """
+    doc = _docstring(IngestionService.ingest)
+    assert "SourceFileNotFoundError" in doc, (
+        "IngestionService.ingest docstring must name "
+        "``SourceFileNotFoundError`` so callers know which error to "
+        "expect when ``request.source`` does not resolve to a readable "
+        "file."
+    )
+
+
+def test_ingestion_ingest_docstring_documents_tier3_schema_violation():
+    """``IngestionService.ingest`` must name ``Tier3SchemaViolationError``.
+
+    The class propagates from ``_validate_tier3_payload`` (called unguarded
+    from ``ingest()``) when ``request.tier3_metadata`` fails schema
+    validation against the resolved ``doc_type``'s ``metadata_schema``, or
+    when the doc_type has no schema declared and a non-empty payload was
+    supplied. Distinct precondition and envelope from
+    ``Tier3UniqueConstraintViolation``, so the gate names both.
+
+    Anti-coincidental-pass: deleting the line that names the error class
+    from the ``Raises:`` block drops the substring entirely and fails
+    this assertion.
+    """
+    doc = _docstring(IngestionService.ingest)
+    assert "Tier3SchemaViolationError" in doc, (
+        "IngestionService.ingest docstring must name "
+        "``Tier3SchemaViolationError`` so callers know which error to "
+        "expect when ``request.tier3_metadata`` fails schema validation."
+    )
+
+
 # ---------------------------------------------------------------------------
 # GraphOpsService.link
 # ---------------------------------------------------------------------------
