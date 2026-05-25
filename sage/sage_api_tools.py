@@ -2245,11 +2245,66 @@ def register_sage_tools(
         if external processes edited ``vault_config.yaml`` outside
         this MCP server.
 
+        Reload-atomicity gap on the outer write+reload sequence:
+        A real-run update walks ``_write_config_yaml(...)`` first and
+        then ``_registry_service.reload(...)``. The reload step itself
+        is atomic with respect to the registry slot per T-0183 (the
+        new services are built first; the old services remain
+        installed if construction fails — see ``sage_reload_vault``
+        for the inner-reload guarantees and the recovery recipe).
+        **The outer yaml-write + reload sequence is NOT atomic**: if
+        the reload step fails (schema-migration required, duplicate
+        edges, abstraction-provider build failure, etc.), the on-disk
+        ``vault_config.yaml`` has already been overwritten with the
+        new merged config while the in-memory registry continues to
+        serve the **old** config. Subsequent tool calls see the old
+        vocabulary; a manual ``sage_reload_vault`` after addressing
+        the underlying failure is required to reconcile disk and
+        memory. The reload-atomicity sibling row for
+        ``sage_reload_vault`` itself is documented in the T-0180
+        audit; T-0183 closed the inner step's atomicity, not the
+        outer sequence.
+
+        Compound-risk warning (FastMCP silent-drop interaction):
+        FastMCP's ``ArgModelBase`` silently drops unknown JSON-RPC
+        kwargs at the MCP framework boundary (see T-0186 and
+        ``.venv/lib/python3.14/site-packages/mcp/server/fastmcp/utilities/func_metadata.py``).
+        This compounds with the all-None real-run code path: when
+        every section parameter is omitted or None (or every section
+        kwarg is misspelled — e.g., ``doctypes={...}`` instead of
+        ``document_types={...}``), and ``dry_run=False``, the tool
+        still revalidates the current in-memory config, writes a
+        byte-identical ``vault_config.yaml`` to disk, and triggers a
+        full ``_registry_service.reload``. The MCP envelope returns
+        ``status="updated"`` with empty warnings; nothing in the
+        response signals that no intended section edit reached the
+        config. **If your response indicates success but the vault
+        config did not change as expected, check for a misspelled
+        section kwarg name -- unknown kwargs are silently dropped at
+        the MCP framework boundary, which can reduce your call to
+        the all-None no-op-with-reload path.**
+
         Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` failed
+          ``VaultIdStr`` typed-alias validation at the boundary (per
+          CAS Typed-Alias Boundary Conventions). The alias enforces a
+          non-empty slug-shaped identifier; malformed inputs are
+          caught here rather than at a downstream lookup.
         - ``destructive_config_change`` (409): see above.
         - ``vault_config_validation_error`` (400): the merged config
           fails schema validation, or the request attempts to change
           ``vault.id``.
+
+        Test-fixture concern (``_registry_service`` back-reference):
+        ``VaultConfigService`` requires a registry-service
+        back-reference to perform the post-write reload. Production
+        wiring supplies one automatically; a service constructed in
+        a context that does NOT wire one (e.g., a unit-test fixture
+        that bypasses the registry) raises ``RuntimeError`` on the
+        first real-run call to this tool. Dry-run mode also raises
+        if the back-reference is absent (the guard runs before the
+        dry-run branch). Tests exercising this tool against an
+        ad-hoc service must supply a registry service or stub.
 
         Dry-run mode (T-0152, T-0163):
         Set ``dry_run=true`` to validate the merged config and preview
@@ -2274,7 +2329,10 @@ def register_sage_tools(
         decide whether to follow up with ``force=True`` on a real run.
 
         Args:
-            vault_id: Target vault identifier.
+            vault_id: Target vault identifier. Validated against
+                ``VaultIdStr`` (typed-alias boundary check; see
+                ``invalid_vault_id`` above) before the registered-vault
+                lookup.
             vault: Replacement for the vault identity section.
             document_types: Replacement for the document_types section.
             lifecycle: Replacement for the lifecycle section.
