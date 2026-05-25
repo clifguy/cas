@@ -186,7 +186,7 @@ def test_discover_filters_args_documents_closed_key_set():
         "tags",
         "document_ids",
         "pipeline_status",
-        "tier3",
+        "tier3_metadata",
     )
     for key in document_target_keys:
         assert key in doc, (

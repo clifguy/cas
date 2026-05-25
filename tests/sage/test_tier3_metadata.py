@@ -983,7 +983,7 @@ async def test_catalog_filter_by_tier3_equality(
     response = await tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
-            filters=RetrievalFilters(tier3={"severity": "high"}),
+            filters=RetrievalFilters(tier3_metadata={"severity": "high"}),
         )
     )
     returned_ids = {hit.document.id for hit in response.results}
@@ -1003,7 +1003,7 @@ async def test_catalog_filter_by_tier3_null_field(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(
                 doc_type="failure_record",
-                tier3={"fix_commit": None},
+                tier3_metadata={"fix_commit": None},
             ),
         )
     )
@@ -1024,7 +1024,7 @@ async def test_catalog_filter_by_tier3_ands_with_other_filters(
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(
                 doc_type="failure_record",
-                tier3={"severity": "high"},
+                tier3_metadata={"severity": "high"},
             ),
         )
     )
@@ -1042,7 +1042,9 @@ async def test_catalog_filter_tier3_pagination_after_post_filter(
     response = await tier3_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
-            filters=RetrievalFilters(doc_type="failure_record", tier3={"severity": "high"}),
+            filters=RetrievalFilters(
+                doc_type="failure_record", tier3_metadata={"severity": "high"}
+            ),
             limit=1,
             offset=0,
         )
@@ -1099,7 +1101,7 @@ async def test_t0075_catalog_filter_unindexed_tier3_value_returns_correct_subset
             mode=RetrievalMode.CATALOG,
             filters=RetrievalFilters(
                 doc_type="failure_record",
-                tier3={"fix_commit": "abc1234"},
+                tier3_metadata={"fix_commit": "abc1234"},
             ),
         )
     )
@@ -1122,7 +1124,7 @@ async def test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_sc
                 mode=RetrievalMode.CATALOG,
                 filters=RetrievalFilters(
                     doc_type="ticket",
-                    tier3={"tickett_id": "T-0001"},  # typo
+                    tier3_metadata={"tickett_id": "T-0001"},  # typo
                 ),
             )
         )
@@ -1163,7 +1165,7 @@ async def test_t0075_catalog_filter_pushes_tier3_into_sql_not_python(
                 mode=RetrievalMode.CATALOG,
                 filters=RetrievalFilters(
                     doc_type="failure_record",
-                    tier3={"severity": "high"},
+                    tier3_metadata={"severity": "high"},
                 ),
             )
         )
@@ -1195,7 +1197,7 @@ async def test_t0075_catalog_filter_rejects_sql_unsafe_tier3_key(
             DiscoverRequest(
                 mode=RetrievalMode.CATALOG,
                 filters=RetrievalFilters(
-                    tier3={"severity') OR 1=1 --": "x"},
+                    tier3_metadata={"severity') OR 1=1 --": "x"},
                 ),
             )
         )

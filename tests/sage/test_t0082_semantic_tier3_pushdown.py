@@ -252,7 +252,7 @@ async def test_t0082_semantic_tier3_filter_returns_only_matching_docs(
             query="alpha-marker",
             filters=RetrievalFilters(
                 doc_type="ticket",
-                tier3={"ticket_priority": "high"},
+                tier3_metadata={"ticket_priority": "high"},
             ),
             limit=10,
         )
@@ -289,14 +289,14 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
             query="alpha-marker",
-            filters=RetrievalFilters(doc_type="ticket", tier3=tier3_filter),
+            filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3_filter),
             limit=100,
         )
     )
     catalog_resp = await t0082_retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
-            filters=RetrievalFilters(doc_type="ticket", tier3=tier3_filter),
+            filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3_filter),
             limit=100,
         )
     )
@@ -342,7 +342,7 @@ async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
         DiscoverRequest(
             mode=RetrievalMode.KEYWORD,
             query="alpha-marker",
-            filters=RetrievalFilters(doc_type="ticket", tier3=tier3_filter),
+            filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3_filter),
             limit=100,
         )
     )
@@ -350,7 +350,7 @@ async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
         DiscoverRequest(
             mode=RetrievalMode.SEMANTIC,
             query="alpha-marker",
-            filters=RetrievalFilters(doc_type="ticket", tier3=tier3_filter),
+            filters=RetrievalFilters(doc_type="ticket", tier3_metadata=tier3_filter),
             limit=100,
         )
     )
@@ -387,7 +387,7 @@ async def test_t0082_semantic_tier3_typo_key_raises_against_doc_type_schema(
                 query="alpha-marker",
                 filters=RetrievalFilters(
                     doc_type="ticket",
-                    tier3={"ticekt_priority": "high"},  # typo
+                    tier3_metadata={"ticekt_priority": "high"},  # typo
                 ),
                 limit=10,
             )
@@ -436,7 +436,7 @@ async def test_t0082_semantic_tier3_does_not_call_list_all_documents(
             query="alpha-marker",
             filters=RetrievalFilters(
                 doc_type="ticket",
-                tier3={"ticket_priority": "high"},
+                tier3_metadata={"ticket_priority": "high"},
             ),
             limit=10,
         )

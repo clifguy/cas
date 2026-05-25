@@ -278,8 +278,8 @@ def register_sage_tools(
                 this argument is non-null, ingest fails with 400
                 ``tier3_schema_violation``. Stored verbatim once
                 validated; queryable via ``sage_discover`` filters as
-                ``{"tier3": {"<field>": <value>}}`` with exact equality
-                semantics (null matches absent-or-null fields).
+                ``{"tier3_metadata": {"<field>": <value>}}`` with exact
+                equality semantics (null matches absent-or-null fields).
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1767,16 +1767,17 @@ def register_sage_tools(
             scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.
             filters: Scope filters. Document-target keys: doc_type, project,
                 lifecycle_status, tags, document_ids, pipeline_status,
-                tier3. Edge-target keys (only when ``target="edges"``):
-                source_id, target_id, edge_type. The ``tier3`` key takes a
-                dict of field-name to expected-value pairs that match
-                against each document's ``tier3_metadata`` (T-0004).
-                Equality is exact; ``null`` in the expected value matches
-                documents whose stored field is null or absent. All pairs
-                AND together. Mixing document-only and edge-only keys is
-                rejected via ``mode_parameter_mismatch``.
+                tier3_metadata. Edge-target keys (only when
+                ``target="edges"``): source_id, target_id, edge_type.
+                The ``tier3_metadata`` key takes a dict of field-name to
+                expected-value pairs that match against each document's
+                ``tier3_metadata`` (T-0004). Equality is exact; ``null``
+                in the expected value matches documents whose stored field
+                is null or absent. All pairs AND together. Mixing
+                document-only and edge-only keys is rejected via
+                ``mode_parameter_mismatch``.
                 Example (documents): ``{"doc_type": "failure_record",
-                "tier3": {"severity": "high", "fix_commit": null}}``.
+                "tier3_metadata": {"severity": "high", "fix_commit": null}}``.
                 Example (edges): ``{"source_id": "...", "edge_type":
                 "references"}``.
             document_id: Target document (required for deterministic mode).

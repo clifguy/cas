@@ -3016,6 +3016,17 @@ components:
             Filter by pipeline status (e.g., "failed",
             "abstraction_complete"). Overrides the default exclusion
             of failed-pipeline documents.
+        tier3_metadata:
+          type: object
+          additionalProperties: true
+          description: >-
+            Tier 3 (per-doc_type typed metadata) post-filter. Each
+            key/value pair in the dict is matched against the
+            document's `tier3_metadata` dict via exact equality. A
+            value of null matches documents whose stored field is
+            either null or absent from the tier3_metadata dict. All
+            pairs AND together; an empty dict is treated as no
+            filter.
         source_id:
           type: string
           description: >-

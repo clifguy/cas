@@ -978,7 +978,7 @@ _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
     "tags": "list[str]",
     "document_ids": "list[str]",
     "pipeline_status": "str",
-    "tier3": "dict",
+    "tier3_metadata": "dict",
 }
 
 
@@ -1040,8 +1040,8 @@ def translate_validation_error(
             key = str(loc[1])
             valid_keys = list(RetrievalFilters.model_fields.keys())
             example = (
-                '{"tier3": {"ticket_id": "T-0001"}} for typed metadata, '
-                'or {"doc_type": "ticket"} for built-in fields'
+                '{"tier3_metadata": {"ticket_id": "T-0001"}} for typed '
+                'metadata, or {"doc_type": "ticket"} for built-in fields'
             )
             return UnknownFilterKeyError(key=key, valid_keys=valid_keys, example=example)
 

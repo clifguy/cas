@@ -2289,12 +2289,12 @@ class RetrievalFilters(BaseModel):
             "of failed-pipeline documents."
         ),
     )
-    tier3: dict | None = Field(
+    tier3_metadata: dict | None = Field(
         default=None,
         description=(
             "Tier 3 (per-doc_type typed metadata) post-filter. Each "
             "key/value pair in the dict is matched against the document's "
-            "`tier3_metadata` dict via exact equality. A value of None "
+            "`tier3_metadata` dict via exact equality. A value of null "
             "matches documents whose stored field is either null or absent "
             "from the tier3_metadata dict. All pairs AND together; an empty "
             "dict is treated as no filter."
@@ -2341,7 +2341,7 @@ _DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "tags",
     "document_ids",
     "pipeline_status",
-    "tier3",
+    "tier3_metadata",
 )
 
 # T-0157: edge-only filter keys that must NOT be set when target="documents".

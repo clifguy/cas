@@ -1003,10 +1003,10 @@ async def test_discover_unknown_filter_key(vault_services):
         "tags",
         "document_ids",
         "pipeline_status",
-        "tier3",
+        "tier3_metadata",
     } <= valid_keys
     # A worked example helps the caller self-correct without a probe round-trip.
-    assert "tier3" in result["detail"]["example"]
+    assert "tier3_metadata" in result["detail"]["example"]
 
 
 async def test_discover_invalid_filter_shape(vault_services):

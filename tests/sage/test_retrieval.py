@@ -2794,7 +2794,7 @@ async def test_t0090_catalog_tier3_filter_round_trips_projection(
         mode=RetrievalMode.CATALOG,
         filters=RetrievalFilters(
             doc_type="ticket",
-            tier3={"ticket_priority": "high"},
+            tier3_metadata={"ticket_priority": "high"},
         ),
     )
     response = await retrieval_service.discover(request)
@@ -4663,7 +4663,7 @@ def test_t0157_target_edges_with_deterministic_mode_is_mode_parameter_mismatch()
         ({"pipeline_status": "abstraction_complete"}, "pipeline_status"),
         ({"tags": ["a"]}, "tags"),
         ({"document_ids": [_id("d1")]}, "document_ids"),
-        ({"tier3": {"k": "v"}}, "tier3"),
+        ({"tier3_metadata": {"k": "v"}}, "tier3_metadata"),
     ],
 )
 def test_t0157_target_edges_rejects_document_only_filter_keys(filter_kwargs, key):

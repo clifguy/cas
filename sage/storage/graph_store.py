@@ -503,8 +503,8 @@ class GraphStore:
 
         Supported filter keys: doc_type, project, lifecycle_status,
         pipeline_status, tags (list[str], AND semantics), document_ids (list[str]),
-        tier3 (dict[str, object], AND semantics, pushed into SQL as
-        ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates per
+        tier3_metadata (dict[str, object], AND semantics, pushed into SQL
+        as ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates per
         T-0075).
 
         ``default_exclude_failed`` (default ``True``) controls the BH-020
@@ -587,15 +587,17 @@ class GraphStore:
                         "WHERE document_id = documents.id AND tag = ?)"
                     )
                     params.append(tag)
-            if "tier3" in filters and filters["tier3"]:
-                tier3 = filters["tier3"]
-                if not isinstance(tier3, dict):
-                    raise ValueError(f"tier3 filter must be a dict, got {type(tier3).__name__}")
-                for key, value in tier3.items():
+            if "tier3_metadata" in filters and filters["tier3_metadata"]:
+                tier3_metadata = filters["tier3_metadata"]
+                if not isinstance(tier3_metadata, dict):
+                    raise ValueError(
+                        f"tier3_metadata filter must be a dict, got {type(tier3_metadata).__name__}"
+                    )
+                for key, value in tier3_metadata.items():
                     if not isinstance(key, str) or not _TIER3_KEY_FORMAT.fullmatch(key):
                         raise ValueError(
-                            f"tier3 filter key {key!r} is not safe for SQL interpolation; "
-                            "keys must match [A-Za-z0-9_]+"
+                            f"tier3_metadata filter key {key!r} is not safe for "
+                            "SQL interpolation; keys must match [A-Za-z0-9_]+"
                         )
                     path_expr = f"json_extract(tier3_metadata, '$.{key}')"
                     if value is None:

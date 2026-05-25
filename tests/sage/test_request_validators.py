@@ -315,21 +315,22 @@ def test_update_metadata_request_tier3_metadata_defaults_none():
     assert req.tier3_metadata is None
 
 
-def test_retrieval_filters_accepts_tier3_dict():
-    filt = RetrievalFilters(tier3={"severity": "high", "fix_commit": None})
-    assert filt.tier3 == {"severity": "high", "fix_commit": None}
+def test_retrieval_filters_accepts_tier3_metadata_dict():
+    filt = RetrievalFilters(tier3_metadata={"severity": "high", "fix_commit": None})
+    assert filt.tier3_metadata == {"severity": "high", "fix_commit": None}
 
 
-def test_retrieval_filters_tier3_defaults_none():
+def test_retrieval_filters_tier3_metadata_defaults_none():
     filt = RetrievalFilters()
-    assert filt.tier3 is None
+    assert filt.tier3_metadata is None
 
 
-def test_retrieval_filters_accepts_empty_tier3_dict():
-    # The semantics of an empty tier3 dict are "no filter" (handled at the
-    # service layer). The request model must still construct.
-    filt = RetrievalFilters(tier3={})
-    assert filt.tier3 == {}
+def test_retrieval_filters_accepts_empty_tier3_metadata_dict():
+    # The semantics of an empty tier3_metadata dict are "no filter"
+    # (handled at the service layer). The request model must still
+    # construct.
+    filt = RetrievalFilters(tier3_metadata={})
+    assert filt.tier3_metadata == {}
 
 
 # ---------------------------------------------------------------------------

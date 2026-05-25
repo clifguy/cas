@@ -131,7 +131,7 @@ async def _resolve_identifier(
     target_tags = [_format_tag(t, identifier=identifier) for t in pattern.get("target_tags", [])]
     filters: dict[str, object] = {"tags": target_tags} if target_tags else {}
     if pattern.get("target_tier3"):
-        filters["tier3"] = {
+        filters["tier3_metadata"] = {
             key: (_format_tag(value, identifier=identifier) if isinstance(value, str) else value)
             for key, value in pattern["target_tier3"].items()
         }

@@ -157,8 +157,9 @@ def _tier3_matches(
     "no value here" semantics). An empty requested dict matches anything
     and is treated as no filter by callers.
 
-    Used as the document-level post-filter for ``RetrievalFilters.tier3``
-    across all retrieval modes (T-0004).
+    Used as the document-level post-filter for
+    ``RetrievalFilters.tier3_metadata`` across all retrieval modes
+    (T-0004).
     """
     if not requested:
         return True
@@ -205,7 +206,8 @@ class RetrievalService:
           ``project``) → 3x. LanceDB has already filtered at the column
           level, so the only remaining cull is dedup.
         * Mixed (any of ``tags``, ``pipeline_status``, ``document_ids``,
-          ``tier3``) → 10x. Graph-resolved ``document_id`` IN clause may
+          ``tier3_metadata``) → 10x. Graph-resolved ``document_id`` IN
+          clause may
           bloat the candidate set when the resolved doc set is large;
           conservative backstop keeps recall high.
         """
@@ -219,11 +221,11 @@ class RetrievalService:
             or f.tags
             or f.pipeline_status
             or f.document_ids
-            or f.tier3
+            or f.tier3_metadata
         )
         if not has_any_filter:
             return request.limit * _FETCH_MULTIPLIER_NONE
-        is_mixed = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3)
+        is_mixed = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3_metadata)
         return request.limit * (_FETCH_MULTIPLIER_MIXED if is_mixed else _FETCH_MULTIPLIER_PUSHDOWN)
 
     async def _content_filters(
@@ -241,9 +243,9 @@ class RetrievalService:
           row. Passed through directly to LanceDB as column predicates
           (T-0050 for ``doc_type``, T-0077 for the other two).
         * Document-level: ``tags``, ``pipeline_status``,
-          ``document_ids``, ``tier3``. Resolved against the graph store
-          into a list of matching ``document_id`` values which is then
-          attached to the chunk filter as an IN clause.
+          ``document_ids``, ``tier3_metadata``. Resolved against the
+          graph store into a list of matching ``document_id`` values
+          which is then attached to the chunk filter as an IN clause.
 
         Returns ``(filters, has_doc_constraints)``. ``has_doc_constraints``
         is True when a graph-store resolution ran and might have produced
@@ -270,12 +272,12 @@ class RetrievalService:
         # depth — a tier3 filter is non-pushdownable today, so this
         # branch is unreachable, but the validation belongs with the
         # tier3 presence check rather than with the SQL path).
-        if f.tier3:
-            self._validate_tier3_filter_keys(f.tier3, f.doc_type)
+        if f.tier3_metadata:
+            self._validate_tier3_filter_keys(f.tier3_metadata, f.doc_type)
 
         # Non-pushdownable filters still need a graph-store SQL
         # resolution into a document_id IN clause.
-        has_non_pushdown = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3)
+        has_non_pushdown = bool(f.tags or f.pipeline_status or f.document_ids or f.tier3_metadata)
         if has_non_pushdown:
             sql_filters: dict[str, object] = {}
             if f.doc_type:
@@ -290,8 +292,8 @@ class RetrievalService:
                 sql_filters["tags"] = f.tags
             if f.document_ids:
                 sql_filters["document_ids"] = f.document_ids
-            if f.tier3:
-                sql_filters["tier3"] = f.tier3
+            if f.tier3_metadata:
+                sql_filters["tier3_metadata"] = f.tier3_metadata
             # Filter resolution wants the full match set, not a page;
             # use an unbounded limit. The SQL ceiling is the documents
             # table size pre-filter, which is bounded at vault scale.
@@ -338,8 +340,8 @@ class RetrievalService:
                 active["document_ids"] = request.filters.document_ids
             if request.filters.pipeline_status:
                 active["pipeline_status"] = request.filters.pipeline_status
-            if request.filters.tier3:
-                active["tier3"] = request.filters.tier3
+            if request.filters.tier3_metadata:
+                active["tier3_metadata"] = request.filters.tier3_metadata
             if active:
                 hints["active_filters"] = active
         if request.scope and request.scope != RetrievalScope.ALL:
@@ -398,7 +400,7 @@ class RetrievalService:
 
     def _validate_tier3_filter_keys(
         self,
-        tier3: dict,
+        tier3_metadata: dict,
         doc_type: str | None,
     ) -> None:
         """Reject tier3 filter keys that are not declared by the resolved
@@ -415,7 +417,7 @@ class RetrievalService:
         if validator is None:
             return
         declared = set(validator.schema.get("properties", {}).keys())
-        for key in tier3:
+        for key in tier3_metadata:
             if key not in declared:
                 raise Tier3SchemaViolationError(
                     doc_type=doc_type,
@@ -442,7 +444,7 @@ class RetrievalService:
         document-level metadata only (no chunk content or relevance scores).
         Supports pagination via limit + offset.
 
-        ``RetrievalFilters.tier3`` is pushed into SQL as
+        ``RetrievalFilters.tier3_metadata`` is pushed into SQL as
         ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates (T-0075);
         the high-frequency canonical keys (``ticket_id``, ``failure_id``,
         ``tool_name``) are backed by SQLite expression indexes. When the
@@ -467,9 +469,11 @@ class RetrievalService:
                 sql_filters["tags"] = request.filters.tags
             if request.filters.document_ids:
                 sql_filters["document_ids"] = request.filters.document_ids
-            if request.filters.tier3:
-                self._validate_tier3_filter_keys(request.filters.tier3, request.filters.doc_type)
-                sql_filters["tier3"] = request.filters.tier3
+            if request.filters.tier3_metadata:
+                self._validate_tier3_filter_keys(
+                    request.filters.tier3_metadata, request.filters.doc_type
+                )
+                sql_filters["tier3_metadata"] = request.filters.tier3_metadata
 
         with phases.phase("query_documents"):
             # T-0148: catalog is filter-only enumeration; failed-pipeline
@@ -670,8 +674,8 @@ class RetrievalService:
         Used for dashboard drill-downs where no content search is needed.
 
         Filters that map to SQL column predicates (doc_type, project,
-        lifecycle_status, pipeline_status, tags, document_ids, tier3)
-        are pushed into ``query_documents()``. ``scope=AUTHORITATIVE``
+        lifecycle_status, pipeline_status, tags, document_ids,
+        tier3_metadata) are pushed into ``query_documents()``. ``scope=AUTHORITATIVE``
         remains a Python post-pass because ``authority_scope`` has no
         SQL column predicate today; the other scope values (SPECIFIC,
         FILTERED, ALL) reduce to filter or short-circuit conditions
@@ -701,9 +705,9 @@ class RetrievalService:
                 sql_filters["tags"] = filters.tags
             if filters.document_ids:
                 sql_filters["document_ids"] = filters.document_ids
-            if filters.tier3:
-                self._validate_tier3_filter_keys(filters.tier3, filters.doc_type)
-                sql_filters["tier3"] = filters.tier3
+            if filters.tier3_metadata:
+                self._validate_tier3_filter_keys(filters.tier3_metadata, filters.doc_type)
+                sql_filters["tier3_metadata"] = filters.tier3_metadata
 
         docs, _ = await self._graph.query_documents(
             filters=sql_filters or None,
