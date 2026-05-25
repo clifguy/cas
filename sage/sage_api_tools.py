@@ -2691,11 +2691,32 @@ def register_sage_tools(
         (``abstraction_complete`` or ``failed``). Returns a
         ReabstractReport with per-document outcomes and aggregate counts.
 
+        Common preconditions:
+        See the ``sage_admin_*`` family preconditions block above for
+        shared rules (``vault_id`` typed-alias validation,
+        ``maintenance_service`` wiring requirement).
+
         Reuses the in-process AbstractionProvider that this MCP server
         loaded at startup; does NOT spin up a second Qwen3 instance
         (F-8 cautionary tale). The standalone script remains as the
         operator fallback for cron-style workflows where no MCP server
         is running.
+
+        Ingestion-service wiring requirement (F-8 guard):
+        ``MaintenanceService.reabstract_deferred_events`` raises
+        ``RuntimeError`` synchronously (before generator iteration
+        starts) when its ``MaintenanceService`` was constructed without
+        an ``ingestion_service`` dependency. This is a defensive guard
+        against the F-8 dual-AbstractionProvider hazard: the operator
+        fallback path (``scripts/reabstract_deferred.py``) runs in a
+        separate OS process and is allowed to self-initialize a
+        provider; this in-process path is not. Production startup
+        wires ``ingestion_service`` in via ``initialize_services``, so
+        the gate fires almost exclusively against test fixtures that
+        construct ``MaintenanceService`` directly without supplying an
+        ingestion dependency. The guard distinguishes "this fixture is
+        missing wiring" from the dual-provider hazard the F-8 rule
+        prohibits.
 
         Single-flight per vault: a concurrent call returns a structured
         ``reabstract_already_in_flight`` error (409) whose detail
@@ -2720,16 +2741,37 @@ def register_sage_tools(
         to the HTTP route's SSE stream directly; the MCP tool exists
         for the report-and-return access pattern.
 
+        Framework boundary -- ``include_pdf`` silent-drop compound risk:
+        If your response indicates success but PDF documents were not
+        processed as expected, check for a misspelled ``include_pdf``
+        parameter name (e.g. ``includePdf``, ``includepdfs``, or
+        ``pdf=True``). Unknown kwargs are silently dropped at the
+        FastMCP framework boundary, which means the tool runs with
+        ``include_pdf=False`` -- its default -- and PDFs are silently
+        skipped despite caller intent to include them. The diagnostic
+        signal is a successful ReabstractReport whose ``pdf_skipped``
+        count matches the vault's PDF count even though the caller
+        believed they had opted PDFs in. See T-0186 (framework-level
+        FastMCP ``extra=forbid`` finding) and the T-0159 v2 cross-
+        cutting compound-risk note for the underlying mechanism.
+
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``reabstract_already_in_flight`` (409): a reabstract is
           already running on this vault.
+        - ``RuntimeError`` (ingestion-service guard): the vault's
+          ``MaintenanceService`` was constructed without an
+          ``ingestion_service`` dependency. See the Ingestion-service
+          wiring requirement row above; test-fixture concern primarily.
 
         Args:
             vault_id: Target vault identifier.
             include_pdf: When False (default), source_type=pdf documents
                 are skipped (scanned PDFs typically have no extractable
                 text). When True, PDFs are included in the worklist.
+                Note the FastMCP silent-drop compound risk documented
+                above: a typo in this parameter name is dropped at the
+                framework boundary and falls back to the False default.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
