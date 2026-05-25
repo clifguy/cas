@@ -468,6 +468,7 @@ async def test_set_lifecycle_unknown_action(vault_services):
 # tests pin the MCP wrapper plumbing.
 
 
+@pytest.mark.filterwarnings("error:Pydantic serializer warnings:UserWarning")
 async def test_set_lifecycle_dry_run_archive_returns_dry_run_true_and_leaves_state(
     vault_services,
 ):
@@ -507,6 +508,7 @@ async def test_set_lifecycle_real_run_archive_returns_dry_run_false_and_changes_
     assert persisted["lifecycle_status"] == "archived"
 
 
+@pytest.mark.filterwarnings("error:Pydantic serializer warnings:UserWarning")
 async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persists_nothing(
     vault_services,
 ):

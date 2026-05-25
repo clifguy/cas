@@ -146,7 +146,10 @@ class LifecycleService:
                 )
                 if request.dry_run:
                     # Compute the would-be predecessor without persisting.
-                    updated_doc = doc.model_copy(update=predecessor_updates)
+                    # `model_copy` receives the raw `datetime` so Pydantic's
+                    # serializer does not warn on a string `updated_at`; the
+                    # store-bound dict keeps the ISO string it expects.
+                    updated_doc = doc.model_copy(update={**predecessor_updates, "updated_at": now})
                     created_edge = edge
                 else:
                     updated_doc = await self._store.supersede_atomic(
@@ -155,10 +158,10 @@ class LifecycleService:
                     created_edge = edge
             else:
                 # Non-supersede actions: single-row update is naturally atomic.
-                now = datetime.now(timezone.utc).isoformat()
-                updates = {"lifecycle_status": to_state, "updated_at": now}
+                now = datetime.now(timezone.utc)
+                updates = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
                 if request.dry_run:
-                    updated_doc = doc.model_copy(update=updates)
+                    updated_doc = doc.model_copy(update={**updates, "updated_at": now})
                 else:
                     updated_doc = await self._store.update_document(document_id, updates)
 
