@@ -74,7 +74,7 @@ async def test_supersede_dry_run_returns_would_be_edge_with_sentinel_id(
         _id("doc_supersede_old"),
         SetLifecycleRequest(
             action="supersede",
-            new_version_id=_id("doc_supersede_new"),
+            successor_id=_id("doc_supersede_new"),
             dry_run=True,
         ),
     )
@@ -121,7 +121,7 @@ async def test_real_run_supersede_response_carries_created_edge(graph_store, lif
 
     response = await lifecycle_service.set_lifecycle(
         _id("doc_real_old"),
-        SetLifecycleRequest(action="supersede", new_version_id=_id("doc_real_new")),
+        SetLifecycleRequest(action="supersede", successor_id=_id("doc_real_new")),
     )
     assert response.dry_run is False
     assert response.created_edge is not None
@@ -197,7 +197,7 @@ async def test_document_not_found_envelope_identical_under_dry_run(lifecycle_ser
 async def test_supersede_missing_new_version_envelope_identical_under_dry_run(
     graph_store, lifecycle_service
 ):
-    """Both paths raise MissingFieldError for supersede without new_version_id."""
+    """Both paths raise MissingFieldError for supersede without successor_id."""
     doc = _make_doc(_id("doc_no_new_v"))
     await graph_store.insert_document(doc)
 
@@ -218,7 +218,7 @@ async def test_supersede_missing_new_version_envelope_identical_under_dry_run(
 async def test_supersede_missing_new_version_doc_envelope_identical_under_dry_run(
     graph_store, lifecycle_service
 ):
-    """Both paths raise DocumentNotFoundError for a missing new_version_id."""
+    """Both paths raise DocumentNotFoundError for a missing successor_id."""
     doc = _make_doc(_id("doc_super_b"))
     await graph_store.insert_document(doc)
     missing_new = _id("doc_missing_new")
@@ -226,12 +226,12 @@ async def test_supersede_missing_new_version_doc_envelope_identical_under_dry_ru
     with pytest.raises(DocumentNotFoundError) as real_info:
         await lifecycle_service.set_lifecycle(
             _id("doc_super_b"),
-            SetLifecycleRequest(action="supersede", new_version_id=missing_new),
+            SetLifecycleRequest(action="supersede", successor_id=missing_new),
         )
     with pytest.raises(DocumentNotFoundError) as dry_info:
         await lifecycle_service.set_lifecycle(
             _id("doc_super_b"),
-            SetLifecycleRequest(action="supersede", new_version_id=missing_new, dry_run=True),
+            SetLifecycleRequest(action="supersede", successor_id=missing_new, dry_run=True),
         )
 
     assert real_info.value.code == dry_info.value.code
@@ -289,7 +289,7 @@ async def test_supersede_dry_run_persists_no_edge(
         _id("doc_no_edge_old"),
         SetLifecycleRequest(
             action="supersede",
-            new_version_id=_id("doc_no_edge_new"),
+            successor_id=_id("doc_no_edge_new"),
             dry_run=True,
         ),
     )
@@ -345,7 +345,7 @@ async def test_supersede_dry_run_changes_lifecycle_status_only_no_edge_in_change
         _id("doc_changes_old"),
         SetLifecycleRequest(
             action="supersede",
-            new_version_id=_id("doc_changes_new"),
+            successor_id=_id("doc_changes_new"),
             dry_run=True,
         ),
     )

@@ -88,7 +88,7 @@ class LifecycleService:
             DocumentNotFoundError: document_id does not exist.
             InvalidActionError: action is unknown (400).
             InvalidLifecycleTransitionError: action invalid from current state (409).
-            DocumentNotFoundError: new_version_id does not exist (supersede).
+            DocumentNotFoundError: successor_id does not exist (supersede).
         """
         async with self._locks.lock(document_id):
             doc = await self._store.get_document(document_id)
@@ -120,11 +120,11 @@ class LifecycleService:
             # leave the predecessor archived without the corresponding
             # edge (BH-135).
             if request.action == "supersede":
-                if not request.new_version_id:
-                    raise MissingFieldError("new_version_id", "supersede requires new_version_id")
-                new_doc = await self._store.get_document(request.new_version_id)
+                if not request.successor_id:
+                    raise MissingFieldError("successor_id", "supersede requires successor_id")
+                new_doc = await self._store.get_document(request.successor_id)
                 if new_doc is None:
-                    raise DocumentNotFoundError(request.new_version_id)
+                    raise DocumentNotFoundError(request.successor_id)
 
                 now = datetime.now(timezone.utc)
                 predecessor_updates = {
@@ -138,7 +138,7 @@ class LifecycleService:
                 edge_id = _DRY_RUN_SENTINEL_EDGE_ID if request.dry_run else str(uuid.uuid4())
                 edge = Edge(
                     id=edge_id,
-                    source_id=request.new_version_id,
+                    source_id=request.successor_id,
                     target_id=document_id,
                     edge_type=EdgeType.SUPERSEDES,
                     resolution_policy=ResolutionPolicy.NONE,
@@ -250,7 +250,7 @@ class LifecycleService:
         for item in request.items:
             single = SetLifecycleRequest(
                 action=item.action,
-                new_version_id=item.new_version_id,
+                successor_id=item.successor_id,
                 # T-0152: propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported.
                 dry_run=request.dry_run,
@@ -300,7 +300,7 @@ class LifecycleService:
     def prepare_supersede(
         self,
         predecessor: Document,
-        new_version_id: str,
+        successor_id: str,
     ) -> SupersedeTransition:
         """Validate the supersede transition and build the writes for it
         without committing. Used by IngestionService to bundle the
@@ -330,7 +330,7 @@ class LifecycleService:
         }
         edge = Edge(
             id=str(uuid.uuid4()),
-            source_id=new_version_id,
+            source_id=successor_id,
             target_id=predecessor.id,
             edge_type=EdgeType.SUPERSEDES,
             resolution_policy=ResolutionPolicy.NONE,

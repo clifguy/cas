@@ -446,7 +446,7 @@ export interface BulkItemErrorEnvelope {
 export interface BulkLifecycleItem {
   document_id: string;
   action: string;
-  new_version_id?: string | null;
+  successor_id?: string | null;
 }
 
 export interface BulkLifecycleItemResult {

@@ -54,7 +54,7 @@ router = APIRouter(tags=["Document Lifecycle"])
                 "`complete`) when the document's `pipeline_status` is not yet "
                 "terminal.\n\n"
                 "`identical_content_supersede`: `action=supersede` with "
-                "`new_version_id` whose content hash matches the "
+                "`successor_id` whose content hash matches the "
                 "predecessor's; supersede chains require distinct content "
                 "per step."
             ),

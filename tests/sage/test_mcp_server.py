@@ -524,7 +524,7 @@ async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persist
             "test_vault",
             doc_a["id"],
             "supersede",
-            new_version_id=doc_b["id"],
+            successor_id=doc_b["id"],
             dry_run=True,
         )
     )
@@ -1635,10 +1635,10 @@ def test_t0155_link_docstring_clarifies_endpoint_shape():
     )
 
 
-def test_t0155_set_lifecycle_docstring_clarifies_new_version_id_shape():
+def test_t0155_set_lifecycle_docstring_clarifies_successor_id_shape():
     """T9. sage_set_lifecycle docstring's Args section describes
-    `new_version_id` as a `documents.id` / `document_id` value.
-    Parallel-pattern guard: `new_version_id` is a semantic-role
+    `successor_id` as a `documents.id` / `document_id` value.
+    Parallel-pattern guard: `successor_id` is a semantic-role
     document-id parameter analogous to source_id/target_id on
     sage_link; the same docstring clarification applies (T-0155
     principle, surfaced via F4 review).
@@ -1651,7 +1651,7 @@ def test_t0155_set_lifecycle_docstring_clarifies_new_version_id_shape():
     doc = sage_set_lifecycle.__doc__
     assert doc is not None
     dedented = textwrap.dedent(doc)
-    assert re.search(r"new_version_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "sage_set_lifecycle Args entry for new_version_id must clarify "
+    assert re.search(r"successor_id:[^\n]*(document_id|documents\.id)", dedented), (
+        "sage_set_lifecycle Args entry for successor_id must clarify "
         "it is a documents.id / document_id value (T-0155)"
     )

@@ -155,7 +155,7 @@ paths:
         non-active state, run the archive → reactivate dance first, then
         either set lifecycle with `action=supersede` against the
         predecessor, or call `POST /documents` (ingest) with
-        `supersedes_document_id=<predecessor_id>` which applies the same
+        `predecessor_id=<predecessor_id>` which applies the same
         atomic transition synchronously with record insertion. A direct
         call against a non-active predecessor returns
         `supersede_target_not_active`.
@@ -216,7 +216,7 @@ paths:
 
 
             `identical_content_supersede`: `action=supersede` with
-            `new_version_id` whose content hash matches the
+            `successor_id` whose content hash matches the
             predecessor's; supersede chains require distinct content
             per step.
           content:
@@ -230,7 +230,7 @@ paths:
       summary: Apply lifecycle transitions to many documents in one call.
       description: >-
         First `sage_bulk_*` operation per CAS-ADR-029. Each item carries
-        `document_id`, `action`, and optional `new_version_id` with the
+        `document_id`, `action`, and optional `successor_id` with the
         same semantics as the single-item `set_lifecycle` endpoint;
         items are processed in order, each holding the per-document
         lock and a per-item SQLite transaction.
@@ -470,7 +470,7 @@ paths:
         large documents can exceed (BH-130).
 
 
-        If `supersedes_document_id` is provided, the supersede lifecycle
+        If `predecessor_id` is provided, the supersede lifecycle
         transition (creating the `supersedes` edge and archiving the
         predecessor) runs synchronously with document record insertion,
         before Stages 2-3 begin. The version chain is complete the
@@ -537,7 +537,7 @@ paths:
             bypass detection and re-run the pipeline.
 
 
-            `supersede_target_not_active`: `supersedes_document_id` was
+            `supersede_target_not_active`: `predecessor_id` was
             set but the predecessor is not in `active`. For completed,
             filed, or otherwise non-active predecessors, run the
             archive → reactivate dance via
@@ -579,7 +579,7 @@ paths:
         copy at `storage_root/source_path`. Supports the agentic
         read-modify-reingest round-trip: an agent fetches the file,
         edits it locally, and re-ingests with
-        `supersedes_document_id` (see POST /documents).
+        `predecessor_id` (see POST /documents).
 
 
         When `write_to_path` is provided, SAGE writes the authoritative
@@ -682,7 +682,7 @@ paths:
 
         **For `supersedes` edges, prefer `POST /documents/{id}/lifecycle`
         with `action=supersede`** (or `POST /documents` with
-        `supersedes_document_id=...` when the successor has not yet been
+        `predecessor_id=...` when the successor has not yet been
         ingested). Those operations wire the edge AND archive the
         predecessor atomically. `POST /edges` with `edge_type=supersedes`
         creates the edge alone and does **not** transition the
@@ -3063,7 +3063,7 @@ components:
             (cas vault) plus `file` (pim_health vault). Neither vault
             defines `activate`; the action for `archived → active` is
             `reactivate`.
-        new_version_id:
+        successor_id:
           type: string
           description: >-
             Document ID of the replacement version. Required when
@@ -3275,7 +3275,7 @@ components:
             authoritative for metadata; SAGE applies values per-field
             with the precedence chain caller > filename parse (only
             when needs_review=true) > chain inherit (predecessor's
-            doc_type, project, authority_scope when supersedes_document_id
+            doc_type, project, authority_scope when predecessor_id
             is set and the caller omitted the field) > vault default
             (doc_type only, falls through to "misc"). Fields with null
             values are ignored. Unknown field names are stored but have
@@ -3283,7 +3283,7 @@ components:
             tags, which may be supplied as a list of strings or as a
             comma-separated string (parity with sage_update_metadata's
             list-typed tags field).
-        supersedes_document_id:
+        predecessor_id:
           type: string
           nullable: true
           description: >-
@@ -3870,12 +3870,12 @@ components:
           description: >-
             Lifecycle transition action. Vault-config-defined; same
             shape as `SetLifecycleRequest.action`.
-        new_version_id:
+        successor_id:
           type: string
           description: >-
             Document id of the replacement version. Required when
             `action="supersede"`; forbidden for all other actions. Same
-            shape and semantics as `SetLifecycleRequest.new_version_id`.
+            shape and semantics as `SetLifecycleRequest.successor_id`.
 
     BulkLifecycleRequest:
       type: object

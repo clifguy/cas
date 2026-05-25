@@ -102,7 +102,7 @@ def test_ingest_metadata_date_iso_with_z_rejected():
 # ---------------------------------------------------------------------------
 # DocumentIdStr — applied to LinkRequest source/target/anchor fields,
 # TraverseRequest.start_id, ChainRequest.document_id,
-# IngestRequest.supersedes_document_id, SetLifecycleRequest.new_version_id.
+# IngestRequest.predecessor_id, SetLifecycleRequest.successor_id.
 # ---------------------------------------------------------------------------
 
 
@@ -143,20 +143,20 @@ def test_chain_request_rejects_malformed_document_id():
     assert "document_id" in str(excinfo.value)
 
 
-def test_ingest_request_rejects_malformed_supersedes_document_id():
+def test_ingest_request_rejects_malformed_predecessor_id():
     with pytest.raises(ValidationError) as excinfo:
         IngestRequest(
             source="x",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id="bad",
+            predecessor_id="bad",
         )
-    assert "supersedes_document_id" in str(excinfo.value)
+    assert "predecessor_id" in str(excinfo.value)
 
 
-def test_set_lifecycle_request_rejects_malformed_new_version_id():
+def test_set_lifecycle_request_rejects_malformed_successor_id():
     with pytest.raises(ValidationError) as excinfo:
-        SetLifecycleRequest(action="supersede", new_version_id="bad")
-    assert "new_version_id" in str(excinfo.value)
+        SetLifecycleRequest(action="supersede", successor_id="bad")
+    assert "successor_id" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ ADR-021 implementation:
   parse entirely; needs_review=True restores prior behavior end-to-end.
 - Caller-supplied metadata is authoritative per-field.
 - Chain inheritance fills doc_type, project, and authority_scope from
-  the predecessor when supersedes_document_id is set, the field is unset
+  the predecessor when predecessor_id is set, the field is unset
   on the new document, and the caller did not supply it. Predecessor
   None values do not propagate.
 
@@ -176,7 +176,7 @@ async def test_ad021_004_chain_inheritance_fills_full_trio(tmp_vault_dir, pim_in
         IngestRequest(
             source="v2.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
         )
     )
     assert v2.document.doc_type == "checklist"
@@ -212,7 +212,7 @@ async def test_ad021_005_per_field_inheritance_caller_overrides_one(
         IngestRequest(
             source="v2.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
             metadata={"doc_type": "work_plan"},
         )
     )
@@ -251,7 +251,7 @@ async def test_ad021_006_caller_supplies_all_three_no_inheritance(
         IngestRequest(
             source="v2.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
             metadata={
                 "doc_type": "work_plan",
                 "project": "OTHER",
@@ -265,7 +265,7 @@ async def test_ad021_006_caller_supplies_all_three_no_inheritance(
 
 
 # ---------------------------------------------------------------------------
-# TEST-AD021-007: no supersedes_document_id -> no inheritance. Trio
+# TEST-AD021-007: no predecessor_id -> no inheritance. Trio
 # fields fall through to the doc_type=misc default and Nones for
 # project/authority_scope.
 # ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ async def test_ad021_007_no_predecessor_no_inheritance(tmp_vault_dir, pim_ingest
     _write_md(tmp_vault_dir, "standalone.md", body="# Standalone\n\nBody.")
 
     # Seed a document that COULD be a predecessor, then ingest a
-    # standalone doc without supersedes_document_id and confirm nothing
+    # standalone doc without predecessor_id and confirm nothing
     # leaks across.
     await pim_ingestion_service.ingest(
         IngestRequest(
@@ -327,7 +327,7 @@ async def test_ad021_008_predecessor_none_does_not_propagate(tmp_vault_dir, pim_
         IngestRequest(
             source="v2.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
         )
     )
     # doc_type inherits because predecessor has a non-None value
@@ -380,7 +380,7 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
         IngestRequest(
             source="patents/Standalone-Note.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
             needs_review=True,
         )
     )

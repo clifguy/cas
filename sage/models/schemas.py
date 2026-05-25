@@ -740,7 +740,7 @@ class IngestRequest(BaseModel):
             "authoritative for metadata; SAGE applies values per-field with "
             "the precedence chain caller > filename parse (only when "
             "needs_review=true) > chain inherit (predecessor's doc_type, "
-            "project, authority_scope when supersedes_document_id is set "
+            "project, authority_scope when predecessor_id is set "
             "and the caller omitted the field) > vault default (doc_type "
             "only, falls through to 'misc'). Fields with null values are "
             "ignored. Unknown field names are stored but have no "
@@ -750,7 +750,7 @@ class IngestRequest(BaseModel):
             "list-typed tags field)."
         ),
     )
-    supersedes_document_id: DocumentIdStr | None = Field(
+    predecessor_id: DocumentIdStr | None = Field(
         default=None,
         description=(
             "When provided, the ingested document is treated as a new "
@@ -917,7 +917,7 @@ class SetLifecycleRequest(BaseModel):
             "`activate`; the action for `archived → active` is `reactivate`."
         )
     )
-    new_version_id: DocumentIdStr | None = Field(
+    successor_id: DocumentIdStr | None = Field(
         default=None,
         description=(
             "Document ID of the replacement version. Required when "
@@ -1013,12 +1013,12 @@ class BulkLifecycleItem(BaseModel):
             "shape as `SetLifecycleRequest.action`."
         )
     )
-    new_version_id: DocumentIdStr | None = Field(
+    successor_id: DocumentIdStr | None = Field(
         default=None,
         description=(
             "Document id of the replacement version. Required when "
             '`action="supersede"`; forbidden for all other actions. Same '
-            "shape and semantics as `SetLifecycleRequest.new_version_id`."
+            "shape and semantics as `SetLifecycleRequest.successor_id`."
         ),
     )
 

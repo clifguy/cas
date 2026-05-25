@@ -880,7 +880,7 @@ async def test_t0077_supersede_syncs_predecessor_lifecycle_to_chunks(
 
     await service.set_lifecycle(
         predecessor.id,
-        SetLifecycleRequest(action="supersede", new_version_id=new_version.id),
+        SetLifecycleRequest(action="supersede", successor_id=new_version.id),
     )
 
     ls_calls = [
@@ -952,7 +952,7 @@ async def test_t0077_ingest_supersede_syncs_predecessor_chunks(
         IngestRequest(
             source="t0077_supersede_v2.md",
             source_type="markdown",
-            supersedes_document_id=pred_id,
+            predecessor_id=pred_id,
         )
     )
 

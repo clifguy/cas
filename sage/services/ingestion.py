@@ -422,7 +422,7 @@ class IngestionService:
             DuplicateContentError: Same content hash exists anywhere in vault
                 (BH-018, BH-066), unless force flag set.
             AdapterNotFoundError: No adapter for requested source type.
-            DocumentNotFoundError: `supersedes_document_id` does not exist.
+            DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: predecessor is not active.
             IdenticalContentSupersedeError: new content matches predecessor.
         """
@@ -435,13 +435,13 @@ class IngestionService:
         # cheap validity checks. The identical-content check happens
         # post-projection, once the new file's hash is known.
         predecessor: Document | None = None
-        if request.supersedes_document_id:
-            predecessor = await self._store.get_document(request.supersedes_document_id)
+        if request.predecessor_id:
+            predecessor = await self._store.get_document(request.predecessor_id)
             if predecessor is None:
-                raise DocumentNotFoundError(request.supersedes_document_id)
+                raise DocumentNotFoundError(request.predecessor_id)
             if predecessor.lifecycle_status != "active":
                 raise SupersedeTargetNotActiveError(
-                    request.supersedes_document_id,
+                    request.predecessor_id,
                     predecessor.lifecycle_status,
                 )
 
@@ -606,7 +606,7 @@ class IngestionService:
             if predecessor is not None and self._lifecycle_service is not None:
                 await self._lifecycle_service.set_lifecycle(
                     predecessor.id,
-                    SetLifecycleRequest(action="supersede", new_version_id=doc.id),
+                    SetLifecycleRequest(action="supersede", successor_id=doc.id),
                 )
         else:
             # New document. When a predecessor is being superseded the

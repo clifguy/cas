@@ -264,7 +264,7 @@ warnings when pipeline is non-terminal.
 
 **Precondition:** Document with `pipeline_status: indexing_in_progress`.
 
-**Input:** `set_lifecycle(action: "supersede", new_version_id: <valid_id>)`
+**Input:** `set_lifecycle(action: "supersede", successor_id: <valid_id>)`
 
 **Expected:**
 - HTTP 200
@@ -292,15 +292,15 @@ superseding a document that was ingested incorrectly).
 
 **Rationale:** Warnings should only appear when there is genuinely something to warn about.
 
-### TEST-SAGE-BH-016: Supersede requires existing new_version_id
+### TEST-SAGE-BH-016: Supersede requires existing successor_id
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (set_lifecycle, supersede action)
 **Category:** lifecycle, referential_integrity
-**Decision:** Strict referential integrity: new_version_id must resolve to an existing document.
+**Decision:** Strict referential integrity: successor_id must resolve to an existing document.
 
 **Precondition:** Document doc_old in `active` state.
 
-**Input:** `set_lifecycle(action: "supersede", new_version_id: "nonexistent_id")`
+**Input:** `set_lifecycle(action: "supersede", successor_id: "nonexistent_id")`
 
 **Expected:**
 - HTTP 404
@@ -318,7 +318,7 @@ edges in the graph.
 
 **Precondition:** doc_old (active), doc_new (active, already ingested).
 
-**Input:** `set_lifecycle` on doc_old with `action: "supersede", new_version_id: doc_new.id`
+**Input:** `set_lifecycle` on doc_old with `action: "supersede", successor_id: doc_new.id`
 
 **Expected:**
 - doc_old transitions to `archived`
@@ -2588,7 +2588,7 @@ These tests cover the agentic read-modify-reingest pattern. An agent retrieves
 the original source file bytes from the vault (`get_document` with
 `include_content=true`), edits the file locally, then ingests the modified file
 as a new version that supersedes its predecessor (`ingest` with
-`supersedes_document_id`). The vault's internal copy at
+`predecessor_id`). The vault's internal copy at
 `storage_root/source_path` is the authoritative file; the agent's temporary
 path is irrelevant after ingestion.
 
@@ -2680,11 +2680,11 @@ bytes.
 **Rationale:** Silent empty bytes would let agents believe they are editing a
 valid file. A loud failure surfaces the underlying vault inconsistency.
 
-### TEST-SAGE-BH-120: ingest with supersedes_document_id links new version and archives predecessor
+### TEST-SAGE-BH-120: ingest with predecessor_id links new version and archives predecessor
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
 **Category:** ingestion
-**Decision:** When `supersedes_document_id` is provided and ingestion succeeds,
+**Decision:** When `predecessor_id` is provided and ingestion succeeds,
 SAGE atomically applies the `supersede` lifecycle transition on the
 predecessor: creates a `supersedes` edge from new to old, sets the
 predecessor's `lifecycle_status` to `archived`.
@@ -2692,7 +2692,7 @@ predecessor's `lifecycle_status` to `archived`.
 **Precondition:** Document A active, pipeline terminal.
 
 **Input:** Ingest modified file as Document B with
-`supersedes_document_id: A`.
+`predecessor_id: A`.
 
 **Expected:**
 - Response is 201 with Document B, `lifecycle_status=active`.
@@ -2705,18 +2705,18 @@ predecessor's `lifecycle_status` to `archived`.
 one call rather than requiring separate `ingest` + `set_lifecycle` calls. The
 supersedes chain is the audit trail.
 
-### TEST-SAGE-BH-121: ingest with supersedes_document_id rejects nonexistent predecessor
+### TEST-SAGE-BH-121: ingest with predecessor_id rejects nonexistent predecessor
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
 **Category:** ingestion
-**Decision:** Validation of `supersedes_document_id` happens before projection.
+**Decision:** Validation of `predecessor_id` happens before projection.
 A bogus predecessor ID must not result in a new document with no supersedes
 link (which would be worse than no-op).
 
 **Precondition:** Vault initialized. No document with id `nonexistent_id`.
 
 **Input:** Ingest a new file with
-`supersedes_document_id: "nonexistent_id"`.
+`predecessor_id: "nonexistent_id"`.
 
 **Expected:**
 - Response is an error with status 404.
@@ -2727,7 +2727,7 @@ link (which would be worse than no-op).
 version without the supersedes link would corrupt the version chain
 invariants.
 
-### TEST-SAGE-BH-122: ingest with supersedes_document_id rejects non-active predecessor
+### TEST-SAGE-BH-122: ingest with predecessor_id rejects non-active predecessor
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
 **Category:** ingestion
@@ -2738,7 +2738,7 @@ ingesting a new supersessor produces an inconsistent state and is rejected.
 **Precondition:** Document A with `lifecycle_status=archived` (already
 superseded, or archived via other path).
 
-**Input:** Ingest a new file with `supersedes_document_id: A`.
+**Input:** Ingest a new file with `predecessor_id: A`.
 
 **Expected:**
 - Response is an error with status 409.
@@ -2751,7 +2751,7 @@ superseded, or archived via other path).
 transition is invalid outside the `active` state. The agent must either
 reactivate the predecessor or target the current head of the chain.
 
-### TEST-SAGE-BH-123: ingest with supersedes_document_id rejects identical content
+### TEST-SAGE-BH-123: ingest with predecessor_id rejects identical content
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (ingest endpoint)
 **Category:** ingestion
@@ -2763,7 +2763,7 @@ identical content would pollute the version chain with duplicates.
 bytes identical to A's file.
 
 **Input:** Ingest the identical-content file with
-`supersedes_document_id: A`.
+`predecessor_id: A`.
 
 **Expected:**
 - Response is an error with status 409.
@@ -2791,8 +2791,8 @@ detected before any new document record is created.
 exists with `lifecycle_status=archived`.
 
 **Input (two cases):**
-- Ingest a file with `supersedes_document_id: "bogus_predecessor"`.
-- Ingest a file with `supersedes_document_id: B`.
+- Ingest a file with `predecessor_id: "bogus_predecessor"`.
+- Ingest a file with `predecessor_id: B`.
 
 **Expected (both cases):**
 - Response is an error (404 for case 1, 409 for case 2).
@@ -2939,7 +2939,7 @@ Stages 2-3 dispatch as a background task when `wait_for_pipeline=False`.
 
 **Artifact:** `sage/services/ingestion.py` (supersede ordering)
 **Category:** ingestion
-**Decision:** When `supersedes_document_id` is provided, the supersede
+**Decision:** When `predecessor_id` is provided, the supersede
 lifecycle transition fires immediately after the new document record is
 inserted and before Stages 2-3 (embedding, abstraction) run. The version
 chain is complete when `ingest` returns regardless of pipeline state.
@@ -2952,7 +2952,7 @@ configured to dispatch Stages 2-3 as a background task
 (`wait_for_pipeline=False`).
 
 **Input:** Ingest modified file as Document B with
-`supersedes_document_id: A` and `wait_for_pipeline=False`.
+`predecessor_id: A` and `wait_for_pipeline=False`.
 
 **Expected (immediately after `ingest` returns, without polling):**
 - Document B exists, `lifecycle_status=active`.
@@ -3158,7 +3158,7 @@ exists so we exercise set_lifecycle directly.)
 
 **Input:** Monkeypatch `GraphStore.insert_edge` to raise
 `RuntimeError("simulated lock contention")`. Then call
-`set_lifecycle(A.id, action="supersede", new_version_id=B.id)`.
+`set_lifecycle(A.id, action="supersede", successor_id=B.id)`.
 
 **Expected:**
 - The call raises (the underlying RuntimeError or a wrapped equivalent).
@@ -3191,7 +3191,7 @@ file present in the vault (would-be successor).
 **Input:** Monkeypatch `GraphStore.insert_with_supersede_atomic` to raise
 `RuntimeError` mid-transaction (simulating a SQLite lock / constraint
 failure during the commit). Then call
-`ingest(source=successor_file, supersedes_document_id=A.id)`.
+`ingest(source=successor_file, predecessor_id=A.id)`.
 
 **Expected:**
 - The call raises (the underlying RuntimeError or wrapped equivalent).

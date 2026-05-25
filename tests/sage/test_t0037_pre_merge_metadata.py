@@ -158,7 +158,7 @@ async def test_a2_failure_on_new_doc_with_predecessor_leaves_no_record_pred_acti
     request = IngestRequest(
         source="succ.md",
         source_type=SourceType.MARKDOWN,
-        supersedes_document_id=pred_id,
+        predecessor_id=pred_id,
         metadata={"title": "Caller Successor Title"},
     )
     with pytest.raises(RuntimeError, match="injected"):
@@ -333,7 +333,7 @@ async def test_c5_with_predecessor_adapter_tag_merge(
         IngestRequest(
             source="c5_succ.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=pred.document.id,
+            predecessor_id=pred.document.id,
             metadata={"codes": "succ-tag"},
         )
     )
@@ -357,7 +357,7 @@ async def test_c6_metadata_confirmed_with_predecessor_default_true(
         IngestRequest(
             source="c6_succ.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=pred.document.id,
+            predecessor_id=pred.document.id,
         )
     )
     assert result.document.metadata_confirmed is True
@@ -395,7 +395,7 @@ async def test_c7_doc_type_defaults_to_misc_when_unresolved_with_predecessor_non
         IngestRequest(
             source="c7_succ.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=pred.document.id,
+            predecessor_id=pred.document.id,
         )
     )
     assert result.document.doc_type == "misc"
@@ -520,7 +520,7 @@ async def test_d2_new_doc_with_predecessor_single_atomic_insert_zero_updates(
         IngestRequest(
             source="d2_succ.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=pred.document.id,
+            predecessor_id=pred.document.id,
         ),
     )
     assert counters["insert_with_supersede_atomic"] == 1

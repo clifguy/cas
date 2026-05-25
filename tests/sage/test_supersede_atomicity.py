@@ -110,7 +110,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     with pytest.raises(RuntimeError, match="simulated lock contention"):
         await lifecycle_service.set_lifecycle(
             pred.id,
-            SetLifecycleRequest(action="supersede", new_version_id=succ.id),
+            SetLifecycleRequest(action="supersede", successor_id=succ.id),
         )
 
     # Predecessor must still be active: lifecycle flip rolled back.
@@ -126,7 +126,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     monkeypatch.setattr(graph_store, "_exec_insert_edge", original_exec_insert_edge)
     response = await lifecycle_service.set_lifecycle(
         pred.id,
-        SetLifecycleRequest(action="supersede", new_version_id=succ.id),
+        SetLifecycleRequest(action="supersede", successor_id=succ.id),
     )
     assert response.document.lifecycle_status == "archived"
     edges = await _supersedes_edges(graph_store, succ.id, pred.id)
@@ -168,7 +168,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
             IngestRequest(
                 source="bh136_v2.md",
                 source_type=SourceType.MARKDOWN,
-                supersedes_document_id=v1.document.id,
+                predecessor_id=v1.document.id,
             )
         )
 
@@ -190,7 +190,7 @@ async def test_bh_136_ingest_rolls_back_doc_on_supersede_failure(
         IngestRequest(
             source="bh136_v2.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
         )
     )
     pred_after = await graph_store.get_document(v1.document.id)

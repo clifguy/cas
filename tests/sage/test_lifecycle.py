@@ -171,7 +171,7 @@ async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_s
 
 
 # ---------------------------------------------------------------------------
-# BH-016: Supersede requires existing new_version_id
+# BH-016: Supersede requires existing successor_id
 # ---------------------------------------------------------------------------
 
 
@@ -182,15 +182,15 @@ async def test_bh_016_supersede_requires_existing_version(graph_store, lifecycle
     with pytest.raises(DocumentNotFoundError) as exc_info:
         await lifecycle_service.set_lifecycle(
             _id("doc_old"),
-            SetLifecycleRequest(action="supersede", new_version_id=_id("nonexistent_id")),
+            SetLifecycleRequest(action="supersede", successor_id=_id("nonexistent_id")),
         )
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail["document_id"] == _id("nonexistent_id")
 
 
-async def test_bh_016_supersede_requires_new_version_id_field(graph_store, lifecycle_service):
-    """Supersede without new_version_id raises 400."""
+async def test_bh_016_supersede_requires_successor_id_field(graph_store, lifecycle_service):
+    """Supersede without successor_id raises 400."""
     doc = _make_doc(_id("doc_no_version"))
     await graph_store.insert_document(doc)
 
@@ -214,7 +214,7 @@ async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
 
     response = await lifecycle_service.set_lifecycle(
         _id("doc_to_supersede"),
-        SetLifecycleRequest(action="supersede", new_version_id=_id("doc_replacement")),
+        SetLifecycleRequest(action="supersede", successor_id=_id("doc_replacement")),
     )
 
     # doc_old transitions to archived

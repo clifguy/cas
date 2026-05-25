@@ -35,7 +35,7 @@ router = APIRouter(tags=["Ingestion"])
                 "`duplicate_content`: a document with the same `source_path` "
                 "and content hash already exists. Use `force: true` to "
                 "bypass detection and re-run the pipeline.\n\n"
-                "`supersede_target_not_active`: `supersedes_document_id` was "
+                "`supersede_target_not_active`: `predecessor_id` was "
                 "set but the predecessor is not in `active`. For completed, "
                 "filed, or otherwise non-active predecessors, run the "
                 "archive → reactivate dance via "

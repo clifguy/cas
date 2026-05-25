@@ -116,7 +116,7 @@ def register_sage_tools(
         config: dict | None = None,
         created_by: str | None = None,
         force: bool = False,
-        supersedes_document_id: str | None = None,
+        predecessor_id: str | None = None,
         needs_review: bool = False,
         metadata: dict | None = None,
         tier3_metadata: dict | None = None,
@@ -149,7 +149,7 @@ def register_sage_tools(
         sage_update_metadata.
 
         Trio-field inheritance on supersede (CAS-ADR-021): when
-        ``supersedes_document_id`` is set and the caller omits any of
+        ``predecessor_id`` is set and the caller omits any of
         ``doc_type``, ``project``, or ``authority_scope`` from
         ``metadata``, the omitted fields inherit from the predecessor's
         value (when non-None). A caller who *wants* to change one of
@@ -194,7 +194,7 @@ def register_sage_tools(
           ``source_path`` and content hash already exists. Override
           with ``force=true`` to re-ingest.
         - ``supersede_target_not_active`` (409):
-          ``supersedes_document_id`` was set but the predecessor is
+          ``predecessor_id`` was set but the predecessor is
           not in ``active``. For completed, filed, or otherwise
           non-active predecessors, run the archive -> reactivate dance
           via ``sage_set_lifecycle`` before retrying. See the
@@ -242,7 +242,7 @@ def register_sage_tools(
                 merged payload.
             created_by: Creator name. Defaults to vault owner.
             force: Allow re-ingestion of duplicate content.
-            supersedes_document_id: When provided, the ingested document
+            predecessor_id: When provided, the ingested document
                 supersedes this predecessor. SAGE applies the `supersede`
                 lifecycle transition synchronously with record insertion:
                 creates a `supersedes` edge (new -> old) and archives
@@ -285,10 +285,8 @@ def register_sage_tools(
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            if supersedes_document_id is not None:
-                supersedes_document_id = _DOCUMENT_ID_ADAPTER.validate_python(
-                    supersedes_document_id
-                )
+            if predecessor_id is not None:
+                predecessor_id = _DOCUMENT_ID_ADAPTER.validate_python(predecessor_id)
             v = get_vault(vault_id)
             request = IngestRequest(
                 source=source,
@@ -296,7 +294,7 @@ def register_sage_tools(
                 config=config,
                 created_by=created_by,
                 force=force,
-                supersedes_document_id=supersedes_document_id,
+                predecessor_id=predecessor_id,
                 needs_review=needs_review,
                 metadata=metadata,
                 tier3_metadata=tier3_metadata,
@@ -618,7 +616,7 @@ def register_sage_tools(
         vault_id: str,
         document_id: str,
         action: str,
-        new_version_id: str | None = None,
+        successor_id: str | None = None,
         dry_run: bool = False,
     ) -> dict:
         """Execute a lifecycle state transition on a document.
@@ -652,8 +650,8 @@ def register_sage_tools(
         To supersede a predecessor in ``completed``, ``filed``, or any
         other non-active state, run the archive -> reactivate dance
         first, then either call ``sage_set_lifecycle(action="supersede",
-        new_version_id=...)`` against the predecessor or
-        ``sage_ingest(..., supersedes_document_id=<predecessor_id>)``
+        successor_id=...)`` against the predecessor or
+        ``sage_ingest(..., predecessor_id=<predecessor_id>)``
         which applies the same atomic transition synchronously with
         record insertion. A direct call against a non-active
         predecessor returns ``supersede_target_not_active``.
@@ -675,7 +673,7 @@ def register_sage_tools(
           (e.g. ``complete``) when the document's
           ``pipeline_status`` is not yet terminal.
         - ``identical_content_supersede`` (409): ``action="supersede"``
-          with ``new_version_id`` whose content hash matches the
+          with ``successor_id`` whose content hash matches the
           predecessor.
 
         Dry-run mode (T-0152, T-0163):
@@ -719,18 +717,18 @@ def register_sage_tools(
                 vault's ``lifecycle.transitions`` table as a valid
                 action from the document's current state. See
                 ``sage_get_vault_config`` for the authoritative list.
-            new_version_id: The successor document's id (a ``documents.id``
+            successor_id: The successor document's id (a ``documents.id``
                 value — the same shape as ``document_id`` on other tools;
-                T-0155). The ``document_id``/``new_version_id`` pair is a
+                T-0155). The ``document_id``/``successor_id`` pair is a
                 semantic distinction, not a naming inconsistency; both
                 endpoints carry document ids. Required when
                 ``action="supersede"`` (a ``supersedes`` edge is created
-                from ``new_version_id`` -> ``document_id``); forbidden
+                from ``successor_id`` -> ``document_id``); forbidden
                 for all other actions. The successor must already exist
                 as a separate active document; this tool does not
                 create it. For the common case where the successor has
                 not yet been ingested, prefer
-                ``sage_ingest(..., supersedes_document_id=<predecessor_id>)``,
+                ``sage_ingest(..., predecessor_id=<predecessor_id>)``,
                 which ingests and supersedes atomically.
             dry_run: T-0152 / T-0163. When True, run all validators
                 and compute the would-be projection of the
@@ -746,12 +744,12 @@ def register_sage_tools(
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
-            if new_version_id is not None:
-                new_version_id = _DOCUMENT_ID_ADAPTER.validate_python(new_version_id)
+            if successor_id is not None:
+                successor_id = _DOCUMENT_ID_ADAPTER.validate_python(successor_id)
             v = get_vault(vault_id)
             request = SetLifecycleRequest(
                 action=action,
-                new_version_id=new_version_id,
+                successor_id=successor_id,
                 dry_run=dry_run,
             )
             response = await v.lifecycle_service.set_lifecycle(document_id, request)
@@ -769,7 +767,7 @@ def register_sage_tools(
         """Apply lifecycle transitions to many documents in one call.
 
         First ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
-        ``document_id``, ``action``, and optional ``new_version_id`` with
+        ``document_id``, ``action``, and optional ``successor_id`` with
         the same semantics as ``sage_set_lifecycle``; items are processed
         in order, each holding the per-document lock and a per-item
         SQLite transaction.
@@ -807,7 +805,7 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             items: List of per-item transition requests. Each item must
                 conform to the ``BulkLifecycleItem`` shape:
-                ``{document_id: str, action: str, new_version_id: str | None}``.
+                ``{document_id: str, action: str, successor_id: str | None}``.
                 Shape validation runs up front; a single malformed item
                 rejects the entire batch before any per-item work
                 executes.
@@ -1176,8 +1174,8 @@ def register_sage_tools(
         """Create a typed edge between two documents in the graph.
 
         **For ``supersedes`` edges, prefer
-        ``sage_set_lifecycle(action="supersede", new_version_id=...)``**
-        (or ``sage_ingest(..., supersedes_document_id=...)`` when the
+        ``sage_set_lifecycle(action="supersede", successor_id=...)``**
+        (or ``sage_ingest(..., predecessor_id=...)`` when the
         successor has not yet been ingested). Those tools wire the
         edge AND archive the predecessor atomically. ``sage_link`` with
         ``edge_type="supersedes"`` creates the edge alone and does

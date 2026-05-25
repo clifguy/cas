@@ -471,7 +471,7 @@ async def test_t6_archived_chain_head_still_holds_identifier(graph_store):
 async def test_t7_supersession_with_shared_identifier_succeeds(
     tmp_vault_dir, unique_keys_ingestion_service, graph_store
 ):
-    """T7: ingest with `supersedes_document_id` set and the same
+    """T7: ingest with `predecessor_id` set and the same
     `ticket_id` succeeds; predecessor is flipped out of `is_chain_head`
     before the successor inserts. Anti-coincidental: failing to reorder
     the atomic supersede path causes the partial UNIQUE to fire on the
@@ -494,7 +494,7 @@ async def test_t7_supersession_with_shared_identifier_succeeds(
             source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
-            supersedes_document_id=first.document.id,
+            predecessor_id=first.document.id,
         )
     )
     pred_fresh = await graph_store.get_document(first.document.id)
@@ -531,7 +531,7 @@ async def test_t8_second_unrelated_ingest_after_supersession_still_collides(
             source_type=SourceType.MARKDOWN,
             metadata={"doc_type": "ticket"},
             tier3_metadata={"ticket_id": "T-0001", "ticket_priority": "high"},
-            supersedes_document_id=first.document.id,
+            predecessor_id=first.document.id,
         )
     )
 

@@ -2,7 +2,7 @@
 
 Covers the read-modify-reingest pattern: agents fetch original file bytes
 via `get_document(include_content=true)`, edit the file locally, then
-re-ingest as a new version via `ingest(supersedes_document_id=...)`.
+re-ingest as a new version via `ingest(predecessor_id=...)`.
 """
 
 import asyncio
@@ -402,7 +402,7 @@ async def test_bh_129_supersede_atomic_with_ingest_response(
         IngestRequest(
             source="bh129_v2.md",
             source_type=_SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
         ),
         wait_for_pipeline=False,
     )
@@ -503,11 +503,11 @@ async def test_bh_130_sync_path_waits_for_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# TEST-SAGE-BH-120: ingest with supersedes_document_id links new version
+# TEST-SAGE-BH-120: ingest with predecessor_id links new version
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_120_supersedes_document_id_happy_path(
+async def test_bh_120_predecessor_id_happy_path(
     tmp_vault_dir, graph_store, ingestion_service, lifecycle_service
 ):
     _seed_file(tmp_vault_dir, "bh120_v1.md", "# Version 1\n\nOriginal content.")
@@ -520,7 +520,7 @@ async def test_bh_120_supersedes_document_id_happy_path(
         IngestRequest(
             source="bh120_v2.md",
             source_type=SourceType.MARKDOWN,
-            supersedes_document_id=v1.document.id,
+            predecessor_id=v1.document.id,
         )
     )
 
@@ -553,7 +553,7 @@ async def test_bh_121_supersedes_nonexistent_predecessor(
             IngestRequest(
                 source="bh121.md",
                 source_type=SourceType.MARKDOWN,
-                supersedes_document_id=_id("nonexistent_id"),
+                predecessor_id=_id("nonexistent_id"),
             )
         )
     assert exc_info.value.status_code == 404
@@ -585,7 +585,7 @@ async def test_bh_122_supersedes_non_active_predecessor(
             IngestRequest(
                 source="bh122_v2.md",
                 source_type=SourceType.MARKDOWN,
-                supersedes_document_id=v1.document.id,
+                predecessor_id=v1.document.id,
             )
         )
     err = exc_info.value
@@ -623,7 +623,7 @@ async def test_bh_123_supersedes_identical_content(tmp_vault_dir, graph_store, i
             IngestRequest(
                 source="bh123_b.md",
                 source_type=SourceType.MARKDOWN,
-                supersedes_document_id=v1.document.id,
+                predecessor_id=v1.document.id,
             )
         )
     err = exc_info.value
@@ -657,7 +657,7 @@ async def test_bh_124_validation_before_projection(
             IngestRequest(
                 source="bh124_case1.md",
                 source_type=SourceType.MARKDOWN,
-                supersedes_document_id=_id("bogus_predecessor"),
+                predecessor_id=_id("bogus_predecessor"),
             )
         )
     assert await graph_store.list_all_documents() == []
@@ -675,7 +675,7 @@ async def test_bh_124_validation_before_projection(
             IngestRequest(
                 source="bh124_case2.md",
                 source_type=SourceType.MARKDOWN,
-                supersedes_document_id=pred.document.id,
+                predecessor_id=pred.document.id,
             )
         )
     all_docs = await graph_store.list_all_documents()

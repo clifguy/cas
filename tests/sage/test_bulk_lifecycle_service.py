@@ -122,7 +122,7 @@ async def test_bulk_set_lifecycle_partial_success_on_unknown_document(
 async def test_bulk_set_lifecycle_supersede_with_missing_new_version_returns_per_item_error(
     graph_store, lifecycle_service
 ):
-    """A supersede whose new_version_id does not exist surfaces per-item
+    """A supersede whose successor_id does not exist surfaces per-item
     error without leaking out of the batch."""
     pred = _id("doc_pred")
     await graph_store.insert_document(_make_doc(pred))
@@ -133,7 +133,7 @@ async def test_bulk_set_lifecycle_supersede_with_missing_new_version_returns_per
                 BulkLifecycleItem(
                     document_id=pred,
                     action="supersede",
-                    new_version_id=_id("nonexistent_successor"),
+                    successor_id=_id("nonexistent_successor"),
                 )
             ]
         )
