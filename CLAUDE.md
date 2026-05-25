@@ -69,6 +69,7 @@ This is a single-developer Mac setup, not a portable Linux service. Adapt comman
 - Keep SAGE and ROOT Harness imports cleanly separated. ROOT Harness imports SAGE's Core API in Phase 1 (in-process), but the code should be structured as if they communicate over HTTP.
 - Database files (SQLite, LanceDB) must never be stored inside cloud-synced directories or inside the Git repository. Paths are configured in `sage/config.yaml` and `root_harness/config.yaml`.
 - API keys are environment variables, never committed. `.env` files are gitignored.
+- **Durable code surfaces stay public-ready.** Code, docstrings, and `#` comments will be read by people who have no knowledge of CAS's internal SDLC scaffolding. Do not reference the precipitating ticket (`T-NNNN`), non-ADR design artifacts (checklist, work plan, decision sheet, dispatcher prompt, subagent contract, cohort, batch), PR or issue numbers, "for the X flow / caller / use case", use-case-specific naming outside the `domains/` subtree (e.g., PIM, theology, patent prosecution), or personal identity (`/Users/clifguy`, GitHub username). The only sanctioned durable-surface anchor is `CAS-ADR-NNN`; ticket and process references go in commit messages and PR bodies. The *CAS Code-Surface Discipline* steering document (cas vault, `doc_type=steering_document`) carries full rationale; the `cas-code-review` skill's §P1 enforces it at the `/commit` gate.
 
 ## Workflow
 

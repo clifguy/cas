@@ -19,14 +19,16 @@ Generalization is a hypothesis until observed in a second repo. Do not extract u
 
 ## Section structure
 
-Each F1-F5 section below is structured the same way:
+Each section below is structured the same way:
 
 1. **What this catches.** One-sentence framing.
 2. **Already gated deterministically.** What CI catches without the skill — the skill must not duplicate this work.
 3. **Review prompts.** Questions to walk through against the diff under review.
 4. **What "correct" looks like.** A short reference snippet from the canonical pattern.
 
-The skill adds value in two places: catching the residue that deterministic gates cannot reach (F2 tests-as-chronicle, F4 remediation-pass scope gap), and giving early feedback before CI runs.
+Sections labeled `F` are code-correctness failure modes anchored to the *AI-First SDLC Tooling Survey*. Sections labeled `P` are publicness-readiness gates for the public-repo posture; they are not code-correctness failures but release-discipline ratchets.
+
+The skill adds value in two places: catching the residue that deterministic gates cannot reach (F2 tests-as-chronicle, F4 remediation-pass scope gap, P1 publicness drift), and giving early feedback before CI runs.
 
 ## How to invoke
 
@@ -179,9 +181,46 @@ Every vault-scoped endpoint takes `vault_id: str = Depends(get_vault_id)` as one
 
 ---
 
+## P1 — Public-repo posture drift (release-readiness gate)
+
+**What this catches.** Newly added or modified code, docstrings, or `#` comments that would (a) leak the internal SDLC scaffolding (specific ticket ids, checklists, work plans, dispatcher prompts, decision sheets, cohorts, batches, PR or issue numbers), (b) pin the repo to a particular non-generic use case (e.g., PIM, theology, patent prosecution), or (c) expose the author's personal identity (`/Users/clifguy/...`, GitHub usernames, internal URLs). The repo is intended to be encountered by readers who have no knowledge of the production process that produced CAS/SAGE; the durable code surface must read accordingly.
+
+**Convention reference.** The *CAS Code-Surface Discipline* steering document (vault: cas, `doc_type=steering_document`, tag `code-surface-discipline`) is the source-of-truth specification for what may and may not appear in durable surfaces, including the SAGE-as-ticketing and `domains/` exceptions and worked right-vs-wrong examples. Cite it when surfacing a finding so the rationale is traceable rather than re-derived.
+
+**Already gated deterministically.** Nothing today. A pre-commit hook over the staged diff could mechanically catch the bulk of these (`grep` for `T-[0-9]{4}`, `PIM`, `pim_health`, `/Users/clifguy`, etc.); not yet implemented. Until it lands, this section is the only gate.
+
+**Scope note.** This is a forward-only ratchet on NEW changes. Legacy violations (the existing ~1,300 `T-NNNN` references and the broader use-case-specific surface area) are addressed by a separate cleanup pass and are not the concern of this section — the section fires when a diff *adds* a violation, not when an unrelated change touches a file that already contains one. Removing a legacy violation is always welcome but never required by this gate unless the diff also modifies the same docstring/comment.
+
+**Review prompts.**
+
+- For every docstring or `#` comment ADDED or MODIFIED in the diff, does it reference:
+  - A ticket id matching `T-NNNN` (e.g., `T-0023`, `T-0195`)? Flag.
+  - A non-ADR internal-scaffolding artifact: "checklist", "work plan", "decision sheet", "dispatcher prompt", "subagent contract", "cohort", "batch", a PR or issue number? Flag.
+  - The motivating ticket, flow, or caller ("added for the X flow", "fix from issue #123", "used by Y")? Flag — that belongs in the commit message and PR body, not in the durable code surface.
+- For every code element (identifier, string literal, module name, file path) ADDED or MODIFIED in the diff outside the `domains/` subtree, does it mention `PIM`, `pim_health`, `pim-health`, `theology`, `theological`, `patent`, `prosecution`, or other use-case-specific terminology? Flag.
+- For every docstring, comment, or test fixture ADDED or MODIFIED, does it hardcode `/Users/clifguy/` or another personally identifying path, URL, or username? Flag.
+- Acceptable references that MUST NOT be flagged:
+  - `CAS-ADR-NNN` — ADRs are durable architectural citations and the only sanctioned non-code rationale anchor.
+  - The `test` vault — used by the SAGE test suite; architecturally meaningful, not use-case-specific.
+  - SAGE-as-ticketing patterns: `doc_type=ticket`, `tier3_metadata` ticket fields, and similar. These describe SAGE's expressly-supported architectural use (per CAS-ADR-028) and are NOT use-case contamination. Distinguish "the architectural pattern" (OK) from "a specific ticket id" (not OK).
+  - The `domains/<domain>/` subtree — a domain example may carry its own domain-specific naming; flag only when changes outside `domains/` leak the same vocabulary.
+
+**What "correct" looks like.**
+
+- WRONG: `# T-0023: enforces the EdgeIdStr alias to prevent SQL-lookup hazard.`
+- RIGHT: `# Enforces the EdgeIdStr alias to prevent SQL-lookup hazard; see CAS-ADR-019.`
+- WRONG: `"""Process PIM document codes (PV##, NP##-yy) from the inbox."""`
+- RIGHT: `"""Process document codes from the configured inbox per the active vault's metadata_extraction config."""`
+- WRONG: `# Per checklist item 4 in the Q2 cleanup workplan, skip the legacy index.`
+- RIGHT: `# Skip the legacy index — see CAS-ADR-NNN for the migration rationale.`
+
+The rule is: durable surfaces (code, docstrings, comments) describe the pattern and cite ADRs only; ephemeral surfaces (commit messages, PR bodies) carry ticket and process scaffolding.
+
+---
+
 ## Out of scope
 
-- Style, formatting, naming. Ruff and mypy own this surface.
+- Style, formatting, naming. Ruff and mypy own this surface. (Public-posture content discipline IS in scope; see P1.)
 - Generic security review. The `security-review` skill (separate, Anthropic-shipped) covers this.
 - Test coverage measurement, performance regression, or dependency-policy review. These are Tier 1 surfaces from the SDLC survey and have their own tooling lanes.
 - Architectural-decision review. ADRs in the cas vault (`doc_type=adr`) are the substrate for that.
