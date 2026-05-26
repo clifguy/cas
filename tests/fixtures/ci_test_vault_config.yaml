@@ -1,34 +1,31 @@
-# Minimal cas vault config for the GitHub Actions Playwright e2e job.
+# Minimal smoke-test vault config for the GitHub Actions Playwright e2e job.
 #
-# Copied into ~/sage_vaults/cas/vault_config.yaml on the CI runner before
-# SAGE starts, so SAGE's lifespan vault-discovery picks it up and the
-# bulk-actions e2e spec (app/e2e/bulk-actions.spec.ts, hardcoding
-# VAULT_ID="cas") finds a vault to ingest fixture docs into. The
-# maintenance spec uses the smoke-test vault instead — see
-# ci_test_vault_config.yaml.
+# Copied into ~/sage_vaults/test/vault_config.yaml on the CI runner before
+# SAGE starts, so SAGE's lifespan vault-discovery picks up the smoke-test
+# vault alongside cas. The maintenance e2e spec
+# (app/e2e/maintenance.spec.ts) ingests its deferred-abstract fixture
+# here so the cas vault stays free of test sediment across runs (SAGE
+# has no hard-delete; archived predecessors persist in the graph store).
 #
 # Shape mirrors VaultRegistryService.get_default_config in
-# sage/services/vault_registry.py, pruned to the minimum the seed script
-# (app/e2e/fixtures/seed_e2e_fixtures.py) and the bulk-actions spec
-# exercise: markdown ingest, lifecycle archive transition, and
-# tag/lifecycle-filtered discover. Abstraction is disabled at vault
-# scope so MLX/Qwen3 is never touched on the Linux runner
+# sage/services/vault_registry.py, pruned to the minimum the maintenance
+# fixture exercises: markdown ingest of doc_type="document", lifecycle
+# archive transition, tag/lifecycle/pipeline_status-filtered discover,
+# and vault-config GET. Abstraction is disabled at vault scope so the
+# maintenance seed produces an abstraction_skipped fixture directly
+# (BH-025) without exercising the toggle dance the script runs in dev,
+# and so MLX/Qwen3 is never touched on the Linux runner
 # (SAGE_TEST_STUB_PROVIDERS=1 is the belt-and-suspenders fallback set
 # by the workflow env).
 vault:
-  id: cas
-  name: CAS Documentation
+  id: test
+  name: Smoke-test vault
   owner: clif
-  storage_root: ~/sage_vaults/cas/sources
-  brain_root: ~/sage_vaults/cas/brain
+  storage_root: ~/sage_vaults/test/sources
+  brain_root: ~/sage_vaults/test/brain
   visibility: personal
 document_types:
   doc_types:
-    - value: misc
-      label: Miscellaneous
-      description: General-purpose document type used by the bulk-actions e2e fixtures.
-      source_types:
-        - markdown
     - value: document
       label: Document
       description: Catch-all document type.

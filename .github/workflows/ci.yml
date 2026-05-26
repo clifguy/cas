@@ -251,10 +251,12 @@ jobs:
         working-directory: app
         run: npx playwright install-deps chromium
 
-      - name: Bootstrap cas vault for SAGE
+      - name: Bootstrap cas and test vaults for SAGE
         run: |
           mkdir -p ~/sage_vaults/cas/sources/imports
           cp tests/fixtures/ci_cas_vault_config.yaml ~/sage_vaults/cas/vault_config.yaml
+          mkdir -p ~/sage_vaults/test/sources/imports
+          cp tests/fixtures/ci_test_vault_config.yaml ~/sage_vaults/test/vault_config.yaml
 
       - name: Run Playwright e2e
         working-directory: app
