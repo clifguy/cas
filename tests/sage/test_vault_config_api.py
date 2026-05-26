@@ -339,18 +339,20 @@ async def test_update_config_failed_reload_keeps_old_services_in_registry(
     assert app.state.vault_registry["test_vault"] is old
 
     # (c) Old services are still FUNCTIONAL — graph store is not closed.
-    # Use the same closure-detection idiom as
+    # Internal-state assertions use the same idiom as
     # tests/sage/test_mcp_server.py::test_reload_vault_closes_old_graph_store
-    # (which inverts these assertions for the success path). A behavioural
-    # check like `await old.graph_store.list_all_documents()` would pass
-    # coincidentally because close() does not break read paths — fresh
-    # threads transparently open new SQLite connections.
+    # (which inverts these assertions for the success path). The behavioural
+    # co-assertion below (per TEST-SAGE-BH-137) confirms the post-CAS-ADR-036
+    # dispatch barrier did not engage: a successful list_all_documents()
+    # through _run is the contrapositive of the close-barrier RuntimeError.
     assert old.graph_store._executor is not None, (
         "old graph_store was closed; build-new-first ordering not enforced"
     )
     assert old.graph_store._all_connections, (
         "old graph_store has no live connections; close() was called"
     )
+    live_docs = await old.graph_store.list_all_documents()
+    assert isinstance(live_docs, list)
 
 
 # ---------------------------------------------------------------------------

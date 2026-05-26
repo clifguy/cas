@@ -441,6 +441,12 @@ async def test_migrate_vault_keeps_graph_store_open_when_migration_fails(
     assert services.graph_store._all_connections, (
         "self._graph_store has no live connections; close() was called"
     )
+    # Behavioural co-assertion per TEST-SAGE-BH-137: the CAS-ADR-036 dispatch
+    # barrier would raise if close() had run. A successful dispatch confirms
+    # the live store still serves operations, not just that its bookkeeping
+    # fields look healthy.
+    live_docs = await services.graph_store.list_all_documents()
+    assert isinstance(live_docs, list)
 
     # (b) Registry slot identity unchanged.
     assert registry[services.config.vault.id] is pre_call_services
@@ -530,6 +536,11 @@ async def test_migrate_vault_keeps_graph_store_open_when_post_migration_reload_f
     assert services.graph_store._all_connections, (
         "self._graph_store has no live connections after reload failure"
     )
+    # Behavioural co-assertion per TEST-SAGE-BH-137: the CAS-ADR-036 dispatch
+    # barrier would raise if close() had run. A successful dispatch confirms
+    # the live store survived the outer-sequence reload failure.
+    live_docs = await services.graph_store.list_all_documents()
+    assert isinstance(live_docs, list)
 
     # (b) Registry slot identity unchanged: the inner-reload build-new-first
     # guarantee preserves the old SAGEServices reference when

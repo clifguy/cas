@@ -142,6 +142,67 @@ contention from reaching callers.
 **Rationale:** indexed_at captures when content entered the content store,
 independent of abstraction.
 
+### TEST-SAGE-BH-137: GraphStore.close() is a dispatch barrier (post-close raise-on-use)
+
+**Artifact:** `sage/storage/graph_store.py` (`GraphStore._run`, `GraphStore.close`)
+**Category:** storage, lifecycle, test-pattern
+**Decision:** After `close()` returns, the dispatch boundary in `_run` raises
+`RuntimeError("GraphStore is closed")` for any subsequent operation, including
+from threads or asyncio tasks that never touched the store before close. Per
+CAS-ADR-036. The barrier is the primary signal; the pre-barrier internal-state
+idiom (`_executor is None`, `_all_connections == []`) is the legacy signal.
+
+**Precondition:** Live `GraphStore` instance with at least one operation
+already dispatched (so `_executor` is non-`None` and `_all_connections` is
+non-empty).
+
+**Input:**
+1. Call `await store.close()`.
+2. Dispatch any public operation, e.g. `await store.list_all_documents()`.
+3. Call `await store.close()` a second time.
+
+**Expected:**
+- The first `close()` returns; the second `close()` is a no-op (idempotent,
+  no error).
+- The post-close dispatch raises `RuntimeError` matching `"closed"`.
+- `store._executor is None` and `store._all_connections == []` (legacy
+  internal-state signals, retained for tests that document idempotency or
+  detect resource-leak shapes distinct from the barrier itself).
+
+**Rationale:** Pre-barrier, `close()` was a bookkeeping label: the underlying
+SQLite handle remained usable from any thread that had not seen the closed
+connection, so behavioural close-checks were coincidental — `_run` fell
+through to asyncio's default executor and transparently re-opened the
+database on a fresh worker thread. The barrier converts the dispatch
+boundary into an enforced terminator so the post-close contract is
+verifiable from a single check, regardless of which thread, task, or
+executor would otherwise serve the call.
+
+**Canonical test pattern.** Tests that need to assert close-state SHOULD use
+the behavioural probe as the primary signal:
+
+```python
+with pytest.raises(RuntimeError, match="closed"):
+    await store.list_all_documents()
+```
+
+Tests that assert "store is NOT closed" (e.g., reload-failure rollback
+preserved the live store) SHOULD pair the internal-state check with a
+successful dispatch probe:
+
+```python
+assert store._executor is not None
+assert store._all_connections
+docs = await store.list_all_documents()
+assert isinstance(docs, list)
+```
+
+Internal-state-only assertions are retained where they document a specific
+invariant the behavioural probe does not exercise — e.g.,
+`test_close_sets_closed_flag_idempotent` and the failure-cleanup tests in
+`tests/sage/test_initialize_services_cleanup.py`, which guard against
+resource leaks that the barrier check alone would not surface.
+
 
 ---
 

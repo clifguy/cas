@@ -1296,18 +1296,21 @@ async def test_reload_vault_failure_keeps_old_services_in_registry(vault_service
     assert _mcp._vaults["test_vault"] is old
 
     # (c) The old services are still FUNCTIONAL — graph store is not closed.
-    # Match the idiom used by test_reload_vault_closes_old_graph_store (above)
-    # for the closure detection: _executor goes to None and _all_connections
-    # is cleared by GraphStore.close(). The trap: a behavioural check like
-    # `await old.graph_store.list_all_documents()` would pass coincidentally
-    # because the underlying SQLite file is still on disk and a fresh thread
-    # would simply open a new connection — close() does not break read paths.
+    # The internal-state assertions match the idiom used by
+    # test_reload_vault_closes_old_graph_store (above) for the closure
+    # detection: _executor goes to None and _all_connections is cleared by
+    # GraphStore.close(). The behavioural co-assertion below (per
+    # TEST-SAGE-BH-137) confirms the post-CAS-ADR-036 dispatch barrier did
+    # not engage — a successful list_all_documents() through _run is the
+    # contrapositive of the close-barrier RuntimeError.
     assert old.graph_store._executor is not None, (
         "old graph_store was closed; restore-on-failure did not preserve it"
     )
     assert old.graph_store._all_connections, (
         "old graph_store has no live connections; close() was called"
     )
+    live_docs = await old.graph_store.list_all_documents()
+    assert isinstance(live_docs, list)
 
 
 async def test_reload_vault_failure_releases_partially_allocated_resources(
@@ -1675,7 +1678,8 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
 
     # Registry slot identity unchanged and graph_store still live: the
     # outer migration-then-reload sequence wrapped the close in reload's
-    # success path.
+    # success path. Behavioural co-assertion per TEST-SAGE-BH-137 confirms
+    # the CAS-ADR-036 dispatch barrier did not engage.
     assert _mcp._vaults["test_vault"] is old
     assert old.graph_store._executor is not None, (
         "live graph_store was closed before the MCP-surface reload failure"
@@ -1683,6 +1687,8 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
     assert old.graph_store._all_connections, (
         "live graph_store has no live connections after MCP-surface reload failure"
     )
+    live_docs = await old.graph_store.list_all_documents()
+    assert isinstance(live_docs, list)
 
 
 # ---------------------------------------------------------------------------

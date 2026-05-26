@@ -162,6 +162,12 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
         f"GraphStore._all_connections has {len(graph_store._all_connections)} "
         "leaked connections on failure"
     )
+    # Behavioural co-assertion per TEST-SAGE-BH-137: the CAS-ADR-036 dispatch
+    # barrier must engage on the error-path teardown, not just the bookkeeping
+    # fields. A silent-degrade close would let post-failure callers transparently
+    # use the wreckage; the barrier raises instead.
+    with pytest.raises(RuntimeError, match="closed"):
+        await graph_store.list_all_documents()
 
 
 async def test_initialize_services_cleanup_does_not_mask_original_exception(
