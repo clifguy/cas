@@ -1,8 +1,8 @@
-"""MCP tool tests for sage_bulk_link.
+"""MCP tool tests for bulk_create_edge.
 
 Exercises the boundary contract (vault_id and per-item shape validation,
 registry membership check, round-trip of BulkLinkResponse through the
-MCP serialize path), the per-item error-code parity with sage_link, the
+MCP serialize path), the per-item error-code parity with create_edge, the
 natural-key idempotency on each item, the/dry-run
 discipline, and the/response_mode rules.
 
@@ -132,7 +132,7 @@ async def test_a1_mcp_tool_round_trip_returns_dict_matching_response_model(seede
     vault_id, ids, services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[1])]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert isinstance(result, dict)
     assert "error" not in result, f"unexpected error envelope: {result!r}"
@@ -149,7 +149,7 @@ async def test_a1_mcp_tool_round_trip_returns_dict_matching_response_model(seede
 
 async def test_a2_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registry):
     """A2 — vault_id failing the VaultIdStr adapter surfaces an error envelope."""
-    result = await mcp_server.sage_bulk_link(vault_id="not a vault id!", items=[])
+    result = await mcp_server.bulk_create_edge(vault_id="not a vault id!", items=[])
     assert isinstance(result, dict)
     assert "error" in result
     assert result["error"] == "internal_error"
@@ -157,7 +157,7 @@ async def test_a2_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registr
 
 async def test_a3_mcp_tool_unknown_vault_returns_error_envelope(empty_registry):
     """A3 — Valid-shape but unregistered vault_id surfaces unknown_vault."""
-    result = await mcp_server.sage_bulk_link(vault_id="ghost", items=[])
+    result = await mcp_server.bulk_create_edge(vault_id="ghost", items=[])
     assert isinstance(result, dict)
     assert result.get("error") == "unknown_vault"
 
@@ -180,7 +180,7 @@ async def test_a4_mcp_tool_items_validation_rejects_batch_before_any_insert(
         },
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=bad_items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=bad_items)
 
     assert isinstance(result, dict)
     assert "error" in result, f"expected validation error envelope, got {result!r}"
@@ -200,7 +200,7 @@ async def test_a5_mcp_tool_empty_items_returns_zero_results(seeded_mcp_vault):
     and envelope success."""
     vault_id, _ids, _services = seeded_mcp_vault
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=[])
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=[])
 
     assert "error" not in result, f"unexpected error envelope: {result!r}"
     assert result["results"] == []
@@ -215,7 +215,9 @@ async def test_a6_mcp_tool_invalid_response_mode_rejected_up_front(seeded_mcp_va
     vault_id, ids, services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[1])]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, response_mode="medium")
+    result = await mcp_server.bulk_create_edge(
+        vault_id=vault_id, items=items, response_mode="medium"
+    )
 
     assert "error" in result, f"expected validation error envelope, got {result!r}"
     persisted = await services.graph_store.get_edges_by_source(ids[0], "references")
@@ -226,7 +228,7 @@ async def test_a6_mcp_tool_invalid_response_mode_rejected_up_front(seeded_mcp_va
 
 
 # ---------------------------------------------------------------------------
-# Group B — Per-item error code parity with sage_link
+# Group B — Per-item error code parity with create_edge
 #
 # For each error code, the test seeds the documents and edge state
 # needed to trigger it, includes the offending item alongside one valid
@@ -246,7 +248,7 @@ async def test_b1_self_referential_edge_per_item(seeded_mcp_vault):
         _ref_item(ids[2], ids[2]),  # self-ref
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 1
@@ -275,7 +277,7 @@ async def test_b2_edge_anchor_policy_violation_missing_transitive_both_per_item(
         },
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 1
@@ -310,7 +312,7 @@ async def test_b3_edge_anchor_policy_violation_forbidden_field_on_retracts_per_i
         },
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 1
@@ -332,7 +334,7 @@ async def test_b4_retract_target_not_edge_per_item(seeded_mcp_vault):
         },
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 1
@@ -350,7 +352,7 @@ async def test_b5_document_not_found_source_per_item(seeded_mcp_vault):
         _ref_item(ghost, ids[2]),
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 1
@@ -368,7 +370,7 @@ async def test_b6_document_not_found_target_per_item(seeded_mcp_vault):
         _ref_item(ids[2], ghost),
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 1
@@ -400,7 +402,7 @@ async def test_c1_per_item_idempotency_returns_created_false_on_natural_key_hit(
         _ref_item(ids[0], ids[2]),  # new
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 2
@@ -422,7 +424,7 @@ async def test_c2_per_item_idempotency_returns_existing_rationale(seeded_mcp_vau
 
     items = [_ref_item(ids[0], ids[1], rationale="r2")]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     entry = result["results"][0]
@@ -449,7 +451,7 @@ async def test_c3_mixed_batch_partial_success_envelope_is_success(seeded_mcp_vau
         _ref_item(ids[0], ids[3]),
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result, "envelope must be success per CAS-ADR-029"
     assert result["success_count"] == 2
@@ -478,7 +480,7 @@ async def test_d1_dry_run_returns_sentinel_edge_id_per_item(seeded_mcp_vault, st
     vault_id, ids, services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[1]), _ref_item(ids[0], ids[2])]
 
-    result = await mcp_server.sage_bulk_link(
+    result = await mcp_server.bulk_create_edge(
         vault_id=vault_id, items=items, dry_run=True, response_mode="full"
     )
 
@@ -498,14 +500,14 @@ async def test_d2_dry_run_persists_no_edges(seeded_mcp_vault, stub_content_store
     items = [_ref_item(ids[0], ids[1]), _ref_item(ids[0], ids[2])]
 
     before = await state_snapshot(services.graph_store)
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, dry_run=True)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items, dry_run=True)
     after = await state_snapshot(services.graph_store)
 
     assert "error" not in result
     assert result["dry_run"] is True
     assert_state_unchanged(before, after)
     # Positive control: real-run actually inserts.
-    await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
     edges_from_zero = await services.graph_store.get_edges_by_source(ids[0], "references")
     assert len(edges_from_zero) == 2
 
@@ -517,8 +519,8 @@ async def test_d3_dry_run_error_parity_per_item(seeded_mcp_vault):
     vault_id, ids, _services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[0])]  # self-ref
 
-    real_result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
-    dry_result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, dry_run=True)
+    real_result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
+    dry_result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items, dry_run=True)
 
     real_err = real_result["results"][0]["error"]
     dry_err = dry_result["results"][0]["error"]
@@ -540,7 +542,7 @@ async def test_d4_dry_run_natural_key_collision_returns_existing_edge_with_creat
     real = await services.graph_ops_service.link(await _build_link_request(ids[0], ids[1]))
     real_id = real.edge.id
 
-    result = await mcp_server.sage_bulk_link(
+    result = await mcp_server.bulk_create_edge(
         vault_id=vault_id,
         items=[_ref_item(ids[0], ids[1])],
         dry_run=True,
@@ -562,10 +564,10 @@ async def test_d5_dry_run_envelope_carries_dry_run_true(seeded_mcp_vault):
     vault_id, ids, _services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[1])]
 
-    dry_result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, dry_run=True)
+    dry_result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items, dry_run=True)
     # Distinct natural key on the real-run so we don't conflate with C4.
     real_items = [_ref_item(ids[0], ids[2])]
-    real_result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=real_items)
+    real_result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=real_items)
 
     assert dry_result["dry_run"] is True
     assert real_result["dry_run"] is False
@@ -583,7 +585,9 @@ async def test_e1_response_mode_light_strips_edge_body_on_success(seeded_mcp_vau
     vault_id, ids, _services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[1]), _ref_item(ids[0], ids[2])]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, response_mode="light")
+    result = await mcp_server.bulk_create_edge(
+        vault_id=vault_id, items=items, response_mode="light"
+    )
 
     assert "error" not in result
     assert result["success_count"] == 2
@@ -601,7 +605,7 @@ async def test_e2_response_mode_full_preserves_edge_body(seeded_mcp_vault):
     vault_id, ids, _services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[1]), _ref_item(ids[0], ids[2])]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, response_mode="full")
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items, response_mode="full")
 
     assert "error" not in result
     for entry in result["results"]:
@@ -621,7 +625,7 @@ async def test_e3_response_mode_default_above_threshold_returns_light(
     vault_id, ids, _services = seeded_seven_mcp_vault
     items = [_ref_item(ids[0], ids[n]) for n in range(1, 7)]  # 6 items
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 6
@@ -642,7 +646,7 @@ async def test_e4_response_mode_default_at_or_below_threshold_returns_full(
         _ref_item(ids[0], ids[3]),
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_create_edge(vault_id=vault_id, items=items)
 
     assert "error" not in result
     assert result["success_count"] == 3
@@ -658,10 +662,10 @@ async def test_e5_response_mode_error_envelope_intact_in_light_mode(seeded_mcp_v
     light_items = [_ref_item(ids[0], ids[0])]  # self-ref
     full_items = [_ref_item(ids[1], ids[1])]  # different self-ref so no cross-pollution
 
-    light_result = await mcp_server.sage_bulk_link(
+    light_result = await mcp_server.bulk_create_edge(
         vault_id=vault_id, items=light_items, response_mode="light"
     )
-    full_result = await mcp_server.sage_bulk_link(
+    full_result = await mcp_server.bulk_create_edge(
         vault_id=vault_id, items=full_items, response_mode="full"
     )
 
@@ -686,7 +690,9 @@ async def test_e6_response_mode_mixed_batch_in_light_mode(seeded_mcp_vault):
         _ref_item(ids[0], ids[3]),  # success
     ]
 
-    result = await mcp_server.sage_bulk_link(vault_id=vault_id, items=items, response_mode="light")
+    result = await mcp_server.bulk_create_edge(
+        vault_id=vault_id, items=items, response_mode="light"
+    )
 
     assert result["success_count"] == 2
     assert result["error_count"] == 1

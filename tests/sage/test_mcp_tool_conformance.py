@@ -16,7 +16,7 @@ requestBody field of its OpenAPI counterpart by name and compatible
 type. Tools may expose a strict subset of OpenAPI inputs. The MCP
 transport's JSON-string-as-carrier convention is encoded in the type
 table below: a Python ``str`` argument may stand in for an OpenAPI
-``object`` or ``array`` field (e.g. ``sage_discover(filters: str)``
+``object`` or ``array`` field (e.g. ``search(filters: str)``
 where the spec declares ``filters`` as an object). The tolerance is
 asymmetric and scoped: ``int`` cannot stand in for ``object``, etc.
 
@@ -27,7 +27,7 @@ OpenAPI operation must have an MCP tool (allowlisted in
 predate the gate are pinned in ``KNOWN_ARG_DRIFT`` until reconciled.
 All three allowlists fail when stale.
 
-``sage_reload_vault`` is intentionally outside the gated registries
+``reload_vault`` is intentionally outside the gated registries
 because it is registered directly on the FastMCP instance in
 ``mcp_server.py`` rather than via ``register_sage_tools``; it has no
 HTTP counterpart by design. The ROOT Harness Orchestration spec
@@ -78,24 +78,23 @@ class ToolSurface(NamedTuple):
 # ``tool_registry_attr=None`` means "no MCP surface exists for this
 # spec yet"; the gate runs the operation-coverage direction only and
 # expects every operation to be listed in HTTP_ONLY_OPERATIONS until
-# the tools land. ``operation_prefix`` is the prefix the surface's
-# OpenAPI operationIds carry (empty for sage_core where operationIds
-# are unprefixed; ``app_`` for cas_app where operationIds carry the
-# same prefix as the tools).
+# the tools land. ``operation_prefix`` and ``tool_prefix`` are both
+# empty for the SAGE surfaces post the verb-convention rename: MCP
+# tool names match OpenAPI operationIds directly (per CAS-ADR-033).
 TOOL_SURFACES: tuple[ToolSurface, ...] = (
     ToolSurface(
         name="sage_core",
         spec_path=SAGE_CORE_SPEC_PATH,
         tool_registry_attr="_sage_tools",
-        tool_prefix="sage_",
+        tool_prefix="",
         operation_prefix="",
     ),
     ToolSurface(
         name="cas_app",
         spec_path=CAS_APP_SPEC_PATH,
         tool_registry_attr="_app_tools",
-        tool_prefix="app_",
-        operation_prefix="app_",
+        tool_prefix="",
+        operation_prefix="",
     ),
     ToolSurface(
         name="root_harness",
@@ -114,26 +113,25 @@ _SURFACES_BY_NAME: dict[str, ToolSurface] = {s.name: s for s in TOOL_SURFACES}
 # ---------------------------------------------------------------------------
 
 # (surface_name, tool_name) -> operation_id when the tool name does
-# not equal "<tool_prefix>" + operation_id. Drains as MCP tools and
-# operationIds are reconciled.
-OPERATION_RENAMES: dict[tuple[str, str], str] = {
-    ("sage_core", "sage_pending_metadata"): "list_pending_metadata",
-}
+# not equal "<tool_prefix>" + operation_id. After the verb-convention
+# rename (CAS-ADR-033), MCP tool names equal OpenAPI operationIds for
+# the SAGE surfaces; this allowlist is empty.
+OPERATION_RENAMES: dict[tuple[str, str], str] = {}
 
 # (surface_name, tool_name) -> justification for MCP tools that
 # legitimately have no HTTP counterpart.
 DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     (
         "sage_core",
-        "sage_reabstract",
+        "recompute_abstract",
     ): "Agent-only abstraction refresh; no HTTP route by design.",
     (
         "sage_core",
-        "sage_update_staging_edge",
+        "update_staging_edge",
     ): (
         "MCP-only consolidation of confirm_staging_edge + dismiss_staging_edge "
-        "per the SAGE MCP Tool Surface steering doc v3 audit. REST exposes the "
-        "two operations separately (BE-011, BE-012); MCP collapses them via the "
+        "per the SAGE MCP Tool Surface enumeration discipline (CAS-ADR-035). "
+        "REST exposes the two operations separately; MCP collapses them via the "
         "action parameter."
     ),
 }
@@ -143,23 +141,23 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
 # must be either remediated (by adding the field to the spec or
 # removing it from the tool) or replaced with a justification for
 # permanent divergence. The test fails on stale entries (drift
-# remediated but allowlist not pruned). Drained to empty by.
+# remediated but allowlist not pruned).
 KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
-    # ``document_id`` is an MCP-only alias for ``start_id`` on
-    # sage_traverse, added to unify document-ID parameter naming across
-    # MCP tools after a field report. The HTTP API surface is explicitly
-    # out of scope per the ticket (HTTP callers see the OpenAPI schema
-    # and don't suffer the same field-name guessing cost). Permanent
+    # ``document_id`` is an MCP-only alias for ``start_id`` on the
+    # ``traverse`` tool, added to unify document-ID parameter naming
+    # across MCP tools after a field report. The HTTP API surface is
+    # explicitly out of scope (HTTP callers see the OpenAPI schema and
+    # don't suffer the same field-name guessing cost). Permanent
     # divergence by design, not pending remediation.
-    ("sage_core", "sage_traverse"): frozenset({"document_id"}),
-    # SAGE MCP Tool Surface steering doc v3 audit: write_to_path was
-    # added to sage_read_projection (MCP) as the consolidated home for
-    # the write-to-disk delivery mode that previously lived on
-    # sage_export_projection. The REST surface keeps export_projection
-    # as its own discrete endpoint (storage_root-relative semantics);
-    # the MCP-side write_to_path is an absolute-path mode mirroring
-    # sage_get_document. Permanent divergence by design.
-    ("sage_core", "sage_read_projection"): frozenset({"write_to_path"}),
+    ("sage_core", "traverse"): frozenset({"document_id"}),
+    # ``write_to_path`` was added to the ``read_projection`` MCP tool
+    # as the consolidated home for the write-to-disk delivery mode
+    # that previously lived on a separate export_projection tool. The
+    # REST surface keeps ``export_projection`` as its own discrete
+    # endpoint (storage_root-relative semantics); the MCP-side
+    # ``write_to_path`` is an absolute-path mode mirroring
+    # ``get_document``. Permanent divergence by design.
+    ("sage_core", "read_projection"): frozenset({"write_to_path"}),
 }
 
 
@@ -172,25 +170,26 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
         "sage_core",
         "register_user",
     ): (
-        "REST-only per the SAGE MCP Tool Surface steering doc (v3 audit): user "
-        "registration is a CAS App account-creation concern. Agents pass ad-hoc "
-        "`created_by` strings per CAS-ADR-021 and do not need an MCP path."
+        "REST-only per the SAGE MCP Tool Surface enumeration discipline "
+        "(CAS-ADR-035): user registration is a CAS App account-creation concern. "
+        "Agents pass ad-hoc `created_by` strings per CAS-ADR-021 and do not need "
+        "an MCP path."
     ),
     (
         "sage_core",
         "confirm_staging_edge",
     ): (
-        "REST keeps the operation as a discrete endpoint (BE-011); MCP collapses "
-        "confirm+dismiss into sage_update_staging_edge(action=...) per the SAGE "
-        "MCP Tool Surface steering doc v3 audit."
+        "REST keeps the operation as a discrete endpoint; MCP collapses "
+        "confirm+dismiss into update_staging_edge(action=...) per the SAGE "
+        "MCP Tool Surface enumeration discipline (CAS-ADR-035)."
     ),
     (
         "sage_core",
         "dismiss_staging_edge",
     ): (
-        "REST keeps the operation as a discrete endpoint (BE-012); MCP collapses "
-        "confirm+dismiss into sage_update_staging_edge(action=...) per the SAGE "
-        "MCP Tool Surface steering doc v3 audit."
+        "REST keeps the operation as a discrete endpoint; MCP collapses "
+        "confirm+dismiss into update_staging_edge(action=...) per the SAGE "
+        "MCP Tool Surface enumeration discipline (CAS-ADR-035)."
     ),
     (
         "sage_core",
@@ -198,9 +197,9 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ): (
         "REST keeps export_projection (storage_root-relative write semantics); "
         "MCP folds the write-to-disk capability into "
-        "sage_read_projection(write_to_path=...) (absolute-path semantics, "
-        "mirroring sage_get_document) per the SAGE MCP Tool Surface steering "
-        "doc v3 audit."
+        "read_projection(write_to_path=...) (absolute-path semantics, mirroring "
+        "get_document) per the SAGE MCP Tool Surface enumeration discipline "
+        "(CAS-ADR-035)."
     ),
     (
         "sage_core",
@@ -429,8 +428,8 @@ def _resolve_expected_operation_id(surface: ToolSurface, tool_name: str) -> str:
     """Map an MCP tool name to its expected operationId.
 
     Strips the surface's ``tool_prefix`` and prepends its
-    ``operation_prefix``. For sage_core: ``sage_ingest`` -> ``ingest``.
-    For cas_app: ``app_scan_directory`` -> ``app_scan_directory`` (the
+    ``operation_prefix``. For sage_core: ``ingest_document`` -> ``ingest``.
+    For cas_app: ``list_directory`` -> ``list_directory`` (the
     operation_prefix matches the tool_prefix).
     """
     override = OPERATION_RENAMES.get((surface.name, tool_name))

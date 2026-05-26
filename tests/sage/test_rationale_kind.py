@@ -152,7 +152,7 @@ def _make_doc(doc_id: str) -> Document:
 
 
 async def test_t10_traverse_returns_stored_rationale_kind(graph_store, graph_ops_service):
-    """T10. ``sage_traverse`` surfaces the stored ``rationale_kind`` on
+    """T10. ``traverse`` surfaces the stored ``rationale_kind`` on
     each edge rather than defaulting to ``manual``.
 
     Also asserts the parallel fields that ``_traverse_sync``'s row dict

@@ -1,6 +1,6 @@
 """Chain-resolution traversal tests (CAS-ADR-017, Chunk 4).
 
-Covers TEST-SAGE-CR-013..022: sage_traverse honors the edge-type
+Covers TEST-SAGE-CR-013..022: traverse honors the edge-type
 resolution_policy registry and anchor-in-lineage filtering. All tests
 use the canonical ADR worked example unless otherwise noted:
 

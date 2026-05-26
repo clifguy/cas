@@ -67,7 +67,7 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     exercise those endpoints (e.g. tests/sage/test_vault_config_api.py)
     would otherwise write YAML into the real user vault tree and leave
     orphan vault directories behind, which then show up in
-    ``sage_list_vaults`` after the server restarts.
+    ``list_vaults`` after the server restarts.
 
     ``sage.services.vault_registry._VAULTS_ROOT`` is the same constant
     re-imported for default-config path construction; patch both so a

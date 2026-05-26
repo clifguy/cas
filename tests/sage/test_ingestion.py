@@ -2421,7 +2421,7 @@ async def test_empty_content_heading_still_emits_chunk(
     FTS index. Without this, a heading like "DETAILED DESCRIPTION" that's
     immediately followed by another top-level heading vanishes from the
     indexed surface — invisible to BM25, semantic search, and
-    sage_read_section heading enumeration. Word's Find finds it; SAGE
+    read_section heading enumeration. Word's Find finds it; SAGE
     must too. Closes the gap surfaced by Cowork on PV01 v10.2.2 et al.
     """
     config = _build_vault_config_with_docx(

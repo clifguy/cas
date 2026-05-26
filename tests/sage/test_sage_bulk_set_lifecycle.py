@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_bulk_set_lifecycle.
+"""MCP tool tests for bulk_update_lifecycle.
 
 Exercises the boundary contract: vault_id and per-item shape validation,
 registry membership check, and round-trip of the BulkLifecycleResponse
@@ -58,7 +58,7 @@ async def test_mcp_tool_round_trip_returns_dict_matching_response_model(seeded_m
     vault_id, seeded_ids = seeded_mcp_vault
     items = [{"document_id": d, "action": "archive"} for d in seeded_ids]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_update_lifecycle(vault_id=vault_id, items=items)
 
     assert isinstance(result, dict)
     assert "error" not in result, f"unexpected error envelope: {result!r}"
@@ -69,7 +69,7 @@ async def test_mcp_tool_round_trip_returns_dict_matching_response_model(seeded_m
 
 async def test_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registry):
     """A vault_id that fails the VaultIdStr adapter surfaces as the error envelope."""
-    result = await mcp_server.sage_bulk_set_lifecycle(vault_id="not a vault id!", items=[])
+    result = await mcp_server.bulk_update_lifecycle(vault_id="not a vault id!", items=[])
 
     assert isinstance(result, dict)
     assert "error" in result
@@ -78,7 +78,7 @@ async def test_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registry):
 
 async def test_mcp_tool_unknown_vault_returns_error_envelope(empty_registry):
     """A syntactically valid but unregistered vault_id surfaces unknown_vault."""
-    result = await mcp_server.sage_bulk_set_lifecycle(vault_id="ghost", items=[])
+    result = await mcp_server.bulk_update_lifecycle(vault_id="ghost", items=[])
 
     assert isinstance(result, dict)
     assert result.get("error") == "unknown_vault"
@@ -93,7 +93,7 @@ async def test_mcp_tool_items_validation_rejects_bad_shape(seeded_mcp_vault):
         {"action": "archive"},  # missing document_id
     ]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(vault_id=vault_id, items=bad_items)
+    result = await mcp_server.bulk_update_lifecycle(vault_id=vault_id, items=bad_items)
 
     assert isinstance(result, dict)
     assert "error" in result, f"expected validation error envelope, got {result!r}"
@@ -157,7 +157,7 @@ async def test_t0153_t1_light_strips_document_and_semantic_abstract(
     vault_id, seeded_ids = seeded_six_with_abstracts
     items = [{"document_id": d, "action": "archive"} for d in seeded_ids[:3]]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(
+    result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=items, response_mode="light"
     )
 
@@ -186,7 +186,7 @@ async def test_t0153_t2_full_preserves_document_with_semantic_abstract(
     vault_id, seeded_ids = seeded_six_with_abstracts
     items = [{"document_id": d, "action": "archive"} for d in seeded_ids[:3]]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(
+    result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=items, response_mode="full"
     )
 
@@ -209,7 +209,7 @@ async def test_t0153_t3_default_above_threshold_returns_light(
     vault_id, seeded_ids = seeded_six_with_abstracts
     items = [{"document_id": d, "action": "archive"} for d in seeded_ids[:6]]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_update_lifecycle(vault_id=vault_id, items=items)
 
     assert "error" not in result, f"unexpected error envelope: {result!r}"
     assert result["success_count"] == 6
@@ -228,7 +228,7 @@ async def test_t0153_t4_default_at_or_below_threshold_returns_full(
     vault_id, seeded_ids = seeded_six_with_abstracts
     items = [{"document_id": d, "action": "archive"} for d in seeded_ids[:3]]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(vault_id=vault_id, items=items)
+    result = await mcp_server.bulk_update_lifecycle(vault_id=vault_id, items=items)
 
     assert "error" not in result, f"unexpected error envelope: {result!r}"
     assert result["success_count"] == 3
@@ -255,10 +255,10 @@ async def test_t0153_t5_error_envelope_intact_in_light_mode(
         {"document_id": ghost_id, "action": "archive"},
     ]
 
-    light_result = await mcp_server.sage_bulk_set_lifecycle(
+    light_result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=light_items, response_mode="light"
     )
-    full_result = await mcp_server.sage_bulk_set_lifecycle(
+    full_result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=full_items, response_mode="full"
     )
 
@@ -286,7 +286,7 @@ async def test_t0153_t6_error_envelope_intact_in_full_mode(
         {"document_id": ghost_id, "action": "archive"},
     ]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(
+    result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=items, response_mode="full"
     )
 
@@ -308,7 +308,7 @@ async def test_t0153_t7_mixed_batch_in_light_mode(seeded_six_with_abstracts):
         {"document_id": seeded_ids[1], "action": "archive"},
     ]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(
+    result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=items, response_mode="light"
     )
 
@@ -332,7 +332,7 @@ async def test_t0153_t8_invalid_response_mode_rejected_up_front(
     vault_id, seeded_ids = seeded_six_with_abstracts
     items = [{"document_id": d, "action": "archive"} for d in seeded_ids[:3]]
 
-    result = await mcp_server.sage_bulk_set_lifecycle(
+    result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=items, response_mode="verbose"
     )
 
@@ -355,7 +355,7 @@ async def test_t0153_t9_empty_batch_with_explicit_light(seeded_six_with_abstract
     light must still parse cleanly)."""
     vault_id, _ = seeded_six_with_abstracts
 
-    result = await mcp_server.sage_bulk_set_lifecycle(
+    result = await mcp_server.bulk_update_lifecycle(
         vault_id=vault_id, items=[], response_mode="light"
     )
 

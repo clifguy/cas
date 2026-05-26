@@ -1,9 +1,9 @@
 """Tests for vault-management MCP tools (TEST-APP-MCP-030 through MCP-040).
 
 Covers the three vault-management MCP tools:
-  - sage_create_vault (single config-dict argument; see)
-  - sage_get_vault_config
-  - sage_update_vault_config (with destructive-change force-gate)
+  - create_vault (single config-dict argument; see)
+  - get_vault_config
+  - update_vault_config (with destructive-change force-gate)
 
 Direct function calls bypassing MCP transport, matching the pattern in
 tests/app/test_mcp_app_tools.py.
@@ -18,12 +18,12 @@ import yaml
 import sage.mcp_server as _mcp
 from sage.config import VaultConfig
 from sage.mcp_server import (
-    sage_create_vault,
-    sage_get_vault_config,
-    sage_ingest,
-    sage_list_vaults,
-    sage_update_metadata,
-    sage_update_vault_config,
+    create_vault,
+    get_vault_config,
+    ingest_document,
+    list_vaults,
+    update_metadata,
+    update_vault_config,
 )
 from sage.services.vault_registry import VaultRegistryService
 
@@ -121,15 +121,15 @@ def _make_full_config_dict(vaults_root: Path, vault_id: str, name: str, owner: s
 
 @pytest.fixture
 async def registered_vault(vaults_root, empty_registry, tmp_path):
-    """Pre-create a vault via sage_create_vault and yield its config."""
+    """Pre-create a vault via create_vault and yield its config."""
     config = _make_full_config_dict(vaults_root, "test_vault", "Test Vault", "testuser")
-    result = await sage_create_vault(config=config)
+    result = await create_vault(config=config)
     assert "vault_id" in result, f"setup failed: {result}"
     yield config
 
 
 # ---------------------------------------------------------------------------
-# 1. sage_create_vault
+# 1. create_vault
 # ---------------------------------------------------------------------------
 
 
@@ -137,9 +137,9 @@ class TestSageCreateVault:
     # TEST-APP-MCP-030
     async def test_mcp_030_default_config_creates_vault(self, vaults_root, empty_registry):
         """``VaultRegistryService.get_default_config`` produces a config dict
-        that ``sage_create_vault`` accepts without further hand-tuning."""
+        that ``create_vault`` accepts without further hand-tuning."""
         default_cfg = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")
-        result = _parse(await sage_create_vault(config=default_cfg))
+        result = _parse(await create_vault(config=default_cfg))
 
         assert result["vault_id"] == "new_vault"
         assert result["name"] == "New Vault"
@@ -150,7 +150,7 @@ class TestSageCreateVault:
         VaultConfig.model_validate(result["config"])
 
         # Registry contains the new vault
-        vaults_list = _parse(await sage_list_vaults())
+        vaults_list = _parse(await list_vaults())
         ids = {v["id"] for v in vaults_list["vaults"]}
         assert "new_vault" in ids
 
@@ -165,26 +165,26 @@ class TestSageCreateVault:
     async def test_mcp_031_rejects_duplicate(self, vaults_root, empty_registry):
         """Creating an already-registered vault id returns vault_already_exists."""
         cfg = VaultRegistryService.get_default_config("existing", "Existing", "testuser")
-        await sage_create_vault(config=cfg)
+        await create_vault(config=cfg)
         cfg_again = VaultRegistryService.get_default_config("existing", "Existing Again", "x")
-        result = _parse(await sage_create_vault(config=cfg_again))
+        result = _parse(await create_vault(config=cfg_again))
         assert result.get("error") == "vault_already_exists"
 
     # TEST-APP-MCP-033
     async def test_mcp_033_full_config_mode_creates_vault(self, vaults_root, empty_registry):
         """A complete config dict creates a vault matching the dict's identity."""
         cfg = _make_full_config_dict(vaults_root, "full_cfg", "Full Cfg", "testuser")
-        result = _parse(await sage_create_vault(config=cfg))
+        result = _parse(await create_vault(config=cfg))
 
         assert result["vault_id"] == "full_cfg"
         assert result["config"]["vault"]["id"] == "full_cfg"
-        vaults_list = _parse(await sage_list_vaults())
+        vaults_list = _parse(await list_vaults())
         assert "full_cfg" in {v["id"] for v in vaults_list["vaults"]}
 
     # TEST-APP-MCP-034
     async def test_mcp_034_full_config_rejects_invalid(self, vaults_root, empty_registry):
         """Invalid config dict returns vault_config_validation_error."""
-        result = _parse(await sage_create_vault(config={"vault": {"id": "bad"}}))
+        result = _parse(await create_vault(config={"vault": {"id": "bad"}}))
         assert result.get("error") == "vault_config_validation_error"
         assert "errors" in result.get("detail", {})
         assert len(result["detail"]["errors"]) > 0
@@ -194,13 +194,13 @@ class TestSageCreateVault:
     async def test_create_vault_populates_config_path_on_services(
         self, vaults_root, empty_registry
     ):
-        """/F10 regression — sage_create_vault must populate
-        ``SAGEServices.config_path`` so a subsequent ``sage_reload_vault`` after
+        """/F10 regression — create_vault must populate
+        ``SAGEServices.config_path`` so a subsequent ``reload_vault`` after
         an on-disk YAML edit re-reads from disk instead of silently no-op'ing
         on the in-memory ``VaultConfig``.
         """
         cfg = _make_full_config_dict(vaults_root, "cp_vault", "CP Vault", "testuser")
-        result = await sage_create_vault(config=cfg)
+        result = await create_vault(config=cfg)
         assert "vault_id" in result, f"setup failed: {result}"
 
         services = _mcp._vaults["cp_vault"]
@@ -209,7 +209,7 @@ class TestSageCreateVault:
 
 
 # ---------------------------------------------------------------------------
-# 2. sage_get_vault_config
+# 2. get_vault_config
 # ---------------------------------------------------------------------------
 
 
@@ -220,10 +220,10 @@ class TestSageGetVaultConfig:
 
         Also asserts (CAS-ADR-030 /) that the vault-config response
         no longer carries `abstraction.provider` or `abstraction.model`;
-        those moved to stack scope. The `sage_get_stack_config` MCP tool
+        those moved to stack scope. The `get_stack_config` MCP tool
         is the canonical surface for them.
         """
-        result = _parse(await sage_get_vault_config("test_vault"))
+        result = _parse(await get_vault_config("test_vault"))
         for section in (
             "vault",
             "document_types",
@@ -239,16 +239,16 @@ class TestSageGetVaultConfig:
         assert "provider" not in abstraction
         assert "model" not in abstraction
 
-        unknown = _parse(await sage_get_vault_config("does_not_exist"))
+        unknown = _parse(await get_vault_config("does_not_exist"))
         assert unknown.get("error") == "unknown_vault"
 
     async def test_mcp_get_stack_config_returns_provider_and_model(self, registered_vault):
-        """`sage_get_stack_config` surfaces the stack-wide abstraction config
+        """`get_stack_config` surfaces the stack-wide abstraction config
         (CAS-ADR-030). Shape: `{"abstraction": {"provider":..., "model":...}}`.
         """
-        from sage.mcp_server import sage_get_stack_config
+        from sage.mcp_server import get_stack_config
 
-        result = _parse(await sage_get_stack_config())
+        result = _parse(await get_stack_config())
         assert "abstraction" in result
         assert "provider" in result["abstraction"]
         assert "model" in result["abstraction"]
@@ -257,7 +257,7 @@ class TestSageGetVaultConfig:
 
 
 # ---------------------------------------------------------------------------
-# 3. sage_update_vault_config
+# 3. update_vault_config
 # ---------------------------------------------------------------------------
 
 
@@ -265,10 +265,10 @@ class TestSageUpdateVaultConfig:
     # TEST-APP-MCP-036
     async def test_mcp_036_updates_section_preserves_others(self, registered_vault):
         """Section replacement leaves other sections byte-equal."""
-        original = _parse(await sage_get_vault_config("test_vault"))
+        original = _parse(await get_vault_config("test_vault"))
 
         result = _parse(
-            await sage_update_vault_config(
+            await update_vault_config(
                 "test_vault",
                 document_types={
                     "doc_types": [
@@ -283,7 +283,7 @@ class TestSageUpdateVaultConfig:
         assert result["vault_id"] == "test_vault"
         assert result["warnings"] == []
 
-        updated = _parse(await sage_get_vault_config("test_vault"))
+        updated = _parse(await get_vault_config("test_vault"))
         dt_values = [dt["value"] for dt in updated["document_types"]["doc_types"]]
         assert "extra" in dt_values
         # Other sections byte-equal
@@ -297,13 +297,13 @@ class TestSageUpdateVaultConfig:
         sources = Path(registered_vault["vault"]["storage_root"])
         sources.mkdir(parents=True, exist_ok=True)
         (sources / "sample.md").write_text("# Sample\n\nContent.")
-        ingest_result = await sage_ingest("test_vault", "sample.md", "markdown")
+        ingest_result = await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.2)
-        await sage_update_metadata("test_vault", ingest_result["id"], doc_type="note")
+        await update_metadata("test_vault", ingest_result["id"], doc_type="note")
 
         # Attempt destructive update
         result = _parse(
-            await sage_update_vault_config(
+            await update_vault_config(
                 "test_vault",
                 document_types={
                     "doc_types": [{"value": "memo", "label": "Memo"}],
@@ -315,7 +315,7 @@ class TestSageUpdateVaultConfig:
         assert any("note" in w for w in warnings)
 
         # On-disk config unchanged
-        current = _parse(await sage_get_vault_config("test_vault"))
+        current = _parse(await get_vault_config("test_vault"))
         dt_values = [dt["value"] for dt in current["document_types"]["doc_types"]]
         assert "note" in dt_values
 
@@ -325,12 +325,12 @@ class TestSageUpdateVaultConfig:
         sources = Path(registered_vault["vault"]["storage_root"])
         sources.mkdir(parents=True, exist_ok=True)
         (sources / "sample.md").write_text("# Sample\n\nContent.")
-        ingest_result = await sage_ingest("test_vault", "sample.md", "markdown")
+        ingest_result = await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.2)
-        await sage_update_metadata("test_vault", ingest_result["id"], doc_type="note")
+        await update_metadata("test_vault", ingest_result["id"], doc_type="note")
 
         result = _parse(
-            await sage_update_vault_config(
+            await update_vault_config(
                 "test_vault",
                 document_types={
                     "doc_types": [{"value": "memo", "label": "Memo"}],
@@ -342,7 +342,7 @@ class TestSageUpdateVaultConfig:
         assert len(result["warnings"]) >= 1
         assert any("note" in w for w in result["warnings"])
 
-        updated = _parse(await sage_get_vault_config("test_vault"))
+        updated = _parse(await get_vault_config("test_vault"))
         dt_values = [dt["value"] for dt in updated["document_types"]["doc_types"]]
         assert "note" not in dt_values
         assert "memo" in dt_values
@@ -351,7 +351,7 @@ class TestSageUpdateVaultConfig:
     async def test_mcp_039_rejects_vault_id_change_even_with_force(self, registered_vault):
         """Changing vault.id is never allowed, regardless of force."""
         result = _parse(
-            await sage_update_vault_config(
+            await update_vault_config(
                 "test_vault",
                 vault={
                     "id": "different_id",
@@ -374,7 +374,7 @@ class TestSageUpdateVaultConfig:
     async def test_mcp_040_invalid_section_rejected(self, registered_vault):
         """Malformed section fails validation; no YAML write."""
         result = _parse(
-            await sage_update_vault_config(
+            await update_vault_config(
                 "test_vault",
                 lifecycle={"states": "not_a_list"},
             )

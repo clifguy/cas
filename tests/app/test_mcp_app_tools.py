@@ -23,17 +23,17 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_server import (
-    app_batch_ingest,
-    app_scan_directory,
-    sage_discover,
-    sage_hash_check,
-    sage_ingest,
-    sage_list_staging_edges,
-    sage_list_vaults,
-    sage_pending_metadata,
-    sage_unlink,
-    sage_update_staging_edge,
-    sage_vault_stats,
+    bulk_ingest_document,
+    delete_edge,
+    get_vault_stats,
+    ingest_document,
+    list_directory,
+    list_pending_metadata,
+    list_staging_edges,
+    list_vaults,
+    search,
+    update_staging_edge,
+    verify_hash,
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
@@ -236,14 +236,14 @@ async def empty_registry():
 
 
 # ---------------------------------------------------------------------------
-# 1. sage_list_vaults (MCP-001, MCP-002)
+# 1. list_vaults (MCP-001, MCP-002)
 # ---------------------------------------------------------------------------
 
 
 class TestSageListVaults:
     async def test_mcp_001_returns_all_vaults(self, two_vaults):
-        """sage_list_vaults returns all registered vaults in envelope."""
-        result = _parse(await sage_list_vaults())
+        """list_vaults returns all registered vaults in envelope."""
+        result = _parse(await list_vaults())
         assert result["count"] == 2
         assert isinstance(result["vaults"], list)
         ids = {v["id"] for v in result["vaults"]}
@@ -254,26 +254,26 @@ class TestSageListVaults:
             assert "storage_root" in v
 
     async def test_mcp_002_empty_returns_envelope(self, empty_registry):
-        """sage_list_vaults with no vaults returns envelope with empty list."""
-        result = _parse(await sage_list_vaults())
+        """list_vaults with no vaults returns envelope with empty list."""
+        result = _parse(await list_vaults())
         assert result["vaults"] == []
         assert result["count"] == 0
 
 
 # ---------------------------------------------------------------------------
-# 2. sage_vault_stats (MCP-003, MCP-004, MCP-005)
+# 2. get_vault_stats (MCP-003, MCP-004, MCP-005)
 # ---------------------------------------------------------------------------
 
 
 class TestSageVaultStats:
     async def test_mcp_003_returns_stats_and_health(self, single_vault):
-        """sage_vault_stats returns statistics and health indicators."""
+        """get_vault_stats returns statistics and health indicators."""
         services, config = single_vault
         # Ingest a document first
-        await sage_ingest("test_vault", "sample.md", "markdown")
+        await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.3)
 
-        result = _parse(await sage_vault_stats("test_vault"))
+        result = _parse(await get_vault_stats("test_vault"))
         assert result["total_documents"] >= 1
         assert "by_lifecycle_status" in result
         assert "by_doc_type" in result
@@ -288,38 +288,38 @@ class TestSageVaultStats:
         assert "failed_ingestion_count" in h
 
     async def test_mcp_004_empty_vault_zero_counts(self, single_vault):
-        """sage_vault_stats for empty vault returns zero counts."""
-        result = _parse(await sage_vault_stats("test_vault"))
+        """get_vault_stats for empty vault returns zero counts."""
+        result = _parse(await get_vault_stats("test_vault"))
         assert result["total_documents"] == 0
         assert result["total_edges"] == 0
         assert result["staging_edge_count"] == 0
 
     async def test_mcp_005_unknown_vault_error(self, single_vault):
-        """sage_vault_stats for unknown vault returns error."""
-        result = _parse(await sage_vault_stats("nonexistent"))
+        """get_vault_stats for unknown vault returns error."""
+        result = _parse(await get_vault_stats("nonexistent"))
         assert result["error"] == "unknown_vault"
 
     async def test_sqlite_size_bytes_nonzero_after_ingest(self, single_vault):
         """sqlite_size_bytes reflects actual graph.db file size."""
         services, config = single_vault
-        await sage_ingest("test_vault", "sample.md", "markdown")
+        await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.3)
 
-        result = _parse(await sage_vault_stats("test_vault"))
+        result = _parse(await get_vault_stats("test_vault"))
         assert result["sqlite_size_bytes"] > 0
 
     async def test_lancedb_size_bytes_nonzero_after_indexing(self, single_vault):
         """lancedb_size_bytes reflects actual LanceDB directory size."""
         services, config = single_vault
-        await sage_ingest("test_vault", "sample.md", "markdown")
+        await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.5)  # allow indexing to complete
 
-        result = _parse(await sage_vault_stats("test_vault"))
+        result = _parse(await get_vault_stats("test_vault"))
         assert result["lancedb_size_bytes"] > 0
 
     async def test_storage_sizes_zero_for_empty_vault(self, single_vault):
         """Empty vault has sqlite overhead but zero LanceDB (no table yet)."""
-        result = _parse(await sage_vault_stats("test_vault"))
+        result = _parse(await get_vault_stats("test_vault"))
         # SQLite file exists with schema, so it has some size
         assert result["sqlite_size_bytes"] > 0
         # LanceDB directory may not exist or be empty before first ingest
@@ -330,50 +330,50 @@ class TestSageVaultStats:
     async def test_lancedb_chunk_count_nonzero_after_indexing(self, single_vault):
         """lancedb_chunk_count reflects the number of indexed chunk rows."""
         services, config = single_vault
-        await sage_ingest("test_vault", "sample.md", "markdown")
+        await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.5)  # allow indexing to complete
 
-        result = _parse(await sage_vault_stats("test_vault"))
+        result = _parse(await get_vault_stats("test_vault"))
         assert result["lancedb_chunk_count"] > 0
 
 
 # ---------------------------------------------------------------------------
-# 3. sage_hash_check (MCP-006, MCP-007)
+# 3. verify_hash (MCP-006, MCP-007)
 # ---------------------------------------------------------------------------
 
 
 class TestSageHashCheck:
     async def test_mcp_006_returns_matches(self, single_vault):
-        """sage_hash_check returns match results."""
+        """verify_hash returns match results."""
         services, config = single_vault
         # Ingest to get a known hash
-        doc_result = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
+        doc_result = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
         doc_hash = doc_result["source_content_hash"]
         await asyncio.sleep(0.1)
 
-        result = _parse(await sage_hash_check("test_vault", [doc_hash, "sha256:unknown"]))
+        result = _parse(await verify_hash("test_vault", [doc_hash, "sha256:unknown"]))
         assert result[doc_hash]["exists"] is True
         assert result[doc_hash]["document_id"] == doc_result["id"]
         assert result["sha256:unknown"]["exists"] is False
 
     async def test_mcp_007_empty_list(self, single_vault):
-        """sage_hash_check with empty list returns empty object."""
-        result = _parse(await sage_hash_check("test_vault", []))
+        """verify_hash with empty list returns empty object."""
+        result = _parse(await verify_hash("test_vault", []))
         assert result == {}
 
 
 # ---------------------------------------------------------------------------
-# 4. sage_list_staging_edges (MCP-008, MCP-009)
+# 4. list_staging_edges (MCP-008, MCP-009)
 # ---------------------------------------------------------------------------
 
 
 class TestSageListStagingEdges:
     async def test_mcp_008_returns_staging_edges(self, single_vault):
-        """sage_list_staging_edges returns Tier 2 edges in envelope."""
+        """list_staging_edges returns Tier 2 edges in envelope."""
         services, config = single_vault
         # Ingest two docs and create a staging edge
-        r1 = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
-        r2 = _parse(await sage_ingest("test_vault", "second.md", "markdown"))
+        r1 = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        r2 = _parse(await ingest_document("test_vault", "second.md", "markdown"))
         await asyncio.sleep(0.1)
 
         staging = StagingEdge(
@@ -387,15 +387,15 @@ class TestSageListStagingEdges:
         )
         await services.graph_store.insert_staging_edge(staging)
 
-        result = _parse(await sage_list_staging_edges("test_vault"))
+        result = _parse(await list_staging_edges("test_vault"))
         assert result["count"] == 1
         assert result["vault_id"] == "test_vault"
         assert result["items"][0]["id"] == _STG_001
         assert result["items"][0]["edge_type"] == "covers"
 
     async def test_mcp_009_empty_when_none(self, single_vault):
-        """sage_list_staging_edges returns envelope when none exist."""
-        result = _parse(await sage_list_staging_edges("test_vault"))
+        """list_staging_edges returns envelope when none exist."""
+        result = _parse(await list_staging_edges("test_vault"))
         assert result["items"] == []
         assert result["count"] == 0
         assert result["vault_id"] == "test_vault"
@@ -410,8 +410,8 @@ class TestSageListStagingEdges:
 class TestStagingEdgeActions:
     async def _setup_staging(self, services):
         """Ingest docs and create a staging edge, return IDs."""
-        r1 = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
-        r2 = _parse(await sage_ingest("test_vault", "second.md", "markdown"))
+        r1 = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        r2 = _parse(await ingest_document("test_vault", "second.md", "markdown"))
         await asyncio.sleep(0.1)
         staging = StagingEdge(
             id=_STG_TEST,
@@ -426,49 +426,49 @@ class TestStagingEdgeActions:
         return r1["id"], r2["id"]
 
     async def test_mcp_010_confirm_moves_to_production(self, single_vault):
-        """sage_update_staging_edge(action='confirm') promotes to production."""
+        """update_staging_edge(action='confirm') promotes to production."""
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "confirm"))
+        result = _parse(await update_staging_edge("test_vault", _STG_TEST, "confirm"))
         assert result["confirmed"] is True
         assert "production_edge_id" in result
 
         # Staging edge gone
-        listing = _parse(await sage_list_staging_edges("test_vault"))
+        listing = _parse(await list_staging_edges("test_vault"))
         assert listing["count"] == 0
 
     async def test_mcp_011_dismiss_deletes(self, single_vault):
-        """sage_update_staging_edge(action='dismiss') deletes from staging."""
+        """update_staging_edge(action='dismiss') deletes from staging."""
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "dismiss"))
+        result = _parse(await update_staging_edge("test_vault", _STG_TEST, "dismiss"))
         assert result["dismissed"] is True
 
-        listing = _parse(await sage_list_staging_edges("test_vault"))
+        listing = _parse(await list_staging_edges("test_vault"))
         assert listing["count"] == 0
 
     async def test_mcp_012_nonexistent_returns_error(self, single_vault):
-        """sage_update_staging_edge against non-existent edge returns error."""
-        result = _parse(await sage_update_staging_edge("test_vault", _GONE_001, "confirm"))
+        """update_staging_edge against non-existent edge returns error."""
+        result = _parse(await update_staging_edge("test_vault", _GONE_001, "confirm"))
         assert "error" in result
 
     async def test_invalid_action_returns_error(self, single_vault):
-        """sage_update_staging_edge with action outside {confirm, dismiss}
+        """update_staging_edge with action outside {confirm, dismiss}
         returns a structured error (the action enum is enforced inside the
         tool, not silently passed through to the service layer)."""
         services, config = single_vault
         await self._setup_staging(services)
 
-        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "approve"))
+        result = _parse(await update_staging_edge("test_vault", _STG_TEST, "approve"))
         assert "error" in result
         assert "invalid_action" in result["message"]
 
         # Anti-coincidental-pass: the staging edge must still exist
         # (the dispatch must not silently fall through to one of the
         # branches on an invalid action).
-        listing = _parse(await sage_list_staging_edges("test_vault"))
+        listing = _parse(await list_staging_edges("test_vault"))
         assert listing["count"] == 1
 
     async def test_t0079_confirm_with_existing_production_edge_is_idempotent(self, single_vault):
@@ -498,7 +498,7 @@ class TestStagingEdgeActions:
             )
         )
 
-        result = _parse(await sage_update_staging_edge("test_vault", _STG_TEST, "confirm"))
+        result = _parse(await update_staging_edge("test_vault", _STG_TEST, "confirm"))
         # The promotion is idempotent: no error surfaced.
         assert result["confirmed"] is True
         assert "production_edge_id" in result
@@ -508,7 +508,7 @@ class TestStagingEdgeActions:
         assert len(edges) == 1
 
         # Staging edge is consumed.
-        listing = _parse(await sage_list_staging_edges("test_vault"))
+        listing = _parse(await list_staging_edges("test_vault"))
         assert listing["count"] == 0
 
 
@@ -526,12 +526,12 @@ class TestEdgeIdValidation:
     @pytest.mark.parametrize(
         "tool_fn",
         [
-            lambda v, e: sage_unlink(v, e),
-            lambda v, e: sage_update_staging_edge(v, e, "confirm"),
-            lambda v, e: sage_update_staging_edge(v, e, "dismiss"),
+            lambda v, e: delete_edge(v, e),
+            lambda v, e: update_staging_edge(v, e, "confirm"),
+            lambda v, e: update_staging_edge(v, e, "dismiss"),
         ],
         ids=[
-            "sage_unlink",
+            "delete_edge",
             "sage_update_staging_edge_confirm",
             "sage_update_staging_edge_dismiss",
         ],
@@ -555,8 +555,8 @@ class TestEdgeIdValidation:
         """A staging edge created with canonical id X is found by URN-prefixed lookup."""
         services, _config = single_vault
         # Set up the staging edge with the canonical id
-        r1 = _parse(await sage_ingest("test_vault", "sample.md", "markdown"))
-        r2 = _parse(await sage_ingest("test_vault", "second.md", "markdown"))
+        r1 = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+        r2 = _parse(await ingest_document("test_vault", "second.md", "markdown"))
         await asyncio.sleep(0.1)
         canonical = _eid("normalize-target")
         staging = StagingEdge(
@@ -572,27 +572,27 @@ class TestEdgeIdValidation:
 
         # Call with URN-prefixed (non-canonical) input — should normalize and succeed
         non_canonical = f"urn:uuid:{canonical}"
-        result = _parse(await sage_update_staging_edge("test_vault", non_canonical, action))
+        result = _parse(await update_staging_edge("test_vault", non_canonical, action))
         # Either confirmed=True or dismissed=True; the absence of "error" proves
         # the non-canonical input was normalized before the storage lookup.
         assert "error" not in result, f"non-canonical input not normalized: {result}"
 
 
 # ---------------------------------------------------------------------------
-# 6. sage_pending_metadata (MCP-013, MCP-014)
+# 6. list_pending_metadata (MCP-013, MCP-014)
 # ---------------------------------------------------------------------------
 
 
 class TestSagePendingMetadata:
     async def test_mcp_013_returns_pending(self, tmp_path):
-        """sage_pending_metadata returns documents awaiting confirmation in envelope.
+        """list_pending_metadata returns documents awaiting confirmation in envelope.
 
         Under CAS-ADR-021, metadata_confirmed=False is driven by the
         caller's IngestRequest.needs_review flag, not by vault config.
         The MCP tool surface does not yet expose needs_review (Chunk 4),
         so the test seeds a pending document by inserting it directly
         via the graph store. This keeps the test focused on
-        sage_pending_metadata's behavior, decoupled from how a document
+        list_pending_metadata's behavior, decoupled from how a document
         comes to be unconfirmed.
         """
         cfg_dict = _make_vault_config_dict(tmp_path, "review_vault", "Review Required Vault")
@@ -624,7 +624,7 @@ class TestSagePendingMetadata:
                 )
                 await services.graph_store.insert_document(pending_doc)
 
-                result = _parse(await sage_pending_metadata("review_vault"))
+                result = _parse(await list_pending_metadata("review_vault"))
                 assert result["vault_id"] == "review_vault"
                 assert result["count"] >= 1
                 assert result["status"] == "pending_review"
@@ -635,8 +635,8 @@ class TestSagePendingMetadata:
             _mcp._vaults.pop("review_vault", None)
 
     async def test_mcp_014_empty_when_none(self, single_vault):
-        """sage_pending_metadata returns envelope when none pending."""
-        result = _parse(await sage_pending_metadata("test_vault"))
+        """list_pending_metadata returns envelope when none pending."""
+        result = _parse(await list_pending_metadata("test_vault"))
         assert result["items"] == []
         assert result["count"] == 0
         assert result["vault_id"] == "test_vault"
@@ -644,20 +644,20 @@ class TestSagePendingMetadata:
 
 
 # ---------------------------------------------------------------------------
-# 7. app_scan_directory (MCP-015, MCP-016, MCP-017, MCP-018)
+# 7. list_directory (MCP-015, MCP-016, MCP-017, MCP-018)
 # ---------------------------------------------------------------------------
 
 
 class TestAppScanDirectory:
     async def test_mcp_015_returns_files_with_parsed_metadata(self, single_vault, tmp_path):
-        """app_scan_directory returns files with parsed metadata."""
+        """list_directory returns files with parsed metadata."""
         services, config = single_vault
         scan_dir = tmp_path / "scan_inbox"
         scan_dir.mkdir()
         (scan_dir / "2026-03-09_EXAMPLE_PV06_Claim-Set_v7.md").write_text("# Test")
         (scan_dir / "notes.txt").write_text("txt file")
 
-        result = _parse(await app_scan_directory("test_vault", str(scan_dir)))
+        result = _parse(await list_directory("test_vault", str(scan_dir)))
         assert "files" in result
         assert "warnings" in result
         files = result["files"]
@@ -671,12 +671,12 @@ class TestAppScanDirectory:
         assert "PV06" in pm["codes"]
 
     async def test_mcp_016_invalid_directory_error(self, single_vault):
-        """app_scan_directory with invalid directory returns error."""
-        result = _parse(await app_scan_directory("test_vault", "/nonexistent/path"))
+        """list_directory with invalid directory returns error."""
+        result = _parse(await list_directory("test_vault", "/nonexistent/path"))
         assert result["error"] == "invalid_directory"
 
     async def test_mcp_017_respects_max_depth(self, single_vault, tmp_path):
-        """app_scan_directory respects max_depth."""
+        """list_directory respects max_depth."""
         services, config = single_vault
         scan_dir = tmp_path / "depth_test"
         scan_dir.mkdir()
@@ -685,30 +685,30 @@ class TestAppScanDirectory:
         sub.mkdir()
         (sub / "nested.md").write_text("# Nested")
 
-        result = _parse(await app_scan_directory("test_vault", str(scan_dir), max_depth=0))
+        result = _parse(await list_directory("test_vault", str(scan_dir), max_depth=0))
         paths = [f["file_path"] for f in result["files"]]
         assert any("top.md" in p for p in paths)
         assert not any("nested.md" in p for p in paths)
 
     async def test_mcp_018_permission_warnings(self, single_vault, tmp_path):
-        """app_scan_directory reports permission errors as warnings."""
+        """list_directory reports permission errors as warnings."""
         services, config = single_vault
         scan_dir = tmp_path / "perm_test"
         scan_dir.mkdir()
         (scan_dir / "ok.md").write_text("# OK")
 
-        result = _parse(await app_scan_directory("test_vault", str(scan_dir)))
+        result = _parse(await list_directory("test_vault", str(scan_dir)))
         assert isinstance(result["warnings"], list)
 
 
 # ---------------------------------------------------------------------------
-# 8. app_batch_ingest (MCP-019, MCP-020, MCP-021, MCP-022)
+# 8. bulk_ingest_document (MCP-019, MCP-020, MCP-021, MCP-022)
 # ---------------------------------------------------------------------------
 
 
 class TestAppBatchIngest:
     async def test_mcp_019_returns_summary_with_edges(self, single_vault):
-        """app_batch_ingest processes files and returns summary with edge counts."""
+        """bulk_ingest_document processes files and returns summary with edge counts."""
         services, config = single_vault
         sources = Path(config.vault.storage_root)
         v1 = sources / "report_v1.md"
@@ -717,7 +717,7 @@ class TestAppBatchIngest:
         v2.write_text("# Report v2\n\nSecond.")
 
         result = _parse(
-            await app_batch_ingest(
+            await bulk_ingest_document(
                 "test_vault",
                 [
                     {
@@ -753,14 +753,14 @@ class TestAppBatchIngest:
         assert result["edges_created"].get("supersedes", 0) >= 1
 
     async def test_mcp_021_continues_after_error(self, single_vault):
-        """app_batch_ingest continues after per-file error."""
+        """bulk_ingest_document continues after per-file error."""
         services, config = single_vault
         sources = Path(config.vault.storage_root)
         good = sources / "good_file.md"
         good.write_text("# Good\n\nContent.")
 
         result = _parse(
-            await app_batch_ingest(
+            await bulk_ingest_document(
                 "test_vault",
                 [
                     {"file_path": str(good), "source_type": "markdown"},
@@ -774,8 +774,8 @@ class TestAppBatchIngest:
         assert "bad.md" in result["errors"][0]["filename"]
 
     async def test_mcp_022_empty_list_error(self, single_vault):
-        """app_batch_ingest with empty file list returns error."""
-        result = _parse(await app_batch_ingest("test_vault", []))
+        """bulk_ingest_document with empty file list returns error."""
+        result = _parse(await bulk_ingest_document("test_vault", []))
         assert "error" in result
         assert result["error"] == "empty_file_list"
 
@@ -795,13 +795,13 @@ class TestMCPConventions:
         (scan_dir / "test.md").write_text("# Test")
 
         results = [
-            await sage_list_vaults(),
-            await sage_vault_stats("test_vault"),
-            await sage_hash_check("test_vault", []),
-            await sage_list_staging_edges("test_vault"),
-            await sage_pending_metadata("test_vault"),
-            await app_scan_directory("test_vault", str(scan_dir)),
-            await app_batch_ingest(
+            await list_vaults(),
+            await get_vault_stats("test_vault"),
+            await verify_hash("test_vault", []),
+            await list_staging_edges("test_vault"),
+            await list_pending_metadata("test_vault"),
+            await list_directory("test_vault", str(scan_dir)),
+            await bulk_ingest_document(
                 "test_vault",
                 [
                     {"file_path": str(sources / "sample.md"), "source_type": "markdown"},
@@ -814,30 +814,40 @@ class TestMCPConventions:
 
     async def test_mcp_024_unknown_vault_error(self, single_vault):
         """App tools with unknown vault_id return structured error."""
-        result = _parse(await app_scan_directory("nonexistent", "/tmp"))
+        result = _parse(await list_directory("nonexistent", "/tmp"))
         assert result["error"] == "unknown_vault"
 
     async def test_mcp_025_tool_naming_convention(self):
-        """Tool naming follows sage_*/app_* prefix convention."""
-        # The tool functions we imported all follow the convention
-        sage_tools = [
-            "sage_list_vaults",
-            "sage_vault_stats",
-            "sage_hash_check",
-            "sage_list_staging_edges",
-            "sage_update_staging_edge",
-            "sage_pending_metadata",
-        ]
-        app_tools = ["app_scan_directory", "app_batch_ingest"]
+        """Tool naming follows the verb-convention naming rule (CAS-ADR-033).
 
-        for name in sage_tools:
-            assert name.startswith("sage_")
-        for name in app_tools:
-            assert name.startswith("app_")
+        Post the verb-sweep rename, MCP tool names omit the legacy
+        ``sage_``, ``sage_admin_``, and ``app_`` inner prefixes (the
+        two-server design in CAS-ADR-034 makes them vestigial) and
+        begin with a canonical verb. The deeper conformance gate lives
+        in ``tests/sage/test_mcp_rename_compliance.py``; this test
+        keeps a smoke-level smoke check colocated with the app-tool
+        suite.
+        """
+        sage_tools = [
+            "list_vaults",
+            "get_vault_stats",
+            "verify_hash",
+            "list_staging_edges",
+            "update_staging_edge",
+            "list_pending_metadata",
+        ]
+        app_tools = ["list_directory", "bulk_ingest_document"]
+
+        legacy_prefixes = ("sage_", "sage_admin_", "app_")
+        for name in sage_tools + app_tools:
+            assert not name.startswith(legacy_prefixes), (
+                f"Tool {name!r} still carries a legacy inner prefix. "
+                "See CAS-ADR-033 for the verb convention."
+            )
 
 
 # ---------------------------------------------------------------------------
-# 10. sage_discover catalog mode (MCP-026, MCP-027)
+# 10. search catalog mode (MCP-026, MCP-027)
 # ---------------------------------------------------------------------------
 
 
@@ -873,12 +883,12 @@ class TestSageDiscoverCatalog:
         await gs.insert_document(_doc("doc_c", "design_spec", ["PV08"]))
 
     async def test_mcp_026_catalog_returns_filtered(self, single_vault):
-        """sage_discover catalog mode returns filtered documents."""
+        """search catalog mode returns filtered documents."""
         services, config = single_vault
         await self._seed_docs(services)
 
         result = _parse(
-            await sage_discover(
+            await search(
                 vault_id="test_vault",
                 mode="catalog",
                 scope="filtered",
@@ -897,12 +907,12 @@ class TestSageDiscoverCatalog:
             assert r.get("relevance_score") is None
 
     async def test_mcp_027_catalog_pagination_offset(self, single_vault):
-        """sage_discover catalog mode pagination with offset."""
+        """search catalog mode pagination with offset."""
         services, config = single_vault
         await self._seed_docs(services)
 
         resp1 = _parse(
-            await sage_discover(
+            await search(
                 vault_id="test_vault",
                 mode="catalog",
                 limit=2,
@@ -910,7 +920,7 @@ class TestSageDiscoverCatalog:
             )
         )
         resp2 = _parse(
-            await sage_discover(
+            await search(
                 vault_id="test_vault",
                 mode="catalog",
                 limit=2,
@@ -971,7 +981,7 @@ class TestSageDiscoverCatalog:
         )
 
         result = _parse(
-            await sage_discover(
+            await search(
                 vault_id="test_vault",
                 mode="catalog",
                 target="edges",
@@ -1029,7 +1039,7 @@ class TestSageDiscoverCatalog:
         await self._seed_portfolio(services, 60)
 
         result = _parse(
-            await sage_discover(
+            await search(
                 vault_id="test_vault",
                 mode="catalog",
                 filters={"doc_type": "ticket"},

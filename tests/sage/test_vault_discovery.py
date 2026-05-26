@@ -264,7 +264,7 @@ async def test_lifespan_forwards_config_path_to_initialize_services(
 ):
     """#14:/F10 regression — the vault_root= lifespan branch must forward
     each discovered config path to ``_initialize_vault`` so it lands on
-    ``SAGEServices.config_path``. Without it, ``sage_reload_vault`` falls into
+    ``SAGEServices.config_path``. Without it, ``reload_vault`` falls into
     the in-memory-config branch and silently no-ops on on-disk YAML edits.
     """
     cp_a = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
@@ -334,7 +334,7 @@ async def test_create_app_with_in_memory_configs_list_still_works(
 async def test_f10_reload_round_trips_on_disk_yaml_edit_through_lifespan(
     vault_root, minimal_vault_config_dict, monkeypatch
 ):
-    """#16: F10 invariant — the documented contract for ``sage_reload_vault``
+    """#16: F10 invariant — the documented contract for ``reload_vault``
     is "after returning ``reloaded: true``, the caller's next read sees the
     on-disk state." wired ``config_path`` through the FastAPI lifespan
     so the reload tool can re-read the YAML; added the
@@ -342,11 +342,11 @@ async def test_f10_reload_round_trips_on_disk_yaml_edit_through_lifespan(
     without LanceDB / Nomic / Qwen3 initialization.
 
     Flow: boot real lifespan with a stub content store; mutate
-    ``vault_config.yaml`` on disk; call ``sage_reload_vault``; call
-    ``sage_get_vault_config``; assert the on-disk edit is reflected.
+    ``vault_config.yaml`` on disk; call ``reload_vault``; call
+    ``get_vault_config``; assert the on-disk edit is reflected.
     """
     from sage.adapters.stubs import StubContentStore
-    from sage.mcp_server import sage_get_vault_config, sage_reload_vault
+    from sage.mcp_server import get_vault_config, reload_vault
 
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
 
@@ -374,15 +374,15 @@ async def test_f10_reload_round_trips_on_disk_yaml_edit_through_lifespan(
         config_path.write_text(yaml.safe_dump(raw))
 
         # Pre-reload guard: the in-memory config still shows the old value.
-        pre_reload = await sage_get_vault_config(vault_id)
+        pre_reload = await get_vault_config(vault_id)
         assert pre_reload["vault"]["name"] != sentinel_name
 
         # Reload from disk.
-        reload_result = await sage_reload_vault(vault_id)
+        reload_result = await reload_vault(vault_id)
         assert reload_result.get("reloaded") is True, reload_result
 
         # F10 invariant: the post-reload read reflects the on-disk edit.
-        post_reload = await sage_get_vault_config(vault_id)
+        post_reload = await get_vault_config(vault_id)
         assert post_reload["vault"]["name"] == sentinel_name
 
         # Reload must preserve the factory so the rebuilt services still

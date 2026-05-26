@@ -109,7 +109,7 @@ def register_sage_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool()
-    async def sage_ingest(
+    async def ingest_document(
         vault_id: str,
         source: str,
         source_type: str,
@@ -127,7 +127,7 @@ def register_sage_tools(
         This tool dispatches Stages 2-3 (indexing, abstraction) as a
         background task and returns in seconds with `pipeline_status`
         typically non-terminal (projection_complete or
-        indexing_in_progress). Poll `sage_get_document` to observe
+        indexing_in_progress). Poll `get_document` to observe
         terminal status (abstraction_complete, abstraction_skipped, or
         failed). The fire-and-forget dispatch keeps the RPC under the
         60-second MCP client timeout for documents whose abstraction
@@ -144,9 +144,9 @@ def register_sage_tools(
         filename inference runs, parsed values populate fields the
         caller did not supply (the specific fields are vault-config-
         defined; see ``metadata_extraction.filename_extraction`` in
-        ``sage_get_vault_config``), and the document is held with
+        ``get_vault_config``), and the document is held with
         metadata_confirmed=false until a reviewer confirms via
-        sage_update_metadata.
+        update_metadata.
 
         Trio-field inheritance on supersede (CAS-ADR-021): when
         ``predecessor_id`` is set and the caller omits any of
@@ -162,7 +162,7 @@ def register_sage_tools(
         Tier3 uniqueness (CAS-ADR-031): doc_types declaring a
         ``unique`` constraint in their ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in
-        ``sage_get_vault_config``) enforce per-vault uniqueness on the
+        ``get_vault_config``) enforce per-vault uniqueness on the
         named tier3 field at ingest time. In the ``cas`` vault,
         ``ticket.ticket_id`` is the live example: re-ingesting a
         document with a ticket_id already in use raises
@@ -171,7 +171,7 @@ def register_sage_tools(
         existing document is never disturbed.
 
         ``pipeline_status`` outcomes (per CAS-ADR-021): the terminal
-        status observed by a poll of ``sage_get_document`` depends on
+        status observed by a poll of ``get_document`` depends on
         vault config and runtime outcome. ``abstraction_complete`` is
         the caller-authoritative happy path: projection + indexing +
         abstraction all succeed, ``metadata_confirmed=true``.
@@ -181,13 +181,13 @@ def register_sage_tools(
         3 was bypassed. ``failed`` is the catch-all for any
         Stage-1/2/3 exception; the document persists with
         ``pipeline_error`` populated. Inspect
-        ``abstraction.enabled`` in ``sage_get_vault_config`` to know
+        ``abstraction.enabled`` in ``get_vault_config`` to know
         which terminal state to expect on a given vault.
 
         Error modes:
         - ``adapter_not_found`` (400): ``source_type`` is not an enabled
           adapter on this vault. See
-          ``source_adapters.adapters`` in ``sage_get_vault_config``.
+          ``source_adapters.adapters`` in ``get_vault_config``.
         - ``source_file_not_found`` (404): ``source`` does not resolve
           to a readable file on disk.
         - ``duplicate_content`` (409): a document with the same
@@ -197,8 +197,8 @@ def register_sage_tools(
           ``predecessor_id`` was set but the predecessor is
           not in ``active``. For completed, filed, or otherwise
           non-active predecessors, run the archive -> reactivate dance
-          via ``sage_set_lifecycle`` before retrying. See the
-          ``sage_set_lifecycle`` docstring for the full pattern.
+          via ``update_lifecycle`` before retrying. See the
+          ``update_lifecycle`` docstring for the full pattern.
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; supersede chains require
           distinct content per step.
@@ -212,7 +212,7 @@ def register_sage_tools(
         - ``tier3_unique_constraint_violation`` (409): the resolved
           doc_type declares a ``unique`` constraint on a tier3 field
           (see ``document_types.doc_types[].metadata_schema`` in
-          ``sage_get_vault_config``) and ``tier3_metadata`` supplied a
+          ``get_vault_config``) and ``tier3_metadata`` supplied a
           value already in use by another document. Detail carries
           ``doc_type``, ``field``, ``colliding_value``, and
           ``existing_document_id``. ``force=true`` does NOT override
@@ -234,7 +234,7 @@ def register_sage_tools(
                 adapter declares its own required-config schema; this
                 payload is **not** a SAGE-wide shape. Inspect
                 ``source_adapters.adapters[].config`` in
-                ``sage_get_vault_config`` for the per-adapter
+                ``get_vault_config`` for the per-adapter
                 required-config shape on the target vault. Caller-
                 supplied keys are deep-merged over the vault's
                 adapter-config defaults at ingest time; unknown keys
@@ -259,7 +259,7 @@ def register_sage_tools(
                 filename inference fills in fields the caller did not
                 supply. Default false: filename inference is skipped
                 and caller metadata is committed authoritatively. Use
-                sage_parse_filename ahead of ingest if you want
+                get_filename_metadata ahead of ingest if you want
                 filename-based suggestions without entering the review
                 queue.
             metadata: Caller-supplied metadata fields applied to the
@@ -275,11 +275,11 @@ def register_sage_tools(
             tier3_metadata: Per-doc_type typed metadata payload.
                 Validated against the JSON Schema fragment declared
                 under ``document_types.doc_types[].metadata_schema`` for
-                the resolved doc_type (see ``sage_get_vault_config``).
+                the resolved doc_type (see ``get_vault_config``).
                 When the doc_type has no metadata_schema declared and
                 this argument is non-null, ingest fails with 400
                 ``tier3_schema_violation``. Stored verbatim once
-                validated; queryable via ``sage_discover`` filters as
+                validated; queryable via ``search`` filters as
                 ``{"tier3_metadata": {"<field>": <value>}}`` with exact
                 equality semantics (null matches absent-or-null fields).
         """
@@ -300,7 +300,7 @@ def register_sage_tools(
                 tier3_metadata=tier3_metadata,
             )
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP
-            # client timeout (BH-130). Callers poll sage_get_document
+            # client timeout (BH-130). Callers poll get_document
             # for terminal pipeline_status.
             result = await v.ingestion_service.ingest(request, wait_for_pipeline=False)
             return serialize(result.document)
@@ -308,7 +308,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_parse_filename(
+    async def get_filename_metadata(
         vault_id: str,
         filename: str,
         source_type: str,
@@ -318,16 +318,16 @@ def register_sage_tools(
         free: no document is created and vault state is unchanged.
 
         Per CAS-ADR-021, this is the agent-facing companion to
-        sage_ingest's caller-authoritative metadata flow. Call this
+        ingest_document's caller-authoritative metadata flow. Call this
         first to obtain filename-derived suggestions, decide which
-        fields to keep, then call sage_ingest with metadata=...
+        fields to keep, then call ingest_document with metadata=...
         carrying the resolved values. Fields the parser could not
         extract come back null. When the vault has no
         filename_extraction.pattern configured, all fields are null.
 
         Which fields the parser extracts is vault-config-defined; see
         ``metadata_extraction.filename_extraction.segment_fields`` in
-        ``sage_get_vault_config`` for the active mapping. In the
+        ``get_vault_config`` for the active mapping. In the
         ``cas`` vault, the configured pattern is
         ``{date}_{project}_{code}_{title}_{version}``, so the parser
         returns ``doc_date``, ``project``, ``doc_code``, ``title``,
@@ -356,7 +356,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_get_document(
+    async def get_document(
         vault_id: str,
         document_id: str,
         include_content: bool = False,
@@ -413,7 +413,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_update_metadata(
+    async def update_metadata(
         vault_id: str,
         document_id: str,
         title: str | None = None,
@@ -439,7 +439,7 @@ def register_sage_tools(
         on the document (it leaves the metadata-review queue if it was
         there). The ``doc_type`` value must be one of the values defined
         under ``document_types.doc_types`` in the vault config; query
-        ``sage_get_vault_config`` for the authoritative list.
+        ``get_vault_config`` for the authoritative list.
 
         Empty-call confirmation-flip semantics (CAS-ADR-021):
         A call carrying only ``vault_id``, ``document_id``, and (implicit)
@@ -455,9 +455,9 @@ def register_sage_tools(
         independent of whether any field-patch parameter accompanies it.
 
         See CAS-ADR-028 for the ingest-vs-update shape asymmetry
-        rationale: ``sage_ingest`` still takes ``tags`` as a list and
+        rationale: ``ingest_document`` still takes ``tags`` as a list and
         ``tier3_metadata`` as a dict (creation supplies full state);
-        ``sage_update_metadata`` patches existing state.
+        ``update_metadata`` patches existing state.
 
         Tags patch shape (``tags``)::
 
@@ -543,7 +543,7 @@ def register_sage_tools(
         ``changes=null`` on real-run responses and on dry-runs that
         touch no caller-supplied fields.
 
-        Worked example: ``sage_update_metadata(vault_id="v",
+        Worked example: ``update_metadata(vault_id="v",
         document_id="d", tier3_metadata={"set": {"severity": "high"}},
         dry_run=True)`` returns the would-be document with the patched
         tier3 dict plus ``changes=[{path: "tier3_metadata.severity",
@@ -596,7 +596,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_set_lifecycle(
+    async def update_lifecycle(
         vault_id: str,
         document_id: str,
         action: str,
@@ -606,7 +606,7 @@ def register_sage_tools(
         """Execute a lifecycle state transition on a document.
 
         The action vocabulary is **vault-config-defined**, not a fixed
-        SAGE-wide set. Call ``sage_get_vault_config`` and read the
+        SAGE-wide set. Call ``get_vault_config`` and read the
         ``lifecycle.transitions`` array for the authoritative list of
         (from_state, action, to_state, creates_edge) tuples in the
         target vault. Two examples seen in practice:
@@ -623,19 +623,19 @@ def register_sage_tools(
         replacing one document with another.** It both transitions the
         predecessor (``active -> archived``) and creates the
         ``supersedes`` edge (new -> old) in a single operation. The
-        alternative two-step pattern -- ``sage_link(edge_type="supersedes")``
-        followed by ``sage_set_lifecycle(action="archive")`` -- ends
+        alternative two-step pattern -- ``create_edge(edge_type="supersedes")``
+        followed by ``update_lifecycle(action="archive")`` -- ends
         in the same state but is required only when patching up an
         already-archived predecessor whose supersedes edge is missing.
-        ``sage_link`` with ``edge_type="supersedes"`` does **not**
+        ``create_edge`` with ``edge_type="supersedes"`` does **not**
         auto-transition the predecessor's lifecycle.
 
         ``supersede`` is defined only as a transition out of ``active``.
         To supersede a predecessor in ``completed``, ``filed``, or any
         other non-active state, run the archive -> reactivate dance
-        first, then either call ``sage_set_lifecycle(action="supersede",
+        first, then either call ``update_lifecycle(action="supersede",
         successor_id=...)`` against the predecessor or
-        ``sage_ingest(..., predecessor_id=<predecessor_id>)``
+        ``ingest_document(..., predecessor_id=<predecessor_id>)``
         which applies the same atomic transition synchronously with
         record insertion. A direct call against a non-active
         predecessor returns ``supersede_target_not_active``.
@@ -686,7 +686,7 @@ def register_sage_tools(
         document field-level deltas. Populated only on dry-run;
         ``changes=null`` on real-run responses.
 
-        Worked example: ``sage_set_lifecycle(vault_id="v",
+        Worked example: ``update_lifecycle(vault_id="v",
         document_id="d", action="archive", dry_run=True)`` returns
         the would-be document with ``lifecycle_status="archived"``
         plus ``changes=[{path: "lifecycle_status", before: "active",
@@ -700,7 +700,7 @@ def register_sage_tools(
             action: Lifecycle action name. Must appear in this
                 vault's ``lifecycle.transitions`` table as a valid
                 action from the document's current state. See
-                ``sage_get_vault_config`` for the authoritative list.
+                ``get_vault_config`` for the authoritative list.
             successor_id: The successor document's id (a ``documents.id``
                 value — the same shape as ``document_id`` on other tools;
                 ). The ``document_id``/``successor_id`` pair is a
@@ -712,7 +712,7 @@ def register_sage_tools(
                 as a separate active document; this tool does not
                 create it. For the common case where the successor has
                 not yet been ingested, prefer
-                ``sage_ingest(..., predecessor_id=<predecessor_id>)``,
+                ``ingest_document(..., predecessor_id=<predecessor_id>)``,
                 which ingests and supersedes atomically.
             dry_run: /. When True, run all validators
                 and compute the would-be projection of the
@@ -742,7 +742,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_bulk_set_lifecycle(
+    async def bulk_update_lifecycle(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
@@ -752,12 +752,12 @@ def register_sage_tools(
 
         First ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
         ``document_id``, ``action``, and optional ``successor_id`` with
-        the same semantics as ``sage_set_lifecycle``; items are processed
+        the same semantics as ``update_lifecycle``; items are processed
         in order, each holding the per-document lock and a per-item
         SQLite transaction.
 
         Each per-item entry in ``items`` is validated using the full
-        ``sage_set_lifecycle`` precondition surface — see that tool's
+        ``update_lifecycle`` precondition surface — see that tool's
         docstring for the inherited rules (vault-config-defined action
         vocabulary, ``invalid_lifecycle_transition`` from the current
         state, the ``supersede`` chain-head and identical-content guards,
@@ -781,7 +781,7 @@ def register_sage_tools(
         special-casing the call site.
 
         Performance: a bulk call is observably faster than N sequential
-        ``sage_set_lifecycle`` calls because MCP framing overhead and
+        ``update_lifecycle`` calls because MCP framing overhead and
         inter-call asyncio scheduling are eliminated; the per-document
         lock and per-item SQLite transaction are unchanged.
 
@@ -844,7 +844,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_bulk_link(
+    async def bulk_create_edge(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
@@ -853,7 +853,7 @@ def register_sage_tools(
         """Create many edges in one call (CAS-ADR-029).
 
         Third ``sage_bulk_*`` operation. Each item carries the same
-        fields as a single ``sage_link`` call (``source_id``,
+        fields as a single ``create_edge`` call (``source_id``,
         ``target_id``, ``edge_type``, anchor fields, ``retracted_edge_id``,
         ``rationale``, ``rationale_kind``, ``notes``, ``synced_from_*``)
         and is dispatched through the idempotent variant: a duplicate
@@ -863,7 +863,7 @@ def register_sage_tools(
         process-wide ``_link_lock`` and a per-item SQLite transaction.
 
         Each per-item entry in ``items`` is validated using the full
-        ``sage_link`` precondition surface — see that tool's docstring
+        ``create_edge`` precondition surface — see that tool's docstring
         for the inherited rules (document existence, edge-type
         registry-declared anchor policy per CAS-ADR-017, ``merged_from``
         chain-head invariant, ``retracted_edge_id`` shape, natural-key
@@ -887,23 +887,23 @@ def register_sage_tools(
         special-casing the call site.
 
         Performance: a bulk call is observably faster than N sequential
-        ``sage_link`` calls because MCP framing overhead and inter-call
+        ``create_edge`` calls because MCP framing overhead and inter-call
         asyncio scheduling are eliminated; the process-wide ``_link_lock``
         and per-item SQLite transaction are unchanged.
 
         Per-item error modes (surfaced inside the response envelope, same
-        codes as ``sage_link``): ``self_referential_edge`` (400),
+        codes as ``create_edge``): ``self_referential_edge`` (400),
         ``document_not_found`` (404), ``tbd_policy_edge`` (400),
         ``edge_anchor_policy_violation`` (400),
         ``retract_target_not_edge`` (400), ``merged_from_validation``
         (400), ``synced_from_inapplicable_edge_type`` (400),
         ``synced_from_version_not_in_source_chain`` (404). See
-        ``sage_link`` for detail-envelope shape.
+        ``create_edge`` for detail-envelope shape.
 
         Worked example. To create three references edges and a fourth
         depends_on edge in one call::
 
-            sage_bulk_link(
+            bulk_create_edge(
                 vault_id="cas",
                 items=[
                     {"source_id": "a1b2c3d4_doc_a",
@@ -986,7 +986,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_bulk_update_metadata(
+    async def bulk_update_metadata(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
@@ -996,14 +996,14 @@ def register_sage_tools(
 
         Second ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
         ``document_id`` plus any subset of the single-item
-        ``sage_update_metadata`` fields (``title``, ``version_label``,
+        ``update_metadata`` fields (``title``, ``version_label``,
         ``project``, ``tags``, ``doc_type``, ``authority_scope``,
         ``document_date``, ``tier3_metadata``) with the same semantics as
-        ``sage_update_metadata``; items are processed in order, each
+        ``update_metadata``; items are processed in order, each
         holding the per-document lock and a per-item SQLite transaction.
 
         Each per-item entry in ``items`` is validated using the full
-        ``sage_update_metadata`` precondition surface — see that tool's
+        ``update_metadata`` precondition surface — see that tool's
         docstring for the inherited rules (document existence, tag and
         tier3 patch grammar per CAS-ADR-028, doc_type validation,
         tier3 schema enforcement against the resolved doc_type,
@@ -1038,13 +1038,13 @@ def register_sage_tools(
 
         At least one key required and non-empty. ``add`` keys must NOT be
         present; ``remove`` keys MUST be present (strict conflict). See
-        ``sage_update_metadata`` for the full grammar (CAS-ADR-028).
+        ``update_metadata`` for the full grammar (CAS-ADR-028).
 
         Tier3 patch shape (per item ``tier3_metadata``)::
 
             {"set": {"key": "value",...}, "unset": ["other_key",...]}
 
-        Same grammar as ``sage_update_metadata``. The merged result is
+        Same grammar as ``update_metadata``. The merged result is
         validated against the resolved doc_type's ``metadata_schema``.
 
         Per-item error modes (surfaced inside the response envelope):
@@ -1054,7 +1054,7 @@ def register_sage_tools(
         ``tier3_patch_overlap`` / ``patch_empty`` (400),
         ``tier3_schema_violation`` (400), and
         ``tier3_doc_type_change_stale_keys`` (400). See
-        ``sage_update_metadata`` for detail-envelope shape.
+        ``update_metadata`` for detail-envelope shape.
 
         Batch-level error modes (surfaced as the tool's error envelope):
         ``legacy_form`` (a per-item ``tags`` is a bare list or per-item
@@ -1064,7 +1064,7 @@ def register_sage_tools(
         ``response_mode``).
 
         Performance: a bulk call is observably faster than N sequential
-        ``sage_update_metadata`` calls because MCP framing overhead and
+        ``update_metadata`` calls because MCP framing overhead and
         inter-call asyncio scheduling are eliminated; the per-document
         lock and per-item SQLite transaction are unchanged.
 
@@ -1139,7 +1139,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_link(
+    async def create_edge(
         vault_id: str,
         source_id: str,
         target_id: str | None,
@@ -1157,10 +1157,10 @@ def register_sage_tools(
         """Create a typed edge between two documents in the graph.
 
         **For ``supersedes`` edges, prefer
-        ``sage_set_lifecycle(action="supersede", successor_id=...)``**
-        (or ``sage_ingest(..., predecessor_id=...)`` when the
+        ``update_lifecycle(action="supersede", successor_id=...)``**
+        (or ``ingest_document(..., predecessor_id=...)`` when the
         successor has not yet been ingested). Those tools wire the
-        edge AND archive the predecessor atomically. ``sage_link`` with
+        edge AND archive the predecessor atomically. ``create_edge`` with
         ``edge_type="supersedes"`` creates the edge alone and does
         **not** transition the predecessor's lifecycle; reach for it
         only when stitching a missing edge into a chain whose
@@ -1194,7 +1194,7 @@ def register_sage_tools(
         Canonical example — agent-asserted ``derived_from`` (e.g., a
         deliverable that traces to its template)::
 
-            sage_link(
+            create_edge(
                 vault_id="cas",
                 source_id="<deliverable_id>",
                 target_id="<template_id>",
@@ -1255,7 +1255,7 @@ def register_sage_tools(
         ``EdgeType`` enum but are reserved-and-not-implemented:
         ``authoritative_for`` and ``sync_target``. Both have
         ``resolution_policy=TBD`` in the edge registry; every
-        ``sage_link`` call carrying either type raises
+        ``create_edge`` call carrying either type raises
         ``tbd_policy_edge`` unconditionally. Callers should not select
         these values until a future ADR retires the TBD policy. (The
         ``synced_from_*`` field-applicability rule above lists
@@ -1299,12 +1299,12 @@ def register_sage_tools(
 
         Idempotency: the edges table carries a UNIQUE
         constraint on ``(source_id, target_id, edge_type)``. Re-calling
-        ``sage_link`` with the same triple does NOT error; it returns
+        ``create_edge`` with the same triple does NOT error; it returns
         the pre-existing edge with ``created=false`` and a populated
         ``existing_rationale``. The caller's ``rationale``/``notes`` on
         the duplicate call are discarded -- the first-write rationale
         is preserved as canonical provenance. To intentionally replace
-        an edge, ``sage_unlink`` it first.
+        an edge, ``delete_edge`` it first.
 
         Dry-run mode:
         Set ``dry_run=true`` to validate the request and compute the
@@ -1324,7 +1324,7 @@ def register_sage_tools(
         ``changes`` block. ``LinkResponse`` does not carry
         a ``changes`` field.
 
-        Worked example: ``sage_link(vault_id="v", source_id="a",
+        Worked example: ``create_edge(vault_id="v", source_id="a",
         target_id="b", edge_type="references",
         source_valid_from_version="a", target_valid_from_version="b",
         dry_run=True)`` returns the would-be edge; no edge row is
@@ -1444,19 +1444,19 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_unlink(vault_id: str, edge_id: str, dry_run: bool = False) -> dict:
+    async def delete_edge(vault_id: str, edge_id: str, dry_run: bool = False) -> dict:
         """Delete a production edge from the graph.
 
         For staging-table edges (pre-confirmation), use
-        ``sage_update_staging_edge(action="dismiss")`` instead. The two
+        ``update_staging_edge(action="dismiss")`` instead. The two
         tables are distinct and edge ids do not cross between them; an
         id minted in staging is not valid here once promoted, and vice
         versa.
 
-        Discovering ``edge_id``: use ``sage_discover`` with
+        Discovering ``edge_id``: use ``search`` with
         ``target="edges"`` to enumerate production edges by
         ``source_id`` / ``target_id`` / ``edge_type``. Example:
-        ``sage_discover(vault_id=..., mode="catalog", target="edges",
+        ``search(vault_id=..., mode="catalog", target="edges",
         filters={"source_id": "...", "edge_type": "..."})``. The
         returned ``edge_id`` is the value to pass here.
 
@@ -1496,7 +1496,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_check_preconditions(vault_id: str, function_id: str) -> dict:
+    async def verify_preconditions(vault_id: str, function_id: str) -> dict:
         """Check whether all depends_on targets for a function document are
         satisfied (active or completed lifecycle, pipeline complete).
 
@@ -1527,7 +1527,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_traverse(
+    async def traverse(
         vault_id: str,
         start_id: str | None = None,
         edge_type: str | None = None,
@@ -1595,13 +1595,13 @@ def register_sage_tools(
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             if start_id is not None and document_id is not None:
                 raise AmbiguousDocumentIdentifierError(
-                    tool="sage_traverse",
+                    tool="traverse",
                     canonical="start_id",
                     alias="document_id",
                 )
             if start_id is None and document_id is None:
                 raise MissingDocumentIdentifierError(
-                    tool="sage_traverse",
+                    tool="traverse",
                     accepted=["start_id", "document_id"],
                 )
             resolved_start_id = start_id if start_id is not None else document_id
@@ -1620,7 +1620,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_chain(
+    async def chain(
         vault_id: str,
         document_id: str,
         edge_type: str,
@@ -1671,7 +1671,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_discover(
+    async def search(
         vault_id: str,
         mode: RetrievalMode = RetrievalMode.SEMANTIC,
         query: str | None = None,
@@ -1705,7 +1705,7 @@ def register_sage_tools(
             results are edge rows rather than document rows. Filter by any
             subset of ``{"source_id":..., "target_id":..., "edge_type":...}``;
             an empty filter returns all edges in the vault, paginated. Each
-            row carries the edge id (required for ``sage_unlink`` and the
+            row carries the edge id (required for ``delete_edge`` and the
             ``retracts`` edge_type), endpoints, edge_type, anchor versions,
             rationale, and retraction state (``retracted_at`` plus the id
             of the disclaiming retracts edge, when applicable). Use
@@ -1716,7 +1716,7 @@ def register_sage_tools(
 
             Example::
 
-                sage_discover(
+                search(
                     vault_id="cas",
                     mode="catalog",
                     target="edges",
@@ -1871,7 +1871,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_read_projection(
+    async def read_projection(
         vault_id: str,
         document_id: str,
         write_to_path: str | None = None,
@@ -1881,13 +1881,13 @@ def register_sage_tools(
         Two delivery modes:
         - default: returns the complete projection (reconstructed from
           stored chunks) inline as ``projection_text``, equivalent to
-          uploading the document. Use this instead of ``sage_discover``
+          uploading the document. Use this instead of ``search``
           when you need the whole document.
         - ``write_to_path=/abs/path``: SAGE writes the projection text
           to the given absolute path. The response carries ``written_to``
           and ``content_size``; ``projection_text`` is null. Preferred
           for large projections that would exceed the MCP tool-result
-          inline budget. Mirrors ``sage_get_document(write_to_path=...)``.
+          inline budget. Mirrors ``get_document(write_to_path=...)``.
 
         Replaces the pre-audit ``sage_export_projection`` MCP tool, which
         was folded into this write_to_path mode per the *SAGE MCP Tool
@@ -1900,8 +1900,8 @@ def register_sage_tools(
         - ``no_projection`` (404): the document exists but has no
           stored projection (e.g. ingestion failed mid-pipeline or
           the document is awaiting reabstraction). Inspect
-          ``pipeline_status`` via ``sage_get_document``; if recoverable,
-          ``sage_reabstract`` may restore the projection.
+          ``pipeline_status`` via ``get_document``; if recoverable,
+          ``recompute_abstract`` may restore the projection.
         - ``write_path_exists`` (409): ``write_to_path`` target already
           exists.
         - ``write_path_invalid`` (400): ``write_to_path`` is not
@@ -1927,7 +1927,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_read_section(vault_id: str, document_id: str, heading_path: str) -> dict:
+    async def read_section(vault_id: str, document_id: str, heading_path: str) -> dict:
         """Read a section of a document by heading path.
 
         Returns clean readable text for a heading subtree without loading
@@ -1942,7 +1942,7 @@ def register_sage_tools(
         query as a substring, so you can retry with the exact path.
 
         For free-text "find this section by name regardless of path
-        position," prefer sage_discover semantic or keyword mode — both
+        position," prefer search semantic or keyword mode — both
         index heading_path text alongside content.
 
         Args:
@@ -1961,18 +1961,18 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_list_headings(vault_id: str, document_id: str) -> dict:
+    async def list_headings(vault_id: str, document_id: str) -> dict:
         """List all heading paths for a document in document order.
 
         Returns the structural table of contents (heading paths only) without
         reading body content. Use this to verify a document's structure or
-        pick a heading path before calling sage_read_section.
+        pick a heading path before calling read_section.
 
-        Replaces the antipattern of calling sage_read_section with a
+        Replaces the antipattern of calling read_section with a
         deliberately wrong heading path to harvest ``available_headings``
         from the resulting ``heading_not_found`` error response. The
         synthetic header chunk is excluded, so the returned paths
-        are exactly those a caller may pass to sage_read_section.
+        are exactly those a caller may pass to read_section.
 
         Args:
             vault_id: Target vault identifier.
@@ -1988,7 +1988,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_refresh_views(vault_id: str) -> dict:
+    async def recompute_views(vault_id: str) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
 
@@ -2007,8 +2007,8 @@ def register_sage_tools(
         every document is represented under ``by_lifecycle/<status>/``.
         A document that exists in the graph but never lands under
         ``by_doc_type/`` is the diagnostic signal that its ``doc_type``
-        is unset -- patch via ``sage_update_metadata(doc_type=...)`` and
-        re-call ``sage_refresh_views`` to populate the missing bucket.
+        is unset -- patch via ``update_metadata(doc_type=...)`` and
+        re-call ``recompute_views`` to populate the missing bucket.
 
         Wipe-then-rebuild is NOT atomic:
         The implementation first removes ``{storage_root}/views/`` in
@@ -2017,7 +2017,7 @@ def register_sage_tools(
         failure mid-rebuild (e.g., filesystem permission denial,
         symlink target missing) leaves ``views/`` partially regenerated
         with no rollback to the prior state. Recovery is a re-call of
-        ``sage_refresh_views`` once the underlying cause is addressed;
+        ``recompute_views`` once the underlying cause is addressed;
         the next successful call wipes the partial tree and rebuilds
         cleanly. Callers must not treat the on-disk state as a
         transactional snapshot of the graph between calls.
@@ -2030,7 +2030,7 @@ def register_sage_tools(
         is the same response shape as a successful regeneration over
         an empty graph; callers cannot distinguish "vault is empty"
         from "every document was filtered out" from the response
-        alone. Check vault population via ``sage_vault_stats`` if
+        alone. Check vault population via ``get_vault_stats`` if
         the distinction matters.
 
         Common preconditions:
@@ -2070,7 +2070,7 @@ def register_sage_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool()
-    async def sage_list_vaults() -> dict:
+    async def list_vaults() -> dict:
         """Enumerate all configured vaults. No vault_id parameter -- operates
         across all registered vaults.
         """
@@ -2092,7 +2092,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_create_vault(config: dict) -> dict:
+    async def create_vault(config: dict) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
         Pass a complete vault config dict. The dict is validated against the
@@ -2102,7 +2102,7 @@ def register_sage_tools(
         vault is registered with the running MCP server immediately
         (no restart needed). The full written config is echoed back in
         the response so the caller can follow up with
-        sage_update_vault_config to adjust individual sections without
+        update_vault_config to adjust individual sections without
         a separate read.
 
         A minimal default config (suitable for most one-off vaults) can be
@@ -2135,8 +2135,8 @@ def register_sage_tools(
         per-vault parameters, not provider identity. Callers that
         want a different provider for a new vault must edit the
         stack config and restart the SAGE process before calling
-        ``sage_create_vault``; verify the in-memory stack config via
-        ``sage_get_stack_config`` if you suspect drift.
+        ``create_vault``; verify the in-memory stack config via
+        ``get_stack_config`` if you suspect drift.
 
         Partial-failure non-atomicity:
         Vault creation runs five sequential steps -- (1) config
@@ -2150,7 +2150,7 @@ def register_sage_tools(
         registry in an intermediate state: ``~/sage_vaults/{vault_id}/``
         may exist with a partial ``vault_config.yaml`` while the
         registry has no entry for the vault. Recovery: manually remove
-        ``~/sage_vaults/{vault_id}/`` and call ``sage_create_vault``
+        ``~/sage_vaults/{vault_id}/`` and call ``create_vault``
         again.
 
         ``bootstrap_owner`` side effect:
@@ -2171,7 +2171,7 @@ def register_sage_tools(
         payload (e.g., a non-Draft 2020-12 schema, an unresolvable
         ``$ref``) surfaces at create time as part of
         ``vault_config_validation_error`` rather than deferred to the
-        first ``sage_ingest`` call that would have used the validator.
+        first ``ingest_document`` call that would have used the validator.
         This is intentional: catching schema authoring errors at vault
         create time is cheaper than catching them on the first ingest
         whose ``tier3_metadata`` happens to exercise the offending
@@ -2208,30 +2208,30 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_get_vault_config(vault_id: str) -> dict:
+    async def get_vault_config(vault_id: str) -> dict:
         """Return the full vault configuration as a dict.
 
         This is the authoritative source for vault-config-defined
         vocabulary that other tools depend on. Read this when you need:
 
-        - The valid ``action`` vocabulary for ``sage_set_lifecycle``
+        - The valid ``action`` vocabulary for ``update_lifecycle``
           (under ``lifecycle.transitions``; each entry includes
           ``from_state``, ``action``, ``to_state``, ``creates_edge``).
-        - The valid ``doc_type`` values for ``sage_update_metadata``
-          or for filtering ``sage_discover`` (under
+        - The valid ``doc_type`` values for ``update_metadata``
+          or for filtering ``search`` (under
           ``document_types.doc_types``).
-        - The enabled source adapters for ``sage_ingest`` / ``sage_parse_filename``
+        - The enabled source adapters for ``ingest_document`` / ``get_filename_metadata``
           (under ``source_adapters.adapters``).
         - The filename-parsing pattern and segment fields used by
-          ``sage_parse_filename`` (under
+          ``get_filename_metadata`` (under
           ``metadata_extraction.filename_extraction``).
         - The edge inference tier assignments and inference rules
-          relevant to ``sage_list_staging_edges`` (under
+          relevant to ``list_staging_edges`` (under
           ``edge_inference.tier_assignments``).
 
         The returned dict is the live in-memory config; on-disk edits
         to ``vault_config.yaml`` are not picked up until
-        ``sage_reload_vault`` is called.
+        ``reload_vault`` is called.
 
         Args:
             vault_id: Target vault identifier.
@@ -2244,7 +2244,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_update_vault_config(
+    async def update_vault_config(
         vault_id: str,
         vault: dict | None = None,
         document_types: dict | None = None,
@@ -2274,11 +2274,11 @@ def register_sage_tools(
         anyway; the warnings then appear in the success response.
 
         Changing `vault.id` is never permitted regardless of force -- use
-        sage_create_vault to make a new vault instead.
+        create_vault to make a new vault instead.
 
         The update writes to disk and updates the running config in
         place; subsequent tool calls see the new vocabulary
-        immediately. Re-load via ``sage_reload_vault`` is only needed
+        immediately. Re-load via ``reload_vault`` is only needed
         if external processes edited ``vault_config.yaml`` outside
         this MCP server.
 
@@ -2291,7 +2291,7 @@ def register_sage_tools(
         required, duplicate edges, abstraction-provider build failure,
         etc.) the yaml is rolled back to its pre-call bytes and the
         registry continues to serve the previous config. Callers see
-        the original exception; no manual ``sage_reload_vault`` is
+        the original exception; no manual ``reload_vault`` is
         required to reconcile disk and memory after a failed update.
 
         Error modes:
@@ -2333,7 +2333,7 @@ def register_sage_tools(
         ``UpdateVaultConfigResponse`` does not carry a ``changes``
         field.
 
-        Worked example: ``sage_update_vault_config(vault_id="v",
+        Worked example: ``update_vault_config(vault_id="v",
         document_types={"doc_types": [...]}, dry_run=True)`` returns
         the destructive-change warnings (if any) so the caller can
         decide whether to follow up with ``force=True`` on a real run.
@@ -2382,7 +2382,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_vault_stats(vault_id: str) -> dict:
+    async def get_vault_stats(vault_id: str) -> dict:
         """Vault statistics and health indicators.
 
         Returns aggregate counts and health summaries for the vault,
@@ -2404,7 +2404,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_hash_check(vault_id: str, hashes: list[str]) -> dict:
+    async def verify_hash(vault_id: str, hashes: list[str]) -> dict:
         """Bulk hash existence check against the graph store.
 
         For each input hash, returns whether an existing document in
@@ -2419,7 +2419,7 @@ def register_sage_tools(
         Hash format: the canonical request form is the prefixed
         ``sha256:<hex>``, matching ``ContentHashStr``. The MCP
         transport additionally accepts bare hex strings (the form
-        ``sage_ingest`` emits in its response payload) without
+        ``ingest_document`` emits in its response payload) without
         rewriting them, so callers can round-trip ingest results
         directly. Output document records carry the prefixed form.
 
@@ -2441,7 +2441,7 @@ def register_sage_tools(
         Malformed hashes:
         Hash strings are accepted through ``HashCheckRequest.model_construct``
         (see ``sage/sage_api_tools.py:2290-2295``), which bypasses
-        Pydantic validation so the bare-hex form ``sage_ingest`` emits
+        Pydantic validation so the bare-hex form ``ingest_document`` emits
         can round-trip without rewriting. The consequence is that
         malformed inputs (truncated hex, non-hex characters, wrong
         length) are NOT rejected with a validation error: they reach
@@ -2464,7 +2464,7 @@ def register_sage_tools(
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             services = get_vault(vault_id)
             # Skip Sha256Str validation: the MCP transport historically
-            # accepts bare-hex hashes (the form sage_ingest emits in its
+            # accepts bare-hex hashes (the form ingest_document emits in its
             # response) in addition to the prefixed form the REST request
             # schema requires. Normalizing the two storage formats is a
             # separate concern from.
@@ -2475,7 +2475,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_list_staging_edges(vault_id: str) -> dict:
+    async def list_staging_edges(vault_id: str) -> dict:
         """List Tier 2 suggested edges awaiting review.
 
         SAGE's edge-inference subsystem runs edges through tiers
@@ -2514,7 +2514,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_update_staging_edge(vault_id: str, edge_id: str, action: str) -> dict:
+    async def update_staging_edge(vault_id: str, edge_id: str, action: str) -> dict:
         """Confirm or dismiss a staging edge.
 
         Dispatches by ``action``:
@@ -2552,7 +2552,7 @@ def register_sage_tools(
         On ``action="confirm"``, if the staging edge's natural-key triple
         ``(source_id, target_id, edge_type)`` already exists in the
         production edges table -- for example, because a parallel
-        ``sage_link`` call or an earlier auto-inference path already
+        ``create_edge`` call or an earlier auto-inference path already
         created the production edge -- confirm silently returns the
         existing production edge's id rather than raising
         ``IntegrityError``. The staging row is consumed in either case
@@ -2592,7 +2592,7 @@ def register_sage_tools(
                 ``VaultIdStr`` (see the ``vault_id`` typed-alias
                 validation paragraph above).
             edge_id: Staging edge identifier (from
-                ``sage_list_staging_edges``). Validated through
+                ``list_staging_edges``). Validated through
                 ``EdgeIdStr`` (see the ``edge_id`` typed-alias
                 validation paragraph above).
             action: One of ``"confirm"`` or ``"dismiss"``. On
@@ -2616,18 +2616,18 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_pending_metadata(vault_id: str) -> dict:
+    async def list_pending_metadata(vault_id: str) -> dict:
         """List documents with unconfirmed metadata.
 
         A document is "pending" when its ``metadata_confirmed`` flag
         is false. Per CAS-ADR-021, this typically arises from
-        ``sage_ingest(needs_review=true)``: the caller deferred metadata
+        ``ingest_document(needs_review=true)``: the caller deferred metadata
         to filename inference, which populated fields the caller did
         not supply and held the document for review. The pending
-        state is cleared on any ``sage_update_metadata`` call against
+        state is cleared on any ``update_metadata`` call against
         the document (even a single-field update).
 
-        For the default ``sage_ingest`` path (``needs_review=false``),
+        For the default ``ingest_document`` path (``needs_review=false``),
         documents land with ``metadata_confirmed=true`` and never
         appear here.
 
@@ -2656,7 +2656,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_reabstract(
+    async def recompute_abstract(
         vault_id: str,
         document_id: str,
     ) -> dict:
@@ -2689,14 +2689,14 @@ def register_sage_tools(
         The background task is what generates the abstract, persists
         ``semantic_abstract``, and flips ``pipeline_status`` to
         ``abstraction_complete`` (success) or ``failed`` (error). To
-        observe terminal state, poll ``sage_get_document`` and read
+        observe terminal state, poll ``get_document`` and read
         ``pipeline_status``; the call is complete when that field is
         no longer ``abstraction_in_progress``. Any caller that assumes
-        ``sage_reabstract`` returns a document with the new abstract
+        ``recompute_abstract`` returns a document with the new abstract
         in place will observe stale state.
 
         Per-document single-flight lock:
-        Concurrent ``sage_reabstract`` calls against the same
+        Concurrent ``recompute_abstract`` calls against the same
         ``document_id`` while a prior reabstract is still in-flight
         produce a structured 409
         (``reabstract_document_already_in_flight``) rather than
@@ -2714,8 +2714,8 @@ def register_sage_tools(
         ``pipeline_status=abstraction_in_progress`` with no terminal
         stamp. Recovery after such a crash: after process restart,
         enumerate documents with
-        ``sage_discover(mode="catalog", filters={"pipeline_status":
-        "abstraction_in_progress"})`` and re-issue ``sage_reabstract``
+        ``search(mode="catalog", filters={"pipeline_status":
+        "abstraction_in_progress"})`` and re-issue ``recompute_abstract``
         against each stuck id.
 
         Error modes:
@@ -2740,7 +2740,7 @@ def register_sage_tools(
         (abstraction provider error, content-store read failure, etc.)
         are NOT surfaced in this tool's response; they manifest as
         ``pipeline_status=failed`` and a populated ``pipeline_error``
-        field on the document, observable via ``sage_get_document``.
+        field on the document, observable via ``get_document``.
 
         Args:
             vault_id: Target vault identifier. See ``invalid_vault_id``
@@ -2785,7 +2785,7 @@ def register_sage_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool()
-    async def sage_admin_migrate_vault(vault_id: str) -> dict:
+    async def migrate_vault(vault_id: str) -> dict:
         """Apply pending schema migrations to a single vault in the running session.
 
         Pilot of the maintenance/admin API surface (CAS-ADR-029). Wraps
@@ -2841,7 +2841,7 @@ def register_sage_tools(
         fields** -- a MigrationReport with empty ``columns_added`` and
         ``backfills_applied`` may still carry tier3 activations or
         collisions from this scan. The ``unique_keys`` vocabulary
-        lives in vault config; query ``sage_get_vault_config`` for the
+        lives in vault config; query ``get_vault_config`` for the
         authoritative declarations.
 
         Error modes:
@@ -2884,7 +2884,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_admin_detect_drift(vault_id: str) -> dict:
+    async def verify_vault_drift(vault_id: str) -> dict:
         """Audit active sync_target / derived_from edges for drift.
 
         Walks every active provenance-bearing edge in the vault and
@@ -2959,9 +2959,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def sage_admin_reabstract_deferred_vault(
-        vault_id: str, include_pdf: bool = False
-    ) -> dict:
+    async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
         Graduation of the standalone scripts/reabstract_deferred.py
@@ -3051,35 +3049,35 @@ def register_sage_tools(
             return error_response(e)
 
     return {
-        "sage_ingest": sage_ingest,
-        "sage_parse_filename": sage_parse_filename,
-        "sage_reabstract": sage_reabstract,
-        "sage_get_document": sage_get_document,
-        "sage_update_metadata": sage_update_metadata,
-        "sage_set_lifecycle": sage_set_lifecycle,
-        "sage_bulk_set_lifecycle": sage_bulk_set_lifecycle,
-        "sage_bulk_link": sage_bulk_link,
-        "sage_bulk_update_metadata": sage_bulk_update_metadata,
-        "sage_link": sage_link,
-        "sage_unlink": sage_unlink,
-        "sage_check_preconditions": sage_check_preconditions,
-        "sage_traverse": sage_traverse,
-        "sage_chain": sage_chain,
-        "sage_discover": sage_discover,
-        "sage_read_projection": sage_read_projection,
-        "sage_read_section": sage_read_section,
-        "sage_list_headings": sage_list_headings,
-        "sage_refresh_views": sage_refresh_views,
-        "sage_list_vaults": sage_list_vaults,
-        "sage_create_vault": sage_create_vault,
-        "sage_get_vault_config": sage_get_vault_config,
-        "sage_update_vault_config": sage_update_vault_config,
-        "sage_vault_stats": sage_vault_stats,
-        "sage_hash_check": sage_hash_check,
-        "sage_list_staging_edges": sage_list_staging_edges,
-        "sage_update_staging_edge": sage_update_staging_edge,
-        "sage_pending_metadata": sage_pending_metadata,
-        "sage_admin_migrate_vault": sage_admin_migrate_vault,
-        "sage_admin_detect_drift": sage_admin_detect_drift,
-        "sage_admin_reabstract_deferred_vault": sage_admin_reabstract_deferred_vault,
+        "ingest_document": ingest_document,
+        "get_filename_metadata": get_filename_metadata,
+        "recompute_abstract": recompute_abstract,
+        "get_document": get_document,
+        "update_metadata": update_metadata,
+        "update_lifecycle": update_lifecycle,
+        "bulk_update_lifecycle": bulk_update_lifecycle,
+        "bulk_create_edge": bulk_create_edge,
+        "bulk_update_metadata": bulk_update_metadata,
+        "create_edge": create_edge,
+        "delete_edge": delete_edge,
+        "verify_preconditions": verify_preconditions,
+        "traverse": traverse,
+        "chain": chain,
+        "search": search,
+        "read_projection": read_projection,
+        "read_section": read_section,
+        "list_headings": list_headings,
+        "recompute_views": recompute_views,
+        "list_vaults": list_vaults,
+        "create_vault": create_vault,
+        "get_vault_config": get_vault_config,
+        "update_vault_config": update_vault_config,
+        "get_vault_stats": get_vault_stats,
+        "verify_hash": verify_hash,
+        "list_staging_edges": list_staging_edges,
+        "update_staging_edge": update_staging_edge,
+        "list_pending_metadata": list_pending_metadata,
+        "migrate_vault": migrate_vault,
+        "verify_vault_drift": verify_vault_drift,
+        "recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
     }

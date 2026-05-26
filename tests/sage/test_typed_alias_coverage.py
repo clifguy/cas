@@ -58,10 +58,10 @@ typed the four shape-bearing fields the extension surfaced;
 extended the gate to FastAPI route parameters and FastMCP tool entry
 points and typed every shape-bearing parameter at those boundaries.
 added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
-and the ``sage_link`` MCP tool as ``str | None`` with hash-format
+and the ``create_edge`` MCP tool as ``str | None`` with hash-format
 validation deferred to; retyped those three sites to
 ``Sha256Str``-shaped validation (Pattern 1 on the Pydantic models,
-Pattern 2 via ``_SHA256_ADAPTER`` in ``sage_link``) and cleared the
+Pattern 2 via ``_SHA256_ADAPTER`` in ``create_edge``) and cleared the
 three allowlist entries. All three ``KNOWN_*_VIOLATIONS`` dicts are
 once again empty.
 """
@@ -809,10 +809,10 @@ def test_discovered_fastmcp_tools_are_nonempty():
     """Sanity: tool discovery finds registered tools on the mcp instance."""
     tools = _registered_fastmcp_tools()
     names = {fn.__name__ for fn in tools}
-    assert "sage_ingest" in names, "Missing sage_ingest tool registration"
-    assert "sage_get_document" in names, "Missing sage_get_document tool registration"
-    assert "sage_unlink" in names, "Missing sage_unlink tool registration (Pattern 2 precedent)"
-    assert "app_scan_directory" in names, "Missing app_scan_directory tool registration"
+    assert "ingest_document" in names, "Missing ingest_document tool registration"
+    assert "get_document" in names, "Missing get_document tool registration"
+    assert "delete_edge" in names, "Missing delete_edge tool registration (Pattern 2 precedent)"
+    assert "list_directory" in names, "Missing list_directory tool registration"
     assert len(tools) >= 25, f"Discovery surfaced only {len(tools)} tools; expected at least 25."
 
 
@@ -956,10 +956,10 @@ def test_fastmcp_tool_rejects_non_canonical_document_id() -> None:
     """
     import asyncio
 
-    from sage.mcp_server import sage_get_document
+    from sage.mcp_server import get_document
 
     # ``not-an-id`` is shape-invalid for DocumentIdStr (no underscore-slug form).
-    result = asyncio.run(sage_get_document(vault_id="cas", document_id="not-an-id"))
+    result = asyncio.run(get_document(vault_id="cas", document_id="not-an-id"))
     assert isinstance(result, dict), f"Expected dict envelope, got {type(result).__name__}"
     assert "error" in result, f"Expected SAGE error envelope with 'error' key, got: {result!r}"
     # The validator's ValueError surfaces through error_response as

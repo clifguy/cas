@@ -387,18 +387,18 @@ per-file events. Optional callbacks avoid forcing a no-op implementation.
 
 ## 7. Caller Integration
 
-### TEST-BIS-018: MCP app_batch_ingest delegates to BatchIngestService
+### TEST-BIS-018: MCP bulk_ingest_document delegates to BatchIngestService
 
 **Artifact:** Code review finding (duplicate logic elimination)
 **Category:** integration
 
-**Decision:** After refactoring, app_batch_ingest in mcp_server.py constructs
+**Decision:** After refactoring, bulk_ingest_document in mcp_server.py constructs
 FileDescriptors from its dict inputs, calls BatchIngestService.run(), and
 serializes the IngestSummary to JSON.
 
 **Precondition:** MCP server running.
 
-**Input:** app_batch_ingest tool call with 2 files and infer_edges=True.
+**Input:** bulk_ingest_document tool call with 2 files and infer_edges=True.
 
 **Expected:**
 - Returns JSON with same structure as before refactoring

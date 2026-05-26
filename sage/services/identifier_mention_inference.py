@@ -3,7 +3,7 @@
 Scans a document's projected body text for vault-config-declared identifier
 patterns and writes Tier-1 ``references`` edges to the resolved targets.
 Invoked by ``IngestionService`` after Stage 2 (indexing) completes so all
-ingest pathways -- bulk ingest and per-document ``sage_ingest`` -- honor
+ingest pathways -- bulk ingest and per-document ``ingest_document`` -- honor
 the same vault behavior.
 
 Two public entry points:

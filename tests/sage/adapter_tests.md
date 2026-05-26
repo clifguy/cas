@@ -874,7 +874,7 @@ path is just its own text.
 - `result.headings[2].path == "Chapter > Section > Subsection"`.
 
 **Rationale:** Path strings are the durable cross-adapter identifier
-used by `sage_read_section`, `sage_read_projection`, and the heading-
+used by `read_section`, `read_projection`, and the heading-
 prefix retrieval contract (AD-020 through AD-022). The separator must
 be stable; downstream consumers split on `" > "`.
 
@@ -1001,7 +1001,7 @@ paragraph.", a 2x2 table, `H2` "Details", body "Detail paragraph."
   `"Intro paragraph."` (the table and paragraph between H1 and H2
   attach to "Overview").
 
-**Rationale:** Section-level retrieval (`sage_read_section`) and
+**Rationale:** Section-level retrieval (`read_section`) and
 heading-prefix queries (AD-020) depend on body content being attached
 to the right heading. Mis-attribution would surface the wrong
 neighborhood to an agent trying to read a specific section.
@@ -1301,7 +1301,7 @@ non-empty.
 
 **Rationale:** Heading paths are the durable retrieval-side identifier
 (see AD-038). For xlsx, the absence of nesting in the path is itself
-a signal: agents reading sheet content via `sage_read_section` know
+a signal: agents reading sheet content via `read_section` know
 the path is the sheet name.
 
 ### TEST-SAGE-AD-056: First row rendered as pipe-delimited header row
@@ -1567,7 +1567,7 @@ and whether they carry active numbering), not its body text. These tests
 validate that the adapter (a) accepts `.dotx` files without error,
 (b) emits a structured style inventory on the `.dotx` branch only, and
 (c) emits namespaced tags via the `adapter_tags` channel so existing
-`sage_discover` tag filters can locate templates by defined style.
+`search` tag filters can locate templates by defined style.
 
 ### TEST-SAGE-AD-068: DocxAdapter registers .dotx as a supported extension
 
@@ -1763,7 +1763,7 @@ A `.docx` fixture with equivalent body content.
 **Rationale:** `adapter_tags` is the channel by which the adapter
 contributes to `document.tags` (see BH-131). The `template:` namespace
 prefix prevents collision with caller-supplied or filename-parsed tags
-and lets `sage_discover` queries filter cleanly. The asymmetry between
+and lets `search` queries filter cleanly. The asymmetry between
 the style-presence and has-numbering tag sets (custom-only vs.
 all-styles) reflects empirical observation: stock Word styles carry
 little selection signal by presence alone, but any style carrying
@@ -2535,7 +2535,7 @@ chunk.
 
 **Expected:** Returns `True`.
 
-**Rationale:** `sage_reabstract`'s fast-ack synchronous prefix needs an
+**Rationale:** `recompute_abstract`'s fast-ack synchronous prefix needs an
 existence probe that does not block on loading every chunk; the LIMIT 1
 path keeps the prefix O(1) regardless of document size. Without this,
 large documents would extend the synchronous portion past the 60-second
@@ -2557,7 +2557,7 @@ and the case where the chunks table itself does not yet exist.
 **Expected:** Returns `False`.
 
 **Rationale:** False is the signal that triggers `NoProjectionError` in
-the synchronous prefix of `sage_reabstract` (BH-121). Lifting the
+the synchronous prefix of `recompute_abstract` (BH-121). Lifting the
 empty-table edge case into the same return type as the populated-but-no-
 match case keeps callers from needing two layers of error handling.
 

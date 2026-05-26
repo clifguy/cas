@@ -74,7 +74,7 @@ class StagingEdgesService:
             rationale=staging.inference_evidence,
         )
         # If the natural-key triple already exists in production
-        # (e.g., a parallel sage_link or earlier auto-inference path
+        # (e.g., a parallel create_edge or earlier auto-inference path
         # already created the edge), confirm-staging is idempotent:
         # consume the staging row and surface the existing production
         # edge's id rather than raising IntegrityError to the caller.

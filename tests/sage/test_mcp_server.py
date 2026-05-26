@@ -24,25 +24,25 @@ from sage.api.errors import SAGEError
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
-    sage_admin_migrate_vault,
-    sage_check_preconditions,
-    sage_discover,
-    sage_get_document,
-    sage_ingest,
-    sage_link,
-    sage_parse_filename,
-    sage_reabstract,
-    sage_read_projection,
-    sage_refresh_views,
-    sage_reload_vault,
-    sage_set_lifecycle,
-    sage_traverse,
-    sage_update_metadata,
-    sage_update_vault_config,
-    sage_vault_stats,
+    create_edge,
+    get_document,
+    get_filename_metadata,
+    get_vault_stats,
+    ingest_document,
+    migrate_vault,
+    read_projection,
+    recompute_abstract,
+    recompute_views,
+    reload_vault,
+    search,
+    traverse,
+    update_lifecycle,
+    update_metadata,
+    update_vault_config,
+    verify_preconditions,
 )
 from sage.mcp_server import (
-    sage_unlink as _sage_unlink_tool,
+    delete_edge as _sage_unlink_tool,
 )
 from sage.models.enums import EdgeType as _EdgeType
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
@@ -89,13 +89,13 @@ def _parse(result: str | dict) -> dict:
 
 
 async def test_unknown_vault_returns_error(vault_services):
-    result = _parse(await sage_get_document("nonexistent_vault", "deadbeef_doc"))
+    result = _parse(await get_document("nonexistent_vault", "deadbeef_doc"))
     assert result["error"] == "unknown_vault"
     assert "nonexistent_vault" in result["message"]
 
 
 async def test_unknown_vault_lists_available(vault_services):
-    result = _parse(await sage_get_document("nonexistent_vault", "deadbeef_doc"))
+    result = _parse(await get_document("nonexistent_vault", "deadbeef_doc"))
     assert "test_vault" in result["message"]
 
 
@@ -145,29 +145,29 @@ async def test_call_tool_rejects_misspelled_kwarg_on_registered_sage_tool():
     coincidental pass: a tool that rejected every call would fail action
     1; a tool that accepted every call would fail action 2.
 
-    sage_list_vaults is chosen because it has no required state setup
+    list_vaults is chosen because it has no required state setup
     and exercises the JSON-RPC dispatch the same as every other tool.
     """
     from mcp.types import TextContent
 
     # Action 1 (control): correct invocation returns success.
-    control = await _mcp.mcp.call_tool("sage_list_vaults", {})
+    control = await _mcp.mcp.call_tool("list_vaults", {})
     assert isinstance(control, list)
     assert len(control) >= 1
     assert isinstance(control[0], TextContent)
     control_payload = json.loads(control[0].text)
-    # Success payload is whatever sage_list_vaults returns -- here we
+    # Success payload is whatever list_vaults returns -- here we
     # just assert it's NOT the unknown_parameter envelope.
     assert control_payload.get("error") != "unknown_parameter"
 
     # Action 2 (subject): misspelled kwarg returns the envelope.
-    subject = await _mcp.mcp.call_tool("sage_list_vaults", {"misspelled": "x"})
+    subject = await _mcp.mcp.call_tool("list_vaults", {"misspelled": "x"})
     assert isinstance(subject, list)
     assert len(subject) == 1
     assert isinstance(subject[0], TextContent)
     envelope = json.loads(subject[0].text)
     assert envelope["error"] == "unknown_parameter"
-    assert envelope["detail"]["tool"] == "sage_list_vaults"
+    assert envelope["detail"]["tool"] == "list_vaults"
     assert envelope["detail"]["rejected_params"] == ["misspelled"]
     # valid_params reflects the tool's declared signature; we don't
     # pin the exact list to keep the test resilient to future signature
@@ -181,42 +181,42 @@ async def test_call_tool_rejects_misspelled_kwarg_on_registered_sage_tool():
 
 
 async def test_ingest_returns_document(vault_services):
-    result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     assert "id" in result
     assert result["source_path"] == "test/sample.md"
     assert result["source_type"] == "markdown"
 
 
 async def test_ingest_duplicate_returns_error(vault_services):
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.1)
-    result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     assert result["error"] == "duplicate_content"
 
 
 async def test_ingest_force_bypasses_duplicate(vault_services):
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.1)
-    result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown", force=True))
+    result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown", force=True))
     assert "id" in result
     assert "error" not in result
 
 
 async def test_ingest_missing_file_returns_error(vault_services):
-    result = _parse(await sage_ingest("test_vault", "no/such/file.md", "markdown"))
+    result = _parse(await ingest_document("test_vault", "no/such/file.md", "markdown"))
     assert result["error"] == "source_file_not_found"
 
 
 # ---------------------------------------------------------------------------
-# CAS-ADR-021: sage_ingest accepts needs_review and metadata; new
-# sage_parse_filename MCP tool returns parsed fields side-effect-free.
+# CAS-ADR-021: ingest_document accepts needs_review and metadata; new
+# get_filename_metadata MCP tool returns parsed fields side-effect-free.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 async def pim_vault_services(tmp_vault_dir):
     """Initialize a EXAMPLE-style vault (with filename_extraction) for the
-    sage_parse_filename test. Registered in the MCP vault registry under
+    get_filename_metadata test. Registered in the MCP vault registry under
     its config-declared id (test_metadata_vault).
     """
     config = VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
@@ -237,12 +237,12 @@ async def pim_vault_services(tmp_vault_dir):
 async def test_ad021_013_sage_ingest_accepts_metadata_and_needs_review(
     vault_services,
 ):
-    """sage_ingest threads metadata + needs_review through to the
+    """ingest_document threads metadata + needs_review through to the
     pipeline. Default needs_review=False commits caller-supplied
     metadata as authoritative (metadata_confirmed=True).
     """
     result = _parse(
-        await sage_ingest(
+        await ingest_document(
             "test_vault",
             "test/sample.md",
             "markdown",
@@ -261,7 +261,7 @@ async def test_ad021_013_sage_ingest_accepts_metadata_and_needs_review(
 async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
     pim_vault_services,
 ):
-    """sage_parse_filename returns parsed fields for a filename
+    """get_filename_metadata returns parsed fields for a filename
     matching the vault's pattern, and creates no documents.
     """
     graph_store = pim_vault_services.graph_store
@@ -272,7 +272,7 @@ async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
     assert pending_before == []
 
     result = _parse(
-        await sage_parse_filename(
+        await get_filename_metadata(
             "test_metadata_vault",
             "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
             "markdown",
@@ -288,8 +288,8 @@ async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
 
     documents_after = await graph_store.list_all_documents()
     pending_after = await graph_store.list_pending_metadata_documents()
-    assert documents_after == [], "sage_parse_filename must not create document records"
-    assert pending_after == [], "sage_parse_filename must not enqueue pending_metadata entries"
+    assert documents_after == [], "get_filename_metadata must not create document records"
+    assert pending_after == [], "get_filename_metadata must not enqueue pending_metadata entries"
 
 
 # ---------------------------------------------------------------------------
@@ -298,16 +298,16 @@ async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
 
 
 async def test_get_document_returns_full_record(vault_services):
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_get_document("test_vault", doc_id))
+    result = _parse(await get_document("test_vault", doc_id))
     assert result["id"] == doc_id
     assert result["title"] == "Sample Document"
 
 
 async def test_get_document_not_found(vault_services):
-    result = _parse(await sage_get_document("test_vault", "deadbeef_nonexistent"))
+    result = _parse(await get_document("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
 
 
@@ -323,14 +323,14 @@ async def test_update_metadata_partial(vault_services):
     so an exact equality would over-assert; a contains-check would
     under-assert. The post-patch set must equal pre-patch ∪ {alpha, beta}.
     """
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
-    pre_patch_tags = set(_parse(await sage_get_document("test_vault", doc_id))["tags"])
+    pre_patch_tags = set(_parse(await get_document("test_vault", doc_id))["tags"])
 
     # Sage_update_metadata now returns UpdateMetadataResponse
     # ({document, dry_run}); unwrap before asserting on document fields.
     result = _parse(
-        await sage_update_metadata(
+        await update_metadata(
             "test_vault",
             doc_id,
             title="Renamed Document",
@@ -346,17 +346,17 @@ async def test_update_metadata_partial(vault_services):
 
 
 async def test_update_metadata_sets_document_date(vault_services):
-    """sage_update_metadata accepts and persists a document_date string,
-    and the value is readable via sage_get_document. Catches the wiring
+    """update_metadata accepts and persists a document_date string,
+    and the value is readable via get_document. Catches the wiring
     fault where a parameter is declared on the MCP tool but not threaded
     into UpdateMetadataRequest.
     """
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     # Wrapper response.
     updated = _parse(
-        await sage_update_metadata(
+        await update_metadata(
             "test_vault",
             doc_id,
             document_date="2026-04-28",
@@ -364,15 +364,15 @@ async def test_update_metadata_sets_document_date(vault_services):
     )
     assert updated["document"]["document_date"] == "2026-04-28"
 
-    fetched = _parse(await sage_get_document("test_vault", doc_id))
+    fetched = _parse(await get_document("test_vault", doc_id))
     assert fetched["document_date"] == "2026-04-28"
 
 
 async def test_update_metadata_invalid_doc_type(vault_services):
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_update_metadata("test_vault", doc_id, doc_type="invalid_type"))
+    result = _parse(await update_metadata("test_vault", doc_id, doc_type="invalid_type"))
     assert result["error"] == "invalid_doc_type"
 
 
@@ -383,39 +383,41 @@ async def test_update_metadata_invalid_doc_type(vault_services):
 
 async def test_update_metadata_tags_add_only(vault_services):
     ingest_result = _parse(
-        await sage_ingest(
+        await ingest_document(
             "test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha,beta"}
         )
     )
     doc_id = ingest_result["id"]
 
     # Wrapper response.
-    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"add": ["gamma"]}))
+    result = _parse(await update_metadata("test_vault", doc_id, tags={"add": ["gamma"]}))
     assert set(result["document"]["tags"]) == {"alpha", "beta", "gamma"}
 
 
 async def test_update_metadata_tags_remove_only(vault_services):
     ingest_result = _parse(
-        await sage_ingest(
+        await ingest_document(
             "test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha,beta"}
         )
     )
     doc_id = ingest_result["id"]
 
     # Wrapper response.
-    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"remove": ["alpha"]}))
+    result = _parse(await update_metadata("test_vault", doc_id, tags={"remove": ["alpha"]}))
     assert result["document"]["tags"] == ["beta"]
 
 
 async def test_update_metadata_tags_add_and_remove(vault_services):
     ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown", metadata={"tags": "old,keep"})
+        await ingest_document(
+            "test_vault", "test/sample.md", "markdown", metadata={"tags": "old,keep"}
+        )
     )
     doc_id = ingest_result["id"]
 
     # Wrapper response.
     result = _parse(
-        await sage_update_metadata("test_vault", doc_id, tags={"add": ["new"], "remove": ["old"]})
+        await update_metadata("test_vault", doc_id, tags={"add": ["new"], "remove": ["old"]})
     )
     assert set(result["document"]["tags"]) == {"keep", "new"}
 
@@ -424,11 +426,13 @@ async def test_update_metadata_tags_add_conflict(vault_services):
     """Adding a tag already present returns 400 tag_add_conflict
     carrying current_tags in the detail."""
     ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha"})
+        await ingest_document(
+            "test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha"}
+        )
     )
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"add": ["alpha"]}))
+    result = _parse(await update_metadata("test_vault", doc_id, tags={"add": ["alpha"]}))
     assert result["error"] == "tag_add_conflict"
     assert result["detail"]["tags"] == ["alpha"]
     assert "alpha" in result["detail"]["current_tags"]
@@ -436,24 +440,24 @@ async def test_update_metadata_tags_add_conflict(vault_services):
 
 async def test_update_metadata_tags_remove_conflict(vault_services):
     ingest_result = _parse(
-        await sage_ingest("test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha"})
+        await ingest_document(
+            "test_vault", "test/sample.md", "markdown", metadata={"tags": "alpha"}
+        )
     )
     doc_id = ingest_result["id"]
 
-    result = _parse(
-        await sage_update_metadata("test_vault", doc_id, tags={"remove": ["never_here"]})
-    )
+    result = _parse(await update_metadata("test_vault", doc_id, tags={"remove": ["never_here"]}))
     assert result["error"] == "tag_remove_conflict"
     assert result["detail"]["tags"] == ["never_here"]
 
 
 async def test_update_metadata_tags_legacy_form_rejected(vault_services):
     """Bare-list tags returns structured legacy_form with a worked example."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(
-        await sage_update_metadata("test_vault", doc_id, tags=["a", "b"])  # type: ignore[arg-type]
+        await update_metadata("test_vault", doc_id, tags=["a", "b"])  # type: ignore[arg-type]
     )
     assert result["error"] == "legacy_form"
     assert result["detail"]["field"] == "tags"
@@ -462,11 +466,11 @@ async def test_update_metadata_tags_legacy_form_rejected(vault_services):
 
 async def test_update_metadata_tier3_legacy_form_rejected(vault_services):
     """Bare-dict tier3_metadata returns structured legacy_form."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = _parse(
-        await sage_update_metadata("test_vault", doc_id, tier3_metadata={"some_key": "value"})
+        await update_metadata("test_vault", doc_id, tier3_metadata={"some_key": "value"})
     )
     assert result["error"] == "legacy_form"
     assert result["detail"]["field"] == "tier3_metadata"
@@ -474,10 +478,10 @@ async def test_update_metadata_tier3_legacy_form_rejected(vault_services):
 
 async def test_update_metadata_empty_tags_patch_rejected(vault_services):
     """tags={} is degenerate; Pydantic returns a validation error."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_update_metadata("test_vault", doc_id, tags={}))
+    result = _parse(await update_metadata("test_vault", doc_id, tags={}))
     # The empty dict has no recognized op keys -- routed through Pydantic
     # validation; the MCP error envelope carries an error code or message.
     assert "error" in result
@@ -489,27 +493,27 @@ async def test_update_metadata_empty_tags_patch_rejected(vault_services):
 
 
 async def test_set_lifecycle_archive(vault_services):
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_set_lifecycle("test_vault", doc_id, "archive"))
+    result = _parse(await update_lifecycle("test_vault", doc_id, "archive"))
     assert result["document"]["lifecycle_status"] == "archived"
 
 
 async def test_set_lifecycle_invalid_transition(vault_services):
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_set_lifecycle("test_vault", doc_id, "reactivate"))
+    result = _parse(await update_lifecycle("test_vault", doc_id, "reactivate"))
     assert result["error"] == "invalid_lifecycle_transition"
     assert "valid_actions" in result["detail"]
 
 
 async def test_set_lifecycle_unknown_action(vault_services):
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    result = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode"))
+    result = _parse(await update_lifecycle("test_vault", doc_id, "explode"))
     assert result["error"] == "invalid_action"
 
 
@@ -529,15 +533,15 @@ async def test_set_lifecycle_dry_run_archive_returns_dry_run_true_and_leaves_sta
     Paired with test_set_lifecycle_real_run_archive_... (positive
     control): together they catch both directions of wrapper bugs (drop
     dry_run vs. hardcode dry_run=True)."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    response = _parse(await sage_set_lifecycle("test_vault", doc_id, "archive", dry_run=True))
+    response = _parse(await update_lifecycle("test_vault", doc_id, "archive", dry_run=True))
 
     assert response["dry_run"] is True
     assert response["document"]["lifecycle_status"] == "archived"  # would-be
 
-    persisted = _parse(await sage_get_document("test_vault", doc_id))
+    persisted = _parse(await get_document("test_vault", doc_id))
     assert persisted["lifecycle_status"] == "active", (
         "dry_run=True must not persist the lifecycle transition; "
         "the wrapper is dropping dry_run on the floor if this fails."
@@ -549,13 +553,13 @@ async def test_set_lifecycle_real_run_archive_returns_dry_run_false_and_changes_
 ):
     """T2: positive control for T1. Without dry_run, the wrapper
     must persist the transition and echo dry_run=False."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    response = _parse(await sage_set_lifecycle("test_vault", doc_id, "archive"))
+    response = _parse(await update_lifecycle("test_vault", doc_id, "archive"))
 
     assert response["dry_run"] is False
-    persisted = _parse(await sage_get_document("test_vault", doc_id))
+    persisted = _parse(await get_document("test_vault", doc_id))
     assert persisted["lifecycle_status"] == "archived"
 
 
@@ -567,16 +571,16 @@ async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persist
     nil-UUID sentinel id, leaves the predecessor active, and persists
     no supersedes edge.
 
-    Anti-coincidental-pass: the sage_traverse zero-edge assertion guards
+    Anti-coincidental-pass: the traverse zero-edge assertion guards
     against a wrapper that echoes dry_run=True in the envelope but
     actually persists the supersede. The sentinel id is asserted against
     the imported constant, not a literal."""
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     response = _parse(
-        await sage_set_lifecycle(
+        await update_lifecycle(
             "test_vault",
             doc_a["id"],
             "supersede",
@@ -591,22 +595,22 @@ async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persist
     assert response["created_edge"]["source_id"] == doc_b["id"]
     assert response["created_edge"]["target_id"] == doc_a["id"]
 
-    persisted = _parse(await sage_get_document("test_vault", doc_a["id"]))
+    persisted = _parse(await get_document("test_vault", doc_a["id"]))
     assert persisted["lifecycle_status"] == "active"
 
     traversal = _parse(
-        await sage_traverse(
+        await traverse(
             "test_vault",
             doc_b["id"],
             edge_type="supersedes",
             direction="outbound",
         )
     )
-    # sage_traverse returns {start_id, nodes: [...]} where nodes is the
+    # traverse returns {start_id, nodes: [...]} where nodes is the
     # set of reachable documents (zero on dry-run since no edge exists).
     assert traversal["nodes"] == [], (
         "dry_run=True supersede must not persist a supersedes edge; "
-        f"sage_traverse from {doc_b['id']} returned {traversal['nodes']!r}."
+        f"traverse from {doc_b['id']} returned {traversal['nodes']!r}."
     )
 
 
@@ -616,11 +620,11 @@ async def test_set_lifecycle_dry_run_invalid_action_error_envelope_matches_real_
     """T4: same-validator paired check. invalid_action error
     envelope must be identical whether dry_run is set or not — confirms
     dry_run does not skip or alter validators."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    real = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode"))
-    dry = _parse(await sage_set_lifecycle("test_vault", doc_id, "explode", dry_run=True))
+    real = _parse(await update_lifecycle("test_vault", doc_id, "explode"))
+    dry = _parse(await update_lifecycle("test_vault", doc_id, "explode", dry_run=True))
 
     assert real["error"] == "invalid_action"
     assert dry["error"] == "invalid_action"
@@ -638,12 +642,12 @@ async def test_set_lifecycle_dry_run_invalid_action_error_envelope_matches_real_
 
 
 async def test_link_creates_edge(vault_services):
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     result = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -662,26 +666,26 @@ async def test_link_creates_edge(vault_services):
 
 
 async def test_link_self_referential_error(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.3)
 
-    result = _parse(await sage_link("test_vault", doc["id"], doc["id"], "references"))
+    result = _parse(await create_edge("test_vault", doc["id"], doc["id"], "references"))
     assert result["error"] == "self_referential_edge"
 
 
 async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
-    """T7. sage_link accepts an optional ``rationale_kind`` argument
+    """T7. create_edge accepts an optional ``rationale_kind`` argument
     and persists it verbatim on the edge — even when the rationale text
     would otherwise derive to a different kind. Tests with a non-default
     discriminator (``version_chain``) so a system that ignored
     rationale_kind and always returned ``manual`` would fail.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     result = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -696,16 +700,16 @@ async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
 
 
 async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services):
-    """T7. sage_link derives rationale_kind from the rationale text
+    """T7. create_edge derives rationale_kind from the rationale text
     prefix when the caller omits the explicit argument. A
     ``[version_chain]`` prefix yields ``rationale_kind=version_chain``.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     result = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -719,15 +723,15 @@ async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services
 
 
 async def test_t0080_sage_link_defaults_to_manual(vault_services):
-    """T7. sage_link defaults rationale_kind to ``manual`` when neither
+    """T7. create_edge defaults rationale_kind to ``manual`` when neither
     an explicit kind nor a recognized rationale prefix is supplied.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     result = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -741,14 +745,14 @@ async def test_t0080_sage_link_defaults_to_manual(vault_services):
 
 
 async def test_link_idempotent_returns_created_flag(vault_services):
-    """Re-calling sage_link with the same natural-key triple
+    """Re-calling create_edge with the same natural-key triple
     returns ``created=False`` and preserves the original rationale."""
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     first = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -763,7 +767,7 @@ async def test_link_idempotent_returns_created_flag(vault_services):
     original_edge_id = first["edge"]["id"]
 
     second = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -783,10 +787,10 @@ async def test_link_idempotent_returns_created_flag(vault_services):
 
 
 async def test_check_preconditions_no_deps(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.3)
 
-    result = _parse(await sage_check_preconditions("test_vault", doc["id"]))
+    result = _parse(await verify_preconditions("test_vault", doc["id"]))
     assert result["function_id"] == doc["id"]
     assert result["satisfied"] is True
     assert result["checks"] == []
@@ -798,22 +802,22 @@ async def test_check_preconditions_no_deps(vault_services):
 
 
 async def test_traverse_returns_nodes(vault_services):
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+    await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
-    result = _parse(await sage_traverse("test_vault", doc_a["id"]))
+    result = _parse(await traverse("test_vault", doc_a["id"]))
     assert result["start_id"] == doc_a["id"]
     assert len(result["nodes"]) == 1
     assert result["nodes"][0]["document"]["id"] == doc_b["id"]
 
 
 async def test_traverse_no_edges(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.3)
 
-    result = _parse(await sage_traverse("test_vault", doc["id"]))
+    result = _parse(await traverse("test_vault", doc["id"]))
     assert result["start_id"] == doc["id"]
     assert result["nodes"] == []
 
@@ -825,18 +829,18 @@ async def test_traverse_no_edges(vault_services):
 
 async def test_link_transitive_both_requires_anchors(vault_services):
     """covers is transitive_both; omitting anchors via MCP surfaces a 400."""
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     # No anchor fields -> edge_anchor_policy_violation
-    result = _parse(await sage_link("test_vault", doc_a["id"], doc_b["id"], "covers"))
+    result = _parse(await create_edge("test_vault", doc_a["id"], doc_b["id"], "covers"))
     assert result["error"] == "edge_anchor_policy_violation"
     assert result["detail"]["resolution_policy"] == "transitive_both"
 
     # Same call with anchors populated -> 201 persistence
     result = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -857,12 +861,12 @@ async def test_link_retracts_round_trip(vault_services):
     """Retracts a covers edge through the MCP wrapper and verifies the
     retracts edge round-trips with null target and the correct
     retracted_edge_id."""
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
 
     covers = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -883,7 +887,7 @@ async def test_link_retracts_round_trip(vault_services):
     import uuid as _uuid
 
     bad = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             None,
@@ -895,7 +899,7 @@ async def test_link_retracts_round_trip(vault_services):
     assert bad["error"] == "retract_target_not_edge"
 
     retract = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             None,
@@ -918,10 +922,10 @@ async def test_link_retracts_round_trip(vault_services):
 
 
 async def test_traverse_debug_populates_resolution_path(vault_services):
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    await sage_link(
+    await create_edge(
         "test_vault",
         doc_a["id"],
         doc_b["id"],
@@ -930,11 +934,11 @@ async def test_traverse_debug_populates_resolution_path(vault_services):
         target_valid_from_version=doc_b["id"],
     )
 
-    off = _parse(await sage_traverse("test_vault", doc_a["id"], edge_type="covers"))
+    off = _parse(await traverse("test_vault", doc_a["id"], edge_type="covers"))
     # debug defaults to False -> resolution_path is absent (exclude_none)
     assert off.get("resolution_path") is None
 
-    on = _parse(await sage_traverse("test_vault", doc_a["id"], edge_type="covers", debug=True))
+    on = _parse(await traverse("test_vault", doc_a["id"], edge_type="covers", debug=True))
     path = on.get("resolution_path") or []
     assert any(e["event_type"] == "anchor_hit" for e in path)
 
@@ -945,10 +949,10 @@ async def test_traverse_debug_populates_resolution_path(vault_services):
 
 
 async def test_discover_semantic(vault_services):
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.5)
 
-    result = _parse(await sage_discover("test_vault", "semantic", query="sample content"))
+    result = _parse(await search("test_vault", "semantic", query="sample content"))
     assert result["mode"] == "semantic"
     assert isinstance(result["results"], list)
 
@@ -960,12 +964,12 @@ async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services
     sort_order values produce reversed orderings. Catches the wrapper silently
     dropping either parameter on the floor.
     """
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
-    await sage_ingest("test_vault", "test/second.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/second.md", "markdown")
     await asyncio.sleep(0.3)
 
     asc_result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             mode="catalog",
             sort_by="title",
@@ -974,7 +978,7 @@ async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services
         )
     )
     desc_result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             mode="catalog",
             sort_by="title",
@@ -1004,11 +1008,11 @@ async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services
 
 
 async def test_discover_deterministic(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
 
     result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             "deterministic",
             document_id=doc["id"],
@@ -1020,7 +1024,7 @@ async def test_discover_deterministic(vault_services):
 
 
 async def test_discover_semantic_missing_query(vault_services):
-    result = _parse(await sage_discover("test_vault", "semantic"))
+    result = _parse(await search("test_vault", "semantic"))
     assert result["error"] == "missing_query"
 
 
@@ -1031,7 +1035,7 @@ async def test_discover_semantic_missing_query(vault_services):
 
 async def test_discover_invalid_mode(vault_services):
     """Unknown mode value returns typed invalid_mode envelope, not internal_error."""
-    result = _parse(await sage_discover("test_vault", mode="bogus"))
+    result = _parse(await search("test_vault", mode="bogus"))
     assert result["error"] == "invalid_mode"
     assert result["detail"]["mode"] == "bogus"
     assert set(result["detail"]["valid_modes"]) == {
@@ -1046,9 +1050,7 @@ async def test_discover_invalid_mode(vault_services):
 async def test_discover_unknown_filter_key(vault_services):
     """Unknown filter key (AC: a) returns unknown_filter_key envelope
     rather than silently dropping the key."""
-    result = _parse(
-        await sage_discover("test_vault", mode="catalog", filters={"tickett_id": "T-0001"})
-    )
+    result = _parse(await search("test_vault", mode="catalog", filters={"tickett_id": "T-0001"}))
     assert result["error"] == "unknown_filter_key"
     assert result["detail"]["key"] == "tickett_id"
     valid_keys = set(result["detail"]["valid_keys"])
@@ -1068,7 +1070,7 @@ async def test_discover_unknown_filter_key(vault_services):
 async def test_discover_invalid_filter_shape(vault_services):
     """Wrong type for a known filter key (AC: b) returns
     invalid_filter_shape envelope with the offending field named."""
-    result = _parse(await sage_discover("test_vault", mode="catalog", filters={"tags": 42}))
+    result = _parse(await search("test_vault", mode="catalog", filters={"tags": 42}))
     assert result["error"] == "invalid_filter_shape"
     assert result["detail"]["field"] == "tags"
     assert "list" in result["detail"]["expected_type"]
@@ -1078,7 +1080,7 @@ async def test_discover_invalid_filter_shape(vault_services):
 async def test_discover_mode_parameter_mismatch_catalog_with_heading_path(vault_services):
     """Catalog mode with heading_path (AC: c) returns
     mode_parameter_mismatch envelope. heading_path is deterministic-only."""
-    result = _parse(await sage_discover("test_vault", mode="catalog", heading_path="Section 1"))
+    result = _parse(await search("test_vault", mode="catalog", heading_path="Section 1"))
     assert result["error"] == "mode_parameter_mismatch"
     assert result["detail"]["mode"] == "catalog"
     assert result["detail"]["forbidden_param"] == "heading_path"
@@ -1087,10 +1089,10 @@ async def test_discover_mode_parameter_mismatch_catalog_with_heading_path(vault_
 
 async def test_discover_mode_parameter_mismatch_deterministic_with_query(vault_services):
     """Deterministic mode with query set: deterministic does not search."""
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
     result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             mode="deterministic",
             document_id=doc["id"],
@@ -1106,15 +1108,15 @@ async def test_discover_mode_parameter_mismatch_deterministic_with_query(vault_s
 async def test_discover_semantic_missing_query_still_typed(vault_services):
     """Regression guard: the existing service-layer missing_query envelope
     must not be folded into mode_parameter_mismatch by."""
-    result = _parse(await sage_discover("test_vault", "semantic"))
+    result = _parse(await search("test_vault", "semantic"))
     assert result["error"] == "missing_query"
 
 
 async def test_discover_semantic_happy_path_unchanged(vault_services):
     """Regression guard: success-path response shape is preserved."""
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.5)
-    result = _parse(await sage_discover("test_vault", "semantic", query="sample content"))
+    result = _parse(await search("test_vault", "semantic", query="sample content"))
     assert result["mode"] == "semantic"
     assert isinstance(result["results"], list)
 
@@ -1125,10 +1127,10 @@ async def test_discover_semantic_happy_path_unchanged(vault_services):
 
 
 async def test_read_projection(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
 
-    result = _parse(await sage_read_projection("test_vault", doc["id"]))
+    result = _parse(await read_projection("test_vault", doc["id"]))
     assert result["document_id"] == doc["id"]
     assert "projection_text" in result
     assert len(result["projection_text"]) > 0
@@ -1139,7 +1141,7 @@ async def test_read_projection(vault_services):
 
 
 async def test_read_projection_not_found(vault_services):
-    result = _parse(await sage_read_projection("test_vault", "deadbeef_nonexistent"))
+    result = _parse(await read_projection("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
 
 
@@ -1150,11 +1152,11 @@ async def test_read_projection_write_to_path_writes_file_and_returns_metadata(
     text bytes to the absolute path and returns metadata only (no inline
     text). Replaces the pre-audit sage_export_projection MCP tool.
     """
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
     target = tmp_path / "out.md"
 
-    result = _parse(await sage_read_projection("test_vault", doc["id"], write_to_path=str(target)))
+    result = _parse(await read_projection("test_vault", doc["id"], write_to_path=str(target)))
 
     assert result["document_id"] == doc["id"]
     assert result["written_to"] == str(target)
@@ -1170,12 +1172,12 @@ async def test_read_projection_write_to_path_writes_file_and_returns_metadata(
 
 
 async def test_read_projection_write_to_path_existing_target_errors(vault_services, tmp_path):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
     target = tmp_path / "existing.md"
     target.write_text("pre-existing")
 
-    result = _parse(await sage_read_projection("test_vault", doc["id"], write_to_path=str(target)))
+    result = _parse(await read_projection("test_vault", doc["id"], write_to_path=str(target)))
 
     assert result["error"] == "write_path_exists"
     # File must not have been clobbered.
@@ -1183,12 +1185,10 @@ async def test_read_projection_write_to_path_existing_target_errors(vault_servic
 
 
 async def test_read_projection_write_to_path_relative_errors(vault_services):
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.5)
 
-    result = _parse(
-        await sage_read_projection("test_vault", doc["id"], write_to_path="relative.md")
-    )
+    result = _parse(await read_projection("test_vault", doc["id"], write_to_path="relative.md"))
 
     assert result["error"] == "write_path_invalid"
 
@@ -1199,9 +1199,9 @@ async def test_read_projection_write_to_path_relative_errors(vault_services):
 
 
 async def test_refresh_views(vault_services):
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
 
-    result = _parse(await sage_refresh_views("test_vault"))
+    result = _parse(await recompute_views("test_vault"))
     assert result["vault_id"] == "test_vault"
     assert isinstance(result["views_generated"], int)
     assert result["views_generated"] >= 1
@@ -1215,11 +1215,11 @@ async def test_refresh_views(vault_services):
 async def test_reload_vault_reinitializes_services(vault_services):
     """Reload replaces services with a fresh instance and returns stats."""
     # Ingest a document so we can verify data survives reload
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.3)
 
     old_services = _mcp._vaults["test_vault"]
-    result = _parse(await sage_reload_vault("test_vault"))
+    result = _parse(await reload_vault("test_vault"))
 
     assert result["vault_id"] == "test_vault"
     assert result["reloaded"] is True
@@ -1236,7 +1236,7 @@ async def test_reload_vault_closes_old_graph_store(vault_services):
     old_graph_store = vault_services.graph_store
     assert old_graph_store._executor is not None
 
-    await sage_reload_vault("test_vault")
+    await reload_vault("test_vault")
 
     # Old store should be shut down
     assert old_graph_store._executor is None
@@ -1250,7 +1250,7 @@ async def test_reload_vault_closes_old_graph_store(vault_services):
 
 async def test_reload_vault_unknown_vault_returns_error(vault_services):
     """Reload on a nonexistent vault returns structured error."""
-    result = _parse(await sage_reload_vault("nonexistent_vault"))
+    result = _parse(await reload_vault("nonexistent_vault"))
     assert result["error"] == "unknown_vault"
     assert "nonexistent_vault" in result["message"]
 
@@ -1262,11 +1262,11 @@ async def test_reload_vault_sees_external_changes(vault_services):
     then reload picks up the new state.
     """
     # Ingest through the current services
-    await sage_ingest("test_vault", "test/sample.md", "markdown")
+    await ingest_document("test_vault", "test/sample.md", "markdown")
     await asyncio.sleep(0.3)
 
     # Verify document is visible
-    stats_before = _parse(await sage_vault_stats("test_vault"))
+    stats_before = _parse(await get_vault_stats("test_vault"))
     assert stats_before["total_documents"] == 1
 
     # Simulate external modification: insert a document directly into the
@@ -1304,11 +1304,11 @@ async def test_reload_vault_sees_external_changes(vault_services):
     conn.close()
 
     # Reload vault to pick up external changes
-    await sage_reload_vault("test_vault")
+    await reload_vault("test_vault")
     await asyncio.sleep(0.1)
 
     # Fresh services should see both documents
-    stats_after = _parse(await sage_vault_stats("test_vault"))
+    stats_after = _parse(await get_vault_stats("test_vault"))
     assert stats_after["total_documents"] == 2
 
 
@@ -1331,13 +1331,13 @@ async def test_reload_vault_failure_keeps_old_services_in_registry(vault_service
         )
 
     # Patch both call sites so the test exercises the failure path whether
-    # sage_reload_vault still has the inline initialize_services call (pre-refactor)
+    # reload_vault still has the inline initialize_services call (pre-refactor)
     # or delegates to reload_vault_in_registry which uses sage.mcp_init's binding
     # (post-refactor).
     monkeypatch.setattr(_mcp_init, "initialize_services", failing_initialize_services)
     monkeypatch.setattr(_mcp, "initialize_services", failing_initialize_services)
 
-    result = _parse(await sage_reload_vault("test_vault"))
+    result = _parse(await reload_vault("test_vault"))
 
     # (a) Error envelope returned, not an exception
     assert result.get("error") == "schema_migration_required"
@@ -1397,7 +1397,7 @@ async def test_reload_vault_failure_releases_partially_allocated_resources(
 
     monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
 
-    result = _parse(await sage_reload_vault("test_vault"))
+    result = _parse(await reload_vault("test_vault"))
 
     # (a) Error envelope returned
     assert result.get("error") == "schema_migration_required"
@@ -1429,7 +1429,7 @@ async def test_reload_vault_stops_old_timing_thread(vault_services, monkeypatch)
     fake_thread.stop = MagicMock()
     _mcp._vaults["test_vault"].timing_thread = fake_thread
 
-    result = _parse(await sage_reload_vault("test_vault"))
+    result = _parse(await reload_vault("test_vault"))
     assert result["reloaded"] is True
 
     fake_thread.stop.assert_called_once_with(timeout=1.0)
@@ -1463,12 +1463,12 @@ async def test_reload_vault_preserves_content_store_factory_across_two_reloads(
             assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
 
             # First reload
-            result1 = _parse(await sage_reload_vault("factory_vault"))
+            result1 = _parse(await reload_vault("factory_vault"))
             assert result1["reloaded"] is True
             assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
 
             # Second reload — the real anti-coincidental check
-            result2 = _parse(await sage_reload_vault("factory_vault"))
+            result2 = _parse(await reload_vault("factory_vault"))
             assert result2["reloaded"] is True
             assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
             assert isinstance(_mcp._vaults["factory_vault"].content_store, StubContentStore)
@@ -1486,7 +1486,7 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
     """Reload re-reads vault_config.yaml from disk and reflects edits.
 
     Documents the contract: when a vault was loaded from a YAML file and
-    the file is later edited, sage_reload_vault must pick up the new
+    the file is later edited, reload_vault must pick up the new
     values, not silently reuse the in-memory config.
     """
     import yaml as _yaml
@@ -1517,12 +1517,12 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
             config_path.write_text(_yaml.safe_dump(edited))
 
             # Reload
-            result = _parse(await sage_reload_vault("yaml_reload_vault"))
+            result = _parse(await reload_vault("yaml_reload_vault"))
             assert result["reloaded"] is True
 
             # In-memory config now reflects the edit
             assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is False, (
-                "sage_reload_vault did not re-read the YAML from disk"
+                "reload_vault did not re-read the YAML from disk"
             )
         finally:
             # Post-reload registry slot may be a fresh bundle; close it
@@ -1552,7 +1552,7 @@ def _copy_dict(d: dict) -> dict:
 async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir, monkeypatch):
     """Parallel to ``vault_services`` but wires a real ``VaultRegistryService``
     into the services bundle so calls that need ``_registry_service`` -- such
-    as ``sage_update_vault_config`` and ``sage_admin_migrate_vault`` -- can
+    as ``update_vault_config`` and ``migrate_vault`` -- can
     reach the registry-reload code path. Also installs stub providers via
     ``SAGE_TEST_STUB_PROVIDERS=1`` and a ``content_store_factory`` so reload
     paths don't try to build LanceDB.
@@ -1587,7 +1587,7 @@ async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir,
 async def test_sage_update_vault_config_atomicity_via_mcp_surface(
     vault_services_with_registry, monkeypatch, tmp_path, tmp_vault_dir
 ):
-    """C1: an MCP ``sage_update_vault_config`` call that fails at the
+    """C1: an MCP ``update_vault_config`` call that fails at the
     inner reload step rolls back the on-disk yaml and leaves the registry
     slot identity unchanged.
 
@@ -1610,7 +1610,7 @@ async def test_sage_update_vault_config_atomicity_via_mcp_surface(
     # MCP call. After this call the registry slot is freshly swapped by
     # the reload step, so ``old`` below captures the post-seed services.
     seed_result = _parse(
-        await sage_update_vault_config(
+        await update_vault_config(
             vault_id="test_vault",
             vault={
                 "id": "test_vault",
@@ -1641,7 +1641,7 @@ async def test_sage_update_vault_config_atomicity_via_mcp_surface(
     monkeypatch.setattr(_mcp, "initialize_services", failing_initialize_services)
 
     result = _parse(
-        await sage_update_vault_config(
+        await update_vault_config(
             vault_id="test_vault",
             vault={
                 "id": "test_vault",
@@ -1673,7 +1673,7 @@ async def test_sage_update_vault_config_atomicity_via_mcp_surface(
 async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
     vault_services_with_registry, monkeypatch
 ):
-    """C2: an MCP ``sage_admin_migrate_vault`` call whose post-migration
+    """C2: an MCP ``migrate_vault`` call whose post-migration
     reload fails returns a structured error envelope and leaves the
     original graph_store live in the registry.
 
@@ -1722,7 +1722,7 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
     old = _mcp._vaults["test_vault"]
     assert old.graph_store._executor is not None
 
-    result = _parse(await sage_admin_migrate_vault(vault_id="test_vault"))
+    result = _parse(await migrate_vault(vault_id="test_vault"))
 
     assert result.get("error") == "schema_migration_required"
     assert "simulated post-migration reload failure" in result["message"]
@@ -1748,17 +1748,17 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
 
 
 async def test_reabstract_returns_started_status(vault_services):
-    """BH-122: sage_reabstract should return a JSON response with
+    """BH-122: recompute_abstract should return a JSON response with
     status='reabstract_started' and the document_id, not the full
     document (fire-and-forget pattern)."""
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    # sage_ingest dispatches Stages 2-3 in the background (BH-130).
+    # ingest_document dispatches Stages 2-3 in the background (BH-130).
     # Wait for indexing to commit chunks so reabstract has a projection
     # to work with.
     for _ in range(200):
-        doc = _parse(await sage_get_document("test_vault", doc_id))
+        doc = _parse(await get_document("test_vault", doc_id))
         if doc.get("pipeline_status") in {
             "indexing_complete",
             "abstraction_in_progress",
@@ -1768,36 +1768,36 @@ async def test_reabstract_returns_started_status(vault_services):
             break
         await asyncio.sleep(0.05)
 
-    result = _parse(await sage_reabstract("test_vault", doc_id))
+    result = _parse(await recompute_abstract("test_vault", doc_id))
     assert "error" not in result
     assert result["status"] == "reabstract_started"
     assert result["document_id"] == doc_id
 
 
 async def test_reabstract_unknown_vault(vault_services):
-    """sage_reabstract should return an error for unknown vault_id."""
-    result = _parse(await sage_reabstract("nonexistent_vault", "deadbeef_doc"))
+    """recompute_abstract should return an error for unknown vault_id."""
+    result = _parse(await recompute_abstract("nonexistent_vault", "deadbeef_doc"))
     assert result["error"] == "unknown_vault"
 
 
 async def test_reabstract_document_not_found(vault_services):
-    """sage_reabstract should return document_not_found for unknown doc."""
-    result = _parse(await sage_reabstract("test_vault", "deadbeef_nonexistent"))
+    """recompute_abstract should return document_not_found for unknown doc."""
+    result = _parse(await recompute_abstract("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
 
 
 async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_services):
-    """A second sage_reabstract call against the same document_id while the
+    """A second recompute_abstract call against the same document_id while the
     first is mid-flight must return the structured 409 error envelope
     (no exception propagated past the MCP boundary).
     """
     from datetime import datetime
 
-    ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     for _ in range(200):
-        doc = _parse(await sage_get_document("test_vault", doc_id))
+        doc = _parse(await get_document("test_vault", doc_id))
         if doc.get("pipeline_status") in {
             "indexing_complete",
             "abstraction_in_progress",
@@ -1817,13 +1817,13 @@ async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_ser
 
     vault_services.ingestion_service._abstraction.generate_abstract = gated_abstract
 
-    first = _parse(await sage_reabstract("test_vault", doc_id))
+    first = _parse(await recompute_abstract("test_vault", doc_id))
     assert first.get("status") == "reabstract_started"
 
     await asyncio.wait_for(entered.wait(), timeout=2.0)
 
     try:
-        second = _parse(await sage_reabstract("test_vault", doc_id))
+        second = _parse(await recompute_abstract("test_vault", doc_id))
         assert second["error"] == "reabstract_document_already_in_flight"
         assert second["detail"]["document_id"] == doc_id
         # detail["start_time"] is an ISO 8601 string; just confirm it parses.
@@ -1834,7 +1834,7 @@ async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_ser
 
 
 # ---------------------------------------------------------------------------
-# First-class edge enumeration via sage_discover(target="edges")
+# First-class edge enumeration via search(target="edges")
 # ---------------------------------------------------------------------------
 
 
@@ -1843,14 +1843,14 @@ async def test_t0157_sage_discover_edges_happy_path(vault_services):
     returns a serialized envelope with target field, results array, and
     total_available.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
     # supersedes has resolution_policy=none so no anchor version
     # requirements; using it keeps the fixture small while still
     # exercising the edge enumeration path.
     link_result = _parse(
-        await sage_link(
+        await create_edge(
             "test_vault",
             doc_a["id"],
             doc_b["id"],
@@ -1864,7 +1864,7 @@ async def test_t0157_sage_discover_edges_happy_path(vault_services):
     actual_target = link_result["edge"]["target_id"]
 
     result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             mode="catalog",
             target="edges",
@@ -1890,13 +1890,13 @@ async def test_t0157_sage_discover_edges_light_round_trips_through_serializer(va
     """29. Light mode round-trips through serialize(): the envelope keys
     on the wire match what the model produced.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    link = _parse(await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes"))
+    link = _parse(await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes"))
 
     result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             mode="catalog",
             target="edges",
@@ -1917,7 +1917,7 @@ async def test_t0157_sage_discover_edges_target_edges_with_semantic_returns_erro
     the typed mode_parameter_mismatch error envelope.
     """
     result = _parse(
-        await sage_discover(
+        await search(
             "test_vault",
             mode="semantic",
             target="edges",
@@ -1928,28 +1928,27 @@ async def test_t0157_sage_discover_edges_target_edges_with_semantic_returns_erro
 
 
 def test_t0157_sage_discover_docstring_carries_edge_example():
-    """30. sage_discover docstring documents the target="edges" dispatch
+    """30. search docstring documents the target="edges" dispatch
     with a worked example. This is a guard test that fails closed when
     the cross-tool documentation contract breaks (e.g., a later edit
     drops the example).
     """
-    doc = sage_discover.__doc__
+    doc = search.__doc__
     assert doc is not None
     assert 'target="edges"' in doc, (
-        "sage_discover docstring must carry a worked example for the "
-        "target='edges' dispatch (T-0157)"
+        "search docstring must carry a worked example for the target='edges' dispatch"
     )
 
 
 def test_t0157_sage_unlink_docstring_points_at_edge_discovery():
-    """31. sage_unlink docstring references sage_discover(target="edges")
+    """31. delete_edge docstring references search(target="edges")
     as the canonical path to discover edge_id. Guard test.
     """
     doc = _sage_unlink_tool.__doc__
     assert doc is not None
     assert 'target="edges"' in doc, (
-        "sage_unlink docstring must point at sage_discover(target='edges') "
-        "as the canonical edge_id discovery path (T-0157)"
+        "delete_edge docstring must point at search(target='edges') "
+        "as the canonical edge_id discovery path"
     )
 
 
@@ -1960,34 +1959,34 @@ def test_t0157_retracts_edge_type_docstring_points_at_edge_discovery():
     doc = _EdgeType.__doc__
     assert doc is not None
     assert 'target="edges"' in doc, (
-        "EdgeType class docstring must point at sage_discover(target='edges') "
-        "for retracts edge_id discovery (T-0157)"
+        "EdgeType class docstring must point at search(target='edges') "
+        "for retracts edge_id discovery"
     )
 
 
 # ---------------------------------------------------------------------------
-# Document_id alias on sage_traverse + docstring clarification on sage_link
+# Document_id alias on traverse + docstring clarification on create_edge
 # ---------------------------------------------------------------------------
 #
 # MCP tools should converge on `document_id` as the canonical
-# parameter name for "the document being operated on". sage_traverse historically
+# parameter name for "the document being operated on". traverse historically
 # uses `start_id`; this section verifies that `document_id` is accepted as an
-# alias (both forms work, exactly one must be supplied). sage_link keeps its
+# alias (both forms work, exactly one must be supplied). create_edge keeps its
 # semantic `source_id`/`target_id` distinction; the docstring is clarified to
 # state both are `documents.id` values.
 
 
 async def test_t0155_traverse_accepts_document_id_alias(vault_services):
-    """T1. sage_traverse accepts `document_id` as a keyword alias for
+    """T1. traverse accepts `document_id` as a keyword alias for
     `start_id`. Happy path: alias resolves to the same traversal result
     as the canonical name.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+    await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
-    result = _parse(await sage_traverse(vault_id="test_vault", document_id=doc_a["id"]))
+    result = _parse(await traverse(vault_id="test_vault", document_id=doc_a["id"]))
     # Response shape unchanged: `start_id` remains the response key.
     assert result["start_id"] == doc_a["id"]
     assert len(result["nodes"]) == 1
@@ -1997,46 +1996,46 @@ async def test_t0155_traverse_accepts_document_id_alias(vault_services):
 
 
 async def test_t0155_traverse_accepts_start_id_kwarg(vault_services):
-    """T2. sage_traverse continues to accept `start_id` as a keyword
+    """T2. traverse continues to accept `start_id` as a keyword
     argument after the alias is added. Back-compat guard.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+    await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
-    result = _parse(await sage_traverse(vault_id="test_vault", start_id=doc_a["id"]))
+    result = _parse(await traverse(vault_id="test_vault", start_id=doc_a["id"]))
     assert result["start_id"] == doc_a["id"]
     assert len(result["nodes"]) == 1
     assert result["nodes"][0]["document"]["id"] == doc_b["id"]
 
 
 async def test_t0155_traverse_accepts_start_id_positional(vault_services):
-    """T3. sage_traverse continues to accept `start_id` positionally
+    """T3. traverse continues to accept `start_id` positionally
     after the alias is added. Back-compat guard for the form used by
     the vast majority of existing tests.
     """
-    doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
-    doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
     await asyncio.sleep(0.3)
-    await sage_link("test_vault", doc_a["id"], doc_b["id"], "supersedes")
+    await create_edge("test_vault", doc_a["id"], doc_b["id"], "supersedes")
 
-    result = _parse(await sage_traverse("test_vault", doc_a["id"]))
+    result = _parse(await traverse("test_vault", doc_a["id"]))
     assert result["start_id"] == doc_a["id"]
     assert len(result["nodes"]) == 1
     assert result["nodes"][0]["document"]["id"] == doc_b["id"]
 
 
 async def test_t0155_traverse_rejects_both_kwargs(vault_services):
-    """T4. sage_traverse rejects supplying both `start_id` and
+    """T4. traverse rejects supplying both `start_id` and
     `document_id` (even with equal values). Strict ambiguity rule:
     exactly one must be supplied.
     """
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.3)
 
     result = _parse(
-        await sage_traverse(
+        await traverse(
             vault_id="test_vault",
             start_id=doc["id"],
             document_id=doc["id"],
@@ -2050,11 +2049,11 @@ async def test_t0155_traverse_rejects_both_kwargs(vault_services):
 
 
 async def test_t0155_traverse_rejects_missing_identifier(vault_services):
-    """T5. sage_traverse rejects neither `start_id` nor `document_id`
+    """T5. traverse rejects neither `start_id` nor `document_id`
     being supplied. Specific code (not a downstream `document_not_found`
     or generic ValidationError) confirms the validation branch fired.
     """
-    result = _parse(await sage_traverse(vault_id="test_vault"))
+    result = _parse(await traverse(vault_id="test_vault"))
     assert result["error"] == "missing_document_identifier"
     # Detail must enumerate the accepted parameter names so the caller
     # learns the alias without trial-and-error.
@@ -2063,21 +2062,21 @@ async def test_t0155_traverse_rejects_missing_identifier(vault_services):
 
 
 async def test_t0155_traverse_rejects_positional_plus_alias_kwarg(vault_services):
-    """T6. sage_traverse rejects positional `start_id` plus keyword
+    """T6. traverse rejects positional `start_id` plus keyword
     `document_id`. Mixing the two forms of the same logical argument
     is treated as the both-supplied case, not as silent precedence.
     """
-    doc = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await asyncio.sleep(0.3)
 
-    result = _parse(await sage_traverse("test_vault", doc["id"], document_id=doc["id"]))
+    result = _parse(await traverse("test_vault", doc["id"], document_id=doc["id"]))
     assert result["error"] == "ambiguous_document_identifier"
     assert "start_id" in result["detail"]["supplied"]
     assert "document_id" in result["detail"]["supplied"]
 
 
 def test_t0155_traverse_docstring_documents_alias():
-    """T7. sage_traverse docstring documents the `document_id` alias
+    """T7. traverse docstring documents the `document_id` alias
     inline on the `start_id` Args entry (not just in prose elsewhere).
     Guard test: ensures the ticket's docstring requirement lands at
     the parameter site where an MCP caller browsing the schema will
@@ -2086,7 +2085,7 @@ def test_t0155_traverse_docstring_documents_alias():
     import re
     import textwrap
 
-    doc = sage_traverse.__doc__
+    doc = traverse.__doc__
     assert doc is not None
     dedented = textwrap.dedent(doc)
     # Anchor the match to the start_id: line of the Args section: the
@@ -2094,13 +2093,13 @@ def test_t0155_traverse_docstring_documents_alias():
     # being described. A loose `"document_id" in doc` would pass
     # coincidentally if document_id appeared in unrelated prose.
     assert re.search(r"start_id:[^\n]*document_id", dedented), (
-        "sage_traverse docstring must document `document_id` as an alias "
-        "inline on the start_id Args entry (T-0155)"
+        "traverse docstring must document `document_id` as an alias "
+        "inline on the start_id Args entry"
     )
 
 
 def test_t0155_link_docstring_clarifies_endpoint_shape():
-    """T8. sage_link docstring's Args section describes `source_id`
+    """T8. create_edge docstring's Args section describes `source_id`
     and `target_id` as `documents.id` / `document_id` values. Guard
     against the docstring update being skipped or being only in the
     prose body, missing the per-parameter Args entries.
@@ -2108,38 +2107,36 @@ def test_t0155_link_docstring_clarifies_endpoint_shape():
     import re
     import textwrap
 
-    doc = sage_link.__doc__
+    doc = create_edge.__doc__
     assert doc is not None
     dedented = textwrap.dedent(doc)
     # Each Args entry for source_id and target_id must carry the
     # shape clarification on its own line.
     assert re.search(r"source_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "sage_link Args entry for source_id must clarify it is a "
-        "documents.id / document_id value (T-0155)"
+        "create_edge Args entry for source_id must clarify it is a documents.id / document_id value"
     )
     assert re.search(r"target_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "sage_link Args entry for target_id must clarify it is a "
-        "documents.id / document_id value (T-0155)"
+        "create_edge Args entry for target_id must clarify it is a documents.id / document_id value"
     )
 
 
 def test_t0155_set_lifecycle_docstring_clarifies_successor_id_shape():
-    """T9. sage_set_lifecycle docstring's Args section describes
+    """T9. update_lifecycle docstring's Args section describes
     `successor_id` as a `documents.id` / `document_id` value.
     Parallel-pattern guard: `successor_id` is a semantic-role
     document-id parameter analogous to source_id/target_id on
-    sage_link; the same docstring clarification applies (
+    create_edge; the same docstring clarification applies (
     principle, surfaced via F4 review).
     """
     import re
     import textwrap
 
-    from sage.mcp_server import sage_set_lifecycle
+    from sage.mcp_server import update_lifecycle
 
-    doc = sage_set_lifecycle.__doc__
+    doc = update_lifecycle.__doc__
     assert doc is not None
     dedented = textwrap.dedent(doc)
     assert re.search(r"successor_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "sage_set_lifecycle Args entry for successor_id must clarify "
-        "it is a documents.id / document_id value (T-0155)"
+        "update_lifecycle Args entry for successor_id must clarify "
+        "it is a documents.id / document_id value"
     )

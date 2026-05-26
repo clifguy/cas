@@ -5,15 +5,15 @@ force-gate refinement to `PUT /sage_vaults/{vault_id}/config`.
 
 Three new MCP tools are added to the SAGE MCP server:
 
-- `sage_create_vault` — create a new vault from a full config dict
-- `sage_get_vault_config` — read the current config
-- `sage_update_vault_config` — section-level update with destructive-change
+- `create_vault` — create a new vault from a full config dict
+- `get_vault_config` — read the current config
+- `update_vault_config` — section-level update with destructive-change
   gate
 
 Design decisions encoded here:
 
 - **No delete tool.** Destroying vaults is out of scope for agentic callers.
-- **Single-shape create (T-0062 revision):** `sage_create_vault` takes a
+- **Single-shape create.** `create_vault` takes a
   single `config` argument that mirrors `CreateVaultRequest` exactly.
   Callers that want a vault with sensible defaults call
   `VaultRegistryService.get_default_config(vault_id, name, owner)` and
@@ -23,8 +23,8 @@ Design decisions encoded here:
   the asymmetry, since the spec only ever declared the config-dict shape.
 - **Echo-back on create.** The tool return value includes the full written
   config. This eliminates an extra read round-trip when an agent wants to
-  follow up with `sage_update_vault_config` to adjust specific sections.
-- **Named-section update (T-0062 revision):** `sage_update_vault_config`
+  follow up with `update_vault_config` to adjust specific sections.
+- **Named-section update.** `update_vault_config`
   takes one optional kwarg per top-level section
   (`vault`, `document_types`, `lifecycle`, `source_adapters`,
   `metadata_extraction`, `edge_inference`, `abstraction`,
@@ -54,7 +54,7 @@ code.
 
 ---
 
-## 1. sage_create_vault
+## 1. create_vault
 
 ### TEST-APP-MCP-030: default-config dict creates vault
 
@@ -63,7 +63,7 @@ code.
 
 **Decision:** Passing the config dict produced by
 `VaultRegistryService.get_default_config(vault_id, name, owner)` to
-`sage_create_vault(config=...)` creates the vault directory tree under
+`create_vault(config=...)` creates the vault directory tree under
 `~/sage_vaults/{vault_id}/`, writes `vault_config.yaml` atomically,
 initializes services, and registers the vault in the MCP registry. The
 return value includes the full written config. This is the canonical
@@ -74,12 +74,12 @@ the MCP tool were collapsed into this dict-only signature in T-0062.
 vaults-root override in place so the test does not touch the real
 `~/sage_vaults/`.
 
-**Input:** Build `default_cfg = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")` and call `sage_create_vault(config=default_cfg)`.
+**Input:** Build `default_cfg = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")` and call `create_vault(config=default_cfg)`.
 
 **Expected:**
 - Return value is a dict with `vault_id == "new_vault"`, `name == "New Vault"`, `storage_root` populated, and a `config` key containing the full written config.
 - The returned `config` passes `VaultConfig.model_validate(...)`.
-- A subsequent `sage_list_vaults()` includes the new vault.
+- A subsequent `list_vaults()` includes the new vault.
 - The file `vault_config.yaml` exists at the vault directory and matches the echoed config.
 
 **Rationale:** Agents that just want a scratch vault build the dict via
@@ -100,7 +100,7 @@ returns a `vault_already_exists` structured error instead of overwriting.
 
 **Input:** Build a default config for `existing` via
 `VaultRegistryService.get_default_config(...)` and call
-`sage_create_vault(config=cfg)`.
+`create_vault(config=cfg)`.
 
 **Expected:**
 - Return value is an error dict with `error == "vault_already_exists"`.
@@ -121,12 +121,12 @@ value echoes the written config.
 
 **Precondition:** Empty registry. `config.vault.id` is unique.
 
-**Input:** Call `sage_create_vault(config=minimal_full_config_dict)`.
+**Input:** Call `create_vault(config=minimal_full_config_dict)`.
 
 **Expected:**
 - Return value has `vault_id == config["vault"]["id"]` and echoes the
   full config.
-- Vault is listed by `sage_list_vaults()`.
+- Vault is listed by `list_vaults()`.
 
 **Rationale:** Full-config callers (e.g. a management script restoring a
 known-good dict) need a path that bypasses defaults.
@@ -142,7 +142,7 @@ with a list of concrete validation failures. No partial side effects
 
 **Precondition:** None.
 
-**Input:** Call `sage_create_vault(config={"vault": {"id": "bad"}})` (missing required sections).
+**Input:** Call `create_vault(config={"vault": {"id": "bad"}})` (missing required sections).
 
 **Expected:**
 - Return value is an error dict with `error == "vault_config_validation_error"`.
@@ -154,22 +154,22 @@ add to the config.
 
 ---
 
-## 2. sage_get_vault_config
+## 2. get_vault_config
 
 ### TEST-APP-MCP-035: returns full config; errors on unknown vault
 
 **Artifact:** `sage/sage_api_tools.py`
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_get_vault_config(vault_id)` returns
+**Decision:** `get_vault_config(vault_id)` returns
 `services.config.model_dump()`. Unknown `vault_id` returns an
 `unknown_vault` error.
 
 **Precondition:** A vault `test_vault` is registered.
 
 **Input:**
-- Call `sage_get_vault_config("test_vault")`.
-- Call `sage_get_vault_config("nonexistent")`.
+- Call `get_vault_config("test_vault")`.
+- Call `get_vault_config("nonexistent")`.
 
 **Expected:**
 - First call returns a dict containing all required sections
@@ -183,7 +183,7 @@ an update.
 
 ---
 
-## 3. sage_update_vault_config
+## 3. update_vault_config
 
 ### TEST-APP-MCP-036: updates a section and preserves others
 
@@ -198,11 +198,11 @@ in the registry.
 **Precondition:** Vault `test_vault` registered with a known
 `lifecycle` section.
 
-**Input:** Call `sage_update_vault_config("test_vault", document_types={"doc_types": [{"value": "note", "label": "Note"}, {"value": "memo", "label": "Memo"}, {"value": "extra", "label": "Extra"}]})`.
+**Input:** Call `update_vault_config("test_vault", document_types={"doc_types": [{"value": "note", "label": "Note"}, {"value": "memo", "label": "Memo"}, {"value": "extra", "label": "Extra"}]})`.
 
 **Expected:**
 - Return value is `{"status": "updated", "vault_id": "test_vault", "warnings": []}`.
-- Subsequent `sage_get_vault_config("test_vault")` shows the new
+- Subsequent `get_vault_config("test_vault")` shows the new
   doc_types list.
 - The `lifecycle`, `source_adapters`, `metadata_extraction`,
   `edge_inference` sections are byte-equal to their pre-update values.
@@ -223,14 +223,14 @@ items and counts. No YAML write, no registry reload.
 **Precondition:** Vault `test_vault` has at least one document with
 `doc_type == "note"`.
 
-**Input:** Call `sage_update_vault_config("test_vault", document_types={"doc_types": [{"value": "memo", "label": "Memo"}]})` (removes `note`).
+**Input:** Call `update_vault_config("test_vault", document_types={"doc_types": [{"value": "memo", "label": "Memo"}]})` (removes `note`).
 
 **Expected:**
 - Return value is an error dict with `error == "destructive_config_change"`.
 - `detail.warnings` (or equivalent) is a list containing at least one
   entry mentioning `note` and the document count.
 - The on-disk `vault_config.yaml` is unchanged.
-- A follow-up `sage_get_vault_config` still shows the old doc_types list.
+- A follow-up `get_vault_config` still shows the old doc_types list.
 
 **Rationale:** Silent removal of in-use doc_types is how metadata rot
 accumulates. The default must be safe.
@@ -245,12 +245,12 @@ includes the warnings that would have blocked the default path.
 
 **Precondition:** Same as MCP-037.
 
-**Input:** Call `sage_update_vault_config("test_vault", document_types={"doc_types": [{"value": "memo", "label": "Memo"}]}, force=True)` (removes `note`).
+**Input:** Call `update_vault_config("test_vault", document_types={"doc_types": [{"value": "memo", "label": "Memo"}]}, force=True)` (removes `note`).
 
 **Expected:**
 - Return value is `{"status": "updated", "vault_id": "test_vault", "warnings": [...]}`.
 - `warnings` is a non-empty list mentioning `note`.
-- `sage_get_vault_config` shows the new (narrower) doc_types list.
+- `get_vault_config` shows the new (narrower) doc_types list.
 
 **Rationale:** The caller has explicitly accepted the consequences.
 Evidence of the destructive change is still surfaced in the response
@@ -266,7 +266,7 @@ is conceptually a new vault. `force` does not override this.
 
 **Precondition:** Vault `test_vault` registered.
 
-**Input:** Call `sage_update_vault_config("test_vault", vault={"id": "different_id", ...}, force=True)`.
+**Input:** Call `update_vault_config("test_vault", vault={"id": "different_id", ...}, force=True)`.
 
 **Expected:**
 - Return value is a `vault_config_validation_error` with a message
@@ -289,7 +289,7 @@ YAML write.
 
 **Precondition:** Vault `test_vault` registered.
 
-**Input:** Call `sage_update_vault_config("test_vault", lifecycle={"states": "not_a_list"})`.
+**Input:** Call `update_vault_config("test_vault", lifecycle={"states": "not_a_list"})`.
 
 **Expected:**
 - Error dict with `error == "vault_config_validation_error"`.

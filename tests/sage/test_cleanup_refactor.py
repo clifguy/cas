@@ -12,7 +12,7 @@ import pytest
 
 import sage.mcp_server as _mcp
 from sage.config import VaultConfig
-from sage.mcp_server import app_batch_ingest
+from sage.mcp_server import bulk_ingest_document
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from tests.sage.conftest import initialize_services_for_test
@@ -133,7 +133,7 @@ class TestEdgeResultTypeConsistency:
         sources = Path(config.vault.storage_root)
 
         result = _parse(
-            await app_batch_ingest(
+            await bulk_ingest_document(
                 "test_vault",
                 [
                     {"file_path": str(sources / "simple.md"), "source_type": "markdown"},
@@ -153,7 +153,7 @@ class TestEdgeResultTypeConsistency:
         sources = Path(config.vault.storage_root)
 
         result = _parse(
-            await app_batch_ingest(
+            await bulk_ingest_document(
                 "test_vault",
                 [
                     {
@@ -175,7 +175,7 @@ class TestEdgeResultTypeConsistency:
         sources = Path(config.vault.storage_root)
 
         result = _parse(
-            await app_batch_ingest(
+            await bulk_ingest_document(
                 "test_vault",
                 [
                     {
@@ -243,7 +243,7 @@ class TestModuleLevelImports:
 
         import sage.mcp_server as m
 
-        source = inspect.getsource(m.sage_get_document)
+        source = inspect.getsource(m.get_document)
         assert "from sage.api.errors import" not in source
 
 

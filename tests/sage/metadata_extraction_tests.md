@@ -9,7 +9,7 @@ the caller entry point (direct service call, MCP tool, app backend).
 Each test encodes a design decision from CAS-ADR-015: "Metadata extraction
 is a SAGE-level capability, not a caller responsibility." Before this
 decision, `FilenameParser` lived in `app/backend/` and only the CAS
-Application's scan/ingest flow invoked it. The `sage_ingest` MCP tool
+Application's scan/ingest flow invoked it. The `ingest_document` MCP tool
 called `IngestionService.ingest` without parsed metadata, leaving every
 filename-derived field blank and letting the adapter's `ProjectionResult.title`
 win unconditionally.

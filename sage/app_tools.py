@@ -38,7 +38,7 @@ def register_app_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool()
-    async def app_scan_directory(
+    async def list_directory(
         vault_id: str,
         directory: str,
         max_depth: int | None = None,
@@ -48,7 +48,7 @@ def register_app_tools(
 
         Side-effect free with respect to the vault: no documents are
         created, no metadata is written. Intended as the discovery
-        step before ``app_batch_ingest``. The response is a list of
+        step before ``bulk_ingest_document``. The response is a list of
         per-file objects with hash, matched adapter, parsed filename
         metadata, and an ``existing_document_id`` indicator when the
         hash already exists in the vault (so the caller can skip or
@@ -95,7 +95,7 @@ def register_app_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def app_batch_ingest(
+    async def bulk_ingest_document(
         vault_id: str,
         files: list[dict],
         infer_edges: bool = True,
@@ -103,14 +103,14 @@ def register_app_tools(
         """Ingest multiple files with optional edge inference. Returns a
         summary when complete.
 
-        Companion to ``app_scan_directory``: the caller decides which
+        Companion to ``list_directory``: the caller decides which
         scanned files to ingest, optionally adjusts the parsed
         metadata, and submits the curated list here. Per-file ingest
-        applies the same precedence chain as ``sage_ingest`` (per
+        applies the same precedence chain as ``ingest_document`` (per
         CAS-ADR-021): caller-supplied metadata wins over filename
         inference. Pipeline staging (projection, indexing,
         abstraction) is dispatched fire-and-forget; the response
-        summary reports synchronous status, and ``sage_get_document``
+        summary reports synchronous status, and ``get_document``
         is used to poll terminal pipeline_status if needed.
 
         When ``infer_edges=True``, the two-phase edge inference runs
@@ -118,22 +118,22 @@ def register_app_tools(
         Tier 1 edges (e.g. supersedes via version_chain) land as
         production edges; Tier 2 candidates are deposited in the
         staging-edge table for review via
-        ``sage_list_staging_edges``.
+        ``list_staging_edges``.
 
-        Divergence from ``sage_ingest`` (hard-coded ``needs_review=True``):
-        This tool's behavior differs from ``sage_ingest``'s in that
+        Divergence from ``ingest_document`` (hard-coded ``needs_review=True``):
+        This tool's behavior differs from ``ingest_document``'s in that
         every document it ingests lands with
         ``metadata_confirmed=False`` and is added to the
         metadata-review queue, regardless of caller intent. The
-        ``sage_ingest`` default is the opposite (caller-authoritative
+        ``ingest_document`` default is the opposite (caller-authoritative
         metadata, ``metadata_confirmed=True``). This is intentional
         per CAS-ADR-021: the batch flow is a confirmation-queue
         feeder by design — callers curate filenames/metadata
         up-front, then a human (or follow-up agent) confirms each
-        record via ``sage_update_metadata``. See ``sage_ingest`` for
+        record via ``update_metadata``. See ``ingest_document`` for
         the contrasting caller-authoritative default.
 
-        Divergence from ``sage_ingest`` (filename parsing always runs):
+        Divergence from ``ingest_document`` (filename parsing always runs):
         Because ``needs_review=True`` is hard-coded (see above), the
         vault's ``FilenameParser`` always runs on every file. It may
         populate ``date``, ``project``, ``codes``, ``version``, and
@@ -141,12 +141,12 @@ def register_app_tools(
         keys from ``parsed_metadata`` — the exact fields the parser
         extracts are vault-config-defined under
         ``metadata_extraction.filename_extraction.segment_fields``
-        (see ``sage_get_vault_config``). The historical claim in the
+        (see ``get_vault_config``). The historical claim in the
         ``files`` parameter description that omitting ``parsed_metadata``
         leaves "no other fields pre-populated" is structurally false
         for any vault that declares a filename pattern. Call
-        ``sage_parse_filename`` first if you want to preview the
-        parser's output before ingest. See ``sage_ingest`` for the
+        ``get_filename_metadata`` first if you want to preview the
+        parser's output before ingest. See ``ingest_document`` for the
         contrasting default (filename parsing only runs when
         ``needs_review=True`` is opted into).
 
@@ -157,15 +157,15 @@ def register_app_tools(
         continues with the remaining files and post-ingest edge
         inference still runs across whatever did insert. Earlier or
         later items are not rolled back. Mirrors the
-        ``sage_bulk_link`` / ``sage_bulk_set_lifecycle`` /
-        ``sage_bulk_update_metadata`` atomicity contract.
+        ``bulk_create_edge`` / ``bulk_update_lifecycle`` /
+        ``bulk_update_metadata`` atomicity contract.
 
         Predecessor auto-archive on Tier-1 supersedes inference:
         When ``infer_edges=True`` and post-ingest edge inference
         creates a Tier-1 ``supersedes`` edge via version-chain
         inference, the target document silently transitions from
         ``active`` to ``archived`` as part of edge execution — no
-        explicit ``sage_set_lifecycle(action="archive")`` call is
+        explicit ``update_lifecycle(action="archive")`` call is
         required and none surfaces in the response. Lifecycle
         transition failures during this phase are collected as
         warnings in ``summary.edge_warnings`` only; they do not raise
@@ -178,30 +178,30 @@ def register_app_tools(
         ``manual_review`` edge in the same chain), the entire group's
         Tier-1 adds are silently downgraded to Tier-2 (deposited in
         the staging-edge table for review via
-        ``sage_list_staging_edges`` rather than landing as production
+        ``list_staging_edges`` rather than landing as production
         edges; the predecessor auto-archive above does NOT fire on a
         downgraded group). The production-vs-staging outcome of a
         batch is therefore rule-dependent on the vault's prior edge
         graph, not deterministic from the input files alone.
 
-        Per-file precondition surface inherited from ``sage_ingest``:
-        Every per-file ingest runs the full ``sage_ingest``
+        Per-file precondition surface inherited from ``ingest_document``:
+        Every per-file ingest runs the full ``ingest_document``
         precondition pipeline. Failures surface as entries in
         ``summary.errors[]`` (per the per-file isolation contract
-        above) and include — by inherited shape from ``sage_ingest``
+        above) and include — by inherited shape from ``ingest_document``
         — ``adapter_not_found``, ``document_not_found``,
         ``source_file_not_found``, ``identical_content_supersede``,
         ``duplicate_content``, ``supersede_target_not_active``,
         ``tier3_unique_constraint_violation``, and
-        ``tier3_schema_violation``. See ``sage_ingest`` for the
+        ``tier3_schema_violation``. See ``ingest_document`` for the
         authoritative per-file precondition surface. Mirrors the
         bulk-tool cross-reference pattern established by
-        ``sage_bulk_link`` / ``sage_bulk_set_lifecycle`` /
-        ``sage_bulk_update_metadata``.
+        ``bulk_create_edge`` / ``bulk_update_lifecycle`` /
+        ``bulk_update_metadata``.
 
         Error modes:
         - ``unknown_vault`` (400): ``vault_id`` is not a registered
-          vault on this SAGE instance. Call ``sage_list_vaults`` for
+          vault on this SAGE instance. Call ``list_vaults`` for
           the registered set. This is a batch-boundary check (raised
           before any per-file work begins); per-file failures do not
           surface here, they accumulate in ``summary.errors[]``.
@@ -215,15 +215,15 @@ def register_app_tools(
                 vocabulary: ``markdown``, ``docx``, ``xlsx``, ``pdf``;
                 the vault's actually-enabled subset is whatever
                 appears under ``source_adapters.adapters`` in
-                ``sage_get_vault_config``), and optional
+                ``get_vault_config``), and optional
                 ``parsed_metadata`` (dict with ``title``, ``date``,
                 ``project``, ``codes``, ``version``, ``doc_type``).
                 When ``parsed_metadata`` is omitted, the stem of
                 ``file_path`` is used as the title; the vault's
                 ``FilenameParser`` still runs and may populate the
                 remaining fields from the filename (see "Divergence
-                from ``sage_ingest`` (filename parsing always runs)"
-                above; call ``sage_parse_filename`` to preview).
+                from ``ingest_document`` (filename parsing always runs)"
+                above; call ``get_filename_metadata`` to preview).
             infer_edges: When True (default), run two-phase edge inference
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle
@@ -278,6 +278,6 @@ def register_app_tools(
             return error_response(e)
 
     return {
-        "app_scan_directory": app_scan_directory,
-        "app_batch_ingest": app_batch_ingest,
+        "list_directory": list_directory,
+        "bulk_ingest_document": bulk_ingest_document,
     }

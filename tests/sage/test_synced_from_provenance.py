@@ -2,7 +2,7 @@
 
 Schema-only ship. Covers:
 
-- TEST-1: round-trip via ``sage_link`` -> ``sage_traverse`` (both fields).
+- TEST-1: round-trip via ``create_edge`` -> ``traverse`` (both fields).
 - TEST-2: omitted attributes default to None and persist as SQL NULL.
 - TEST-3: one attribute set, the other null (no coupled enforcement).
 - TEST-5: Pydantic type rejection at the FastAPI router boundary.
@@ -88,7 +88,7 @@ def _edge_sql_row(db_path: Path, edge_id: str) -> tuple[str | None, str | None]:
     return row[0], row[1]
 
 
-# ── TEST-1: round-trip via sage_link -> sage_traverse ─────────────────
+# ── TEST-1: round-trip via create_edge -> traverse ─────────────────
 
 
 async def test_t1_round_trip_both_attributes_via_link_and_traverse(

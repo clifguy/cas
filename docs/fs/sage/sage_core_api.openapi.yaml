@@ -57,7 +57,7 @@ paths:
 
   /sage_vaults/{vault_id}/discover:
     post:
-      operationId: discover
+      operationId: search
       summary: Retrieve documents by semantic search, keyword search, catalog enumeration, or deterministic extraction.
       description: >-
         The primary retrieval operation. Supports four modes:
@@ -113,7 +113,7 @@ paths:
 
   /sage_vaults/{vault_id}/documents/{document_id}/lifecycle:
     post:
-      operationId: set_lifecycle
+      operationId: update_lifecycle
       summary: Execute a lifecycle transition on a document.
       description: >-
         Transitions a document through the vault's lifecycle state machine.
@@ -226,7 +226,7 @@ paths:
 
   /sage_vaults/{vault_id}/lifecycle/bulk:
     post:
-      operationId: bulk_set_lifecycle
+      operationId: bulk_update_lifecycle
       summary: Apply lifecycle transitions to many documents in one call.
       description: >-
         First `sage_bulk_*` operation per CAS-ADR-029. Each item carries
@@ -438,7 +438,7 @@ paths:
 
   /sage_vaults/{vault_id}/documents:
     post:
-      operationId: ingest
+      operationId: ingest_document
       summary: Ingest a source artifact into the vault.
       description: >-
         Triggers the three-stage ingestion pipeline:
@@ -461,10 +461,10 @@ paths:
         which is what the bulk-ingest callers rely on.
 
 
-        The MCP `sage_ingest` tool wraps this same service but dispatches
+        The MCP `ingest_document` tool wraps this same service but dispatches
         Stages 2-3 as a background task and returns in seconds with
         `pipeline_status` at a non-terminal value (typically
-        `indexing_in_progress`). MCP callers poll `sage_get_document`
+        `indexing_in_progress`). MCP callers poll `get_document`
         to observe terminal status. This exists because the MCP client
         transport imposes a 60-second RPC timeout that abstraction on
         large documents can exceed (BH-130).
@@ -672,7 +672,7 @@ paths:
 
   /sage_vaults/{vault_id}/edges:
     post:
-      operationId: link
+      operationId: create_edge
       summary: Create a typed graph edge between two documents.
       description: >-
         Creates a directed edge from `source_id` to `target_id` with the
@@ -794,7 +794,7 @@ paths:
 
   /sage_vaults/{vault_id}/edges/bulk:
     post:
-      operationId: bulk_link
+      operationId: bulk_create_edge
       summary: Create many graph edges in one call.
       description: >-
         Third `sage_bulk_*` operation per CAS-ADR-029 (T-0165). Each
@@ -984,7 +984,7 @@ paths:
 
   /sage_vaults/{vault_id}/preconditions/{function_id}:
     get:
-      operationId: check_preconditions
+      operationId: verify_preconditions
       summary: Verify that all depends_on targets exist and are in valid state.
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
@@ -1272,7 +1272,7 @@ paths:
 
   /sage_vaults/{vault_id}/refresh-views:
     post:
-      operationId: refresh_views
+      operationId: recompute_views
       summary: Regenerate symlink-based browsable folder views.
       description: >-
         Drops and recreates the symlink trees under the vault's
@@ -1376,7 +1376,7 @@ paths:
 
   /sage_vaults/{vault_id}/stats:
     get:
-      operationId: vault_stats
+      operationId: get_vault_stats
       summary: Return Dashboard statistics and health indicators for a vault.
       description: >-
         Aggregates document, edge, storage, and pipeline-status counts
@@ -1551,7 +1551,7 @@ paths:
 
   /sage_vaults/{vault_id}/hash-check:
     post:
-      operationId: hash_check
+      operationId: verify_hash
       summary: Bulk hash existence check against the graph store.
       description: >-
         For each supplied SHA-256 hash, returns whether it matches an
@@ -1774,7 +1774,7 @@ paths:
 
   /sage_vaults/{vault_id}/parse-filename:
     post:
-      operationId: parse_filename
+      operationId: get_filename_metadata
       summary: Parse a filename without ingesting.
       description: >-
         Side-effect-free wrapper over the vault's `FilenameParser`.
@@ -2014,7 +2014,7 @@ paths:
 
   /sage_vaults/{vault_id}/edges/{edge_id}:
     delete:
-      operationId: unlink
+      operationId: delete_edge
       summary: Remove a production edge from the graph.
       description: >-
         Deletes the specified production edge. Documents are never
@@ -2081,7 +2081,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/detect-drift:
     post:
-      operationId: admin_detect_drift
+      operationId: verify_vault_drift
       summary: Audit active sync_target / derived_from edges for drift (T-0111).
       description: >-
         Walks every active provenance-bearing edge in the vault and
@@ -2123,7 +2123,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/migrate:
     post:
-      operationId: admin_migrate_vault
+      operationId: migrate_vault
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
@@ -2163,7 +2163,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/reabstract-deferred:
     post:
-      operationId: admin_reabstract_deferred_vault
+      operationId: recompute_deferred_vault_abstracts
       summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
@@ -2322,7 +2322,7 @@ components:
         rule (T-0016), and `filename_code_match` for the filename code
         match inference rule. `manual` is the default for any edge whose
         rationale lacks a recognized prefix (hand-curated edges via
-        sage_link, legacy edges, edges written before this column existed).
+        create_edge, legacy edges, edges written before this column existed).
         Storage enforces NOT NULL with DEFAULT 'manual'.
 
     ResolutionPolicy:
@@ -2395,7 +2395,7 @@ components:
       enum: [documents, edges]
       default: documents
       description: >-
-        Discriminates whether sage_discover enumerates documents or edges
+        Discriminates whether search enumerates documents or edges
         (T-0157). "documents" (default) preserves the historical surface:
         results are DiscoverHit rows. "edges" switches the dispatch to
         first-class edge enumeration: results are EdgeHit rows carrying
@@ -2411,10 +2411,10 @@ components:
         T-0153). "light" omits large per-item fields and returns only
         identity/status; "full" returns the complete envelope. When
         unset, surfaces that honor this parameter apply their own
-        default-resolution rule (sage_discover edges and the bulk
+        default-resolution rule (search edges and the bulk
         mutation tools both default to "light" when their result/batch
         size exceeds LIGHT_DEFAULT_THRESHOLD, otherwise "full"). Per-
-        surface light-mode shape varies: sage_discover(target="edges")
+        surface light-mode shape varies: search(target="edges")
         keeps edge identity columns; the bulk mutation tools drop the
         per-item document body entirely. Failure entries always carry
         the full structured error envelope regardless of mode.
@@ -2660,7 +2660,7 @@ components:
     DocumentSummaryLight:
       type: object
       description: >-
-        Stripped DocumentSummary returned by `sage_discover` with
+        Stripped DocumentSummary returned by `search` with
         `target="documents", mode="catalog", response_mode="light"`
         (T-0158). Carries only the identity columns plus the two fields
         most callers need for triage (doc_type and tier3_metadata).
@@ -2669,7 +2669,7 @@ components:
         semantic_abstract) are intentionally absent to keep bulk catalog
         enumerations inside the MCP inline-output budget. Callers who
         need the omitted fields pass `response_mode="full"` (returns
-        DocumentSummary) or fall back to `sage_get_document` per id.
+        DocumentSummary) or fall back to `get_document` per id.
       required:
         - id
         - title
@@ -2742,7 +2742,7 @@ components:
             row so later registry edits do not retroactively change
             resolution behavior for existing edges. Null when an Edge
             is constructed without policy resolution (e.g., the
-            traversal-node Edge views returned by sage_traverse).
+            traversal-node Edge views returned by traverse).
         source_valid_from_version:
           type: string
           nullable: true
@@ -2808,7 +2808,7 @@ components:
             asserted. Semantically meaningful on `sync_target` (Tier 1,
             populated automatically at re-ingestion when the Tier-1
             inference subsystem ships) and `derived_from` (Tier 3,
-            agent-supplied via sage_link). Distinct from
+            agent-supplied via create_edge). Distinct from
             `source_valid_from_version`, which records chain-scoped
             edge visibility per CAS-ADR-017 — the two must not be
             conflated. Unset = explicit null; never inferred from chain
@@ -3281,7 +3281,7 @@ components:
             values are ignored. Unknown field names are stored but have
             no schema-enforced semantics. Values are strings except
             tags, which may be supplied as a list of strings or as a
-            comma-separated string (parity with sage_update_metadata's
+            comma-separated string (parity with update_metadata's
             list-typed tags field).
         predecessor_id:
           type: string
@@ -3454,7 +3454,7 @@ components:
             asserted. Semantically meaningful on `sync_target` (Tier 1,
             populated automatically at re-ingestion when the Tier-1
             inference subsystem ships) and `derived_from` (Tier 3,
-            agent-supplied via sage_link). Distinct from
+            agent-supplied via create_edge). Distinct from
             `source_valid_from_version`, which records chain-scoped
             edge visibility per CAS-ADR-017 — the two must not be
             conflated. Unset = explicit null; never inferred from chain
@@ -3695,7 +3695,7 @@ components:
       type: object
       description: >-
         A single edge enumeration result (T-0157). Returned by
-        sage_discover when target="edges". Field population depends on
+        search when target="edges". Field population depends on
         response_mode: "light" returns only identity columns (edge_id,
         source_id, target_id, edge_type); "full" returns the complete
         envelope including anchor versions, rationale, and retraction
@@ -4441,7 +4441,7 @@ components:
       type: object
       required: [edge, created]
       description: >-
-        T-0152 wrapper for `sage_link` return. Promotes the
+        Wrapper for `create_edge` return. Promotes the
         previously-hand-constructed `{edge, created, ...}` dict to a
         real schema so the dry-run flag has a home.
       properties:
@@ -4486,7 +4486,7 @@ components:
         three-stage pipeline completes. The REST endpoint is
         synchronous: `pipeline_status` is at a terminal value
         (`abstraction_complete`, `abstraction_skipped`, or `failed`)
-        by the time this response is returned. The MCP `sage_ingest`
+        by the time this response is returned. The MCP `ingest_document`
         wrapper inverts this and returns early with a non-terminal
         status; that behavior is MCP-specific and does not affect the
         REST surface.
@@ -5417,7 +5417,7 @@ components:
     MigrationReportEntry:
       type: object
       required: [table, column]
-      description: One schema migration that was applied to a vault by sage_admin_migrate_vault.
+      description: One schema migration that was applied to a vault by migrate_vault.
       properties:
         table:
           type: string
@@ -5429,7 +5429,7 @@ components:
     MigrationReport:
       type: object
       required: [vault_id, columns_added, backfills_applied]
-      description: Result of a sage_admin_migrate_vault call -- what changed on disk.
+      description: Result of a migrate_vault call -- what changed on disk.
       properties:
         vault_id:
           $ref: "#/components/schemas/VaultId"
@@ -5523,7 +5523,7 @@ components:
 
     ReabstractRequest:
       type: object
-      description: Request body for sage_admin_reabstract_deferred_vault (T-0089).
+      description: Request body for recompute_deferred_vault_abstracts.
       properties:
         include_pdf:
           type: boolean
@@ -5633,7 +5633,7 @@ components:
           description: >-
             Number of heads observed when `staleness_basis =
             chain_nonlinear`; null otherwise. Operators follow up via
-            `sage_chain` for full forensics.
+            `chain` for full forensics.
         staleness_basis:
           $ref: "#/components/schemas/StalenessBasis"
           description: Why this edge appears in the drift report.
@@ -5642,7 +5642,7 @@ components:
       type: object
       required: [vault_id, total_edges_walked, summary, entries]
       description: >-
-        Result of a sage_admin_detect_drift call (T-0111). Per-vault
+        Result of a verify_vault_drift call. Per-vault
         audit of sync_target / derived_from edges whose recorded
         provenance has diverged from the current source-chain head.
         Entries with `staleness_basis = content_drift` are stale and
@@ -5680,7 +5680,7 @@ components:
       required:
         [vault_id, reabstracted_count, skipped_pdf_count, failed_count, entries]
       description: >-
-        Result of a sage_admin_reabstract_deferred_vault call -- aggregate
+        Result of a recompute_deferred_vault_abstracts call -- aggregate
         counts and per-document outcomes for the deferred-abstract worklist.
       properties:
         vault_id:
@@ -5705,7 +5705,7 @@ components:
       type: object
       required: [event_type, processed, total, current_document_id, current_title, status]
       description: >-
-        SSE `progress` event payload for sage_admin_reabstract_deferred_vault
+        SSE `progress` event payload for recompute_deferred_vault_abstracts
         (T-0134). Emitted twice per non-PDF document (a `started` event
         before dispatch, then a `completed` or `failed` event after the
         polling loop reaches a terminal pipeline_status) and once per
@@ -5773,7 +5773,7 @@ components:
       required:
         [event_type, vault_id, reabstracted_count, skipped_pdf_count, failed_count, entries]
       description: >-
-        SSE `summary` event payload for sage_admin_reabstract_deferred_vault
+        SSE `summary` event payload for recompute_deferred_vault_abstracts
         (T-0134). Emitted once at the end of the stream, after all per-
         document progress events. Payload fields (sans the `event_type`
         discriminator) are structurally identical to ReabstractReport so

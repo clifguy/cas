@@ -20,12 +20,12 @@ import re
 from typing import Any, get_args, get_origin
 
 from sage.mcp_server import (
-    sage_bulk_set_lifecycle,
-    sage_bulk_update_metadata,
-    sage_discover,
-    sage_link,
-    sage_set_lifecycle,
-    sage_update_metadata,
+    bulk_update_lifecycle,
+    bulk_update_metadata,
+    create_edge,
+    search,
+    update_lifecycle,
+    update_metadata,
 )
 from sage.models.enums import EdgeType, RationaleKind, RetrievalMode
 
@@ -62,7 +62,7 @@ def _docstring(fn: Any) -> str:
 
 
 def test_link_edge_type_signature_is_enum():
-    """T1.1 — sage_link.edge_type must be typed as the EdgeType StrEnum.
+    """T1.1 — create_edge.edge_type must be typed as the EdgeType StrEnum.
 
     The Pydantic LinkRequest already uses EdgeType, but FastMCP introspects
     the tool function signature itself when generating the JSON schema
@@ -73,9 +73,9 @@ def test_link_edge_type_signature_is_enum():
     not isinstance/issubclass; replacing EdgeType with a sibling enum
     fails the test, and reverting to ``str`` fails it.
     """
-    ann = _annotation_of(sage_link, "edge_type")
+    ann = _annotation_of(create_edge, "edge_type")
     assert ann is EdgeType, (
-        f"sage_link.edge_type annotation is {ann!r}; expected EdgeType. "
+        f"create_edge.edge_type annotation is {ann!r}; expected EdgeType. "
         "Without the enum at the tool signature, FastMCP exposes edge_type "
         "as a free-form string and callers learn valid values only by "
         "erroring."
@@ -83,62 +83,62 @@ def test_link_edge_type_signature_is_enum():
 
 
 def test_link_rationale_kind_signature_is_enum():
-    """T1.2 — sage_link.rationale_kind must be typed as RationaleKind | None.
+    """T1.2 — create_edge.rationale_kind must be typed as RationaleKind | None.
 
     Same rationale as T1.1 — LinkRequest carries the enum but the tool
     function signature lags. Optional because the field is nullable.
     """
-    ann = _annotation_of(sage_link, "rationale_kind")
+    ann = _annotation_of(create_edge, "rationale_kind")
     assert _annotation_includes(ann, RationaleKind), (
-        f"sage_link.rationale_kind annotation is {ann!r}; expected "
+        f"create_edge.rationale_kind annotation is {ann!r}; expected "
         "RationaleKind | None. Callers currently see this as a free-form "
         "optional string at the MCP boundary."
     )
 
 
 def test_discover_mode_signature_is_enum():
-    """T1.4 — sage_discover.mode must be typed as the RetrievalMode StrEnum.
+    """T1.4 — search.mode must be typed as the RetrievalMode StrEnum.
 
     DiscoverRequest.mode uses RetrievalMode but the tool function signature
     declares ``mode: str = "semantic"``. The default must remain a valid
     enum value (RetrievalMode.SEMANTIC) so existing callers keep working.
     """
-    ann = _annotation_of(sage_discover, "mode")
+    ann = _annotation_of(search, "mode")
     assert ann is RetrievalMode, (
-        f"sage_discover.mode annotation is {ann!r}; expected RetrievalMode. "
+        f"search.mode annotation is {ann!r}; expected RetrievalMode. "
         "Callers picking the mode value from the tool schema currently "
         "see a free-form string."
     )
 
 
 def test_set_lifecycle_action_docstring_points_at_vault_config():
-    """T1.3 — sage_set_lifecycle.action description must point at vault_config.
+    """T1.3 — update_lifecycle.action description must point at vault_config.
 
     Per the scope resolution: action stays a free-form ``str``
     (values are vault-config-defined), but the documentation must direct
-    callers at the authoritative source — ``sage_get_vault_config`` —
+    callers at the authoritative source — ``get_vault_config`` —
     rather than leaving them to discover the action set by erroring.
 
     Anti-coincidental-pass: the docstring must mention BOTH ``vault
-    config`` (closure source) and ``sage_get_vault_config`` (the
+    config`` (closure source) and ``get_vault_config`` (the
     discovery tool). Mentioning one without the other fails.
     """
-    doc = _docstring(sage_set_lifecycle)
+    doc = _docstring(update_lifecycle)
     assert "vault config" in doc.lower(), (
-        "sage_set_lifecycle docstring must reference 'vault config' as the "
+        "update_lifecycle docstring must reference 'vault config' as the "
         "authoritative source of the action vocabulary."
     )
-    assert "sage_get_vault_config" in doc, (
-        "sage_set_lifecycle docstring must point callers at "
-        "``sage_get_vault_config`` for the authoritative action list."
+    assert "get_vault_config" in doc, (
+        "update_lifecycle docstring must point callers at "
+        "``get_vault_config`` for the authoritative action list."
     )
 
 
 def test_set_lifecycle_signature_exposes_dry_run():
-    """— sage_set_lifecycle must expose ``dry_run: bool = False`` at the wrapper.
+    """— update_lifecycle must expose ``dry_run: bool = False`` at the wrapper.
 
     The dry-run rollout shipped on every other mutation tool
-    but skipped the single-form ``sage_set_lifecycle`` wrapper. The
+    but skipped the single-form ``update_lifecycle`` wrapper. The
     underlying ``SetLifecycleRequest`` already carries ``dry_run`` and
     ``LifecycleService.set_lifecycle`` honors it; the gap was at the
     MCP boundary.
@@ -148,24 +148,24 @@ def test_set_lifecycle_signature_exposes_dry_run():
     default ``False``. Replacing the annotation with ``str`` or moving
     the default to ``True`` fails the test.
     """
-    sig = inspect.signature(sage_set_lifecycle)
+    sig = inspect.signature(update_lifecycle)
     assert "dry_run" in sig.parameters, (
-        "sage_set_lifecycle is missing the dry_run parameter; "
+        "update_lifecycle is missing the dry_run parameter; "
         "the wrapper must expose dry_run to close the T-0152 rollout gap."
     )
     param = sig.parameters["dry_run"]
     assert param.annotation is bool, (
-        f"sage_set_lifecycle.dry_run annotation is {param.annotation!r}; "
+        f"update_lifecycle.dry_run annotation is {param.annotation!r}; "
         "expected ``bool``. Every other mutation MCP wrapper uses ``bool = False``."
     )
     assert param.default is False, (
-        f"sage_set_lifecycle.dry_run default is {param.default!r}; "
+        f"update_lifecycle.dry_run default is {param.default!r}; "
         "expected ``False`` to preserve real-run as the default behavior."
     )
 
 
 def test_discover_filters_args_documents_closed_key_set():
-    """T1.5 — sage_discover.filters Args docstring must list the closed key set.
+    """T1.5 — search.filters Args docstring must list the closed key set.
 
     Filters can't be typed as ``RetrievalFilters | None`` at the MCP
     boundary because routes the raw dict through DiscoverRequest
@@ -178,7 +178,7 @@ def test_discover_filters_args_documents_closed_key_set():
     key listed by name, AND (b) a closure claim referencing the
     ``unknown_filter_key`` error envelope.
     """
-    doc = _docstring(sage_discover)
+    doc = _docstring(search)
     document_target_keys = (
         "doc_type",
         "project",
@@ -190,11 +190,11 @@ def test_discover_filters_args_documents_closed_key_set():
     )
     for key in document_target_keys:
         assert key in doc, (
-            f"sage_discover docstring is missing filter key {key!r}. "
+            f"search docstring is missing filter key {key!r}. "
             "All seven document-target filter keys must be enumerated."
         )
     assert "unknown_filter_key" in doc, (
-        "sage_discover docstring must reference the ``unknown_filter_key`` "
+        "search docstring must reference the ``unknown_filter_key`` "
         "error envelope as the closure-rejection path."
     )
 
@@ -214,7 +214,7 @@ _TIER3_OPS_RE = re.compile(
 
 
 def test_update_metadata_docstring_carries_tier3_ops_example():
-    """T2.1 — sage_update_metadata docstring must inline the {set, unset} shape.
+    """T2.1 — update_metadata docstring must inline the {set, unset} shape.
 
     Regression guard for the existing inlining. The check requires not
     only the ``set`` and ``unset`` keys, but a populated example
@@ -225,22 +225,22 @@ def test_update_metadata_docstring_carries_tier3_ops_example():
     ``unset`` as English words without a JSON-shaped example will not
     match _TIER3_OPS_RE.
     """
-    doc = _docstring(sage_update_metadata)
+    doc = _docstring(update_metadata)
     assert _TIER3_OPS_RE.search(doc), (
-        "sage_update_metadata docstring must carry an inline "
+        "update_metadata docstring must carry an inline "
         '{"set": {...}, "unset": [...]} example with populated values.'
     )
 
 
 def test_bulk_update_metadata_docstring_carries_tier3_ops_example():
-    """T2.2 — sage_bulk_update_metadata docstring must inline the {set, unset} shape.
+    """T2.2 — bulk_update_metadata docstring must inline the {set, unset} shape.
 
     Regression guard. The bulk variant already carries the example
     (per CAS-ADR-029 documentation); this test pins it.
     """
-    doc = _docstring(sage_bulk_update_metadata)
+    doc = _docstring(bulk_update_metadata)
     assert _TIER3_OPS_RE.search(doc), (
-        "sage_bulk_update_metadata docstring must carry an inline "
+        "bulk_update_metadata docstring must carry an inline "
         '{"set": {...}, "unset": [...]} example with populated values.'
     )
 
@@ -251,7 +251,7 @@ def test_bulk_update_metadata_docstring_carries_tier3_ops_example():
 
 
 def test_link_docstring_documents_derived_from_anchor_semantics():
-    """T3.1 — sage_link must document what source_valid_from_version anchors for derived_from.
+    """T3.1 — create_edge must document what source_valid_from_version anchors for derived_from.
 
     Three required ingredients:
       (a) the term ``derived_from`` appears in the field documentation,
@@ -264,9 +264,9 @@ def test_link_docstring_documents_derived_from_anchor_semantics():
     changing it to a non-derived_from edge example) fails the third
     check.
     """
-    doc = _docstring(sage_link)
-    assert "derived_from" in doc, "sage_link docstring missing 'derived_from'."
-    assert "transitive_source" in doc, "sage_link docstring missing 'transitive_source'."
+    doc = _docstring(create_edge)
+    assert "derived_from" in doc, "create_edge docstring missing 'derived_from'."
+    assert "transitive_source" in doc, "create_edge docstring missing 'transitive_source'."
 
     # Canonical example: at least one snippet containing both
     # ``edge_type="derived_from"`` (or ``edge_type='derived_from'``) AND
@@ -276,7 +276,7 @@ def test_link_docstring_documents_derived_from_anchor_semantics():
         re.DOTALL,
     )
     assert pattern.search(doc), (
-        "sage_link docstring must carry a canonical example showing a "
+        "create_edge docstring must carry a canonical example showing a "
         "derived_from link with source_valid_from_version supplied."
     )
 
@@ -287,7 +287,7 @@ def test_link_docstring_documents_derived_from_anchor_semantics():
 
 
 def test_link_docstring_documents_merged_from_chain_head_precondition():
-    """T4.1 — sage_link must document the merged_from chain-head precondition.
+    """T4.1 — create_edge must document the merged_from chain-head precondition.
 
     The validator at sage/services/graph_ops.py:240-253 rejects
     merged_from when the source has an outbound supersedes edge. That
@@ -301,7 +301,7 @@ def test_link_docstring_documents_merged_from_chain_head_precondition():
 
     Anti-coincidental-pass: removing either ingredient fails the test.
     """
-    doc = _docstring(sage_link)
+    doc = _docstring(create_edge)
 
     # (a) chain-head / no outbound supersedes precondition. Accept any
     # of several reasonable phrasings.
@@ -314,7 +314,7 @@ def test_link_docstring_documents_merged_from_chain_head_precondition():
     ]
     found_precondition = any(p in doc for p in chain_head_phrases)
     assert found_precondition, (
-        "sage_link docstring must document the merged_from chain-head "
+        "create_edge docstring must document the merged_from chain-head "
         "precondition (source must have no outbound supersedes edge). "
         f"None of {chain_head_phrases!r} appeared."
     )
@@ -326,7 +326,7 @@ def test_link_docstring_documents_merged_from_chain_head_precondition():
     paragraphs = re.split(r"\n\s*\n", doc)
     proximity_satisfied = any(("merged_from" in p and "derived_from" in p) for p in paragraphs)
     assert proximity_satisfied, (
-        "sage_link docstring must mention ``derived_from`` as the "
+        "create_edge docstring must mention ``derived_from`` as the "
         "alternative path for mid-chain content reuse, in the same "
         "paragraph as the ``merged_from`` precondition discussion."
     )
@@ -338,7 +338,7 @@ def test_link_docstring_documents_merged_from_chain_head_precondition():
 
 
 def test_discover_docstring_carries_pagination_and_response_mode_guidance():
-    """T5.1 — sage_discover docstring must explicitly cite the size budget.
+    """T5.1 — search docstring must explicitly cite the size budget.
 
     Required ingredients:
       (a) reference to ``response_mode="light"`` (or equivalent) as the
@@ -349,22 +349,21 @@ def test_discover_docstring_carries_pagination_and_response_mode_guidance():
     Anti-coincidental-pass: deleting the 24 KiB budget reference fails
     the third check.
     """
-    doc = _docstring(sage_discover)
+    doc = _docstring(search)
     assert "response_mode" in doc and "light" in doc, (
-        "sage_discover docstring must reference ``response_mode='light'`` "
-        "as the size-mitigation lever."
+        "search docstring must reference ``response_mode='light'`` as the size-mitigation lever."
     )
     assert "offset" in doc, (
-        "sage_discover docstring must reference ``offset`` for catalog-mode pagination."
+        "search docstring must reference ``offset`` for catalog-mode pagination."
     )
     assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
-        "sage_discover docstring must cite the 24 KiB inline budget or "
+        "search docstring must cite the 24 KiB inline budget or "
         "the SAGE_MCP_INLINE_BUDGET_BYTES override knob."
     )
 
 
 def test_bulk_set_lifecycle_docstring_carries_response_mode_note():
-    """T5.2 — sage_bulk_set_lifecycle docstring must carry the response_mode note.
+    """T5.2 — bulk_update_lifecycle docstring must carry the response_mode note.
 
     Required ingredients:
       (a) reference to ``response_mode`` parameter,
@@ -372,28 +371,28 @@ def test_bulk_set_lifecycle_docstring_carries_response_mode_note():
       (c) the inline budget / 24 KiB callout.
 
     Regression guard for the existing documentation, extended to
-    require the 24 KiB anchor for parity with sage_discover.
+    require the 24 KiB anchor for parity with search.
     """
-    doc = _docstring(sage_bulk_set_lifecycle)
+    doc = _docstring(bulk_update_lifecycle)
     assert "response_mode" in doc
     assert "5" in doc, (
-        "sage_bulk_set_lifecycle docstring must document the 5-item default-to-light threshold."
+        "bulk_update_lifecycle docstring must document the 5-item default-to-light threshold."
     )
     assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
-        "sage_bulk_set_lifecycle docstring must cite the 24 KiB inline "
-        "budget so callers see the same anchor as sage_discover."
+        "bulk_update_lifecycle docstring must cite the 24 KiB inline "
+        "budget so callers see the same anchor as search."
     )
 
 
 def test_bulk_update_metadata_docstring_carries_response_mode_note():
-    """T5.3 — sage_bulk_update_metadata docstring must carry the response_mode note.
+    """T5.3 — bulk_update_metadata docstring must carry the response_mode note.
 
     Mirror of T5.2.
     """
-    doc = _docstring(sage_bulk_update_metadata)
+    doc = _docstring(bulk_update_metadata)
     assert "response_mode" in doc
     assert "5" in doc
     assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
-        "sage_bulk_update_metadata docstring must cite the 24 KiB inline "
-        "budget so callers see the same anchor as sage_discover."
+        "bulk_update_metadata docstring must cite the 24 KiB inline "
+        "budget so callers see the same anchor as search."
     )

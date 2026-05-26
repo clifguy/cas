@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Repair document_date values that were persisted in ISO-with-time form.
 
-Caller-supplied paths (``sage_update_metadata`` and ``sage_ingest`` with
+Caller-supplied paths (``update_metadata`` and ``ingest_document`` with
 caller metadata) historically accepted any string for ``document_date``
 and stored it verbatim. Some callers passed datetime-ISO strings
 (``2026-05-05T00:00:00Z``) instead of the contract YYYY-MM-DD shape;
-``sage_traverse`` then raised ``ValueError`` from ``strptime`` on those
+``traverse`` then raised ``ValueError`` from ``strptime`` on those
 records. The boundary is now validated by Pydantic; this script
 normalizes any pre-existing rows back to YYYY-MM-DD.
 

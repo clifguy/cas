@@ -8,8 +8,8 @@ SAGE rather than the file system.
 
 - Vault id: `cas`
 - Storage root on disk: `~/sage_vaults/cas/sources`
-- MCP access: configured in `~/.claude/settings.json`. Use the `sage_discover`,
-  `sage_get_document`, `sage_read_section`, and `sage_traverse` tools against
+- MCP access: configured in `~/.claude/settings.json`. Use the `search`,
+  `get_document`, `read_section`, and `traverse` tools against
   `vault_id: "cas"`.
 
 ## What was in this directory

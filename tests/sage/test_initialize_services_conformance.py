@@ -8,7 +8,7 @@ each kwarg listed in the canonical set. Six call sites are surveyed:
   Transport lifespans / one-shot entrypoints
   ------------------------------------------
   - ``sage/mcp_server.py:_lifespan`` -- MCP standalone lifespan
-  - ``sage/mcp_server.py:sage_reload_vault`` -- MCP reload tool
+  - ``sage/mcp_server.py:reload_vault`` -- MCP reload tool
   - ``sage/app.py:_initialize_vault`` -- FastAPI lifespan
   - ``sage/migrate.py:_migrate_vault`` -- standalone schema-migration CLI
 
@@ -17,7 +17,7 @@ each kwarg listed in the canonical set. Six call sites are surveyed:
   - ``sage/mcp_init.py:reload_vault_in_registry``
       (FastAPI PUT-config-reload + VaultRegistryService.reload)
   - ``sage/services/vault_registry.py:VaultRegistryService.create_vault``
-      (FastAPI POST-create-vault + MCP sage_create_vault)
+      (FastAPI POST-create-vault + MCP create_vault)
 
 Pattern: same shape as ``tests/sage/test_router_conformance.py``.
 One ``TRANSPORT_SURFACES`` tuple declares the surface; one parametrized
@@ -185,7 +185,7 @@ async def _drive_mcp_reload(
     tmp_path: Path,
     minimal_vault_config_dict: dict,
 ) -> list[dict]:
-    """Drive sage.mcp_server.sage_reload_vault.
+    """Drive sage.mcp_server.reload_vault.
 
     Sage_reload_vault now delegates to
     ``sage.mcp_init.reload_vault_in_registry``, which calls
@@ -217,7 +217,7 @@ async def _drive_mcp_reload(
     monkeypatch.setattr("sage.mcp_init.initialize_services", capturing_init)
     monkeypatch.setattr("sage.mcp_init.build_stack_abstraction_provider", lambda _cfg: object())
 
-    await mcp_server.sage_reload_vault("vault_a")
+    await mcp_server.reload_vault("vault_a")
     return captured
 
 
@@ -321,7 +321,7 @@ async def _drive_vault_registry_create_vault(
 ) -> list[dict]:
     """Drive sage.services.vault_registry.VaultRegistryService.create_vault.
     Reachable via the FastAPI POST-create-vault endpoint and the MCP
-    sage_create_vault tool."""
+    create_vault tool."""
     # Redirect _VAULTS_ROOT so the config-yaml write lands inside tmp_path
     # rather than polluting ~/sage_vaults.
     vaults_dir = tmp_path / "sage_vaults"

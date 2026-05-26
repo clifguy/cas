@@ -21,21 +21,21 @@ Design decisions encoded here:
 
 ---
 
-## 1. sage_list_vaults
+## 1. list_vaults
 
-### TEST-APP-MCP-001: sage_list_vaults returns all registered vaults
+### TEST-APP-MCP-001: list_vaults returns all registered vaults
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-001
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_list_vaults` takes no parameters (no vault_id -- it operates
+**Decision:** `list_vaults` takes no parameters (no vault_id -- it operates
 across vaults). Returns a JSON array of vault summary objects. This is the only
 SAGE MCP tool without a vault_id parameter.
 
 **Precondition:** MCP server running with two vaults registered (test_vault,
 example_vault).
 
-**Input:** Call `sage_list_vaults()`.
+**Input:** Call `list_vaults()`.
 
 **Expected:**
 - Returns valid JSON string
@@ -46,7 +46,7 @@ example_vault).
 **Rationale:** The vault selector in the CAS Application sidebar and any MCP
 client need to discover available vaults without knowing their IDs in advance.
 
-### TEST-APP-MCP-002: sage_list_vaults with no vaults returns empty array
+### TEST-APP-MCP-002: list_vaults with no vaults returns empty array
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-002
 **Category:** mcp_tool, sage_api
@@ -56,7 +56,7 @@ not an error.
 
 **Precondition:** MCP server running with empty vault registry.
 
-**Input:** Call `sage_list_vaults()`.
+**Input:** Call `list_vaults()`.
 
 **Expected:**
 - Returns `"[]"` (valid JSON empty array)
@@ -66,19 +66,19 @@ lets callers display a "no vaults configured" message.
 
 ---
 
-## 2. sage_vault_stats
+## 2. get_vault_stats
 
-### TEST-APP-MCP-003: sage_vault_stats returns statistics and health indicators
+### TEST-APP-MCP-003: get_vault_stats returns statistics and health indicators
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-003, TEST-APP-BE-004
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_vault_stats(vault_id)` returns the full statistics object
+**Decision:** `get_vault_stats(vault_id)` returns the full statistics object
 including health indicator counts. Mirrors the HTTP stats endpoint response.
 
 **Precondition:** Vault with documents, edges, and staging edges.
 
-**Input:** Call `sage_vault_stats("test_vault")`.
+**Input:** Call `get_vault_stats("test_vault")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -95,7 +95,7 @@ including health indicator counts. Mirrors the HTTP stats endpoint response.
 **Rationale:** MCP clients (e.g., Claude Desktop) need vault health at a glance
 to decide which operations to suggest.
 
-### TEST-APP-MCP-004: sage_vault_stats for empty vault returns zero counts
+### TEST-APP-MCP-004: get_vault_stats for empty vault returns zero counts
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-005
 **Category:** mcp_tool, sage_api
@@ -105,7 +105,7 @@ last_ingestion_at.
 
 **Precondition:** Vault with no documents or edges.
 
-**Input:** Call `sage_vault_stats("test_vault")`.
+**Input:** Call `get_vault_stats("test_vault")`.
 
 **Expected:**
 - `total_documents`: 0
@@ -115,7 +115,7 @@ last_ingestion_at.
 
 **Rationale:** Same behavior as the HTTP endpoint. Zero counts are valid.
 
-### TEST-APP-MCP-005: sage_vault_stats for unknown vault returns error
+### TEST-APP-MCP-005: get_vault_stats for unknown vault returns error
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-006
 **Category:** mcp_tool, error_handling
@@ -125,7 +125,7 @@ Matches existing MCP error convention.
 
 **Precondition:** Vault "nonexistent" not registered.
 
-**Input:** Call `sage_vault_stats("nonexistent")`.
+**Input:** Call `get_vault_stats("nonexistent")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -137,19 +137,19 @@ let the caller present a meaningful message.
 
 ---
 
-## 3. sage_hash_check
+## 3. verify_hash
 
-### TEST-APP-MCP-006: sage_hash_check returns match results for known hashes
+### TEST-APP-MCP-006: verify_hash returns match results for known hashes
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-007
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_hash_check(vault_id, hashes)` accepts a list of hash strings
+**Decision:** `verify_hash(vault_id, hashes)` accepts a list of hash strings
 and returns a JSON object mapping each hash to its match result.
 
 **Precondition:** Vault with one document having `source_content_hash` = "sha256:abc123".
 
-**Input:** Call `sage_hash_check("test_vault", ["sha256:abc123", "sha256:unknown"])`.
+**Input:** Call `verify_hash("test_vault", ["sha256:abc123", "sha256:unknown"])`.
 
 **Expected:**
 - Returns valid JSON string
@@ -160,7 +160,7 @@ and returns a JSON object mapping each hash to its match result.
 **Rationale:** MCP clients performing scan-like operations need the same hash
 check capability as the application backend.
 
-### TEST-APP-MCP-007: sage_hash_check with empty list returns empty object
+### TEST-APP-MCP-007: verify_hash with empty list returns empty object
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-008
 **Category:** mcp_tool, sage_api
@@ -169,7 +169,7 @@ check capability as the application backend.
 
 **Precondition:** Vault initialized.
 
-**Input:** Call `sage_hash_check("test_vault", [])`.
+**Input:** Call `verify_hash("test_vault", [])`.
 
 **Expected:**
 - Returns `"{}"` (valid JSON empty object)
@@ -178,20 +178,20 @@ check capability as the application backend.
 
 ---
 
-## 4. sage_list_staging_edges
+## 4. list_staging_edges
 
-### TEST-APP-MCP-008: sage_list_staging_edges returns Tier 2 edges
+### TEST-APP-MCP-008: list_staging_edges returns Tier 2 edges
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-010
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_list_staging_edges(vault_id)` returns all Tier 2 suggested
+**Decision:** `list_staging_edges(vault_id)` returns all Tier 2 suggested
 edges awaiting review. Each entry includes id, source_id, target_id, edge_type,
 inference_evidence, confidence_tier, and created_at.
 
 **Precondition:** Vault with staging edges.
 
-**Input:** Call `sage_list_staging_edges("test_vault")`.
+**Input:** Call `list_staging_edges("test_vault")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -202,7 +202,7 @@ inference_evidence, confidence_tier, and created_at.
 **Rationale:** MCP clients need to list staging edges for review workflows,
 identical to the Edge Review tab in the CAS Application.
 
-### TEST-APP-MCP-009: sage_list_staging_edges returns empty array when none exist
+### TEST-APP-MCP-009: list_staging_edges returns empty array when none exist
 
 **Artifact:** `sage/mcp_server.py`
 **Category:** mcp_tool, sage_api
@@ -211,7 +211,7 @@ identical to the Edge Review tab in the CAS Application.
 
 **Precondition:** Vault with no staging edges.
 
-**Input:** Call `sage_list_staging_edges("test_vault")`.
+**Input:** Call `list_staging_edges("test_vault")`.
 
 **Expected:**
 - Returns `"[]"` (valid JSON empty array)
@@ -220,14 +220,14 @@ identical to the Edge Review tab in the CAS Application.
 
 ---
 
-## 5. sage_update_staging_edge
+## 5. update_staging_edge
 
-### TEST-APP-MCP-010: sage_update_staging_edge(action="confirm") moves edge to production
+### TEST-APP-MCP-010: update_staging_edge(action="confirm") moves edge to production
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-011
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_update_staging_edge(vault_id, edge_id, action="confirm")`
+**Decision:** `update_staging_edge(vault_id, edge_id, action="confirm")`
 moves the specified staging edge to the production edge table. Returns the newly
 created production edge. (Consolidated from the pre-audit
 `sage_confirm_staging_edge` / `sage_dismiss_staging_edge` pair per the SAGE MCP
@@ -235,38 +235,38 @@ Tool Surface steering doc v3 audit.)
 
 **Precondition:** Staging edge with known ID exists.
 
-**Input:** Call `sage_update_staging_edge("test_vault", "<staging-edge-id>", "confirm")`.
+**Input:** Call `update_staging_edge("test_vault", "<staging-edge-id>", "confirm")`.
 
 **Expected:**
 - Returns valid JSON string
 - Parsed result is a production edge object with auto-generated ID
-- Staging edge no longer appears in `sage_list_staging_edges` results
-- Production edge visible via `sage_traverse`
+- Staging edge no longer appears in `list_staging_edges` results
+- Production edge visible via `traverse`
 
 **Rationale:** MCP clients can confirm edges during conversational review
 workflows without switching to the web UI.
 
-### TEST-APP-MCP-011: sage_update_staging_edge(action="dismiss") deletes from staging
+### TEST-APP-MCP-011: update_staging_edge(action="dismiss") deletes from staging
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-012
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_update_staging_edge(vault_id, edge_id, action="dismiss")`
+**Decision:** `update_staging_edge(vault_id, edge_id, action="dismiss")`
 deletes the staging edge. Returns a confirmation object (not the deleted edge).
 
 **Precondition:** Staging edge with known ID exists.
 
-**Input:** Call `sage_update_staging_edge("test_vault", "<staging-edge-id>", "dismiss")`.
+**Input:** Call `update_staging_edge("test_vault", "<staging-edge-id>", "dismiss")`.
 
 **Expected:**
 - Returns valid JSON string with confirmation (e.g., `{ "dismissed": true }`)
-- Staging edge no longer appears in `sage_list_staging_edges` results
+- Staging edge no longer appears in `list_staging_edges` results
 - No production edge created
 
 **Rationale:** Symmetric with confirm. MCP clients can dismiss false-positive
 suggestions conversationally.
 
-### TEST-APP-MCP-012: sage_update_staging_edge against non-existent edge returns error
+### TEST-APP-MCP-012: update_staging_edge against non-existent edge returns error
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-013
 **Category:** mcp_tool, error_handling
@@ -277,7 +277,7 @@ outside `{"confirm", "dismiss"}` returns `invalid_action`.
 
 **Precondition:** No staging edge with ID "gone-001".
 
-**Input:** Call `sage_update_staging_edge("test_vault", "gone-001", "confirm")`.
+**Input:** Call `update_staging_edge("test_vault", "gone-001", "confirm")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -288,20 +288,20 @@ outside `{"confirm", "dismiss"}` returns `invalid_action`.
 
 ---
 
-## 6. sage_pending_metadata
+## 6. list_pending_metadata
 
-### TEST-APP-MCP-013: sage_pending_metadata returns documents awaiting confirmation
+### TEST-APP-MCP-013: list_pending_metadata returns documents awaiting confirmation
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-014
 **Category:** mcp_tool, sage_api
 
-**Decision:** `sage_pending_metadata(vault_id)` returns documents with
+**Decision:** `list_pending_metadata(vault_id)` returns documents with
 unconfirmed metadata, including the document record and extracted fields with
 source annotations.
 
 **Precondition:** Vault with documents pending metadata confirmation.
 
-**Input:** Call `sage_pending_metadata("test_vault")`.
+**Input:** Call `list_pending_metadata("test_vault")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -312,7 +312,7 @@ source annotations.
 **Rationale:** MCP clients can review and confirm metadata conversationally,
 complementing the web UI's Metadata Review tab.
 
-### TEST-APP-MCP-014: sage_pending_metadata returns empty array when none pending
+### TEST-APP-MCP-014: list_pending_metadata returns empty array when none pending
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-015
 **Category:** mcp_tool, sage_api
@@ -321,7 +321,7 @@ complementing the web UI's Metadata Review tab.
 
 **Precondition:** Vault with all metadata confirmed.
 
-**Input:** Call `sage_pending_metadata("test_vault")`.
+**Input:** Call `list_pending_metadata("test_vault")`.
 
 **Expected:**
 - Returns `"[]"` (valid JSON empty array)
@@ -330,14 +330,14 @@ complementing the web UI's Metadata Review tab.
 
 ---
 
-## 7. app_scan_directory
+## 7. list_directory
 
-### TEST-APP-MCP-015: app_scan_directory returns file list with parsed metadata
+### TEST-APP-MCP-015: list_directory returns file list with parsed metadata
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-018
 **Category:** mcp_tool, app_backend
 
-**Decision:** `app_scan_directory(vault_id, directory, max_depth=None)` walks the
+**Decision:** `list_directory(vault_id, directory, max_depth=None)` walks the
 directory, matches files against vault adapters, hashes files, parses filenames
 using the vault's metadata_extraction config, checks hashes against the vault,
 and returns the scan results. The tool reuses the same scan logic as the
@@ -346,7 +346,7 @@ and returns the scan results. The tool reuses the same scan logic as the
 **Precondition:** Vault initialized. Directory exists with mixed file types,
 including files already ingested and files with no matching adapter.
 
-**Input:** Call `app_scan_directory("test_vault", "/path/to/directory")`.
+**Input:** Call `list_directory("test_vault", "/path/to/directory")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -365,7 +365,7 @@ with parsed filename metadata before triggering ingestion, matching the Ingest
 view's scan preview step. Parsed metadata enables the client to show doc_type
 and version information in the scan preview.
 
-### TEST-APP-MCP-016: app_scan_directory validates directory existence
+### TEST-APP-MCP-016: list_directory validates directory existence
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-017
 **Category:** mcp_tool, app_backend, error_handling
@@ -375,7 +375,7 @@ exception.
 
 **Precondition:** MCP server running.
 
-**Input:** Call `app_scan_directory("test_vault", "/nonexistent/path")`.
+**Input:** Call `list_directory("test_vault", "/nonexistent/path")`.
 
 **Expected:**
 - Returns valid JSON string
@@ -384,7 +384,7 @@ exception.
 
 **Rationale:** MCP error convention: structured JSON errors for all failure modes.
 
-### TEST-APP-MCP-017: app_scan_directory respects max_depth
+### TEST-APP-MCP-017: list_directory respects max_depth
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-019
 **Category:** mcp_tool, app_backend
@@ -394,7 +394,7 @@ means unlimited depth, matching the HTTP endpoint behavior.
 
 **Precondition:** Directory with nested subdirectories.
 
-**Input:** Call `app_scan_directory("test_vault", "/path/to/dir", max_depth=0)`.
+**Input:** Call `list_directory("test_vault", "/path/to/dir", max_depth=0)`.
 
 **Expected:**
 - Returns only files in the immediate directory
@@ -403,7 +403,7 @@ means unlimited depth, matching the HTTP endpoint behavior.
 **Rationale:** Depth limiting prevents accidentally scanning large directory
 trees during conversational workflows.
 
-### TEST-APP-MCP-018: app_scan_directory handles permission errors as warnings
+### TEST-APP-MCP-018: list_directory handles permission errors as warnings
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-021
 **Category:** mcp_tool, app_backend
@@ -413,7 +413,7 @@ array rather than causing the tool to return an error.
 
 **Precondition:** Directory with one unreadable subdirectory.
 
-**Input:** Call `app_scan_directory("test_vault", "/path/to/dir")`.
+**Input:** Call `list_directory("test_vault", "/path/to/dir")`.
 
 **Expected:**
 - Returns valid JSON with `files` array (readable files) and `warnings` array
@@ -425,14 +425,14 @@ can decide how to present warnings.
 
 ---
 
-## 8. app_batch_ingest
+## 8. bulk_ingest_document
 
-### TEST-APP-MCP-019: app_batch_ingest processes files and returns summary
+### TEST-APP-MCP-019: bulk_ingest_document processes files and returns summary
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-022, TEST-APP-BE-024, TEST-APP-BE-032
 **Category:** mcp_tool, app_backend
 
-**Decision:** `app_batch_ingest(vault_id, files)` accepts a list of file objects
+**Decision:** `bulk_ingest_document(vault_id, files)` accepts a list of file objects
 (`{ file_path, adapter, parsed_metadata? }`) and processes them sequentially via
 SAGE's single-document ingest with two-phase edge inference. Returns the summary
 object when all files are done. The tool runs synchronously from the caller's
@@ -441,7 +441,7 @@ IngestRequest.metadata for single-call ingestion with metadata.
 
 **Precondition:** Vault initialized. Two valid source files exist.
 
-**Input:** Call `app_batch_ingest("test_vault", [{"file_path": "/path/doc1.md", "source_type": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "design_spec"}}, {"file_path": "/path/doc2.md", "source_type": "markdown"}])`.
+**Input:** Call `bulk_ingest_document("test_vault", [{"file_path": "/path/doc1.md", "source_type": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "design_spec"}}, {"file_path": "/path/doc2.md", "source_type": "markdown"}])`.
 
 **Expected:**
 - Returns valid JSON string (blocks until all files processed)
@@ -460,7 +460,7 @@ IngestRequest.metadata for single-call ingestion with metadata.
 final event, including edge inference results. Synchronous return simplifies the
 caller's logic since MCP tools are request/response.
 
-### TEST-APP-MCP-020: app_batch_ingest emits MCP progress notifications
+### TEST-APP-MCP-020: bulk_ingest_document emits MCP progress notifications
 
 **Artifact:** `sage/mcp_server.py`
 **Category:** mcp_tool, app_backend
@@ -472,7 +472,7 @@ equivalent of SSE streaming.
 
 **Precondition:** Vault initialized. Three valid source files.
 
-**Input:** Call `app_batch_ingest("test_vault", [...3 files...])` and observe
+**Input:** Call `bulk_ingest_document("test_vault", [...3 files...])` and observe
 progress notifications.
 
 **Expected:**
@@ -485,7 +485,7 @@ progress notifications.
 to the client without requiring a streaming response. Claude Desktop renders
 these as progress indicators.
 
-### TEST-APP-MCP-021: app_batch_ingest continues after per-file error
+### TEST-APP-MCP-021: bulk_ingest_document continues after per-file error
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-027
 **Category:** mcp_tool, app_backend
@@ -495,7 +495,7 @@ error and continues with the next file. The batch does not abort.
 
 **Precondition:** Batch of 3 files. File 2 will fail (e.g., missing file).
 
-**Input:** Call `app_batch_ingest("test_vault", [file1, bad_file, file3])`.
+**Input:** Call `bulk_ingest_document("test_vault", [file1, bad_file, file3])`.
 
 **Expected:**
 - Returns summary with `error_count: 1`
@@ -506,7 +506,7 @@ error and continues with the next file. The batch does not abort.
 **Rationale:** Per-file error isolation maximizes throughput. One bad file
 should not waste the work done on valid files.
 
-### TEST-APP-MCP-022: app_batch_ingest with empty file list returns error
+### TEST-APP-MCP-022: bulk_ingest_document with empty file list returns error
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-028
 **Category:** mcp_tool, app_backend, error_handling
@@ -515,7 +515,7 @@ should not waste the work done on valid files.
 
 **Precondition:** MCP server running.
 
-**Input:** Call `app_batch_ingest("test_vault", [])`.
+**Input:** Call `bulk_ingest_document("test_vault", [])`.
 
 **Expected:**
 - Returns valid JSON string
@@ -554,14 +554,14 @@ Consistent serialization enables uniform client-side parsing.
 **Artifact:** `sage/mcp_server.py`
 **Category:** mcp_tool, convention
 
-**Decision:** All new tools except `sage_list_vaults` take `vault_id` as their
+**Decision:** All new tools except `list_vaults` take `vault_id` as their
 first parameter. The `sage_*` tools route through `_get_vault()` for service
 lookup. The `app_*` tools also use `_get_vault()` because they need the vault's
 adapter registry and service instances.
 
 **Precondition:** MCP server running with vault registered.
 
-**Input:** Call `app_scan_directory` with an unknown vault_id.
+**Input:** Call `list_directory` with an unknown vault_id.
 
 **Expected:**
 - Returns structured error JSON with "unknown_vault" error
@@ -595,14 +595,14 @@ a process and vault registry.
 
 ---
 
-## 10. sage_discover Catalog Mode
+## 10. search Catalog Mode
 
-### TEST-APP-MCP-026: sage_discover catalog mode returns filtered documents
+### TEST-APP-MCP-026: search catalog mode returns filtered documents
 
-**Artifact:** `sage/sage_api_tools.py` (sage_discover)
+**Artifact:** `sage/sage_api_tools.py` (search)
 **Category:** mcp_tool, retrieval
 
-**Decision:** The sage_discover MCP tool supports catalog mode. When called with
+**Decision:** The search MCP tool supports catalog mode. When called with
 `mode="catalog"` and filters, it returns a JSON response containing all matching
 documents with document-level metadata only (no chunk content or relevance scores).
 
@@ -611,7 +611,7 @@ documents with document-level metadata only (no chunk content or relevance score
 - doc_b: `doc_type="glossary"`, `tags=["PV07"]`
 - doc_c: `doc_type="design_spec"`, `tags=["PV08"]`
 
-**Input:** `sage_discover(vault_id="test_vault", mode="catalog", scope="filtered", filters={"tags": ["PV07"]})`
+**Input:** `search(vault_id="test_vault", mode="catalog", scope="filtered", filters={"tags": ["PV07"]})`
 
 **Expected:**
 - Parsed response contains `mode: "catalog"`.
@@ -625,20 +625,20 @@ Catalog mode via MCP eliminates the need for multiple overlapping semantic
 searches plus Python deduplication.
 
 
-### TEST-APP-MCP-027: sage_discover catalog mode pagination with offset
+### TEST-APP-MCP-027: search catalog mode pagination with offset
 
-**Artifact:** `sage/sage_api_tools.py` (sage_discover)
+**Artifact:** `sage/sage_api_tools.py` (search)
 **Category:** mcp_tool, retrieval
 
-**Decision:** The sage_discover MCP tool accepts an `offset` parameter for
+**Decision:** The search MCP tool accepts an `offset` parameter for
 catalog mode pagination. Combined with `limit`, this enables MCP agents to
 page through large result sets.
 
 **Precondition:** Vault with 5 documents (all non-failed).
 
 **Input:**
-- `sage_discover(vault_id="test_vault", mode="catalog", limit=2, offset=0)`
-- `sage_discover(vault_id="test_vault", mode="catalog", limit=2, offset=2)`
+- `search(vault_id="test_vault", mode="catalog", limit=2, offset=0)`
+- `search(vault_id="test_vault", mode="catalog", limit=2, offset=2)`
 
 **Expected:**
 - First call: 2 results, `total_available == 5`.
@@ -652,21 +652,21 @@ all documents in a single call, which could exceed response size limits.
 
 ---
 
-## 11. sage_chain
+## 11. chain
 
-### TEST-APP-MCP-028: sage_chain returns ordered version history
+### TEST-APP-MCP-028: chain returns ordered version history
 
-**Artifact:** `sage/sage_api_tools.py` (sage_chain)
+**Artifact:** `sage/sage_api_tools.py` (chain)
 **Category:** mcp_tool, graph, chain
 
-**Decision:** The `sage_chain` MCP tool walks an edge chain to both ends from
+**Decision:** The `chain` MCP tool walks an edge chain to both ends from
 any starting document and returns an ordered list with positional metadata.
 Same semantics as the Core API chain endpoint (BH-089).
 
 **Precondition:** Vault with 5 documents forming a linear supersedes chain:
 v1 <- v2 <- v3 <- v4 <- v5.
 
-**Input:** `sage_chain(vault_id="test_vault", document_id=v3.id, edge_type="supersedes")`
+**Input:** `chain(vault_id="test_vault", document_id=v3.id, edge_type="supersedes")`
 
 **Expected:**
 - JSON response with `chain` array of 5 entries ordered tail-to-head.
@@ -682,15 +682,15 @@ The ordered list with positional metadata enables agents to reason about version
 lineage without manual graph traversal and post-processing.
 
 
-### TEST-APP-MCP-029: sage_chain with non-existent document returns error
+### TEST-APP-MCP-029: chain with non-existent document returns error
 
-**Artifact:** `sage/sage_api_tools.py` (sage_chain)
+**Artifact:** `sage/sage_api_tools.py` (chain)
 **Category:** mcp_tool, graph, chain, error
 
 **Decision:** Standard MCP error response for invalid starting document,
 consistent with other sage_* tools.
 
-**Input:** `sage_chain(vault_id="test_vault", document_id="nonexistent", edge_type="supersedes")`
+**Input:** `chain(vault_id="test_vault", document_id="nonexistent", edge_type="supersedes")`
 
 **Expected:**
 - JSON response with `error` key.

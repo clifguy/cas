@@ -10,7 +10,7 @@ Safeguards (SAGE-Architecture v2.1 §6.4 No-Delete Invariant; CAS-ADR-029 v1.1):
 
 - Dry-run is the default. ``--apply`` is required for any state change.
 - Chain membership is resolved by walking the named edge type from the head
-  via the same recursive-CTE logic as ``sage_chain``.
+  via the same recursive-CTE logic as ``chain``.
 - ``--head-id`` is validated to be a genuine head (no inbound edges of the
   named type); a middle or tail id is refused with the actual head ids
   surfaced.

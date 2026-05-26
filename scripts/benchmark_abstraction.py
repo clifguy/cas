@@ -17,7 +17,7 @@ disposable scratch space):
 
 The harness is read-only against any vault graph; it does not invoke
 ``IngestionService.reabstract`` and writes no abstracts back. The user
-moves the scorecard into the cas vault deliberately via ``sage_ingest``
+moves the scorecard into the cas vault deliberately via ``ingest_document``
 after the blind review.
 
 Usage::

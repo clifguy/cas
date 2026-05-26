@@ -5,7 +5,7 @@ The harness is read-only against any vault graph: it pulls projection
 text from the content store, invokes the provider directly, and never
 calls ``IngestionService.reabstract``. Outputs land as filesystem
 artifacts; the user ingests the scorecard into the cas vault
-deliberately via ``sage_ingest`` after the blind review.
+deliberately via ``ingest_document`` after the blind review.
 
 Module structure:
 

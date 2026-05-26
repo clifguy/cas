@@ -766,7 +766,7 @@ valid outcome, not an error condition.
 **Decision:** When `resolve_and_execute` creates a Tier 1 supersedes edge via
 `link()`, it must also transition the target document's `lifecycle_status` to
 `"archived"`. This ensures that bulk ingest supersedes edges produce the same
-lifecycle outcome as the explicit `sage_set_lifecycle(action="supersede")` path.
+lifecycle outcome as the explicit `update_lifecycle(action="supersede")` path.
 
 **Precondition:** Edge plan with a Tier 1 supersedes edge. Both source and
 target document IDs are resolved.
@@ -811,7 +811,7 @@ keeps the audit trail clean.
 
 ### TEST-APP-EI-033: Batch ingest with infer_edges=False creates no edges
 
-**Artifact:** `sage/mcp_server.py` (app_batch_ingest), `app/backend/router.py`
+**Artifact:** `sage/mcp_server.py` (bulk_ingest_document), `app/backend/router.py`
 **Category:** orchestration, edge_inference
 
 **Decision:** When `infer_edges` is False, batch ingest skips the

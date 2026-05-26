@@ -39,16 +39,16 @@ async def test_call_tool_logs_name_on_success(caplog, monkeypatch):
     monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
 
     with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
-        result = await mcp.call_tool("sage_discover", {"vault_id": "x"})
+        result = await mcp.call_tool("search", {"vault_id": "x"})
 
-    assert result == {"echoed": "sage_discover", "args": {"vault_id": "x"}}
+    assert result == {"echoed": "search", "args": {"vault_id": "x"}}
 
     info_records = [
         rec
         for rec in caplog.records
         if rec.name == "sage.mcp_server" and rec.levelno == logging.INFO
     ]
-    assert any(rec.getMessage() == "mcp tool: sage_discover" for rec in info_records)
+    assert any(rec.getMessage() == "mcp tool: search" for rec in info_records)
 
     elevated_records = [
         rec
@@ -77,18 +77,18 @@ async def test_call_tool_logs_warning_on_envelope_wrapped_in_text_content(caplog
     monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
 
     with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
-        result = await mcp.call_tool("sage_get_document", {"document_id": "nope"})
+        result = await mcp.call_tool("get_document", {"document_id": "nope"})
 
     assert result is wrapped, "result must pass through unchanged"
 
     sage_records = [rec for rec in caplog.records if rec.name == "sage.mcp_server"]
 
     info_messages = [rec.getMessage() for rec in sage_records if rec.levelno == logging.INFO]
-    assert "mcp tool: sage_get_document" in info_messages
+    assert "mcp tool: get_document" in info_messages
 
     warning_records = [rec for rec in sage_records if rec.levelno == logging.WARNING]
     assert warning_records, "expected a WARNING log on TextContent-wrapped envelope"
-    assert warning_records[0].getMessage() == "mcp tool error: sage_get_document (internal_error)"
+    assert warning_records[0].getMessage() == "mcp tool error: get_document (internal_error)"
 
     error_records = [rec for rec in sage_records if rec.levelno == logging.ERROR]
     assert not error_records
@@ -110,18 +110,18 @@ async def test_call_tool_logs_warning_on_raw_dict_envelope(caplog, monkeypatch):
     monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
 
     with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
-        result = await mcp.call_tool("sage_get_document", {"document_id": "nope"})
+        result = await mcp.call_tool("get_document", {"document_id": "nope"})
 
     assert result == {"error": "internal_error", "message": "validation failed: bad id"}
 
     sage_records = [rec for rec in caplog.records if rec.name == "sage.mcp_server"]
 
     info_messages = [rec.getMessage() for rec in sage_records if rec.levelno == logging.INFO]
-    assert "mcp tool: sage_get_document" in info_messages
+    assert "mcp tool: get_document" in info_messages
 
     warning_records = [rec for rec in sage_records if rec.levelno == logging.WARNING]
     assert warning_records, "expected a WARNING log on raw-dict envelope"
-    assert warning_records[0].getMessage() == "mcp tool error: sage_get_document (internal_error)"
+    assert warning_records[0].getMessage() == "mcp tool error: get_document (internal_error)"
 
     error_records = [rec for rec in sage_records if rec.levelno == logging.ERROR]
     assert not error_records
@@ -140,7 +140,7 @@ async def test_call_tool_no_warning_on_text_content_success(caplog, monkeypatch)
     monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
 
     with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
-        result = await mcp.call_tool("sage_discover", {"vault_id": "x"})
+        result = await mcp.call_tool("search", {"vault_id": "x"})
 
     assert result is wrapped
 
@@ -165,14 +165,14 @@ async def test_call_tool_logs_failure_and_reraises(caplog, monkeypatch):
 
     with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
         with pytest.raises(Boom, match="kaboom"):
-            await mcp.call_tool("sage_get_document", {})
+            await mcp.call_tool("get_document", {})
 
     sage_records = [rec for rec in caplog.records if rec.name == "sage.mcp_server"]
     info_messages = [rec.getMessage() for rec in sage_records if rec.levelno == logging.INFO]
-    assert "mcp tool: sage_get_document" in info_messages
+    assert "mcp tool: get_document" in info_messages
 
     error_records = [rec for rec in sage_records if rec.levelno == logging.ERROR]
     assert error_records, "expected an ERROR log on tool failure"
-    assert error_records[0].getMessage() == "mcp tool failed: sage_get_document"
+    assert error_records[0].getMessage() == "mcp tool failed: get_document"
     assert error_records[0].exc_info is not None
     assert error_records[0].exc_info[0] is Boom

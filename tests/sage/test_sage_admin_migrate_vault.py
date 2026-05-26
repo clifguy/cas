@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_admin_migrate_vault (CAS-ADR-029).
+"""MCP tool tests for migrate_vault (CAS-ADR-029).
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, and successful round-trip of the MigrationReport
@@ -46,7 +46,7 @@ async def test_sage_admin_migrate_vault_returns_report_dict(tmp_path, monkeypatc
             # reads. Mirror the entry we just built so the tool sees it.
             mcp_server._vaults[vault_id] = registry[vault_id]
 
-            result = await mcp_server.sage_admin_migrate_vault(vault_id=vault_id)
+            result = await mcp_server.migrate_vault(vault_id=vault_id)
 
             # The tool returns a dict that must validate cleanly as a
             # MigrationReport.
@@ -65,7 +65,7 @@ async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_env
 ):
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
     and surfaces as a standard error envelope, not a raised exception."""
-    result = await mcp_server.sage_admin_migrate_vault(vault_id="not a vault id!")
+    result = await mcp_server.migrate_vault(vault_id="not a vault id!")
 
     assert isinstance(result, dict)
     assert "error" in result, f"expected error envelope, got {result!r}"
@@ -77,7 +77,7 @@ async def test_sage_admin_migrate_vault_unknown_vault_returns_error_envelope(
     empty_registry,
 ):
     """An unregistered vault_id returns the unknown_vault envelope."""
-    result = await mcp_server.sage_admin_migrate_vault(vault_id="ghost")
+    result = await mcp_server.migrate_vault(vault_id="ghost")
 
     assert isinstance(result, dict)
     assert result.get("error") == "unknown_vault", (

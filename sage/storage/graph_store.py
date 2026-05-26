@@ -2006,7 +2006,7 @@ class GraphStore:
         For a fork (heads_count > 1), `head_id` / `head_content_hash` /
         `head_version_label` are all None; the detector reports the edge
         as `staleness_basis=chain_nonlinear` and the operator follows up
-        via `sage_chain`.
+        via `chain`.
         """
         with self._query_timer.measure("head_with_hash_for_chain"):
             return await self._run(self._head_with_hash_for_chain_sync, target_id, edge_type)
