@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: astral-sh/ruff-action@v3
+      - uses: astral-sh/ruff-action@v4
         with:
           version: 0.15.12
 
@@ -167,7 +167,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
@@ -221,7 +221,7 @@ jobs:
           .venv/bin/pip install --index-url https://download.pytorch.org/whl/cpu torch
           .venv/bin/pip install -e ".[test]"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
