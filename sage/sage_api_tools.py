@@ -159,7 +159,7 @@ def register_sage_tools(
         inheritance is the documented default, override is the
         opt-in.
 
-        Tier3 uniqueness (CAS-ADR-031, T-0115): doc_types declaring a
+        Tier3 uniqueness (CAS-ADR-031): doc_types declaring a
         ``unique`` constraint in their ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in
         ``sage_get_vault_config``) enforce per-vault uniqueness on the
@@ -217,7 +217,7 @@ def register_sage_tools(
           ``doc_type``, ``field``, ``colliding_value``, and
           ``existing_document_id``. ``force=true`` does NOT override
           this -- uniqueness is independent of content-hash
-          deduplication (CAS-ADR-031, T-0115).
+          deduplication (CAS-ADR-031).
 
         Args:
             vault_id: Target vault identifier.
@@ -272,7 +272,7 @@ def register_sage_tools(
                 supplied as a list of strings or as a comma-separated
                 string; whitespace is trimmed and empty fragments are
                 dropped in the string form.
-            tier3_metadata: Per-doc_type typed metadata payload (T-0004).
+            tier3_metadata: Per-doc_type typed metadata payload.
                 Validated against the JSON Schema fragment declared
                 under ``document_types.doc_types[].metadata_schema`` for
                 the resolved doc_type (see ``sage_get_vault_config``).
@@ -477,7 +477,7 @@ def register_sage_tools(
 
         Tags patch shape (``tags``)::
 
-            {"add": ["x", ...], "remove": ["y", ...]}
+            {"add": ["x",...], "remove": ["y",...]}
 
         At least one key required and non-empty. ``add`` keys must NOT
         be present; ``remove`` keys MUST be present (strict conflict).
@@ -489,7 +489,7 @@ def register_sage_tools(
 
         Tier3 patch shape (``tier3_metadata``)::
 
-            {"set": {"key": "value", ...}, "unset": ["other_key", ...]}
+            {"set": {"key": "value",...}, "unset": ["other_key",...]}
 
         At least one key required and non-empty. ``set`` overwrites
         existing keys without error (the verb is literal: assert this
@@ -536,7 +536,7 @@ def register_sage_tools(
         the caller should adjust its model of the document state rather
         than blindly re-issue.
 
-        Dry-run mode (T-0152, T-0163):
+        Dry-run mode:
         Set ``dry_run=true`` to validate the patch and compute the
         would-be projection of the post-patch state without persisting.
         The response is wrapped: ``{"document": <would-be post-patch
@@ -548,7 +548,7 @@ def register_sage_tools(
         is still acquired so the preview is consistent with concurrent
         mutations.
 
-        ``changes`` (T-0163) enumerates the field-level deltas the
+        ``changes`` enumerates the field-level deltas the
         patch would persist on a real run as a list of
         ``{path, before, after}`` entries (``FieldChange`` shape).
         Scalar field changes use the bare field name as ``path``;
@@ -579,7 +579,7 @@ def register_sage_tools(
             document_date: Document calendar date (YYYY-MM-DD).
             tier3_metadata: Tier-3 patch object ``{set?, unset?}``.
                 See above.
-            dry_run: T-0152 / T-0163. When True, run all validators
+            dry_run: /. When True, run all validators
                 and compute the would-be projection of the post-patch
                 state, but do NOT persist. The response carries a
                 ``changes`` block enumerating field-level deltas (see
@@ -629,7 +629,7 @@ def register_sage_tools(
 
         - ``cas`` vault: ``ingest``, ``supersede``, ``complete``,
           ``archive``, ``reactivate``.
-        - ``pim_health`` vault: ``ingest``, ``supersede``, ``complete``,
+        - ``example_vault`` vault: ``ingest``, ``supersede``, ``complete``,
           ``archive``, ``reactivate``, ``file``.
 
         Neither vault defines ``activate``; the action for
@@ -676,7 +676,7 @@ def register_sage_tools(
           with ``successor_id`` whose content hash matches the
           predecessor.
 
-        Dry-run mode (T-0152, T-0163):
+        Dry-run mode:
         Set ``dry_run=true`` to validate the request and compute the
         would-be projection of the post-transition state without
         persisting. The response is the same ``SetLifecycleResponse``
@@ -694,7 +694,7 @@ def register_sage_tools(
         per-document lock is still acquired so the preview is
         consistent with concurrent mutations.
 
-        ``changes`` (T-0163) carries a single ``FieldChange`` entry
+        ``changes`` carries a single ``FieldChange`` entry
         for ``lifecycle_status`` when the action changes state
         (skipped on no-op transitions). The would-be ``supersedes``
         edge stays in ``created_edge`` and is NOT duplicated in
@@ -719,7 +719,7 @@ def register_sage_tools(
                 ``sage_get_vault_config`` for the authoritative list.
             successor_id: The successor document's id (a ``documents.id``
                 value — the same shape as ``document_id`` on other tools;
-                T-0155). The ``document_id``/``successor_id`` pair is a
+                ). The ``document_id``/``successor_id`` pair is a
                 semantic distinction, not a naming inconsistency; both
                 endpoints carry document ids. Required when
                 ``action="supersede"`` (a ``supersedes`` edge is created
@@ -730,7 +730,7 @@ def register_sage_tools(
                 not yet been ingested, prefer
                 ``sage_ingest(..., predecessor_id=<predecessor_id>)``,
                 which ingests and supersedes atomically.
-            dry_run: T-0152 / T-0163. When True, run all validators
+            dry_run: /. When True, run all validators
                 and compute the would-be projection of the
                 post-transition state, but do NOT persist. The
                 response carries a ``changes`` block with a single
@@ -809,7 +809,7 @@ def register_sage_tools(
                 Shape validation runs up front; a single malformed item
                 rejects the entire batch before any per-item work
                 executes.
-            response_mode: Per-item payload depth (T-0153). ``"full"``
+            response_mode: Per-item payload depth. ``"full"``
                 returns each success item's complete ``document`` body
                 (including the potentially-large ``semantic_abstract``);
                 ``"light"`` strips the per-item ``document`` field
@@ -824,7 +824,7 @@ def register_sage_tools(
                 ``sage.services.lifecycle``); pass ``response_mode``
                 explicitly to override. Invalid values surface as an
                 ``internal_error`` envelope before any per-item work runs.
-            dry_run: T-0152 / T-0163. When True, every item runs as
+            dry_run: /. When True, every item runs as
                 a dry-run — validators execute, the would-be
                 projection of the post-state is computed, and each
                 per-item result carries a ``changes`` block
@@ -846,7 +846,7 @@ def register_sage_tools(
             # loop) guarantees that a malformed item produces an error
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
-            # rides this same up-front rejection path (T-0153).
+            # rides this same up-front rejection path.
             validated_items = [BulkLifecycleItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
             request = BulkLifecycleRequest(
@@ -866,7 +866,7 @@ def register_sage_tools(
         response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
-        """Create many edges in one call (T-0165, CAS-ADR-029).
+        """Create many edges in one call (CAS-ADR-029).
 
         Third ``sage_bulk_*`` operation. Each item carries the same
         fields as a single ``sage_link`` call (``source_id``,
@@ -875,7 +875,7 @@ def register_sage_tools(
         and is dispatched through the idempotent variant: a duplicate
         natural-key triple (``source_id``, ``target_id``, ``edge_type``)
         returns the existing edge with ``created=false`` rather than
-        raising (T-0079). Items are processed in order, each under the
+        raising. Items are processed in order, each under the
         process-wide ``_link_lock`` and a per-item SQLite transaction.
 
         Each per-item entry in ``items`` is validated using the full
@@ -883,7 +883,7 @@ def register_sage_tools(
         for the inherited rules (document existence, edge-type
         registry-declared anchor policy per CAS-ADR-017, ``merged_from``
         chain-head invariant, ``retracted_edge_id`` shape, natural-key
-        idempotency per T-0079, etc.). Item-level errors do NOT roll
+        idempotency etc.). Item-level errors do NOT roll
         back earlier or later items (CAS-ADR-029).
 
         **The batch is NOT atomic.** A per-item SAGEError surfaces in the
@@ -929,8 +929,7 @@ def register_sage_tools(
                      "target_valid_from_version": "e5f6a7b8_doc_b",
                      "rationale": "doc A cites doc B"},
                     ...
-                ],
-            )
+                ])
 
         On a dry-run (``dry_run=True``), every per-item ``edge.id``
         carries the nil-UUID sentinel ``00000000-0000-0000-0000-000000000000``
@@ -952,7 +951,7 @@ def register_sage_tools(
                 validation runs up front; a single malformed item
                 rejects the entire batch before any per-item work
                 executes.
-            response_mode: Per-item payload depth (T-0153 / T-0158).
+            response_mode: Per-item payload depth (/).
                 ``"full"`` returns each success item's complete ``edge``
                 body; ``"light"`` strips the per-item ``edge`` field
                 entirely, returning only ``source_id`` / ``target_id`` /
@@ -971,8 +970,8 @@ def register_sage_tools(
                 explicitly to override. Invalid values surface as an
                 ``internal_error`` envelope before any per-item work
                 runs.
-            dry_run: T-0152 / T-0163. When True, every item runs as a
-                dry-run — validators execute (including the T-0079
+            dry_run: /. When True, every item runs as a
+                dry-run — validators execute (including the
                 natural-key pre-check), the would-be projection of the
                 edge is computed, and each per-item ``edge.id`` carries
                 the sentinel (or the existing edge id on a natural-key
@@ -989,7 +988,7 @@ def register_sage_tools(
             # loop) guarantees that a malformed item produces an error
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
-            # rides this same up-front rejection path (T-0153).
+            # rides this same up-front rejection path.
             validated_items = [BulkLinkItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
             request = BulkLinkRequest(
@@ -1051,7 +1050,7 @@ def register_sage_tools(
 
         Tags patch shape (per item ``tags``)::
 
-            {"add": ["x", ...], "remove": ["y", ...]}
+            {"add": ["x",...], "remove": ["y",...]}
 
         At least one key required and non-empty. ``add`` keys must NOT be
         present; ``remove`` keys MUST be present (strict conflict). See
@@ -1059,7 +1058,7 @@ def register_sage_tools(
 
         Tier3 patch shape (per item ``tier3_metadata``)::
 
-            {"set": {"key": "value", ...}, "unset": ["other_key", ...]}
+            {"set": {"key": "value",...}, "unset": ["other_key",...]}
 
         Same grammar as ``sage_update_metadata``. The merged result is
         validated against the resolved doc_type's ``metadata_schema``.
@@ -1095,7 +1094,7 @@ def register_sage_tools(
                 tier3_metadata?: Tier3Patch}``. Shape validation runs up
                 front; a single malformed item rejects the entire batch
                 before any per-item work executes.
-            response_mode: Per-item payload depth (T-0153). ``"full"``
+            response_mode: Per-item payload depth. ``"full"``
                 returns each success item's complete ``document`` body
                 (including the potentially-large ``semantic_abstract``);
                 ``"light"`` strips the per-item ``document`` field
@@ -1110,7 +1109,7 @@ def register_sage_tools(
                 ``sage.services.metadata``); pass ``response_mode``
                 explicitly to override. Invalid values surface as an
                 ``internal_error`` envelope before any per-item work runs.
-            dry_run: T-0152 / T-0163. When True, every item runs as
+            dry_run: /. When True, every item runs as
                 a dry-run — validators execute, the would-be
                 projection of the post-state is computed, and each
                 per-item result carries a ``changes`` block
@@ -1142,7 +1141,7 @@ def register_sage_tools(
             # loop) guarantees that a malformed item produces an error
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
-            # rides this same up-front rejection path (T-0153).
+            # rides this same up-front rejection path.
             validated_items = [BulkMetadataItem.model_validate(it) for it in items]
             v = get_vault(vault_id)
             request = BulkMetadataRequest(
@@ -1217,8 +1216,7 @@ def register_sage_tools(
                 target_id="<template_id>",
                 edge_type="derived_from",
                 source_valid_from_version="<deliverable_id>",
-                rationale="Template authored by ...",
-            )
+                rationale="Template authored by...")
 
         ``merged_from`` chain-head precondition: **both** endpoints
         must be chain heads — i.e., neither ``source_id`` nor
@@ -1260,7 +1258,7 @@ def register_sage_tools(
         merely ignored on inapplicable types — they are a structural
         error.
 
-        ``synced_from_version`` chain-membership (T-0111): when set,
+        ``synced_from_version`` chain-membership: when set,
         the value must be a member of the **target document's**
         ``supersedes`` chain (i.e., the target itself or any
         predecessor of the target reachable by walking outbound
@@ -1308,14 +1306,14 @@ def register_sage_tools(
           ``synced_from_version`` or ``synced_from_content_hash`` was
           set on an ``edge_type`` other than ``derived_from`` or
           ``sync_target``.
-        - ``synced_from_version_not_in_source_chain`` (T-0111):
+        - ``synced_from_version_not_in_source_chain``:
           ``synced_from_version`` was set but the named document is
           not a member of the target's ``supersedes`` chain.
         - ``tbd_policy_edge``: the requested edge_type has
           ``resolution_policy=TBD`` and cannot be created. Currently
           ``authoritative_for`` and ``sync_target`` (CAS-ADR-017).
 
-        Idempotency (T-0079): the edges table carries a UNIQUE
+        Idempotency: the edges table carries a UNIQUE
         constraint on ``(source_id, target_id, edge_type)``. Re-calling
         ``sage_link`` with the same triple does NOT error; it returns
         the pre-existing edge with ``created=false`` and a populated
@@ -1324,14 +1322,14 @@ def register_sage_tools(
         is preserved as canonical provenance. To intentionally replace
         an edge, ``sage_unlink`` it first.
 
-        Dry-run mode (T-0152, T-0163):
+        Dry-run mode:
         Set ``dry_run=true`` to validate the request and compute the
         would-be projection of the edge without persisting. The
         response shape is identical to a real-run response
         (``{edge, created, existing_rationale, dry_run}``);
         ``dry_run=true`` is echoed and the would-be ``edge.id`` is
         the nil-UUID sentinel ``00000000-0000-0000-0000-000000000000``.
-        The T-0079 natural-key pre-check runs in dry-run too, so a
+        The natural-key pre-check runs in dry-run too, so a
         preview on a (source, target, edge_type) that already has an
         edge returns ``created=false`` with the existing edge id and
         rationale — same shape as the real-run no-op path.
@@ -1339,7 +1337,7 @@ def register_sage_tools(
         Note: link is an edge mutation, not a document field
         mutation, so the change surface is the existing ``edge``
         field (with the nil-UUID sentinel) rather than a separate
-        ``changes`` block (T-0163). ``LinkResponse`` does not carry
+        ``changes`` block. ``LinkResponse`` does not carry
         a ``changes`` field.
 
         Worked example: ``sage_link(vault_id="v", source_id="a",
@@ -1352,12 +1350,12 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             source_id: Source document identifier (a ``documents.id``
                 value — the same shape as ``document_id`` on other
-                tools; T-0155). The ``source_id``/``target_id`` pair is a
+                tools;). The ``source_id``/``target_id`` pair is a
                 semantic distinction, not a naming inconsistency; both
                 endpoints carry document ids.
             target_id: Target document identifier (a ``documents.id``
                 value — the same shape as ``document_id`` on other
-                tools; T-0155). Required for all edge types except
+                tools;). Required for all edge types except
                 ``retracts`` (which uses ``retracted_edge_id``); pass
                 null for ``retracts`` edges.
             edge_type: Edge type (supersedes, derived_from, covers, references,
@@ -1380,20 +1378,20 @@ def register_sage_tools(
             notes: Free-text notes about the edge.
             rationale: Rationale for creating this edge.
             rationale_kind: Optional explicit provenance discriminator
-                (CAS-ADR-019 / T-0080). Accepts one of
+                (CAS-ADR-019 /). Accepts one of
                 ``version_chain``, ``references_mention``,
                 ``filename_code_match``, ``manual``. When omitted, the
                 value is derived from the rationale text prefix and
                 falls back to ``manual``.
             synced_from_version: Source-chain version (document id) the
                 content was copied or derived from at the moment this
-                edge is asserted (T-0110). Accepted **only** on
+                edge is asserted. Accepted **only** on
                 ``edge_type="derived_from"`` and
                 ``edge_type="sync_target"``; any other edge_type with
                 this field set raises
                 ``synced_from_inapplicable_edge_type``. When set, the
                 value must be a member of the target's ``supersedes``
-                chain (T-0111) — out-of-chain values raise
+                chain — out-of-chain values raise
                 ``synced_from_version_not_in_source_chain``.
                 Semantically meaningful on ``sync_target`` (Tier 1,
                 auto-populated at re-ingestion when the Tier-1
@@ -1404,7 +1402,7 @@ def register_sage_tools(
                 from chain anchors.
             synced_from_content_hash: Source document's
                 ``source_content_hash`` captured at edge assertion
-                (T-0110). Accepted **only** on
+                . Accepted **only** on
                 ``edge_type="derived_from"`` and
                 ``edge_type="sync_target"`` (same closed list as
                 ``synced_from_version``;
@@ -1413,9 +1411,9 @@ def register_sage_tools(
                 recommended on derivations because version labels are
                 reused and can drift from content (in-place edits).
                 Unset = explicit null.
-            dry_run: T-0152. When True, validate the request and
+            dry_run:. When True, validate the request and
                 compute the would-be projection of the edge without
-                persisting. No separate ``changes`` block (T-0163);
+                persisting. No separate ``changes`` block;
                 the would-be edge is the change surface. Default False.
         """
         try:
@@ -1444,10 +1442,10 @@ def register_sage_tools(
                 synced_from_content_hash=synced_from_content_hash,
                 dry_run=dry_run,
             )
-            # T-0079: link_idempotent returns (edge, created). On a
+            # Link_idempotent returns (edge, created). On a
             # duplicate natural-key triple the existing edge is
             # returned with created=False and the caller's rationale
-            # is discarded. T-0152: wrap in LinkResponse so the
+            # is discarded. Wrap in LinkResponse so the
             # dry_run echo and the existing_rationale field have a
             # typed home.
             edge, created = await v.graph_ops_service.link_idempotent(request)
@@ -1471,7 +1469,7 @@ def register_sage_tools(
         id minted in staging is not valid here once promoted, and vice
         versa.
 
-        Discovering ``edge_id`` (T-0157): use ``sage_discover`` with
+        Discovering ``edge_id``: use ``sage_discover`` with
         ``target="edges"`` to enumerate production edges by
         ``source_id`` / ``target_id`` / ``edge_type``. Example:
         ``sage_discover(vault_id=..., mode="catalog", target="edges",
@@ -1481,7 +1479,7 @@ def register_sage_tools(
         Error modes:
         - ``edge_not_found`` (404): no production edge with that id.
 
-        Dry-run mode (T-0152, T-0163):
+        Dry-run mode:
         Set ``dry_run=true`` to confirm the edge exists and preview
         the would-be projection of what would be deleted without
         persisting. The response carries ``deleted=false``,
@@ -1492,16 +1490,16 @@ def register_sage_tools(
         Note: unlink is an edge mutation, not a document field
         mutation, so the change surface is the existing
         ``preview_edge`` field rather than a separate ``changes``
-        block (T-0163). ``UnlinkResponse`` does not carry a
+        block. ``UnlinkResponse`` does not carry a
         ``changes`` field.
 
         Args:
             vault_id: Target vault identifier.
             edge_id: Production edge identifier.
-            dry_run: T-0152. When True, preview the would-be
+            dry_run:. When True, preview the would-be
                 projection of the deletion without persisting; the
                 edge surfaces in ``preview_edge``. No separate
-                ``changes`` block (T-0163); ``preview_edge`` is the
+                ``changes`` block; ``preview_edge`` is the
                 change surface. Default False.
         """
         try:
@@ -1581,7 +1579,7 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            start_id: Starting document identifier. Alias: ``document_id`` (T-0155).
+            start_id: Starting document identifier. Alias: ``document_id``.
                 Supply exactly one of ``start_id`` or ``document_id``. The
                 response key remains ``start_id`` regardless of which input
                 form was used.
@@ -1594,12 +1592,12 @@ def register_sage_tools(
                 `retracts_applied`, `tombstone_applied`) explaining why
                 each candidate edge was surfaced or suppressed. Default:
                 false (zero overhead when disabled).
-            document_id: Alias for ``start_id`` (T-0155). Either parameter
+            document_id: Alias for ``start_id``. Either parameter
                 is accepted; supply exactly one. Supplying both — even with
                 equal values — returns ``ambiguous_document_identifier``.
         """
         try:
-            # T-0155: validate each id-bearing parameter by its literal
+            # Validate each id-bearing parameter by its literal
             # name (so the typed-alias conformance gate in
             # tests/sage/test_typed_alias_coverage.py sees a
             # _DOCUMENT_ID_ADAPTER.validate_python(<param>) call for
@@ -1718,10 +1716,10 @@ def register_sage_tools(
                 Best for deterministic enumeration by tags, doc_type, or other metadata.
             deterministic: Exact heading path extraction. Requires document_id + heading_path.
 
-        Edge enumeration (T-0157):
+        Edge enumeration:
             When ``target="edges"`` (only valid with ``mode="catalog"``),
             results are edge rows rather than document rows. Filter by any
-            subset of ``{"source_id": ..., "target_id": ..., "edge_type": ...}``;
+            subset of ``{"source_id":..., "target_id":..., "edge_type":...}``;
             an empty filter returns all edges in the vault, paginated. Each
             row carries the edge id (required for ``sage_unlink`` and the
             ``retracts`` edge_type), endpoints, edge_type, anchor versions,
@@ -1739,10 +1737,9 @@ def register_sage_tools(
                     mode="catalog",
                     target="edges",
                     filters={"source_id": "<doc_id>", "edge_type": "references"},
-                    response_mode="full",
-                )
+                    response_mode="full")
 
-        Response-mode semantics across targets (T-0158):
+        Response-mode semantics across targets:
             ``response_mode`` is the canonical payload-depth selector for both
             targets. Behavior matrix:
 
@@ -1772,7 +1769,7 @@ def register_sage_tools(
                 ``target="edges"``): source_id, target_id, edge_type.
                 The ``tier3_metadata`` key takes a dict of field-name to
                 expected-value pairs that match against each document's
-                ``tier3_metadata`` (T-0004). Equality is exact; ``null``
+                ``tier3_metadata``. Equality is exact; ``null``
                 in the expected value matches documents whose stored field
                 is null or absent. All pairs AND together. Mixing
                 document-only and edge-only keys is rejected via
@@ -1799,9 +1796,9 @@ def register_sage_tools(
                 historical surface; "edges" enumerates production edges
                 via filter on ``source_id`` / ``target_id`` /
                 ``edge_type`` and is valid only with ``mode="catalog"``.
-                See the *Edge enumeration* section above. (T-0157)
+                See the *Edge enumeration* section above.
             response_mode: Canonical payload-depth selector across SAGE
-                surfaces (T-0157, T-0158, T-0153). See the
+                surfaces (,). See the
                 *Response-mode semantics across targets* section above
                 for the full behavior matrix. "light" returns the
                 stripped shape (DocumentSummaryLight for
@@ -1815,13 +1812,13 @@ def register_sage_tools(
                 "lifecycle_status". Ignored by semantic, keyword, and
                 deterministic modes. Default: unset -- catalog falls
                 back to active-lifecycle-first then ``document_date``
-                descending. (T-0174)
+                descending.
             sort_order: Sort direction for catalog mode results. One
                 of: "asc", "desc". Ignored by semantic, keyword, and
                 deterministic modes. Default: unset -- ascending when
-                ``sort_by`` is specified. (T-0174)
+                ``sort_by`` is specified.
 
-        Catalog budget hint (T-0091):
+        Catalog budget hint:
             Catalog responses include a ``hints`` field carrying
             ``recommended_limit`` when the serialized result would
             exceed the Claude Code MCP inline ceiling. When present,
@@ -1830,7 +1827,7 @@ def register_sage_tools(
             budget defaults to 24 KiB and is configurable per process
             via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
 
-        Error modes (T-0092):
+        Error modes:
         - ``invalid_mode`` (400): ``mode`` is not one of ``semantic``,
           ``keyword``, ``catalog``, ``deterministic``. Detail carries
           the offending ``mode`` and ``valid_modes``.
@@ -1854,9 +1851,9 @@ def register_sage_tools(
             if document_id is not None:
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
-            # T-0092: pass the raw dict so DiscoverRequest performs the
+            # Pass the raw dict so DiscoverRequest performs the
             # nested RetrievalFilters validation. This keeps the
-            # ValidationError loc prefixed with ``("filters", ...)``, which
+            # ValidationError loc prefixed with ``("filters",...)``, which
             # the translator in sage.api.errors needs to map into typed
             # ``unknown_filter_key`` / ``invalid_filter_shape`` envelopes.
             request = DiscoverRequest(
@@ -1990,7 +1987,7 @@ def register_sage_tools(
         Replaces the antipattern of calling sage_read_section with a
         deliberately wrong heading path to harvest ``available_headings``
         from the resulting ``heading_not_found`` error response. The
-        synthetic header chunk (T-0038) is excluded, so the returned paths
+        synthetic header chunk is excluded, so the returned paths
         are exactly those a caller may pass to sage_read_section.
 
         Args:
@@ -2315,7 +2312,7 @@ def register_sage_tools(
 
         Compound-risk warning (FastMCP silent-drop interaction):
         FastMCP's ``ArgModelBase`` silently drops unknown JSON-RPC
-        kwargs at the MCP framework boundary (see T-0186 and
+        kwargs at the MCP framework boundary (see and
         ``.venv/lib/python3.14/site-packages/mcp/server/fastmcp/utilities/func_metadata.py``).
         This compounds with the all-None real-run code path: when
         every section parameter is omitted or None (or every section
@@ -2354,7 +2351,7 @@ def register_sage_tools(
         dry-run branch). Tests exercising this tool against an
         ad-hoc service must supply a registry service or stub.
 
-        Dry-run mode (T-0152, T-0163):
+        Dry-run mode:
         Set ``dry_run=true`` to validate the merged config and preview
         the would-be projection of which sections would change,
         without writing yaml or reloading the registry. The response
@@ -2367,7 +2364,7 @@ def register_sage_tools(
         Note: vault-config updates are a config mutation, not a
         document field mutation, so the change surface is the
         existing ``preview.changed_sections`` list rather than a
-        separate ``changes`` block (T-0163).
+        separate ``changes`` block.
         ``UpdateVaultConfigResponse`` does not carry a ``changes``
         field.
 
@@ -2392,11 +2389,11 @@ def register_sage_tools(
             retrieval_health: Replacement for the retrieval_health section.
             force: When True, proceed even if the update would orphan
                 existing documents. Default False.
-            dry_run: T-0152. When True, preview the would-be
+            dry_run:. When True, preview the would-be
                 projection of the change without persisting; never
                 raises destructive_config_change. The change surface
                 is the existing ``preview.changed_sections`` field;
-                no separate ``changes`` block (T-0163). Default False.
+                no separate ``changes`` block. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2505,7 +2502,7 @@ def register_sage_tools(
             # accepts bare-hex hashes (the form sage_ingest emits in its
             # response) in addition to the prefixed form the REST request
             # schema requires. Normalizing the two storage formats is a
-            # separate concern from T-0009.
+            # separate concern from.
             body = HashCheckRequest.model_construct(hashes=hashes)
             matches = await services.vault_config_service.hash_check(body)
             return {h: m.model_dump(exclude_none=True) for h, m in matches.items()}
@@ -2586,7 +2583,7 @@ def register_sage_tools(
         before any service-layer dispatch. Shape violations surface as
         ``invalid_edge_id`` before the staging-row lookup runs.
 
-        Confirm idempotency on natural-key collision (T-0079):
+        Confirm idempotency on natural-key collision:
         On ``action="confirm"``, if the staging edge's natural-key triple
         ``(source_id, target_id, edge_type)`` already exists in the
         production edges table -- for example, because a parallel
@@ -2609,10 +2606,10 @@ def register_sage_tools(
         staging row persists alongside the new production edge; the
         natural-key triple then exists in both tables until a subsequent
         confirm consumes the orphaned staging row (which is itself a
-        T-0079 silent-idempotent no-op per the rule above). Callers
+        silent-idempotent no-op per the rule above). Callers
         building provenance over staging-edge promotion should treat
         confirm as "at-least-once" for the production-edge insert and
-        rely on the natural-key UNIQUE constraint plus T-0079 idempotency
+        rely on the natural-key UNIQUE constraint plus idempotency
         to absorb retries.
 
         Error modes:
@@ -2635,7 +2632,7 @@ def register_sage_tools(
                 validation paragraph above).
             action: One of ``"confirm"`` or ``"dismiss"``. On
                 ``"confirm"``, behavior on a natural-key collision is
-                governed by the T-0079 confirm-idempotency paragraph
+                governed by the confirm-idempotency paragraph
                 above, and the insert/delete pair is not atomic per the
                 atomicity-gap paragraph above.
         """
@@ -2803,20 +2800,20 @@ def register_sage_tools(
     # Family-shared preconditions for every ``sage_admin_*`` tool below:
     #
     # 1. ``vault_id`` is validated through the ``VaultIdStr`` typed alias
-    #    (``_VAULT_ID_ADAPTER.validate_python``) before any vault lookup.
-    #    Inputs that violate the typed-alias shape raise a structured
-    #    ``ValueError`` rather than reaching the registry. See the CAS
-    #    Typed-Alias Boundary Conventions for the shared validation
-    #    contract.
+    # (``_VAULT_ID_ADAPTER.validate_python``) before any vault lookup.
+    # Inputs that violate the typed-alias shape raise a structured
+    # ``ValueError`` rather than reaching the registry. See the CAS
+    # Typed-Alias Boundary Conventions for the shared validation
+    # contract.
     #
     # 2. The targeted vault must have been initialized with a
-    #    ``registry_service``; otherwise ``v.maintenance_service`` is
-    #    ``None`` and the tool raises ``RuntimeError``. This is primarily
-    #    a test-fixture concern (production vault construction wires
-    #    ``registry_service`` by default), but agents and integration
-    #    tests that build vaults directly without the registry will hit
-    #    this error rather than a silent no-op. The maintenance/admin
-    #    API surface is governed by CAS-ADR-029.
+    # ``registry_service``; otherwise ``v.maintenance_service`` is
+    # ``None`` and the tool raises ``RuntimeError``. This is primarily
+    # a test-fixture concern (production vault construction wires
+    # ``registry_service`` by default), but agents and integration
+    # tests that build vaults directly without the registry will hit
+    # this error rather than a silent no-op. The maintenance/admin
+    # API surface is governed by CAS-ADR-029.
     #
     # Per-tool docstrings cross-reference this block rather than
     # repeating these two rules inline.
@@ -2863,7 +2860,7 @@ def register_sage_tools(
         continues to serve the pre-migration services; the operator
         can re-issue the reload after addressing the underlying cause.
 
-        T-0115 tier3 uniqueness activation (CAS-ADR-031):
+        tier3 uniqueness activation (CAS-ADR-031):
         After the schema-migration step settles, every ``unique_keys``
         declaration in vault config is scanned. Clean declarations get
         partial UNIQUE indexes installed under
@@ -2903,7 +2900,7 @@ def register_sage_tools(
           requested constraint, so the partial UNIQUE index cannot be
           installed. The collision report is captured in the returned
           MigrationReport's ``tier3_uniqueness_collisions`` field per
-          the T-0115 row above; the substrate does not auto-resolve.
+          the row above; the substrate does not auto-resolve.
 
         Args:
             vault_id: Target vault identifier.
@@ -2923,7 +2920,7 @@ def register_sage_tools(
 
     @mcp.tool()
     async def sage_admin_detect_drift(vault_id: str) -> dict:
-        """Audit active sync_target / derived_from edges for drift (T-0111).
+        """Audit active sync_target / derived_from edges for drift.
 
         Walks every active provenance-bearing edge in the vault and
         compares its recorded ``synced_from_*`` fields against the
@@ -2942,7 +2939,7 @@ def register_sage_tools(
         shared rules (``vault_id`` typed-alias validation,
         ``maintenance_service`` wiring requirement).
 
-        ``StalenessBasis`` bucket semantics (T-0111):
+        ``StalenessBasis`` bucket semantics:
         Each ``DriftEntry`` carries a ``staleness_basis`` field
         classifying why the edge surfaced. Callers interpret a
         DriftReport against these four buckets without leaving this
@@ -2955,7 +2952,7 @@ def register_sage_tools(
           past the recorded version, but the head's content hash
           still matches what was recorded. Informational — the
           provenance pointer is behind but the bytes are equivalent.
-        - ``recorded_null``: the edge predates the T-0110 provenance
+        - ``recorded_null``: the edge predates the provenance
           columns (neither ``synced_from_version`` nor
           ``synced_from_content_hash`` is recorded). Informational —
           back-filling the provenance is optional cleanup, not a
@@ -3003,7 +3000,7 @@ def register_sage_tools(
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
         Graduation of the standalone scripts/reabstract_deferred.py
-        script to the maintenance API surface (T-0089, CAS-ADR-029).
+        script to the maintenance API surface (CAS-ADR-029).
         Enumerates documents in the named vault whose pipeline_status is
         ``abstraction_skipped``, dispatches IngestionService.reabstract
         per document, and polls until each reaches terminal status
@@ -3050,7 +3047,7 @@ def register_sage_tools(
         The MCP tool returns a single ReabstractReport dict once the
         pass completes; allocate a generous client-side timeout.
 
-        T-0134: the HTTP route now streams per-document SSE progress
+        The HTTP route now streams per-document SSE progress
         events, but the MCP-layer contract is unchanged. Under the
         hood, ``MaintenanceService.reabstract_deferred`` consumes the
         streaming generator and re-shapes the final summary event as a
@@ -3070,8 +3067,8 @@ def register_sage_tools(
         skipped despite caller intent to include them. The diagnostic
         signal is a successful ReabstractReport whose ``pdf_skipped``
         count matches the vault's PDF count even though the caller
-        believed they had opted PDFs in. See T-0186 (framework-level
-        FastMCP ``extra=forbid`` finding) and the T-0159 v2 cross-
+        believed they had opted PDFs in. See (framework-level
+        FastMCP ``extra=forbid`` finding) and the v2 cross-
         cutting compound-risk note for the underlying mechanism.
 
         Error modes:

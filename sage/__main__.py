@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 # Quiet huggingface library noise before any sage import pulls in
-# transformers/tokenizers (T-0060). Env vars are read at library import
+# transformers/tokenizers. Env vars are read at library import
 # time; setdefault preserves a debugger's explicit override.
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "warning")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -56,11 +56,11 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
 
 
 class _DropMcpMessagesAccessLogs(_logging.Filter):
-    """Drop uvicorn.access records for /mcp/messages/ (T-0063).
+    """Drop uvicorn.access records for /mcp/messages/.
 
     The MCP SSE transport hits this endpoint on every JSON-RPC message
     (often twice per logical tool call, plus extras for notifications).
-    T-0061's ``_LoggingFastMCP.call_tool`` override already surfaces
+    ``_LoggingFastMCP.call_tool`` override already surfaces
     the tool name; these access lines add no signal beyond that.
     """
 

@@ -1,4 +1,4 @@
-"""T-0152: `update_vault_config` dry-run.
+"""`update_vault_config` dry-run.
 
 Four test categories:
 

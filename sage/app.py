@@ -125,7 +125,7 @@ class _GracefulSSEMiddleware:
 class _CancelledNotificationValidationFilter(logging.Filter):
     """Suppress the cosmetic ``Failed to validate notification`` WARNING
     emitted by ``mcp.shared.session`` when an MCP client cancels a long
-    ``CallToolRequest`` (T-0022).
+    ``CallToolRequest``.
 
     The emission site (``mcp/shared/session.py:430``) uses
     ``logging.warning(...)`` against the root logger, so the filter attaches
@@ -145,7 +145,7 @@ class _CancelledNotificationValidationFilter(logging.Filter):
 
 
 def _install_cancelled_notification_filter() -> None:
-    """Attach the T-0022 filter to the root logger if not already present."""
+    """Attach the filter to the root logger if not already present."""
     root = logging.getLogger()
     if any(isinstance(f, _CancelledNotificationValidationFilter) for f in root.filters):
         return
@@ -160,7 +160,7 @@ def _ensure_registry_service(app: FastAPI) -> VaultRegistryService:
 
     The singleton is owned by sage.mcp_server (it wraps the same `_vaults`
     dict aliased onto app.state.vault_registry per CAS-ADR-013), so the
-    MCP and REST transports operate against the same instance.  This
+    MCP and REST transports operate against the same instance. This
     function exists to populate app.state for legacy test fixtures that
     bypass the lifespan and call ``_initialize_services`` directly.
     """

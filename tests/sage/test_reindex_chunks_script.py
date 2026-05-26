@@ -230,8 +230,8 @@ async def test_reindex_skips_documents_with_no_chunks(graph_store, stub_content_
 async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store):
     """Re-index must preserve ``chunk.doc_type``. A read→re-embed→write
     cycle that drops doc_type wipes the column for every chunk and breaks
-    ``filters={"doc_type": ...}`` queries vault-wide. Regression guard for
-    the live-data incident on 2026-05-04 (PIM Health).
+    ``filters={"doc_type":...}`` queries vault-wide. Regression guard for
+    the live-data incident on 2026-05-04 (Example Portfolio).
     """
     doc = _make_doc(doc_id=_id("doc_dtype"), adapter_version="0.1.0")
     await graph_store.insert_document(doc)
@@ -242,7 +242,7 @@ async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store)
         content="body content",
         embedding=[0.0] * 768,
         chunk_index=0,
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
     await stub_content_store.index_chunks(doc.id, [chunk])
 
@@ -258,7 +258,7 @@ async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store)
 
     chunks_after = await stub_content_store.get_all_chunks(doc.id)
     assert len(chunks_after) == 1
-    assert chunks_after[0].doc_type == "patent_draft", (
+    assert chunks_after[0].doc_type == "design_spec", (
         "Re-index round-trip dropped chunk.doc_type. The content store's "
         "get_all_chunks must populate doc_type, and the script must not "
         "discard it before calling index_chunks."

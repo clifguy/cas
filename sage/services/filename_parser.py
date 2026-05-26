@@ -33,7 +33,7 @@ class ParsedMetadata:
 # Pre-split patterns: operate on the full stem before separator splitting.
 # Leading date: YYYY-MM-DD followed by a space or underscore.
 _LEADING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})[_ ](.*)")
-# Trailing version: v-prefix with optional sub-components separated by _ or .
+# Trailing version: v-prefix with optional sub-components separated by _ or.
 # An optional trailing annotation group (e.g. _FIXED, _FINAL) is captured
 # separately so it can be re-attached to the residual stem as title content.
 _TRAILING_VERSION_RE = re.compile(
@@ -45,15 +45,15 @@ _TRAILING_VERSION_RE = re.compile(
 # Stripped from the stem before version extraction; not preserved.
 _TRAILING_FINDER_NOISE_RE = re.compile(r"(?:[_ ]+(?:copy(?:\s+\d+)?|\(\d+\)))+\s*$")
 # Post-split date: a segment that is exactly YYYY-MM-DD. Catches dates
-# that appear after a project prefix (e.g. PIM_2026-01-06_Title).
+# that appear after a project prefix (e.g. EXAMPLE_2026-01-06_Title).
 _SEGMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def normalize_version(version_str: str) -> tuple[int, int, int]:
     """Normalize a version string to a (major, minor, patch) tuple.
 
-    Accepts v7, v10_2, v8_4_1, v1.3, v6a etc.  Missing components default
-    to 0.  Trailing alpha suffixes on parts are stripped (e.g. '6a' -> 6).
+    Accepts v7, v10_2, v8_4_1, v1.3, v6a etc. Missing components default
+    to 0. Trailing alpha suffixes on parts are stripped (e.g. '6a' -> 6).
     """
     stripped = version_str.lstrip("vV")
     parts = re.split(r"[._]", stripped)
@@ -110,7 +110,7 @@ class FilenameParser:
         # code_to_doc_type rules (evaluated second)
         self._code_rules = fe.get("code_to_doc_type", [])
 
-        # Explicit project identifier (e.g. "PIM") for disambiguating
+        # Explicit project identifier (e.g. "EXAMPLE") for disambiguating
         # the first segment from codes during parsing.
         self._project_id: str | None = fe.get("project_identifier")
 
@@ -174,19 +174,23 @@ class FilenameParser:
         project: str | None = None
         codes: list[str] = []
 
-        # Project vs code: the first short uppercase segment could be
-        # either a project identifier (PIM) or a code (PV07).  When
-        # project_identifier is configured, use it for an exact match.
-        # Otherwise fall back to the original heuristic (first short
-        # uppercase segment that is not a code).
-        if remaining and len(remaining[0]) <= 5 and remaining[0].isupper():
-            if self._project_id and remaining[0].upper() == self._project_id.upper():
-                project = remaining[0]
-            elif self._is_code(remaining[0]):
-                codes.append(remaining[0])
-            else:
-                project = remaining[0]
-            remaining = remaining[1:]
+        # Project vs code: the first uppercase segment could be either
+        # a project identifier or a code (e.g., PV07). When
+        # project_identifier is configured, match it exactly regardless
+        # of length. Otherwise fall back to the heuristic that a short
+        # uppercase segment is the project (or a code if it matches a
+        # configured code pattern).
+        if remaining and remaining[0].isupper():
+            first = remaining[0]
+            if self._project_id and first.upper() == self._project_id.upper():
+                project = first
+                remaining = remaining[1:]
+            elif len(first) <= 5:
+                if self._is_code(first):
+                    codes.append(first)
+                else:
+                    project = first
+                remaining = remaining[1:]
 
         # Codes and dates: via known_code_patterns and YYYY-MM-DD pattern
         still_remaining: list[str] = []
@@ -198,9 +202,9 @@ class FilenameParser:
             else:
                 still_remaining.append(seg)
 
-        # Whatever remains is the title.  When no title segments remain
+        # Whatever remains is the title. When no title segments remain
         # but codes were extracted, use the first code as the title (e.g.
-        # "2026-01-02_PIM_TD04_v1_1" -> title "TD04").  Fall back to the
+        # "2026-01-02_EXAMPLE_TD04_v1_1" -> title "TD04"). Fall back to the
         # raw filename stem only when nothing was extracted at all.
         if still_remaining:
             title = self._separator.join(still_remaining)
@@ -248,7 +252,7 @@ class FilenameParser:
         """Word-boundary keyword match against a title.
 
         Matches the keyword as a whole word, using underscores, hyphens,
-        and string boundaries as delimiters.  This prevents substring
+        and string boundaries as delimiters. This prevents substring
         matches inside compound words (e.g. "Plan" must not match
         "PlanPortability").
         """
@@ -280,8 +284,8 @@ class FilenameParser:
                 continue
 
             # Prefix match: rule code "PV" matches extracted codes PV01,
-            # PV07, etc.  Exact-match rules (REF, PVMaster) naturally
-            # work because startswith covers equality.  Order in the
+            # PV07, etc. Exact-match rules (REF, PVMaster) naturally
+            # work because startswith covers equality. Order in the
             # config controls precedence (PVMaster before PV).
             matching_codes = [c for c in codes if c.upper().startswith(rule_code.upper())]
             if not matching_codes:

@@ -4,7 +4,7 @@ Covers TEST-SAGE-CR-013..022: sage_traverse honors the edge-type
 resolution_policy registry and anchor-in-lineage filtering. All tests
 use the canonical ADR worked example unless otherwise noted:
 
-    Chain A: a1 <- a2 <- a3 <- a4 <- a5   (source=newer, target=older)
+    Chain A: a1 <- a2 <- a3 <- a4 <- a5 (source=newer, target=older)
     Chain B: b1 <- b2 <- b3
     covers edge: source=a3, target=b2, policy=transitive_both,
                  source_anchor=a3, target_anchor=b2.
@@ -86,7 +86,7 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
     """Insert supersedes edges connecting chain oldest->newest.
 
     For chain [a1, a2, a3, a4, a5], writes edges
-        a2->a1, a3->a2, a4->a3, a5->a4  (source supersedes target).
+        a2->a1, a3->a2, a4->a3, a5->a4 (source supersedes target).
     """
     now = datetime.now(timezone.utc)
     for i in range(1, len(chain)):
@@ -238,16 +238,16 @@ async def test_cr_017_supersedes_ignores_anchor_logic(graph_store, graph_ops_ser
 async def test_cr_018_transitive_source_source_anchor_in_lineage(graph_store, graph_ops_service):
     await _seed_docs(
         graph_store,
-        _id("patent_v1"),
-        _id("patent_v2"),
-        _id("patent_v3"),
-        _id("patent_v4"),
+        _id("report_v1"),
+        _id("report_v2"),
+        _id("report_v3"),
+        _id("report_v4"),
         _id("uspto_template_v1"),
         _id("uspto_template_v2"),
     )
     await _seed_supersedes_chain(
         graph_store,
-        [_id("patent_v1"), _id("patent_v2"), _id("patent_v3"), _id("patent_v4")],
+        [_id("report_v1"), _id("report_v2"), _id("report_v3"), _id("report_v4")],
     )
     await _seed_supersedes_chain(
         graph_store,
@@ -255,16 +255,16 @@ async def test_cr_018_transitive_source_source_anchor_in_lineage(graph_store, gr
     )
     await graph_ops_service.link(
         LinkRequest(
-            source_id=_id("patent_v3"),
+            source_id=_id("report_v3"),
             target_id=_id("uspto_template_v2"),
             edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=_id("patent_v3"),
+            source_valid_from_version=_id("report_v3"),
         )
     )
 
     out = await graph_ops_service.traverse(
         TraverseRequest(
-            start_id=_id("patent_v4"),
+            start_id=_id("report_v4"),
             edge_type=EdgeType.DERIVED_FROM,
             direction=TraversalDirection.OUTBOUND,
             depth=1,
@@ -284,17 +284,17 @@ async def test_cr_019_transitive_source_target_frozen_after_target_chain_advance
 ):
     await _seed_docs(
         graph_store,
-        _id("patent_v1"),
-        _id("patent_v2"),
-        _id("patent_v3"),
-        _id("patent_v4"),
+        _id("report_v1"),
+        _id("report_v2"),
+        _id("report_v3"),
+        _id("report_v4"),
         _id("uspto_template_v1"),
         _id("uspto_template_v2"),
         _id("uspto_template_v3"),
     )
     await _seed_supersedes_chain(
         graph_store,
-        [_id("patent_v1"), _id("patent_v2"), _id("patent_v3"), _id("patent_v4")],
+        [_id("report_v1"), _id("report_v2"), _id("report_v3"), _id("report_v4")],
     )
     await _seed_supersedes_chain(
         graph_store,
@@ -302,16 +302,16 @@ async def test_cr_019_transitive_source_target_frozen_after_target_chain_advance
     )
     await graph_ops_service.link(
         LinkRequest(
-            source_id=_id("patent_v3"),
+            source_id=_id("report_v3"),
             target_id=_id("uspto_template_v2"),
             edge_type=EdgeType.DERIVED_FROM,
-            source_valid_from_version=_id("patent_v3"),
+            source_valid_from_version=_id("report_v3"),
         )
     )
 
     out = await graph_ops_service.traverse(
         TraverseRequest(
-            start_id=_id("patent_v4"),
+            start_id=_id("report_v4"),
             edge_type=EdgeType.DERIVED_FROM,
             direction=TraversalDirection.OUTBOUND,
             depth=1,

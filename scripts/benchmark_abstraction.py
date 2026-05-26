@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Benchmark a candidate ``AbstractionProvider`` against a stratified
-corpus of cas-vault documents (T-0084).
+corpus of cas-vault documents.
 
 Reads documents from the named vault (default ``cas``), selects a
 stratified corpus by ``doc_type`` and length tercile, instantiates the

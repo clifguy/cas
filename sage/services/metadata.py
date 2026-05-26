@@ -37,7 +37,7 @@ from sage.storage.locks import DocumentLockManager
 
 
 def _compute_metadata_changes(pre_doc: Document, updates: dict) -> list[FieldChange]:
-    """T-0163: derive field-level deltas for a dry-run update_metadata response.
+    """Derive field-level deltas for a dry-run update_metadata response.
 
     `updates` is the post-patch dict the service is about to apply (or
     would apply on a real run). For each entry:
@@ -140,7 +140,7 @@ class MetadataService:
 
         Returns:
             ``UpdateMetadataResponse`` wrapping the post-patch document
-            and a ``dry_run`` echo (T-0152). On a real run, ``document``
+            and a ``dry_run`` echo. On a real run, ``document``
             is the persisted row; on a dry-run, ``document`` is the
             computed post-patch state with no ``updated_at`` advance.
 
@@ -177,7 +177,7 @@ class MetadataService:
                 updates["doc_type"] = request.doc_type
             if request.document_date is not None:
                 updates["document_date"] = request.document_date
-            # T-0156 Wart 1: a doc_type change must revalidate the stored
+            # Wart 1: a doc_type change must revalidate the stored
             # tier3 against the new schema even when no Tier3Patch was
             # supplied -- otherwise stored keys from the old doc_type
             # silently survive against the new one. So the validation
@@ -198,14 +198,14 @@ class MetadataService:
                     # No patch supplied: validate the stored dict as-is
                     # against the new doc_type (Wart 1 no-patch path).
                     merged = dict(doc.tier3_metadata or {})
-                # T-0151: when the call changes doc_type, surface stale
+                # When the call changes doc_type, surface stale
                 # legacy keys explicitly so the caller knows exactly which
                 # keys to add to `unset`. The post-merge `_validate_tier3`
                 # would otherwise raise a generic tier3_schema_violation
                 # that conflates "your patch is wrong for the new schema"
                 # with "you forgot to unset legacy keys." A no-schema new
                 # doc_type means every merged key is stale (zero allowed
-                # properties). T-0156 broadened this to the no-patch path.
+                # properties). broadened this to the no-patch path.
                 if is_doc_type_change:
                     validator = self._config.tier3_validator(effective_dt)
                     allowed: set[str] = (
@@ -229,14 +229,14 @@ class MetadataService:
                 if request.tier3_metadata is not None:
                     updates["tier3_metadata"] = merged
 
-            # T-0152: dry-run branches BEFORE the persistence call and
+            # Dry-run branches BEFORE the persistence call and
             # BEFORE stamping updated_at / metadata_confirmed. The
             # computed `updates` dict already represents the would-be
             # post-patch state for every persisted field; applying it
             # to a shallow copy of the in-memory doc gives the preview
             # with byte-identical semantics to the real-run output.
             #
-            # T-0163: also compute the field-level deltas (`changes`)
+            # Also compute the field-level deltas (`changes`)
             # the patch would persist. Dry-run only; real-run responses
             # carry `changes=None`. `None` (not `[]`) on a dry-run with
             # no caller-supplied field changes (e.g., a doc_type-only
@@ -260,7 +260,7 @@ class MetadataService:
             doc = await self._store.update_document(document_id, updates)
 
             # Sync chunk-pushdownable scalars to the content store so
-            # LanceDB pre-filter pushdown (T-0050 for doc_type, T-0077
+            # LanceDB pre-filter pushdown (for doc_type,
             # for lifecycle_status and project) stays accurate after
             # the document update. update_metadata never touches
             # lifecycle_status (that lives on LifecycleService); only
@@ -314,7 +314,7 @@ class MetadataService:
         and asyncio scheduling between items; the per-document lock and
         the per-item SQLite transaction are unchanged.
 
-        ``request.response_mode`` (T-0153) controls per-item payload
+        ``request.response_mode`` controls per-item payload
         depth. ``light`` drops the per-item ``document`` body from
         success entries; failure entries always carry the full structured
         error envelope. When unset, the default-resolution rule mirrors
@@ -322,7 +322,7 @@ class MetadataService:
         ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
         smaller batches default to ``full``.
         """
-        # T-0153: resolve the effective response_mode (mirror
+        # Resolve the effective response_mode (mirror
         # ``RetrievalService._edges``). Driven by ``len(items)`` because
         # the bulk endpoint's blast radius is known up front.
         effective_mode = request.response_mode
@@ -344,7 +344,7 @@ class MetadataService:
                 authority_scope=item.authority_scope,
                 document_date=item.document_date,
                 tier3_metadata=item.tier3_metadata,
-                # T-0152: propagate envelope dry_run to each per-item
+                # Propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported; the
                 # envelope is the single source of truth for the batch.
                 dry_run=request.dry_run,
@@ -355,7 +355,7 @@ class MetadataService:
                     BulkMetadataItemResult(
                         document_id=item.document_id,
                         status="success",
-                        # T-0153 light mode: drop the document body. The
+                        # light mode: drop the document body. The
                         # caller already knows the document_id (they
                         # passed it); the body's primary bloat field
                         # (semantic_abstract) is what the field report
@@ -363,7 +363,7 @@ class MetadataService:
                         document=(
                             response.document if effective_mode == ResponseMode.FULL else None
                         ),
-                        # T-0163: propagate the per-item changes block
+                        # Propagate the per-item changes block
                         # from the single-item service. Populated only
                         # on dry-run; small enough to survive light
                         # mode, so the response_mode gate above does
@@ -385,7 +385,7 @@ class MetadataService:
             success_count=success_count,
             error_count=len(results) - success_count,
             total=len(results),
-            # T-0152: envelope echo so callers can confirm the batch ran
+            # Envelope echo so callers can confirm the batch ran
             # as a preview even when every item's per-item response_mode
             # was light (and the per-item documents are absent).
             dry_run=request.dry_run,
@@ -445,8 +445,8 @@ class MetadataService:
         """Validate a tier3_metadata payload against a doc_type's schema.
 
         Raises Tier3SchemaViolationError when the doc_type has no
-        metadata_schema declared (strict no-loose-mode per T-0004) or
-        when the payload fails the schema. T-0156: an empty merged dict
+        metadata_schema declared (strict no-loose-mode ) or
+        when the payload fails the schema. An empty merged dict
         trivially satisfies a no-schema doc_type and is accepted, so a
         caller reclassifying to a no-schema target can unset every
         legacy key without then tripping the no-schema raise.

@@ -1,4 +1,4 @@
-"""Unit tests for MaintenanceService.reabstract_deferred (T-0089, CAS-ADR-029).
+"""Unit tests for MaintenanceService.reabstract_deferred (CAS-ADR-029).
 
 Graduation of scripts/reabstract_deferred.py into the maintenance API
 surface. The new service method enumerates documents whose
@@ -7,7 +7,7 @@ in-process IngestionService.reabstract (reusing the already-loaded
 AbstractionProvider per F-8), polls until each reaches a terminal
 status, and assembles a ReabstractReport.
 
-Test surface pins the seven contracts from T-0089:
+Test surface pins the seven contracts from
 
     1. Empty worklist -> empty report (idempotent no-op).
     2. Skipped document is promoted to abstraction_complete and the
@@ -177,7 +177,7 @@ def _build_maintenance(
     config,
     ingestion_service: IngestionService | None,
 ) -> MaintenanceService:
-    """Construct a MaintenanceService with the T-0089 ingestion dependency.
+    """Construct a MaintenanceService with the ingestion dependency.
 
     db_path and registry_service are not exercised by reabstract_deferred
     (only migrate_vault touches them); we still pass concrete values so
@@ -477,7 +477,7 @@ async def test_reabstract_deferred_hard_errors_when_no_ingestion_service(
 
 
 # ---------------------------------------------------------------------------
-# Streaming-generator tests (T-0134)
+# Streaming-generator tests
 #
 # Cover the async-generator surface of MaintenanceService that the new
 # SSE-emitting HTTP route consumes. The aggregator tests above pin the

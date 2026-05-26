@@ -181,7 +181,7 @@ class LanceDBContentStore(ContentStore):
         """Build a SQL WHERE clause from a filters dict.
 
         Only columns in _FILTERABLE_COLUMNS are accepted to prevent
-        injection via arbitrary column names.  Values may be a single
+        injection via arbitrary column names. Values may be a single
         string (equality) or a list of strings (IN clause).
         """
         clauses = []
@@ -253,7 +253,7 @@ class LanceDBContentStore(ContentStore):
             self._rebuild_fts(table)
 
     async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
-        """Replace the synthetic document-header chunk for a document (T-0038).
+        """Replace the synthetic document-header chunk for a document.
 
         Deletes any existing row for this document with
         ``heading_path == SYNTHETIC_HEADER_HEADING_PATH``, inserts the new
@@ -485,7 +485,7 @@ class LanceDBContentStore(ContentStore):
             paths: list[str] = []
             for row in rows:
                 hp = row["heading_path"]
-                # Exclude the synthetic header chunk marker (T-0038) so it
+                # Exclude the synthetic header chunk marker so it
                 # does not appear in user-visible "available headings" lists
                 # surfaced by HeadingNotFoundError.
                 if hp == SYNTHETIC_HEADER_HEADING_PATH:

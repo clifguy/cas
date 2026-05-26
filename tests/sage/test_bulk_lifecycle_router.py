@@ -1,4 +1,4 @@
-"""HTTP integration tests for the bulk lifecycle endpoint (T-0087).
+"""HTTP integration tests for the bulk lifecycle endpoint.
 
 POST /sage_vaults/{vault_id}/lifecycle/bulk.
 """
@@ -120,7 +120,7 @@ async def test_bulk_endpoint_empty_items_returns_200(seeded_app):
 
 
 # ---------------------------------------------------------------------------
-# T-0153: response_mode parameter on the bulk lifecycle HTTP endpoint
+# Response_mode parameter on the bulk lifecycle HTTP endpoint
 # ---------------------------------------------------------------------------
 
 _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
@@ -128,7 +128,7 @@ _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
 
 @pytest.fixture
 async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
-    """T-0153 fixture for the HTTP router. Boot an app with six active
+    """fixture for the HTTP router. Boot an app with six active
     documents each carrying a populated `semantic_abstract`. Six items so
     the threshold-default tests can cross the >5 boundary in either
     direction by slicing."""

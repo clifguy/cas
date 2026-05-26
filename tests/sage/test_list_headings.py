@@ -1,4 +1,4 @@
-"""Tests for list_headings: structural-only heading enumeration (T-0069).
+"""Tests for list_headings: structural-only heading enumeration.
 
 list_headings returns the distinct heading paths of a document in
 document order without reading body content. It replaces the
@@ -155,7 +155,7 @@ async def test_list_headings_dedupes(listing_services, multi_section_doc):
 
 
 async def test_list_headings_excludes_synthetic_header(listing_services, multi_section_doc):
-    """The synthetic header chunk (T-0038) must not appear in the listing."""
+    """The synthetic header chunk must not appear in the listing."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 
     utilities, _ = listing_services

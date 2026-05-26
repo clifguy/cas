@@ -280,7 +280,7 @@ async def test_mig_004_graphstore_current_schema_no_op(tmp_path):
     await store2.close()
 
 
-# ── T-0080: rationale_kind backfill ────────────────────────────────
+# ── Rationale_kind backfill ────────────────────────────────
 
 
 def _seed_legacy_edges_with_rationales(
@@ -313,7 +313,7 @@ async def test_t0080_rationale_kind_backfill_on_legacy_db(tmp_path):
     discriminator. Edges with unrecognized or NULL rationale take the
     NOT NULL DEFAULT 'manual'.
 
-    Edges use distinct edge_type values per row so the T-0079 unique
+    Edges use distinct edge_type values per row so the unique
     natural-key index does not collide on the shared (source, target)
     pair.
     """
@@ -439,17 +439,17 @@ async def test_t0080_rationale_kind_backfill_is_idempotent(tmp_path):
         await store2.close()
 
 
-# ── T-0110: synced_from_version / synced_from_content_hash migration ──
+# ── Synced_from_version / synced_from_content_hash migration ──
 
 
 async def test_t0110_synced_from_columns_added_and_idempotent(tmp_path):
     """TEST-4. Migration adds ``synced_from_version`` and
-    ``synced_from_content_hash`` to the ``edges`` table on a pre-T-0110
+    ``synced_from_content_hash`` to the ``edges`` table on a pre-
     -shaped database, populates existing rows with NULL, and re-running
     the migration is a no-op (no ``OperationalError``, no duplicates).
 
     Uses ``_build_legacy_db`` which omits every MIGRATION_PLAN-added
-    column, so the two T-0110 columns are guaranteed to be absent pre-
+    column, so the two columns are guaranteed to be absent pre-
     migration. This is critical: a fresh DB created via the current
     ``initialize_storage()`` already has the columns via the
     ``EDGES_TABLE`` CREATE statement, which would mask a missing
@@ -769,7 +769,7 @@ async def test_mig_013_owner_bootstrap_always_runs(tmp_path):
         await services.graph_store.close()
 
 
-# ── T-0079: index-migration framework + UNIQUE on edges/staging_edges ──
+# ── Index-migration framework + UNIQUE on edges/staging_edges ──
 
 
 def _has_index(db_path: Path, table: str, index_name: str) -> bool:
@@ -782,7 +782,7 @@ def _has_index(db_path: Path, table: str, index_name: str) -> bool:
 
 
 async def test_t0079_unique_indexes_present_on_fresh_vault(tmp_path):
-    """Fresh-vault initialize creates both T-0079 unique indexes."""
+    """Fresh-vault initialize creates both unique indexes."""
     db_path = tmp_path / "graph.db"
     store = GraphStore(db_path)
     await store.initialize(migrate=False)
@@ -832,7 +832,7 @@ async def test_t0079_unique_index_blocks_direct_duplicate_insert(tmp_path):
 
 async def test_t0079_migration_fails_clearly_when_duplicates_present(tmp_path):
     """Legacy DB with duplicate edges produces a DuplicateEdgesPresentError
-    pointing at scripts/dedup_edges.py when the T-0079 migration runs.
+    pointing at scripts/dedup_edges.py when the migration runs.
     """
     from sage.storage.migrations import DuplicateEdgesPresentError
 
@@ -840,7 +840,7 @@ async def test_t0079_migration_fails_clearly_when_duplicates_present(tmp_path):
     _build_legacy_db(db_path)
 
     # Seed two documents and two duplicate edges on the legacy schema
-    # (which has no unique index). The first time the T-0079 migration
+    # (which has no unique index). The first time the migration
     # tries to CREATE UNIQUE INDEX, SQLite refuses; the wrapper in
     # GraphStore._initialize_sync translates the IntegrityError.
     conn = sqlite3.connect(str(db_path))

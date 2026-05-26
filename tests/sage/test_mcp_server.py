@@ -163,7 +163,7 @@ async def test_ingest_missing_file_returns_error(vault_services):
 
 @pytest.fixture
 async def pim_vault_services(tmp_vault_dir):
-    """Initialize a PIM-style vault (with filename_extraction) for the
+    """Initialize a EXAMPLE-style vault (with filename_extraction) for the
     sage_parse_filename test. Registered in the MCP vault registry under
     its config-declared id (test_metadata_vault).
     """
@@ -223,16 +223,16 @@ async def test_ad021_014_sage_parse_filename_returns_parsed_fields(
     result = _parse(
         await sage_parse_filename(
             "test_metadata_vault",
-            "2026-03-09_PIM_PV06_Claim-Set_v6.md",
+            "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
             "markdown",
         )
     )
 
     assert result["title"] == "Claim-Set"
-    assert result["project"] == "PIM"
+    assert result["project"] == "EXAMPLE"
     assert result["version_label"] == "v6.0"
     assert result["document_date"] == "2026-03-09"
-    assert result["doc_type"] == "patent_draft"
+    assert result["doc_type"] == "design_spec"
     assert result["codes"] == ["PV06"]
 
     documents_after = await graph_store.list_all_documents()
@@ -276,7 +276,7 @@ async def test_update_metadata_partial(vault_services):
     doc_id = ingest_result["id"]
     pre_patch_tags = set(_parse(await sage_get_document("test_vault", doc_id))["tags"])
 
-    # T-0152: sage_update_metadata now returns UpdateMetadataResponse
+    # Sage_update_metadata now returns UpdateMetadataResponse
     # ({document, dry_run}); unwrap before asserting on document fields.
     result = _parse(
         await sage_update_metadata(
@@ -303,7 +303,7 @@ async def test_update_metadata_sets_document_date(vault_services):
     ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
-    # T-0152: wrapper response.
+    # Wrapper response.
     updated = _parse(
         await sage_update_metadata(
             "test_vault",
@@ -338,7 +338,7 @@ async def test_update_metadata_tags_add_only(vault_services):
     )
     doc_id = ingest_result["id"]
 
-    # T-0152: wrapper response.
+    # Wrapper response.
     result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"add": ["gamma"]}))
     assert set(result["document"]["tags"]) == {"alpha", "beta", "gamma"}
 
@@ -351,7 +351,7 @@ async def test_update_metadata_tags_remove_only(vault_services):
     )
     doc_id = ingest_result["id"]
 
-    # T-0152: wrapper response.
+    # Wrapper response.
     result = _parse(await sage_update_metadata("test_vault", doc_id, tags={"remove": ["alpha"]}))
     assert result["document"]["tags"] == ["beta"]
 
@@ -362,7 +362,7 @@ async def test_update_metadata_tags_add_and_remove(vault_services):
     )
     doc_id = ingest_result["id"]
 
-    # T-0152: wrapper response.
+    # Wrapper response.
     result = _parse(
         await sage_update_metadata("test_vault", doc_id, tags={"add": ["new"], "remove": ["old"]})
     )
@@ -462,7 +462,7 @@ async def test_set_lifecycle_unknown_action(vault_services):
     assert result["error"] == "invalid_action"
 
 
-# T-0162: dry_run rollout closes the asymmetry with the bulk variant.
+# Dry_run rollout closes the asymmetry with the bulk variant.
 # The service layer (LifecycleService.set_lifecycle) and the
 # SetLifecycleRequest/Response schemas already carry dry_run; these
 # tests pin the MCP wrapper plumbing.
@@ -472,7 +472,7 @@ async def test_set_lifecycle_unknown_action(vault_services):
 async def test_set_lifecycle_dry_run_archive_returns_dry_run_true_and_leaves_state(
     vault_services,
 ):
-    """T-0162 T1: dry_run=True returns dry_run=True and the would-be
+    """T1: dry_run=True returns dry_run=True and the would-be
     archived state, but the persisted document is still active.
 
     Paired with test_set_lifecycle_real_run_archive_... (positive
@@ -496,7 +496,7 @@ async def test_set_lifecycle_dry_run_archive_returns_dry_run_true_and_leaves_sta
 async def test_set_lifecycle_real_run_archive_returns_dry_run_false_and_changes_state(
     vault_services,
 ):
-    """T-0162 T2: positive control for T1. Without dry_run, the wrapper
+    """T2: positive control for T1. Without dry_run, the wrapper
     must persist the transition and echo dry_run=False."""
     ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
@@ -512,7 +512,7 @@ async def test_set_lifecycle_real_run_archive_returns_dry_run_false_and_changes_
 async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persists_nothing(
     vault_services,
 ):
-    """T-0162 T3: dry-run supersede populates created_edge with the
+    """T3: dry-run supersede populates created_edge with the
     nil-UUID sentinel id, leaves the predecessor active, and persists
     no supersedes edge.
 
@@ -562,7 +562,7 @@ async def test_set_lifecycle_dry_run_supersede_returns_sentinel_edge_and_persist
 async def test_set_lifecycle_dry_run_invalid_action_error_envelope_matches_real_run(
     vault_services,
 ):
-    """T-0162 T4: same-validator paired check. invalid_action error
+    """T4: same-validator paired check. invalid_action error
     envelope must be identical whether dry_run is set or not — confirms
     dry_run does not skip or alter validators."""
     ingest_result = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
@@ -600,7 +600,7 @@ async def test_link_creates_edge(vault_services):
             rationale="test link",
         )
     )
-    # T-0152: sage_link now returns LinkResponse-shaped {edge, created,
+    # Sage_link now returns LinkResponse-shaped {edge, created,
     # existing_rationale, dry_run}; unwrap edge for field assertions.
     assert result["dry_run"] is False
     edge = result["edge"]
@@ -640,7 +640,7 @@ async def test_t0080_sage_link_explicit_rationale_kind(vault_services):
         )
     )
     assert result.get("error") is None, result
-    # T-0152: wrapper response.
+    # Wrapper response.
     assert result["edge"]["rationale_kind"] == "version_chain"
 
 
@@ -663,7 +663,7 @@ async def test_t0080_sage_link_derives_rationale_kind_from_prefix(vault_services
         )
     )
     assert result.get("error") is None, result
-    # T-0152: wrapper response.
+    # Wrapper response.
     assert result["edge"]["rationale_kind"] == "version_chain"
 
 
@@ -685,12 +685,12 @@ async def test_t0080_sage_link_defaults_to_manual(vault_services):
         )
     )
     assert result.get("error") is None, result
-    # T-0152: wrapper response.
+    # Wrapper response.
     assert result["edge"]["rationale_kind"] == "manual"
 
 
 async def test_link_idempotent_returns_created_flag(vault_services):
-    """T-0079: re-calling sage_link with the same natural-key triple
+    """Re-calling sage_link with the same natural-key triple
     returns ``created=False`` and preserves the original rationale."""
     doc_a = _parse(await sage_ingest("test_vault", "test/sample.md", "markdown"))
     doc_b = _parse(await sage_ingest("test_vault", "test/second.md", "markdown"))
@@ -705,7 +705,7 @@ async def test_link_idempotent_returns_created_flag(vault_services):
             rationale="original rationale",
         )
     )
-    # T-0152: wrapper-level fields (created, existing_rationale, dry_run)
+    # Wrapper-level fields (created, existing_rationale, dry_run)
     # remain at the top level; edge fields live under result["edge"].
     assert first["created"] is True
     assert first.get("existing_rationale") is None
@@ -794,7 +794,7 @@ async def test_link_transitive_both_requires_anchors(vault_services):
             target_valid_from_version=doc_b["id"],
         )
     )
-    # T-0152: wrapper response.
+    # Wrapper response.
     edge = result["edge"]
     assert edge["edge_type"] == "covers"
     assert edge["resolution_policy"] == "transitive_both"
@@ -820,7 +820,7 @@ async def test_link_retracts_round_trip(vault_services):
             target_valid_from_version=doc_b["id"],
         )
     )
-    # T-0152: wrapper response.
+    # Wrapper response.
     assert "id" in covers["edge"]
     covers_edge_id = covers["edge"]["id"]
 
@@ -853,7 +853,7 @@ async def test_link_retracts_round_trip(vault_services):
             retracted_edge_id=covers_edge_id,
         )
     )
-    # T-0152: wrapper response.
+    # Wrapper response.
     retract_edge = retract["edge"]
     assert retract_edge["edge_type"] == "retracts"
     assert retract_edge["resolution_policy"] == "none"
@@ -903,7 +903,7 @@ async def test_discover_semantic(vault_services):
 
 
 async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services):
-    """T-0174: sort_by / sort_order on the MCP wrapper must reach DiscoverRequest.
+    """Sort_by / sort_order on the MCP wrapper must reach DiscoverRequest.
 
     Ingest two documents with distinct titles, then verify that asc and desc
     sort_order values produce reversed orderings. Catches the wrapper silently
@@ -974,7 +974,7 @@ async def test_discover_semantic_missing_query(vault_services):
 
 
 # ---------------------------------------------------------------------------
-# Retrieval: discover — ADR-028 error envelope on parameter validation (T-0092)
+# Retrieval: discover — ADR-028 error envelope on parameter validation
 # ---------------------------------------------------------------------------
 
 
@@ -993,7 +993,7 @@ async def test_discover_invalid_mode(vault_services):
 
 
 async def test_discover_unknown_filter_key(vault_services):
-    """Unknown filter key (T-0092 AC: a) returns unknown_filter_key envelope
+    """Unknown filter key (AC: a) returns unknown_filter_key envelope
     rather than silently dropping the key."""
     result = _parse(
         await sage_discover("test_vault", mode="catalog", filters={"tickett_id": "T-0001"})
@@ -1015,7 +1015,7 @@ async def test_discover_unknown_filter_key(vault_services):
 
 
 async def test_discover_invalid_filter_shape(vault_services):
-    """Wrong type for a known filter key (T-0092 AC: b) returns
+    """Wrong type for a known filter key (AC: b) returns
     invalid_filter_shape envelope with the offending field named."""
     result = _parse(await sage_discover("test_vault", mode="catalog", filters={"tags": 42}))
     assert result["error"] == "invalid_filter_shape"
@@ -1025,7 +1025,7 @@ async def test_discover_invalid_filter_shape(vault_services):
 
 
 async def test_discover_mode_parameter_mismatch_catalog_with_heading_path(vault_services):
-    """Catalog mode with heading_path (T-0092 AC: c) returns
+    """Catalog mode with heading_path (AC: c) returns
     mode_parameter_mismatch envelope. heading_path is deterministic-only."""
     result = _parse(await sage_discover("test_vault", mode="catalog", heading_path="Section 1"))
     assert result["error"] == "mode_parameter_mismatch"
@@ -1054,7 +1054,7 @@ async def test_discover_mode_parameter_mismatch_deterministic_with_query(vault_s
 
 async def test_discover_semantic_missing_query_still_typed(vault_services):
     """Regression guard: the existing service-layer missing_query envelope
-    must not be folded into mode_parameter_mismatch by T-0092."""
+    must not be folded into mode_parameter_mismatch by."""
     result = _parse(await sage_discover("test_vault", "semantic"))
     assert result["error"] == "missing_query"
 
@@ -1095,7 +1095,7 @@ async def test_read_projection_not_found(vault_services):
 async def test_read_projection_write_to_path_writes_file_and_returns_metadata(
     vault_services, tmp_path
 ):
-    """T-0176: sage_read_projection(write_to_path=...) writes the projection
+    """Sage_read_projection(write_to_path=...) writes the projection
     text bytes to the absolute path and returns metadata only (no inline
     text). Replaces the pre-audit sage_export_projection MCP tool.
     """
@@ -1254,7 +1254,7 @@ async def test_reload_vault_sees_external_changes(vault_services):
 
 
 async def test_reload_vault_failure_keeps_old_services_in_registry(vault_services, monkeypatch):
-    """T-0183 AC2: a failed reload leaves _vaults pointing at functional old services.
+    """AC2: a failed reload leaves _vaults pointing at functional old services.
 
     Trap (anti-coincidental): a literal try/restore that re-installs the (closed)
     old reference would pass the identity check but fail the "graph store still
@@ -1305,7 +1305,7 @@ async def test_reload_vault_failure_keeps_old_services_in_registry(vault_service
 async def test_reload_vault_failure_releases_partially_allocated_resources(
     vault_services, monkeypatch
 ):
-    """T-0183 AC2 + Risk: a failed reload must not leak background threads.
+    """AC2 + Risk: a failed reload must not leak background threads.
 
     `_build_vault_timers` calls `flusher.start()` before initialize_services
     returns. If initialize_services raises after that point without
@@ -1350,7 +1350,7 @@ async def test_reload_vault_failure_releases_partially_allocated_resources(
 
 
 async def test_reload_vault_stops_old_timing_thread(vault_services, monkeypatch):
-    """T-0183 AC3 (reconciliation): MCP reload path now stops the old vault's
+    """AC3 (reconciliation): MCP reload path now stops the old vault's
     timing thread on success (parity with the FastAPI path via
     reload_vault_in_registry).
 
@@ -1376,7 +1376,7 @@ async def test_reload_vault_stops_old_timing_thread(vault_services, monkeypatch)
 async def test_reload_vault_preserves_content_store_factory_across_two_reloads(
     minimal_vault_config_dict, tmp_vault_dir
 ):
-    """T-0183 AC3 (reconciliation): content_store_factory survives across
+    """AC3 (reconciliation): content_store_factory survives across
     multiple successive reloads.
 
     Trap (anti-coincidental): a single-reload test would pass against the
@@ -1755,7 +1755,7 @@ async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_ser
 
 
 # ---------------------------------------------------------------------------
-# T-0157: First-class edge enumeration via sage_discover(target="edges")
+# First-class edge enumeration via sage_discover(target="edges")
 # ---------------------------------------------------------------------------
 
 
@@ -1780,7 +1780,7 @@ async def test_t0157_sage_discover_edges_happy_path(vault_services):
         )
     )
 
-    # T-0152: sage_link returns wrapper; edge fields live under "edge".
+    # Sage_link returns wrapper; edge fields live under "edge".
     actual_source = link_result["edge"]["source_id"]
     actual_target = link_result["edge"]["target_id"]
 
@@ -1821,7 +1821,7 @@ async def test_t0157_sage_discover_edges_light_round_trips_through_serializer(va
             "test_vault",
             mode="catalog",
             target="edges",
-            # T-0152: sage_link returns wrapper; source_id is under "edge".
+            # Sage_link returns wrapper; source_id is under "edge".
             filters={"source_id": link["edge"]["source_id"]},
             response_mode="light",
         )
@@ -1887,10 +1887,10 @@ def test_t0157_retracts_edge_type_docstring_points_at_edge_discovery():
 
 
 # ---------------------------------------------------------------------------
-# T-0155: document_id alias on sage_traverse + docstring clarification on sage_link
+# Document_id alias on sage_traverse + docstring clarification on sage_link
 # ---------------------------------------------------------------------------
 #
-# Per T-0155, MCP tools should converge on `document_id` as the canonical
+# MCP tools should converge on `document_id` as the canonical
 # parameter name for "the document being operated on". sage_traverse historically
 # uses `start_id`; this section verifies that `document_id` is accepted as an
 # alias (both forms work, exactly one must be supplied). sage_link keeps its
@@ -2049,7 +2049,7 @@ def test_t0155_set_lifecycle_docstring_clarifies_successor_id_shape():
     `successor_id` as a `documents.id` / `document_id` value.
     Parallel-pattern guard: `successor_id` is a semantic-role
     document-id parameter analogous to source_id/target_id on
-    sage_link; the same docstring clarification applies (T-0155
+    sage_link; the same docstring clarification applies (
     principle, surfaced via F4 review).
     """
     import re

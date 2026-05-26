@@ -1,4 +1,4 @@
-"""T-0152: bulk-tool dry-run plumbing (`bulk_update_metadata`, `bulk_set_lifecycle`).
+"""Bulk-tool dry-run plumbing (`bulk_update_metadata`, `bulk_set_lifecycle`).
 
 Three test categories per the plan:
 
@@ -227,14 +227,14 @@ async def test_bulk_metadata_dry_run_mixed_results_same_shape_as_real(
 
 
 # ---------------------------------------------------------------------------
-# (G) T-0163 `changes` block — per-item dry-run deltas
+# (G) `changes` block — per-item dry-run deltas
 # ---------------------------------------------------------------------------
 
 
 async def test_bulk_update_metadata_dry_run_per_item_changes_populated(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
 ):
-    """T-0163: each per-item dry-run success carries a `changes` block
+    """Each per-item dry-run success carries a `changes` block
     derived from that item's patch. Item N's changes match item N's
     patch, not item N+1's — verifies the bulk wrapper passes the
     per-item changes through, not a shared/lumped value."""
@@ -296,7 +296,7 @@ async def test_bulk_update_metadata_dry_run_per_item_changes_populated(
 async def test_bulk_set_lifecycle_dry_run_per_item_changes_populated(
     graph_store, lifecycle_service, stub_content_store
 ):
-    """T-0163: each per-item lifecycle dry-run carries a one-entry
+    """Each per-item lifecycle dry-run carries a one-entry
     `changes` block for `lifecycle_status`."""
     doc_a = _make_doc(_id("doc_bulk_changes_a"))
     doc_b = _make_doc(_id("doc_bulk_changes_b"))
@@ -336,7 +336,7 @@ async def test_bulk_set_lifecycle_dry_run_per_item_changes_populated(
 async def test_bulk_dry_run_changes_preserved_under_response_mode_light(
     graph_store, lifecycle_service, stub_content_store
 ):
-    """T-0163: `changes` is preserved under `response_mode=light`. With
+    """`changes` is preserved under `response_mode=light`. With
     a 6-item batch the default is LIGHT (LIGHT_DEFAULT_THRESHOLD=5), so
     per-item `document` is dropped but `changes` survives — it's small
     and is the most useful summary for dry-run callers.
@@ -366,7 +366,7 @@ async def test_bulk_dry_run_changes_preserved_under_response_mode_light(
     for item in response.results:
         # Light mode dropped the document body (proves light fired).
         assert item.document is None
-        # But changes survived — that's the T-0163 contract.
+        # But changes survived — that's the contract.
         assert item.changes is not None
         assert len(item.changes) == 1
         assert item.changes[0].path == "lifecycle_status"
@@ -376,7 +376,7 @@ async def test_bulk_dry_run_changes_preserved_under_response_mode_light(
 async def test_bulk_set_lifecycle_real_run_per_item_changes_absent(
     graph_store, lifecycle_service, stub_content_store
 ):
-    """T-0163: real-run bulk lifecycle responses carry `changes=None`
+    """Real-run bulk lifecycle responses carry `changes=None`
     on every per-item result."""
     doc = _make_doc(_id("doc_bulk_realrun"))
     await graph_store.insert_document(doc)
@@ -397,7 +397,7 @@ async def test_bulk_set_lifecycle_real_run_per_item_changes_absent(
 async def test_bulk_update_metadata_real_run_per_item_changes_absent(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0163: real-run bulk metadata responses carry `changes=None`
+    """Real-run bulk metadata responses carry `changes=None`
     on every per-item result."""
     _write_md(tmp_vault_dir, "real.md", "# Real\n\nBody.")
     initial = await tier3_ingestion_service.ingest(

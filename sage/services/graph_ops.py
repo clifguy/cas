@@ -202,7 +202,7 @@ class GraphOpsService:
         are not silently ignored on inapplicable types — they are a
         structural error.
 
-        ``synced_from_version`` chain-membership (T-0111):
+        ``synced_from_version`` chain-membership:
         When set, ``synced_from_version`` must be a member of the
         target document's ``supersedes`` chain (the target itself or
         any predecessor reachable by walking outbound ``supersedes``
@@ -223,11 +223,11 @@ class GraphOpsService:
 
         Raises ``sqlite3.IntegrityError`` if an edge with the same
         natural-key triple (source_id, target_id, edge_type) already
-        exists (T-0079 unique constraint). For idempotent semantics
+        exists (unique constraint). For idempotent semantics
         (no-op on duplicate, return existing edge), use
         ``link_idempotent``.
 
-        T-0152: ``request.dry_run`` makes the call a preview — same
+        ``request.dry_run`` makes the call a preview — same
         validators run, but no edge is inserted. The response carries
         the would-be edge with the nil-UUID sentinel id and
         ``dry_run=True``.
@@ -237,7 +237,7 @@ class GraphOpsService:
     async def link_idempotent(self, request: LinkRequest) -> tuple[Edge, bool]:
         """Idempotent variant of ``link``. Returns ``(edge, created)``.
 
-        Under T-0079, the edges table carries a UNIQUE constraint on
+        Under, the edges table carries a UNIQUE constraint on
         ``(source_id, target_id, edge_type)``. ``link_idempotent`` swallows
         the duplicate-key error and returns the pre-existing edge with
         ``created=False``. The caller's rationale and notes are discarded
@@ -257,7 +257,7 @@ class GraphOpsService:
         tool (which wraps the tuple in a ``LinkResponse`` to surface
         ``existing_rationale`` and the ``dry_run`` echo).
 
-        T-0152: when ``request.dry_run`` is True, the T-0079 natural-key
+        When ``request.dry_run`` is True, the natural-key
         pre-check is performed in the application layer so the dry-run
         path surfaces the no-op outcome without ever touching storage.
         The would-be edge on the create path carries the nil-UUID
@@ -267,10 +267,10 @@ class GraphOpsService:
         return response.edge, response.created
 
     async def bulk_link(self, request: BulkLinkRequest) -> BulkLinkResponse:
-        """Apply one edge-creation request per item (T-0165).
+        """Apply one edge-creation request per item.
 
         Each item is dispatched through ``link_idempotent`` so the
-        per-item natural-key idempotency contract (T-0079) is preserved:
+        per-item natural-key idempotency contract is preserved:
         a duplicate request returns the existing edge with
         ``created=False`` and ``existing_rationale`` populated, rather
         than raising. The batch is NOT atomic (CAS-ADR-029): a SAGEError
@@ -297,7 +297,7 @@ class GraphOpsService:
         asyncio scheduling between items; the process-wide ``_link_lock``
         and the per-item SQLite transaction are unchanged.
 
-        ``request.response_mode`` (T-0153) controls per-item payload
+        ``request.response_mode`` controls per-item payload
         depth. ``light`` drops the per-item ``edge`` body from success
         entries; failure entries always carry the full structured error
         envelope. The ``created`` and ``existing_rationale`` fields are
@@ -307,7 +307,7 @@ class GraphOpsService:
         with more than ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to
         ``light``, smaller batches default to ``full``.
         """
-        # T-0153: resolve the effective response_mode by batch size, the
+        # Resolve the effective response_mode by batch size, the
         # same rule the sibling bulk mutation tools use. Batches that
         # cross the threshold default to light so the response stays
         # inside the MCP inline-output budget; smaller batches keep the
@@ -334,7 +334,7 @@ class GraphOpsService:
                 rationale_kind=item.rationale_kind,
                 synced_from_version=item.synced_from_version,
                 synced_from_content_hash=item.synced_from_content_hash,
-                # T-0152: propagate envelope dry_run to each per-item
+                # Propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported (CAS-ADR-029).
                 dry_run=request.dry_run,
             )
@@ -346,7 +346,7 @@ class GraphOpsService:
                         target_id=item.target_id,
                         edge_type=item.edge_type,
                         status="success",
-                        # T-0153 light mode: drop the edge body. Caller
+                        # light mode: drop the edge body. Caller
                         # still has source_id/target_id/edge_type echoed,
                         # plus the created flag and existing_rationale,
                         # which are the only natural-key idempotency
@@ -372,7 +372,7 @@ class GraphOpsService:
             success_count=success_count,
             error_count=len(results) - success_count,
             total=len(results),
-            # T-0152: envelope echo so callers can confirm the batch ran
+            # Envelope echo so callers can confirm the batch ran
             # as a preview even when every per-item edge was dropped
             # under light response_mode.
             dry_run=request.dry_run,
@@ -385,8 +385,8 @@ class GraphOpsService:
         propagate. ``on_conflict="noop"`` translates it into a return of
         the pre-existing edge with ``created=False``.
 
-        T-0152: honors ``request.dry_run``. When True, runs every
-        validator and the T-0079 natural-key pre-check, then returns
+        Honors ``request.dry_run``. When True, runs every
+        validator and the natural-key pre-check, then returns
         either a ``LinkResponse`` for the no-op path (if an edge
         already exists) or for the would-be-create path (with the
         nil-UUID sentinel id). No persistence.
@@ -435,7 +435,7 @@ class GraphOpsService:
 
             self._validate_anchors_from_context(request, policy, ctx)
 
-            # T-0111: when synced_from_version is set on a sync_target /
+            # When synced_from_version is set on a sync_target /
             # derived_from edge, verify the recorded id is a member of
             # the target_id's supersedes chain. Catches both "wrong
             # document" (id exists but not in this chain) and "dangling
@@ -465,17 +465,17 @@ class GraphOpsService:
                         synced_from_version=request.synced_from_version,
                     )
 
-            # T-0152: T-0079 natural-key pre-check — DRY-RUN ONLY. The
+            # natural-key pre-check — DRY-RUN ONLY. The
             # storage uniqueness constraint never fires on dry-run
             # (no insert happens), so without this pre-check a dry-run
             # would silently report ``created=True`` for what would
             # actually be a real-run no-op. Real-run does not need
             # this pre-check: the IntegrityError path below already
             # handles the dup case correctly (and adding the read
-            # here on every real-run link broke the T-0079 executor-
+            # here on every real-run link broke the executor-
             # submission bound). Note: ``target_id`` may be null on
             # retracts edges; the natural-key triple is meaningless
-            # for those (T-0079 constraint allows null target_id), so
+            # for those (constraint allows null target_id), so
             # skip even in dry-run.
             if request.dry_run and request.target_id is not None:
                 existing = await self._store.find_edge_by_natural_key(
@@ -501,10 +501,10 @@ class GraphOpsService:
                         f"{request.edge_type.value})"
                     )
 
-            # T-0080: prefer the caller-supplied rationale_kind; otherwise
+            # Prefer the caller-supplied rationale_kind; otherwise
             # derive from the rationale-text prefix and fall back to MANUAL.
             rationale_kind = request.rationale_kind or derive_rationale_kind(request.rationale)
-            # T-0152: mint the sentinel id on dry-run so callers can
+            # Mint the sentinel id on dry-run so callers can
             # never mistake the preview edge for a persisted one.
             edge_id = _DRY_RUN_SENTINEL_EDGE_ID if request.dry_run else str(uuid.uuid4())
             edge = Edge(
@@ -525,7 +525,7 @@ class GraphOpsService:
                 synced_from_content_hash=request.synced_from_content_hash,
             )
 
-            # T-0152: dry-run returns the would-be edge without writing.
+            # Dry-run returns the would-be edge without writing.
             # All validators above have already run in the same order
             # as a real run.
             if request.dry_run:
@@ -539,7 +539,7 @@ class GraphOpsService:
             if request.edge_type == EdgeType.MERGED_FROM:
                 # merge_atomic is transaction-critical (couples the
                 # merged_from insert with tombstone updates). The
-                # T-0079 storage layer does NOT noop inside the
+                # storage layer does NOT noop inside the
                 # atomic op; the duplicate-key path rolls back the
                 # whole transaction and we recover here by looking
                 # up the existing merged_from edge to honor the
@@ -589,7 +589,7 @@ class GraphOpsService:
         edge_type = request.edge_type
         offending: list[str] = []
 
-        # T-0111: synced_from_* fields are only meaningful on sync_target
+        # Synced_from_* fields are only meaningful on sync_target
         # (Tier 1) and derived_from (Tier 3). Reject any other edge type
         # carrying these fields; this is a pure-field gate independent
         # of policy, so it fires before any policy branch.
@@ -810,7 +810,7 @@ class GraphOpsService:
     async def unlink(self, edge_id: str, dry_run: bool = False) -> UnlinkResponse:
         """Delete a production edge by ID (or preview the deletion on dry-run).
 
-        T-0152: when ``dry_run`` is True, runs the same edge-existence
+        When ``dry_run`` is True, runs the same edge-existence
         validator (raising EdgeNotFoundError when absent) but skips
         ``delete_edge``. The response carries ``deleted=False``,
         ``dry_run=True``, and ``preview_edge`` set to the edge that
@@ -931,7 +931,7 @@ class GraphOpsService:
         # query at the merge point still surfaces the edge).
         filtered = await self._apply_tombstones(filtered, request.start_id, cache, recorder)
 
-        # T-0079: collapse multi-path traversal hits by doc_id. With the
+        # Collapse multi-path traversal hits by doc_id. With the
         # UNIQUE (source_id, target_id, edge_type) constraint enforced
         # at the storage layer, there is at most one edge per
         # natural-key triple, so the historical "pick most recent edge"
@@ -955,7 +955,7 @@ class GraphOpsService:
             representative = rows[0]
             min_depth = min(r["depth"] for r in rows)
 
-            # T-0118: route CTE-row -> DocumentSummary projection through
+            # Route CTE-row -> DocumentSummary projection through
             # the single owning factory ``DocumentSummary.from_traversal_row``
             # per the *CAS Projection-Point Audit Conventions* steering
             # document. Field additions to DocumentSummary are now structurally
@@ -974,7 +974,7 @@ class GraphOpsService:
             # the tombstone field (valid_until_version) silently
             # default to None on traversal-returned edges regardless of
             # what is stored. The rationale_kind drop was a documented
-            # T-0080 regression; the four parallel fields had the same
+            # regression; the four parallel fields had the same
             # defect, fixed here in the same pass.
             # Read every storage-layer edge field that ``_traverse_sync``
             # carries through its row dict; without this, the CAS-ADR-017
@@ -982,10 +982,10 @@ class GraphOpsService:
             # the tombstone field (valid_until_version) silently
             # default to None on traversal-returned edges regardless of
             # what is stored. The rationale_kind drop was a documented
-            # T-0080 regression; the four parallel fields had the same
+            # regression; the four parallel fields had the same
             # defect, fixed here in the same pass.
             #
-            # BH-101 (T-0124): excluded projection point.
+            # BH-101: excluded projection point.
             #
             # This inline ``Edge`` construction deliberately bypasses the
             # canonical factory ``GraphStore._row_to_edge``
@@ -1006,7 +1006,7 @@ class GraphOpsService:
             # exclusions"). The structural guard against field-addition
             # drift between this inline path and ``_row_to_edge`` is the
             # parity test ``test_edge_cte_row_parity_with_row_to_edge``
-            # in ``tests/sage/test_graph_ops.py`` (T-0124): when a field
+            # in ``tests/sage/test_graph_ops.py``: when a field
             # is added to ``Edge`` and wired through one path but not the
             # other, the parity test trips. Any modification to this
             # construction must keep the two paths field-equivalent or
@@ -1445,8 +1445,8 @@ class GraphOpsService:
         # root (newest/head).
         #
         # For supersedes: source supersedes target, so edge direction is
-        # newer->older.  Roots (no predecessors) are the newest documents.
-        # Walking successors goes backward in time.  Reversing gives
+        # newer->older. Roots (no predecessors) are the newest documents.
+        # Walking successors goes backward in time. Reversing gives
         # oldest-first ordering.
         roots = [d for d in doc_map if not predecessors.get(d)]
 

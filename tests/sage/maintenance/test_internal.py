@@ -1,8 +1,8 @@
 """Direct unit tests for the shared per-document purge helper.
 
-T-0105 and T-0106 both call ``_purge_one``. The two call sites diverge
-in whether they pass a ``batch_id``: T-0105 passes ``None`` (single-doc,
-no batch concept) and T-0106 passes a UUID shared across every
+and both call ``_purge_one``. The two call sites diverge
+in whether they pass a ``batch_id``: passes ``None`` (single-doc,
+no batch concept) and passes a UUID shared across every
 document in the batch. The helper must honour that distinction in the
 audit-log shape, otherwise the single-doc audit format leaks a
 spurious ``batch_id`` field.
@@ -185,7 +185,7 @@ async def test_purge_one_omits_batch_id_when_none(helper_vault):
 
     Anti-coincidental-pass guard for the H2 trap: a helper that always
     injects a batch_id (defaulting to a fresh UUID) would silently break
-    the T-0105 single-doc audit format. This test catches that.
+    the single-doc audit format. This test catches that.
     """
     conn = sqlite3.connect(helper_vault["sqlite_path"])
     try:

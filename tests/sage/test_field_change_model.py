@@ -1,4 +1,4 @@
-"""T-0163: `FieldChange` model contract tests.
+"""`FieldChange` model contract tests.
 
 `FieldChange` is the per-entry shape for the `changes` block on dry-run
 responses across `UpdateMetadataResponse`, `SetLifecycleResponse`,
@@ -16,7 +16,7 @@ from sage.models.schemas import FieldChange
 
 
 def test_field_change_model_rejects_extra_fields():
-    """T-0163: FieldChange uses extra='forbid'. An unrecognized field
+    """FieldChange uses extra='forbid'. An unrecognized field
     must raise ValidationError, not be silently dropped — otherwise
     callers parsing dry-run responses can stash arbitrary keys and
     we lose the contract.
@@ -28,7 +28,7 @@ def test_field_change_model_rejects_extra_fields():
 
 
 def test_field_change_model_round_trip_serialization():
-    """T-0163: before/after are Any-typed; serialization must round-trip
+    """Before/after are Any-typed; serialization must round-trip
     for scalar, list (the tags shape), and None (absent-key dry-run
     semantics)."""
     # Scalar variant (tier3 per-key change).

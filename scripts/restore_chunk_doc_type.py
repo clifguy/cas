@@ -12,7 +12,7 @@ the vault. Search queries with ``filters={"doc_type": "..."}`` then
 returned zero hits because no chunks had a doc_type value to match.
 
 This script repairs the column by issuing per-document
-``table.update(values={"doc_type": ...}, where="document_id = '...'")``
+``table.update(values={"doc_type":...}, where="document_id = '...'")``
 calls. The doc_type column is not FTS-indexed, so updates do not trigger
 an FTS rebuild — the operation is fast (no embedding compute, no FTS).
 

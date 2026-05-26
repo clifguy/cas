@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backfill the synthetic document-header chunk for every document in a vault (T-0038, F9).
+"""Backfill the synthetic document-header chunk for every document in a vault (F9).
 
 Rewrites the chunks of every document so that:
   - Body chunk[0]'s ``content`` no longer carries the inlined identity
@@ -12,7 +12,7 @@ Rewrites the chunks of every document so that:
     ``heading_path = SYNTHETIC_HEADER_HEADING_PATH``, carrying title +
     source filename stem + tags + semantic_abstract + a case-split
     identifier-token line. This chunk is what makes BM25 match natural-
-    language queries against CamelCase compound identifiers (T-0038).
+    language queries against CamelCase compound identifiers.
 
 Idempotent: re-running on an already-migrated vault writes the same
 synthetic header (any drift in title/abstract gets picked up).
@@ -55,7 +55,7 @@ def _truncate(s: str | None, n: int) -> str:
 
 
 def _build_old_preamble(doc) -> str:
-    """Reconstruct the pre-T-0038 ``_build_search_preamble`` output from
+    """Reconstruct the pre-``_build_search_preamble`` output from
     current document metadata. Used to strip the inlined preamble from
     chunk[0] during backfill.
 
@@ -180,7 +180,7 @@ async def rebuild_with_services(
             for idx, emb in zip(re_embed_indices, new_embeddings):
                 rebuilt[idx] = replace(rebuilt[idx], embedding=emb)
 
-        # Build the fresh synthetic header chunk (T-0038).
+        # Build the fresh synthetic header chunk.
         header = Chunk(
             document_id=doc.id,
             heading_path=SYNTHETIC_HEADER_HEADING_PATH,
@@ -266,7 +266,7 @@ def main() -> None:
             "document in a vault (T-0038, F9). See script docstring."
         )
     )
-    parser.add_argument("vault_id", help="Vault id (e.g. pim_health)")
+    parser.add_argument("vault_id", help="Vault id (e.g. example_vault)")
     parser.add_argument(
         "--execute",
         action="store_true",

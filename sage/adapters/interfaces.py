@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 # Reserved heading_path marker for the per-document synthetic header chunk
 # carrying title, source filename stem, tags, semantic_abstract, and
-# case-split identifier tokens (T-0038, F9). Body chunks never use this
+# case-split identifier tokens (F9). Body chunks never use this
 # marker; backfill and stage-3 refresh match on it via equality.
 SYNTHETIC_HEADER_HEADING_PATH = "__document_header__"
 
@@ -54,7 +54,7 @@ class ContentStore(ABC):
         with ``heading_path == SYNTHETIC_HEADER_HEADING_PATH``. Body chunks
         for the document are not touched. Used by Stage 3 abstraction
         completion and reabstract to refresh the header once
-        ``semantic_abstract`` is populated (T-0038).
+        ``semantic_abstract`` is populated.
         """
 
     @abstractmethod
@@ -70,9 +70,9 @@ class ContentStore(ABC):
     ) -> list[SearchResult]:
         """Vector similarity search.
 
-        filters: optional pre-filter predicates (e.g. {"doc_type": "patent_draft"}).
+        filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings
-        (IN clause).  When provided, only chunks matching all predicates
+        (IN clause). When provided, only chunks matching all predicates
         are searched.
         """
 
@@ -85,9 +85,9 @@ class ContentStore(ABC):
     ) -> list[SearchResult]:
         """BM25 keyword search.
 
-        filters: optional pre-filter predicates (e.g. {"doc_type": "patent_draft"}).
+        filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings
-        (IN clause).  When provided, only chunks matching all predicates
+        (IN clause). When provided, only chunks matching all predicates
         are searched.
         """
 

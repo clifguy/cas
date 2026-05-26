@@ -121,25 +121,25 @@ async def test_bh043_both_view_dimensions_generated(
     storage_root = Path(minimal_config.vault.storage_root)
 
     # Create source files and documents
-    _create_source_file(storage_root, "patents/doc_a.md")
-    _create_source_file(storage_root, "patents/doc_b.md")
+    _create_source_file(storage_root, "reports/doc_a.md")
+    _create_source_file(storage_root, "reports/doc_b.md")
     _create_source_file(storage_root, "glossaries/doc_c.md")
 
     await _insert_test_document(
         graph_store,
         _id("doc_a"),
         "Doc A",
-        "patents/doc_a.md",
+        "reports/doc_a.md",
         lifecycle_status="active",
-        doc_type="patent",
+        doc_type="report",
     )
     await _insert_test_document(
         graph_store,
         _id("doc_b"),
         "Doc B",
-        "patents/doc_b.md",
+        "reports/doc_b.md",
         lifecycle_status="archived",
-        doc_type="patent",
+        doc_type="report",
     )
     await _insert_test_document(
         graph_store,
@@ -153,17 +153,17 @@ async def test_bh043_both_view_dimensions_generated(
     result = await utilities_service.refresh_views()
 
     assert result.vault_id == "test_vault"
-    # by_doc_type: patent, glossary = 2
+    # by_doc_type: report, glossary = 2
     # by_lifecycle: active, archived = 2
     assert result.views_generated >= 3
 
     views_root = storage_root / "views"
 
     # by_doc_type checks
-    patent_dir = views_root / "by_doc_type" / "patent"
-    assert patent_dir.exists()
-    patent_links = list(patent_dir.iterdir())
-    assert len(patent_links) == 2
+    report_dir = views_root / "by_doc_type" / "report"
+    assert report_dir.exists()
+    design_links = list(report_dir.iterdir())
+    assert len(design_links) == 2
 
     glossary_dir = views_root / "by_doc_type" / "glossary"
     assert glossary_dir.exists()
@@ -195,19 +195,19 @@ async def test_bh044_symlinks_point_to_source_files(
     """Symlinks target original source files via relative paths."""
     storage_root = Path(minimal_config.vault.storage_root)
 
-    source_file = _create_source_file(storage_root, "patents/claim_set.md")
+    source_file = _create_source_file(storage_root, "reports/claim_set.md")
     await _insert_test_document(
         graph_store,
         _id("doc_cs"),
         "Claim Set",
-        "patents/claim_set.md",
-        doc_type="patent",
+        "reports/claim_set.md",
+        doc_type="report",
     )
 
     await utilities_service.refresh_views()
 
-    patent_dir = storage_root / "views" / "by_doc_type" / "patent"
-    links = list(patent_dir.iterdir())
+    report_dir = storage_root / "views" / "by_doc_type" / "report"
+    links = list(report_dir.iterdir())
     assert len(links) == 1
 
     link = links[0]
@@ -287,7 +287,7 @@ async def test_bh046_failed_pipeline_documents_in_views(
         "Failed Doc",
         "test/failed.md",
         lifecycle_status="active",
-        doc_type="patent",
+        doc_type="report",
         pipeline_status=PipelineStatus.FAILED,
     )
 
@@ -298,9 +298,9 @@ async def test_bh046_failed_pipeline_documents_in_views(
     assert active_dir.exists()
     assert len(list(active_dir.iterdir())) == 1
 
-    patent_dir = storage_root / "views" / "by_doc_type" / "patent"
-    assert patent_dir.exists()
-    assert len(list(patent_dir.iterdir())) == 1
+    report_dir = storage_root / "views" / "by_doc_type" / "report"
+    assert report_dir.exists()
+    assert len(list(report_dir.iterdir())) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -323,19 +323,19 @@ async def test_bh047_empty_categories_no_directory(
         "Only Doc",
         "test/only.md",
         lifecycle_status="active",
-        doc_type="patent",
+        doc_type="report",
     )
 
     result = await utilities_service.refresh_views()
 
-    # Exactly 2 directories: by_doc_type/patent and by_lifecycle/active
+    # Exactly 2 directories: by_doc_type/report and by_lifecycle/active
     assert result.views_generated == 2
 
     views_root = storage_root / "views"
     doc_type_dirs = list((views_root / "by_doc_type").iterdir())
     lifecycle_dirs = list((views_root / "by_lifecycle").iterdir())
     assert len(doc_type_dirs) == 1
-    assert doc_type_dirs[0].name == "patent"
+    assert doc_type_dirs[0].name == "report"
     assert len(lifecycle_dirs) == 1
     assert lifecycle_dirs[0].name == "active"
 
@@ -425,7 +425,7 @@ async def test_filename_collision_handled(
         "Spec V1",
         "v1/spec.md",
         lifecycle_status="active",
-        doc_type="patent",
+        doc_type="report",
     )
     await _insert_test_document(
         graph_store,
@@ -433,13 +433,13 @@ async def test_filename_collision_handled(
         "Spec V2",
         "v2/spec.md",
         lifecycle_status="active",
-        doc_type="patent",
+        doc_type="report",
     )
 
     await utilities_service.refresh_views()
 
-    patent_dir = storage_root / "views" / "by_doc_type" / "patent"
-    links = sorted(patent_dir.iterdir())
+    report_dir = storage_root / "views" / "by_doc_type" / "report"
+    links = sorted(report_dir.iterdir())
     assert len(links) == 2
 
     # Both should be valid symlinks

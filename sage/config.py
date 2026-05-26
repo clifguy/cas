@@ -419,7 +419,7 @@ class VaultConfig(BaseModel):
         no metadata_schema declared. Callers in the ingestion and metadata
         services treat a None return as 'reject any tier3_metadata payload
         for this doc_type' (the strict no-loose-mode decision recorded in
-        the T-0004 implementation plan).
+        the implementation plan).
         """
         return self._tier3_validators.get(doc_type)
 
@@ -433,7 +433,7 @@ class TransitionTable:
     """
 
     def __init__(self, transitions: list[LifecycleTransition]) -> None:
-        # {from_state: [(action, to_state, creates_edge), ...]}
+        # {from_state: [(action, to_state, creates_edge),...]}
         self._table: dict[str, list[LifecycleTransition]] = {}
         self._all_actions: set[str] = set()
         for t in transitions:

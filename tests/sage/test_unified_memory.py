@@ -1,4 +1,4 @@
-"""T-0029 unified-memory helper tests.
+"""unified-memory helper tests.
 
 The helper queries macOS ``vm_stat`` and exposes the operator-tunable
 threshold that gates Qwen3 generation. These tests verify the helper

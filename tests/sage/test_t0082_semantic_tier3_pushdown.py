@@ -1,16 +1,16 @@
-"""T-0082: Push tier3_metadata filters into semantic/keyword content-store pre-filter.
+"""Push tier3_metadata filters into semantic/keyword content-store pre-filter.
 
-T-0075 pushed ``tier3_metadata`` into SQL ``json_extract`` predicates for
-catalog-mode retrieval. T-0082 closes the parallel-directory gap: the
+pushed ``tier3_metadata`` into SQL ``json_extract`` predicates for
+catalog-mode retrieval. closes the parallel-directory gap: the
 semantic and keyword retrieval paths must also resolve their tier3
 filter via the same SQL pushdown instead of the legacy
 ``list_all_documents() + Python post-filter`` pattern.
 
-The T-0076 sweep already migrated ``_content_filters()`` and
+The sweep already migrated ``_content_filters()`` and
 ``_list_filtered()`` to ``query_documents()``; that diff incidentally
-covers tier3 as well. T-0082's role is to lock in the tier3 path with
+covers tier3 as well. role is to lock in the tier3 path with
 its own coverage so a future refactor that silently regresses tier3 to
-a Python post-filter would be caught here, even if T-0076's gates
+a Python post-filter would be caught here, even if gates
 (which target project/lifecycle) still pass.
 
 Test coverage:
@@ -26,7 +26,7 @@ Test coverage:
   before any retrieval runs (symmetric with
   ``test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_schema``).
 * T4 — anti-coincidental-pass gate: semantic-mode tier3 must not call
-  ``list_all_documents()``. Symmetric with T-0076's gate but binds to
+  ``list_all_documents()``. Symmetric with gate but binds to
   the tier3 path specifically.
 """
 
@@ -187,10 +187,10 @@ async def _index_marker(
 async def _seed_tier3_vault(graph_store, content_store, embedding_provider):
     """Four doc_type=ticket docs with distinct tier3 shapes:
 
-    * d_high_ticket    -- tier3={ticket_id: T-0900, ticket_priority: high}
-    * d_medium_ticket  -- tier3={ticket_id: T-0901, ticket_priority: medium}
-    * d_no_tier3       -- tier3=None (matches None-valued filters, not "high")
-    * d_failed         -- tier3={ticket_priority: high}, pipeline=FAILED, no chunks
+    * d_high_ticket -- tier3={ticket_id:, ticket_priority: high}
+    * d_medium_ticket -- tier3={ticket_id:, ticket_priority: medium}
+    * d_no_tier3 -- tier3=None (matches None-valued filters, not "high")
+    * d_failed -- tier3={ticket_priority: high}, pipeline=FAILED, no chunks
 
     Each non-failed doc indexes one chunk containing "alpha-marker" so a
     keyword/semantic query for that term retrieves them when the tier3
@@ -275,8 +275,8 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
     t0082_retrieval_service,
 ):
     """The same tier3 filter applied in semantic mode and catalog mode
-    must return the same document set, modulo the T-0148 asymmetry on
-    ``pipeline_status=failed``. T-0082 calls behavior parity between
+    must return the same document set, modulo the asymmetry on
+    ``pipeline_status=failed``. calls behavior parity between
     modes the load-bearing assertion -- divergence on any axis other
     than the deliberate pipeline-status one means the SQL surface
     called from ``_content_filters`` has drifted from the one called
@@ -304,7 +304,7 @@ async def test_t0082_semantic_tier3_matches_catalog_tier3_result_set(
     semantic_ids = {hit.document.id for hit in semantic_resp.results}
     catalog_ids = {hit.document.id for hit in catalog_resp.results}
 
-    # T-0148: catalog enumerates failed-pipeline docs; semantic still
+    # Catalog enumerates failed-pipeline docs; semantic still
     # excludes them by BH-020. The two modes match on every other axis
     # of the tier3 filter pushdown.
     failed_id = docs["d_failed"].id
@@ -332,7 +332,7 @@ async def test_t0082_keyword_tier3_matches_semantic_tier3_result_set(
     so the tier3 pushdown applies to both. T2 binds the semantic path;
     this test binds the keyword path. Without it, a future refactor that
     splits tier3 resolution into mode-specific code paths would silently
-    miss the keyword side (T-0082 AC: 'Semantic AND keyword modes
+    miss the keyword side (AC: 'Semantic AND keyword modes
     resolve RetrievalFilters.tier3 without calling list_all_documents()')."""
     await _seed_tier3_vault(graph_store, stub_content_store, stub_embedding_provider)
 
@@ -416,8 +416,8 @@ async def test_t0082_semantic_tier3_does_not_call_list_all_documents(
     raise; the test passes iff the implementation routes tier3 through
     the SQL ``query_documents()`` call instead.
 
-    Symmetric with T-0076's gate, but binds to the tier3 path
-    specifically -- T-0076's gate uses project/lifecycle filters and
+    Symmetric with gate, but binds to the tier3 path
+    specifically -- gate uses project/lifecycle filters and
     would not catch a tier3-only regression to the Python post-filter
     pattern."""
     docs = await _seed_tier3_vault(graph_store, stub_content_store, stub_embedding_provider)

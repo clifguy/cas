@@ -1,4 +1,4 @@
-"""T-0152: `sage_link` dry-run, including the T-0079 natural-key pre-check.
+"""`sage_link` dry-run, including the natural-key pre-check.
 
 Three test categories per the plan:
 
@@ -72,8 +72,8 @@ async def test_dry_run_returns_would_be_edge_with_sentinel_id(
 async def test_dry_run_on_natural_key_collision_returns_existing_edge(
     graph_store, graph_ops_service, stub_content_store
 ):
-    """T-0079 pre-check (lifted from storage to application layer for
-    T-0152): dry-run via `link_idempotent` on a (source, target,
+    """pre-check (lifted from storage to application layer for
+    ): dry-run via `link_idempotent` on a (source, target,
     edge_type) that already has an edge returns the existing edge with
     `created=False` — same shape as the real-run no-op path.
 

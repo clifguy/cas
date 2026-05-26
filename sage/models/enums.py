@@ -2,7 +2,7 @@
 
 `LifecycleStatus` and `LifecycleAction` are intentionally absent from this
 module: vaults define domain-specific extensions to the base sets
-(e.g., `filed` in PIM Health), so both surfaces are typed as `str` and
+(e.g., `filed` in Example Portfolio), so both surfaces are typed as `str` and
 validated against vault config at the API boundary rather than at the
 Python type system.
 """
@@ -38,8 +38,8 @@ class EdgeType(StrEnum):
     `retracts` is a meta-edge pointing at an earlier edge instance that the
     retracting chain now disclaims. The retracting edge requires the
     `edge_id` of the edge it disclaims; that id is discoverable via
-    ``sage_discover(target="edges", filters={"source_id": ..., "edge_type": ...})``
-    (T-0157). `merged_from` is a meta-edge recording that a successor chain
+    ``sage_discover(target="edges", filters={"source_id":..., "edge_type":...})``
+    . `merged_from` is a meta-edge recording that a successor chain
     absorbs predecessor chains, tombstoning their downstream edges.
     """
 
@@ -61,7 +61,7 @@ class RationaleKind(StrEnum):
 
     Promoted from the rationale-text prefix convention introduced in
     CAS-ADR-019 (auto edge inference may delete only its own edges) to a
-    typed, indexed column on the edges table (T-0080) so chain-repair and
+    typed, indexed column on the edges table so chain-repair and
     future inference rules filter via SQL rather than Python `startswith()`.
 
     `manual` is the default for edges with no recognized rationale prefix
@@ -157,7 +157,7 @@ class RetrievalScope(StrEnum):
 
 
 class RetrievalTarget(StrEnum):
-    """Discriminates whether ``sage_discover`` enumerates documents or edges (T-0157).
+    """Discriminates whether ``sage_discover`` enumerates documents or edges.
 
     `documents` (default) preserves the historical surface: results are
     ``DiscoverHit`` rows backed by ``DocumentSummary``. `edges` switches
@@ -172,7 +172,7 @@ class RetrievalTarget(StrEnum):
 
 
 class ResponseMode(StrEnum):
-    """Payload depth for ``sage_discover`` results (T-0157, T-0153, T-0169).
+    """Payload depth for ``sage_discover`` results (,).
 
     `light` returns identity columns only and omits rationale, retraction
     envelope, and other large fields. `full` returns the complete envelope.
@@ -192,13 +192,13 @@ class ResponseMode(StrEnum):
 # stay inside the MCP inline-output budget); at or below it, default is
 # FULL (so single-item-style calls keep their contextual richness).
 #
-# Originally tied to T-0157's edge-enumeration default; T-0153 extends
+# Originally tied to edge-enumeration default; extends
 # the same rule to the bulk mutation tools (``sage_bulk_update_metadata``
-# and ``sage_bulk_set_lifecycle``). The 5-item figure comes from T-0153's
+# and ``sage_bulk_set_lifecycle``). The 5-item figure comes from
 # field-use report (a 28-item bulk_update_metadata batch overflowed the
 # MCP inline budget by returning a full ``semantic_abstract`` per item).
 #
-# The scope of this default is per-surface (see T-0158's "Scope of the
+# The scope of this default is per-surface (see "Scope of the
 # threshold-default stance" design note for why the rule is NOT applied
 # to ``sage_discover`` document-target results).
 LIGHT_DEFAULT_THRESHOLD = 5
@@ -229,7 +229,7 @@ class TraversalDirection(StrEnum):
 
 
 class ReabstractOutcome(StrEnum):
-    """Per-document outcome categories in a ReabstractReport (T-0089)."""
+    """Per-document outcome categories in a ReabstractReport."""
 
     SUCCESS = "success"
     SKIPPED_PDF = "skipped_pdf"
@@ -237,7 +237,7 @@ class ReabstractOutcome(StrEnum):
 
 
 class StalenessBasis(StrEnum):
-    """Per-edge drift classification in a DriftReport (T-0111).
+    """Per-edge drift classification in a DriftReport.
 
     Used to discriminate why a `sync_target` / `derived_from` edge appears
     in the drift report. `content_drift` is the load-bearing "stale, act

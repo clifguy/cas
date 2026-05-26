@@ -6,9 +6,9 @@ sage.migrate`` advances schemas. The serving binary refuses to start
 when a vault's schema is out of date and directs the operator here.
 
 Usage:
-    python -m sage.migrate                       # migrate every discovered vault
-    python -m sage.migrate --vault VAULT_ID      # migrate one vault
-    python -m sage.migrate --vault A --vault B   # migrate selected vaults
+    python -m sage.migrate # migrate every discovered vault
+    python -m sage.migrate --vault VAULT_ID # migrate one vault
+    python -m sage.migrate --vault A --vault B # migrate selected vaults
 """
 
 from __future__ import annotations

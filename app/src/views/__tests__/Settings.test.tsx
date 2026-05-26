@@ -16,7 +16,7 @@ import type { VaultContext } from '../../App';
 function makeVaultConfig(overrides: Partial<VaultIdentityConfig> = {}): VaultConfig {
   return {
     vault: {
-      id: 'pim_health',
+      id: 'example_vault',
       name: 'TestVault',
       description: null,
       owner: 'clif',
@@ -40,7 +40,7 @@ function ContextWrapper({ ctx }: { ctx: VaultContext }) {
   return <Outlet context={ctx} />;
 }
 
-function renderSettings(vaultId = 'pim_health') {
+function renderSettings(vaultId = 'example_vault') {
   const ctx: VaultContext = { vaultId, vault: null, vaults: [] };
   const utils = render(
     <MemoryRouter initialEntries={['/settings']}>
@@ -66,12 +66,12 @@ describe('Settings view — vault-config flow', () => {
     await waitFor(() => expect(screen.getByText('TestVault')).toBeInTheDocument());
     expect(screen.queryByText(/loading configuration/i)).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
-    expect(getVaultConfig).toHaveBeenCalledWith('pim_health');
+    expect(getVaultConfig).toHaveBeenCalledWith('example_vault');
   });
 
   it('sends a section-keyed payload to updateVaultConfig on save and renders the success affordance', async () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig());
-    vi.mocked(updateVaultConfig).mockResolvedValue({ status: 'ok', vault_id: 'pim_health', warnings: [] });
+    vi.mocked(updateVaultConfig).mockResolvedValue({ status: 'ok', vault_id: 'example_vault', warnings: [] });
     const { user } = renderSettings();
     await waitFor(() => expect(screen.getByText('TestVault')).toBeInTheDocument());
 
@@ -83,7 +83,7 @@ describe('Settings view — vault-config flow', () => {
 
     await waitFor(() => expect(updateVaultConfig).toHaveBeenCalledTimes(1));
     expect(updateVaultConfig).toHaveBeenCalledWith(
-      'pim_health',
+      'example_vault',
       { vault: expect.objectContaining({ name: 'TestVault Renamed' }) },
     );
     const [, sections] = vi.mocked(updateVaultConfig).mock.calls[0];

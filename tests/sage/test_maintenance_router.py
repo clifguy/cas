@@ -1,4 +1,4 @@
-"""HTTP integration tests for the maintenance router (T-0086).
+"""HTTP integration tests for the maintenance router.
 
 POST /sage_vaults/{vault_id}/admin/migrate.
 """

@@ -1,4 +1,4 @@
-"""Closure-pair conformance for ``initialize_services`` call sites (T-0136).
+"""Closure-pair conformance for ``initialize_services`` call sites.
 
 This module gates the closure-pair invariant declared in
 ``sage/mcp_init.py`` as ``REQUIRED_TRANSPORT_KWARGS``: every
@@ -7,10 +7,10 @@ each kwarg listed in the canonical set. Six call sites are surveyed:
 
   Transport lifespans / one-shot entrypoints
   ------------------------------------------
-  - ``sage/mcp_server.py:_lifespan``         -- MCP standalone lifespan
+  - ``sage/mcp_server.py:_lifespan`` -- MCP standalone lifespan
   - ``sage/mcp_server.py:sage_reload_vault`` -- MCP reload tool
-  - ``sage/app.py:_initialize_vault``        -- FastAPI lifespan
-  - ``sage/migrate.py:_migrate_vault``       -- standalone schema-migration CLI
+  - ``sage/app.py:_initialize_vault`` -- FastAPI lifespan
+  - ``sage/migrate.py:_migrate_vault`` -- standalone schema-migration CLI
 
   Feature-operation call sites (reachable via FastAPI routers + MCP tools)
   -----------------------------------------------------------------------
@@ -19,10 +19,10 @@ each kwarg listed in the canonical set. Six call sites are surveyed:
   - ``sage/services/vault_registry.py:VaultRegistryService.create_vault``
       (FastAPI POST-create-vault + MCP sage_create_vault)
 
-Pattern: same shape as ``tests/sage/test_router_conformance.py`` (T-0002).
+Pattern: same shape as ``tests/sage/test_router_conformance.py``.
 One ``TRANSPORT_SURFACES`` tuple declares the surface; one parametrized
 test walks it. Closure-pair pattern per the *CAS Projection-Point Audit
-Conventions* (T-0109), applied to a non-projection-point surface.
+Conventions*, applied to a non-projection-point surface.
 
 Exclusion: ``sage/app.py:_initialize_services`` (the test-only backcompat
 helper, ~10 callers across ``tests/app/`` and ``tests/sage/``) is
@@ -187,11 +187,11 @@ async def _drive_mcp_reload(
 ) -> list[dict]:
     """Drive sage.mcp_server.sage_reload_vault.
 
-    T-0183: sage_reload_vault now delegates to
+    Sage_reload_vault now delegates to
     ``sage.mcp_init.reload_vault_in_registry``, which calls
     ``initialize_services`` from its own module namespace and builds the
     stack abstraction provider locally. The driver therefore patches both
-    in ``sage.mcp_init`` (the post-T-0183 call site), not in
+    in ``sage.mcp_init`` (the post-call site), not in
     ``sage.mcp_server``.
     """
     vault_root = tmp_path / "vault_root"
@@ -211,7 +211,7 @@ async def _drive_mcp_reload(
         captured.append(kwargs)
         return _FakeServices(config)
 
-    # T-0183: post-delegation, the live call to initialize_services and
+    # Post-delegation, the live call to initialize_services and
     # build_stack_abstraction_provider happens inside reload_vault_in_registry
     # (sage.mcp_init), not at the import binding in sage.mcp_server.
     monkeypatch.setattr("sage.mcp_init.initialize_services", capturing_init)

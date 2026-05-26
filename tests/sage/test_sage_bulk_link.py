@@ -1,14 +1,14 @@
-"""MCP tool tests for sage_bulk_link (T-0165).
+"""MCP tool tests for sage_bulk_link.
 
 Exercises the boundary contract (vault_id and per-item shape validation,
 registry membership check, round-trip of BulkLinkResponse through the
 MCP serialize path), the per-item error-code parity with sage_link, the
-T-0079 natural-key idempotency on each item, the T-0152/T-0163 dry-run
-discipline, and the T-0158/T-0153 response_mode rules.
+natural-key idempotency on each item, the/dry-run
+discipline, and the/response_mode rules.
 
 Each group mirrors the conventions established by
 test_sage_bulk_set_lifecycle.py and test_sage_bulk_update_metadata.py
-(per CAS-ADR-029) and test_link_dry_run.py (per T-0152).
+(per CAS-ADR-029) and test_link_dry_run.py ( ).
 """
 
 from __future__ import annotations
@@ -231,9 +231,9 @@ async def test_a6_mcp_tool_invalid_response_mode_rejected_up_front(seeded_mcp_va
 # For each error code, the test seeds the documents and edge state
 # needed to trigger it, includes the offending item alongside one valid
 # item, and asserts:
-#   (1) the offending item's `error.error` code matches the named code,
-#   (2) the valid item committed (proves the batch did not short-circuit),
-#   (3) the offending item's edge did NOT commit.
+# (1) the offending item's `error.error` code matches the named code,
+# (2) the valid item committed (proves the batch did not short-circuit),
+# (3) the offending item's edge did NOT commit.
 # ---------------------------------------------------------------------------
 
 
@@ -377,7 +377,7 @@ async def test_b6_document_not_found_target_per_item(seeded_mcp_vault):
 
 
 # ---------------------------------------------------------------------------
-# Group C — Idempotency (T-0079) & mixed batches
+# Group C — Idempotency & mixed batches
 # ---------------------------------------------------------------------------
 
 
@@ -468,7 +468,7 @@ async def test_c3_mixed_batch_partial_success_envelope_is_success(seeded_mcp_vau
 
 
 # ---------------------------------------------------------------------------
-# Group D — Dry-run (T-0152 / T-0163)
+# Group D — Dry-run (/)
 # ---------------------------------------------------------------------------
 
 
@@ -513,7 +513,7 @@ async def test_d2_dry_run_persists_no_edges(seeded_mcp_vault, stub_content_store
 async def test_d3_dry_run_error_parity_per_item(seeded_mcp_vault):
     """D3 — A per-item error envelope from dry-run is byte-identical to
     the per-item error envelope from a real run for the same input
-    (T-0152 same-validator-paired contract)."""
+    (same-validator-paired contract)."""
     vault_id, ids, _services = seeded_mcp_vault
     items = [_ref_item(ids[0], ids[0])]  # self-ref
 
@@ -533,7 +533,7 @@ async def test_d4_dry_run_natural_key_collision_returns_existing_edge_with_creat
 ):
     """D4 — On a natural-key collision, dry-run returns the existing
     edge id (NOT the sentinel) with created=False. Anti-coincidental:
-    without the T-0152 pre-check, dry-run would silently mint a
+    without the pre-check, dry-run would silently mint a
     sentinel and report created=True even though a real run would
     no-op."""
     vault_id, ids, services = seeded_mcp_vault
@@ -572,7 +572,7 @@ async def test_d5_dry_run_envelope_carries_dry_run_true(seeded_mcp_vault):
 
 
 # ---------------------------------------------------------------------------
-# Group E — response_mode (T-0158 / T-0153)
+# Group E — response_mode (/)
 # ---------------------------------------------------------------------------
 
 

@@ -71,15 +71,15 @@ def vault_root(tmp_path) -> Path:
 
 def test_discovers_vaults_under_root(vault_root, minimal_vault_config_dict):
     """#1: Returns vault_config.yaml paths for every qualifying subdir."""
-    _materialize_vault(vault_root, "pim_health", minimal_vault_config_dict)
-    _materialize_vault(vault_root, "theology", minimal_vault_config_dict)
+    _materialize_vault(vault_root, "example_vault", minimal_vault_config_dict)
+    _materialize_vault(vault_root, "editorial", minimal_vault_config_dict)
 
     result = discover_vault_configs(vault_root)
 
     assert len(result) == 2
     assert all(p.name == "vault_config.yaml" for p in result)
     parents = {p.parent.name for p in result}
-    assert parents == {"pim_health", "theology"}
+    assert parents == {"example_vault", "editorial"}
 
 
 def test_empty_root_returns_empty_list(vault_root):
@@ -120,7 +120,7 @@ def test_loose_file_at_root_is_ignored(vault_root, minimal_vault_config_dict):
 
 
 def test_hidden_directories_are_skipped(vault_root, minimal_vault_config_dict):
-    """#6: Dot-prefixed dirs (e.g., .DS_Store) are not treated as vaults."""
+    """#6: Dot-prefixed dirs (e.g.,.DS_Store) are not treated as vaults."""
     _materialize_vault(vault_root, "real_vault", minimal_vault_config_dict)
 
     # Materialize a hidden directory that *does* contain a vault_config.yaml
@@ -262,7 +262,7 @@ async def test_create_app_with_in_memory_config_still_works(minimal_config, monk
 async def test_lifespan_forwards_config_path_to_initialize_services(
     vault_root, minimal_vault_config_dict, monkeypatch
 ):
-    """#14: T-0052/F10 regression — the vault_root= lifespan branch must forward
+    """#14:/F10 regression — the vault_root= lifespan branch must forward
     each discovered config path to ``_initialize_vault`` so it lands on
     ``SAGEServices.config_path``. Without it, ``sage_reload_vault`` falls into
     the in-memory-config branch and silently no-ops on on-disk YAML edits.
@@ -336,8 +336,8 @@ async def test_f10_reload_round_trips_on_disk_yaml_edit_through_lifespan(
 ):
     """#16: F10 invariant — the documented contract for ``sage_reload_vault``
     is "after returning ``reloaded: true``, the caller's next read sees the
-    on-disk state." T-0052 wired ``config_path`` through the FastAPI lifespan
-    so the reload tool can re-read the YAML; T-0053 added the
+    on-disk state." wired ``config_path`` through the FastAPI lifespan
+    so the reload tool can re-read the YAML; added the
     ``content_store_factory`` hook so this test can drive that path end-to-end
     without LanceDB / Nomic / Qwen3 initialization.
 

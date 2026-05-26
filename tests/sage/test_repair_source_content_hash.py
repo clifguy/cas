@@ -3,7 +3,7 @@
 Exercises the service-level entry point ``repair_with_services`` against
 a real graph store fixture. The script normalizes
 ``source_content_hash`` values that were persisted in bare 64-char hex
-form (pre T-0026 part 3/3) back to the ``Sha256Str`` contract
+form (pre part 3/3) back to the ``Sha256Str`` contract
 (``sha256:`` + 64 hex).
 
 Defensive contract: dry-run is the default and writes nothing; values

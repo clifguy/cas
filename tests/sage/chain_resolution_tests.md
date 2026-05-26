@@ -91,16 +91,16 @@ cases produce 400 with the documented error code.
 **Category:** valid
 **Policy:** `transitive_source`
 
-**Input:** `link(source_id=patent_v3, target_id=uspto_template_v2, edge_type=derived_from, source_valid_from_version=patent_v3)`
+**Input:** `link(source_id=report_v3, target_id=uspto_template_v2, edge_type=derived_from, source_valid_from_version=report_v3)`
 
-**Expected:** 201. Created Edge carries `resolution_policy: transitive_source`, `source_valid_from_version: patent_v3`, `target_valid_from_version: null`. Target anchor is inapplicable for this policy (target is frozen at derivation; version specificity is already carried by `target_id`). Standard null-means-not-applicable semantics per CAS-ADR-017.
+**Expected:** 201. Created Edge carries `resolution_policy: transitive_source`, `source_valid_from_version: report_v3`, `target_valid_from_version: null`. Target anchor is inapplicable for this policy (target is frozen at derivation; version specificity is already carried by `target_id`). Standard null-means-not-applicable semantics per CAS-ADR-017.
 
 ### TEST-SAGE-CR-006: transitive_source edge with target anchor explicitly supplied — rejected
 
 **Category:** invalid
 **Policy:** `transitive_source`
 
-**Input:** `link(source_id=patent_v3, target_id=uspto_template_v2, edge_type=derived_from, source_valid_from_version=patent_v3, target_valid_from_version=uspto_template_v1)` (caller tried to set target anchor away from target_id).
+**Input:** `link(source_id=report_v3, target_id=uspto_template_v2, edge_type=derived_from, source_valid_from_version=report_v3, target_valid_from_version=uspto_template_v1)` (caller tried to set target anchor away from target_id).
 
 **Expected:** 400 `EDGE_ANCHOR_POLICY_VIOLATION`. Target anchor is frozen at derivation and must equal target_id; callers may not supply a different value.
 
@@ -216,14 +216,14 @@ is in play here.
 
 **Expected:** The full supersedes chain walk (a5 → a4 → a3 → a2 → a1) is returned, unaffected by any anchor logic. Policy `none` short-circuits lineage filtering.
 
-### TEST-SAGE-CR-018: transitive_source edge from patent_v4 — source anchor in lineage — surfaces
+### TEST-SAGE-CR-018: transitive_source edge from report_v4 — source anchor in lineage — surfaces
 
 **Category:** resolution
 **Policy:** `transitive_source`
 
-**Precondition:** Patent chain `patent_v1 ← v2 ← v3 ← v4`. `derived_from` edge with `source_id=patent_v3, target_id=uspto_template_v2, source_valid_from_version=patent_v3, target_valid_from_version=uspto_template_v2`.
+**Precondition:** Report chain `report_v1 ← v2 ← v3 ← v4`. `derived_from` edge with `source_id=report_v3, target_id=uspto_template_v2, source_valid_from_version=report_v3, target_valid_from_version=uspto_template_v2`.
 
-**Input:** `traverse(start_id=patent_v4, edge_type=derived_from, direction=outbound, depth=1)`.
+**Input:** `traverse(start_id=report_v4, edge_type=derived_from, direction=outbound, depth=1)`.
 
 **Expected:** Edge surfaces. Source anchor is in v4's lineage; target is frozen (not re-checked).
 
@@ -234,7 +234,7 @@ is in play here.
 
 **Precondition:** Same as CR-018. Then a new USPTO template version `uspto_template_v3` is added on the template chain (supersedes v2).
 
-**Input:** `traverse(start_id=patent_v4, edge_type=derived_from, direction=outbound, depth=1)`.
+**Input:** `traverse(start_id=report_v4, edge_type=derived_from, direction=outbound, depth=1)`.
 
 **Expected:** Edge surfaces with `target_id = uspto_template_v2` (the frozen derivation source). The resolver does NOT re-point to the current template chain head.
 

@@ -152,13 +152,13 @@ class SAGEServices:
     # the services tuple so the factory survives across reloads without
     # adding module-level mutable state. None in production.
     content_store_factory: Callable[[Path], ContentStore] | None = None
-    # T-0073: per-vault background flusher for query-timing summary records.
+    # Per-vault background flusher for query-timing summary records.
     # None when timing is disabled or when the content store was injected
     # without going through _build_vault_timers (test paths).
     timing_thread: VaultTimingThread | None = None
 
 
-# Stack-wide SAGE Core API config (CAS-ADR-030, T-0103). Loaded once at
+# Stack-wide SAGE Core API config (CAS-ADR-030). Loaded once at
 # lifespan startup; nullable to support callers (tests, in-process FastAPI
 # mounts) that construct services without invoking the standalone lifespan.
 _stack_config: SageCoreConfig | None = None
@@ -209,15 +209,15 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     opt out via ``vault.abstraction.enabled = False``.
 
     Dispatch contract:
-      1. SAGE_TEST_STUB_PROVIDERS=1               -> Stub (env override)
-      2. stack.abstraction.provider == "stub"      -> Stub (explicit opt-out)
+      1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (env override)
+      2. stack.abstraction.provider == "stub" -> Stub (explicit opt-out)
       3. stack.abstraction.provider == "qwen3-mlx"
-         and stack.abstraction.model is None       -> raise ValueError
+         and stack.abstraction.model is None -> raise ValueError
       4. stack.abstraction.provider == "qwen3-mlx"
-         and stack.abstraction.model is not None   -> Qwen3 (factory)
+         and stack.abstraction.model is not None -> Qwen3 (factory)
 
     The env override remains the topmost short-circuit so that tests
-    cannot load Qwen3 alongside the running MCP server (T-0029, F-8).
+    cannot load Qwen3 alongside the running MCP server (F-8).
     Provider/model live at stack scope because the Qwen3 provider is a
     process-wide singleton; co-locating the config with the resource
     boundary resolves the layering contradiction (ADR-030).
@@ -245,7 +245,7 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     )
 
 
-# Closure-pair invariant (T-0136): the canonical declaration of kwargs that
+# Closure-pair invariant: the canonical declaration of kwargs that
 # every transport-reachable production call site of ``initialize_services``
 # must thread. ``tests/sage/test_initialize_services_conformance.py`` walks
 # every call site (MCP standalone lifespan + reload tool in sage/mcp_server.py,
@@ -279,7 +279,7 @@ async def initialize_services(
     store) are released on a best-effort basis before the original
     exception propagates. Cleanup-time exceptions are logged but never
     re-raised — the caller sees only the original failure. This is the
-    structural counterpart to T-0183 AC2's atomicity guarantee in
+    structural counterpart to AC2's atomicity guarantee in
     ``reload_vault_in_registry``.
 
     Args:
@@ -311,7 +311,7 @@ async def initialize_services(
     Returns:
         SAGEServices dataclass with all services ready to use.
     """
-    # Transactional cleanup handles for the build-fails-midway path (T-0183).
+    # Transactional cleanup handles for the build-fails-midway path.
     # Only resources THIS function constructed are tracked here; resources
     # passed in by the caller (explicit content_store, factory-built
     # content_store) are owned by the caller and not closed on cleanup.
@@ -350,7 +350,7 @@ async def initialize_services(
         # Embedding provider: injected or production Nomic. CI sets
         # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
         # services via this path don't each load the ~270MB nomic model
-        # into a 7 GB Linux runner (T-0018). Tests that exercise the real
+        # into a 7 GB Linux runner. Tests that exercise the real
         # adapter (@requires_embedding in test_adapters.py) construct
         # NomicEmbeddingProvider directly and are unaffected.
         if embedding_provider is None:
@@ -361,15 +361,15 @@ async def initialize_services(
             else:
                 embedding_provider = get_nomic_embedding_provider()
 
-        # Abstraction provider: post CAS-ADR-030 / T-0103, the factory dispatch
+        # Abstraction provider: post CAS-ADR-030 /, the factory dispatch
         # lives in build_stack_abstraction_provider (stack scope). The per-vault
         # path here only consults the vault-scope opt-out. Precedence:
-        #   1. vault.abstraction.enabled is False        -> Stub (ADR-011 opt-in)
-        #   2. abstraction_provider injected             -> use injection
-        #   3. SAGE_TEST_STUB_PROVIDERS=1                -> Stub (belt-and-suspenders
-        #      for tests that don't go through stack startup)
-        #   4. no injection, env var unset               -> raise (production path
-        #      must thread the stack-built provider through)
+        # 1. vault.abstraction.enabled is False -> Stub (ADR-011 opt-in)
+        # 2. abstraction_provider injected -> use injection
+        # 3. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (belt-and-suspenders
+        # for tests that don't go through stack startup)
+        # 4. no injection, env var unset -> raise (production path
+        # must thread the stack-built provider through)
         if not config.abstraction.enabled:
             abstraction_provider = StubAbstractionProvider()
         elif abstraction_provider is None:
@@ -399,7 +399,7 @@ async def initialize_services(
         lifecycle_service = LifecycleService(graph_store, lock_manager, config, content_store)
         metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
         documents_service = DocumentsService(graph_store, config)
-        # T-0129: GraphOpsService is constructed before IngestionService so the
+        # GraphOpsService is constructed before IngestionService so the
         # ingestion pipeline can run identifier_mention inference (which writes
         # edges via link_idempotent) inside its Stage-2 → Stage-3 transition.
         graph_ops_service = GraphOpsService(graph_store, config)
@@ -434,7 +434,7 @@ async def initialize_services(
         # CAS-ADR-029: only construct the maintenance service when a registry
         # service is available, since migrate_vault closes-and-reopens via
         # registry_service.reload(...).
-        # T-0089: ingestion_service is wired through so reabstract_deferred can
+        # Ingestion_service is wired through so reabstract_deferred can
         # reuse the in-process AbstractionProvider (F-8 budget rule); ordering
         # matters -- ingestion_service is constructed above this block.
         maintenance_service: MaintenanceService | None = None
@@ -472,7 +472,7 @@ async def initialize_services(
             timing_thread=timing_thread,
         )
     except BaseException:
-        # T-0183 AC2 + Risk: release partially-allocated resources without
+        # AC2 + Risk: release partially-allocated resources without
         # masking the original exception. BaseException (not Exception) is
         # deliberate — KeyboardInterrupt and asyncio.CancelledError between
         # _build_vault_timers and the return statement would otherwise leak
@@ -509,7 +509,7 @@ async def reload_vault_in_registry(
     config_path: Path | None = None,
     registry_service: "VaultRegistryService | None" = None,
 ) -> SAGEServices:
-    """Atomically swap a vault's services in the registry (T-0183).
+    """Atomically swap a vault's services in the registry.
 
     Build-new-first ordering: constructs the new services completely, then
     closes the old services and installs the new ones in the registry. If
@@ -542,7 +542,7 @@ async def reload_vault_in_registry(
     # (test paths that exercise reload directly).
     stack_provider = build_stack_abstraction_provider(get_stack_config())
 
-    # T-0183: build new BEFORE touching old. If initialize_services raises,
+    # Build new BEFORE touching old. If initialize_services raises,
     # ``old`` remains installed in the registry and fully functional. The
     # exception propagates; partial-allocation cleanup inside
     # initialize_services releases timing_thread / graph_store /

@@ -223,7 +223,7 @@ async def test_link_201(app, client):
     )
     assert resp3.status_code == 201
     body = resp3.json()
-    # T-0152: link router now returns LinkResponse wrapper; edge
+    # Link router now returns LinkResponse wrapper; edge
     # fields live under "edge".
     assert body["dry_run"] is False
     assert body["created"] is True
@@ -352,7 +352,7 @@ async def test_discover_semantic_missing_query_422(client):
 
 
 # ---------------------------------------------------------------------------
-# Retrieval: discover — ADR-028 error envelope on parameter validation (T-0092)
+# Retrieval: discover — ADR-028 error envelope on parameter validation
 # ---------------------------------------------------------------------------
 
 
@@ -438,7 +438,7 @@ async def test_export_projection_200(app, client):
 
 
 async def test_export_projection_path_traversal_400(client):
-    """POST /documents/{id}/export with ../ path returns 400."""
+    """POST /documents/{id}/export with../ path returns 400."""
     # Ingest first
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
@@ -608,7 +608,7 @@ async def test_refresh_views_200(client):
 
 
 # ---------------------------------------------------------------------------
-# T-0024: edge_id path-parameter validation on routes that take edge_id
+# Edge_id path-parameter validation on routes that take edge_id
 # ---------------------------------------------------------------------------
 
 

@@ -1,6 +1,6 @@
 """Tests for the JSON Schema definition of sage_core_config.schema.json.
 
-The stack-wide SAGE Core API configuration schema (CAS-ADR-030, T-0103).
+The stack-wide SAGE Core API configuration schema (CAS-ADR-030).
 Carries the abstraction provider and model identifier that the per-vault
 schema no longer owns. Mirror discipline of test_vault_config_schema.py:
 both the raw JSON Schema and the derived Pydantic model

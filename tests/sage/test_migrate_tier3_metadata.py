@@ -1,4 +1,4 @@
-"""Tests for the T-0039 tier3_metadata backfill migration script.
+"""Tests for the tier3_metadata backfill migration script.
 
 Unit tests cover the pure tag/body parsers and the strip-tags logic.
 Integration tests exercise the end-to-end migration against a fabricated
@@ -95,7 +95,7 @@ def test_parse_failure_tags_does_not_match_ticket_id_prefix() -> None:
     tags = ["failure-log", "id:T-0001", "severity:low"]
     payload, stripped = parse_failure_tags(tags)
     assert "failure_id" not in payload
-    # id:T-0001 falls through to stripped because it is not a recognized
+    # id:falls through to stripped because it is not a recognized
     # failure-id pattern.
     assert "id:T-0001" in stripped
 

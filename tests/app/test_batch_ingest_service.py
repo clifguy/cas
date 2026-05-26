@@ -125,11 +125,11 @@ def _make_services(
         """Filter-aware double for GraphStore.query_documents.
 
         Mirrors the subset of predicate behaviour exercised by
-        _build_edge_plan after T-0076's app-side filter pushdown:
+        _build_edge_plan after app-side filter pushdown:
         lifecycle_status, project, doc_type. Other keys are passed
         through (no filter applied) so unrelated callers stay agnostic
         of fixture detail. Pagination is not implemented because no
-        test depends on it. ``default_exclude_failed`` (T-0148) is
+        test depends on it. ``default_exclude_failed`` is
         accepted to match the production signature; this double does
         not model pipeline_status filtering.
         """
@@ -157,7 +157,7 @@ def _make_services(
 
     services.ingestion_service.ingest = AsyncMock(side_effect=_ingest)
 
-    # Graph ops (T-0079: batch_inference now calls link_idempotent and
+    # Graph ops (Batch_inference now calls link_idempotent and
     # passes on_conflict to insert_staging_edge; both return tuples).
     from unittest.mock import MagicMock as _MM
 
@@ -252,10 +252,10 @@ class TestFileDescriptorNormalization:
                     "/tmp/test.md",
                     title="Claim-Set",
                     date="2026-03-09",
-                    project="PIM",
+                    project="EXAMPLE",
                     codes=["PV06"],
                     version="v7",
-                    doc_type="patent_draft",
+                    doc_type="design_spec",
                 )
             ],
             vault_services=services,
@@ -270,10 +270,10 @@ class TestFileDescriptorNormalization:
         assert isinstance(request, IngestRequest)
         assert request.metadata["title"] == "Claim-Set"
         assert request.metadata["date"] == "2026-03-09"
-        assert request.metadata["project"] == "PIM"
+        assert request.metadata["project"] == "EXAMPLE"
         assert request.metadata["codes"] == "PV06"
         assert request.metadata["version_label"] == "v7"
-        assert request.metadata["doc_type"] == "patent_draft"
+        assert request.metadata["doc_type"] == "design_spec"
 
     @pytest.mark.asyncio
     async def test_bis_004_file_without_metadata(self):
@@ -307,9 +307,9 @@ class TestEdgePlanConstruction:
             "bbbbbbbb_existing_v5",
             title="Claim-Set",
             version_label="v5",
-            doc_type="patent_draft",
+            doc_type="design_spec",
             tags=["PV06"],
-            project="PIM",
+            project="EXAMPLE",
         )
         services = _make_services(existing_docs=[existing_doc])
         svc = BatchIngestService()
@@ -320,17 +320,17 @@ class TestEdgePlanConstruction:
                     "/tmp/v6.md",
                     title="Claim-Set",
                     version="v6",
-                    doc_type="patent_draft",
+                    doc_type="design_spec",
                     codes=["PV06"],
-                    project="PIM",
+                    project="EXAMPLE",
                 ),
                 _fd(
                     "/tmp/v7.md",
                     title="Claim-Set",
                     version="v7",
-                    doc_type="patent_draft",
+                    doc_type="design_spec",
                     codes=["PV06"],
-                    project="PIM",
+                    project="EXAMPLE",
                 ),
             ],
             vault_services=services,
@@ -368,9 +368,9 @@ class TestEdgePlanConstruction:
             "doc-existing",
             title="Report",
             version_label="v3",
-            doc_type="patent_draft",
+            doc_type="design_spec",
             tags=["PV06", "CF-1"],
-            project="PIM",
+            project="EXAMPLE",
         )
         services = _make_services(existing_docs=[existing_doc])
         svc = BatchIngestService()
@@ -396,11 +396,11 @@ class TestEdgePlanConstruction:
             assert ei.parsed.title == "Report"
             assert ei.parsed.codes == ["PV06", "CF-1"]
             assert ei.parsed.version == "v3"
-            assert ei.parsed.doc_type == "patent_draft"
-            assert ei.parsed.project == "PIM"
+            assert ei.parsed.doc_type == "design_spec"
+            assert ei.parsed.project == "EXAMPLE"
 
     # ---------------------------------------------------------------------
-    # T-0076 — filter pushdown for the existing-doc fetch in
+    # — filter pushdown for the existing-doc fetch in
     # _build_edge_plan. The site at app/backend/ingest_service.py
     # historically pulled the entire vault and filtered in Python.
     # ---------------------------------------------------------------------
@@ -560,10 +560,10 @@ class TestPerFileIngestion:
                     "/tmp/test.md",
                     title="Claim-Set",
                     date="2026-03-09",
-                    project="PIM",
+                    project="EXAMPLE",
                     codes=["PV06", "CF-1"],
                     version="v7",
-                    doc_type="patent_draft",
+                    doc_type="design_spec",
                 )
             ],
             vault_services=services,
@@ -650,8 +650,8 @@ class TestEdgeExecution:
 
         result = await svc.run(
             files=[
-                _fd("/tmp/v1.md", title="Doc", version="v1", doc_type="patent_draft"),
-                _fd("/tmp/v2.md", title="Doc", version="v2", doc_type="patent_draft"),
+                _fd("/tmp/v1.md", title="Doc", version="v1", doc_type="design_spec"),
+                _fd("/tmp/v2.md", title="Doc", version="v2", doc_type="design_spec"),
             ],
             vault_services=services,
             infer_edges=True,
@@ -678,8 +678,8 @@ class TestEdgeExecution:
 
         result = await svc.run(
             files=[
-                _fd("/tmp/v1.md", title="Doc", version="v1", doc_type="patent_draft"),
-                _fd("/tmp/v2.md", title="Doc", version="v2", doc_type="patent_draft"),
+                _fd("/tmp/v1.md", title="Doc", version="v1", doc_type="design_spec"),
+                _fd("/tmp/v2.md", title="Doc", version="v2", doc_type="design_spec"),
             ],
             vault_services=services,
             infer_edges=True,
@@ -864,8 +864,8 @@ class TestCallerIntegration:
 
         result = await svc.run(
             files=[
-                _fd("/tmp/v1.md", title="Doc", version="v1", doc_type="patent_draft"),
-                _fd("/tmp/v2.md", title="Doc", version="v2", doc_type="patent_draft"),
+                _fd("/tmp/v1.md", title="Doc", version="v1", doc_type="design_spec"),
+                _fd("/tmp/v2.md", title="Doc", version="v2", doc_type="design_spec"),
                 _fd("/tmp/bad.md", title="Bad"),
             ],
             vault_services=services,
@@ -952,7 +952,7 @@ def _make_edge(
 ) -> Edge:
     """Build a minimal Edge for in-memory mock graph state.
 
-    T-0080: ``rationale_kind`` defaults to ``MANUAL`` so existing
+    ``rationale_kind`` defaults to ``MANUAL`` so existing
     chain-repair fixtures that constructed pre-existing edges without
     awareness of the typed discriminator now exercise the provenance
     gate against a non-version_chain edge (the explicit pattern in
@@ -1001,11 +1001,11 @@ class _MockGraphState:
         default_exclude_failed: bool = True,
     ):
         """Filter-aware double mirroring the subset of predicate
-        behaviour _build_edge_plan relies on after T-0076's pushdown:
+        behaviour _build_edge_plan relies on after pushdown:
         lifecycle_status, project, doc_type. Returns
         (matching_documents, total_count) like the real signature.
         Pagination is not implemented because no chain-repair test
-        depends on it. ``default_exclude_failed`` (T-0148) is accepted
+        depends on it. ``default_exclude_failed`` is accepted
         to match the production signature; this double does not model
         pipeline_status filtering.
         """
@@ -1046,7 +1046,7 @@ class _MockGraphState:
 
     async def insert_staging_edge(self, staging, on_conflict: str = "raise") -> tuple:
         # Tracking only; no real staging in unit tests. Returns the
-        # T-0079 tuple shape: (edge, created).
+        # tuple shape: (edge, created).
         if not hasattr(self, "staged_edges"):
             self.staged_edges = []
         self.staged_edges.append(staging)
@@ -1067,7 +1067,7 @@ class _MockGraphState:
         return {"edge_id": edge_id}
 
     async def link_idempotent(self, request: LinkRequest) -> tuple:
-        # T-0079: returns (edge, created). The mock semantics here are
+        # Returns (edge, created). The mock semantics here are
         # always-created because the test scenarios never replay the
         # same natural-key triple.
         edge_dict = await self.link(request)
@@ -1131,8 +1131,8 @@ def _make_chain_services(
 
 CHAIN_KW = dict(
     title="Claim-Set",
-    project="PIM",
-    doc_type="patent_draft",
+    project="EXAMPLE",
+    doc_type="design_spec",
     codes=["PV06"],
 )
 
@@ -1148,8 +1148,8 @@ class TestChainRepair:
         v1 = _make_document(
             V1_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v1",
             tags=["PV06"],
             lifecycle_status="archived",
@@ -1157,8 +1157,8 @@ class TestChainRepair:
         v3 = _make_document(
             V3_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v3",
             tags=["PV06"],
             lifecycle_status="active",
@@ -1205,8 +1205,8 @@ class TestChainRepair:
         v1 = _make_document(
             V1_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v1",
             tags=["PV06"],
             lifecycle_status="archived",
@@ -1214,8 +1214,8 @@ class TestChainRepair:
         v3 = _make_document(
             V3_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v3",
             tags=["PV06"],
             lifecycle_status="active",
@@ -1287,8 +1287,8 @@ class TestChainRepair:
         v1 = _make_document(
             V1_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v1",
             tags=["PV06"],
             lifecycle_status="archived",
@@ -1296,8 +1296,8 @@ class TestChainRepair:
         v2 = _make_document(
             V2_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v2",
             tags=["PV06"],
             lifecycle_status="archived",
@@ -1305,8 +1305,8 @@ class TestChainRepair:
         v3 = _make_document(
             V3_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v3",
             tags=["PV06"],
             lifecycle_status="active",
@@ -1362,7 +1362,7 @@ class TestChainRepair:
         assert state.removed_edge_ids == []
 
     # ------------------------------------------------------------------
-    # T-0080: typed rationale_kind discriminator on edges
+    # Typed rationale_kind discriminator on edges
     # ------------------------------------------------------------------
 
     @pytest.mark.asyncio
@@ -1371,15 +1371,15 @@ class TestChainRepair:
         on the LinkRequest it submits to link_idempotent. Without this,
         the auto-inferred edge lands with the default 'manual' kind, the
         rationale-text prefix becomes load-bearing again, and the index
-        added by T-0080 cannot be used to identify version-chain edges.
+        added by cannot be used to identify version-chain edges.
         """
         V1_ID = "dddddddd_v1"
         V3_ID = "dddddddd_v3"
         v1 = _make_document(
             V1_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v1",
             tags=["PV06"],
             lifecycle_status="archived",
@@ -1387,8 +1387,8 @@ class TestChainRepair:
         v3 = _make_document(
             V3_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v3",
             tags=["PV06"],
             lifecycle_status="active",
@@ -1435,7 +1435,7 @@ class TestChainRepair:
         workflow_doc = _make_document(
             WF_ID,
             title="Checklist",
-            project="PIM",
+            project="EXAMPLE",
             doc_type="checklist",
             tags=["PV06"],
             lifecycle_status="active",
@@ -1443,8 +1443,8 @@ class TestChainRepair:
         content_doc = _make_document(
             CT_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             tags=["PV06"],
             lifecycle_status="active",
         )
@@ -1456,7 +1456,7 @@ class TestChainRepair:
                 _fd(
                     "/tmp/new_checklist.md",
                     title="New-Checklist",
-                    project="PIM",
+                    project="EXAMPLE",
                     codes=["PV06"],
                     doc_type="checklist",
                 )
@@ -1482,7 +1482,7 @@ class TestChainRepair:
         """T8. The CAS-ADR-019 provenance gate downgrades chain repair to
         Tier 2 when an existing supersedes edge has rationale_kind=manual,
         even if its rationale text happens to start with
-        ``[version_chain]`` (a stale rationale string from before T-0080).
+        ``[version_chain]`` (a stale rationale string from before).
         The discriminator now lives in the typed column, not the prefix.
         """
         V1_ID = "ffffffff_v1"
@@ -1490,8 +1490,8 @@ class TestChainRepair:
         v1 = _make_document(
             V1_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v1",
             tags=["PV06"],
             lifecycle_status="archived",
@@ -1499,14 +1499,14 @@ class TestChainRepair:
         v3 = _make_document(
             V3_ID,
             title="Claim-Set",
-            project="PIM",
-            doc_type="patent_draft",
+            project="EXAMPLE",
+            doc_type="design_spec",
             version_label="v3",
             tags=["PV06"],
             lifecycle_status="active",
         )
         # Stale rationale carries the prefix but the typed kind is MANUAL
-        # (e.g., a hand-curated edge written before T-0080 that someone
+        # (e.g., a hand-curated edge written before that someone
         # included the prefix in by convention but never set the column).
         existing_edge = _make_edge(
             _E_V3_V1,

@@ -1,4 +1,4 @@
-"""Unit tests for IngestStreamingService (T-0049).
+"""Unit tests for IngestStreamingService.
 
 The streaming service owns the SSE delivery glue extracted from
 ``app.backend.router.ingest_endpoint``. These tests exercise:
@@ -43,7 +43,7 @@ def _stub_services() -> MagicMock:
 class TestStreamValidation:
     def test_stream_raises_empty_file_list_for_empty_files(self) -> None:
         service = IngestStreamingService(vault_services=_stub_services())
-        body = IngestRequest(vault_id="pim_health", files=[])
+        body = IngestRequest(vault_id="example_vault", files=[])
         with pytest.raises(EmptyFileListError):
             service.stream(body)
 
@@ -52,7 +52,7 @@ class TestStreamResponseShape:
     def test_stream_returns_streaming_response_with_sse_media_type(self) -> None:
         service = IngestStreamingService(vault_services=_stub_services())
         body = IngestRequest(
-            vault_id="pim_health",
+            vault_id="example_vault",
             files=[
                 IngestFileItem(
                     file_path="/tmp/probe.md",

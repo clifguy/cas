@@ -1,4 +1,4 @@
-"""T-0076: Push retrieval-service filters into SQL.
+"""Push retrieval-service filters into SQL.
 
 Two hot paths in ``sage/services/retrieval.py`` previously fetched the
 entire vault via ``list_all_documents()`` and applied filters in Python:
@@ -104,7 +104,7 @@ async def _index_marker(
     """Index a single chunk containing the marker term so BM25 finds it.
 
     Stamps the parent document's lifecycle_status, project, and doc_type
-    on the chunk row so LanceDB pre-filter pushdown (T-0077) matches the
+    on the chunk row so LanceDB pre-filter pushdown matches the
     chunk when the filter is active. Mirrors what production ingest does
     at ``_stage2_indexing`` time.
     """
@@ -135,13 +135,13 @@ def t0076_retrieval_service(
 
 
 async def _seed_mixed_vault(graph_store, content_store, embedding_provider):
-    """Five docs spanning the dimensions T-0076 needs to exercise:
+    """Five docs spanning the dimensions needs to exercise:
 
-    * d_active_alpha     -- lifecycle=active,    project=alpha, authority=None
-    * d_completed_alpha  -- lifecycle=completed, project=alpha, authority=None
-    * d_active_beta      -- lifecycle=active,    project=beta,  authority=None
-    * d_authoritative    -- lifecycle=active,    project=alpha, authority="alpha-domain"
-    * d_failed           -- lifecycle=active,    project=alpha, authority=None,
+    * d_active_alpha -- lifecycle=active, project=alpha, authority=None
+    * d_completed_alpha -- lifecycle=completed, project=alpha, authority=None
+    * d_active_beta -- lifecycle=active, project=beta, authority=None
+    * d_authoritative -- lifecycle=active, project=alpha, authority="alpha-domain"
+    * d_failed -- lifecycle=active, project=alpha, authority=None,
                             pipeline_status=FAILED (must never appear in results)
 
     Each non-failed doc gets one chunk containing "alpha-marker" so a

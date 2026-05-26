@@ -1,7 +1,7 @@
-"""Tests for sage/services/batch_inference.py (T-0138).
+"""Tests for sage/services/batch_inference.py.
 
 Covers the batch-context edge inference service relocated from the app
-layer per T-0138:
+layer per
 
   - Version chain inference (EI-013 through EI-018)
   - Filename code match inference (EI-019 through EI-024)
@@ -10,7 +10,7 @@ layer per T-0138:
   - Migration boundary guard (BI-005)
 
 The first three classes were relocated verbatim from
-``tests/app/test_app_backend.py`` (T-0138's predecessor location). The
+``tests/app/test_app_backend.py`` (predecessor location). The
 fourth section is new: it covers ``plan_batch_edges``, the new public
 entry point that absorbs the vault-querying logic previously in
 ``BatchIngestService._build_edge_plan``. The fifth section guards
@@ -46,12 +46,12 @@ from sage.services.filename_parser import (
 
 
 def _pim_metadata_extraction():
-    """PIM Health-like metadata extraction config (copied from test_app_backend)."""
+    """Example Portfolio-like metadata extraction config (copied from test_app_backend)."""
     return {
         "filename_extraction": {
             "pattern": "{date}_{project}_{code}_{title}_{version}",
             "separator": "_",
-            "project_identifier": "PIM",
+            "project_identifier": "EXAMPLE",
             "segment_fields": {
                 "date": "doc_date",
                 "project": "project",
@@ -84,8 +84,8 @@ def _pim_metadata_extraction():
                     "doc_type": "integration_catalog",
                 },
                 {"code": "REF", "doc_type": "reference_document"},
-                {"code": "PVMaster", "doc_type": "patent_draft"},
-                {"code": "PV", "doc_type": "patent_draft"},
+                {"code": "PVMaster", "doc_type": "design_spec"},
+                {"code": "PV", "doc_type": "design_spec"},
                 {"code": "TDMaster", "doc_type": "technical_disclosure"},
                 {"code": "TD", "doc_type": "technical_disclosure"},
             ],
@@ -95,7 +95,7 @@ def _pim_metadata_extraction():
 
 # ---------------------------------------------------------------------------
 # 1. Version Chain Inference (EI-013 through EI-018b)
-#    Relocated verbatim from tests/app/test_app_backend.py per T-0138.
+# Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
 
@@ -133,9 +133,9 @@ class TestVersionChain:
     def test_filename_parser_preserves_trailing_zero_patch_end_to_end(self):
         """Full parse path round-trips a vN.M.0 version without truncation."""
         p = FilenameParser(_pim_metadata_extraction())
-        assert p.parse("2026-04-28_PIM_Doc_v8.2.0").version == "v8.2.0"
-        assert p.parse("2026-04-28_PIM_Doc_v9.1.0").version == "v9.1.0"
-        assert p.parse("2026-04-28_PIM_Doc_v3.0.0").version == "v3.0.0"
+        assert p.parse("2026-04-28_EXAMPLE_Doc_v8.2.0").version == "v8.2.0"
+        assert p.parse("2026-04-28_EXAMPLE_Doc_v9.1.0").version == "v9.1.0"
+        assert p.parse("2026-04-28_EXAMPLE_Doc_v3.0.0").version == "v3.0.0"
 
     def test_ei_014_linear_chain(self):
         """Linear chain: each version supersedes immediate predecessor."""
@@ -144,17 +144,17 @@ class TestVersionChain:
             InferenceItem(
                 "f1",
                 False,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v1", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v1", doc_type="design_spec"),
             ),
             InferenceItem(
                 "f3",
                 False,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v3", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v3", doc_type="design_spec"),
             ),
             InferenceItem(
                 "f7",
                 False,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="design_spec"),
             ),
         ]
         plan = engine.build_edge_plan(items, [])
@@ -172,10 +172,10 @@ class TestVersionChain:
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem(
-                "a1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")
+                "a1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="design_spec")
             ),
             InferenceItem(
-                "a2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="patent_draft")
+                "a2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="design_spec")
             ),
             InferenceItem(
                 "b1",
@@ -199,19 +199,19 @@ class TestVersionChain:
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem(
-                "p1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")
+                "p1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="design_spec")
             ),
             InferenceItem(
                 "w2", False, ParsedMetadata("Claim-Set", version="v2", doc_type="work_plan")
             ),
             InferenceItem(
-                "p3", False, ParsedMetadata("Claim-Set", version="v3", doc_type="patent_draft")
+                "p3", False, ParsedMetadata("Claim-Set", version="v3", doc_type="design_spec")
             ),
         ]
         plan = engine.build_edge_plan(items, [])
         supersedes = [e for e in plan.edges if e.edge_type == EdgeType.SUPERSEDES]
         assert len(supersedes) == 1
-        # Only the two patent_draft items chain (v3 supersedes v1)
+        # Only the two design_spec items chain (v3 supersedes v1)
         assert supersedes[0].source_ref == "p3"
         assert supersedes[0].target_ref == "p1"
         # The work_plan v2 does not participate in any edge
@@ -222,17 +222,17 @@ class TestVersionChain:
         engine = EdgeInferenceEngine()
         scan_items = [
             InferenceItem(
-                "f6", False, ParsedMetadata("Claim-Set", version="v6", doc_type="patent_draft")
+                "f6", False, ParsedMetadata("Claim-Set", version="v6", doc_type="design_spec")
             ),
             InferenceItem(
-                "f7", False, ParsedMetadata("Claim-Set", version="v7", doc_type="patent_draft")
+                "f7", False, ParsedMetadata("Claim-Set", version="v7", doc_type="design_spec")
             ),
         ]
         existing = [
             InferenceItem(
                 "existing-v5",
                 True,
-                ParsedMetadata("Claim-Set", version="v5", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", version="v5", doc_type="design_spec"),
             ),
         ]
         plan = engine.build_edge_plan(scan_items, existing)
@@ -246,7 +246,7 @@ class TestVersionChain:
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem(
-                "f1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="patent_draft")
+                "f1", False, ParsedMetadata("Claim-Set", version="v1", doc_type="design_spec")
             ),
         ]
         plan = engine.build_edge_plan(items, [])
@@ -293,7 +293,7 @@ class TestVersionChain:
 
 # ---------------------------------------------------------------------------
 # 2. Filename Code Match Inference (EI-019 through EI-024)
-#    Relocated verbatim from tests/app/test_app_backend.py per T-0138.
+# Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
 
@@ -310,7 +310,7 @@ class TestFilenameCodeMatch:
             InferenceItem(
                 "pat",
                 False,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="design_spec"),
             ),
         ]
         plan = engine.build_edge_plan(items, [])
@@ -324,7 +324,7 @@ class TestFilenameCodeMatch:
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem(
-                "pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")
+                "pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="design_spec")
             ),
             InferenceItem(
                 "chk", False, ParsedMetadata("Checklist", codes=["PV06"], doc_type="checklist")
@@ -333,7 +333,7 @@ class TestFilenameCodeMatch:
         plan = engine.build_edge_plan(items, [])
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
         assert len(covers) == 1
-        # Workflow (checklist) is source, content (patent_draft) is target
+        # Workflow (checklist) is source, content (design_spec) is target
         assert covers[0].source_ref == "chk"
         assert covers[0].target_ref == "pat"
 
@@ -357,12 +357,12 @@ class TestFilenameCodeMatch:
         engine = EdgeInferenceEngine()
         items = [
             InferenceItem(
-                "p1", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")
+                "p1", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="design_spec")
             ),
             InferenceItem(
                 "p2",
                 False,
-                ParsedMetadata("Specification", codes=["PV06"], doc_type="patent_draft"),
+                ParsedMetadata("Specification", codes=["PV06"], doc_type="design_spec"),
             ),
         ]
         plan = engine.build_edge_plan(items, [])
@@ -379,16 +379,16 @@ class TestFilenameCodeMatch:
         ]
         existing = [
             InferenceItem(
-                "existing-patent",
+                "existing-report",
                 True,
-                ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="design_spec"),
             ),
         ]
         plan = engine.build_edge_plan(scan_items, existing)
         covers = [e for e in plan.edges if e.edge_type == EdgeType.COVERS]
         assert len(covers) == 1
         assert covers[0].source_ref == "chk"
-        assert covers[0].target_ref == "existing-patent"
+        assert covers[0].target_ref == "existing-report"
 
     def test_ei_024_multiple_codes_multiple_edges(self):
         """Multiple codes produce multiple edges."""
@@ -400,7 +400,7 @@ class TestFilenameCodeMatch:
                 ParsedMetadata("Checklist", codes=["PV06", "CF-1"], doc_type="checklist"),
             ),
             InferenceItem(
-                "pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="patent_draft")
+                "pat", False, ParsedMetadata("Claim-Set", codes=["PV06"], doc_type="design_spec")
             ),
             InferenceItem(
                 "ic",
@@ -419,7 +419,7 @@ class TestFilenameCodeMatch:
 
 # ---------------------------------------------------------------------------
 # 3. Two-Phase Orchestration (EI-025 through EI-032)
-#    Relocated verbatim from tests/app/test_app_backend.py per T-0138.
+# Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
 
@@ -431,12 +431,12 @@ class TestTwoPhaseOrchestration:
             InferenceItem(
                 "f_v6",
                 False,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v6", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v6", doc_type="design_spec"),
             ),
             InferenceItem(
                 "f_v7",
                 False,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v7", doc_type="design_spec"),
             ),
             InferenceItem(
                 "f_chk",
@@ -448,7 +448,7 @@ class TestTwoPhaseOrchestration:
             InferenceItem(
                 "existing-v5",
                 True,
-                ParsedMetadata("Claim-Set", codes=["PV06"], version="v5", doc_type="patent_draft"),
+                ParsedMetadata("Claim-Set", codes=["PV06"], version="v5", doc_type="design_spec"),
             ),
         ]
         plan = engine.build_edge_plan(scan_items, existing)
@@ -743,7 +743,7 @@ class TestTwoPhaseOrchestration:
 
 # ---------------------------------------------------------------------------
 # 4. plan_batch_edges (BI-001 through BI-004)
-#    New tests covering the batch-context entry point introduced by T-0138.
+# New tests covering the batch-context entry point introduced by.
 # ---------------------------------------------------------------------------
 
 
@@ -872,7 +872,7 @@ async def test_bi_001_plan_batch_edges_active_only(graph_store):
         "claim_set_v5",
         title="Claim-Set",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v5",
         tags=["PV06"],
         lifecycle_status="active",
@@ -887,7 +887,7 @@ async def test_bi_001_plan_batch_edges_active_only(graph_store):
                 "Claim-Set",
                 codes=["PV06"],
                 version="v6",
-                doc_type="patent_draft",
+                doc_type="design_spec",
                 project="PV06",
             ),
         ),
@@ -898,7 +898,7 @@ async def test_bi_001_plan_batch_edges_active_only(graph_store):
                 "Claim-Set",
                 codes=["PV06"],
                 version="v7",
-                doc_type="patent_draft",
+                doc_type="design_spec",
                 project="PV06",
             ),
         ),
@@ -931,7 +931,7 @@ async def test_bi_002_plan_batch_edges_includes_archived_chain_predecessors(grap
         "claim_set_v1",
         title="Claim-Set",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v1",
         tags=["PV06"],
         lifecycle_status="archived",
@@ -940,7 +940,7 @@ async def test_bi_002_plan_batch_edges_includes_archived_chain_predecessors(grap
         "claim_set_v2",
         title="Claim-Set",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v2",
         tags=["PV06"],
         lifecycle_status="active",
@@ -961,7 +961,7 @@ async def test_bi_002_plan_batch_edges_includes_archived_chain_predecessors(grap
                 "Claim-Set",
                 codes=["PV06"],
                 version="v3",
-                doc_type="patent_draft",
+                doc_type="design_spec",
                 project="PV06",
             ),
         ),
@@ -995,7 +995,7 @@ async def test_bi_003_plan_batch_edges_fetches_existing_supersedes_edges(graph_s
         "claim_set_v5_spy",
         title="Claim-Set-Spy",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v5",
         tags=["PV06"],
         lifecycle_status="active",
@@ -1010,7 +1010,7 @@ async def test_bi_003_plan_batch_edges_fetches_existing_supersedes_edges(graph_s
                 "Claim-Set-Spy",
                 codes=["PV06"],
                 version="v6",
-                doc_type="patent_draft",
+                doc_type="design_spec",
                 project="PV06",
             ),
         ),
@@ -1079,7 +1079,7 @@ async def test_bi_004_plan_batch_edges_no_versioned_items_skips_chain_candidate_
 
 @pytest.mark.asyncio
 async def test_bi_006_plan_batch_edges_includes_failed_active_predecessor(graph_store):
-    """T-0150: a failed+active predecessor must surface as a chain candidate.
+    """A failed+active predecessor must surface as a chain candidate.
 
     The chain-identity fields are set at ingest time before abstraction,
     so a pipeline_status=FAILED document still carries valid chain
@@ -1098,7 +1098,7 @@ async def test_bi_006_plan_batch_edges_includes_failed_active_predecessor(graph_
         "claim_set_v1_t0150",
         title="Claim-Set-T0150",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v1",
         tags=["PV06"],
         lifecycle_status="active",
@@ -1107,7 +1107,7 @@ async def test_bi_006_plan_batch_edges_includes_failed_active_predecessor(graph_
         "claim_set_v2_t0150",
         title="Claim-Set-T0150",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v2",
         tags=["PV06"],
         lifecycle_status="active",
@@ -1126,7 +1126,7 @@ async def test_bi_006_plan_batch_edges_includes_failed_active_predecessor(graph_
                 "Claim-Set-T0150",
                 codes=["PV06"],
                 version="v3",
-                doc_type="patent_draft",
+                doc_type="design_spec",
                 project="PV06",
             ),
         ),
@@ -1153,7 +1153,7 @@ async def test_bi_006_plan_batch_edges_includes_failed_active_predecessor(graph_
 async def test_bi_007_plan_batch_edges_passes_default_exclude_failed_false_on_both_passes(
     graph_store,
 ):
-    """T-0150: both query_documents passes must opt out of BH-020.
+    """Both query_documents passes must opt out of BH-020.
 
     Structural spy assertion complementing BI-006. BI-006's behavioral
     output (an active+failed predecessor surfacing) passes if *either*
@@ -1170,7 +1170,7 @@ async def test_bi_007_plan_batch_edges_passes_default_exclude_failed_false_on_bo
         "spy_seed",
         title="Spy-Chain",
         project="PV06",
-        doc_type="patent_draft",
+        doc_type="design_spec",
         version_label="v1",
         tags=["PV06"],
         lifecycle_status="active",
@@ -1185,7 +1185,7 @@ async def test_bi_007_plan_batch_edges_passes_default_exclude_failed_false_on_bo
                 "Spy-Chain",
                 codes=["PV06"],
                 version="v2",
-                doc_type="patent_draft",
+                doc_type="design_spec",
                 project="PV06",
             ),
         ),
@@ -1221,7 +1221,7 @@ async def test_bi_007_plan_batch_edges_passes_default_exclude_failed_false_on_bo
     ),
 )
 def test_bi_005_app_layer_does_not_define_edge_inference():
-    """T-0138: the app-layer edge_inference module is gone for good.
+    """The app-layer edge_inference module is gone for good.
 
     The relocation is complete only when ``app.backend.edge_inference``
     no longer exists. Re-introducing the module (intentionally or as a

@@ -1,4 +1,4 @@
-"""T-0111 rationale-prose backfill tests.
+"""rationale-prose backfill tests.
 
 Drives ``_backfill_synced_from_version_from_rationale_detect`` and
 ``_backfill_synced_from_version_from_rationale_apply`` against a

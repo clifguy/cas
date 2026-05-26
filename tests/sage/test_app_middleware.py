@@ -2,10 +2,10 @@
 
 Covers:
 
-- _GracefulSSEMiddleware (T-0019): suppresses two known-benign tracebacks
+- _GracefulSSEMiddleware: suppresses two known-benign tracebacks
   from the SSE transport: uvicorn-shutdown double-response RuntimeError and
   client-cancellation anyio.ClosedResourceError.
-- _CancelledNotificationValidationFilter (T-0022): suppresses the cosmetic
+- _CancelledNotificationValidationFilter: suppresses the cosmetic
   ``Failed to validate notification`` WARNING emitted by mcp.shared.session
   on client-cancelled long tool calls.
 """
@@ -130,7 +130,7 @@ def test_extract_session_id_handles_malformed_query_string():
 
 
 # ---------------------------------------------------------------------------
-# T-0022: _CancelledNotificationValidationFilter
+# _CancelledNotificationValidationFilter
 # ---------------------------------------------------------------------------
 
 

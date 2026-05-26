@@ -1,11 +1,11 @@
 """Vault listing, statistics, hash-check, and configuration endpoints.
 
-GET  /sage_vaults                     -- list all configured vaults (BE-001, BE-002)
-GET  /sage_vaults/{vault_id}/stats    -- vault statistics (BE-003 through BE-006)
+GET /sage_vaults -- list all configured vaults (BE-001, BE-002)
+GET /sage_vaults/{vault_id}/stats -- vault statistics (BE-003 through BE-006)
 POST /sage_vaults/{vault_id}/hash-check -- bulk hash check (BE-007 through BE-009)
-GET  /sage_vaults/{vault_id}/config   -- read vault configuration
-PUT  /sage_vaults/{vault_id}/config   -- update vault configuration (section-level)
-POST /sage_vaults                     -- create a new vault with config
+GET /sage_vaults/{vault_id}/config -- read vault configuration
+PUT /sage_vaults/{vault_id}/config -- update vault configuration (section-level)
+POST /sage_vaults -- create a new vault with config
 """
 
 from fastapi import APIRouter, Depends

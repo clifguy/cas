@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_bulk_set_lifecycle (T-0087).
+"""MCP tool tests for sage_bulk_set_lifecycle.
 
 Exercises the boundary contract: vault_id and per-item shape validation,
 registry membership check, and round-trip of the BulkLifecycleResponse
@@ -110,7 +110,7 @@ async def test_mcp_tool_items_validation_rejects_bad_shape(seeded_mcp_vault):
 
 
 # ---------------------------------------------------------------------------
-# T-0153: response_mode parameter on bulk mutation tools
+# Response_mode parameter on bulk mutation tools
 # ---------------------------------------------------------------------------
 
 _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
@@ -118,7 +118,7 @@ _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
 
 @pytest.fixture
 async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empty_registry):
-    """T-0153 fixture. Boot a vault, seed six active documents each with
+    """fixture. Boot a vault, seed six active documents each with
     a populated `semantic_abstract`, publish on mcp_server._vaults.
 
     Six items so the threshold-default tests can cross the >5 boundary

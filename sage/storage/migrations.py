@@ -22,7 +22,7 @@ class SchemaMigrationRequired(RuntimeError):
 
 
 class DuplicateEdgesPresentError(RuntimeError):
-    """Raised when the T-0079 unique-index migration cannot be applied
+    """Raised when the unique-index migration cannot be applied
     because the edges or staging_edges table contains duplicate rows on
     the natural-key triple (source_id, target_id, edge_type).
 
@@ -33,7 +33,7 @@ class DuplicateEdgesPresentError(RuntimeError):
 
 class Tier3UniqueViolation(Exception):
     """Storage-layer signal that a tier3_metadata uniqueness constraint
-    fired on insert or supersession-insert (CAS-ADR-031, T-0115).
+    fired on insert or supersession-insert (CAS-ADR-031).
 
     Raised by GraphStore when SQLite's partial UNIQUE index on
     `(doc_type, json_extract(tier3_metadata, '$.<field>'))` rejects a write.
@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS staging_edges (
 );
 """
 
-# T-0078: derived join table for tag-filter queries (F-1 remediation).
+# Derived join table for tag-filter queries (F-1 remediation).
 # Kept in sync from the SAGE layer; documents.tags JSON remains the
 # authoritative serialization.
 DOCUMENT_TAGS_TABLE = """\
@@ -210,7 +210,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_documents_lifecycle ON documents(lifecycle_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_pipeline ON documents(pipeline_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_metadata_confirmed ON documents(metadata_confirmed);",
-    # T-0074: doc_type and project are the two most-filtered columns in
+    # Doc_type and project are the two most-filtered columns in
     # the entire codebase. The composite (doc_type, lifecycle_status) index
     # serves the dominant "active tickets / ADRs / failures" query shape.
     "CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);",
@@ -219,17 +219,17 @@ INDEXES = [
         "CREATE INDEX IF NOT EXISTS idx_documents_doc_type_lifecycle "
         "ON documents(doc_type, lifecycle_status);"
     ),
-    # T-0074: composite edge indexes for sage_traverse(edge_type=X). The
+    # Composite edge indexes for sage_traverse(edge_type=X). The
     # left-prefix rule lets these cover the source-only / target-only
     # scans previously served by idx_edges_source / idx_edges_target,
     # which are dropped below.
     "CREATE INDEX IF NOT EXISTS idx_edges_source_type ON edges(source_id, edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_target_type ON edges(target_id, edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(edge_type);",
-    # T-0080: typed provenance discriminator, indexed for chain-repair
+    # Typed provenance discriminator, indexed for chain-repair
     # and future per-inference-rule telemetry.
     "CREATE INDEX IF NOT EXISTS idx_edges_rationale_kind ON edges(rationale_kind);",
-    # T-0111: supports the drift detector's hash-comparison scan over
+    # Supports the drift detector's hash-comparison scan over
     # provenance-bearing edges. The detector's list_provenance_edges
     # filters by edge_type (covered by idx_edges_type) and projects
     # synced_from_content_hash for per-edge comparison; this index lets
@@ -241,7 +241,7 @@ INDEXES = [
     ),
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
-    # T-0075: expression indexes on the three canonical high-frequency
+    # Expression indexes on the three canonical high-frequency
     # tier3_metadata fields. The SQL builder in graph_store emits
     # json_extract(tier3_metadata, '$.<field>') = ? predicates with the
     # path string interpolated character-for-character so the planner
@@ -259,7 +259,7 @@ INDEXES = [
         "CREATE INDEX IF NOT EXISTS idx_tier3_tool_name "
         "ON documents(json_extract(tier3_metadata, '$.tool_name'));"
     ),
-    # T-0078: tag-filter pre-filter. The composite (tag, document_id)
+    # Tag-filter pre-filter. The composite (tag, document_id)
     # is the covering index for the rewritten EXISTS subquery. The
     # standalone (tag) index is redundant via left-prefix but is
     # called out in the ticket's acceptance criteria.
@@ -267,7 +267,7 @@ INDEXES = [
     ("CREATE INDEX IF NOT EXISTS idx_document_tags_tag_doc ON document_tags(tag, document_id);"),
 ]
 
-# T-0074: single-column edge indexes superseded by the composite
+# Single-column edge indexes superseded by the composite
 # (source_id, edge_type) and (target_id, edge_type). SQLite uses the
 # left-prefix of a composite for single-column lookups, so these are
 # strictly redundant once the composites exist.
@@ -276,7 +276,7 @@ INDEX_REPLACEMENTS = [
     "DROP INDEX IF EXISTS idx_edges_target;",
 ]
 
-# T-0115: trigger maintaining `documents.is_chain_head` whenever a
+# Trigger maintaining `documents.is_chain_head` whenever a
 # supersedes edge is created via any path (the compound atomic methods
 # explicitly flip the flag inside their transactions; this trigger
 # covers direct edge creation via `link()` and any future path that
@@ -293,7 +293,7 @@ END;
 """
 
 
-# T-0079: natural-key uniqueness on production and staging edges.
+# Natural-key uniqueness on production and staging edges.
 # SQLite cannot ALTER TABLE ADD UNIQUE; a unique index is the
 # semantic equivalent. ``IF NOT EXISTS`` keeps re-init idempotent;
 # CREATE UNIQUE INDEX still fails (with sqlite3.IntegrityError) when
@@ -336,7 +336,7 @@ class Backfill:
 
 
 def _backfill_rationale_kind_detect(conn: sqlite3.Connection) -> bool:
-    """T-0080: edges whose rationale starts with a recognized prefix but
+    """Edges whose rationale starts with a recognized prefix but
     whose ``rationale_kind`` is still the post-migration default
     ``'manual'``.
     """
@@ -353,7 +353,7 @@ def _backfill_rationale_kind_detect(conn: sqlite3.Connection) -> bool:
 
 
 def _backfill_rationale_kind_apply(conn: sqlite3.Connection) -> None:
-    """T-0080: classify ``rationale_kind`` for each known prefix.
+    """Classify ``rationale_kind`` for each known prefix.
 
     Idempotent under repeated invocation against the same data. The
     ``AND rationale_kind = 'manual'`` guard prevents the backfill from
@@ -368,7 +368,7 @@ def _backfill_rationale_kind_apply(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_is_chain_head_detect(conn: sqlite3.Connection) -> bool:
-    """T-0115: documents that are the target of a supersedes edge but whose
+    """Documents that are the target of a supersedes edge but whose
     `is_chain_head` is still the post-migration default 1.
     """
     row = conn.execute(
@@ -381,7 +381,7 @@ def _backfill_is_chain_head_detect(conn: sqlite3.Connection) -> bool:
 
 
 def _backfill_is_chain_head_apply(conn: sqlite3.Connection) -> None:
-    """T-0115: a document is a chain head iff no supersedes edge points at it.
+    """A document is a chain head iff no supersedes edge points at it.
 
     Flip `is_chain_head` to 0 for every document that is the target of a
     supersedes edge. The default of 1 is preserved for chain heads (the
@@ -397,7 +397,7 @@ def _backfill_is_chain_head_apply(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_document_tags_detect(conn: sqlite3.Connection) -> bool:
-    """T-0078: documents with tags JSON but no corresponding join rows."""
+    """Documents with tags JSON but no corresponding join rows."""
     row = conn.execute(
         "SELECT 1 FROM documents "
         "WHERE tags IS NOT NULL AND tags != '[]' "
@@ -409,7 +409,7 @@ def _backfill_document_tags_detect(conn: sqlite3.Connection) -> bool:
 
 
 def _backfill_document_tags_apply(conn: sqlite3.Connection) -> None:
-    """T-0078: populate document_tags from existing documents.tags JSON."""
+    """Populate document_tags from existing documents.tags JSON."""
     cur = conn.execute("SELECT id, tags FROM documents WHERE tags IS NOT NULL AND tags != '[]'")
     rows: list[tuple[str, str]] = []
     for doc_id, tags_json in cur.fetchall():
@@ -429,7 +429,7 @@ def _backfill_document_tags_apply(conn: sqlite3.Connection) -> None:
         )
 
 
-# T-0080: prefix → kind pairs driving the one-time backfill UPDATE
+# Prefix → kind pairs driving the one-time backfill UPDATE
 # statements. The list is derived from
 # ``sage.storage.edge_provenance.RATIONALE_PREFIX_TO_KIND`` so the helper
 # and the backfill SQL cannot drift. The detector in
@@ -452,7 +452,7 @@ def _populate_backfill_rationale_kind_pairs() -> None:
 _populate_backfill_rationale_kind_pairs()
 
 
-# T-0111: verb-gated regex for the rationale-prose backfill that
+# Verb-gated regex for the rationale-prose backfill that
 # recovers synced_from_version on legacy derived_from edges. Requires a
 # provenance verb (derived/synced/copied/adapted/based) followed by
 # from/on, then a version token (optional `v`, then 1-3 numeric groups).
@@ -469,7 +469,7 @@ _BACKFILL_SYNCED_FROM_REGEX = re.compile(
 def _iter_synced_from_version_backfill_assignments(
     conn: sqlite3.Connection,
 ) -> "list[tuple[str, str]]":
-    """T-0111: yield (edge_id, resolved_version_doc_id) pairs to assign.
+    """Yield (edge_id, resolved_version_doc_id) pairs to assign.
 
     Shared driver for the detect/apply pair. Each pair indicates a
     derived_from edge whose rationale prose names a version label that
@@ -519,7 +519,7 @@ def _iter_synced_from_version_backfill_assignments(
 
 
 def _backfill_synced_from_version_from_rationale_detect(conn: sqlite3.Connection) -> bool:
-    """T-0111: detect if any derived_from edge has a backfill-assignable
+    """Detect if any derived_from edge has a backfill-assignable
     synced_from_version pending. Iterates the same regex-then-chain-match
     logic as apply; returns True on the first assignable pair.
     """
@@ -527,7 +527,7 @@ def _backfill_synced_from_version_from_rationale_detect(conn: sqlite3.Connection
 
 
 def _backfill_synced_from_version_from_rationale_apply(conn: sqlite3.Connection) -> None:
-    """T-0111: per-edge UPDATE of ``synced_from_version`` for legacy
+    """Per-edge UPDATE of ``synced_from_version`` for legacy
     ``derived_from`` edges whose rationale prose unambiguously names a
     chain member. Idempotent: re-running produces no new changes
     because the WHERE clause filters on ``synced_from_version IS NULL``.
@@ -618,7 +618,7 @@ MIGRATION_PLAN: list[Migration] = [
         "edges", "valid_until_version", "ALTER TABLE edges ADD COLUMN valid_until_version TEXT;"
     ),
     Migration("edges", "retracted_edge_id", "ALTER TABLE edges ADD COLUMN retracted_edge_id TEXT;"),
-    # T-0080: typed rationale-kind discriminator. NOT NULL with constant
+    # Typed rationale-kind discriminator. NOT NULL with constant
     # default 'manual' is legal under SQLite ALTER TABLE ADD COLUMN, so
     # existing rows pick up the default at migration time; the paired
     # backfill (registered in BACKFILL_PLAN) then re-classifies rows whose
@@ -628,7 +628,7 @@ MIGRATION_PLAN: list[Migration] = [
         "rationale_kind",
         "ALTER TABLE edges ADD COLUMN rationale_kind TEXT NOT NULL DEFAULT 'manual';",
     ),
-    # T-0115: chain-head flag enabling partial UNIQUE indexes on declared
+    # Chain-head flag enabling partial UNIQUE indexes on declared
     # tier3 unique_keys. NOT NULL with constant default 1 is legal under
     # SQLite ALTER TABLE ADD COLUMN, so existing rows pick up the default
     # at migration time; the paired backfill (registered in BACKFILL_PLAN)
@@ -639,7 +639,7 @@ MIGRATION_PLAN: list[Migration] = [
         "is_chain_head",
         "ALTER TABLE documents ADD COLUMN is_chain_head INTEGER NOT NULL DEFAULT 1;",
     ),
-    # T-0110: synced-from provenance on sync_target / derived_from edges.
+    # Synced-from provenance on sync_target / derived_from edges.
     # Both nullable; meaningful only for sync_target and derived_from but
     # stored on the shared edges table. Unset = explicit NULL, never
     # inferred from chain anchors (source_valid_from_version /
@@ -655,7 +655,7 @@ MIGRATION_PLAN: list[Migration] = [
         "synced_from_content_hash",
         "ALTER TABLE edges ADD COLUMN synced_from_content_hash TEXT;",
     ),
-    # T-0171: rename users.type -> users.user_type to eliminate collision
+    # Rename users.type -> users.user_type to eliminate collision
     # with the Python builtin and disambiguate the wire shape. Detected by
     # column-presence on the NEW column name (user_type). SQLite >= 3.25
     # supports ALTER TABLE RENAME COLUMN and propagates the new name into
@@ -686,7 +686,7 @@ TABLES = [
 # CREATE TABLE IF NOT EXISTS was a no-op. Replacements run first so the
 # obsolete single-column edge indexes are gone before the composites
 # (which would otherwise coexist as a transient bloat window).
-# T-0079: unique indexes follow the other indexes; their failure path
+# Unique indexes follow the other indexes; their failure path
 # is special-cased in graph_store._initialize_sync.
 POST_MIGRATION_DDL = [
     *INDEX_REPLACEMENTS,
@@ -696,7 +696,7 @@ POST_MIGRATION_DDL = [
 ]
 
 
-# T-0115: defense-in-depth gate for the doc_type and field tokens
+# Defense-in-depth gate for the doc_type and field tokens
 # interpolated into the tier3 partial UNIQUE index DDL. doc_type already
 # matches `^[a-z][a-z0-9_]*$` by vault-config schema; the cross-field
 # validator in sage.config restricts unique_keys entries to declared

@@ -72,11 +72,11 @@ def _create_test_file(
 
 
 async def test_bh_018_duplicate_content_409(tmp_vault_dir, graph_store, ingestion_service):
-    _create_test_file(tmp_vault_dir, "patents/doc_a.md")
+    _create_test_file(tmp_vault_dir, "reports/doc_a.md")
 
     # First ingest succeeds
     request = IngestRequest(
-        source="patents/doc_a.md",
+        source="reports/doc_a.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -100,10 +100,10 @@ async def test_bh_018_duplicate_content_409(tmp_vault_dir, graph_store, ingestio
 
 
 async def test_bh_019_force_reingestion(tmp_vault_dir, graph_store, ingestion_service):
-    _create_test_file(tmp_vault_dir, "patents/doc_force.md")
+    _create_test_file(tmp_vault_dir, "reports/doc_force.md")
 
     request = IngestRequest(
-        source="patents/doc_force.md",
+        source="reports/doc_force.md",
         source_type=SourceType.MARKDOWN,
     )
     result1 = await ingestion_service.ingest(request)
@@ -114,7 +114,7 @@ async def test_bh_019_force_reingestion(tmp_vault_dir, graph_store, ingestion_se
 
     # Force re-ingest
     force_request = IngestRequest(
-        source="patents/doc_force.md",
+        source="reports/doc_force.md",
         source_type=SourceType.MARKDOWN,
         force=True,
     )
@@ -130,17 +130,17 @@ async def test_bh_019_force_reingestion(tmp_vault_dir, graph_store, ingestion_se
 # ---------------------------------------------------------------------------
 # BH-020: Failed pipeline quarantines document from retrieval
 # (Retrieval not implemented in this slice; test that failed docs
-#  are marked correctly for quarantine)
+# are marked correctly for quarantine)
 # ---------------------------------------------------------------------------
 
 
 async def test_bh_020_failed_pipeline_marks_document(
     tmp_vault_dir, graph_store, ingestion_service_failing_llm
 ):
-    _create_test_file(tmp_vault_dir, "patents/doc_fail.md")
+    _create_test_file(tmp_vault_dir, "reports/doc_fail.md")
 
     request = IngestRequest(
-        source="patents/doc_fail.md",
+        source="reports/doc_fail.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_failing_llm.ingest(request)
@@ -162,10 +162,10 @@ async def test_bh_020_failed_pipeline_marks_document(
 async def test_bh_022_failed_document_visible(
     tmp_vault_dir, graph_store, ingestion_service_failing_llm
 ):
-    _create_test_file(tmp_vault_dir, "patents/doc_visible.md")
+    _create_test_file(tmp_vault_dir, "reports/doc_visible.md")
 
     request = IngestRequest(
-        source="patents/doc_visible.md",
+        source="reports/doc_visible.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_failing_llm.ingest(request)
@@ -188,11 +188,11 @@ async def test_bh_024_llm_failure_results_in_failed(
     tmp_vault_dir, graph_store, ingestion_service_failing_llm
 ):
     _create_test_file(
-        tmp_vault_dir, "patents/doc_llm_fail.md", "# Document\n\nContent for abstraction."
+        tmp_vault_dir, "reports/doc_llm_fail.md", "# Document\n\nContent for abstraction."
     )
 
     request = IngestRequest(
-        source="patents/doc_llm_fail.md",
+        source="reports/doc_llm_fail.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_failing_llm.ingest(request)
@@ -215,10 +215,10 @@ async def test_bh_024_llm_failure_results_in_failed(
 async def test_bh_025_abstraction_disabled(
     tmp_vault_dir, graph_store, ingestion_service_no_abstraction
 ):
-    _create_test_file(tmp_vault_dir, "patents/doc_no_abstract.md")
+    _create_test_file(tmp_vault_dir, "reports/doc_no_abstract.md")
 
     request = IngestRequest(
-        source="patents/doc_no_abstract.md",
+        source="reports/doc_no_abstract.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service_no_abstraction.ingest(request)
@@ -238,10 +238,10 @@ async def test_bh_025_abstraction_disabled(
 
 
 async def test_bh_026_sequential_pipeline(tmp_vault_dir, graph_store, ingestion_service):
-    _create_test_file(tmp_vault_dir, "patents/doc_seq.md", "# Sequential Test\n\nContent here.")
+    _create_test_file(tmp_vault_dir, "reports/doc_seq.md", "# Sequential Test\n\nContent here.")
 
     request = IngestRequest(
-        source="patents/doc_seq.md",
+        source="reports/doc_seq.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -266,14 +266,14 @@ async def test_bh_026_sequential_pipeline(tmp_vault_dir, graph_store, ingestion_
 async def test_bh_049_source_modified_at_set_on_ingest(
     tmp_vault_dir, graph_store, ingestion_service
 ):
-    full_path = _create_test_file(tmp_vault_dir, "patents/doc_mtime.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/doc_mtime.md")
 
     # Set a known mtime in the past
     known_mtime = datetime(2023, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
     os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
 
     request = IngestRequest(
-        source="patents/doc_mtime.md",
+        source="reports/doc_mtime.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -294,14 +294,14 @@ async def test_bh_049_source_modified_at_set_on_ingest(
 async def test_bh_050_force_reingestion_updates_source_modified_at(
     tmp_vault_dir, graph_store, ingestion_service
 ):
-    full_path = _create_test_file(tmp_vault_dir, "patents/doc_mtime_force.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/doc_mtime_force.md")
 
     # Set old mtime
     old_mtime = datetime(2022, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     os.utime(full_path, (full_path.stat().st_atime, old_mtime.timestamp()))
 
     request = IngestRequest(
-        source="patents/doc_mtime_force.md",
+        source="reports/doc_mtime_force.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -314,7 +314,7 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
     os.utime(full_path, (full_path.stat().st_atime, new_mtime.timestamp()))
 
     force_request = IngestRequest(
-        source="patents/doc_mtime_force.md",
+        source="reports/doc_mtime_force.md",
         source_type=SourceType.MARKDOWN,
         force=True,
     )
@@ -335,13 +335,13 @@ async def test_bh_050_force_reingestion_updates_source_modified_at(
 
 
 async def test_bh_051_source_modified_at_round_trip(tmp_vault_dir, graph_store, ingestion_service):
-    full_path = _create_test_file(tmp_vault_dir, "patents/doc_roundtrip.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/doc_roundtrip.md")
 
     known_mtime = datetime(2021, 3, 10, 8, 30, 0, tzinfo=timezone.utc)
     os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
 
     request = IngestRequest(
-        source="patents/doc_roundtrip.md",
+        source="reports/doc_roundtrip.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -360,7 +360,7 @@ async def test_bh_051_source_modified_at_round_trip(tmp_vault_dir, graph_store, 
 
 
 async def test_bh_052_created_at_is_ingestion_time(tmp_vault_dir, graph_store, ingestion_service):
-    full_path = _create_test_file(tmp_vault_dir, "patents/doc_old.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/doc_old.md")
 
     # Set mtime well in the past
     old_mtime = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
@@ -369,7 +369,7 @@ async def test_bh_052_created_at_is_ingestion_time(tmp_vault_dir, graph_store, i
     before_ingest = datetime.now(timezone.utc)
 
     request = IngestRequest(
-        source="patents/doc_old.md",
+        source="reports/doc_old.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -501,17 +501,17 @@ async def test_bh_055_import_name_collision_appends_hash(
 async def test_bh_056_internal_file_not_copied(tmp_vault_dir, graph_store, ingestion_service):
     """Files already under storage_root are ingested in place without
     copying. source_path is the normalized relative path."""
-    _create_test_file(tmp_vault_dir, "patents/internal.md", "# Internal\n\nContent.\n")
+    _create_test_file(tmp_vault_dir, "reports/internal.md", "# Internal\n\nContent.\n")
 
     request = IngestRequest(
-        source="patents/internal.md",
+        source="reports/internal.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
 
     doc = result.document
     assert result.is_new is True
-    assert doc.source_path == "patents/internal.md"
+    assert doc.source_path == "reports/internal.md"
 
     # No imports/ directory should have been created
     imports_dir = tmp_vault_dir / "sources" / "imports"
@@ -579,7 +579,7 @@ async def test_ensure_vault_local_creates_missing_sources_parent(
 
 
 # ---------------------------------------------------------------------------
-# T-0038 (unit): _chunk_projection emits body chunks only; identity
+# (unit): _chunk_projection emits body chunks only; identity
 # signals live in the standalone synthetic header chunk built by
 # _build_header_chunk.
 # ---------------------------------------------------------------------------
@@ -587,8 +587,8 @@ async def test_ensure_vault_local_creates_missing_sources_parent(
 
 def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
     """_chunk_projection prepends the ATX heading line to body content
-    (T-0081) so the projection round-trips through read_projection. The
-    synthetic-header preamble (T-0038) still lives in its own chunk and
+     so the projection round-trips through read_projection. The
+    synthetic-header preamble still lives in its own chunk and
     must not leak into body chunks."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
@@ -613,7 +613,7 @@ def test_chunk_projection_emits_body_chunks_without_preamble(ingestion_service):
 
 def test_chunk_projection_fallback_chunk_has_no_preamble(ingestion_service):
     """When there are no headings, the fallback single chunk carries the
-    raw projection text without any identity preamble (T-0038)."""
+    raw projection text without any identity preamble."""
     from sage.source_adapters.base import ProjectionResult
 
     projection = ProjectionResult(
@@ -633,8 +633,8 @@ def test_chunk_projection_fallback_chunk_has_no_preamble(ingestion_service):
 
 def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
     """Every body chunk carries its ATX heading line plus body content
-    (T-0081); the synthetic header chunk lives outside _chunk_projection's
-    output (T-0038)."""
+    ; the synthetic header chunk lives outside _chunk_projection's
+    output."""
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
     projection = ProjectionResult(
@@ -659,7 +659,7 @@ def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
 def test_build_header_chunk_content_includes_all_identity_fields(ingestion_service):
     """The synthetic header chunk body covers title, source filename
     stem, tags, semantic_abstract, and a case-split identifier-token
-    line (T-0038)."""
+    line."""
     from sage.services.ingestion import IngestionService
 
     now = datetime.now(timezone.utc)
@@ -667,7 +667,7 @@ def test_build_header_chunk_content_includes_all_identity_fields(ingestion_servi
         id=_id("test_doc"),
         title="ClinicalNormalization",
         source_type=SourceType.MARKDOWN,
-        source_path="imports/PIM_PV07_ClinicalNormalization_v1_0.md",
+        source_path="imports/EXAMPLE_PV07_ClinicalNormalization_v1_0.md",
         source_content_hash=_sha("test"),
         adapter_version="0.1.0",
         created_by="test",
@@ -681,7 +681,7 @@ def test_build_header_chunk_content_includes_all_identity_fields(ingestion_servi
     content = IngestionService._build_header_chunk_content(doc)
 
     assert "Title: ClinicalNormalization" in content
-    assert "Source: PIM_PV07_ClinicalNormalization_v1_0" in content
+    assert "Source: EXAMPLE_PV07_ClinicalNormalization_v1_0" in content
     assert "Tags: PV07" in content
     assert "Abstract: A canonical definition of clinical normalization." in content
     assert "Identifier tokens:" in content
@@ -692,7 +692,7 @@ def test_build_header_chunk_content_includes_all_identity_fields(ingestion_servi
 
 def test_build_header_chunk_content_empty_abstract_when_unset(ingestion_service):
     """Header chunk shape stays stable when semantic_abstract is None;
-    Stage 3 rebuilds the chunk once abstraction completes (T-0038)."""
+    Stage 3 rebuilds the chunk once abstraction completes."""
     from sage.services.ingestion import IngestionService
 
     now = datetime.now(timezone.utc)
@@ -700,7 +700,7 @@ def test_build_header_chunk_content_empty_abstract_when_unset(ingestion_service)
         id=_id("test_doc"),
         title="PortfolioDashboard_Template",
         source_type=SourceType.XLSX,
-        source_path="imports/2026-05-11_PIM_REF_PortfolioDashboard_Template_v3.xlsx",
+        source_path="imports/2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3.xlsx",
         source_content_hash=_sha("test"),
         adapter_version="0.1.0",
         created_by="test",
@@ -722,7 +722,7 @@ def test_build_header_chunk_content_empty_abstract_when_unset(ingestion_service)
 
 def test_build_header_chunk_marker_and_index(ingestion_service):
     """The standalone synthetic header chunk uses the reserved heading
-    path marker and a chunk_index that sorts before body chunks (T-0038)."""
+    path marker and a chunk_index that sorts before body chunks."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
 
     now = datetime.now(timezone.utc)
@@ -751,7 +751,7 @@ def test_build_header_chunk_marker_and_index(ingestion_service):
 
 def test_case_split_identifiers_handles_camelcase_and_underscores():
     """_case_split_identifiers lowercases, splits CamelCase compounds and
-    underscored compounds, and dedupes (T-0038)."""
+    underscored compounds, and dedupes."""
     from sage.services.ingestion import IngestionService
 
     out = IngestionService._case_split_identifiers(
@@ -773,7 +773,7 @@ def test_case_split_identifiers_handles_camelcase_and_underscores():
 
 
 def test_case_split_identifiers_empty_sources_returns_empty():
-    """No sources → empty string (T-0038)."""
+    """No sources → empty string."""
     from sage.services.ingestion import IngestionService
 
     assert IngestionService._case_split_identifiers() == ""
@@ -789,14 +789,14 @@ async def test_bh_062_filename_date_sets_document_date(
     tmp_vault_dir, graph_store, ingestion_service
 ):
     """Caller-supplied date in metadata takes precedence as document_date."""
-    full_path = _create_test_file(tmp_vault_dir, "patents/dated_doc.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/dated_doc.md")
 
     # Set file mtime to a different date so we can verify independence
     file_mtime = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
     os.utime(full_path, (full_path.stat().st_atime, file_mtime.timestamp()))
 
     request = IngestRequest(
-        source="patents/dated_doc.md",
+        source="reports/dated_doc.md",
         source_type=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
@@ -820,13 +820,13 @@ async def test_bh_063_fallback_to_source_modified_at_date(
     tmp_vault_dir, graph_store, ingestion_service
 ):
     """When no date in metadata, document_date derives from source_modified_at."""
-    full_path = _create_test_file(tmp_vault_dir, "patents/no_date_doc.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/no_date_doc.md")
 
     known_mtime = datetime(2025, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
     os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
 
     request = IngestRequest(
-        source="patents/no_date_doc.md",
+        source="reports/no_date_doc.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -873,7 +873,7 @@ async def test_document_date_fallback_uses_vault_timezone(
         lifecycle_service=lifecycle_service,
     )
 
-    full_path = _create_test_file(tmp_vault_dir, "patents/late_evening.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/late_evening.md")
     # 2026-04-29 00:33 UTC is 2026-04-28 19:33 CDT.
     chicago_evening_mtime = datetime(2026, 4, 29, 0, 33, 0, tzinfo=timezone.utc)
     os.utime(
@@ -882,7 +882,7 @@ async def test_document_date_fallback_uses_vault_timezone(
     )
 
     request = IngestRequest(
-        source="patents/late_evening.md",
+        source="reports/late_evening.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await service.ingest(request)
@@ -911,12 +911,12 @@ async def test_document_date_fallback_defaults_to_utc(
     behavior: fallback uses the UTC calendar date of source_modified_at.
     Regression guard for existing vaults.
     """
-    full_path = _create_test_file(tmp_vault_dir, "patents/utc_default.md")
+    full_path = _create_test_file(tmp_vault_dir, "reports/utc_default.md")
     known_mtime = datetime(2025, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
     os.utime(full_path, (full_path.stat().st_atime, known_mtime.timestamp()))
 
     request = IngestRequest(
-        source="patents/utc_default.md",
+        source="reports/utc_default.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -933,13 +933,13 @@ async def test_document_date_fallback_defaults_to_utc(
 async def test_bh_064_null_when_no_date_sources(tmp_vault_dir, graph_store, ingestion_service):
     """document_date is null when neither filename date nor source_modified_at
     is available."""
-    _create_test_file(tmp_vault_dir, "patents/no_sources.md")
+    _create_test_file(tmp_vault_dir, "reports/no_sources.md")
 
     # Simpler approach: ingest, then clear both fields and verify the
     # invariant that _build_metadata_updates doesn't set document_date
     # when no date key is present.
     request = IngestRequest(
-        source="patents/no_sources.md",
+        source="reports/no_sources.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -966,10 +966,10 @@ async def test_bh_064_null_when_no_date_sources(tmp_vault_dir, graph_store, inge
 
 async def test_bh_065_document_date_round_trip(tmp_vault_dir, graph_store, ingestion_service):
     """document_date stored as TEXT in SQLite survives insert/retrieve cycle."""
-    _create_test_file(tmp_vault_dir, "patents/date_roundtrip.md")
+    _create_test_file(tmp_vault_dir, "reports/date_roundtrip.md")
 
     request = IngestRequest(
-        source="patents/date_roundtrip.md",
+        source="reports/date_roundtrip.md",
         source_type=SourceType.MARKDOWN,
         metadata={"date": "2026-04-10"},
     )
@@ -994,13 +994,13 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
     the existing document record rather than creating a duplicate.
     The source_path is updated to the new location."""
     content = "# Identical\n\nSame content at two paths."
-    _create_test_file(tmp_vault_dir, "patents/doc_a.md", content)
-    _create_test_file(tmp_vault_dir, "patents/subfolder/doc_a_copy.md", content)
+    _create_test_file(tmp_vault_dir, "reports/doc_a.md", content)
+    _create_test_file(tmp_vault_dir, "reports/subfolder/doc_a_copy.md", content)
 
     # First ingest
     result1 = await ingestion_service.ingest(
         IngestRequest(
-            source="patents/doc_a.md",
+            source="reports/doc_a.md",
             source_type=SourceType.MARKDOWN,
         )
     )
@@ -1010,7 +1010,7 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
     # Force re-ingest from different path with identical content
     result2 = await ingestion_service.ingest(
         IngestRequest(
-            source="patents/subfolder/doc_a_copy.md",
+            source="reports/subfolder/doc_a_copy.md",
             source_type=SourceType.MARKDOWN,
             force=True,
         )
@@ -1018,7 +1018,7 @@ async def test_bh_067_force_reingestion_different_path_reuses_document(
 
     assert result2.is_new is False
     assert result2.document.id == original_id
-    assert result2.document.source_path == "patents/subfolder/doc_a_copy.md"
+    assert result2.document.source_path == "reports/subfolder/doc_a_copy.md"
     assert result2.document.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 
@@ -1035,12 +1035,12 @@ async def test_bh_068_sequential_pipeline_final_status(
     status, and the graph store is consistent with it."""
     _create_test_file(
         tmp_vault_dir,
-        "patents/doc_final.md",
+        "reports/doc_final.md",
         "# Final Status\n\nVerify sequential pipeline completion.",
     )
 
     request = IngestRequest(
-        source="patents/doc_final.md",
+        source="reports/doc_final.md",
         source_type=SourceType.MARKDOWN,
     )
     result = await ingestion_service.ingest(request)
@@ -1178,9 +1178,9 @@ async def test_reabstract_returns_immediately_with_started_status(
     """BH-116: reabstract should return immediately with a dict containing
     status='reabstract_started' and the document_id, without waiting for
     the background abstraction to complete."""
-    _create_test_file(tmp_vault_dir, "patents/reabs.md", "# Reabstract Test\n\nOriginal content.")
+    _create_test_file(tmp_vault_dir, "reports/reabs.md", "# Reabstract Test\n\nOriginal content.")
 
-    request = IngestRequest(source="patents/reabs.md", source_type=SourceType.MARKDOWN)
+    request = IngestRequest(source="reports/reabs.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
@@ -1198,9 +1198,9 @@ async def test_reabstract_sets_pipeline_status_in_progress(
 ):
     """BH-117: reabstract should set pipeline_status to
     abstraction_in_progress before returning."""
-    _create_test_file(tmp_vault_dir, "patents/status.md", "# Status Test\n\nContent.")
+    _create_test_file(tmp_vault_dir, "reports/status.md", "# Status Test\n\nContent.")
 
-    request = IngestRequest(source="patents/status.md", source_type=SourceType.MARKDOWN)
+    request = IngestRequest(source="reports/status.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
@@ -1219,9 +1219,9 @@ async def test_reabstract_background_updates_abstract_on_success(
     pipeline_status to abstraction_complete when abstraction succeeds."""
     import asyncio
 
-    _create_test_file(tmp_vault_dir, "patents/bgok.md", "# BG OK\n\nOriginal content.")
+    _create_test_file(tmp_vault_dir, "reports/bgok.md", "# BG OK\n\nOriginal content.")
 
-    request = IngestRequest(source="patents/bgok.md", source_type=SourceType.MARKDOWN)
+    request = IngestRequest(source="reports/bgok.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
     original_abstract = result.document.semantic_abstract
@@ -1253,7 +1253,7 @@ async def test_reabstract_background_sets_failed_on_error(
     when the abstraction provider raises an exception."""
     import asyncio
 
-    _create_test_file(tmp_vault_dir, "patents/bgfail.md", "# BG Fail\n\nContent.")
+    _create_test_file(tmp_vault_dir, "reports/bgfail.md", "# BG Fail\n\nContent.")
 
     # Ingest with the normal stub first so initial ingestion succeeds,
     # then swap to the failing provider for reabstract
@@ -1263,7 +1263,7 @@ async def test_reabstract_background_sets_failed_on_error(
 
     # Use stub for initial ingest
     ingestion_service_failing_llm._abstraction = StubAbstractionProvider()
-    request = IngestRequest(source="patents/bgfail.md", source_type=SourceType.MARKDOWN)
+    request = IngestRequest(source="reports/bgfail.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service_failing_llm.ingest(request)
     doc_id = result.document.id
 
@@ -1299,9 +1299,9 @@ async def test_reabstract_no_projection_raises_error(
     the document exists but has no stored chunks."""
     from sage.api.errors import NoProjectionError
 
-    _create_test_file(tmp_vault_dir, "patents/nochunks.md", "# No Chunks\n\nContent.")
+    _create_test_file(tmp_vault_dir, "reports/nochunks.md", "# No Chunks\n\nContent.")
 
-    request = IngestRequest(source="patents/nochunks.md", source_type=SourceType.MARKDOWN)
+    request = IngestRequest(source="reports/nochunks.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
@@ -1526,7 +1526,7 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
 #
 # These tests exercise the adapter_tags / adapter_tag_prefixes convention
 # between the source adapter layer and the ingestion service. The
-# DocxAdapter is the first adapter to use this channel (for .dotx template
+# DocxAdapter is the first adapter to use this channel (for.dotx template
 # style inventory), but the contract is generic so any adapter can
 # contribute to document.tags from projection metadata.
 
@@ -1535,7 +1535,7 @@ class _TagEmittingStubAdapter:
     """Stub adapter that emits configurable adapter_tags in projection metadata.
 
     Used to exercise the ingestion-level tag-merge plumbing (BH-131..133)
-    without the real .dotx machinery. Each instance can be reconfigured
+    without the real.dotx machinery. Each instance can be reconfigured
     between calls to simulate an updated adapter version, supporting
     the BH-132 stale-tag-stripping scenario.
     """
@@ -1624,12 +1624,12 @@ async def test_bh_131_adapter_tags_merge_on_new_ingest(
 
     _create_test_file(
         tmp_vault_dir,
-        "patents/bh131_a.md",
+        "reports/bh131_a.md",
         content="# BH-131 case A\n\nWith adapter tags.",
     )
 
     request = IngestRequest(
-        source="patents/bh131_a.md",
+        source="reports/bh131_a.md",
         source_type=SourceType.MARKDOWN,
         metadata={"codes": "caller-tag"},
     )
@@ -1686,12 +1686,12 @@ async def test_bh_131_adapter_tags_merge_on_new_ingest(
 
     _create_test_file(
         tmp_vault_dir,
-        "patents/bh131_plain.md",
+        "reports/bh131_plain.md",
         content="# BH-131 case B\n\nWithout adapter tags.",
     )
     plain_result = await service_plain.ingest(
         IngestRequest(
-            source="patents/bh131_plain.md",
+            source="reports/bh131_plain.md",
             source_type=SourceType.MARKDOWN,
             metadata={"codes": "caller-tag"},
         )
@@ -1727,13 +1727,13 @@ async def test_bh_132_force_reingest_strips_stale_adapter_tags(
 
     file_path = _create_test_file(
         tmp_vault_dir,
-        "patents/bh132.md",
+        "reports/bh132.md",
         content="# BH-132\n\nFirst.",
     )
 
     first = await service.ingest(
         IngestRequest(
-            source="patents/bh132.md",
+            source="reports/bh132.md",
             source_type=SourceType.MARKDOWN,
             metadata={"codes": "caller-tag"},
         )
@@ -1749,7 +1749,7 @@ async def test_bh_132_force_reingest_strips_stale_adapter_tags(
 
     second = await service.ingest(
         IngestRequest(
-            source="patents/bh132.md",
+            source="reports/bh132.md",
             source_type=SourceType.MARKDOWN,
             force=True,
             metadata={"codes": "caller-tag"},
@@ -1788,10 +1788,10 @@ async def test_bh_133_byte_identical_reingest_raises_duplicate(
         adapter=adapter,
     )
 
-    _create_test_file(tmp_vault_dir, "patents/bh133.md", content="# BH-133\n\nOnly content.")
+    _create_test_file(tmp_vault_dir, "reports/bh133.md", content="# BH-133\n\nOnly content.")
 
     first = await service.ingest(
-        IngestRequest(source="patents/bh133.md", source_type=SourceType.MARKDOWN)
+        IngestRequest(source="reports/bh133.md", source_type=SourceType.MARKDOWN)
     )
     assert "template:style:X" in first.document.tags
     original_adapter_version = first.document.adapter_version
@@ -1801,7 +1801,7 @@ async def test_bh_133_byte_identical_reingest_raises_duplicate(
     # Same file, no force: must raise DuplicateContentError
     with pytest.raises(DuplicateContentError) as exc_info:
         await service.ingest(
-            IngestRequest(source="patents/bh133.md", source_type=SourceType.MARKDOWN)
+            IngestRequest(source="reports/bh133.md", source_type=SourceType.MARKDOWN)
         )
     assert exc_info.value.detail["existing_document_id"] == first.document.id
 
@@ -1884,12 +1884,12 @@ async def test_bh_134_empty_projection_text_skips_abstraction(
 
     _create_test_file(
         tmp_vault_dir,
-        "patents/bh134.md",
+        "reports/bh134.md",
         content="# Placeholder\n\nSource has bytes but adapter returns empty text.",
     )
 
     result = await service.ingest(
-        IngestRequest(source="patents/bh134.md", source_type=SourceType.MARKDOWN)
+        IngestRequest(source="reports/bh134.md", source_type=SourceType.MARKDOWN)
     )
 
     fetched = await graph_store.get_document(result.document.id)
@@ -1923,12 +1923,12 @@ async def test_bh_134_non_empty_text_still_runs_abstraction(
 
     _create_test_file(
         tmp_vault_dir,
-        "patents/bh134_ctrl.md",
+        "reports/bh134_ctrl.md",
         content="# Real\n\nNon-empty body content to abstract.",
     )
 
     result = await service.ingest(
-        IngestRequest(source="patents/bh134_ctrl.md", source_type=SourceType.MARKDOWN)
+        IngestRequest(source="reports/bh134_ctrl.md", source_type=SourceType.MARKDOWN)
     )
 
     fetched = await graph_store.get_document(result.document.id)
@@ -1959,7 +1959,7 @@ requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not availa
 
 
 def _write_styled_docx(path: Path, paragraphs: list[tuple[str, str]]) -> None:
-    """Write a .docx with the given (text, style) paragraphs.
+    """Write a.docx with the given (text, style) paragraphs.
 
     Style names must already exist in the document's style set. Built-in
     styles like "Title", "Heading 1", "Subtitle", "Normal" are pre-defined
@@ -2027,7 +2027,7 @@ async def test_vault_adapter_config_reaches_adapter_at_ingest(
     stub_abstraction_provider,
     minimal_vault_config_dict,
 ):
-    """The PIM use case: vault config's heading_style_map flows to docx adapter."""
+    """The EXAMPLE use case: vault config's heading_style_map flows to docx adapter."""
     config = _build_vault_config_with_docx(
         minimal_vault_config_dict,
         vault_docx_config={"heading_style_map": {"Title": 1}},
@@ -2258,7 +2258,7 @@ class _RecordingEmbeddingProvider:
 
     Accumulates across calls — the production pipeline now embeds chunks
     in Stage 2 and re-embeds the synthetic header chunk in Stage 3
-    (T-0038), so a single call's inputs are no longer the full picture.
+    , so a single call's inputs are no longer the full picture.
     """
 
     def __init__(self) -> None:
@@ -2282,7 +2282,7 @@ async def test_embedder_receives_combined_heading_path_and_content(
     so semantic search can find chunks via heading-only query terms.
 
     Heading text is deliberately distinct from the document title so the
-    standalone synthetic header chunk (T-0038) — which carries title /
+    standalone synthetic header chunk — which carries title /
     source / tags / semantic_abstract — does not accidentally include
     the heading text; that would mask a failure of the heading-context
     embedding logic.
@@ -2327,7 +2327,7 @@ async def test_embedder_receives_combined_heading_path_and_content(
     await service.ingest(IngestRequest(source="plain_filename.docx", source_type=SourceType.DOCX))
 
     assert recording_embedder.last_inputs, "embedder was not called"
-    # The synthetic header chunk is index 0 (T-0038); the body chunk is
+    # The synthetic header chunk is index 0; the body chunk is
     # at the index whose embed input begins with the heading text.
     body_inputs = [
         text
@@ -2357,9 +2357,9 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     minimal_vault_config_dict,
 ):
     """The chunk.content field stored in the content store carries its
-    own ATX heading line plus body content (T-0081). The embedder builds
+    own ATX heading line plus body content. The embedder builds
     its `heading_path + content` input on the fly; it does not mutate the
-    stored chunk.content. The synthetic-header preamble (T-0038) does not
+    stored chunk.content. The synthetic-header preamble does not
     leak into body chunks."""
     config = _build_vault_config_with_docx(
         minimal_vault_config_dict,
@@ -2393,8 +2393,8 @@ async def test_chunk_content_field_unchanged_by_combined_embedding(
     )
 
     chunks = await stub_content_store.get_all_chunks(result.document.id)
-    # Body chunks carry the ATX heading line plus body content (T-0081);
-    # the synthetic header chunk (T-0038) lives separately under
+    # Body chunks carry the ATX heading line plus body content;
+    # the synthetic header chunk lives separately under
     # heading_path SYNTHETIC_HEADER_HEADING_PATH.
     assert len(chunks) >= 2
     second = next(c for c in chunks if c.heading_path == second_heading)
@@ -2464,7 +2464,7 @@ async def test_empty_content_heading_still_emits_chunk(
     by_path = {c.heading_path: c for c in chunks}
     assert "EMPTY PARENT" in by_path
     # Body chunks carry projected content only — the synthetic header
-    # chunk (T-0038) lives under SYNTHETIC_HEADER_HEADING_PATH and does
+    # chunk lives under SYNTHETIC_HEADER_HEADING_PATH and does
     # not touch the per-heading chunks.
     parent = by_path["EMPTY PARENT"]
     assert "Some body content" not in parent.content, (

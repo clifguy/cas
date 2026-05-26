@@ -60,18 +60,18 @@ filename using the vault's `metadata_extraction.filename_extraction` config
 and populates `title`, `document_date`, `project`, `tags`, `version_label`,
 and `doc_type` from the parse result. No caller-supplied metadata is required.
 
-**Precondition:** Vault has PIM-Health-style `metadata_extraction` config
+**Precondition:** Vault has EXAMPLE-Health-style `metadata_extraction` config
 with a filename pattern, `known_code_patterns`, and `code_to_doc_type` rules.
 
-**Input:** `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", source_type="markdown"))`
+**Input:** `ingest(IngestRequest(source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.title == "Claim-Set"`
 - `doc.document_date == "2026-03-09"`
-- `doc.project == "PIM"`
+- `doc.project == "EXAMPLE"`
 - `doc.tags == ["PV06"]` (codes serialized as tags)
 - `doc.version_label == "v6.0"`
-- `doc.doc_type == "patent_draft"` (resolved via `code_to_doc_type` PV rule)
+- `doc.doc_type == "design_spec"` (resolved via `code_to_doc_type` PV rule)
 
 **Rationale:** Before CAS-ADR-015, this ingestion path bypassed the filename
 parser. All catalog fields except title would be null, and doc_type would
@@ -88,7 +88,7 @@ by the filename parser.
 
 **Precondition:** Same as ME-001.
 
-**Input:** `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", source_type="markdown", metadata={"title": "Custom Title", "project": "OTHER", "version_label": "v99.0"}))`
+**Input:** `ingest(IngestRequest(source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md", source_type="markdown", metadata={"title": "Custom Title", "project": "OTHER", "version_label": "v99.0"}))`
 
 **Expected:**
 - `doc.title == "Custom Title"` (caller wins)
@@ -96,7 +96,7 @@ by the filename parser.
 - `doc.version_label == "v99.0"` (caller wins)
 - `doc.document_date == "2026-03-09"` (filename parse fills unspecified field)
 - `doc.tags == ["PV06"]` (filename parse fills unspecified field)
-- `doc.doc_type == "patent_draft"` (filename parse fills unspecified field)
+- `doc.doc_type == "design_spec"` (filename parse fills unspecified field)
 
 **Rationale:** Manual entry is the highest-precedence layer. Partial
 caller metadata (some fields specified, some not) composes correctly
@@ -112,14 +112,14 @@ with filename-parsed values filling the gaps.
 parse yields a usable title segment, the filename-parsed title wins over
 `ProjectionResult.title` from the adapter.
 
-**Precondition:** Vault has PIM-Health-style filename pattern. Source file's
+**Precondition:** Vault has EXAMPLE-Health-style filename pattern. Source file's
 content produces an adapter title that differs from the filename-parsed
 title (e.g., a markdown file whose first H1 differs from the filename stem).
 
 **Input:**
-- Source file `2026-03-09_PIM_PV06_Claim-Set_v6.md` with first H1
+- Source file `2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md` with first H1
   "A Long Rhetorical Title That Differs From The Filename".
-- `ingest(IngestRequest(source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md", source_type="markdown"))`
+- `ingest(IngestRequest(source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.title == "Claim-Set"` (filename parse wins)
@@ -165,10 +165,10 @@ of the filename_extraction block is the signal to skip the stage.
 **Decision:** The existing default-to-"misc" path runs only when neither
 filename parse nor caller metadata yields a doc_type.
 
-**Precondition:** PIM-Health-style filename pattern. Source filename encodes
+**Precondition:** EXAMPLE-Health-style filename pattern. Source filename encodes
 a code that maps to a non-misc doc_type via `code_to_doc_type`.
 
-**Input:** `ingest(IngestRequest(source="refs/2026-02-01_PIM_REF_Glossary_v2.md", source_type="markdown"))`
+**Input:** `ingest(IngestRequest(source="refs/2026-02-01_EXAMPLE_REF_Glossary_v2.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.doc_type == "glossary"` (resolved by compound rule: code=REF + title_contains=Glossary)
@@ -188,15 +188,15 @@ code rule, no matching keyword rule) and caller supplies none, the existing
 default to "misc" still applies so that content-store pre-filtering has a
 stable non-null key.
 
-**Precondition:** PIM-Health-style pattern; source filename contains no code
+**Precondition:** EXAMPLE-Health-style pattern; source filename contains no code
 that matches any `code_to_doc_type` rule.
 
-**Input:** `ingest(IngestRequest(source="random/2026-03-01_PIM_Untagged-Note.md", source_type="markdown"))`
+**Input:** `ingest(IngestRequest(source="random/2026-03-01_EXAMPLE_Untagged-Note.md", source_type="markdown"))`
 
 **Expected:**
 - `doc.doc_type == "misc"`
 - `doc.document_date == "2026-03-01"` (filename parse still ran)
-- `doc.project == "PIM"`
+- `doc.project == "EXAMPLE"`
 
 **Rationale:** The default-to-"misc" invariant is preserved. The change is
 narrow: only when filename parse WOULD resolve a doc_type, the misc default
@@ -216,8 +216,8 @@ precedence.
 
 **Input:** Two ingest calls against files with structurally identical names
 but different extensions:
-- `2026-03-09_PIM_PV06_A_v1.md`
-- `2026-03-09_PIM_PV06_A_v1.docx` (docx adapter with minimal docx content)
+- `2026-03-09_EXAMPLE_PV06_A_v1.md`
+- `2026-03-09_EXAMPLE_PV06_A_v1.docx` (docx adapter with minimal docx content)
 
 **Expected:**
 - Both resulting Documents have matching `title`, `project`, `tags`,

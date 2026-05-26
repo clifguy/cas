@@ -1,4 +1,4 @@
-"""Integration tests for app.backend.dependencies (T-0049).
+"""Integration tests for app.backend.dependencies.
 
 These tests exercise the new FastAPI ``Depends`` factories that resolve
 ``ScanService`` and ``IngestStreamingService`` from the request body's
@@ -33,9 +33,9 @@ from tests.app.test_app_backend import _make_vault_config_dict
 
 @pytest.fixture
 async def app_with_vault(tmp_path):
-    """FastAPI app with a single vault registered under id 'pim_health'."""
+    """FastAPI app with a single vault registered under id 'example_vault'."""
     config = VaultConfig.model_validate(
-        _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
+        _make_vault_config_dict(tmp_path, "example_vault", "Example Portfolio")
     )
     app = create_app(config=config)
     await _initialize_services(
@@ -60,7 +60,7 @@ async def http_client(app_with_vault):
 
 
 class TestDependenciesModuleSurface:
-    """T-0049 requires app.backend.dependencies to host the new
+    """requires app.backend.dependencies to host the new
     Depends factories. These are the architectural commitments that
     the migration must satisfy; the integration tests below verify
     they wire correctly end-to-end."""
@@ -87,7 +87,7 @@ class TestGetScanService:
         scan_dir.mkdir()
         resp = await client.post(
             "/app/scan",
-            json={"vault_id": "pim_health", "directory": str(scan_dir)},
+            json={"vault_id": "example_vault", "directory": str(scan_dir)},
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
@@ -121,7 +121,7 @@ class TestGetIngestStreamingService:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
@@ -159,7 +159,7 @@ class TestGetIngestStreamingService:
         client, _config = http_client
         resp = await client.post(
             "/app/ingest",
-            json={"vault_id": "pim_health", "files": []},
+            json={"vault_id": "example_vault", "files": []},
         )
         assert resp.status_code == 400, resp.text
         assert "text/event-stream" not in resp.headers.get("content-type", "")

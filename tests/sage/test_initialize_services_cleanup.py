@@ -1,4 +1,4 @@
-"""Transactional cleanup for ``initialize_services`` (T-0183 AC2, Risk note).
+"""Transactional cleanup for ``initialize_services`` (AC2, Risk note).
 
 When ``initialize_services`` raises mid-construction, any partially-allocated
 resources (timing thread, graph store connections, content store) must be
@@ -8,7 +8,7 @@ that propagates; cleanup-time exceptions are logged, not re-raised.
 These three tests exercise the transactional contract directly against
 ``initialize_services``. The end-to-end integration via ``sage_reload_vault``
 is covered in ``tests/sage/test_mcp_server.py`` (the N1/N2 reload-failure
-tests for T-0183).
+tests for).
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def vault_config_with_timing(minimal_vault_config_dict):
 async def test_initialize_services_cleans_up_timing_thread_on_failure(
     vault_config_with_timing, monkeypatch
 ):
-    """T-0183 N5: failed initialize_services must stop the timing thread.
+    """N5: failed initialize_services must stop the timing thread.
 
     ``_build_vault_timers`` calls ``flusher.start()`` before returning. If a
     downstream constructor raises, the thread keeps running unless the
@@ -92,7 +92,7 @@ async def test_initialize_services_cleans_up_timing_thread_on_failure(
 async def test_initialize_services_cleans_up_graph_store_on_failure(
     minimal_vault_config_dict, monkeypatch
 ):
-    """T-0183 N6: failed initialize_services must close the graph store.
+    """N6: failed initialize_services must close the graph store.
 
     ``GraphStore.__init__`` constructs an executor and connection pool;
     ``.initialize()`` opens connections to apply schema. If a downstream
@@ -159,9 +159,9 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
 async def test_initialize_services_cleanup_does_not_mask_original_exception(
     vault_config_with_timing, monkeypatch
 ):
-    """T-0183 N7 (Risk note): cleanup-time exceptions must not mask the original.
+    """N7 (Risk note): cleanup-time exceptions must not mask the original.
 
-    The Risk note in T-0183 explicitly requires "cleanup must release any
+    The Risk note in explicitly requires "cleanup must release any
     partially-allocated resources without re-raising". Cleanup-time errors
     are logged and swallowed; the original exception is what propagates.
 

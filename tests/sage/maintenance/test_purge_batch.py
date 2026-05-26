@@ -1,4 +1,4 @@
-"""Tests for the purge_batch maintenance script (T-0106).
+"""Tests for the purge_batch maintenance script.
 
 Exercises the service-level entry point
 ``sage.maintenance.purge_batch.purge`` against a real SQLite + LanceDB
@@ -9,14 +9,14 @@ halt-on-first-failure semantics.
 
 Fixture layout (six documents around ``T_BASE``):
 
-| doc_id            | created_at                      | role                |
+| doc_id | created_at | role |
 |-------------------|---------------------------------|---------------------|
-| doc_pre           | T_BASE - 2min                   | before-window control |
-| doc_at_since      | T_BASE                          | inclusive lower edge |
-| doc_mid_1         | T_BASE + 1min                   | in window |
-| doc_mid_2         | T_BASE + 2min                   | in window |
-| doc_at_until      | T_BASE + 5min                   | exclusive upper edge |
-| doc_post          | now(utc) + 24h                  | after-window control |
+| doc_pre | T_BASE - 2min | before-window control |
+| doc_at_since | T_BASE | inclusive lower edge |
+| doc_mid_1 | T_BASE + 1min | in window |
+| doc_mid_2 | T_BASE + 2min | in window |
+| doc_at_until | T_BASE + 5min | exclusive upper edge |
+| doc_post | now(utc) + 24h | after-window control |
 
 Most tests invoke the batch with ``since=T_BASE`` and
 ``until=T_BASE + 5min``, producing the target set
@@ -769,7 +769,7 @@ async def test_audit_log_one_entry_per_target_with_shared_batch_id(populated_vau
 
 
 async def test_audit_log_each_entry_carries_t0105_field_shape(populated_vault, monkeypatch):
-    """Each entry has T-0105's seven fields plus batch_id; values from rows, not constants."""
+    """Each entry has seven fields plus batch_id; values from rows, not constants."""
     sqlite_path = populated_vault["sqlite_path"]
     t_base = populated_vault["t_base"]
 
@@ -858,7 +858,7 @@ async def test_two_batches_have_distinct_batch_ids(populated_vault, monkeypatch)
 
 
 async def test_audit_log_appends_does_not_overwrite_t0105_entries(populated_vault, monkeypatch):
-    """A pre-existing T-0105-shaped line (no batch_id) survives a batch run."""
+    """A pre-existing-shaped line (no batch_id) survives a batch run."""
     audit_path = _audit_log_path()
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     seed = json.dumps(
@@ -1022,7 +1022,7 @@ async def test_halt_on_failure_preserves_batch_id_on_partial_entries(populated_v
     assert len(batch_ids) == 1, "halted batch's partial audit entries should share one batch_id"
 
 
-# ─── Refusal on bad vault (sanity, parallel to T-0105) ──────────────
+# ─── Refusal on bad vault (sanity, parallel to) ──────────────
 
 
 def test_refuses_unknown_vault(capsys):

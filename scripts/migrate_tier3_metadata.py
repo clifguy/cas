@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Backfill tier3_metadata on every ticket and failure_record version (T-0039).
+"""Backfill tier3_metadata on every ticket and failure_record version.
 
-T-0004 Phase 1 (commit cedfce6) wired the tier3_metadata substrate: a typed
+Phase 1 (commit cedfce6) wired the tier3_metadata substrate: a typed
 per-doc_type metadata field validated against each doc_type's metadata_schema
-declared in vault config. Phase 2 (T-0039) migrates existing data into it.
+declared in vault config. Phase 2 migrates existing data into it.
 
 This script:
 

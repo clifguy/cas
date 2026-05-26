@@ -79,7 +79,7 @@ def _sha(name: str) -> str:
 def test_bh_001_document_id_format():
     """Doc ID matches pattern ^[0-9a-f]{8}_[a-z0-9_]+$"""
     doc_id = generate_document_id(
-        source_path="patents/2026-03-09_PIM_PV06_Claim_Set_v6_12.docx",
+        source_path="reports/2026-03-09_EXAMPLE_PV06_Claim_Set_v6_12.docx",
         created_at="2026-03-09T10:00:00Z",
         title="Claim Set",
     )
@@ -95,8 +95,8 @@ def test_bh_001_document_id_format():
 
 def test_bh_002_different_paths_different_ids():
     ts = "2026-03-09T10:00:00Z"
-    id_a = generate_document_id("patents/doc_a.docx", ts, "Doc A")
-    id_b = generate_document_id("patents/doc_b.docx", ts, "Doc B")
+    id_a = generate_document_id("reports/doc_a.docx", ts, "Doc A")
+    id_b = generate_document_id("reports/doc_b.docx", ts, "Doc B")
     assert id_a != id_b
 
 
@@ -106,7 +106,7 @@ def test_bh_002_different_paths_different_ids():
 
 
 def test_bh_003_same_path_different_timestamps():
-    path = "patents/doc_a.docx"
+    path = "reports/doc_a.docx"
     id_1 = generate_document_id(path, "2026-03-09T10:00:00Z", "Doc A")
     id_2 = generate_document_id(path, "2026-03-09T11:00:00Z", "Doc A")
     assert id_1 != id_2
@@ -377,7 +377,7 @@ async def test_get_supersedes_lineage_linear_chain(graph_store):
 
 
 # ---------------------------------------------------------------------------
-# T-0078: document_tags join-table normalization
+# Document_tags join-table normalization
 # ---------------------------------------------------------------------------
 
 
@@ -406,7 +406,7 @@ def _make_doc_with_tags(doc_id: str, tags: list[str]) -> Document:
 
 
 async def test_t0078_insert_with_tags_populates_join_table(graph_store):
-    """T-0078 #1: insert document with tags -> matching join rows."""
+    """#1: insert document with tags -> matching join rows."""
     doc = _make_doc_with_tags(_id("doc_t1"), ["alpha", "beta"])
     await graph_store.insert_document(doc)
     rows = _join_rows(graph_store._db_path, doc.id)
@@ -414,7 +414,7 @@ async def test_t0078_insert_with_tags_populates_join_table(graph_store):
 
 
 async def test_t0078_insert_with_no_tags_creates_no_join_rows(graph_store):
-    """T-0078 #2: insert with empty tags -> zero join rows.
+    """#2: insert with empty tags -> zero join rows.
 
     Vacuous pre-implementation (no hook runs, join table is always empty).
     Kept as a regression guard against an over-eager hook that emits a
@@ -426,7 +426,7 @@ async def test_t0078_insert_with_no_tags_creates_no_join_rows(graph_store):
 
 
 async def test_t0078_update_tags_add(graph_store):
-    """T-0078 #3: update ["a"] -> ["a","b"] reflects in join table."""
+    """#3: update ["a"] -> ["a","b"] reflects in join table."""
     doc = _make_doc_with_tags(_id("doc_t3"), ["a"])
     await graph_store.insert_document(doc)
     await graph_store.update_document(doc.id, {"tags": ["a", "b"]})
@@ -435,7 +435,7 @@ async def test_t0078_update_tags_add(graph_store):
 
 
 async def test_t0078_update_tags_remove(graph_store):
-    """T-0078 #4: update ["a","b"] -> ["a"] removes the dropped row."""
+    """#4: update ["a","b"] -> ["a"] removes the dropped row."""
     doc = _make_doc_with_tags(_id("doc_t4"), ["a", "b"])
     await graph_store.insert_document(doc)
     await graph_store.update_document(doc.id, {"tags": ["a"]})
@@ -443,7 +443,7 @@ async def test_t0078_update_tags_remove(graph_store):
 
 
 async def test_t0078_update_tags_full_replace(graph_store):
-    """T-0078 #5: update ["a"] -> ["c"] replaces the row entirely."""
+    """#5: update ["a"] -> ["c"] replaces the row entirely."""
     doc = _make_doc_with_tags(_id("doc_t5"), ["a"])
     await graph_store.insert_document(doc)
     await graph_store.update_document(doc.id, {"tags": ["c"]})
@@ -451,7 +451,7 @@ async def test_t0078_update_tags_full_replace(graph_store):
 
 
 async def test_t0078_update_without_tags_key_preserves_join(graph_store):
-    """T-0078 #6: update title only -> join rows unchanged.
+    """#6: update title only -> join rows unchanged.
 
     Seeds the join table via the insert hook so the "unchanged" claim is
     not vacuous. Pre-implementation this test still detects a buggy hook
@@ -469,7 +469,7 @@ async def test_t0078_update_without_tags_key_preserves_join(graph_store):
 
 
 async def test_t0078_tag_filter_query_uses_join_table_plan(graph_store):
-    """T-0078 #7: the production tag-filter query path uses the join table.
+    """#7: the production tag-filter query path uses the join table.
 
     Two assertions:
     1. The source of `_query_documents_sync` no longer contains the
@@ -524,7 +524,7 @@ async def test_t0078_tag_filter_query_uses_join_table_plan(graph_store):
 
 
 async def test_t0078_tag_filter_and_semantics(graph_store):
-    """T-0078 #8: filter for two tags returns only documents that carry both."""
+    """#8: filter for two tags returns only documents that carry both."""
     for suffix, tags in (
         ("a", ["alpha"]),
         ("b", ["beta"]),
@@ -543,7 +543,7 @@ async def test_t0078_tag_filter_and_semantics(graph_store):
 
 
 async def test_t0078_backfill_populates_from_json(graph_store):
-    """T-0078 #9: backfill helper fills join table from existing JSON.
+    """#9: backfill helper fills join table from existing JSON.
 
     Simulates an unmigrated state by inserting a document directly via SQL
     (bypassing the sync hook) so the JSON column is populated but the
@@ -597,7 +597,7 @@ async def test_t0078_backfill_populates_from_json(graph_store):
 
 
 async def test_t0078_backfill_is_idempotent(graph_store):
-    """T-0078 #10: re-running backfill does not duplicate or error."""
+    """#10: re-running backfill does not duplicate or error."""
     doc_id = _id("doc_idem")
     now = datetime.now(timezone.utc).isoformat()
     conn = sqlite3.connect(str(graph_store._db_path))
@@ -640,7 +640,7 @@ async def test_t0078_backfill_is_idempotent(graph_store):
 
 
 async def test_t0078_fk_cascade_on_document_delete(graph_store):
-    """T-0078 #11: deleting a document cascades to document_tags rows."""
+    """#11: deleting a document cascades to document_tags rows."""
     doc = _make_doc_with_tags(_id("doc_fk"), ["m", "n"])
     await graph_store.insert_document(doc)
     assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "m"), (doc.id, "n")]
@@ -657,7 +657,7 @@ async def test_t0078_fk_cascade_on_document_delete(graph_store):
 
 
 async def test_t0078_metadata_service_e2e(metadata_service, graph_store):
-    """T-0078 #12: TagsPatch through MetadataService syncs the join table."""
+    """#12: TagsPatch through MetadataService syncs the join table."""
     doc = _make_doc_with_tags(_id("doc_e2e"), ["initial"])
     await graph_store.insert_document(doc)
     assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "initial")]
@@ -678,7 +678,7 @@ async def test_t0078_backfill_plan_includes_document_tags():
 
 
 # ---------------------------------------------------------------------------
-# T-0123: Exhaustive-fields closure test for ``GraphStore._row_to_edge``.
+# Exhaustive-fields closure test for ``GraphStore._row_to_edge``.
 #
 # ``_row_to_edge`` is the single owning factory for the
 # ``sqlite3.Row -> Edge`` projection (sage/storage/graph_store.py). Per the
@@ -695,7 +695,7 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
     ``GraphStore._row_to_edge`` set to a distinct non-default sentinel.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
-    (T-0145); only the column->value mapping is per-ticket. The real
+    ; only the column->value mapping is per-ticket. The real
     ``sqlite3.Row`` it returns matches ``_row_to_edge``'s expectations
     including the defensive ``"<col>" in row.keys()`` guards for the
     optional CTE-stripped columns.
@@ -708,7 +708,7 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
       left null, so an unread column trips ``value is not None``.
     - ``rationale_kind`` is set to ``version_chain`` rather than the
       ``manual`` default so a regression that drops the field is caught
-      by the T-0144 non-None-default-scalar branch (``MANUAL`` would
+      by the non-None-default-scalar branch (``MANUAL`` would
       satisfy ``is not None`` coincidentally).
     - ``edge_type`` is ``references`` (a ``transitive_both`` edge type)
       paired with ``resolution_policy='transitive_both'`` so the policy
@@ -738,7 +738,7 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
 
 
 def test_row_to_edge_populates_every_edge_field():
-    """T-0123 (F4 closure pair, T1): every ``Edge`` field is populated by
+    """(F4 closure pair, T1): every ``Edge`` field is populated by
     ``GraphStore._row_to_edge`` from a sentinel row dict whose columns are
     all non-default. Iterates ``Edge.model_fields`` so the assertion grows
     automatically when a field is added to ``Edge``; if the new field is
@@ -750,7 +750,7 @@ def test_row_to_edge_populates_every_edge_field():
         value = getattr(edge, field_name)
         annotation = field_info.annotation
         default = field_info.default
-        # Three-branch closure-test idiom (T-0144). The list/dict
+        # Three-branch closure-test idiom. The list/dict
         # branch is forward defense for future Edge field additions
         # (no current Edge field is list- or dict-typed). The
         # non-None-default-scalar branch catches the coincidental-pass
@@ -774,7 +774,7 @@ def test_row_to_edge_populates_every_edge_field():
 
 
 # ---------------------------------------------------------------------------
-# T-0125: Exhaustive-fields closure test for ``GraphStore._row_to_staging_edge``.
+# Exhaustive-fields closure test for ``GraphStore._row_to_staging_edge``.
 #
 # ``_row_to_staging_edge`` is the single owning factory for the
 # ``sqlite3.Row -> StagingEdge`` projection (sage/storage/graph_store.py).
@@ -793,7 +793,7 @@ def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
     sentinel.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
-    (T-0145); only the column->value mapping is per-ticket. The real
+    ; only the column->value mapping is per-ticket. The real
     ``sqlite3.Row`` it returns matches ``_row_to_staging_edge``'s
     column-lookup expectations.
 
@@ -801,7 +801,7 @@ def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
 
     - ``confidence_tier`` is set to ``3`` rather than the model's default
       of ``2`` so a regression that drops the field is caught by the
-      T-0144 non-None-default-scalar branch (default ``2`` would
+      non-None-default-scalar branch (default ``2`` would
       satisfy ``is not None`` coincidentally).
     - ``inference_evidence`` carries a distinctive sentinel string so
       an unread column trips ``value is not None``.
@@ -825,7 +825,7 @@ def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
 
 
 def test_row_to_staging_edge_populates_every_staging_edge_field():
-    """T-0125 (F4 closure pair, T1): every ``StagingEdge`` field is
+    """(F4 closure pair, T1): every ``StagingEdge`` field is
     populated by ``GraphStore._row_to_staging_edge`` from a sentinel
     row dict whose columns are all non-default. Iterates
     ``StagingEdge.model_fields`` so the assertion grows automatically
@@ -839,7 +839,7 @@ def test_row_to_staging_edge_populates_every_staging_edge_field():
         value = getattr(staging_edge, field_name)
         annotation = field_info.annotation
         default = field_info.default
-        # Three-branch closure-test idiom (T-0144). StagingEdge.confidence_tier
+        # Three-branch closure-test idiom. StagingEdge.confidence_tier
         # defaults to 2; the sentinel sets it to 3 so the non-None-default
         # branch trips if the factory drops the field (Pydantic would supply
         # the default and 'is not None' would still pass).
@@ -861,7 +861,7 @@ def test_row_to_staging_edge_populates_every_staging_edge_field():
 
 
 # ---------------------------------------------------------------------------
-# T-0157: query_edges enumeration with retraction JOIN
+# Query_edges enumeration with retraction JOIN
 # ---------------------------------------------------------------------------
 
 

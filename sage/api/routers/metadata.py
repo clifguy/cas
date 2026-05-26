@@ -1,6 +1,6 @@
 """Document metadata endpoints:
 - PATCH /sage_vaults/{vault_id}/documents/{document_id}/metadata -- update_metadata.
-- POST /sage_vaults/{vault_id}/metadata/bulk -- bulk_update_metadata (T-0088).
+- POST /sage_vaults/{vault_id}/metadata/bulk -- bulk_update_metadata.
 """
 
 from fastapi import APIRouter, Depends

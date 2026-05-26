@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Backfill `references` edges from inline identifier mentions (T-0016).
+"""Backfill `references` edges from inline identifier mentions.
 
-The T-0016 inference rule runs at ingest time and creates `references` edges
+The inference rule runs at ingest time and creates `references` edges
 from documents that mention vault-resident artifacts by their canonical
 identifier strings (CAS-ADR-NNN, T-NNNN, F-N). It does not retroactively
 process documents already in the vault.

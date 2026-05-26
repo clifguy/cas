@@ -1,9 +1,9 @@
-"""T-0100 prompt-content tests for Qwen3AbstractionProvider.
+"""prompt-content tests for Qwen3AbstractionProvider.
 
-Asserts the two prompt-layer directives added in T-0100:
+Asserts the two prompt-layer directives added in
 
   1. **Acronym non-expansion.** The system prompt instructs the model
-     to leave unknown acronyms unexpanded — surfaced by the T-0084
+     to leave unknown acronyms unexpanded — surfaced by the
      blind review (Qwen3-30B invented "Context-Aware System" for
      "CAS"; Qwen3-8B invented "Component Architecture Specification";
      correct per CAS-ADR-007 is "Clif's Agentic System").
@@ -116,7 +116,7 @@ def provider(monkeypatch):
 
 async def test_acronym_non_expansion_directive_present_in_prompt(provider):
     """Fix 1 acceptance: the prompt sent to ``_generate_fn`` carries
-    the acronym non-expansion directive. Guards against the T-0084
+    the acronym non-expansion directive. Guards against the
     failure mode where the model hallucinates an expansion for an
     acronym (e.g., "CAS") whose expansion is not in the source text.
     """

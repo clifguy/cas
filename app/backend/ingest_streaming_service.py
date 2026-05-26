@@ -1,4 +1,4 @@
-"""HTTP-delivery streaming service for ``/app/ingest`` (T-0049).
+"""HTTP-delivery streaming service for ``/app/ingest``.
 
 This module owns the SSE glue that bridges the caller-neutral
 ``BatchIngestService`` pipeline to FastAPI's ``StreamingResponse``.

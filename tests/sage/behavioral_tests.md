@@ -18,7 +18,7 @@ Tests are grouped by subsystem in implementation dependency order.
 
 **Precondition:** SAGE vault initialized.
 
-**Input:** Ingest a document with source path `patents/2026-03-09_PIM_PV06_Claim_Set_v6_12.docx`.
+**Input:** Ingest a document with source path `reports/2026-03-09_EXAMPLE_PV06_Claim_Set_v6_12.docx`.
 
 **Expected:**
 - `id` matches pattern `^[0-9a-f]{8}_[a-z0-9_]+$`
@@ -37,8 +37,8 @@ component provides uniqueness; the slug provides quick visual identification.
 **Precondition:** SAGE vault initialized.
 
 **Input:** Ingest two documents at the same created_at timestamp from different paths:
-- `patents/doc_a.docx`
-- `patents/doc_b.docx`
+- `reports/doc_a.docx`
+- `reports/doc_b.docx`
 
 **Expected:** The two documents have different `id` values.
 
@@ -53,7 +53,7 @@ concurrent ingestions from different files.
 
 **Precondition:** SAGE vault initialized.
 
-**Input:** Ingest from `patents/doc_a.docx` at two different timestamps (simulating
+**Input:** Ingest from `reports/doc_a.docx` at two different timestamps (simulating
 re-ingestion of a changed file with `force: true`).
 
 **Expected:** The two ingest operations produce different `id` values.
@@ -231,14 +231,14 @@ from the current state without requiring a separate lookup.
 **Decision:** valid_actions is derived from the vault's full transition table,
 including domain-specific transitions.
 
-**Precondition:** PIM Health vault. Document in `active` state.
+**Precondition:** Example Portfolio vault. Document in `active` state.
 
 **Input:** `set_lifecycle(action: "nonexistent_action")`
 
 **Expected:**
 - HTTP 409 (or 400 for unknown action -- see note below)
 - `detail.valid_actions` includes `["supersede", "complete", "archive", "file"]`
-- The `file` action is PIM Health domain-specific
+- The `file` action is Example Portfolio domain-specific
 
 **Note:** If the action value itself is unknown (not in any transition table),
 400 (invalid action value) is returned per the existing OpenAPI spec. If the action
@@ -339,9 +339,9 @@ any document to its predecessors via outbound edges.
 **Category:** ingestion, duplicate_detection
 **Decision:** Same source_path + same source_content_hash = 409 Conflict.
 
-**Precondition:** Document A already ingested from `patents/doc_a.docx` with hash H.
+**Precondition:** Document A already ingested from `reports/doc_a.docx` with hash H.
 
-**Input:** Ingest from `patents/doc_a.docx` with identical content (hash H), no force flag.
+**Input:** Ingest from `reports/doc_a.docx` with identical content (hash H), no force flag.
 
 **Expected:**
 - HTTP 409
@@ -358,9 +358,9 @@ decide to re-ingest via the force flag.
 **Category:** ingestion, duplicate_detection
 **Decision:** force: true re-runs the full pipeline on the existing document record.
 
-**Precondition:** Document A already ingested from `patents/doc_a.docx` with hash H.
+**Precondition:** Document A already ingested from `reports/doc_a.docx` with hash H.
 
-**Input:** Ingest from `patents/doc_a.docx` with identical content, `force: true`.
+**Input:** Ingest from `reports/doc_a.docx` with identical content, `force: true`.
 
 **Expected:**
 - HTTP 200 (not 201 -- existing record, re-processed)
@@ -683,7 +683,7 @@ superseded or simply retired). Callers should depend on the active replacement.
 **Decision:** Only base states (active, completed) satisfy dependencies. Domain-specific
 states are not known to SAGE's precondition checker.
 
-**Precondition:** PIM Health vault. doc_function depends_on doc_patent. doc_patent
+**Precondition:** Example Portfolio vault. doc_function depends_on doc_patent. doc_patent
 is `filed`.
 
 **Input:** `check_preconditions(function_id: doc_function.id)`
@@ -817,17 +817,17 @@ generated. Output location is `{storage_root}/views/by_doc_type/` and
 `{storage_root}/views/by_lifecycle/`.
 
 **Precondition:** Vault with three documents:
-- doc_a: `doc_type: "patent"`, `lifecycle_status: "active"`
-- doc_b: `doc_type: "patent"`, `lifecycle_status: "archived"`
+- doc_a: `doc_type: "report"`, `lifecycle_status: "active"`
+- doc_b: `doc_type: "report"`, `lifecycle_status: "archived"`
 - doc_c: `doc_type: "glossary"`, `lifecycle_status: "active"`
 
 **Input:** `refresh_views()`
 
 **Expected:**
 - HTTP 200
-- `views_generated` >= 3 (at least: `by_doc_type/patent`, `by_doc_type/glossary`,
+- `views_generated` >= 3 (at least: `by_doc_type/report`, `by_doc_type/glossary`,
   `by_lifecycle/active`)
-- Directory `{storage_root}/views/by_doc_type/patent/` exists with symlinks to
+- Directory `{storage_root}/views/by_doc_type/report/` exists with symlinks to
   doc_a and doc_b source files
 - Directory `{storage_root}/views/by_doc_type/glossary/` exists with symlink to
   doc_c source file
@@ -847,13 +847,13 @@ of directories.
 **Decision:** Symlinks target the original source files at
 `{storage_root}/{source_path}`.
 
-**Precondition:** Document ingested from `patents/claim_set.docx`.
+**Precondition:** Document ingested from `reports/claim_set.docx`.
 
 **Input:** `refresh_views()`
 
 **Expected:**
 - Symlink in `views/by_doc_type/{doc_type}/` resolves to
-  `{storage_root}/patents/claim_set.docx`
+  `{storage_root}/reports/claim_set.docx`
 - Symlink target is a relative path (not absolute) to remain valid if the
   vault root is moved
 - Symlink name is the original filename (`claim_set.docx`)
@@ -890,13 +890,13 @@ personal vault makes incremental updates unnecessary.
 with failed pipelines appear in views like any other document.
 
 **Precondition:** Document doc_a with `pipeline_status: failed`,
-`lifecycle_status: active`, `doc_type: "patent"`.
+`lifecycle_status: active`, `doc_type: "report"`.
 
 **Input:** `refresh_views()`
 
 **Expected:**
 - Symlink to doc_a appears in `views/by_lifecycle/active/`
-- Symlink to doc_a appears in `views/by_doc_type/patent/`
+- Symlink to doc_a appears in `views/by_doc_type/report/`
 
 **Rationale:** The filesystem view is for human browsing, not retrieval. A human
 might want to find a failed document precisely to diagnose the failure. Hiding
@@ -910,13 +910,13 @@ quarantined documents from the filesystem would be inconsistent with
 **Decision:** Only create subdirectories that contain at least one symlink.
 `views_generated` counts the number of subdirectories created.
 
-**Precondition:** Vault with one document: `doc_type: "patent"`,
+**Precondition:** Vault with one document: `doc_type: "report"`,
 `lifecycle_status: "active"`.
 
 **Input:** `refresh_views()`
 
 **Expected:**
-- `views/by_doc_type/patent/` exists (one symlink)
+- `views/by_doc_type/report/` exists (one symlink)
 - `views/by_lifecycle/active/` exists (one symlink)
 - No other subdirectories under `by_doc_type/` or `by_lifecycle/`
 - `views_generated: 2`
@@ -1133,12 +1133,12 @@ commit 5cd10d8 (2026-04-06)
 file is ingested in place. No copy is made and the `imports/` directory is
 not created or touched.
 
-**Precondition:** A file exists at `{storage_root}/patents/internal.md`.
+**Precondition:** A file exists at `{storage_root}/reports/internal.md`.
 
-**Input:** `ingest(source="patents/internal.md", source_type="markdown")`
+**Input:** `ingest(source="reports/internal.md", source_type="markdown")`
 
 **Expected:**
-- `doc.source_path == "patents/internal.md"` (the original relative path).
+- `doc.source_path == "reports/internal.md"` (the original relative path).
 - `{storage_root}/imports/` does not exist (or remains untouched).
 
 **Rationale:** The import-on-ingest behavior is specifically for
@@ -1196,7 +1196,7 @@ These design decisions require modifications to the Formal Substrate:
 
 **Artifact:** Search bug report (2026-04-09): keyword search for "PV07" found
 workflow documents referencing the term in body text but missed the actual PV07
-patent drafts. The PV07 documents had titles like "ClinicalNormalization"
+report drafts. The PV07 documents had titles like "ClinicalNormalization"
 (extracted from first heading) while "PV07" appeared only in the source
 filename and tags.
 
@@ -1306,7 +1306,7 @@ timestamp) and `created_at` (SAGE ingestion timestamp).
   they happen to coincide)
 
 **Rationale:** Filenames often encode the document's authoring or effective
-date (e.g., `2026-04-10_PIM_PV07_checklist_v1.md`). This date is a stronger
+date (e.g., `2026-04-10_EXAMPLE_PV07_checklist_v1.md`). This date is a stronger
 provenance signal than the filesystem mtime, which can change from file
 copies, restores, or cloud sync operations. Storing it as a dedicated field
 preserves both signals without conflation.
@@ -1325,7 +1325,7 @@ has a document_date.
 **Precondition:** SAGE vault initialized. Source file exists with a known
 modification time (set via `os.utime` for determinism, e.g., 2025-06-15).
 
-**Input:** `ingest(source="PIM_PV07_checklist_v1.md", source_type="markdown")`
+**Input:** `ingest(source="EXAMPLE_PV07_checklist_v1.md", source_type="markdown")`
 (no `date` key in metadata)
 
 **Expected:**
@@ -1392,9 +1392,9 @@ following the same pattern as BH-051 for source_modified_at.
 **Category:** ingestion, duplicate_detection
 **Decision:** Same content hash at a different source_path is also a duplicate.
 
-**Precondition:** Document A ingested from `patents/doc_a.docx` with hash H.
+**Precondition:** Document A ingested from `reports/doc_a.docx` with hash H.
 
-**Input:** Ingest from `patents/subfolder/doc_a_copy.docx` with identical
+**Input:** Ingest from `reports/subfolder/doc_a_copy.docx` with identical
 content (hash H), no force flag.
 
 **Expected:**
@@ -1416,14 +1416,14 @@ retrieval. The hash-only check catches these before the path+hash check.
 document record regardless of source path. The content hash is the identity
 signal; the path is mutable metadata.
 
-**Precondition:** Document A ingested from `patents/doc_a.docx` with hash H.
+**Precondition:** Document A ingested from `reports/doc_a.docx` with hash H.
 
-**Input:** Ingest from `patents/subfolder/doc_a_copy.docx` with identical
+**Input:** Ingest from `reports/subfolder/doc_a_copy.docx` with identical
 content (hash H), `force: true`.
 
 **Expected:**
 - Existing document record reused (same document ID as doc_A_id)
-- `source_path` updated to `patents/subfolder/doc_a_copy.docx`
+- `source_path` updated to `reports/subfolder/doc_a_copy.docx`
 - `is_new` is False
 - Pipeline re-runs (semantic_abstract cleared, content store re-indexed)
 
@@ -1548,16 +1548,16 @@ filter predicates, bypassing vector/BM25 search entirely. Returns document-level
 metadata only. No query string required.
 
 **Precondition:** Vault with 5 documents:
-- doc_a: `doc_type="patent_draft"`, `lifecycle_status="active"`, `tags=["PV07"]`
-- doc_b: `doc_type="patent_draft"`, `lifecycle_status="active"`, `tags=["PV08"]`
+- doc_a: `doc_type="design_spec"`, `lifecycle_status="active"`, `tags=["PV07"]`
+- doc_b: `doc_type="design_spec"`, `lifecycle_status="active"`, `tags=["PV08"]`
 - doc_c: `doc_type="glossary"`, `lifecycle_status="active"`, `tags=["PV07"]`
-- doc_d: `doc_type="patent_draft"`, `lifecycle_status="archived"`, `tags=["PV07"]`
+- doc_d: `doc_type="design_spec"`, `lifecycle_status="archived"`, `tags=["PV07"]`
 - doc_e: `doc_type="checklist"`, `lifecycle_status="active"`, `tags=["PV07"]`
 
-**Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "patent_draft"})`
+**Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "design_spec"})`
 
 **Expected:**
-- Results contain exactly doc_a, doc_b, doc_d (all patent_draft documents).
+- Results contain exactly doc_a, doc_b, doc_d (all design_spec documents).
 - `total_available == 3`
 - Response mode is `catalog`.
 
@@ -1713,10 +1713,10 @@ must match ALL specified filters to appear in results.
 
 **Precondition:** Vault with 5 documents (as in BH-072).
 
-**Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "patent_draft", "tags": ["PV07"], "lifecycle_status": "active"})`
+**Input:** `discover(mode="catalog", scope="filtered", filters={"doc_type": "design_spec", "tags": ["PV07"], "lifecycle_status": "active"})`
 
 **Expected:**
-- Results contain exactly doc_a (the only active patent_draft tagged PV07).
+- Results contain exactly doc_a (the only active design_spec tagged PV07).
 - `total_available == 1`
 
 **Rationale:** AND semantics are the natural interpretation for metadata filters.
@@ -1824,7 +1824,7 @@ ordering (relevance score) and a sort override would conflict with it.
 **Precondition:** Vault has at least one document with indexed chunks
 matching the query.
 
-**Input:** `discover(mode="keyword", query="patents",
+**Input:** `discover(mode="keyword", query="reports",
 sort_by="document_date", sort_order="desc", limit=10)`
 
 **Expected:**

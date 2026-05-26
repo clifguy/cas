@@ -1,10 +1,10 @@
-"""Identifier-mention edge inference (T-0016, T-0129).
+"""Identifier-mention edge inference.
 
 Scans a document's projected body text for vault-config-declared identifier
 patterns and writes Tier-1 ``references`` edges to the resolved targets.
 Invoked by ``IngestionService`` after Stage 2 (indexing) completes so all
 ingest pathways -- bulk ingest and per-document ``sage_ingest`` -- honor
-the same vault behavior (T-0129).
+the same vault behavior.
 
 Two public entry points:
 
@@ -123,7 +123,7 @@ async def _resolve_identifier(
       1. catalog query against the graph store with tag, tier3, and
          (optional) doc_type filters. Tags and tier3 entries each may
          contain ``{id}`` placeholders substituted with the matched
-         literal (T-0016 for tags; T-0139 for tier3).
+         literal (for tags; for tier3).
       2. optional title-prefix narrowing among the catalog candidates.
     Among multiple matches, an ``active`` lifecycle status wins; among
     multiple active matches, the most recently updated wins.
@@ -137,7 +137,7 @@ async def _resolve_identifier(
         }
     if pattern.get("target_doc_type"):
         filters["doc_type"] = pattern["target_doc_type"]
-    # T-0150 family: identifier-resolution filters (tags, tier3, doc_type) are
+    # family: identifier-resolution filters (tags, tier3, doc_type) are
     # populated by adapters at ingest time, BEFORE abstraction runs. A
     # pipeline_status=failed target still carries valid identifier-resolution
     # metadata; opting out of BH-020 here keeps the Python active-lifecycle

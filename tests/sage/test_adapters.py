@@ -34,7 +34,7 @@ except ImportError:
     _HAS_LANCEDB = False
 
 try:
-    import mlx_lm  # noqa: F401  # gate fires on missing runtime dep, not just module shape
+    import mlx_lm  # noqa: F401 # gate fires on missing runtime dep, not just module shape
 
     from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 
@@ -148,7 +148,7 @@ class TestNomicEmbeddingProvider:
     async def test_ad_001_embedding_dimension_is_768(self, embedding_provider):
         """AD-001: nomic-embed-text produces 768-dimensional vectors."""
         result = await embedding_provider.embed(
-            ["The patent claims a novel method for data synchronization."]
+            ["The report claims a novel method for data synchronization."]
         )
         assert len(result) == 1
         assert len(result[0]) == 768
@@ -183,7 +183,7 @@ class TestNomicEmbeddingProvider:
         texts = [
             "Short text.",
             "A significantly longer passage with multiple sentences about "
-            "various topics including patent law, data management, and "
+            "various topics including report law, data management, and "
             "retrieval systems.",
         ]
         result = await embedding_provider.embed(texts)
@@ -553,9 +553,9 @@ class TestLanceDBContentStore:
         stored row. Earlier this read path defaulted to None, which caused
         a reindex round-trip (read→re-embed→re-write) to silently wipe the
         doc_type column for every chunk and break ``filters={"doc_type":
-        "patent_draft"}`` filtering. Regression guard.
+        "design_spec"}`` filtering. Regression guard.
         """
-        body = "patent body content"
+        body = "report body content"
         vec = (await embedding_provider.embed([body]))[0]
         original = Chunk(
             document_id="doc_with_type",
@@ -563,13 +563,13 @@ class TestLanceDBContentStore:
             content=body,
             embedding=vec,
             chunk_index=0,
-            doc_type="patent_draft",
+            doc_type="design_spec",
         )
         await content_store.index_chunks("doc_with_type", [original])
 
         chunks = await content_store.get_all_chunks("doc_with_type")
         assert len(chunks) == 1
-        assert chunks[0].doc_type == "patent_draft", (
+        assert chunks[0].doc_type == "design_spec", (
             "get_all_chunks must round-trip doc_type so reindex flows "
             "preserve it across read→write cycles."
         )
@@ -577,7 +577,7 @@ class TestLanceDBContentStore:
         # Round-trip simulating a reindex pass: read, re-write unchanged.
         await content_store.index_chunks("doc_with_type", chunks)
         chunks_after = await content_store.get_all_chunks("doc_with_type")
-        assert chunks_after[0].doc_type == "patent_draft"
+        assert chunks_after[0].doc_type == "design_spec"
 
     async def test_ad_020_heading_prefix_exact_and_child(self, content_store, embedding_provider):
         """AD-020: Heading prefix retrieval returns exact match and children."""
@@ -896,7 +896,7 @@ class TestMarkdownAdapterProvenance:
 
 
 class TestMarkdownAdapterCodeBlockSuppression:
-    """T-0070: ATX heading-shaped lines inside code blocks must not extract.
+    """ATX heading-shaped lines inside code blocks must not extract.
 
     The regex parser at adapter_version 0.3.0 had no awareness of fenced or
     indented code-block context, so heading-format examples inside them were
@@ -965,7 +965,7 @@ class TestMarkdownAdapterCodeBlockSuppression:
         assert by_text["C"].path == "A > C"
 
     async def test_tc6_canonical_reproducer_open_questions_resolved(self, tmp_path):
-        """Mirrors the pim_health design-note bug where `## Open Questions
+        """Mirrors the example_vault design-note bug where `## Open Questions
         Resolved` inside a fenced block phantom-headed §3.2..§3.5."""
         adapter = MarkdownAdapter()
         test_file = tmp_path / "tc6.md"
@@ -982,7 +982,7 @@ class TestMarkdownAdapterCodeBlockSuppression:
 
 
 class TestMarkdownAdapterFrontmatterStripping:
-    """T-0071: YAML frontmatter must not extract as headings.
+    """YAML frontmatter must not extract as headings.
 
     Without the front_matter_plugin, the CommonMark parser binds the YAML
     body as a paragraph anchored to its closing ``---`` delimiter and
@@ -1110,7 +1110,7 @@ requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not availa
 
 
 def _make_docx(tmp_path: Path, filename: str = "test.docx") -> Path:
-    """Create a minimal empty .docx and return its path."""
+    """Create a minimal empty.docx and return its path."""
     doc = docx.Document()
     path = tmp_path / filename
     doc.save(str(path))
@@ -1386,7 +1386,7 @@ class TestDocxAdapter:
         assert "the" not in result3.title.lower().split()
 
     async def test_ad_040_content_hash_is_raw_bytes(self, tmp_path):
-        """AD-040: content_hash is SHA-256 of raw .docx bytes."""
+        """AD-040: content_hash is SHA-256 of raw.docx bytes."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -1567,7 +1567,7 @@ class TestDocxAdapter:
         doc = docx.Document()
         _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
 
-        # H1 -> H2, H2 -> H1 -> H2 (second H2 should restart at .1)
+        # H1 -> H2, H2 -> H1 -> H2 (second H2 should restart at.1)
         p1 = doc.add_paragraph("Part A", style="Heading 1")
         _set_paragraph_numbering(p1, num_id=100, ilvl=0)
         p2 = doc.add_paragraph("Sub One", style="Heading 2")
@@ -1674,7 +1674,7 @@ class TestDocxAdapter:
         assert result.headings[5].text == "II.1 Sub Beta"
 
 
-# ── Docx Adapter: .dotx template support ──────────────────────────
+# ── Docx Adapter:.dotx template support ──────────────────────────
 
 
 def _add_custom_style(
@@ -1738,9 +1738,9 @@ def _attach_numbering_to_builtin_style(doc, style_id: str, num_id: int) -> None:
 
 
 def _convert_docx_to_dotx(docx_path: Path, dotx_path: Path) -> None:
-    """Rewrite a .docx's content-type entry to template flavor and save as .dotx.
+    """Rewrite a.docx's content-type entry to template flavor and save as.dotx.
 
-    Creates a structurally valid .dotx (OPC content type set to template)
+    Creates a structurally valid.dotx (OPC content type set to template)
     that python-docx will reject at load unless the adapter's workaround
     applies, so this fixture exercises the real format path.
     """
@@ -1759,7 +1759,7 @@ def _convert_docx_to_dotx(docx_path: Path, dotx_path: Path) -> None:
 
 
 def _build_template_fixture(tmp_path: Path, filename: str) -> Path:
-    """Build a .dotx fixture with the style surface required by AD-071/073.
+    """Build a.dotx fixture with the style surface required by AD-071/073.
 
     The fixture contains:
     - AppendixHeading (custom, paragraph, no numbering)
@@ -1811,17 +1811,17 @@ def _build_template_fixture(tmp_path: Path, filename: str) -> Path:
 
 @requires_docx
 class TestDocxAdapterDotxSupport:
-    """AD-068 through AD-073: .dotx template support in DocxAdapter."""
+    """AD-068 through AD-073:.dotx template support in DocxAdapter."""
 
     async def test_ad_068_extensions_includes_dotx(self):
-        """AD-068: DocxAdapter.EXTENSIONS contains both .docx and .dotx."""
+        """AD-068: DocxAdapter.EXTENSIONS contains both.docx and.dotx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         assert ".docx" in DocxAdapter.EXTENSIONS
         assert ".dotx" in DocxAdapter.EXTENSIONS
 
     async def test_ad_069_dotx_loads_without_error(self, tmp_path):
-        """AD-069: A .dotx file is parsed successfully despite template content type."""
+        """AD-069: A.dotx file is parsed successfully despite template content type."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -1833,17 +1833,17 @@ class TestDocxAdapterDotxSupport:
         assert isinstance(result.content_hash, str)
         assert len(result.content_hash) == 64
         assert len(result.headings) >= 1
-        # content_hash is over raw .dotx bytes, not the shadow copy
+        # content_hash is over raw.dotx bytes, not the shadow copy
         assert result.content_hash == hashlib.sha256(dotx_path.read_bytes()).hexdigest()
 
     async def test_ad_070_dotx_has_inventory_docx_does_not(self, tmp_path):
-        """AD-070: template_style_inventory is .dotx-only; absent on .docx."""
+        """AD-070: template_style_inventory is.dotx-only; absent on.docx."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "t.dotx")
 
-        # Equivalent .docx with the same body content and custom styles
+        # Equivalent.docx with the same body content and custom styles
         doc = docx.Document()
         doc.add_paragraph("Intro", style="Heading 1")
         doc.add_paragraph("Body paragraph.")
@@ -1939,13 +1939,13 @@ class TestDocxAdapterDotxSupport:
         )
 
     async def test_ad_073_dotx_emits_tags_docx_does_not(self, tmp_path):
-        """AD-073: .dotx emits adapter_tags with prescribed namespacing; .docx does not."""
+        """AD-073:.dotx emits adapter_tags with prescribed namespacing;.docx does not."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
         dotx_path = _build_template_fixture(tmp_path, "tags.dotx")
 
-        # Equivalent .docx (custom styles added but no template content type)
+        # Equivalent.docx (custom styles added but no template content type)
         doc = docx.Document()
         doc.add_paragraph("Intro", style="Heading 1")
         _add_custom_style(doc, "AppendixHeading", "Appendix Heading", "paragraph")
@@ -1980,7 +1980,7 @@ class TestDocxAdapterDotxSupport:
         assert "adapter_tag_prefixes" not in docx_result.metadata
 
     async def test_ad_074_dotx_synthesizes_non_empty_text(self, tmp_path):
-        """AD-074: .dotx projection produces non-empty style-surface text."""
+        """AD-074:.dotx projection produces non-empty style-surface text."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -2147,7 +2147,7 @@ class TestDocxAdapterDotxSupport:
         assert plain["numbering_detail"] is None
 
     async def test_ad_074_docx_projection_unchanged(self, tmp_path):
-        """AD-074 (negative): .docx projection does not receive synthesized text."""
+        """AD-074 (negative):.docx projection does not receive synthesized text."""
         from sage.source_adapters.docx_adapter import DocxAdapter
 
         adapter = DocxAdapter()
@@ -2195,7 +2195,7 @@ def _make_multisheet_xlsx(
 ) -> Path:
     """Create a workbook with named sheets and cell data.
 
-    sheets_data: {"SheetName": [[row1_values], [row2_values], ...]}
+    sheets_data: {"SheetName": [[row1_values], [row2_values],...]}
     """
     wb = openpyxl.Workbook()
     # Remove default sheet
@@ -2364,7 +2364,7 @@ class TestXlsxAdapter:
         assert result.title == "my_data"
 
     async def test_ad_062_content_hash_raw_bytes(self, tmp_path):
-        """AD-062: content_hash is SHA-256 of raw .xlsx file bytes."""
+        """AD-062: content_hash is SHA-256 of raw.xlsx file bytes."""
         from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
         adapter = XlsxAdapter()
@@ -2535,7 +2535,7 @@ def _make_pdf_with_pages(
 ) -> Path:
     """Create a multi-page PDF with given lines per page.
 
-    pages: [[line1, line2, ...], [line1, line2, ...], ...]
+    pages: [[line1, line2,...], [line1, line2,...],...]
     Each inner list is the lines of one page.
     """
     from reportlab.lib.pagesizes import letter
@@ -2690,7 +2690,7 @@ def _make_malformed_xref_pdf(path: Path) -> Path:
     return path
 
 
-# T-0104: unit tests for the PDF adapter's CID safe-decode helper.
+# Unit tests for the PDF adapter's CID safe-decode helper.
 
 
 def test_decode_safe_cid_decodes_ascii_range():
@@ -2735,7 +2735,7 @@ class TestPdfAdapter:
     # ── Section 8.1 — Registration & basic projection ────────────
 
     def test_ad_076_extension_registration(self):
-        """AD-076: PdfAdapter registers .pdf as a supported extension."""
+        """AD-076: PdfAdapter registers.pdf as a supported extension."""
         import re
 
         from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -3036,7 +3036,7 @@ class TestPdfAdapter:
         from sage.source_adapters import pdf_adapter as pdf_adapter_mod
         from sage.source_adapters.pdf_adapter import PdfAdapter
 
-        # Fake ocrmypdf module whose .ocr() raises mid-call.
+        # Fake ocrmypdf module whose.ocr() raises mid-call.
         fake_ocrmypdf = types.ModuleType("ocrmypdf")
 
         def _failing_ocr(*args, **kwargs):

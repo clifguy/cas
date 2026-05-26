@@ -93,7 +93,7 @@ def _deliver_to_path(
 
     response.written_to = str(target)
     response.content_size = len(data)
-    # Canonicalize to the Sha256Str shape (`sha256:` + 64 hex). Per T-0026,
+    # Canonicalize to the Sha256Str shape (`sha256:` + 64 hex).
     # DocumentWithContent.content_hash is typed; hashlib emits raw hex.
     response.content_hash = f"sha256:{hashlib.sha256(data).hexdigest()}"
 
@@ -125,7 +125,7 @@ class DocumentsService:
         elif platform.startswith("linux"):
             subprocess.Popen(["xdg-open", str(file_path)])  # noqa: S603,S607 -- hardcoded XDG opener; file_path is registry-validated
         elif platform == "win32":
-            os.startfile(str(file_path))  # type: ignore[attr-defined]  # noqa: S606 -- Windows shell-execute equivalent of the POSIX openers above
+            os.startfile(str(file_path))  # type: ignore[attr-defined] # noqa: S606 -- Windows shell-execute equivalent of the POSIX openers above
         else:
             subprocess.Popen(["xdg-open", str(file_path)])  # noqa: S603,S607 -- hardcoded XDG opener fallback; file_path is registry-validated
 

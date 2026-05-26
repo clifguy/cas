@@ -34,7 +34,7 @@ const mockVault: VaultSummary = {
   description: 'A test vault',
   storage_root: '/tmp/test',
   doc_types: [
-    { value: 'patent_draft', label: 'Patent Draft' },
+    { value: 'design_spec', label: 'Design Spec' },
     { value: 'reference', label: 'Reference' },
   ],
   lifecycle_states: [
@@ -42,7 +42,7 @@ const mockVault: VaultSummary = {
     { value: 'active', label: 'Active', is_terminal: false },
   ],
   adapters: [],
-  projects: ['pim_health'],
+  projects: ['example_vault'],
 };
 
 function makeHit(id: string, title: string, overrides?: Partial<DiscoverHit>): DiscoverHit {
@@ -54,8 +54,8 @@ function makeHit(id: string, title: string, overrides?: Partial<DiscoverHit>): D
       source_type: 'docx',
       source_path: `/vault/${title}.docx`,
       version_label: null,
-      project: 'pim_health',
-      doc_type: 'patent_draft',
+      project: 'example_vault',
+      doc_type: 'design_spec',
       tags: [],
       document_date: '2026-03-15T00:00:00Z',
       source_modified_at: null,
@@ -172,7 +172,7 @@ describe('Search view: dashboard drill-down (catalog mode)', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?doc_type=patent_draft']}
+        initialEntries={['/search?doc_type=design_spec']}
       />,
     );
 
@@ -350,7 +350,7 @@ describe('Search view: sortable table in drill-down', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?doc_type=patent_draft']}
+        initialEntries={['/search?doc_type=design_spec']}
       />,
     );
 
@@ -369,7 +369,7 @@ describe('Search view: sortable table in drill-down', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?doc_type=patent_draft']}
+        initialEntries={['/search?doc_type=design_spec']}
       />,
     );
 
@@ -391,7 +391,7 @@ describe('Search view: sortable table in drill-down', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?doc_type=patent_draft']}
+        initialEntries={['/search?doc_type=design_spec']}
       />,
     );
 
@@ -575,10 +575,10 @@ describe('Search view: URL-driven state persistence', () => {
 
     await user.click(screen.getByRole('button', { name: /show filters/i }));
 
-    // Select first doc type (patent_draft) and first lifecycle (draft)
+    // Select first doc type (design_spec) and first lifecycle (draft)
     const selects = screen.getAllByRole('combobox');
     // selects[0] is mode, selects[1] is doc type, selects[2] is lifecycle, selects[3] is project
-    await user.selectOptions(selects[1], 'patent_draft');
+    await user.selectOptions(selects[1], 'design_spec');
     await user.selectOptions(selects[2], 'draft');
 
     await user.type(screen.getByPlaceholderText(/search documents/i), 'hello');
@@ -587,12 +587,12 @@ describe('Search view: URL-driven state persistence', () => {
     await screen.findByText('Filtered');
 
     expect(locationRef.current).toContain('q=hello');
-    expect(locationRef.current).toContain('doc_type=patent_draft');
+    expect(locationRef.current).toContain('doc_type=design_spec');
     expect(locationRef.current).toContain('lifecycle_status=draft');
 
     // The API request should include those filters
     const [, request] = mockDiscover.mock.calls[0];
-    expect(request.filters).toMatchObject({ doc_type: 'patent_draft', lifecycle_status: 'draft' });
+    expect(request.filters).toMatchObject({ doc_type: 'design_spec', lifecycle_status: 'draft' });
   });
 
   it('restores filter selects from URL on mount', async () => {
@@ -607,7 +607,7 @@ describe('Search view: URL-driven state persistence', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?q=foo&mode=semantic&doc_type=patent_draft&lifecycle_status=draft']}
+        initialEntries={['/search?q=foo&mode=semantic&doc_type=design_spec&lifecycle_status=draft']}
       />,
     );
 
@@ -619,7 +619,7 @@ describe('Search view: URL-driven state persistence', () => {
 
     const selects = screen.getAllByRole('combobox') as HTMLSelectElement[];
     // selects[0]=mode, selects[1]=doc type, selects[2]=lifecycle
-    expect(selects[1].value).toBe('patent_draft');
+    expect(selects[1].value).toBe('design_spec');
     expect(selects[2].value).toBe('draft');
   });
 
@@ -673,7 +673,7 @@ describe('Search view: URL-driven state persistence', () => {
   });
 
   it('does not render dashboard drill-down when mode param is present', async () => {
-    // mode=browse + doc_type=patent_draft should render the regular Browse/Search view,
+    // mode=browse + doc_type=design_spec should render the regular Browse/Search view,
     // not the drill-down heading.
     mockDiscover.mockResolvedValueOnce(makeCatalogResponse(3, 3));
 
@@ -681,7 +681,7 @@ describe('Search view: URL-driven state persistence', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?mode=browse&doc_type=patent_draft']}
+        initialEntries={['/search?mode=browse&doc_type=design_spec']}
       />,
     );
 
@@ -894,14 +894,14 @@ describe('Search view: tags URL parameter (T-0130)', () => {
       <TestWrapper
         vaultId="test_vault"
         vault={mockVault}
-        initialEntries={['/search?mode=browse&doc_type=patent_draft']}
+        initialEntries={['/search?mode=browse&doc_type=design_spec']}
       />,
     );
 
     await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
 
     const [, request] = mockDiscover.mock.calls[0];
-    expect(request.filters).toEqual({ doc_type: 'patent_draft' });
+    expect(request.filters).toEqual({ doc_type: 'design_spec' });
     expect(request.filters?.tags).toBeUndefined();
   });
 });

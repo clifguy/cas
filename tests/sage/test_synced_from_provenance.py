@@ -1,4 +1,4 @@
-"""T-0110 tests: synced-from provenance attributes on edges.
+"""tests: synced-from provenance attributes on edges.
 
 Schema-only ship. Covers:
 
@@ -7,12 +7,12 @@ Schema-only ship. Covers:
 - TEST-3: one attribute set, the other null (no coupled enforcement).
 - TEST-5: Pydantic type rejection at the FastAPI router boundary.
 
-TEST-4 (migration idempotency on a pre-T-0110-shaped DB) lives in
+TEST-4 (migration idempotency on a pre--shaped DB) lives in
 ``tests/sage/test_migrate_flag.py`` alongside the other migration tests.
 The OpenAPI conformance regression (TEST-6) is covered by
 ``tests/sage/test_openapi_conformance.py``; no new test required.
 
-T-0110 / CAS-ADR-017.
+/ CAS-ADR-017.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ async def test_t1_round_trip_both_attributes_via_link_and_traverse(
     """
     src = _id("t1_src")
     tgt = _id("t1_tgt")
-    # T-0111 chain-membership guard: synced_from_version must be a member
+    # chain-membership guard: synced_from_version must be a member
     # of target_id's supersedes chain. tgt itself is a one-element chain;
     # synced_from = tgt is valid (recorded == head → "current" per the
     # detector's classification).
@@ -215,7 +215,7 @@ async def test_t3_one_attribute_set_other_null_no_coupled_enforcement(
     """
     src = _id("t3_src")
     tgt = _id("t3_tgt")
-    # T-0111 chain-membership guard: synced_from_version must be a member
+    # chain-membership guard: synced_from_version must be a member
     # of target_id's supersedes chain.
     synced_from = tgt
 

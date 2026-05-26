@@ -1,7 +1,7 @@
 """Property-based tests for typed-alias regexes in sage/models/schemas.py.
 
-Companion tickets: T-0012 (initial property coverage) and T-0023 (closure of
-the three latent quirks documented in T-0012's plan). The example-based tests
+Companion tickets: (initial property coverage) and (closure of
+the three latent quirks documented in plan). The example-based tests
 in test_request_validators.py cover hand-picked positive and negative cases.
 These property tests use Hypothesis to fuzz each alias's accepted and
 rejected language and lock in current behavior. If a validator is widened
@@ -9,7 +9,7 @@ beyond its current behavior without updating the corresponding negative
 strategy, the affected negative test will start passing strings it was meant
 to reject, surfacing the regression.
 
-The three latent quirks from T-0012 were resolved in T-0023 and are now
+The three latent quirks from were resolved in and are now
 exercised here: ``trailing_newline`` negatives lock in re.fullmatch (Quirk 1)
 across DocumentIdStr / Sha256Str / DocumentDateStr; ``calendar_invalid``
 negatives lock in the date.fromisoformat check on DocumentDateStr (Quirk 2);
@@ -104,7 +104,7 @@ DOC_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
 
 # ---------------------------------------------------------------------------
 # EdgeIdStr -- uuid.UUID() constructor with normalize-to-canonical (Quirk 3,
-# resolved in T-0023). The validator now returns str(uuid.UUID(v)), so any
+# resolved in). The validator now returns str(uuid.UUID(v)), so any
 # RFC 4122 input form is accepted but rewritten to canonical hyphenated
 # lowercase. Canonical is the only form that satisfies validate(v) == v;
 # the other forms validate but mutate, exercised by
@@ -195,7 +195,7 @@ SHA256_INVALID: dict[str, st.SearchStrategy[str]] = {
 # DocumentDateStr -- regex ^\d{4}-\d{2}-\d{2}$ + date.fromisoformat, or None.
 #
 # Quirks 1 and 2 (re.match + $ trailing-newline acceptance, and
-# calendar-correctness gap) were closed in T-0023. The trailing_newline and
+# calendar-correctness gap) were closed in. The trailing_newline and
 # calendar_invalid negative strategies below lock in the tighter behavior.
 # ---------------------------------------------------------------------------
 

@@ -8,7 +8,7 @@ Tools are defined in:
   - sage.app_tools: Application backend tools (scan, batch ingest)
 
 Usage:
-    python -m sage.mcp_server <config1.yaml> [config2.yaml ...]
+    python -m sage.mcp_server <config1.yaml> [config2.yaml...]
 """
 
 import json as _json
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 # Quiet huggingface library noise before any sage import pulls in
-# transformers/tokenizers (T-0060). Env vars are read at library import
+# transformers/tokenizers. Env vars are read at library import
 # time; setdefault preserves a debugger's explicit override.
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "warning")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -38,7 +38,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ContentBlock
 from pydantic import TypeAdapter
 
-import sage.app  # noqa: F401 -- import side-effect: installs T-0022 root-logger filter
+import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
 from sage.api.errors import SAGEError
 from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
@@ -67,10 +67,10 @@ _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 
 _vaults: dict[str, SAGEServices] = {}
 
-# Cross-vault registry service singleton.  Constructed once at module import
+# Cross-vault registry service singleton. Constructed once at module import
 # against the `_vaults` dict so both the MCP transport (here) and the FastAPI
 # transport (sage/app.py reaches into us via get_vault_registry_service())
-# share the same instance, which wraps the same registry dict.  See CAS-ADR-013
+# share the same instance, which wraps the same registry dict. See CAS-ADR-013
 # for the registry-dict aliasing rationale.
 _vault_registry_service: VaultRegistryService = VaultRegistryService(
     registry=_vaults,
@@ -137,7 +137,7 @@ _vault_root: Path | None = None
 @asynccontextmanager
 async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     # When mounted on FastAPI, _vault_root is None and _vaults is
-    # pre-populated by the parent app's lifespan.  Skip init/teardown
+    # pre-populated by the parent app's lifespan. Skip init/teardown
     # so the FastAPI lifespan owns the vault lifecycle.
     standalone = _vault_root is not None
 
@@ -220,7 +220,7 @@ def _envelope_error_kind(result: Any) -> str | None:
 class _LoggingFastMCP(FastMCP):
     """FastMCP subclass that distinguishes tool outcomes in the console log.
 
-    T-0061: the underlying uvicorn access log shows every tool call as
+    The underlying uvicorn access log shows every tool call as
     `POST /mcp/messages/?session_id=...` — uninformative because the tool
     name lives in the JSON-RPC body, not the URL. Overriding the single
     dispatch point (`FastMCP.call_tool`, wired in `_setup_handlers`)
@@ -232,7 +232,7 @@ class _LoggingFastMCP(FastMCP):
       (`mcp tool error: <name> (<error_kind>)`); the result is returned to the
       caller unchanged. The envelope is detected via `_envelope_error_kind`,
       which handles the production `[TextContent(text=<json>)]` shape that
-      FastMCP wraps SAGE dict returns into. [T-0064]
+      FastMCP wraps SAGE dict returns into. []
     - raised exception → INFO plus one ERROR line
       (`mcp tool failed: <name>`) with traceback, and re-raise.
     """
@@ -285,7 +285,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
     stack config require a process restart to take effect; callers
     can verify the in-memory stack config via ``sage_get_stack_config``.
 
-    Reload is atomic with respect to the registry slot (T-0183):
+    Reload is atomic with respect to the registry slot:
     Internally this delegates to ``reload_vault_in_registry``, which
     builds the new services first and only tears down the old services
     on success. If construction raises (schema migration, duplicate edges,
@@ -370,7 +370,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
     else:
         config = old_services.config
 
-    # T-0183: delegate to the registry-aware reload. ``reload_vault_in_registry``
+    # Delegate to the registry-aware reload. ``reload_vault_in_registry``
     # builds new services first; only on success does it stop the old timing
     # thread, close the old graph store, and install the new services in the
     # registry. On failure the exception propagates here with the registry

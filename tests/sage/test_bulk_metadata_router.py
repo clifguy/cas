@@ -1,4 +1,4 @@
-"""HTTP integration tests for the bulk metadata endpoint (T-0088).
+"""HTTP integration tests for the bulk metadata endpoint.
 
 POST /sage_vaults/{vault_id}/metadata/bulk.
 """
@@ -125,7 +125,7 @@ async def test_bulk_metadata_endpoint_empty_items_returns_200(seeded_app):
 
 
 # ---------------------------------------------------------------------------
-# T-0153: response_mode parameter on the bulk metadata HTTP endpoint
+# Response_mode parameter on the bulk metadata HTTP endpoint
 # ---------------------------------------------------------------------------
 
 _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
@@ -133,7 +133,7 @@ _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
 
 @pytest.fixture
 async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
-    """T-0153 fixture for the HTTP router. Six active docs each with
+    """fixture for the HTTP router. Six active docs each with
     doc_type='note', tags=['a'], populated semantic_abstract."""
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = VaultConfig.model_validate(minimal_vault_config_dict)

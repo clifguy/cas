@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_admin_reabstract_deferred_vault (T-0089, CAS-ADR-029).
+"""MCP tool tests for sage_admin_reabstract_deferred_vault (CAS-ADR-029).
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, ReabstractReport serialization on the happy path, and
@@ -170,7 +170,7 @@ async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
     monkeypatch,
     empty_registry,
 ):
-    """T-0134 regression guard for the MCP-layer contract.
+    """regression guard for the MCP-layer contract.
 
     The MCP tool returns a dict that round-trips as ReabstractReport even
     though the underlying service now exposes a streaming event generator.

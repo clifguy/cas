@@ -1,12 +1,12 @@
 """Shared internals for the maintenance scripts.
 
 This module holds the per-document purge primitive that
-``sage.maintenance.purge_document`` (T-0105),
-``sage.maintenance.purge_batch`` (T-0106), and
-``sage.maintenance.purge_chain`` (T-0108) all call, plus the chain-walk
+``sage.maintenance.purge_document``,
+``sage.maintenance.purge_batch``, and
+``sage.maintenance.purge_chain`` all call, plus the chain-walk
 helpers used exclusively by ``purge_chain``. It is internal to the
 maintenance package; nothing outside ``sage.maintenance.*`` should
-import it. The architectural-boundary test (T-0107) excludes this
+import it. The architectural-boundary test excludes this
 module from the importable surface of ``sage.mcp_server`` and the Core
 API alongside the rest of the package.
 
@@ -95,10 +95,10 @@ def _write_audit_record(
 ) -> None:
     """Append a JSONL audit record to ``{vault_dir}/.maintenance_log.jsonl``.
 
-    The ``batch_id`` field is included only when supplied. T-0105 single-
-    doc callers pass ``None`` and the field is omitted; T-0106 batch
+    The ``batch_id`` field is included only when supplied. single-
+    doc callers pass ``None`` and the field is omitted; batch
     callers pass a shared UUID and every entry in the batch carries it;
-    T-0108 chain-purge callers pass ``chain_id`` instead so an auditor
+    chain-purge callers pass ``chain_id`` instead so an auditor
     can distinguish chain-purges from time-window batch-purges.
     """
     record: dict[str, Any] = {
@@ -204,7 +204,7 @@ def _purge_one(
     )
 
 
-# ─── Chain-walk helpers (T-0108) ─────────────────────────────────────
+# ─── Chain-walk helpers ─────────────────────────────────────
 
 
 def _walk_chain(
@@ -219,7 +219,7 @@ def _walk_chain(
     the package's import surface small. Walks both directions; ``UNION``
     (not ``UNION ALL``) terminates on cycles.
 
-    Returns ``{"documents": [{...}, ...], "edges": [{...}, ...]}`` where
+    Returns ``{"documents": [{...},...], "edges": [{...},...]}`` where
     each document entry carries ``doc_id``, ``title``, ``version_label``,
     ``document_date``, ``doc_type``, ``pipeline_status`` and each edge
     entry carries ``source_id``, ``target_id``.

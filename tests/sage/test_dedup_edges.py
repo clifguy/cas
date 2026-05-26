@@ -1,7 +1,7 @@
-"""Tests for scripts/dedup_edges.py — the T-0079 backfill script.
+"""Tests for scripts/dedup_edges.py — the backfill script.
 
 The script removes duplicate (source_id, target_id, edge_type) rows
-from ``edges`` and ``staging_edges`` so the T-0079 ``CREATE UNIQUE
+from ``edges`` and ``staging_edges`` so the ``CREATE UNIQUE
 INDEX`` migration can be applied cleanly. These tests build a
 legacy-shaped DB (no unique index) seeded with duplicate edges, drive
 the ``run`` entry point, and verify both the JSON audit trail and the
@@ -19,7 +19,7 @@ from pathlib import Path
 from scripts.dedup_edges import run
 
 # Legacy-shaped tables (no unique index). Mirrors the production CREATE
-# TABLE definitions minus the T-0079 index migration so the test can
+# TABLE definitions minus the index migration so the test can
 # seed duplicate rows that would otherwise be rejected.
 _DOCS_DDL = """\
 CREATE TABLE documents (

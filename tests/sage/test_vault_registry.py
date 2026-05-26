@@ -1,6 +1,6 @@
 """Closure-pair tests for ``VaultRegistryService._build_vault_summary``.
 
-T-0122 installs the second half of the F4 closure pair for the
+installs the second half of the F4 closure pair for the
 ``VaultConfig -> VaultSummary`` projection (plus its three sub-models
 ``VaultDocTypeEntry``, ``VaultLifecycleState``, ``VaultAdapterInfo``)
 at ``sage/services/vault_registry.py``. ``_build_vault_summary`` is the
@@ -140,7 +140,7 @@ def _vault_config_with_every_summary_field() -> VaultConfig:
 
 
 def test_build_vault_summary_populates_every_vault_summary_field():
-    """T-0122 (F4 closure pair, T1): every ``VaultSummary`` field is
+    """(F4 closure pair, T1): every ``VaultSummary`` field is
     populated by ``_build_vault_summary`` from a sentinel ``VaultConfig``
     whose every consumed sub-section has at least one non-default entry.
 
@@ -162,7 +162,7 @@ def test_build_vault_summary_populates_every_vault_summary_field():
     summary = VaultRegistryService._build_vault_summary(config, services, projects)
 
     # ---- VaultSummary: every field non-empty / non-None ----
-    # Three-branch closure-test idiom (T-0144): list/dict-annotation branch
+    # Three-branch closure-test idiom: list/dict-annotation branch
     # catches empty/falsy defaults; non-None-default-scalar branch catches
     # coincidental passes where Pydantic supplies the default and the value
     # would still satisfy ``is not None``; else falls back to non-None.
@@ -210,7 +210,7 @@ def test_build_vault_summary_populates_every_vault_summary_field():
 
     # ---- VaultLifecycleState: every field populated on first element ----
     # The ``is_terminal`` field defaults to ``False`` and the sentinel sets it
-    # ``True``; the non-None-default-scalar branch (T-0144) catches a factory
+    # ``True``; the non-None-default-scalar branch catches a factory
     # regression where Pydantic would supply the default and the prior
     # ``is not None`` idiom would pass coincidentally.
     assert summary.lifecycle_states, "summary.lifecycle_states empty — sub-model test cannot run"

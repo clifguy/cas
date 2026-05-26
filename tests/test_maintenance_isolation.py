@@ -1,10 +1,10 @@
 """Architectural boundary enforcement for the sage.maintenance package.
 
-T-0107. SAGE-Architecture v2.1 §6.4 No-Delete Invariant.
+. SAGE-Architecture v2.1 §6.4 No-Delete Invariant.
 
 The sage.maintenance package is operator-only-by-construction: no module
 under sage.mcp_server or sage.api may import any sage.maintenance module,
-directly or transitively. This test parses every .py file under sage/ with
+directly or transitively. This test parses every.py file under sage/ with
 ast, builds a module-to-imports graph, and runs BFS from each public
 surface. If any sage.maintenance.* node is reachable, the test fails with
 the shortest import chain that reaches it.
@@ -26,11 +26,11 @@ ARCHITECTURE_ANCHOR = "SAGE-Architecture v2.1 §6.4 No-Delete Invariant"
 
 
 def _module_metadata(path: Path) -> tuple[str, str]:
-    """Return (module_name, package_name) for a .py file under REPO_ROOT.
+    """Return (module_name, package_name) for a.py file under REPO_ROOT.
 
-    sage/api/__init__.py  -> ("sage.api", "sage.api")
-    sage/api/errors.py    -> ("sage.api.errors", "sage.api")
-    sage/mcp_server.py    -> ("sage.mcp_server", "sage")
+    sage/api/__init__.py -> ("sage.api", "sage.api")
+    sage/api/errors.py -> ("sage.api.errors", "sage.api")
+    sage/mcp_server.py -> ("sage.mcp_server", "sage")
     """
     rel = path.relative_to(REPO_ROOT).with_suffix("")
     parts = list(rel.parts)

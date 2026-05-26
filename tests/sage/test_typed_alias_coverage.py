@@ -7,11 +7,11 @@ SAGE vault, doc_type=steering_document). A typed alias is a
 
 1. **Pydantic ``BaseModel`` fields** in modules listed in
    ``_SCOPED_MODULES``. Every shape-bearing field must carry the
-   alias or be pinned in ``KNOWN_VIOLATIONS``. (T-0028.)
+   alias or be pinned in ``KNOWN_VIOLATIONS``. (.)
 2. **FastAPI route parameters** in the routers listed in
    ``_FASTAPI_ROUTER_MODULES``. Pattern 1: the alias goes directly on
    the parameter annotation. ``KNOWN_FASTAPI_VIOLATIONS`` is the
-   allowlist. (T-0035.)
+   allowlist. (.)
 3. **FastMCP tool entry points** registered on the FastMCP server.
    Pattern 2: signature stays bare ``str``; a module-scope
    ``TypeAdapter[<Alias>]`` is constructed and the tool body calls
@@ -19,7 +19,7 @@ SAGE vault, doc_type=steering_document). A typed alias is a
    parameter. ``pydantic_core.ValidationError`` extends ``ValueError``
    so the existing ``except (SAGEError, ValueError)`` block routes
    shape failures through the SAGE error envelope.
-   ``KNOWN_FASTMCP_VIOLATIONS`` is the allowlist. (T-0035.)
+   ``KNOWN_FASTMCP_VIOLATIONS`` is the allowlist. (.)
 
 Allowlist contract — uniform across all three site classes:
 
@@ -50,16 +50,16 @@ Scope — not yet typeable (no alias exists):
   ``VaultIdentity.brain_root``, ``RetrievalHealthConfig.assertions_file``)
   — no path alias exists. The gate does not flag these today.
 
-Drain plan: T-0026 typed the 22 currently-allowlisted BaseModel fields
-whose aliases already existed; T-0027 introduced ``UserIdStr`` /
-``VaultIdStr`` / ``FunctionIdStr`` and typed the remaining 5; T-0028
+Drain plan: typed the 22 currently-allowlisted BaseModel fields
+whose aliases already existed; introduced ``UserIdStr`` /
+``VaultIdStr`` / ``FunctionIdStr`` and typed the remaining 5;
 extended the gate to ``app.backend.router`` and ``sage.config`` and
-typed the four shape-bearing fields the extension surfaced; T-0035
+typed the four shape-bearing fields the extension surfaced;
 extended the gate to FastAPI route parameters and FastMCP tool entry
 points and typed every shape-bearing parameter at those boundaries.
-T-0110 added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
+added ``synced_from_content_hash`` to ``Edge`` / ``LinkRequest``
 and the ``sage_link`` MCP tool as ``str | None`` with hash-format
-validation deferred to T-0111; T-0111 retyped those three sites to
+validation deferred to; retyped those three sites to
 ``Sha256Str``-shaped validation (Pattern 1 on the Pydantic models,
 Pattern 2 via ``_SHA256_ADAPTER`` in ``sage_link``) and cleared the
 three allowlist entries. All three ``KNOWN_*_VIOLATIONS`` dicts are
@@ -213,7 +213,7 @@ def _walk_annotation(annotation) -> tuple[bool, bool]:
 
     - Required ``DocumentIdStr``: ``field_info.annotation == str`` and the
       ``AfterValidator`` lives in ``field_info.metadata``.
-    - ``DocumentIdStr | None``: the Union arm is the ``Annotated[str, ...]``
+    - ``DocumentIdStr | None``: the Union arm is the ``Annotated[str,...]``
       itself; ``field_info.metadata`` is empty.
 
     This walker covers the second case (and is composed with a direct
@@ -521,7 +521,7 @@ def _module_typeadapter_bindings(module: ModuleType) -> dict[str, type]:
 
 
 def _validate_python_calls_in_function(fn: Callable) -> list[tuple[str, str]]:
-    """Return ``[(adapter_name, param_name), ...]`` from the function's body.
+    """Return ``[(adapter_name, param_name),...]`` from the function's body.
 
     Walks the AST of ``fn`` looking for calls of the form::
 
@@ -660,7 +660,7 @@ def test_discovered_basemodels_are_nonempty():
     assert "Document" in names, "Discovery missed core Document model"
     assert "Edge" in names, "Discovery missed core Edge model"
     assert "LinkRequest" in names, "Discovery missed canonical LinkRequest model"
-    # app.backend.models (scan-chain models -- T-0043)
+    # app.backend.models (scan-chain models --)
     assert "ScanRequest" in names, "Discovery missed app.backend.models ScanRequest"
     assert "ScanResultResponse" in names, "Discovery missed app.backend.models ScanResultResponse"
     # sage.config
@@ -885,7 +885,7 @@ def test_known_fastmcp_violations_reference_real_params():
 # ---------------------------------------------------------------------------
 # Boundary-validation construction tests
 #
-# DiscoverRequest.document_id is the one request-side field T-0026 typed.
+# DiscoverRequest.document_id is the one request-side field typed.
 # Property coverage in test_alias_invariants.py locks the validator; this
 # test confirms the alias is wired through at the model-construction
 # boundary so that bad caller input is rejected before reaching the

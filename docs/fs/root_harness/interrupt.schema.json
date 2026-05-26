@@ -293,7 +293,7 @@
         "conditions": {
           "type": ["object", "null"],
           "additionalProperties": true,
-          "description": "Optional conditions that narrow the match beyond operation name. Structure is domain-specific (e.g., {'lifecycle_action': 'archive'} to match only archive transitions, or {'doc_type': 'patent_specification'} to match operations on specific document types). Null means the rule matches solely on operation name."
+          "description": "Optional conditions that narrow the match beyond operation name. Structure is domain-specific (e.g., {'lifecycle_action': 'archive'} to match only archive transitions, or {'doc_type': 'system_spec'} to match operations on specific document types). Null means the rule matches solely on operation name."
         },
         "action": {
           "type": "string",

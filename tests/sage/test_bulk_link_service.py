@@ -1,9 +1,9 @@
-"""Service-layer tests for GraphOpsService.bulk_link (T-0165).
+"""Service-layer tests for GraphOpsService.bulk_link.
 
 The bulk method holds the process-wide ``_link_lock`` per item and runs
 each item under its own SQLite transaction via ``link_idempotent``; the
 batch as a whole is NOT atomic. A bad item does not roll back earlier-
-or-later successful items (CAS-ADR-029). The T-0079 natural-key
+or-later successful items (CAS-ADR-029). The natural-key
 idempotency contract is preserved per item: a duplicate triple returns
 the existing edge with ``created=False`` rather than raising.
 
@@ -156,7 +156,7 @@ async def test_bulk_link_partial_success_on_unknown_document(graph_store, graph_
 async def test_bulk_link_t0079_idempotency_returns_existing_edge_with_created_false(
     graph_store, graph_ops_service
 ):
-    """T-0079 per-item idempotency contract: a duplicate natural-key
+    """per-item idempotency contract: a duplicate natural-key
     triple returns the existing edge with created=False and
     existing_rationale populated. No second edge persisted."""
     src = _id("doc_idem_src")
@@ -245,7 +245,7 @@ async def test_bulk_link_response_mode_light_drops_edge_body(graph_store, graph_
     for entry in response.results:
         assert entry.status == "success"
         assert entry.edge is None
-        # T-0079 signals preserved under light per the response_mode contract.
+        # signals preserved under light per the response_mode contract.
         assert entry.created is True
 
 

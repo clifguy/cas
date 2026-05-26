@@ -321,7 +321,7 @@ def test_every_documented_operation_has_response_schema(
 
 
 # ---------------------------------------------------------------------------
-# Test 2a: Live /openapi.json matches YAML non-2xx error envelopes (T-0055)
+# Test 2a: Live /openapi.json matches YAML non-2xx error envelopes
 # ---------------------------------------------------------------------------
 
 
@@ -352,7 +352,7 @@ def test_live_openapi_matches_yaml_error_envelope(
     3. carries a description matching the YAML description after
        whitespace normalization (re.sub(r'\\s+', ' ', s).strip()).
 
-    Regression gate for T-0054. Per-operation parametrization so failures
+    Regression gate for. Per-operation parametrization so failures
     attribute to one (path, method, status) rather than aggregating into a
     single multi-line message. Forward-declared operations
     (SPEC_FORWARD_DECLARATIONS) are excluded at parametrize-build time.
@@ -452,7 +452,7 @@ def test_vault_stats_response_documents_lancedb_chunk_count(
 def test_every_pydantic_field_has_description():
     """Every BaseModel field in sage.models.schemas declares Field(description=...).
 
-    Source-of-truth check for the discipline established by T-0034: the
+    Source-of-truth check for the discipline established by The
     FastAPI-generated OpenAPI inherits its per-field documentation from
     Pydantic Field descriptions, so an empty description here surfaces as
     an empty description in the rendered /docs page. Walks the module
@@ -482,10 +482,10 @@ def test_every_cas_app_pydantic_field_has_description():
     """Every BaseModel field in app.backend.{models,router} declares
     Field(description=...).
 
-    Companion to test_every_pydantic_field_has_description (T-0034) and
-    test_every_sage_config_field_has_description (T-0057). Closes the
-    presence-test gap T-0058 identified: the CAS App surface was previously
-    gated only transitively through the YAML-parity check (T-0041), which
+    Companion to test_every_pydantic_field_has_description and
+    test_every_sage_config_field_has_description. Closes the
+    presence-test gap identified: the CAS App surface was previously
+    gated only transitively through the YAML-parity check, which
     catches divergence but not absence. Walks both modules for symmetry
     with the parity test's module set, even though router currently
     defines no BaseModel classes -- guards against future router-defined
@@ -514,7 +514,7 @@ def test_every_cas_app_pydantic_field_has_description():
 
 # ---------------------------------------------------------------------------
 # Test 5a: Every property in docs/fs/ OpenAPI YAML and JSON Schema files has a
-# description (T-0041)
+# description
 # ---------------------------------------------------------------------------
 
 
@@ -600,7 +600,7 @@ def test_every_substrate_property_has_description():
     non-empty `description`.
 
     YAML/JSON-side counterpart to test_every_pydantic_field_has_description
-    (T-0034). docs/fs/ is the formal substrate authority per CAS-ADR-008;
+    . docs/fs/ is the formal substrate authority per CAS-ADR-008;
     Pydantic descriptions are derived from these files, so any gap here
     propagates to the rendered /docs page when the corresponding Pydantic
     Field reuses the same text.
@@ -660,7 +660,7 @@ def test_every_substrate_property_has_description():
 
 
 # ---------------------------------------------------------------------------
-# Test 5b: Pydantic Field descriptions match YAML verbatim (T-0041)
+# Test 5b: Pydantic Field descriptions match YAML verbatim
 # ---------------------------------------------------------------------------
 
 
@@ -768,9 +768,9 @@ def test_pydantic_descriptions_match_yaml_verbatim(
     text equals the YAML property description verbatim (after whitespace
     normalization).
 
-    Closes the drift class T-0041 left open: T-0034 authored Pydantic
+    Closes the drift class left open: authored Pydantic
     descriptions independently while YAML descriptions were absent;
-    T-0041 filled the YAML gaps. Without this gate, the two sides can
+    filled the YAML gaps. Without this gate, the two sides can
     silently diverge because no existing test asserts text equality --
     only presence on each side. Per CAS-ADR-008 the YAML is authoritative,
     so Pydantic is expected to match it.
@@ -836,7 +836,7 @@ def test_pydantic_descriptions_match_yaml_verbatim(
 
 # ---------------------------------------------------------------------------
 # Test 5c: sage.config Pydantic fields carry descriptions sourced verbatim
-# from the JSON Schemas under docs/fs/sage/ (T-0057)
+# from the JSON Schemas under docs/fs/sage/
 # ---------------------------------------------------------------------------
 
 
@@ -914,10 +914,10 @@ def _resolve_json_pointer(schema: dict, pointer: str) -> dict:
 def test_every_sage_config_field_has_description():
     """Every BaseModel field in sage.config declares Field(description=...).
 
-    Mirror of test_every_pydantic_field_has_description (T-0034), scoped to
+    Mirror of test_every_pydantic_field_has_description, scoped to
     sage.config rather than sage.models.schemas. Closes the gap surfaced as
-    an F4 finding during the T-0041 commit-time cas-code-review pass: the
-    T-0034 module walk does not reach sage.config, so the vault-config
+    an F4 finding during the commit-time cas-code-review pass: the
+    module walk does not reach sage.config, so the vault-config
     Pydantic models could carry zero descriptions without tripping any
     existing gate. Per CAS-ADR-008 these models derive from the JSON
     Schemas under docs/fs/sage/, so missing descriptions are drift from
@@ -948,7 +948,7 @@ def test_sage_config_descriptions_match_json_schema_verbatim():
     description in docs/fs/sage/*.schema.json verbatim (after whitespace
     normalization).
 
-    Mirror of test_pydantic_descriptions_match_yaml_verbatim (T-0041) on
+    Mirror of test_pydantic_descriptions_match_yaml_verbatim on
     the JSON-Schema side: that test only compares OpenAPI YAML <-> Pydantic
     and never reaches the vault-config schemas. Per CAS-ADR-008 the JSON
     Schemas are the formal substrate authority for vault configuration;
@@ -1041,7 +1041,7 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
     same-named BaseModel in sage.models.schemas, and that BaseModel's
     fields are a superset of the YAML schema's properties.
 
-    Deterministic guard against the gap class that produced T-0040 (seven
+    Deterministic guard against the gap class that produced (seven
     YAML-only response classes with no Pydantic counterpart, discovered
     by chance). Reads the YAML on disk per CAS-ADR-008 (the formal
     substrate is the source of truth), not via FastAPI introspection --
@@ -1052,7 +1052,7 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
     scope; their absence from the YAML, if a drift, is tracked separately.
 
     Scope: SAGE Core API spec only. Parallel parity assertion for
-    `docs/fs/cas_app_api.openapi.yaml` is tracked by T-0043. The ROOT
+    `docs/fs/cas_app_api.openapi.yaml` is tracked by. The ROOT
     Harness OpenAPI spec has no Python implementation yet (only the
     spec exists), so YAML<->Pydantic parity is not yet meaningful for
     that surface.
@@ -1126,8 +1126,8 @@ def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
     components/schemas of the SAGE Core API YAML.
 
     Reverse-direction parity counterpart to
-    test_every_yaml_schema_has_pydantic_class (T-0042). Closes the gap
-    that produced T-0044: Python-side additions could previously drift
+    test_every_yaml_schema_has_pydantic_class. Closes the gap
+    that produced Python-side additions could previously drift
     away from the YAML spec silently. Reads the YAML on disk per
     CAS-ADR-008 (the formal substrate is the source of truth), not via
     FastAPI introspection -- BaseModels not referenced by any handler
@@ -1140,7 +1140,7 @@ def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
     duplicate the same signal.
 
     Scope: SAGE Core API spec only. Parallel parity assertion for
-    `docs/fs/cas_app_api.openapi.yaml` is tracked separately by T-0043.
+    `docs/fs/cas_app_api.openapi.yaml` is tracked separately by.
     The ROOT Harness OpenAPI spec has no Python implementation yet (only
     the spec exists), so YAML<->Pydantic parity is not yet meaningful
     for that surface.
@@ -1185,7 +1185,7 @@ def test_every_pydantic_class_has_yaml_schema(sage_core_spec: dict | None):
 
 def test_every_cas_app_yaml_schema_has_pydantic_class(cas_app_spec: dict | None):
     """Parallel of test_every_yaml_schema_has_pydantic_class for the CAS
-    App API surface (T-0043). Walks app.backend.models (the centralized
+    App API surface. Walks app.backend.models (the centralized
     home for /app/scan response shapes) and app.backend.router (ingest-
     chain models that remain in the router module pending their own
     typing pass) for BaseModel definitions.

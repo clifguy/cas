@@ -105,7 +105,7 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
         },
         "document_types": {
             "doc_types": [
-                {"value": "patent_draft", "label": "Patent Draft"},
+                {"value": "design_spec", "label": "Report Draft"},
                 {"value": "checklist", "label": "Checklist"},
                 {"value": "note", "label": "Note"},
             ],
@@ -142,7 +142,7 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
                     {"keyword": "Checklist", "doc_type": "checklist"},
                 ],
                 "code_to_doc_type": [
-                    {"code": "PV06", "doc_type": "patent_draft"},
+                    {"code": "PV06", "doc_type": "design_spec"},
                 ],
             },
         },
@@ -472,7 +472,7 @@ class TestStagingEdgeActions:
         assert listing["count"] == 1
 
     async def test_t0079_confirm_with_existing_production_edge_is_idempotent(self, single_vault):
-        """T-0079: if a production edge with the same natural-key triple
+        """If a production edge with the same natural-key triple
         already exists when a staging edge is confirmed, the promotion
         is idempotent: the staging row is consumed and the response
         carries the pre-existing production edge id (no IntegrityError
@@ -513,7 +513,7 @@ class TestStagingEdgeActions:
 
 
 # ---------------------------------------------------------------------------
-# T-0024: edge_id validation across MCP tools that take edge_id directly
+# Edge_id validation across MCP tools that take edge_id directly
 # ---------------------------------------------------------------------------
 
 
@@ -654,7 +654,7 @@ class TestAppScanDirectory:
         services, config = single_vault
         scan_dir = tmp_path / "scan_inbox"
         scan_dir.mkdir()
-        (scan_dir / "2026-03-09_PIM_PV06_Claim-Set_v7.md").write_text("# Test")
+        (scan_dir / "2026-03-09_EXAMPLE_PV06_Claim-Set_v7.md").write_text("# Test")
         (scan_dir / "notes.txt").write_text("txt file")
 
         result = _parse(await app_scan_directory("test_vault", str(scan_dir)))
@@ -711,10 +711,10 @@ class TestAppBatchIngest:
         """app_batch_ingest processes files and returns summary with edge counts."""
         services, config = single_vault
         sources = Path(config.vault.storage_root)
-        v1 = sources / "patent_v1.md"
-        v1.write_text("# Patent v1\n\nFirst.")
-        v2 = sources / "patent_v2.md"
-        v2.write_text("# Patent v2\n\nSecond.")
+        v1 = sources / "report_v1.md"
+        v1.write_text("# Report v1\n\nFirst.")
+        v2 = sources / "report_v2.md"
+        v2.write_text("# Report v2\n\nSecond.")
 
         result = _parse(
             await app_batch_ingest(
@@ -724,20 +724,20 @@ class TestAppBatchIngest:
                         "file_path": str(v1),
                         "source_type": "markdown",
                         "parsed_metadata": {
-                            "title": "Patent",
+                            "title": "Report",
                             "codes": ["PV06"],
                             "version": "v1",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                     {
                         "file_path": str(v2),
                         "source_type": "markdown",
                         "parsed_metadata": {
-                            "title": "Patent",
+                            "title": "Report",
                             "codes": ["PV06"],
                             "version": "v2",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                 ],
@@ -849,7 +849,7 @@ class TestSageDiscoverCatalog:
         gs = services.graph_store
         now = datetime.now(timezone.utc)
 
-        def _doc(doc_id, doc_type="patent_draft", tags=None, lifecycle="active"):
+        def _doc(doc_id, doc_type="design_spec", tags=None, lifecycle="active"):
             return Document(
                 id=_id(doc_id),
                 title=f"Test {doc_id}",
@@ -868,9 +868,9 @@ class TestSageDiscoverCatalog:
                 tags=tags or [],
             )
 
-        await gs.insert_document(_doc("doc_a", "patent_draft", ["PV07"]))
+        await gs.insert_document(_doc("doc_a", "design_spec", ["PV07"]))
         await gs.insert_document(_doc("doc_b", "glossary", ["PV07"]))
-        await gs.insert_document(_doc("doc_c", "patent_draft", ["PV08"]))
+        await gs.insert_document(_doc("doc_c", "design_spec", ["PV08"]))
 
     async def test_mcp_026_catalog_returns_filtered(self, single_vault):
         """sage_discover catalog mode returns filtered documents."""
@@ -928,7 +928,7 @@ class TestSageDiscoverCatalog:
         assert len(ids1 & ids2) == 0  # No overlap
 
     async def test_t0157_catalog_edges_through_app_wrapper(self, single_vault):
-        """T-0157: sage_discover(target="edges") wired end-to-end through
+        """Sage_discover(target="edges") wired end-to-end through
         the app-layer MCP adapter. Confirms the new target dispatch
         propagates through the same path that doc-target catalog uses
         and that the response shape arrives at the wire intact.
@@ -1023,7 +1023,7 @@ class TestSageDiscoverCatalog:
     async def test_mcp_028_catalog_budget_hint_surfaces_through_mcp_wrapper(
         self, single_vault, monkeypatch
     ):
-        """T-0091 budget hint survives Pydantic→dict serialization across the MCP boundary."""
+        """budget hint survives Pydantic→dict serialization across the MCP boundary."""
         monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
         services, _ = single_vault
         await self._seed_portfolio(services, 60)

@@ -6,7 +6,7 @@ convention drift) and F5 (validation-bypass via missing dependency
 declaration).
 
 Discovery is static and parameterized over a small list of `RouterTree`
-records (T-0056). Each tree names a package or module to walk, the set of
+records. Each tree names a package or module to walk, the set of
 routers expected within it, and the dependencies module from which
 `get_*_service` factories are harvested. The SAGE tree walks
 ``sage/api/routers/`` and recognizes the path-scoped ``Depends(get_vault_id)``
@@ -181,7 +181,7 @@ def _route_requires_vault_id(tree: RouterTree, router_name: str, route: APIRoute
 def _handler_uses_body_scoped_vault_id(route: APIRoute, service_callables: set[Callable]) -> bool:
     """True iff some service-factory dependency binds a body with ``vault_id``.
 
-    The body-scoped vault_id pattern (CAS App, post-T-0049): the handler
+    The body-scoped vault_id pattern (CAS App, post-): the handler
     declares ``body: SomeRequest`` plus ``service: SomeService =
     Depends(get_xxx_service)``, and the service factory's own signature also
     binds the request body and reads ``body.vault_id`` to resolve the vault.

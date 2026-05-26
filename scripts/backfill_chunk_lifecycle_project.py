@@ -1,6 +1,6 @@
-"""Backfill `lifecycle_status` and `project` on LanceDB chunk rows (T-0077).
+"""Backfill `lifecycle_status` and `project` on LanceDB chunk rows.
 
-The T-0077 schema migration adds the two columns to the chunks table and
+The schema migration adds the two columns to the chunks table and
 leaves them NULL on rows that predate the migration. This script reads
 each document's current `lifecycle_status` and `project` from the graph
 store and writes them to every chunk row for that document via

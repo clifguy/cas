@@ -79,8 +79,8 @@ must survive the conversion: title, date, project, codes, version, doc_type.
 **Precondition:** A ScanResult with all metadata fields populated.
 
 **Input:** ScanResult with:
-- title="Claim-Set", date="2026-03-09", project="PIM"
-- codes=["PV06", "CF-1"], version="v7", doc_type="patent_draft"
+- title="Claim-Set", date="2026-03-09", project="EXAMPLE"
+- codes=["PV06", "CF-1"], version="v7", doc_type="design_spec"
 
 **Expected:**
 - Response ParsedMetadataResponse has identical field values
@@ -104,8 +104,8 @@ project, codes, version, doc_type.
 
 **Input:** IngestFileItem with:
 - file_path="/path/to/doc.docx", source_type="docx"
-- parsed_metadata: title="Claim-Set", date="2026-03-09", project="PIM",
-  codes=["PV06"], version="v7", doc_type="patent_draft"
+- parsed_metadata: title="Claim-Set", date="2026-03-09", project="EXAMPLE",
+  codes=["PV06"], version="v7", doc_type="design_spec"
 
 **Expected:**
 - FileDescriptor.parsed_metadata has identical field values

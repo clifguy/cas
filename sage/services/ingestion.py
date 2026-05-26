@@ -77,9 +77,9 @@ logger = logging.getLogger(__name__)
 # its files must remain user-auditable.
 #
 # Empirical behavior on macOS + CPython 3.12/3.14:
-#   * shutil.copy2 DOES propagate UF_HIDDEN (via os.chflags in copystat).
-#   * shutil.copy2 does NOT propagate com.apple.FinderInfo xattr on macOS
-#     (Python stdlib has no xattr API there; _copyxattr is a no-op).
+# * shutil.copy2 DOES propagate UF_HIDDEN (via os.chflags in copystat).
+# * shutil.copy2 does NOT propagate com.apple.FinderInfo xattr on macOS
+# (Python stdlib has no xattr API there; _copyxattr is a no-op).
 #
 # Clearing the xattr is therefore defensive: guards against future Python
 # versions that add macOS xattr support, alternative copy mechanisms, or
@@ -109,8 +109,8 @@ def _macos_libc() -> ctypes.CDLL | None:
     libc = ctypes.CDLL(lib_path, use_errno=True)
 
     # ssize_t getxattr(const char *path, const char *name,
-    #                  void *value, size_t size,
-    #                  u_int32_t position, int options);
+    # void *value, size_t size,
+    # u_int32_t position, int options);
     libc.getxattr.argtypes = [
         ctypes.c_char_p,
         ctypes.c_char_p,
@@ -122,8 +122,8 @@ def _macos_libc() -> ctypes.CDLL | None:
     libc.getxattr.restype = ctypes.c_ssize_t
 
     # int setxattr(const char *path, const char *name,
-    #              void *value, size_t size,
-    #              u_int32_t position, int options);
+    # void *value, size_t size,
+    # u_int32_t position, int options);
     libc.setxattr.argtypes = [
         ctypes.c_char_p,
         ctypes.c_char_p,
@@ -287,7 +287,7 @@ class IngestionService:
         self._config = config
         self._adapters = source_adapters or {}
         self._lifecycle_service = lifecycle_service
-        # T-0129: identifier_mention inference runs inside the per-document
+        # Identifier_mention inference runs inside the per-document
         # pipeline so all ingest pathways (bulk and sage_ingest) honor the
         # vault's declared rules. Optional in the constructor signature so
         # legacy call sites that don't yet pass it still construct; inference
@@ -360,11 +360,11 @@ class IngestionService:
         into ``{storage_root}/imports/`` if it lives outside the vault.
 
         Internal files (already under *storage_root*) are returned as-is
-        with a normalized relative path.  External files are copied
+        with a normalized relative path. External files are copied
         verbatim; on filename collision a content-hash suffix is appended.
 
         Returns:
-            Vault-relative path string (e.g. ``patents/doc.md`` or
+            Vault-relative path string (e.g. ``reports/doc.md`` or
             ``imports/doc_a1b2c3d4.md``).
         """
         try:
@@ -428,7 +428,7 @@ class IngestionService:
         is raised either way — inheritance is the documented default,
         override is the opt-in.
 
-        Tier3 uniqueness (CAS-ADR-031, T-0115):
+        Tier3 uniqueness (CAS-ADR-031):
         Doc types declaring a ``unique`` constraint in their
         ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in vault config)
@@ -480,7 +480,7 @@ class IngestionService:
                 a readable file on disk.
             Tier3UniqueConstraintViolation: ``tier3_metadata`` carried a
                 value already in use on a doc_type with a ``unique``
-                constraint (CAS-ADR-031, T-0115). ``force=True`` does
+                constraint (CAS-ADR-031). ``force=True`` does
                 not override.
             Tier3SchemaViolationError: ``request.tier3_metadata`` failed
                 validation against the resolved doc_type's
@@ -544,7 +544,7 @@ class IngestionService:
         )
 
         # Validate tier3_metadata against the resolved doc_type's
-        # metadata_schema (T-0004). Done before any side effects (the
+        # metadata_schema. Done before any side effects (the
         # adapter projection runs above but is read-only on disk). Resolution
         # mirrors the precedence chain applied below by update_document
         # calls: caller > filename parse > predecessor inheritance > "misc".
@@ -568,7 +568,7 @@ class IngestionService:
 
         # Canonicalize the adapter-computed content hash to the
         # Document.source_content_hash shape (`sha256:` + 64 lowercase hex)
-        # before crossing the typed-alias boundary (T-0026). Adapters emit
+        # before crossing the typed-alias boundary. Adapters emit
         # raw hex from hashlib.sha256(...).hexdigest(); the canonical-form
         # validator requires the explicit `sha256:` algorithm prefix.
         # Idempotent: an already-prefixed hash passes through unchanged.
@@ -608,7 +608,7 @@ class IngestionService:
             existing_doc = await self._store.get_document(existing_id)
 
         # Compute the merged metadata in memory before any insert/update
-        # touches the store (T-0037). Closes the partial-metadata window
+        # touches the store. Closes the partial-metadata window
         # that existed when these layers ran as separate post-insert
         # update_document calls. The baseline differs by branch: empty
         # for new-doc, the existing record's fields for force-reingest.
@@ -643,8 +643,8 @@ class IngestionService:
             }
             updates.update(field_updates)
             # Tier3 metadata override (caller authority on force-reingest,
-            # T-0004). Pre-validated above against the resolved doc_type's
-            # schema; storage replacement is top-level per T-0004.
+            # ). Pre-validated above against the resolved doc_type's
+            # schema; storage replacement is top-level.
             if request.tier3_metadata is not None:
                 updates["tier3_metadata"] = request.tier3_metadata
             # Title reaffirmation (force branch): when filename parse
@@ -678,7 +678,7 @@ class IngestionService:
             # but the predecessor was never archived. Without a
             # predecessor it is a single-row insert. The pre-merged
             # field_updates carry the full metadata into the atomic
-            # insert (T-0037).
+            # insert.
             created_by = request.created_by or self._config.vault.owner
             doc_id = generate_document_id(vault_relative, now.isoformat(), resolved_title)
             base = dict(
@@ -725,7 +725,7 @@ class IngestionService:
                 # Sync the predecessor's new lifecycle_status to its
                 # chunks. insert_with_supersede_atomic commits the flip
                 # directly in SQL (BH-136 atomicity), bypassing
-                # LifecycleService.set_lifecycle's chunk-sync hook. T-0077
+                # LifecycleService.set_lifecycle's chunk-sync hook.
                 # pre-filter pushdown requires the chunk-level
                 # lifecycle_status column to stay aligned with the
                 # document's current state.
@@ -781,7 +781,7 @@ class IngestionService:
         try:
             await self._stage2_indexing(document_id, projection)
 
-            # T-0129: run vault-declared identifier_mention inference after
+            # Run vault-declared identifier_mention inference after
             # Stage 2 (chunks materialized in the content store) and before
             # Stage 3 (abstraction). Placement here -- rather than after
             # abstraction -- ensures inferred edges appear even when
@@ -831,7 +831,7 @@ class IngestionService:
                 )
 
     async def _infer_identifier_mention_edges(self, document_id: str) -> None:
-        """T-0129: run identifier_mention inference for the just-indexed doc.
+        """Run identifier_mention inference for the just-indexed doc.
 
         Reads chunks from the content store (Stage 2 must have completed),
         invokes ``infer_identifier_mentions_for_document``, and lets it
@@ -877,14 +877,14 @@ class IngestionService:
             )
 
         # Build body chunks from the projection. Document-identity signals
-        # live in a standalone synthetic header chunk (T-0038, F9) — not
+        # live in a standalone synthetic header chunk (F9) — not
         # inlined into chunk[0].
         doc = await self._store.get_document(document_id)
         body_chunks = self._chunk_projection(document_id, projection)
 
         # Stamp document-level scalars on body chunks for content-store
-        # pre-filtering. doc_type (T-0050), lifecycle_status, and project
-        # (T-0077) are all stable per-document fields whose values must
+        # pre-filtering. doc_type, lifecycle_status, and project
+        # are all stable per-document fields whose values must
         # ride along with each chunk row so LanceDB can pre-filter at
         # top-K time without a graph-store round trip.
         if doc and body_chunks:
@@ -930,7 +930,7 @@ class IngestionService:
             )
 
     async def _refresh_header_chunk(self, document_id: str) -> None:
-        """Rebuild the synthetic header chunk after metadata changes (T-0038).
+        """Rebuild the synthetic header chunk after metadata changes.
 
         Loads the current document, rebuilds the header chunk content
         (now potentially with ``semantic_abstract``), re-embeds, and
@@ -1008,7 +1008,7 @@ class IngestionService:
             )
 
         # Refresh the synthetic header chunk so retrieval sees the new
-        # ``semantic_abstract`` (T-0038). Body chunks are not touched.
+        # ``semantic_abstract``. Body chunks are not touched.
         await self._refresh_header_chunk(document_id)
 
     async def reabstract(self, document_id: str) -> dict:
@@ -1094,7 +1094,7 @@ class IngestionService:
         try:
             try:
                 chunks = await self._content_store.get_all_chunks(document_id)
-                # Exclude the synthetic header chunk (T-0038) from the
+                # Exclude the synthetic header chunk from the
                 # reconstituted projection text so its title/source/tags
                 # restatement does not feed back into the abstraction prompt.
                 body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
@@ -1112,7 +1112,7 @@ class IngestionService:
                     )
 
                 # Refresh the synthetic header chunk so the new abstract is
-                # indexed for retrieval (T-0038).
+                # indexed for retrieval.
                 await self._refresh_header_chunk(document_id)
             except Exception:
                 logger.exception("Background reabstract failed for document %s", document_id)
@@ -1160,7 +1160,7 @@ class IngestionService:
         """Validate a tier3_metadata payload against the resolved doc_type's
         metadata_schema. Raises ``Tier3SchemaViolationError`` when the
         doc_type has no schema declared (strict no-loose-mode) or when the
-        payload fails validation. T-0156: an explicit empty dict against
+        payload fails validation. An explicit empty dict against
         a no-schema doc_type is accepted as trivially valid — mirrors the
         carve-out in ``MetadataService._validate_tier3`` so the
         ingest-vs-update behavior stays symmetric for the
@@ -1215,7 +1215,7 @@ class IngestionService:
                 updates["document_date"] = value
             elif key == "codes":
                 # codes accepts list[str] (per IngestRequest type) or
-                # comma-separated string (T-0036).
+                # comma-separated string.
                 if isinstance(value, list):
                     updates["tags"] = [str(c).strip() for c in value if str(c).strip()]
                 else:
@@ -1338,7 +1338,7 @@ class IngestionService:
         vault_timezone: str,
     ) -> dict:
         """Compose all metadata precedence layers in memory before any
-        insert/update touches the store (T-0037). Closes the partial-
+        insert/update touches the store. Closes the partial-
         metadata window that existed when these layers ran as separate
         post-insert ``update_document`` calls.
 
@@ -1395,7 +1395,7 @@ class IngestionService:
         document_id: str,
         projection: ProjectionResult,
     ) -> list[Chunk]:
-        """Split projection into body chunks by heading (T-0038).
+        """Split projection into body chunks by heading.
 
         Emits one chunk per heading regardless of whether the heading has
         immediate body content. A heading whose next paragraph is another
@@ -1409,12 +1409,12 @@ class IngestionService:
         Body chunks carry projected content only. Document-identity
         signals (title, source filename, tags, semantic_abstract,
         case-split identifier tokens) live in the standalone synthetic
-        header chunk built by ``_build_header_chunk`` (T-0038, F9).
+        header chunk built by ``_build_header_chunk`` (F9).
         """
         chunks: list[Chunk] = []
         for i, heading in enumerate(projection.headings):
             # Prepend the ATX heading line to chunk content so the heading
-            # mark survives into the reconstructed projection text (T-0081).
+            # mark survives into the reconstructed projection text.
             # Without this, _get_projection_text emits prose-only text and
             # round-trip through re-ingestion loses the heading hierarchy.
             atx_line = ("#" * heading.level) + " " + heading.text
@@ -1443,7 +1443,7 @@ class IngestionService:
 
     @staticmethod
     def _build_header_chunk_content(doc: Document) -> str:
-        """Build the synthetic document-header chunk's content (T-0038).
+        """Build the synthetic document-header chunk's content.
 
         Composes a single text body covering title, source filename stem,
         tags, semantic_abstract, and a case-split identifier-token line.
@@ -1478,7 +1478,7 @@ class IngestionService:
     def _case_split_identifiers(*sources: str) -> str:
         """Return a deduplicated, lowercased space-separated string of
         case-split identifier tokens drawn from the given source strings
-        (T-0038).
+        .
 
         For each whitespace/punctuation-bounded token in the sources:
         - All-alpha CamelCase compounds with at least two title-cased
@@ -1518,7 +1518,7 @@ class IngestionService:
         return " ".join(seen.keys())
 
     def _build_header_chunk(self, document_id: str, doc: Document) -> Chunk:
-        """Build the standalone synthetic document-header chunk (T-0038)."""
+        """Build the standalone synthetic document-header chunk."""
         return Chunk(
             document_id=document_id,
             heading_path=SYNTHETIC_HEADER_HEADING_PATH,

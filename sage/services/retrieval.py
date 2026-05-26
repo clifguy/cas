@@ -69,7 +69,7 @@ _RRF_K = 60
 
 # Filter keys that LanceDB can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
-# document_id IN-clause resolution entirely (T-0077). Keep in sync with
+# document_id IN-clause resolution entirely. Keep in sync with
 # ``_FILTERABLE_COLUMNS`` in sage/adapters/content_store_lancedb.py.
 _CHUNK_PUSHDOWN_KEYS = frozenset({"doc_type", "lifecycle_status", "project"})
 
@@ -86,7 +86,7 @@ _FETCH_MULTIPLIER_MIXED = 10
 # disk/jq round-trip. The default is empirical; override per-process via
 # the ``SAGE_MCP_INLINE_BUDGET_BYTES`` environment variable. Catalog mode
 # attaches a ``recommended_limit`` hint when the serialized response
-# exceeds this budget (T-0091).
+# exceeds this budget.
 DEFAULT_MCP_INLINE_BUDGET_BYTES = 24576
 
 # Safety factor applied when computing ``recommended_limit`` so the
@@ -123,7 +123,7 @@ def _apply_catalog_budget_hint(response: DiscoverResponse) -> None:
     would fit, and merges the hint into ``response.hints``. No-op when
     there are no results — empty responses are trivially inline.
 
-    T-0091: advisory only — the response is not truncated.
+    Advisory only — the response is not truncated.
     """
     if not response.results:
         return
@@ -159,7 +159,7 @@ def _tier3_matches(
 
     Used as the document-level post-filter for
     ``RetrievalFilters.tier3_metadata`` across all retrieval modes
-    (T-0004).
+    .
     """
     if not requested:
         return True
@@ -199,7 +199,7 @@ class RetrievalService:
         document-level dedup (one hit per doc), the inner RRF re-rank
         fetch multiplier, and the optional ``min_relevance`` threshold.
         The size of the headroom depends on what kind of filtering the
-        candidate set has already been through (T-0077):
+        candidate set has already been through:
 
         * No filters → 5x. Dedup-only headroom.
         * All pushdownable (``doc_type``, ``lifecycle_status``,
@@ -241,7 +241,7 @@ class RetrievalService:
         * Chunk-level (``_CHUNK_PUSHDOWN_KEYS``): ``doc_type``,
           ``lifecycle_status``, and ``project`` are stored on each chunk
           row. Passed through directly to LanceDB as column predicates
-          (T-0050 for ``doc_type``, T-0077 for the other two).
+          (for ``doc_type``, for the other two).
         * Document-level: ``tags``, ``pipeline_status``,
           ``document_ids``, ``tier3_metadata``. Resolved against the
           graph store into a list of matching ``document_id`` values
@@ -352,7 +352,7 @@ class RetrievalService:
         """Dispatch to the appropriate retrieval mode handler."""
         request_id = uuid.uuid4().hex[:12]
         with self._query_timer.request(request.mode.value, request_id) as phases:
-            # T-0157: edge enumeration bypasses the document-target post-
+            # Edge enumeration bypasses the document-target post-
             # processing pipeline. The DiscoverRequest validator already
             # enforces target=edges <=> mode=catalog and rejects all
             # document-only knobs, so we can route directly.
@@ -383,13 +383,13 @@ class RetrievalService:
 
                 if not request.include_abstracts:
                     for hit in response.results:
-                        # DocumentSummaryLight (T-0158) has no
+                        # DocumentSummaryLight has no
                         # semantic_abstract field by design; skip the
                         # null-out so the assignment doesn't raise.
                         if isinstance(hit.document, DocumentSummary):
                             hit.document.semantic_abstract = None
 
-            # T-0091: surface a recommended_limit hint when a catalog
+            # Surface a recommended_limit hint when a catalog
             # response would bust the Claude Code MCP inline ceiling.
             # Applied here (post-projection) so the byte measurement
             # reflects what the wire actually carries.
@@ -404,7 +404,7 @@ class RetrievalService:
         doc_type: str | None,
     ) -> None:
         """Reject tier3 filter keys that are not declared by the resolved
-        doc_type's metadata_schema (T-0075).
+        doc_type's metadata_schema.
 
         Runs only when ``doc_type`` is supplied AND that doc_type has a
         metadata_schema declared. When the caller filters by tier3
@@ -445,7 +445,7 @@ class RetrievalService:
         Supports pagination via limit + offset.
 
         ``RetrievalFilters.tier3_metadata`` is pushed into SQL as
-        ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates (T-0075);
+        ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates;
         the high-frequency canonical keys (``ticket_id``, ``failure_id``,
         ``tool_name``) are backed by SQLite expression indexes. When the
         request also names a ``doc_type`` that declares a
@@ -476,7 +476,7 @@ class RetrievalService:
                 sql_filters["tier3_metadata"] = request.filters.tier3_metadata
 
         with phases.phase("query_documents"):
-            # T-0148: catalog is filter-only enumeration; failed-pipeline
+            # Catalog is filter-only enumeration; failed-pipeline
             # documents are visible unless the caller explicitly filters
             # them out via ``pipeline_status``.
             docs, total_count = await self._graph.query_documents(
@@ -508,7 +508,7 @@ class RetrievalService:
     def _project_doc_summary(
         doc: Document, response_mode: ResponseMode | None
     ) -> DocumentSummary | DocumentSummaryLight:
-        """Project a Document to DocumentSummary or DocumentSummaryLight (T-0158).
+        """Project a Document to DocumentSummary or DocumentSummaryLight.
 
         ``response_mode="light"`` returns the stripped variant carrying
         only id, title, doc_type, lifecycle_status, and tier3_metadata;
@@ -523,7 +523,7 @@ class RetrievalService:
         return DocumentSummary.from_document(doc)
 
     # ------------------------------------------------------------------
-    # Edge enumeration (T-0157)
+    # Edge enumeration
     # ------------------------------------------------------------------
 
     async def _catalog_edges(
@@ -721,7 +721,7 @@ class RetrievalService:
             # pipeline_status is unset (query_documents excludes failed
             # by default) and kept as defense-in-depth so a future change
             # to the SQL default cannot silently leak failed rows into
-            # the response. The explicit-filter carve-out (T-0149) mirrors
+            # the response. The explicit-filter carve-out mirrors
             # the storage-layer pattern: when the caller passes an
             # explicit pipeline_status filter (e.g., asking for failed
             # docs), the gate steps aside and honors the override.
@@ -902,7 +902,7 @@ class RetrievalService:
                 continue
 
             # BH-020: failed pipeline = excluded from all retrieval, EXCEPT when
-            # the caller passes an explicit pipeline_status filter (T-0149). The
+            # the caller passes an explicit pipeline_status filter. The
             # gate mirrors the storage-layer default_exclude_failed: skip the
             # post-filter when the request asks for failed docs (or any non-default
             # pipeline_status), otherwise apply it as a service-layer mirror.
@@ -917,12 +917,12 @@ class RetrievalService:
 
             summary = DocumentSummary.from_document(doc)
 
-            # BH-084/085 + T-0158 + T-0169: suppress chunk_content when
+            # BH-084/085 + + Suppress chunk_content when
             # response_mode=light; heading_path preserved as cheap "why
             # this matched" context. When response_mode is unset, default
             # is full-equivalent (chunk content included).
             include_content = request.response_mode != ResponseMode.LIGHT
-            # Mask the synthetic header chunk's marker heading_path (T-0038)
+            # Mask the synthetic header chunk's marker heading_path
             # so users never see the internal sentinel string.
             visible_heading_path = (
                 None
@@ -978,7 +978,7 @@ class RetrievalService:
         boosted: list[DiscoverHit] = []
 
         for i, doc in enumerate(metadata_docs):
-            # Service-layer mirror of the storage-layer default-exclude (T-0149):
+            # Service-layer mirror of the storage-layer default-exclude:
             # drop failed docs from the metadata-boost path only when the caller
             # has not asked for them. Explicit pipeline_status filters bypass.
             if doc.pipeline_status == PipelineStatus.FAILED and (

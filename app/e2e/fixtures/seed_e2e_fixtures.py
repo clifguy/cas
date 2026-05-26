@@ -10,7 +10,7 @@ markdown documents with the same tag. A timestamp nonce in each body
 keeps the content hash fresh across runs so the ingest does not collide
 with archived predecessors under `duplicate_content`.
 
-Replaces seed_bulk_e2e.py — see T-0130 for the rationale (drop the
+Replaces seed_bulk_e2e.py — see for the rationale (drop the
 dedicated bulk_e2e vault; run fixtures alongside real cas content,
 scoped by tag).
 """
@@ -31,7 +31,7 @@ FIXTURE_TAG = "e2e-bulk-fixture"
 FIXTURE_DOC_TYPE = "misc"
 FIXTURE_TITLES = ("e2e-doc-1", "e2e-doc-2", "e2e-doc-3")
 
-# Maintenance panel e2e (T-0117) — one document in abstraction_skipped so the
+# Maintenance panel e2e — one document in abstraction_skipped so the
 # reabstract worklist is non-empty when the panel mounts.
 MAINTENANCE_FIXTURE_TAG = "e2e-maintenance-fixture"
 MAINTENANCE_FIXTURE_TITLE = "e2e-deferred-abstract-fixture"

@@ -4,7 +4,7 @@ Pins shape contracts for fields that the substrate stores verbatim from
 caller input. Today's gap: ``document_date`` is typed ``str | None`` and
 the schema/OpenAPI specifies the YYYY-MM-DD shape, but no validator
 enforces it. As a result, callers passing datetime-ISO strings such as
-``2026-05-05T00:00:00Z`` poisoned the live PIM Health vault and made
+``2026-05-05T00:00:00Z`` poisoned the live Example Portfolio vault and made
 ``sage_traverse`` raise ``ValueError`` from ``strptime``.
 
 These tests pin the strict-reject contract on the two boundary models
@@ -207,8 +207,8 @@ def test_hash_check_request_rejects_wrong_length():
 
 # ---------------------------------------------------------------------------
 # Sha256Str — applied to LinkRequest.synced_from_content_hash and
-# Edge.synced_from_content_hash (T-0111; tightening of the schema-only
-# fields introduced by T-0110).
+# Edge.synced_from_content_hash (; tightening of the schema-only
+# fields introduced by).
 #
 # Each rejection case populates all other required LinkRequest fields with
 # valid values so the only validator that can fire is the synced_from
@@ -284,7 +284,7 @@ def test_link_request_synced_from_content_hash_rejects_empty_string():
 
 # ---------------------------------------------------------------------------
 # tier3_metadata — applied to IngestRequest, UpdateMetadataRequest, and
-# RetrievalFilters (T-0004 Phase 1, plumbing only — validator-cache
+# RetrievalFilters (Phase 1, plumbing only — validator-cache
 # integration tests live in test_tier3_metadata.py).
 # ---------------------------------------------------------------------------
 

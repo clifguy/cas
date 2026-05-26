@@ -10,8 +10,8 @@ import type { VaultSummary } from '../../api/types';
  */
 
 const mockVault: VaultSummary = {
-  id: 'pim_health',
-  name: 'PIM Health Portfolio',
+  id: 'example_vault',
+  name: 'Example Vault',
   description: 'Test vault',
   storage_root: '/tmp/test',
   doc_types: [],
@@ -39,7 +39,7 @@ function WrapperWithContext({ ctx }: { ctx: VaultContext }) {
 
 describe('Ingest view', () => {
   it('renders all three step labels', () => {
-    render(<TestWrapper vaultId="pim_health" vault={mockVault} />);
+    render(<TestWrapper vaultId="example_vault" vault={mockVault} />);
 
     expect(screen.getByText(/1\. Directory Input/)).toBeInTheDocument();
     expect(screen.getByText(/2\. Scan Preview/)).toBeInTheDocument();
@@ -47,7 +47,7 @@ describe('Ingest view', () => {
   });
 
   it('starts on Step 1 with directory input and Scan button', () => {
-    render(<TestWrapper vaultId="pim_health" vault={mockVault} />);
+    render(<TestWrapper vaultId="example_vault" vault={mockVault} />);
 
     expect(screen.getByPlaceholderText('/path/to/source/directory')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /scan/i })).toBeInTheDocument();

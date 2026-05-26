@@ -1,4 +1,4 @@
-"""Tests for the purge_document maintenance script (T-0105).
+"""Tests for the purge_document maintenance script.
 
 Exercises the service-level entry point ``sage.maintenance.purge_document.purge``
 against a real SQLite + LanceDB vault. The script enforces the

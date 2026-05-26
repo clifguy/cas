@@ -1,4 +1,4 @@
-"""Batch edge inference service (T-0138; follows T-0129's pattern).
+"""Batch edge inference service (; follows pattern).
 
 Owns the vault-declared inference rules that operate on multi-document
 batch context. Per principle 5 ("SAGE owns vault-declared behavior"), the
@@ -62,7 +62,7 @@ WORKFLOW_DOC_TYPES = frozenset(
 
 # Rationale prefixes mark edges authored by an auto-inference rule.
 # Promoted to a typed, indexed `rationale_kind` column on the edges table
-# in T-0080; the prefix is still emitted in evidence/rationale text so
+# in; the prefix is still emitted in evidence/rationale text so
 # that staging edges (no rationale_kind column) can be classified at
 # promotion time.
 VERSION_CHAIN_RATIONALE_PREFIX = "[version_chain]"
@@ -70,13 +70,13 @@ FILENAME_CODE_MATCH_RATIONALE_PREFIX = "[filename_code_match]"
 
 
 def _is_version_chain_edge(edge: Edge) -> bool:
-    """T-0080: provenance gate check reads the typed column, not the
+    """Provenance gate check reads the typed column, not the
     rationale-text prefix.
     """
     return edge.rationale_kind == RationaleKind.VERSION_CHAIN
 
 
-# T-0080: map from the inference rule's `method` name (set on each
+# Map from the inference rule's `method` name (set on each
 # PlannedEdge) to the typed RationaleKind for the produced edge.
 _METHOD_TO_RATIONALE_KIND: dict[str, RationaleKind] = {
     "version_chain": RationaleKind.VERSION_CHAIN,
@@ -102,7 +102,7 @@ class PlannedEdge:
     tier: int
     method: str
     evidence: str
-    # T-0016: anchors for transitive_both edges (references) emitted by
+    # Anchors for transitive_both edges (references) emitted by
     # identifier_mention. Resolved doc IDs; resolve_and_execute forwards
     # them into LinkRequest. None for edges whose policy is `none` (e.g.,
     # SUPERSEDES via version_chain).
@@ -390,7 +390,7 @@ async def plan_batch_edges(
         if it.parsed.version is not None
     }
 
-    # Existing-doc fetch (T-0076): two SQL-pushed passes feed the
+    # Existing-doc fetch: two SQL-pushed passes feed the
     # union of "always include" + "chain-repair candidates" instead
     # of pulling the entire vault into Python.
     active_docs, _ = await vault_services.graph_store.query_documents(
@@ -546,14 +546,14 @@ async def resolve_and_execute(
             )
             continue
 
-        # T-0080: every auto-inference method stamps its provenance prefix
+        # Every auto-inference method stamps its provenance prefix
         # on the evidence string above; derive the typed discriminator
         # from that prefix so the LinkRequest and StagingEdge land with
         # the correct rationale_kind without re-encoding the mapping.
         rationale_kind = _METHOD_TO_RATIONALE_KIND.get(planned.method, RationaleKind.MANUAL)
         try:
             if planned.tier == 1:
-                # T-0079: link_idempotent makes auto-inferred edges
+                # Link_idempotent makes auto-inferred edges
                 # idempotent under re-ingest. A duplicate natural-key
                 # triple returns the existing edge with created=False;
                 # we still count it as edges_created when newly minted,
@@ -590,7 +590,7 @@ async def resolve_and_execute(
                     confidence_tier=planned.tier,
                     created_at=datetime.now(timezone.utc),
                 )
-                # T-0079: insert_staging_edge returns (edge, created); we
+                # Insert_staging_edge returns (edge, created); we
                 # discard the result here since the planning layer
                 # already accounts for staging edges by their planned
                 # status, not by post-write created/skipped state.

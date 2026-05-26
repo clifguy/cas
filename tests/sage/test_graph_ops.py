@@ -155,9 +155,9 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, gra
 
 
 # ---------------------------------------------------------------------------
-# BH-031 (T-0079 update): Duplicate edges are now blocked
+# BH-031 (update): Duplicate edges are now blocked
 # ---------------------------------------------------------------------------
-# Pre-T-0079, BH-031 asserted that re-calling `link` with the same
+# Pre-, BH-031 asserted that re-calling `link` with the same
 # natural-key triple produced a second edge with a fresh id. That is
 # now an invariant violation; the UNIQUE constraint on
 # (source_id, target_id, edge_type) prevents duplicate rows. The
@@ -335,7 +335,7 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, extended_graph_ops_ser
 # BH-037: Traversal collapses multi-path hits to one node per target
 # ---------------------------------------------------------------------------
 #
-# Under T-0079, the UNIQUE (source_id, target_id, edge_type) constraint
+# Under, the UNIQUE (source_id, target_id, edge_type) constraint
 # prevents storage-level duplicates, so the original BH-037 scenario
 # (three duplicate edges between the same pair) is no longer
 # constructable. The multi-path collapse responsibility of
@@ -397,7 +397,7 @@ async def test_bh_037_traversal_collapses_multipath_hits(graph_store, graph_ops_
 
 
 # ---------------------------------------------------------------------------
-# T-0079: insert_edge raises on duplicate natural-key triple
+# Insert_edge raises on duplicate natural-key triple
 # ---------------------------------------------------------------------------
 
 
@@ -599,9 +599,9 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
 
 
 async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
-    """T-0079 contract: the legacy BH-037 setup (three duplicate edges
+    """contract: the legacy BH-037 setup (three duplicate edges
     between the same pair via direct INSERT) is now blocked at the
-    storage layer. This test pins the post-T-0079 invariant.
+    storage layer. This test pins the post-invariant.
     """
     import sqlite3 as _sqlite3
 
@@ -687,11 +687,11 @@ async def test_link_nonexistent_target_raises_404(graph_store, graph_ops_service
 
 
 # ---------------------------------------------------------------------------
-# T-0111: Write-time guards on synced_from_* fields
+# Write-time guards on synced_from_* fields
 #
 # (A) Inapplicable-edge-type guard: synced_from_* only applies to
-#     sync_target / derived_from. Setting them on any other edge type
-#     raises SyncedFromInapplicableEdgeType (400).
+# sync_target / derived_from. Setting them on any other edge type
+# raises SyncedFromInapplicableEdgeType (400).
 # ---------------------------------------------------------------------------
 
 
@@ -766,7 +766,7 @@ async def test_t0111_supersedes_without_synced_from_still_succeeds(graph_store, 
 
 
 # ---------------------------------------------------------------------------
-# T-0111 (B) Chain-membership guard: when synced_from_version is set on a
+# (B) Chain-membership guard: when synced_from_version is set on a
 # derived_from edge, it must be a member of target_id's supersedes chain.
 # Otherwise SyncedFromVersionNotInSourceChain (400) is raised.
 # ---------------------------------------------------------------------------
@@ -880,7 +880,7 @@ async def test_check_preconditions_nonexistent_function_raises_404(graph_store, 
 async def _create_linear_chain(graph_store, count: int = 5):
     """Create a linear supersedes chain of `count` documents.
 
-    Returns list of doc IDs in order [v1, v2, ..., vN] where each
+    Returns list of doc IDs in order [v1, v2,..., vN] where each
     supersedes its predecessor (source=newer, target=older).
     """
     doc_ids = []
@@ -1130,7 +1130,7 @@ async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
 
 
 async def test_bh_097_edge_counts_mixed_types(graph_store, graph_ops_service):
-    # T-0079 reshape: a single (source, target, edge_type) row per
+    # reshape: a single (source, target, edge_type) row per
     # natural-key triple is enforced. The "mixed types" invariant is
     # preserved by attaching one of each edge_type between doc_a and
     # doc_b; the edge_counts map should record both keys.
@@ -1217,7 +1217,7 @@ async def test_bh_098_edge_counts_single_type(graph_store, graph_ops_service):
 
 
 async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
-    # T-0079 reshape: one edge per natural-key triple. The invariant
+    # reshape: one edge per natural-key triple. The invariant
     # under test (edge_type filter excludes other types from counts)
     # holds with single-row attachments.
     doc_a = _make_doc(_id("doc_a"))
@@ -1268,7 +1268,7 @@ async def test_bh_099_edge_counts_filtered(graph_store, graph_ops_service):
 
 
 async def test_bh_100_edge_counts_multi_depth(graph_store, graph_ops_service):
-    # T-0079 reshape: at most one (source, target, edge_type) per
+    # reshape: at most one (source, target, edge_type) per
     # natural-key triple. Multi-depth invariant is preserved with
     # one of each edge_type per hop.
     for name in ["doc_a", "doc_b", "doc_c"]:
@@ -1596,7 +1596,7 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
 
 
 # ---------------------------------------------------------------------------
-# T-0124: Parity test for the BH-101-excluded ``Edge`` CTE-row construction.
+# Parity test for the BH-101-excluded ``Edge`` CTE-row construction.
 #
 # The traversal hot path at sage/services/graph_ops.py:663 constructs an
 # ``Edge`` directly from a CTE join row, deliberately bypassing the
@@ -1610,7 +1610,7 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
 #
 # The exhaustive-fields test on the canonical factory itself lives in
 # tests/sage/test_graph_store.py::test_row_to_edge_populates_every_edge_field
-# (T-0123). This file installs the parity half of the same closure: a
+# . This file installs the parity half of the same closure: a
 # test that iterates ``Edge.model_fields`` and asserts field-by-field
 # equality between an ``Edge`` built via ``_row_to_edge`` and an ``Edge``
 # built via the graph_ops.py:663 inline construction from equivalent
@@ -1618,7 +1618,7 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
 # ---------------------------------------------------------------------------
 
 
-import sqlite3  # noqa: E402 -- co-located with the T-0124 fixtures below
+import sqlite3  # noqa: E402 -- co-located with the fixtures below
 
 # Shared sentinel values used to populate both the canonical
 # ``sqlite3.Row`` (matching the ``_row_to_edge`` shape) and the CTE row
@@ -1648,7 +1648,7 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
     column shape, with every field set to a distinct non-default value.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
-    (T-0145); only the column->value mapping is per-ticket. Co-derived
+    ; only the column->value mapping is per-ticket. Co-derived
     with ``_edge_cte_row_with_every_edge_field`` from the same
     underlying sentinel constants so the two row shapes carry
     equivalent payloads despite their different column-name conventions
@@ -1740,13 +1740,13 @@ def _build_edge_from_cte_row(representative: dict) -> Edge:
 
 
 def test_edge_cte_row_parity_with_row_to_edge():
-    """T-0124 (F4 closure pair, T2 -- parity guard on the BH-101 excluded
+    """(F4 closure pair, T2 -- parity guard on the BH-101 excluded
     projection point): the inline ``Edge`` construction at
     sage/services/graph_ops.py:663 and the canonical factory
     ``GraphStore._row_to_edge`` (sage/storage/graph_store.py) construct
     field-equivalent ``Edge`` instances from equivalent row inputs.
 
-    The exhaustive-fields test on the canonical factory itself is T-0123
+    The exhaustive-fields test on the canonical factory itself is
     (``tests/sage/test_graph_store.py::``
     ``test_row_to_edge_populates_every_edge_field``). This parity test
     composes against the same sentinel-row pattern and adds the
@@ -1755,7 +1755,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
     added to ``Edge`` and wired through one path but not the other, the
     parity check trips.
 
-    Together the T-0123 exhaustive-fields test and this T-0124 parity
+    Together the exhaustive-fields test and this parity
     test satisfy the three sub-criteria for an excluded projection
     point under the *CAS Projection-Point Audit Conventions* steering
     document (the third sub-criterion -- the in-line BH-101 exclusion
@@ -1796,7 +1796,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
 
 
 # ---------------------------------------------------------------------------
-# T-0120: ChainEntry.from_chain_row factory closes the chain-walk CTE-row
+# ChainEntry.from_chain_row factory closes the chain-walk CTE-row
 # projection. The exhaustive-fields test (T1) is the structural F4 closure:
 # it fails closed when a new field is added to ChainEntry without a matching
 # factory update.
@@ -1823,7 +1823,7 @@ def _chain_row_with_every_chain_entry_field() -> dict:
 def test_from_chain_row_populates_every_chain_entry_field():
     row = _chain_row_with_every_chain_entry_field()
     entry = ChainEntry.from_chain_row(row, position=3)
-    # Three-branch closure-test idiom (T-0144). ChainEntry has no
+    # Three-branch closure-test idiom. ChainEntry has no
     # list/dict or non-None-default scalar fields today; both branches
     # are forward defense for future field additions.
     for field_name, field_info in ChainEntry.model_fields.items():
@@ -1845,7 +1845,7 @@ def test_from_chain_row_populates_every_chain_entry_field():
 
 
 # ---------------------------------------------------------------------------
-# T-0119: TraversalNode.from_traversal closure-pair install.
+# TraversalNode.from_traversal closure-pair install.
 # Single owning factory consolidates the TraversalNode construction site at
 # sage/services/graph_ops.py:693. The exhaustive-fields test below is the
 # structural F4 closure: it iterates TraversalNode.model_fields and fails
@@ -1915,7 +1915,7 @@ def test_from_traversal_populates_every_traversal_node_field():
         edge_counts=edge_counts,
     )
 
-    # Three-branch closure-test idiom (T-0144). The list/dict branch is
+    # Three-branch closure-test idiom. The list/dict branch is
     # extended to ``dict[str, int]`` for ``TraversalNode.edge_counts``
     # (default_factory={} — not addressed by the non-None-default-scalar
     # branch). The elif branch is forward defense; TraversalNode has no
@@ -1939,13 +1939,13 @@ def test_from_traversal_populates_every_traversal_node_field():
 
 
 # ---------------------------------------------------------------------------
-# T-0118: DocumentSummary.from_traversal_row closure-pair install.
+# DocumentSummary.from_traversal_row closure-pair install.
 # Single owning factory consolidates the DocumentSummary construction site at
 # sage/services/graph_ops.py:628, which built DocumentSummary directly from a
 # CTE join row's ``d_*``-prefixed columns bypassing the canonical
-# ``DocumentSummary.from_document`` factory (T-0096). Per the *Projection-Point
-# Closure Cohort — Canonical Decisions (T-0109 Follow-up Set)* reference
-# document, T-0118 routes via a fresh ``from_traversal_row`` classmethod on
+# ``DocumentSummary.from_document`` factory. Per the *Projection-Point
+# Closure Cohort — Canonical Decisions (Follow-up Set)* reference
+# document, routes via a fresh ``from_traversal_row`` classmethod on
 # DocumentSummary (no per-row Document construction on the traversal hot path,
 # yielding two parallel factories each with its own exhaustive-fields test).
 # The exhaustive-fields test below is the structural F4 closure: it iterates
@@ -1956,13 +1956,13 @@ def test_from_traversal_populates_every_traversal_node_field():
 
 def _traversal_row_with_every_document_summary_field() -> dict:
     """Per-ticket sentinel CTE row dict with every ``d_*``-prefixed key set to
-    a distinct non-default value. Local to T-0118; the cohort policy is
+    a distinct non-default value. Local to; the cohort policy is
     per-ticket sentinels with no shared module.
 
     The sentinel includes ``d_semantic_abstract`` and ``d_tier3_metadata``
     keys even though the production SQL (sage/storage/graph_store.py) does
     not currently surface those columns. That divergence is by design and
-    out of scope per the T-0118 ticket body ("Refactoring the broader
+    out of scope per the ticket body ("Refactoring the broader
     CTE-join column-naming convention" is out of scope). The factory reads
     these keys defensively via ``dict.get`` so production traversal rows
     that omit them continue to project ``None`` for the corresponding
@@ -1995,10 +1995,10 @@ def test_from_traversal_row_populates_every_document_summary_field():
     (anti-coincidental: an empty default would pass a naive
     ``is not None`` check). When a future field is added to
     DocumentSummary without a matching factory update, this test fails
-    closed (T-0118)."""
+    closed."""
     row = _traversal_row_with_every_document_summary_field()
     summary = DocumentSummary.from_traversal_row(row)
-    # Three-branch closure-test idiom (T-0144). DocumentSummary has no
+    # Three-branch closure-test idiom. DocumentSummary has no
     # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DocumentSummary.model_fields.items():
         value = getattr(summary, field_name)

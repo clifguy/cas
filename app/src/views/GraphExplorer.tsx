@@ -9,7 +9,7 @@ import { getDocument as fetchDocument } from '../api/documents';
 
 // Shape mapping for doc_type
 const docTypeShapes: Record<string, string> = {
-  patent_draft: 'diamond',
+  design_spec: 'diamond',
   technical_disclosure: 'box',
   reference: 'ellipse',
   status_report: 'triangle',

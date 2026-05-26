@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Synthetic-load probe for the T-0082 semantic-mode tier3 pushdown A/B.
+"""Synthetic-load probe for the semantic-mode tier3 pushdown A/B.
 
-T-0082 extends the T-0075 ``json_extract`` pushdown of ``tier3_metadata``
+extends the ``json_extract`` pushdown of ``tier3_metadata``
 filters from catalog mode into the shared ``_content_filters()`` resolver
 that gates semantic and keyword retrieval. This probe captures latency
 numbers for semantic-mode tier3 lookups so the AC's required A/B
@@ -134,7 +134,7 @@ async def _run_probes(label: str, reps: int) -> None:
                 durations.append((time.perf_counter() - t0) * 1000.0)
             print(_stats(f"semantic no-filter query='{query}'", durations))
 
-        # --- semantic discover with tier3 filter (the T-0082 target shape) ---
+        # --- semantic discover with tier3 filter (the target shape) ---
         for tier3 in TIER3_PROBES:
             for query in PROBE_QUERIES:
                 durations = []

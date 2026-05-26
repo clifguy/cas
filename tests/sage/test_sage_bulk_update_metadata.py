@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_bulk_update_metadata (T-0088).
+"""MCP tool tests for sage_bulk_update_metadata.
 
 Exercises the boundary contract: vault_id and per-item shape validation,
 per-item legacy-form rejection, registry membership check, and round-trip
@@ -164,7 +164,7 @@ async def test_mcp_tool_legacy_form_tier3_metadata_rejected_per_item(seeded_mcp_
 
 
 # ---------------------------------------------------------------------------
-# T-0153: response_mode parameter on bulk mutation tools
+# Response_mode parameter on bulk mutation tools
 # ---------------------------------------------------------------------------
 
 _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
@@ -172,7 +172,7 @@ _T0153_ABSTRACT = "Test abstract used as the bulk-mode bloat probe (T-0153)."
 
 @pytest.fixture
 async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empty_registry):
-    """T-0153 fixture. Boot a vault, seed six active documents each
+    """fixture. Boot a vault, seed six active documents each
     with doc_type='note', tags=['a'], and a populated `semantic_abstract`;
     publish on mcp_server._vaults.
 

@@ -1,4 +1,4 @@
-"""macOS unified-memory query helper for the T-0029 OOM guardrail.
+"""macOS unified-memory query helper for the OOM guardrail.
 
 ``free_unified_memory_bytes`` parses ``vm_stat`` (the page size is
 read from the header line so the helper is correct on both Intel

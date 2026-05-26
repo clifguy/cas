@@ -285,13 +285,13 @@ async def test_update_config_preserves_other_sections(client):
 async def test_update_config_failed_reload_keeps_old_services_in_registry(
     app, client, tmp_vault_dir, monkeypatch
 ):
-    """T-0183 FastAPI atomicity: a failed PUT-config reload leaves
+    """FastAPI atomicity: a failed PUT-config reload leaves
     ``app.state.vault_registry[vault_id]`` pointing at the still-functional
     old services.
 
     The PUT-config path writes the new YAML to disk, then calls
     ``VaultRegistryService.reload`` → ``reload_vault_in_registry`` →
-    ``initialize_services``. With T-0183's build-new-first ordering inside
+    ``initialize_services``. With build-new-first ordering inside
     ``reload_vault_in_registry``, a failure in ``initialize_services``
     propagates with the registry untouched. The old graph store stays open;
     subsequent reads work; the caller can retry the PUT after fixing the

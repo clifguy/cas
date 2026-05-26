@@ -1,4 +1,4 @@
-"""FastAPI dependency factories for the CAS App backend (T-0049).
+"""FastAPI dependency factories for the CAS App backend.
 
 These factories produce service instances for the ``/app/scan`` and
 ``/app/ingest`` route handlers. Both routes carry ``vault_id`` in the
@@ -32,7 +32,7 @@ def _get_services(request: Request, vault_id: str) -> SAGEServices:
     """Look up ``SAGEServices`` for a vault_id, raising
     ``VaultNotFoundError`` on miss. Mirrors
     ``sage.api.dependencies._get_services`` and is kept private to this
-    module per T-0049's ``out of scope: changing the function itself``."""
+    module per ``out of scope: changing the function itself``."""
 
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
     if vault_id not in registry:

@@ -156,15 +156,15 @@ export interface VaultData {
 
 // --- Mock Data ---
 
-const pimDocuments: Document[] = [
+const exampleDocuments: Document[] = [
   {
     id: 'doc-001',
-    title: 'PIM Architecture Overview',
+    title: 'System Architecture Overview',
     source_type: 'docx',
-    source_path: '/Users/clifguy/pim_vault/PIM_Architecture_Overview_v2.docx',
+    source_path: '/path/to/example_vault/PIM_Architecture_Overview_v2.docx',
     lifecycle_status: 'active',
     version_label: 'v2',
-    project: 'pim_health',
+    project: 'example_vault',
     tags: ['architecture', 'overview'],
     authority_scope: null,
     doc_type: 'technical_disclosure',
@@ -177,20 +177,20 @@ const pimDocuments: Document[] = [
     projected_at: '2026-03-15T10:01:00Z',
     indexed_at: '2026-03-15T10:02:00Z',
     source_modified_at: '2026-03-14T16:00:00Z',
-    semantic_abstract: 'Describes the layered architecture of the PIM Health platform, covering data ingestion, processing pipelines, and API design patterns.',
+    semantic_abstract: 'Describes the layered architecture of the example platform, covering data ingestion, processing pipelines, and API design patterns.',
     pipeline_status: 'abstraction_complete',
     pipeline_error: null,
     tier3_metadata: { heading_styles: ['Heading 1', 'Heading 2', 'Heading 3'], page_count: 24 },
-    projection_text: '# PIM Architecture Overview\n\n## 1. Introduction\n\nThe PIM Health platform is a modular system...\n\n## 2. Data Layer\n\nAll patient interaction data flows through...\n\n## 3. Processing Pipeline\n\nThe pipeline consists of three stages...\n\n## 4. API Design\n\nRESTful endpoints expose...',
+    projection_text: '# System Architecture Overview\n\n## 1. Introduction\n\nThe example platform is a modular system...\n\n## 2. Data Layer\n\nAll patient interaction data flows through...\n\n## 3. Processing Pipeline\n\nThe pipeline consists of three stages...\n\n## 4. API Design\n\nRESTful endpoints expose...',
   },
   {
     id: 'doc-002',
-    title: 'PIM Architecture Overview',
+    title: 'System Architecture Overview',
     source_type: 'docx',
-    source_path: '/Users/clifguy/pim_vault/PIM_Architecture_Overview_v1.docx',
+    source_path: '/path/to/example_vault/PIM_Architecture_Overview_v1.docx',
     lifecycle_status: 'archived',
     version_label: 'v1',
-    project: 'pim_health',
+    project: 'example_vault',
     tags: ['architecture', 'overview'],
     authority_scope: null,
     doc_type: 'technical_disclosure',
@@ -203,23 +203,23 @@ const pimDocuments: Document[] = [
     projected_at: '2026-02-10T09:01:00Z',
     indexed_at: '2026-02-10T09:02:00Z',
     source_modified_at: '2026-02-09T11:00:00Z',
-    semantic_abstract: 'Earlier version of the PIM architecture document covering initial design decisions.',
+    semantic_abstract: 'Earlier version of the example architecture document covering initial design decisions.',
     pipeline_status: 'abstraction_complete',
     pipeline_error: null,
     tier3_metadata: null,
   },
   {
     id: 'doc-003',
-    title: 'CD-04 Interaction Context Patent Draft',
+    title: 'CD-04 Interaction Context Design Spec',
     source_type: 'docx',
-    source_path: '/Users/clifguy/pim_vault/2026-03-01_PIM_CD-04_InteractionContext_v1.docx',
+    source_path: '/path/to/example_vault/2026-03-01_PIM_CD-04_InteractionContext_v1.docx',
     lifecycle_status: 'active',
     version_label: 'v1',
-    project: 'pim_health',
-    tags: ['patent', 'interaction-context'],
+    project: 'example_vault',
+    tags: ['design', 'interaction-context'],
     authority_scope: 'CD-04',
-    doc_type: 'patent_draft',
-    source_content_hash: 'sha256:patent456',
+    doc_type: 'design_spec',
+    source_content_hash: 'sha256:designhash456',
     adapter_version: '1.0.0',
     created_by: 'clif',
     created_at: '2026-03-01T11:00:00Z',
@@ -228,7 +228,7 @@ const pimDocuments: Document[] = [
     projected_at: '2026-03-01T11:01:00Z',
     indexed_at: '2026-03-01T11:02:00Z',
     source_modified_at: '2026-02-28T15:00:00Z',
-    semantic_abstract: 'Patent application for the Interaction Context system, covering contextual data capture from patient-provider encounters.',
+    semantic_abstract: 'Design specification for the Interaction Context system, covering contextual data capture from provider-side service encounters.',
     pipeline_status: 'abstraction_complete',
     pipeline_error: null,
     tier3_metadata: { heading_styles: ['Heading 1', 'Heading 2'], page_count: 38 },
@@ -236,12 +236,12 @@ const pimDocuments: Document[] = [
   },
   {
     id: 'doc-004',
-    title: 'PIM Integration Catalog',
+    title: 'Integration Catalog',
     source_type: 'markdown',
-    source_path: '/Users/clifguy/pim_vault/PIM_Integration_Catalog.md',
+    source_path: '/path/to/example_vault/PIM_Integration_Catalog.md',
     lifecycle_status: 'active',
     version_label: null,
-    project: 'pim_health',
+    project: 'example_vault',
     tags: ['integration', 'catalog'],
     authority_scope: null,
     doc_type: 'reference',
@@ -254,20 +254,20 @@ const pimDocuments: Document[] = [
     projected_at: '2026-03-10T08:01:00Z',
     indexed_at: '2026-03-10T08:02:00Z',
     source_modified_at: '2026-03-09T17:00:00Z',
-    semantic_abstract: 'Catalog of all integration points in the PIM Health platform, including APIs, webhooks, and data exchange formats.',
+    semantic_abstract: 'Catalog of all integration points in the example platform, including APIs, webhooks, and data exchange formats.',
     pipeline_status: 'abstraction_complete',
     pipeline_error: null,
     tier3_metadata: null,
-    projection_text: '# PIM Integration Catalog\n\n## EHR Integration\n\nThe platform connects to EHR systems via...\n\n## Webhook Events\n\nThe following events trigger outbound webhooks...',
+    projection_text: '# Integration Catalog\n\n## EHR Integration\n\nThe platform connects to EHR systems via...\n\n## Webhook Events\n\nThe following events trigger outbound webhooks...',
   },
   {
     id: 'doc-005',
     title: 'Weekly Status Report 2026-W13',
     source_type: 'markdown',
-    source_path: '/Users/clifguy/pim_vault/status/2026-W13_Status.md',
+    source_path: '/path/to/example_vault/status/2026-W13_Status.md',
     lifecycle_status: 'active',
     version_label: null,
-    project: 'pim_health',
+    project: 'example_vault',
     tags: ['status', 'weekly'],
     authority_scope: null,
     doc_type: 'status_report',
@@ -287,15 +287,15 @@ const pimDocuments: Document[] = [
   },
   {
     id: 'doc-006',
-    title: 'CD-01 Data Mesh Patent Draft',
+    title: 'CD-01 Data Mesh Design Spec',
     source_type: 'docx',
-    source_path: '/Users/clifguy/pim_vault/2026-02-15_PIM_CD-01_DataMesh_v1.docx',
+    source_path: '/path/to/example_vault/2026-02-15_PIM_CD-01_DataMesh_v1.docx',
     lifecycle_status: 'active',
     version_label: 'v1',
-    project: 'pim_health',
-    tags: ['patent', 'data-mesh'],
+    project: 'example_vault',
+    tags: ['design', 'data-mesh'],
     authority_scope: 'CD-01',
-    doc_type: 'patent_draft',
+    doc_type: 'design_spec',
     source_content_hash: 'sha256:cd01hash',
     adapter_version: '1.0.0',
     created_by: 'clif',
@@ -305,20 +305,20 @@ const pimDocuments: Document[] = [
     projected_at: '2026-02-15T10:01:00Z',
     indexed_at: '2026-02-15T10:02:00Z',
     source_modified_at: '2026-02-14T18:00:00Z',
-    semantic_abstract: 'Patent draft for the health data mesh architecture enabling federated data access across provider networks.',
+    semantic_abstract: 'Design draft for the data mesh architecture enabling federated data access across provider networks.',
     pipeline_status: 'abstraction_complete',
     pipeline_error: null,
     tier3_metadata: { heading_styles: ['Heading 1', 'Heading 2'], page_count: 42 },
   },
   {
     id: 'doc-007',
-    title: 'Meeting Notes - Patent Strategy Review',
+    title: 'Meeting Notes - Strategy Review',
     source_type: 'markdown',
-    source_path: '/Users/clifguy/pim_vault/notes/2026-04-02_Patent_Strategy_Review.md',
+    source_path: '/path/to/example_vault/notes/2026-04-02_Strategy_Review.md',
     lifecycle_status: 'draft',
     version_label: null,
-    project: 'pim_health',
-    tags: ['meeting', 'patent-strategy'],
+    project: 'example_vault',
+    tags: ['meeting', 'strategy'],
     authority_scope: null,
     doc_type: 'meeting_notes',
     source_content_hash: 'sha256:meeting402',
@@ -337,12 +337,12 @@ const pimDocuments: Document[] = [
   },
   {
     id: 'doc-008',
-    title: 'PIM Glossary',
+    title: 'Glossary',
     source_type: 'markdown',
-    source_path: '/Users/clifguy/pim_vault/PIM_Glossary.md',
+    source_path: '/path/to/example_vault/PIM_Glossary.md',
     lifecycle_status: 'active',
     version_label: null,
-    project: 'pim_health',
+    project: 'example_vault',
     tags: ['glossary', 'terminology'],
     authority_scope: null,
     doc_type: 'reference',
@@ -355,15 +355,15 @@ const pimDocuments: Document[] = [
     projected_at: '2026-01-20T10:01:00Z',
     indexed_at: '2026-01-20T10:02:00Z',
     source_modified_at: '2026-01-19T09:00:00Z',
-    semantic_abstract: 'Authoritative glossary of terms used across PIM Health patent portfolio and technical disclosures.',
+    semantic_abstract: 'Authoritative glossary of terms used across the example portfolio and technical documentation.',
     pipeline_status: 'abstraction_complete',
     pipeline_error: null,
     tier3_metadata: null,
-    projection_text: '# PIM Glossary\n\n## A\n\n**Adaptive Learning Engine** - The subsystem responsible for...\n\n## C\n\n**Clinical Decision Support** - Real-time guidance...',
+    projection_text: '# Glossary\n\n## A\n\n**Adaptive Learning Engine** - The subsystem responsible for...\n\n## C\n\n**Clinical Decision Support** - Real-time guidance...',
   },
 ];
 
-const pimEdges: Edge[] = [
+const exampleEdges: Edge[] = [
   {
     id: 'edge-001',
     source_id: 'doc-001',
@@ -380,7 +380,7 @@ const pimEdges: Edge[] = [
     edge_type: 'derived_from',
     created_at: '2026-03-01T11:00:00Z',
     notes: null,
-    rationale: 'Patent draft references architecture document',
+    rationale: 'Design draft references architecture document',
   },
   {
     id: 'edge-003',
@@ -398,7 +398,7 @@ const pimEdges: Edge[] = [
     edge_type: 'derived_from',
     created_at: '2026-02-15T10:05:00Z',
     notes: null,
-    rationale: 'Patent draft references architecture',
+    rationale: 'Design draft references architecture',
   },
   {
     id: 'edge-005',
@@ -406,7 +406,7 @@ const pimEdges: Edge[] = [
     target_id: 'doc-006',
     edge_type: 'bundles_with',
     created_at: '2026-03-01T11:05:00Z',
-    notes: 'Both patent drafts in the same portfolio',
+    notes: 'Both design specs in the same portfolio',
     rationale: null,
   },
   {
@@ -415,12 +415,12 @@ const pimEdges: Edge[] = [
     target_id: 'doc-003',
     edge_type: 'references',
     created_at: '2026-03-25T11:00:00Z',
-    notes: 'Glossary provides term definitions used in patent draft',
+    notes: 'Glossary provides term definitions used in design spec',
     rationale: null,
   },
 ];
 
-const pimStagingEdges: StagingEdge[] = [
+const exampleStagingEdges: StagingEdge[] = [
   {
     id: 'staging-001',
     source_id: 'doc-005',
@@ -429,7 +429,7 @@ const pimStagingEdges: StagingEdge[] = [
     created_at: '2026-03-28T17:05:00Z',
     notes: null,
     rationale: null,
-    inference_evidence: 'Status report mentions CD-04 patent code in body text',
+    inference_evidence: 'Status report mentions CD-04 design code in body text',
     confidence_tier: 2,
   },
   {
@@ -440,7 +440,7 @@ const pimStagingEdges: StagingEdge[] = [
     created_at: '2026-03-28T17:05:00Z',
     notes: null,
     rationale: null,
-    inference_evidence: 'Status report mentions CD-01 patent code in body text',
+    inference_evidence: 'Status report mentions CD-01 design code in body text',
     confidence_tier: 2,
   },
   {
@@ -456,79 +456,79 @@ const pimStagingEdges: StagingEdge[] = [
   },
 ];
 
-const pimPendingMetadata: PendingMetadata[] = [
+const examplePendingMetadata: PendingMetadata[] = [
   {
-    document: pimDocuments[4], // Weekly Status Report
+    document: exampleDocuments[4], // Weekly Status Report
     extracted_fields: {
-      project: { value: 'pim_health', source: 'filename' },
+      project: { value: 'example_vault', source: 'filename' },
       doc_type: { value: 'status_report', source: 'filename' },
       version_label: { value: 'W13', source: 'filename', alt_value: 'Week 13', alt_source: 'content' },
     },
   },
   {
-    document: pimDocuments[6], // Meeting Notes
+    document: exampleDocuments[6], // Meeting Notes
     extracted_fields: {
-      project: { value: 'pim_health', source: 'default' },
+      project: { value: 'example_vault', source: 'default' },
       doc_type: { value: 'meeting_notes', source: 'filename' },
-      title: { value: 'Patent Strategy Review', source: 'filename', alt_value: 'Patent Strategy Session - Q2 Planning', alt_source: 'content' },
+      title: { value: 'Strategy Review', source: 'filename', alt_value: 'Strategy Session - Q2 Planning', alt_source: 'content' },
     },
   },
 ];
 
-const pimSearchResults: DiscoverHit[] = [
+const exampleSearchResults: DiscoverHit[] = [
   {
-    document: { id: 'doc-001', title: 'PIM Architecture Overview', lifecycle_status: 'active', source_type: 'docx', version_label: 'v2', project: 'pim_health', doc_type: 'technical_disclosure', tags: ['architecture'] },
-    chunk_content: 'The PIM Health platform is a modular system designed around three core principles: data sovereignty, contextual awareness, and adaptive learning. Each module communicates through well-defined API boundaries.',
+    document: { id: 'doc-001', title: 'System Architecture Overview', lifecycle_status: 'active', source_type: 'docx', version_label: 'v2', project: 'example_vault', doc_type: 'technical_disclosure', tags: ['architecture'] },
+    chunk_content: 'The example platform is a modular system designed around three core principles: data sovereignty, contextual awareness, and adaptive learning. Each module communicates through well-defined API boundaries.',
     heading_path: '1. Introduction',
     relevance_score: 0.94,
   },
   {
-    document: { id: 'doc-003', title: 'CD-04 Interaction Context Patent Draft', lifecycle_status: 'active', source_type: 'docx', version_label: 'v1', project: 'pim_health', doc_type: 'patent_draft', tags: ['patent'] },
+    document: { id: 'doc-003', title: 'CD-04 Interaction Context Design Spec', lifecycle_status: 'active', source_type: 'docx', version_label: 'v1', project: 'example_vault', doc_type: 'design_spec', tags: ['design'] },
     chunk_content: 'A computer-implemented method for capturing and structuring contextual data from patient-provider interactions, wherein the system maintains a persistent context graph that evolves with each encounter.',
     heading_path: 'Claims > Claim 1',
     relevance_score: 0.87,
   },
   {
-    document: { id: 'doc-004', title: 'PIM Integration Catalog', lifecycle_status: 'active', source_type: 'markdown', version_label: null, project: 'pim_health', doc_type: 'reference', tags: ['integration'] },
+    document: { id: 'doc-004', title: 'Integration Catalog', lifecycle_status: 'active', source_type: 'markdown', version_label: null, project: 'example_vault', doc_type: 'reference', tags: ['integration'] },
     chunk_content: 'EHR Integration uses HL7 FHIR R4 resources. The platform acts as a FHIR client, querying patient records via the standard REST API and mapping responses to the internal data model.',
     heading_path: 'EHR Integration',
     relevance_score: 0.72,
   },
   {
-    document: { id: 'doc-008', title: 'PIM Glossary', lifecycle_status: 'active', source_type: 'markdown', version_label: null, project: 'pim_health', doc_type: 'reference', tags: ['glossary'] },
+    document: { id: 'doc-008', title: 'Glossary', lifecycle_status: 'active', source_type: 'markdown', version_label: null, project: 'example_vault', doc_type: 'reference', tags: ['glossary'] },
     chunk_content: 'Adaptive Learning Engine - The subsystem responsible for adjusting recommendation models based on observed provider behavior and patient outcome data.',
     heading_path: 'A',
     relevance_score: 0.65,
   },
 ];
 
-const pimScanResults: ScanResultItem[] = [
+const exampleScanResults: ScanResultItem[] = [
   {
-    file_path: '/Users/clifguy/pim_inbox/CD-05_ClinicalPathway_v1.docx',
+    file_path: '/path/to/example_inbox/CD-05_ClinicalPathway_v1.docx',
     file_hash: 'sha256:e3b0c44298fc1c149afbf4c8996fb924',
     source_modified_at: '2026-04-05T14:20:00Z',
     source_type: 'docx',
-    parsed_metadata: { title: 'ClinicalPathway', date: null, project: null, codes: ['CD-05'], version: 'v1', doc_type: 'patent_draft' },
+    parsed_metadata: { title: 'ClinicalPathway', date: null, project: null, codes: ['CD-05'], version: 'v1', doc_type: 'design_spec' },
     sage_status: 'new',
   },
   {
-    file_path: '/Users/clifguy/pim_inbox/PIM_Architecture_Overview_v3.docx',
+    file_path: '/path/to/example_inbox/PIM_Architecture_Overview_v3.docx',
     file_hash: 'sha256:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
     source_modified_at: '2026-04-06T09:15:00Z',
     source_type: 'docx',
-    parsed_metadata: { title: 'Architecture Overview', date: null, project: 'PIM', codes: [], version: 'v3', doc_type: 'technical_disclosure' },
+    parsed_metadata: { title: 'Architecture Overview', date: null, project: 'example', codes: [], version: 'v3', doc_type: 'technical_disclosure' },
     sage_status: 'modified',
   },
   {
-    file_path: '/Users/clifguy/pim_inbox/PIM_Integration_Catalog.md',
+    file_path: '/path/to/example_inbox/PIM_Integration_Catalog.md',
     file_hash: 'sha256:intcat789000111222333444555666777',
     source_modified_at: '2026-03-09T17:00:00Z',
     source_type: 'markdown',
-    parsed_metadata: { title: 'Integration Catalog', date: null, project: 'PIM', codes: [], version: null, doc_type: 'reference' },
+    parsed_metadata: { title: 'Integration Catalog', date: null, project: 'example', codes: [], version: null, doc_type: 'reference' },
     sage_status: 'unchanged',
   },
   {
-    file_path: '/Users/clifguy/pim_inbox/meeting_recording.mp4',
+    file_path: '/path/to/example_inbox/meeting_recording.mp4',
     file_hash: 'sha256:mp4hash000111222333444555666777888',
     source_modified_at: '2026-04-02T16:00:00Z',
     source_type: null,
@@ -536,7 +536,7 @@ const pimScanResults: ScanResultItem[] = [
     sage_status: 'no_adapter',
   },
   {
-    file_path: '/Users/clifguy/pim_inbox/Q2_Planning_Notes.md',
+    file_path: '/path/to/example_inbox/Q2_Planning_Notes.md',
     file_hash: 'sha256:q2plan000111222333444555666777888',
     source_modified_at: '2026-04-01T10:30:00Z',
     source_type: 'markdown',
@@ -544,7 +544,7 @@ const pimScanResults: ScanResultItem[] = [
     sage_status: 'new',
   },
   {
-    file_path: '/Users/clifguy/pim_inbox/Prior_Art_Analysis.pdf',
+    file_path: '/path/to/example_inbox/Prior_Art_Analysis.pdf',
     file_hash: 'sha256:priorart000111222333444555666777',
     source_modified_at: '2026-03-28T08:45:00Z',
     source_type: 'pdf',
@@ -568,17 +568,17 @@ export const mockIngestSummary: IngestSummaryEvent = {
 // --- Vault assembly ---
 
 export const vaults: Record<string, VaultData> = {
-  pim_health: {
+  example_vault: {
     identity: {
-      id: 'pim_health',
-      name: 'PIM Health Portfolio',
+      id: 'example_vault',
+      name: 'Example Vault',
       owner: 'clif',
-      description: 'Patent portfolio and technical documentation for the PIM Health platform.',
-      storage_root: '/Users/clifguy/pim_vault',
-      brain_root: '/Users/clifguy/sage_vaults/pim_health',
+      description: 'Example portfolio of design specs and technical documentation.',
+      storage_root: '/path/to/example_vault',
+      brain_root: '/path/to/sage_vaults/example_vault',
     },
     doc_types: [
-      { value: 'patent_draft', label: 'Patent Draft' },
+      { value: 'design_spec', label: 'Design Spec' },
       { value: 'technical_disclosure', label: 'Technical Disclosure' },
       { value: 'reference', label: 'Reference Document' },
       { value: 'status_report', label: 'Status Report' },
@@ -595,12 +595,12 @@ export const vaults: Record<string, VaultData> = {
       { source_type: 'docx', enabled: true, extensions: ['.docx'], version: '1.0.0' },
       { source_type: 'pdf', enabled: true, extensions: ['.pdf'], version: '1.0.0' },
     ],
-    documents: pimDocuments,
-    edges: pimEdges,
-    staging_edges: pimStagingEdges,
-    pending_metadata: pimPendingMetadata,
-    search_results: pimSearchResults,
-    mock_scan_results: pimScanResults,
+    documents: exampleDocuments,
+    edges: exampleEdges,
+    staging_edges: exampleStagingEdges,
+    pending_metadata: examplePendingMetadata,
+    search_results: exampleSearchResults,
+    mock_scan_results: exampleScanResults,
   },
   personal_notes: {
     identity: {
@@ -608,8 +608,8 @@ export const vaults: Record<string, VaultData> = {
       name: 'Personal Notes',
       owner: 'clif',
       description: 'Personal knowledge base and research notes.',
-      storage_root: '/Users/clifguy/notes',
-      brain_root: '/Users/clifguy/sage_vaults/personal_notes',
+      storage_root: '/path/to/notes',
+      brain_root: '/path/to/sage_vaults/personal_notes',
     },
     doc_types: [
       { value: 'note', label: 'Note' },
@@ -633,7 +633,7 @@ export const vaults: Record<string, VaultData> = {
   },
 };
 
-export const defaultVaultId = 'pim_health';
+export const defaultVaultId = 'example_vault';
 
 // --- Helper functions ---
 

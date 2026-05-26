@@ -13,7 +13,7 @@ def generate_document_id(source_path: str, created_at: str, title: str) -> str:
     """Generate a human-readable document ID.
 
     Args:
-        source_path: Path to source file (e.g., "patents/doc_a.docx").
+        source_path: Path to source file (e.g., "reports/doc_a.docx").
         created_at: ISO 8601 timestamp string.
         title: Document title for the slug component.
 

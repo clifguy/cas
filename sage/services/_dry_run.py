@@ -1,4 +1,4 @@
-"""T-0152 shared constants for dry-run mode across mutation services.
+"""shared constants for dry-run mode across mutation services.
 
 Centralized so that ``LifecycleService`` (would-be ``supersedes`` edge),
 ``GraphOpsService`` (would-be ``link`` edge), the MCP-tool wrappers,

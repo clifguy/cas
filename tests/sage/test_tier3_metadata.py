@@ -1,11 +1,11 @@
-"""Cross-surface tests for tier3_metadata (T-0004 Phase 1).
+"""Cross-surface tests for tier3_metadata (Phase 1).
 
 Coverage:
 
 * VaultConfig.model_post_init builds a validator-cache keyed by doc_type.
 * VaultConfig.tier3_validator returns None for doc_types with no
   metadata_schema; the service layer treats that as 400 (strict
-  no-loose-mode per the T-0004 design).
+  no-loose-mode per the design).
 * sage_ingest validates tier3_metadata against the resolved doc_type's
   schema BEFORE inserting the document; failures raise
   Tier3SchemaViolationError without creating a row.
@@ -264,7 +264,7 @@ async def test_ingest_with_no_schema_doc_type_rejects_tier3(tmp_vault_dir, tier3
 async def test_ingest_with_no_schema_doc_type_and_empty_tier3_passes(
     tmp_vault_dir, tier3_ingestion_service, graph_store
 ):
-    """T-0156: an explicit empty tier3 dict against a no-schema doc_type
+    """An explicit empty tier3 dict against a no-schema doc_type
     is accepted at ingest, mirroring the MetadataService Wart 2 carve-out
     so the ingest-vs-update behavior stays symmetric. Anti-coincidental:
     the doc is actually created (the carve-out is a `return`, not a swap
@@ -439,7 +439,7 @@ async def test_update_metadata_with_changing_doc_type_uses_new_schema(
 
 
 # ---------------------------------------------------------------------------
-# T-0151: doc_type change paired with tier3 ops must reject when merged
+# Doc_type change paired with tier3 ops must reject when merged
 # tier3 carries keys absent from the new doc_type's schema. The caller is
 # told the exact `unset` list needed; storage is untouched.
 # ---------------------------------------------------------------------------
@@ -617,10 +617,10 @@ async def test_update_metadata_doc_type_change_falls_through_to_schema_validator
 
 
 # ---------------------------------------------------------------------------
-# T-0156: close the two reconciliation gaps left open by T-0151.
+# Close the two reconciliation gaps left open by.
 #
 # Wart 1: a doc_type change with no Tier3Patch must still revalidate the
-# stored tier3 against the new schema. T-0151 added the stale-keys
+# stored tier3 against the new schema. added the stale-keys
 # pre-check inside the `if request.tier3_metadata is not None:` guard, so
 # the gap is the no-patch path -- stored stale keys silently survived.
 #
@@ -635,11 +635,11 @@ async def test_update_metadata_doc_type_change_falls_through_to_schema_validator
 async def test_update_metadata_doc_type_change_no_tier3_patch_with_stale_stored_keys_rejects(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0156 Wart 1 primary: doc_type change with no Tier3Patch and stale
+    """Wart 1 primary: doc_type change with no Tier3Patch and stale
     stored keys raises Tier3DocTypeChangeStaleKeysError pre-write. Anti-
     coincidental probe: storage unchanged. Specific error code (not a
     generic tier3_schema_violation) -- the caller is told which keys to
-    unset, mirroring the T-0151 error envelope."""
+    unset, mirroring the error envelope."""
     _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
         IngestRequest(
@@ -671,7 +671,7 @@ async def test_update_metadata_doc_type_change_no_tier3_patch_with_stale_stored_
 async def test_update_metadata_doc_type_change_no_tier3_patch_with_empty_stored_passes(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0156 Wart 1 happy path + Wart 2 happy path: doc_type change to a
+    """Wart 1 happy path + Wart 2 happy path: doc_type change to a
     no-schema target with empty stored tier3 and no Tier3Patch must
     succeed. Anti-coincidental: doc_type flipped on disk AND stored
     tier3 was not overwritten by an empty merged dict (write discipline)."""
@@ -703,7 +703,7 @@ async def test_update_metadata_doc_type_change_no_tier3_patch_with_empty_stored_
 async def test_update_metadata_doc_type_change_to_no_schema_with_unset_all_succeeds(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0156 Wart 2 primary: reclassify to a no-schema doc_type while
+    """Wart 2 primary: reclassify to a no-schema doc_type while
     unsetting every legacy tier3 key. The merged dict is {}; the new
     doc_type has no schema. This must succeed. Without the fix, the
     call raises tier3_schema_violation with the 'no metadata_schema
@@ -736,7 +736,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_with_unset_all_succe
 async def test_update_metadata_doc_type_change_to_no_schema_with_nonempty_merged_still_rejects(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0156 Wart 2 anti-coincidental: the empty-dict carve-out must not
+    """Wart 2 anti-coincidental: the empty-dict carve-out must not
     loosen rejection for non-empty payloads against no-schema doc_types.
     The doc_type-change path's stale-keys pre-check fires first because
     the new doc_type has no allowed properties (allowed == set()), so a
@@ -773,7 +773,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_with_nonempty_merged
 async def test_update_metadata_no_doc_type_change_set_against_no_schema_still_rejects(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0156 Wart 2 scope guard: the empty-dict carve-out in
+    """Wart 2 scope guard: the empty-dict carve-out in
     _validate_tier3 must not silently allow tier3 set-ops against
     no-schema doc_types in the non-doc-type-change path. A Tier3Patch
     with set ops produces a non-empty merged dict, which must still
@@ -1082,7 +1082,7 @@ def test_tier3_matches_ands_multiple_keys():
 
 
 # ---------------------------------------------------------------------------
-# T-0075: SQL pushdown of tier3 filters into json_extract predicates
+# SQL pushdown of tier3 filters into json_extract predicates
 # ---------------------------------------------------------------------------
 
 

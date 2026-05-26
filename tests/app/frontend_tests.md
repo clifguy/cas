@@ -40,8 +40,8 @@ from the sidebar. Keeping the sidebar to four entries reduces cognitive load.
 
 **Decision:** Switching vaults resets the current view to Dashboard.
 
-**Precondition:** Two vaults configured (e.g., pim_health, personal_notes).
-User is viewing Search in the pim_health vault.
+**Precondition:** Two vaults configured (e.g., example_vault, personal_notes).
+User is viewing Search in the example_vault vault.
 
 **Input:** Select personal_notes from the vault selector.
 
@@ -81,12 +81,12 @@ the user before drilling into specific operations.
 **Decision:** Vault name, description, and base path are displayed at the top
 of the Dashboard.
 
-**Precondition:** Vault loaded (e.g., pim_health).
+**Precondition:** Vault loaded (e.g., example_vault).
 
 **Input:** Navigate to Dashboard.
 
 **Expected:**
-- Vault name displayed (e.g., "PIM Health Portfolio")
+- Vault name displayed (e.g., "Engineering Portfolio")
 - Vault description displayed
 - Base path (storage_root) displayed
 
@@ -583,7 +583,7 @@ evidence, and confidence tier.
 **Expected:**
 - Source document title displayed
 - Target document title displayed
-- Inference evidence text displayed (e.g., "filename contains patent code CD-04")
+- Inference evidence text displayed (e.g., "filename contains report code CD-04")
 - Confidence tier displayed (always Tier 2 in this view)
 
 **Rationale:** Evidence and confidence give the user enough context to make a
@@ -748,10 +748,10 @@ the result set and ranking.
 
 **Precondition:** Vault with documents of multiple doc_types and lifecycle states.
 
-**Input:** Set doc_type filter to "patent_draft" and execute a search.
+**Input:** Set doc_type filter to "design_spec" and execute a search.
 
 **Expected:**
-- Only patent_draft documents appear in results
+- Only design_spec documents appear in results
 - Results are ranked within the filtered set
 - Filter value is passed to the SAGE discover endpoint as a scope parameter
 
@@ -970,7 +970,7 @@ mapping is an implementation decision.
 - Legend or tooltip identifies the shape-to-type mapping
 
 **Rationale:** Shape is a pre-attentive visual channel. Users can scan for
-document types (e.g., patent drafts) without reading labels.
+document types (e.g., report drafts) without reading labels.
 
 ### TEST-APP-UI-045: Edge dash pattern encodes edge type
 

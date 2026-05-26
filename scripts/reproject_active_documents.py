@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Re-project active documents so chunk content carries the T-0081 ATX
+"""Re-project active documents so chunk content carries the ATX
 heading line.
 
-T-0081 changed the persisted shape of ``Chunk.content``: each body chunk
-now holds its own ATX heading line ("# ...", "## ...", ...) followed by
+changed the persisted shape of ``Chunk.content``: each body chunk
+now holds its own ATX heading line ("#...", "##...",...) followed by
 the body text. The fix lives in ``IngestionService._chunk_projection``
 and is source-type-agnostic: it iterates ``projection.headings`` produced
 by whatever adapter ran Stage 1. Every adapter that emits ``HeadingNode``
@@ -26,8 +26,8 @@ Per-document flow:
    ``--allow-hash-drift``).
 5. Snapshot the document's current ``pipeline_status``.
 6. Call ``IngestionService._stage2_indexing`` to re-chunk (now with the
-   T-0081 fix), re-embed, and atomically replace stored chunks. The
-   synthetic header chunk (T-0038) is rebuilt as part of Stage 2.
+   fix), re-embed, and atomically replace stored chunks. The
+   synthetic header chunk is rebuilt as part of Stage 2.
 7. Restore the snapshotted ``pipeline_status`` if it was a terminal
    state (``abstraction_complete``, ``abstraction_skipped``, ``failed``)
    so docs with existing abstracts keep their reporting status.
@@ -56,7 +56,7 @@ Usage::
 
     # Single vault
     .venv/bin/python -m scripts.reproject_active_documents \\
-        --vault pim_health --execute
+        --vault example_vault --execute
 
     # Restrict to one source type (repeatable)
     .venv/bin/python -m scripts.reproject_active_documents \\
@@ -243,7 +243,7 @@ async def reproject_vault_with_services(
             # after Stage 2 (which would otherwise mark INDEXING_COMPLETE).
             prior_status = doc.pipeline_status
 
-            # Stage 2: re-chunk (T-0081 fix), re-embed, atomic replace.
+            # Stage 2: re-chunk (fix), re-embed, atomic replace.
             await ingestion._stage2_indexing(doc.id, projection)
 
             # Restore prior terminal pipeline_status so that
@@ -373,7 +373,7 @@ def main() -> None:
     parser.add_argument(
         "--vault",
         help=(
-            "Single vault id (e.g. pim_health). Default: every vault discovered "
+            "Single vault id (e.g. example_vault). Default: every vault discovered "
             "under ~/sage_vaults/."
         ),
     )

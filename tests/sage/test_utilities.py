@@ -3,7 +3,7 @@
 Tests for export_projection (path containment security) and
 eval_retrieval (retrieval health assertions from YAML).
 
-Also carries the T-0126 closure-pair exhaustive-fields tests for the
+Also carries the closure-pair exhaustive-fields tests for the
 three thin ``Document`` → response-model projections in
 ``sage/services/utilities.py`` (``ReadProjectionResponse``,
 ``ReadSectionResponse``, ``ListHeadingsResponse``), per the *CAS
@@ -130,7 +130,7 @@ async def ingested_doc(
 
 
 async def test_bh038_path_traversal_denied(utilities_service, ingested_doc):
-    """Relative path with ../ that escapes storage_root is rejected."""
+    """Relative path with../ that escapes storage_root is rejected."""
     from sage.api.errors import PathTraversalDeniedError
 
     with pytest.raises(PathTraversalDeniedError) as exc_info:
@@ -192,7 +192,7 @@ async def test_read_projection_returns_text(utilities_service, ingested_doc):
 
 
 async def test_read_projection_excludes_synthetic_header(utilities_service, ingested_doc):
-    """The synthetic header chunk (T-0038) carries title/source/tags/
+    """The synthetic header chunk carries title/source/tags/
     abstract for retrieval and must not leak into the exported/read
     projection text."""
     result = await utilities_service.read_projection(ingested_doc.id)
@@ -207,7 +207,7 @@ async def test_export_projection_excludes_synthetic_header(
     utilities_service, ingested_doc, tmp_vault_dir
 ):
     """export_projection writes the body-only projection — the synthetic
-    header chunk content does not appear in the exported file (T-0038)."""
+    header chunk content does not appear in the exported file."""
     result = await utilities_service.export_projection(ingested_doc.id, "exports/no_synthetic.md")
 
     written = Path(result.output_path).read_text(encoding="utf-8")
@@ -276,7 +276,7 @@ async def test_bh041_retrieval_assertions_from_yaml(
     # Create test source files
     test_dir = sources / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
-    (test_dir / "alpha.md").write_text("# Alpha Document\n\nAlpha content about patents.")
+    (test_dir / "alpha.md").write_text("# Alpha Document\n\nAlpha content about reports.")
     (test_dir / "beta.md").write_text("# Beta Document\n\nBeta content about trademarks.")
 
     config_dict = {
@@ -335,7 +335,7 @@ async def test_bh041_retrieval_assertions_from_yaml(
     assertions = {
         "assertions": [
             {
-                "query": "Alpha content about patents",
+                "query": "Alpha content about reports",
                 "expected_document_id": doc_alpha.id,
                 "top_k": 10,
             },
@@ -515,7 +515,7 @@ async def test_export_nonexistent_document(utilities_service):
 
 
 # ---------------------------------------------------------------------------
-# T-0126: Closure-pair tests for the three thin Document-field pulls in
+# Closure-pair tests for the three thin Document-field pulls in
 # sage/services/utilities.py. Each ``from_document`` factory consolidates a
 # single construction site behind a model classmethod; the exhaustive-fields
 # tests below are the structural F4 closure — they fail closed when a new
@@ -529,7 +529,7 @@ def _doc_with_every_document_field() -> Document:
     """Build a Document with every Document-mapped field set to a distinct
     non-default sentinel.
 
-    Used by the T-0126 exhaustive-fields tests so that a factory which
+    Used by the exhaustive-fields tests so that a factory which
     inadvertently drops a Document-sourced field surfaces as a non-populated
     response-model field; defaulted source values would let the assertions
     pass coincidentally for ``str | None`` / ``list[str]`` / ``dict | None``
@@ -577,7 +577,7 @@ _READ_PROJECTION_DELIVERY_FIELDS = {"written_to", "content_size"}
 def test_from_document_populates_every_read_projection_response_field():
     doc = _doc_with_every_document_field()
     response = ReadProjectionResponse.from_document(doc, projection_text="sentinel projection text")
-    # Three-branch closure-test idiom (T-0144). ReadProjectionResponse has
+    # Three-branch closure-test idiom. ReadProjectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadProjectionResponse.model_fields.items():
         if field_name in _READ_PROJECTION_DELIVERY_FIELDS:
@@ -610,7 +610,7 @@ def test_from_document_populates_every_read_section_response_field():
         chunk_count=7,
         section_text="sentinel section text",
     )
-    # Three-branch closure-test idiom (T-0144). ReadSectionResponse has
+    # Three-branch closure-test idiom. ReadSectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadSectionResponse.model_fields.items():
         value = getattr(response, field_name)
@@ -636,7 +636,7 @@ def test_from_document_populates_every_read_section_response_field():
 def test_from_document_populates_every_list_headings_response_field():
     doc = _doc_with_every_document_field()
     response = ListHeadingsResponse.from_document(doc, headings=["Heading A", "Heading B > Sub"])
-    # Three-branch closure-test idiom (T-0144). ListHeadingsResponse has
+    # Three-branch closure-test idiom. ListHeadingsResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ListHeadingsResponse.model_fields.items():
         value = getattr(response, field_name)

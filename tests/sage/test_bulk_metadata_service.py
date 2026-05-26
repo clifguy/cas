@@ -1,4 +1,4 @@
-"""Service-layer tests for MetadataService.bulk_update_metadata (T-0088).
+"""Service-layer tests for MetadataService.bulk_update_metadata.
 
 The bulk method holds the per-document lock per item and the per-item
 SQLite transaction; the batch as a whole is NOT atomic. A bad item does
@@ -55,7 +55,7 @@ async def _insert_with_state(
 
 # ---------------------------------------------------------------------------
 # 1. Happy path with scalar + tag + tier3 changes (anti-coincidental-pass:
-#    re-read every doc from storage).
+# re-read every doc from storage).
 # ---------------------------------------------------------------------------
 
 
@@ -229,8 +229,8 @@ async def test_bulk_update_metadata_tier3_unset_conflict_per_item_error(
 
 # ---------------------------------------------------------------------------
 # 5. Post-merge tier3 schema violation surfaces tier3_schema_violation.
-#    Mutation probe: removing _validate_tier3 makes this test pass with
-#    the bad merged dict committing.
+# Mutation probe: removing _validate_tier3 makes this test pass with
+# the bad merged dict committing.
 # ---------------------------------------------------------------------------
 
 
@@ -270,10 +270,10 @@ async def test_bulk_update_metadata_tier3_schema_violation_per_item_error(
 
 
 # ---------------------------------------------------------------------------
-# 5b. T-0151: doc_type change paired with tier3 ops in one bulk item
-#     surfaces tier3_doc_type_change_stale_keys per-item; neighbor commits.
-#     Anti-coincidental: storage-probe on the failing doc confirms it is
-#     unchanged; the new error must fire pre-write.
+# 5b. Doc_type change paired with tier3 ops in one bulk item
+# surfaces tier3_doc_type_change_stale_keys per-item; neighbor commits.
+# Anti-coincidental: storage-probe on the failing doc confirms it is
+# unchanged; the new error must fire pre-write.
 # ---------------------------------------------------------------------------
 
 
@@ -332,10 +332,10 @@ async def test_bulk_update_metadata_doc_type_change_stale_keys_per_item_error(
 
 
 # ---------------------------------------------------------------------------
-# 5c. T-0156: doc_type change with no Tier3Patch and stale stored keys
-#     surfaces tier3_doc_type_change_stale_keys per-item; neighbor commits.
-#     Locks in parity with the single-item path -- bulk_update_metadata is
-#     a thin loop over update_metadata.
+# 5c. Doc_type change with no Tier3Patch and stale stored keys
+# surfaces tier3_doc_type_change_stale_keys per-item; neighbor commits.
+# Locks in parity with the single-item path -- bulk_update_metadata is
+# a thin loop over update_metadata.
 # ---------------------------------------------------------------------------
 
 
@@ -360,7 +360,7 @@ async def test_bulk_update_metadata_doc_type_change_no_tier3_patch_stale_keys_pe
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                # T-0156 Wart 1: doc_type change with no Tier3Patch but
+                # Wart 1: doc_type change with no Tier3Patch but
                 # stale stored keys -- must reject.
                 BulkMetadataItem(
                     document_id=doc_a,
@@ -394,9 +394,9 @@ async def test_bulk_update_metadata_doc_type_change_no_tier3_patch_stale_keys_pe
 
 
 # ---------------------------------------------------------------------------
-# 5d. T-0156 Wart 2: doc_type change to no-schema target with Tier3Patch
-#     that unsets every legacy key (empty merged dict) succeeds per-item.
-#     A bad neighbor confirms per-item isolation.
+# 5d. Wart 2: doc_type change to no-schema target with Tier3Patch
+# that unsets every legacy key (empty merged dict) succeeds per-item.
+# A bad neighbor confirms per-item isolation.
 # ---------------------------------------------------------------------------
 
 
@@ -422,7 +422,7 @@ async def test_bulk_update_metadata_doc_type_change_to_no_schema_unset_all_per_i
         BulkMetadataRequest(
             items=[
                 # Reclassify to no-schema doc_type while unsetting every
-                # legacy key -- T-0156 Wart 2 should let this through.
+                # legacy key -- Wart 2 should let this through.
                 BulkMetadataItem(
                     document_id=doc_ok,
                     doc_type="misc",
@@ -456,7 +456,7 @@ async def test_bulk_update_metadata_doc_type_change_to_no_schema_unset_all_per_i
 
 # ---------------------------------------------------------------------------
 # 6. Unknown document_id surfaces document_not_found per-item; neighbor
-#    still commits.
+# still commits.
 # ---------------------------------------------------------------------------
 
 
@@ -524,7 +524,7 @@ async def test_bulk_update_metadata_invalid_doc_type_per_item_error(
 
 # ---------------------------------------------------------------------------
 # 8. Duplicate document_id serializes via per-doc lock; updated_at is
-#    monotonically non-decreasing across the three items.
+# monotonically non-decreasing across the three items.
 # ---------------------------------------------------------------------------
 
 
@@ -565,7 +565,7 @@ async def test_bulk_update_metadata_duplicate_document_id_serializes_via_per_doc
 
 # ---------------------------------------------------------------------------
 # 9. Per-item transactions — load-bearing isolation test. Mutation probe:
-#    a batch-wide try/except would roll item 0 back when item 1 raises.
+# a batch-wide try/except would roll item 0 back when item 1 raises.
 # ---------------------------------------------------------------------------
 
 
@@ -602,7 +602,7 @@ async def test_bulk_update_metadata_per_item_transactions_no_batch_rollback(
 
 # ---------------------------------------------------------------------------
 # 10. Each successful patch sets metadata_confirmed=True (CAS-ADR-021
-#     behavior carries through the bulk path).
+# behavior carries through the bulk path).
 # ---------------------------------------------------------------------------
 
 

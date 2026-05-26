@@ -68,7 +68,7 @@ def _detect_pending_work(db_path: Path) -> tuple[list[Migration], list[Backfill]
     detection runs against a temp copy of the db whose schema has the
     post-migration columns. This mirrors the re-detect step in
     ``GraphStore._initialize_sync`` so backfills that depend on newly-
-    added columns (e.g., the T-0080 rationale_kind backfill, whose
+    added columns (e.g., the rationale_kind backfill, whose
     detector queries the ``rationale_kind`` column that the migration
     itself adds) are surfaced rather than silently skipped.
 
@@ -125,7 +125,7 @@ class MaintenanceService:
         self._config = config
         self._registry_service = registry_service
         self._ingestion = ingestion_service
-        # Per-vault single-flight lock for reabstract_deferred (T-0089).
+        # Per-vault single-flight lock for reabstract_deferred.
         # Non-blocking check: a second caller raises rather than queueing
         # (reabstract passes can run for minutes against the in-process
         # Qwen3; silently queuing would mask client-side coordination
@@ -154,7 +154,7 @@ class MaintenanceService:
         on disk and the registry continues to serve the prior
         services.
 
-        T-0115: after the schema migration step settles, scan every
+        After the schema migration step settles, scan every
         ``unique_keys`` declaration in vault config. For each declared
         (doc_type, field), build the chain-head-grouped value map and
         report any collisions; for each clean declaration, ensure the
@@ -208,7 +208,7 @@ class MaintenanceService:
         )
 
     async def detect_drift(self) -> DriftReport:
-        """Walk every active sync_target / derived_from edge; classify drift (T-0111).
+        """Walk every active sync_target / derived_from edge; classify drift.
 
         For each edge whose target's supersedes-chain head has advanced
         past the recorded ``synced_from_*`` provenance, emit a
@@ -341,7 +341,7 @@ class MaintenanceService:
     async def scan_tier3_uniqueness_collisions(
         self, doc_type: str, field: str
     ) -> list[Tier3UniquenessCollision]:
-        """Enumerate cross-chain collisions on `(doc_type, field)` (T-0115).
+        """Enumerate cross-chain collisions on `(doc_type, field)`.
 
         Groups chain heads of `doc_type` by their `tier3_metadata.<field>`
         value. Any value held by more than one chain head is a collision:
@@ -407,7 +407,7 @@ class MaintenanceService:
 
     def _reject_if_in_flight(self) -> None:
         """Raise ReabstractAlreadyInFlightError synchronously if a reabstract
-        is already running on this vault (T-0089, T-0134).
+        is already running on this vault.
 
         Synchronous helper -- not ``async`` -- so callers can fail fast
         BEFORE constructing a StreamingResponse. The in-flight check
@@ -427,7 +427,7 @@ class MaintenanceService:
             )
 
     async def reabstract_deferred(self, include_pdf: bool = False) -> ReabstractReport:
-        """Backfill semantic abstracts for the deferred-abstract worklist (T-0089).
+        """Backfill semantic abstracts for the deferred-abstract worklist.
 
         Consumes the ``reabstract_deferred_events`` streaming generator
         and returns the final summary event re-shaped as a
@@ -503,7 +503,7 @@ class MaintenanceService:
         self, include_pdf: bool = False
     ) -> AsyncGenerator[ReabstractEvent, None]:
         """Stream per-document progress events for the deferred-abstract
-        worklist (T-0134).
+        worklist.
 
         Returns an async generator that yields a ``ReabstractProgressEvent``
         per per-document state transition (one ``started`` and one
@@ -589,7 +589,7 @@ class MaintenanceService:
 
                 # PDFs first: each surfaces as a single ``skipped`` event
                 # (no dispatch, no wait). Aggregator order preserves the
-                # pre-T-0134 behavior in which PDF entries lead the
+                # pre-behavior in which PDF entries lead the
                 # report.
                 for doc in pdf_skipped:
                     entry = ReabstractReportEntry(

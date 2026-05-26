@@ -1,7 +1,7 @@
 """Shared date-parsing helpers for document_date round-tripping.
 
 Consolidates the formerly-parallel ``_parse_document_date`` (retrieval.py)
-and ``_parse_doc_date`` (graph_ops.py) helpers per T-0096.
+and ``_parse_doc_date`` (graph_ops.py) helpers.
 """
 
 from datetime import datetime, timezone

@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Synthetic-load probe for the T-0074 storage-index A/B baseline.
+"""Synthetic-load probe for the storage-index A/B baseline.
 
 Runs a fixed set of query shapes against the cas vault and emits
-timing records via the T-0073 instrumentation. The probe is intended
+timing records via the instrumentation. The probe is intended
 to be run twice on the same code revision:
 
 1. Pre-migration: capture the timing log against the current schema.
 2. Post-migration: capture the timing log against the new index set.
 
-Compare the two log windows to demonstrate that T-0074's index
+Compare the two log windows to demonstrate that index
 additions move query plans onto the new indexes without regressing
 latency.
 
 The probe deliberately:
 
 - Hits only catalog-mode discover, traverse, and a small set of tier3
-  filter shapes — the three query families T-0074 either adds an
+  filter shapes — the three query families either adds an
   index for (doc_type, project, composite edges) or must not regress
-  (tier3_metadata, which is T-0075's job).
+  (tier3_metadata, which is job).
 - Forces emit_threshold_ms=0.0 so every call is logged individually
   rather than coalesced into a periodic summary record.
 - Uses StubAbstractionProvider so Qwen3 / MLX never loads.
@@ -64,7 +64,7 @@ from sage.vault_management import config_path_for_vault
 DOC_TYPES = ("ticket", "adr", "failure_record", "tooling_entry", "steering_document")
 
 # Deterministic start nodes for traversal probes. Picked for density:
-# T-0072 umbrella references the eight Phase 0–3 sub-tickets; the
+# umbrella references the eight Phase 0–3 sub-tickets; the
 # steering doc anchors many ticket → steering references.
 TRAVERSE_STARTS = (
     (
@@ -171,7 +171,7 @@ async def _run_probes(label: str, reps: int) -> None:
                     durations.append((time.perf_counter() - t0) * 1000.0)
                 print(_stats(f"catalog doc_type={dt} lifecycle={status}", durations))
 
-        # --- catalog discover with tier3 filters (T-0075 regression check) ---
+        # --- catalog discover with tier3 filters (regression check) ---
         for tier3 in TIER3_PROBES:
             durations = []
             for _ in range(reps):

@@ -35,12 +35,12 @@ requires_docx = pytest.mark.skipif(not _HAS_DOCX, reason="python-docx not availa
 
 
 # ---------------------------------------------------------------------------
-# Fixtures: PIM-Health-style vault config with filename_extraction enabled
+# Fixtures: EXAMPLE-Health-style vault config with filename_extraction enabled
 # ---------------------------------------------------------------------------
 
 
 def _pim_metadata_extraction() -> dict:
-    """PIM Health-like metadata extraction config.
+    """Example Portfolio-like metadata extraction config.
 
     Mirrors the fixture used in tests/app/test_app_backend.py so that
     the SAGE-side behavior is validated against the same rule set the
@@ -50,7 +50,7 @@ def _pim_metadata_extraction() -> dict:
         "filename_extraction": {
             "pattern": "{date}_{project}_{code}_{title}_{version}",
             "separator": "_",
-            "project_identifier": "PIM",
+            "project_identifier": "EXAMPLE",
             "segment_fields": {
                 "date": "doc_date",
                 "project": "project",
@@ -75,15 +75,15 @@ def _pim_metadata_extraction() -> dict:
                     "doc_type": "glossary",
                 },
                 {"code": "REF", "doc_type": "reference_document"},
-                {"code": "PVMaster", "doc_type": "patent_draft"},
-                {"code": "PV", "doc_type": "patent_draft"},
+                {"code": "PVMaster", "doc_type": "design_spec"},
+                {"code": "PV", "doc_type": "design_spec"},
             ],
         },
     }
 
 
 def _pim_vault_config_dict(tmp_vault_dir: Path) -> dict:
-    """Build a PIM-Health-like vault config for tests in this module.
+    """Build a EXAMPLE-Health-like vault config for tests in this module.
 
     Uses both markdown and docx adapters so ME-007 can exercise both
     paths against structurally identical filenames.
@@ -99,7 +99,7 @@ def _pim_vault_config_dict(tmp_vault_dir: Path) -> dict:
         },
         "document_types": {
             "doc_types": [
-                {"value": "patent_draft", "label": "Patent Draft"},
+                {"value": "design_spec", "label": "Report Draft"},
                 {"value": "glossary", "label": "Glossary"},
                 {"value": "reference_document", "label": "Reference Document"},
                 {"value": "checklist", "label": "Checklist"},
@@ -149,7 +149,7 @@ def _pim_vault_config_dict(tmp_vault_dir: Path) -> dict:
 
 @pytest.fixture
 def pim_style_config(tmp_vault_dir):
-    """Parsed VaultConfig with PIM-style filename_extraction."""
+    """Parsed VaultConfig with EXAMPLE-style filename_extraction."""
     return VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
 
 
@@ -162,7 +162,7 @@ def pim_style_ingestion_service(
     stub_abstraction_provider,
     pim_style_config,
 ):
-    """IngestionService with PIM-style metadata_extraction and both adapters."""
+    """IngestionService with EXAMPLE-style metadata_extraction and both adapters."""
     return IngestionService(
         graph_store=graph_store,
         lock_manager=lock_manager,
@@ -192,7 +192,7 @@ def _write_md(
 
 
 def _write_docx(tmp_vault_dir: Path, relative_path: str) -> Path:
-    """Write a minimal empty .docx at the given vault-relative path."""
+    """Write a minimal empty.docx at the given vault-relative path."""
     full_path = tmp_vault_dir / "sources" / relative_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
     doc = _docx_pkg.Document()
@@ -208,12 +208,12 @@ def _write_docx(tmp_vault_dir: Path, relative_path: str) -> Path:
 async def test_me_001_filename_parse_populates_record(tmp_vault_dir, pim_style_ingestion_service):
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        "reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         body="# A Heading\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
@@ -223,10 +223,10 @@ async def test_me_001_filename_parse_populates_record(tmp_vault_dir, pim_style_i
 
     assert doc.title == "Claim-Set"
     assert doc.document_date == "2026-03-09"
-    assert doc.project == "PIM"
+    assert doc.project == "EXAMPLE"
     assert doc.tags == ["PV06"]
     assert doc.version_label == "v6.0"
-    assert doc.doc_type == "patent_draft"
+    assert doc.doc_type == "design_spec"
 
 
 # ---------------------------------------------------------------------------
@@ -239,12 +239,12 @@ async def test_me_002_caller_metadata_overrides_filename_parse(
 ):
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        "reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         body="# A Heading\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
@@ -265,7 +265,7 @@ async def test_me_002_caller_metadata_overrides_filename_parse(
     # Filename parse fills unspecified fields
     assert doc.document_date == "2026-03-09"
     assert doc.tags == ["PV06"]
-    assert doc.doc_type == "patent_draft"
+    assert doc.doc_type == "design_spec"
 
 
 # ---------------------------------------------------------------------------
@@ -278,12 +278,12 @@ async def test_me_003_filename_title_overrides_adapter_title(
 ):
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        "reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         body="# A Long Rhetorical Title That Differs From The Filename\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
@@ -366,12 +366,12 @@ async def test_me_005_filename_doc_type_is_not_overwritten_by_misc(
 ):
     _write_md(
         tmp_vault_dir,
-        "refs/2026-02-01_PIM_REF_Glossary_v2.md",
+        "refs/2026-02-01_EXAMPLE_REF_Glossary_v2.md",
         body="# Glossary\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="refs/2026-02-01_PIM_REF_Glossary_v2.md",
+        source="refs/2026-02-01_EXAMPLE_REF_Glossary_v2.md",
         source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
@@ -396,12 +396,12 @@ async def test_me_006_doc_type_defaults_to_misc_when_unresolved(
     # and "Untagged-Note" does not match any keyword_to_doc_type keyword.
     _write_md(
         tmp_vault_dir,
-        "random/2026-03-01_PIM_Untagged-Note.md",
+        "random/2026-03-01_EXAMPLE_Untagged-Note.md",
         body="# Some Heading\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="random/2026-03-01_PIM_Untagged-Note.md",
+        source="random/2026-03-01_EXAMPLE_Untagged-Note.md",
         source_type=SourceType.MARKDOWN,
         # ADR-021: filename inference runs only under needs_review=True.
         needs_review=True,
@@ -414,7 +414,7 @@ async def test_me_006_doc_type_defaults_to_misc_when_unresolved(
 
     # But filename parse ran and populated what it could
     assert doc.document_date == "2026-03-01"
-    assert doc.project == "PIM"
+    assert doc.project == "EXAMPLE"
 
 
 # ---------------------------------------------------------------------------
@@ -428,17 +428,17 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
 ):
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_A_v1.md",
+        "reports/2026-03-09_EXAMPLE_PV06_A_v1.md",
         body="# A\n\nBody.\n",
     )
     _write_docx(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_A_v1.docx",
+        "reports/2026-03-09_EXAMPLE_PV06_A_v1.docx",
     )
 
     md_result = await pim_style_ingestion_service.ingest(
         IngestRequest(
-            source="patents/2026-03-09_PIM_PV06_A_v1.md",
+            source="reports/2026-03-09_EXAMPLE_PV06_A_v1.md",
             source_type=SourceType.MARKDOWN,
             # ADR-021: filename inference runs only under needs_review=True.
             needs_review=True,
@@ -446,7 +446,7 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
     )
     docx_result = await pim_style_ingestion_service.ingest(
         IngestRequest(
-            source="patents/2026-03-09_PIM_PV06_A_v1.docx",
+            source="reports/2026-03-09_EXAMPLE_PV06_A_v1.docx",
             source_type=SourceType.DOCX,
             needs_review=True,
         )
@@ -457,11 +457,11 @@ async def test_me_007_markdown_and_docx_produce_identical_metadata(
 
     # Filename-extracted fields must match across adapters.
     assert md_doc.title == dx_doc.title == "A"
-    assert md_doc.project == dx_doc.project == "PIM"
+    assert md_doc.project == dx_doc.project == "EXAMPLE"
     assert md_doc.tags == dx_doc.tags == ["PV06"]
     assert md_doc.version_label == dx_doc.version_label == "v1.0"
     assert md_doc.document_date == dx_doc.document_date == "2026-03-09"
-    assert md_doc.doc_type == dx_doc.doc_type == "patent_draft"
+    assert md_doc.doc_type == dx_doc.doc_type == "design_spec"
 
 
 # ---------------------------------------------------------------------------

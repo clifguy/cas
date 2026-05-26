@@ -4,13 +4,13 @@ Verifies the three-way distinction `_LoggingFastMCP.call_tool` draws
 between tool outcomes in the console log:
 
 - success → one INFO line (`mcp tool: <name>`), no WARNING, no ERROR
-  [T-0061]
+  []
 - envelope-error → one INFO line plus one WARNING line
   (`mcp tool error: <name> (<error_kind>)`), no ERROR; the result is
-  returned to the caller unchanged [T-0064]
+  returned to the caller unchanged []
 - raised exception → one INFO line plus one ERROR line
   (`mcp tool failed: <name>`) with traceback, and the exception
-  re-propagates [T-0061]
+  re-propagates []
 
 The envelope-error test exercises the *production* return shape that
 FastMCP's `_convert_to_content` produces: SAGE tool dicts are
@@ -59,11 +59,11 @@ async def test_call_tool_logs_name_on_success(caplog, monkeypatch):
 
 
 async def test_call_tool_logs_warning_on_envelope_wrapped_in_text_content(caplog, monkeypatch):
-    """T-0064 production shape: SAGE dict envelopes are wrapped in [TextContent(text=<json>)].
+    """production shape: SAGE dict envelopes are wrapped in [TextContent(text=<json>)].
 
     This mirrors what FastMCP's `_convert_to_content` produces from a SAGE
     tool's `{"error": "<code>", "message": "..."}` return. The first cut of
-    T-0064 only exercised the raw-dict mock and missed this shape — the
+    only exercised the raw-dict mock and missed this shape — the
     smoke test against the running server caught the gap.
     """
     mcp = _LoggingFastMCP("test")
@@ -95,7 +95,7 @@ async def test_call_tool_logs_warning_on_envelope_wrapped_in_text_content(caplog
 
 
 async def test_call_tool_logs_warning_on_raw_dict_envelope(caplog, monkeypatch):
-    """T-0064 defensive shape: a hypothetical FastMCP that returns the raw dict.
+    """defensive shape: a hypothetical FastMCP that returns the raw dict.
 
     Not the current production path — FastMCP wraps dicts in TextContent (see
     sibling test). Pinned anyway so the helper's dict branch can't silently

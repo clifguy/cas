@@ -26,10 +26,10 @@ def _full_parsed_metadata() -> ParsedMetadata:
     return ParsedMetadata(
         title="Claim-Set",
         date="2026-03-09",
-        project="PIM",
+        project="EXAMPLE",
         codes=["PV06", "CF-1"],
         version="v7",
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
 
 
@@ -40,7 +40,7 @@ def _sparse_parsed_metadata() -> ParsedMetadata:
 
 def _full_scan_result() -> ScanResult:
     return ScanResult(
-        file_path="/tmp/2026-03-09_PIM_PV06_Claim-Set_v7.docx",
+        file_path="/tmp/2026-03-09_EXAMPLE_PV06_Claim-Set_v7.docx",
         file_hash="sha256:" + "a" * 64,
         source_modified_at="2026-03-09T10:00:00+00:00",
         source_type="docx",
@@ -68,7 +68,7 @@ def _sparse_scan_result() -> ScanResult:
 class TestImportHygiene:
     """CL-002: verify dead imports removed from backend modules.
 
-    CL-001 (edge_inference Document import) is retired -- T-0138 deleted
+    CL-001 (edge_inference Document import) is retired -- deleted
     ``app/backend/edge_inference.py`` entirely; the relocated SAGE
     service ``sage/services/batch_inference.py`` doesn't import Document
     either.
@@ -110,10 +110,10 @@ class TestMetadataConversion:
         pm = resp.parsed_metadata
         assert pm.title == "Claim-Set"
         assert pm.date == "2026-03-09"
-        assert pm.project == "PIM"
+        assert pm.project == "EXAMPLE"
         assert pm.codes == ["PV06", "CF-1"]
         assert pm.version == "v7"
-        assert pm.doc_type == "patent_draft"
+        assert pm.doc_type == "design_spec"
 
     def test_cl_004_scan_result_to_response_sparse(self) -> None:
         """CL-004: _scan_result_to_response handles sparse metadata."""
@@ -136,10 +136,10 @@ class TestMetadataConversion:
             parsed_metadata=ApiParsedMetadata(
                 title="Claim-Set",
                 date="2026-03-09",
-                project="PIM",
+                project="EXAMPLE",
                 codes=["PV06"],
                 version="v7",
-                doc_type="patent_draft",
+                doc_type="design_spec",
             ),
         )
         fd = _to_file_descriptor(item)
@@ -149,10 +149,10 @@ class TestMetadataConversion:
         assert fd.parsed_metadata is not None
         assert fd.parsed_metadata.title == "Claim-Set"
         assert fd.parsed_metadata.date == "2026-03-09"
-        assert fd.parsed_metadata.project == "PIM"
+        assert fd.parsed_metadata.project == "EXAMPLE"
         assert fd.parsed_metadata.codes == ["PV06"]
         assert fd.parsed_metadata.version == "v7"
-        assert fd.parsed_metadata.doc_type == "patent_draft"
+        assert fd.parsed_metadata.doc_type == "design_spec"
 
     def test_cl_005_to_file_descriptor_none_metadata(self) -> None:
         """CL-005: _to_file_descriptor handles None parsed_metadata."""

@@ -111,13 +111,13 @@ abstraction:
 **Expected:** PASS
 **Rationale:** Validates all optional sections are accepted when present.
 
-### TEST-SAGE-VC-003: PIM Health config validates
+### TEST-SAGE-VC-003: Example Portfolio config validates
 
 **Artifact:** `docs/fs/sage/vault_config.schema.json`
 **Category:** valid
 **Constraint:** Real domain config validates against root schema with $ref composition
 
-**Input:** Load `~/sage_vaults/pim_health/vault_config.yaml`
+**Input:** Load `~/sage_vaults/example_vault/vault_config.yaml`
 
 **Expected:** PASS
 **Rationale:** Proves $ref composition works end-to-end with a production config.
@@ -250,9 +250,9 @@ doc_types:
 **Input:**
 ```yaml
 doc_types:
-  - value: patent_draft
-    label: "Patent Draft"
-    description: "Provisional patent application"
+  - value: design_spec
+    label: "Design Spec"
+    description: "Provisional design application"
   - value: glossary
     label: "Glossary"
     description: "Terminology authority"
@@ -299,8 +299,8 @@ doc_types:
 **Input:**
 ```yaml
 doc_types:
-  - value: "PatentDraft"
-    label: "Patent Draft"
+  - value: "BadPatternValue"
+    label: "Design Spec"
 ```
 
 **Expected:** FAIL -- pattern mismatch
@@ -979,7 +979,7 @@ entries:
     timestamp: "2026-03-30T15:00:00Z"
     category: cross_artifact_reasoning
     summary: "Sequenced PV06 before PV07 for conformance"
-    context: "Both patents ready for conformance stage"
+    context: "Both reports ready for conformance stage"
     rationale: "PV06 is closer to filing deadline; prioritize to clear the pipeline"
     related_document_ids: ["doc-pv06", "doc-pv07"]
     workflow_run_id: "wf-run-001"

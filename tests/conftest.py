@@ -12,8 +12,8 @@ import yaml
 from tests.helpers.schema_validation import SchemaValidator
 
 # Default to stub providers on every pytest invocation. Stubs both the
-# embedding provider (T-0018: avoids accidental ~270 MB nomic loads) and the
-# abstraction provider (T-0029: prevents Qwen3 ~16GB MLX/Metal loads in tests
+# embedding provider (Avoids accidental ~270 MB nomic loads) and the
+# abstraction provider (Prevents Qwen3 ~16GB MLX/Metal loads in tests
 # alongside a running MCP server, which is the trigger profile documented in
 # F-8). setdefault preserves explicit overrides, including per-test
 # monkeypatch.delenv calls (see test_di_005).

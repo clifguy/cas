@@ -1,10 +1,10 @@
 """Per-vault administration: stats, hash-check, config get/update.
 
 Owns the work behind the four vault-scoped administration routes:
-- GET  /sage_vaults/{vault_id}/stats       -- dashboard aggregation.
-- POST /sage_vaults/{vault_id}/hash-check  -- bulk hash existence check.
-- GET  /sage_vaults/{vault_id}/config      -- read full config as JSON.
-- PUT  /sage_vaults/{vault_id}/config      -- update sections (with destructive
+- GET /sage_vaults/{vault_id}/stats -- dashboard aggregation.
+- POST /sage_vaults/{vault_id}/hash-check -- bulk hash existence check.
+- GET /sage_vaults/{vault_id}/config -- read full config as JSON.
+- PUT /sage_vaults/{vault_id}/config -- update sections (with destructive
                                               -change detection and reload).
 
 Update orchestration: validation, destructive-change detection, and YAML
@@ -172,7 +172,7 @@ class VaultConfigService:
         still has documents attached, raises DestructiveConfigChangeError
         unless ``force`` is True.
 
-        T-0152: when ``body.dry_run`` is True, runs the merge, schema
+        When ``body.dry_run`` is True, runs the merge, schema
         validation, vault.id-change check, and destructive-change
         detection, but skips ``_write_config_yaml`` and
         ``_registry_service.reload``. Dry-run NEVER raises
@@ -190,7 +190,7 @@ class VaultConfigService:
         old_config = self._config
 
         merged = old_config.model_dump()
-        # T-0152: exclude `dry_run` from the body dict — it's a request
+        # Exclude `dry_run` from the body dict — it's a request
         # control field, not a config section. (`_ALL_SECTIONS` filtering
         # below would skip it anyway, but excluding here keeps `merged`
         # clean for the section-diff computation.)
@@ -208,7 +208,7 @@ class VaultConfigService:
 
         warnings = await _check_destructive_changes(old_config, new_config, self._store)
 
-        # T-0152: dry-run path — compute the section-level diff and
+        # Dry-run path — compute the section-level diff and
         # return the preview without writing yaml or reloading the
         # registry. dry-run never raises DestructiveConfigChangeError;
         # warnings (if any) appear in the response body so the caller

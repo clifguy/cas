@@ -33,7 +33,7 @@ across vaults). Returns a JSON array of vault summary objects. This is the only
 SAGE MCP tool without a vault_id parameter.
 
 **Precondition:** MCP server running with two vaults registered (test_vault,
-pim_health).
+example_vault).
 
 **Input:** Call `sage_list_vaults()`.
 
@@ -441,7 +441,7 @@ IngestRequest.metadata for single-call ingestion with metadata.
 
 **Precondition:** Vault initialized. Two valid source files exist.
 
-**Input:** Call `app_batch_ingest("test_vault", [{"file_path": "/path/doc1.md", "source_type": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "patent_draft"}}, {"file_path": "/path/doc2.md", "source_type": "markdown"}])`.
+**Input:** Call `app_batch_ingest("test_vault", [{"file_path": "/path/doc1.md", "source_type": "markdown", "parsed_metadata": {"title": "Doc1", "codes": ["PV06"], "version": "v1", "doc_type": "design_spec"}}, {"file_path": "/path/doc2.md", "source_type": "markdown"}])`.
 
 **Expected:**
 - Returns valid JSON string (blocks until all files processed)
@@ -607,9 +607,9 @@ a process and vault registry.
 documents with document-level metadata only (no chunk content or relevance scores).
 
 **Precondition:** Vault with 3 documents:
-- doc_a: `doc_type="patent_draft"`, `tags=["PV07"]`
+- doc_a: `doc_type="design_spec"`, `tags=["PV07"]`
 - doc_b: `doc_type="glossary"`, `tags=["PV07"]`
-- doc_c: `doc_type="patent_draft"`, `tags=["PV08"]`
+- doc_c: `doc_type="design_spec"`, `tags=["PV08"]`
 
 **Input:** `sage_discover(vault_id="test_vault", mode="catalog", scope="filtered", filters={"tags": ["PV07"]})`
 
@@ -676,7 +676,7 @@ v1 <- v2 <- v3 <- v4 <- v5.
 - `is_linear` = true.
 - Each chain entry has `id`, `title`, `version_label`, `lifecycle_status`, `document_date`.
 
-**Rationale:** MCP agents working with versioned PIM documents (50+ versions common)
+**Rationale:** MCP agents working with versioned EXAMPLE documents (50+ versions common)
 need an efficient single-call operation to retrieve the full version history.
 The ordered list with positional metadata enables agents to reason about version
 lineage without manual graph traversal and post-processing.

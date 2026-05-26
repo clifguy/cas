@@ -1,6 +1,6 @@
 """Tests for the JSON Schema definition of vault_config.schema.json.
 
-Post-T-0103 / CAS-ADR-030: the per-vault `abstraction` block no longer
+Post-/ CAS-ADR-030: the per-vault `abstraction` block no longer
 carries `provider` or `model` (those moved to stack scope; see
 test_sage_core_config_schema.py). The block still carries `enabled` and
 the density-proportional token-budget fields, and is still

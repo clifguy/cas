@@ -1,4 +1,4 @@
-"""T-0077: Backfill script tests.
+"""Backfill script tests.
 
 Exercises ``scripts.backfill_chunk_lifecycle_project.run`` against an
 in-process LanceDB + SQLite vault. Verifies that the script:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic-load probe for the T-0078 tag-filter A/B baseline.
+"""Synthetic-load probe for the tag-filter A/B baseline.
 
 Mirrors scripts/t0074_load_probe.py but targets the tag-filter path
 specifically. Run twice on the same code revision:

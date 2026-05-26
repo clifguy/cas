@@ -1,8 +1,8 @@
-"""Unit tests for the shared sentinel-row scaffold (T-0145).
+"""Unit tests for the shared sentinel-row scaffold.
 
 The helper at ``tests/sage/_sentinel_rows.py`` is load-bearing for the
-T-0109 cohort's ``sqlite3.Row`` projection closure tests (T-0123,
-T-0124, T-0125). These tests pin the helper's contract so a refactor
+cohort's ``sqlite3.Row`` projection closure tests (,
+). These tests pin the helper's contract so a refactor
 or future variant cannot silently regress the row-shape semantics
 that the production factories depend on.
 """

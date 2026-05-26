@@ -26,7 +26,7 @@ router = APIRouter(tags=["Maintenance"])
 
 
 def _sse_event(event: BaseModel) -> str:
-    """Format an SSE ``data:`` line from a Pydantic event (T-0134).
+    """Format an SSE ``data:`` line from a Pydantic event.
 
     Mirrors the helper at app/backend/ingest_streaming_service.py:48-55.
     ``exclude_none=True`` preserves the wire convention of omitting
@@ -111,7 +111,7 @@ async def admin_reabstract_deferred(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> StreamingResponse:
-    # T-0134: route now streams per-document SSE events instead of
+    # Route now streams per-document SSE events instead of
     # returning a synchronous ReabstractReport JSON body. The
     # ``reabstract_deferred_events`` constructor performs the
     # in-flight check and None-ingestion guard synchronously, so a 409

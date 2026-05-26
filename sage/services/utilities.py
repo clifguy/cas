@@ -168,7 +168,7 @@ class UtilitiesService:
         if not chunks:
             raise NoProjectionError(document_id)
 
-        # Exclude the synthetic header chunk (T-0038) so exported/read
+        # Exclude the synthetic header chunk so exported/read
         # projection text reflects only the body content the source
         # adapter produced — not the synthetic title/source/tags/abstract
         # surface added for retrieval.
@@ -234,7 +234,7 @@ class UtilitiesService:
           and ``content_size``; ``projection_text`` is null.
 
         The write_to_path mode mirrors ``DocumentsService.get_document_with_content``
-        delivery and replaces the per-T-0176-audit-removed
+        delivery and replaces the per--audit-removed
         ``export_projection`` MCP tool, whose pre-existing storage_root-
         relative semantics remain on the REST surface.
 
@@ -320,7 +320,7 @@ class UtilitiesService:
         )
 
     # ------------------------------------------------------------------
-    # list_headings (T-0069)
+    # list_headings
     # ------------------------------------------------------------------
 
     async def list_headings(self, document_id: str) -> ListHeadingsResponse:
@@ -336,7 +336,7 @@ class UtilitiesService:
 
         Returns:
             ListHeadingsResponse with the heading paths in document order.
-            The synthetic header chunk (T-0038) is excluded by
+            The synthetic header chunk is excluded by
             get_heading_paths so the returned paths are exactly those a
             caller may pass to read_section.
 

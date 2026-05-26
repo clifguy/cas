@@ -6,8 +6,8 @@ database. Files not referenced by any document record are orphans,
 typically created by the duplicate-on-reimport bug in _ensure_vault_local.
 
 Usage:
-    python scripts/cleanup_orphan_imports.py                  # dry-run
-    python scripts/cleanup_orphan_imports.py --execute        # delete orphans
+    python scripts/cleanup_orphan_imports.py # dry-run
+    python scripts/cleanup_orphan_imports.py --execute # delete orphans
     python scripts/cleanup_orphan_imports.py --vault OTHER_ID # different vault
 """
 
@@ -56,7 +56,9 @@ def find_orphans(storage_root: Path, db_paths: set[str]) -> list[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Remove orphaned vault imports")
-    parser.add_argument("--vault", default="pim_health", help="Vault ID (default: pim_health)")
+    parser.add_argument(
+        "--vault", default="example_vault", help="Vault ID (default: example_vault)"
+    )
     parser.add_argument(
         "--execute", action="store_true", help="Actually delete orphans (default: dry-run)"
     )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""T-0088 acceptance benchmark: sage_bulk_update_metadata vs sequential calls.
+"""acceptance benchmark: sage_bulk_update_metadata vs sequential calls.
 
 Compares wall-clock for two paths that apply a tag-add metadata patch to
 N documents:
@@ -12,7 +12,7 @@ Two run modes:
 - ``--mode stdio`` (default): launches ``python -m sage.mcp_server`` as
   a subprocess and runs both paths over the real MCP stdio transport
   using the official ``mcp`` Python client SDK. This is the canonical
-  T-0088 acceptance measurement; the ticket gate is calibrated against
+  acceptance measurement; the ticket gate is calibrated against
   it.
 - ``--mode fastmcp``: dispatches through ``FastMCP.call_tool`` against
   the in-process MCP server. Exercises the FastMCP routing / argument
@@ -21,13 +21,13 @@ Two run modes:
   acceptance number — the framing overhead is a meaningful contributor
   to the ticket's performance win.
 
-Acceptance gate (per the T-0088 ticket): the bulk wall-clock must be
+Acceptance gate (per the ticket): the bulk wall-clock must be
 < 30% of the sequential wall-clock at N=500 on a representative vault.
 The script exits non-zero when the ratio gate fails.
 
 Usage:
 
-    SAGE_TEST_STUB_PROVIDERS=1 .venv/bin/python \\
+    SAGE_TEST_STUB_PROVIDERS=1.venv/bin/python \\
         -m scripts.t0088_bulk_metadata_load_probe --n 500
 """
 

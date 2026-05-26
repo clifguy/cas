@@ -1,10 +1,10 @@
-"""Single-document purge (T-0105, permanently out-of-band per CAS-ADR-029).
+"""Single-document purge (permanently out-of-band per CAS-ADR-029).
 
 Removes one document and all its dependents from a SAGE vault: the
 ``documents`` row, ``document_tags``, ``edges`` (both directions),
 ``staging_edges`` (both directions), and the LanceDB chunks. Operator-
 invoked only; this module is unreachable from the SAGE Core API and MCP
-server by architectural invariant (T-0107 import-topology test).
+server by architectural invariant (import-topology test).
 
 Safeguards (SAGE-Architecture v2.1 §6.4 No-Delete Invariant):
 - Dry-run is the default. ``--apply`` is required for any state change.
@@ -26,7 +26,7 @@ terminality; this script reads that set rather than enumerating statuses
 locally.
 
 The per-document cascade lives in ``sage.maintenance._internal._purge_one``
-and is shared with ``sage.maintenance.purge_batch`` (T-0106).
+and is shared with ``sage.maintenance.purge_batch``.
 
 Usage::
 
@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
             "Operator-only; dry-run by default."
         ),
     )
-    parser.add_argument("--vault", required=True, help="Vault id (e.g. pim_health).")
+    parser.add_argument("--vault", required=True, help="Vault id (e.g. example_vault).")
     parser.add_argument("--document-id", required=True, help="Document id to purge.")
     parser.add_argument(
         "--reason",

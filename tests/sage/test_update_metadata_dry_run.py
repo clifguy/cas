@@ -1,4 +1,4 @@
-"""T-0152: `update_metadata` dry-run.
+"""`update_metadata` dry-run.
 
 Three test categories per the plan:
 
@@ -167,7 +167,7 @@ async def test_tier3_schema_violation_envelope_identical_under_dry_run(
 async def test_tier3_doc_type_change_stale_keys_envelope_identical_under_dry_run(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
 ):
-    """T-0151 case: stale keys on doc_type change raise the same
+    """case: stale keys on doc_type change raise the same
     Tier3DocTypeChangeStaleKeysError in both paths."""
     _write_md(tmp_vault_dir, "d.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
@@ -370,14 +370,14 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
 
 
 # ---------------------------------------------------------------------------
-# (D) T-0163 `changes` block — dry-run deltas
+# (D) `changes` block — dry-run deltas
 # ---------------------------------------------------------------------------
 
 
 async def test_dry_run_changes_lists_scalar_deltas(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
 ):
-    """T-0163: dry-run with scalar patches surfaces one FieldChange per
+    """Dry-run with scalar patches surfaces one FieldChange per
     changed field with the bare field name as `path` and the actual
     pre/post values as before/after."""
     _write_md(tmp_vault_dir, "scalars.md", "# Doc\n\nBody.")
@@ -413,7 +413,7 @@ async def test_dry_run_changes_lists_scalar_deltas(
 async def test_dry_run_changes_enumerates_tier3_per_key(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
 ):
-    """T-0163: tier3 changes enumerate per-key with dotted paths. An
+    """Tier3 changes enumerate per-key with dotted paths. An
     unset key surfaces as `after=None`; a set-to-new-value surfaces with
     the pre value in `before`. Lumping the whole tier3 dict into one
     entry would fail this test."""
@@ -461,7 +461,7 @@ async def test_dry_run_changes_enumerates_tier3_per_key(
 async def test_dry_run_changes_tags_uses_full_before_after_lists(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
 ):
-    """T-0163: tags change uses full ordered before/after lists, not the
+    """Tags change uses full ordered before/after lists, not the
     patch ops shape (so callers don't have to round-trip the patch
     semantics to compute the post-state)."""
     _write_md(tmp_vault_dir, "tagdoc.md", "# Tagdoc\n\nBody.")
@@ -496,7 +496,7 @@ async def test_dry_run_changes_tags_uses_full_before_after_lists(
 async def test_real_run_changes_block_absent(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store
 ):
-    """T-0163: real-run responses carry `changes=None`. A non-None
+    """Real-run responses carry `changes=None`. A non-None
     `changes` value unambiguously means 'this was a dry-run.'"""
     _write_md(tmp_vault_dir, "realrun.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
@@ -521,7 +521,7 @@ async def test_real_run_changes_block_absent(
 async def test_dry_run_empty_actionable_patch_changes_block_is_none(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
 ):
-    """T-0163: a dry-run that updates no caller-supplied fields (e.g., a
+    """A dry-run that updates no caller-supplied fields (e.g., a
     bare-confirmation call with no scalars or patches) carries
     `changes=None`, matching the real-run-absence pattern. Codifies the
     `None` choice for the empty-changes boundary."""

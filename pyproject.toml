@@ -87,7 +87,7 @@ exclude_also = [
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
 ]
-# T-0065: floor is baseline - 2. Baseline 91% observed in CI run 25975319154 (commit a8f191e).
+# Floor is baseline minus 2 percentage points; baseline 91% observed in CI.
 fail_under = 89
 
 [tool.importlinter]

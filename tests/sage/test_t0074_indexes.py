@@ -1,4 +1,4 @@
-"""T-0074 — SQLite index additions: presence and query-plan tests.
+"""— SQLite index additions: presence and query-plan tests.
 
 Verifies that:
 
@@ -15,7 +15,7 @@ Verifies that:
 5. Pre-existing legacy DBs are migrated forward: a DB pre-populated
    with the old single-column edge indexes loses them on init.
 6. SQLite's query planner picks the new indexes for the canonical
-   filter shapes that T-0074 targets.
+   filter shapes that targets.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ async def test_t0074_init_is_idempotent_on_existing_db(tmp_path):
 
 
 async def test_t0074_legacy_single_column_edge_indexes_are_migrated_away(tmp_path):
-    """Simulate a pre-T-0074 DB that has idx_edges_source / idx_edges_target.
+    """Simulate a pre-DB that has idx_edges_source / idx_edges_target.
 
     After init, the legacy single-column edge indexes must be gone and
     the composites must be in place. This mirrors what happens on a
@@ -208,7 +208,7 @@ async def test_t0074_source_only_edge_query_uses_composite_via_left_prefix(tmp_p
 
 
 async def test_t0111_query_planner_picks_synced_from_content_hash_index(tmp_path):
-    """T-0111 detector index: hash-equality scans over the edges table
+    """detector index: hash-equality scans over the edges table
     must use ``idx_edges_synced_from_content_hash`` so the per-vault
     drift sweep is index-driven, not a full scan.
     """

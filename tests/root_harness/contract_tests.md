@@ -39,14 +39,14 @@ stages:
     label: "Ingested"
   - value: review
     label: "Review"
-    applicable_doc_types: ["patent_draft"]
+    applicable_doc_types: ["design_spec"]
 transitions:
   - from_stage: "(entry)"
     to_stage: ingested
   - from_stage: ingested
     to_stage: review
     gatekeeper:
-      agent_id: patent_steward
+      agent_id: design_steward
       escalation_policy: escalate_to_human
     preconditions:
       - check: lifecycle_status
@@ -63,13 +63,13 @@ transitions:
 **Expected:** PASS
 **Rationale:** Exercises gatekeeper, all precondition check types, and human approval flag.
 
-### TEST-RH-PL-003: PIM Health pipeline validates
+### TEST-RH-PL-003: Example Portfolio pipeline validates
 
 **Artifact:** `docs/fs/root_harness/pipeline.schema.json`
 **Category:** valid
 **Constraint:** Real domain config validates
 
-**Input:** Load `domains/pim_health/pipeline.yaml`
+**Input:** Load `domains/example_vault/pipeline.yaml`
 
 **Expected:** PASS
 **Rationale:** Proves the schema handles a complex 14-stage, 24-transition pipeline.
@@ -213,13 +213,13 @@ agents:
 **Expected:** PASS
 **Rationale:** Full orchestrator with LLM configuration.
 
-### TEST-RH-AG-003: PIM Health agents validate
+### TEST-RH-AG-003: Example Portfolio agents validate
 
 **Artifact:** `docs/fs/root_harness/agent.schema.json`
 **Category:** valid
 **Constraint:** Real domain config validates
 
-**Input:** Load `domains/pim_health/agents.yaml`
+**Input:** Load `domains/example_vault/agents.yaml`
 
 **Expected:** PASS
 **Rationale:** Validates 16-agent registration with mixed steward/orchestrator types.
@@ -339,12 +339,12 @@ policies:
 **Input:**
 ```yaml
 policies:
-  - policy_id: patent_steward_policy
-    label: "Patent Steward Policy"
-    description: "Governs patent steward agent behavior"
+  - policy_id: design_steward_policy
+    label: "Report Steward Policy"
+    description: "Governs report steward agent behavior"
     permitted_operations: ["discover", "ingest", "traverse", "set_lifecycle", "update_metadata"]
     scope_restrictions:
-      doc_types: ["patent_draft", "technical_disclosure"]
+      doc_types: ["design_spec", "technical_disclosure"]
       lifecycle_states: ["active"]
     approval_policy:
       default_action: allow
@@ -360,13 +360,13 @@ policies:
 **Expected:** PASS
 **Rationale:** Exercises all optional policy features.
 
-### TEST-RH-PO-003: PIM Health policies validate
+### TEST-RH-PO-003: Example Portfolio policies validate
 
 **Artifact:** `docs/fs/root_harness/policy.schema.json`
 **Category:** valid
 **Constraint:** Real domain config validates
 
-**Input:** Load `domains/pim_health/policies.yaml`
+**Input:** Load `domains/example_vault/policies.yaml`
 
 **Expected:** PASS
 **Rationale:** Validates 7-policy production configuration.
@@ -413,7 +413,7 @@ policies: []
 **Category:** invalid
 **Constraint:** `policy_id` must match `^[a-z][a-z0-9_-]*$`
 
-**Input:** Policy with `policy_id: "Patent Steward"`
+**Input:** Policy with `policy_id: "Report Steward"`
 
 **Expected:** FAIL -- pattern mismatch
 **Rationale:** Policy IDs are machine identifiers.
@@ -483,11 +483,11 @@ workflows:
       - node_id: evaluate
         label: "Evaluate"
         node_type: action
-        agent_ref: patent_steward
+        agent_ref: design_steward
       - node_id: route
         label: "Route"
         node_type: router
-        agent_ref: patent_steward
+        agent_ref: design_steward
       - node_id: approve
         label: "Approve"
         node_type: interrupt
@@ -506,11 +506,11 @@ workflows:
       - node_id: execute
         label: "Execute"
         node_type: action
-        agent_ref: patent_steward
+        agent_ref: design_steward
       - node_id: report
         label: "Report"
         node_type: action
-        agent_ref: patent_steward
+        agent_ref: design_steward
       - node_id: done
         label: "Done"
         node_type: end
@@ -574,11 +574,11 @@ workflows:
       - node_id: task_a
         label: "Task A"
         node_type: action
-        agent_ref: patent_steward
+        agent_ref: design_steward
       - node_id: task_b
         label: "Task B"
         node_type: action
-        agent_ref: patent_steward
+        agent_ref: design_steward
       - node_id: collect
         label: "Collect"
         node_type: merge
@@ -609,13 +609,13 @@ workflows:
 **Expected:** PASS
 **Rationale:** Tests fan_out_config and merge node structural validity.
 
-### TEST-RH-WF-004: PIM Health workflows validate
+### TEST-RH-WF-004: Example Portfolio workflows validate
 
 **Artifact:** `docs/fs/root_harness/workflow.schema.json`
 **Category:** valid
 **Constraint:** Real domain config validates
 
-**Input:** Load `domains/pim_health/workflows.yaml`
+**Input:** Load `domains/example_vault/workflows.yaml`
 
 **Expected:** PASS
 **Rationale:** Validates 5-workflow production configuration.
@@ -756,7 +756,7 @@ workflows:
   "event_type": "interrupt.raised",
   "timestamp": "2026-03-30T14:02:00Z",
   "workflow_execution_id": "wf-exec-001",
-  "agent_id": "patent_steward",
+  "agent_id": "design_steward",
   "agent_type": "steward",
   "node_id": "approve_transition",
   "interrupt_id": "int-001",
@@ -916,8 +916,8 @@ Note: This schema uses `$defs` only. Tests use `validate_sub_schema()`.
 {
   "interrupt_id": "int-001",
   "workflow_execution_id": "wf-exec-001",
-  "workflow_name": "patent_pipeline_advance",
-  "agent_id": "patent_steward",
+  "workflow_name": "design_pipeline_advance",
+  "agent_id": "design_steward",
   "agent_type": "steward",
   "node_id": "approve_transition",
   "origin": "interrupt_node",

@@ -152,8 +152,8 @@ async def _index_doc_chunks(
     chunks_data: list of (heading_path, content) tuples.
     doc_type, lifecycle_status, project: optional document-level scalars
     to stamp on the chunks for pre-filter testing. Production ingest
-    stamps all three from the parent ``Document`` (T-0050 for doc_type,
-    T-0077 for the other two); tests opt in per-call.
+    stamps all three from the parent ``Document`` (for doc_type,
+    for the other two); tests opt in per-call.
     """
     chunks = []
     for i, (heading_path, content) in enumerate(chunks_data):
@@ -199,16 +199,16 @@ async def test_bh_020_failed_pipeline_excluded_from_semantic(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_ok"),
-        [("Section 1", "This document discusses patent claims and prior art.")],
+        [("Section 1", "This document discusses report claims and prior art.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_failed"),
-        [("Section 1", "This document discusses patent claims and prior art.")],
+        [("Section 1", "This document discusses report claims and prior art.")],
     )
 
-    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="patent claims")
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="report claims")
     response = await retrieval_service.discover(request)
 
     doc_ids = [h.document.id for h in response.results]
@@ -274,19 +274,19 @@ async def test_bh_027_hybrid_rrf(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_bm25"),
-        [("Section 1", "patent claims prior art novelty claims")],
+        [("Section 1", "report claims prior art novelty claims")],
     )
     # doc_both gets content matching both
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_both"),
-        [("Section 1", "patent claims prior art neural network deep learning")],
+        [("Section 1", "report claims prior art neural network deep learning")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent claims prior art",
+        query="report claims prior art",
         use_hybrid=True,
     )
     response = await retrieval_service.discover(request)
@@ -360,7 +360,7 @@ async def test_bh_029_deterministic_prefix_match(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """heading_path matches the specified heading and all children."""
-    # T-0096: set document_date and source_modified_at so the assertions
+    # Set document_date and source_modified_at so the assertions
     # below can lock the deterministic-site field-drop regression at the
     # consumer surface (both were silently omitted before the from_document
     # consolidation).
@@ -417,7 +417,7 @@ async def test_bh_029_deterministic_prefix_match(
     for hit in response.results:
         assert hit.relevance_score is None
 
-    # T-0096: deterministic site previously dropped source_modified_at and
+    # Deterministic site previously dropped source_modified_at and
     # passed document_date through as a raw string. The from_document
     # consolidation fixes both; assert the consumer-surface round-trip.
     summary = response.results[0].document
@@ -527,7 +527,7 @@ async def test_get_heading_paths_returns_distinct_ordered(
 async def test_get_heading_paths_excludes_synthetic_header(
     stub_content_store, seeded_embedding_provider
 ):
-    """The synthetic header chunk's marker heading_path (T-0038) must
+    """The synthetic header chunk's marker heading_path must
     not appear in get_heading_paths output — it is an internal
     retrieval surface, not a real heading."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
@@ -600,7 +600,7 @@ async def test_deterministic_nonexistent_document(graph_store, retrieval_service
 
 
 # ---------------------------------------------------------------------------
-# T-0092: mode_parameter_mismatch fires at DiscoverRequest construction
+# Mode_parameter_mismatch fires at DiscoverRequest construction
 # ---------------------------------------------------------------------------
 
 
@@ -631,7 +631,7 @@ async def test_authoritative_scope_filters(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Authoritative scope excludes documents without authority_scope."""
-    doc_auth = _make_doc(_id("doc_auth"), authority_scope="pim_health")
+    doc_auth = _make_doc(_id("doc_auth"), authority_scope="example_vault")
     doc_plain = _make_doc(_id("doc_plain"))
     await graph_store.insert_document(doc_auth)
     await graph_store.insert_document(doc_plain)
@@ -640,18 +640,18 @@ async def test_authoritative_scope_filters(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_auth"),
-        [("Section 1", "Authoritative patent content.")],
+        [("Section 1", "Authoritative report content.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_plain"),
-        [("Section 1", "Non-authoritative patent content.")],
+        [("Section 1", "Non-authoritative report content.")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent content",
+        query="report content",
         scope=RetrievalScope.AUTHORITATIVE,
     )
     response = await retrieval_service.discover(request)
@@ -665,7 +665,7 @@ async def test_filter_by_project(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Filters narrow results to matching project."""
-    doc_pim = _make_doc(_id("doc_pim"), project="pim_health")
+    doc_pim = _make_doc(_id("doc_pim"), project="example_vault")
     doc_other = _make_doc(_id("doc_other"), project="basketball")
     await graph_store.insert_document(doc_pim)
     await graph_store.insert_document(doc_other)
@@ -674,21 +674,21 @@ async def test_filter_by_project(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_pim"),
-        [("Section 1", "Patent filing process documentation.")],
-        project="pim_health",
+        [("Section 1", "Report filing process documentation.")],
+        project="example_vault",
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_other"),
-        [("Section 1", "Patent filing process documentation.")],
+        [("Section 1", "Report filing process documentation.")],
         project="basketball",
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
-        filters=RetrievalFilters(project="pim_health"),
+        query="report filing",
+        filters=RetrievalFilters(project="example_vault"),
     )
     response = await retrieval_service.discover(request)
 
@@ -713,7 +713,7 @@ async def test_bh_058_document_identity_indexed_in_chunks(
     # but source filename contains "PV07"
     doc = _make_doc(_id("doc_pv07"))
     doc.title = "ClinicalNormalization"
-    doc.source_path = "imports/PIM_PV07_ClinicalNormalization_v1_0.md"
+    doc.source_path = "imports/EXAMPLE_PV07_ClinicalNormalization_v1_0.md"
     doc.tags = ["PV07"]
     await graph_store.insert_document(doc)
 
@@ -727,9 +727,9 @@ async def test_bh_058_document_identity_indexed_in_chunks(
             (
                 "Section 1",
                 "Title: ClinicalNormalization\n"
-                "Source: PIM_PV07_ClinicalNormalization_v1_0\n"
+                "Source: EXAMPLE_PV07_ClinicalNormalization_v1_0\n"
                 "Tags: PV07\n\n"
-                "This document discusses patent claims.",
+                "This document discusses report claims.",
             )
         ],
     )
@@ -747,7 +747,7 @@ async def test_bh_058_document_identity_indexed_in_chunks(
 
 
 # ---------------------------------------------------------------------------
-# T-0038: Documents whose identifying terms live in title/semantic_abstract
+# Documents whose identifying terms live in title/semantic_abstract
 # or in CamelCase compounds are discoverable via the synthetic header chunk
 # ---------------------------------------------------------------------------
 
@@ -763,11 +763,11 @@ async def test_t_0038_camelcase_title_searchable_via_split_tokens(
 
     doc = _make_doc(_id("doc_portfolio"))
     doc.title = "PortfolioDashboard_Template"
-    doc.source_path = "imports/2026-05-11_PIM_REF_PortfolioDashboard_Template_v3.xlsx"
+    doc.source_path = "imports/2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3.xlsx"
     doc.tags = ["REF", "template"]
     doc.semantic_abstract = (
-        "Authoritative template for the PIM Health Portfolio Dashboard "
-        "with rows per patent and columns per filing pipeline stage."
+        "Authoritative template for the Engineering Portfolio Dashboard "
+        "with rows per report and columns per filing pipeline stage."
     )
     await graph_store.insert_document(doc)
 
@@ -776,10 +776,10 @@ async def test_t_0038_camelcase_title_searchable_via_split_tokens(
     # "dashboard" match against "PortfolioDashboard".
     header_content = (
         "Title: PortfolioDashboard_Template\n"
-        "Source: 2026-05-11_PIM_REF_PortfolioDashboard_Template_v3\n"
+        "Source: 2026-05-11_EXAMPLE_REF_PortfolioDashboard_Template_v3\n"
         "Tags: REF, template\n"
         "Abstract: " + doc.semantic_abstract + "\n\n"
-        "Identifier tokens: portfolio dashboard template v3 pim ref\n"
+        "Identifier tokens: portfolio dashboard template v3 example ref\n"
     )
     body_content = "[Placeholder content. Template body is structurally minimal.]"
 
@@ -871,7 +871,7 @@ async def test_t_0038_semantic_abstract_drives_keyword_match(
 async def test_t_0038_hit_heading_path_masks_synthetic_marker(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """When a hit's winning chunk is the synthetic header (T-0038), the
+    """When a hit's winning chunk is the synthetic header, the
     hit's user-visible heading_path is None — never the internal
     ``__document_header__`` sentinel."""
     from sage.adapters.interfaces import SYNTHETIC_HEADER_HEADING_PATH
@@ -975,13 +975,13 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_ok_kw"),
-        [("Section 1", "Patent claims analysis for PV07.")],
+        [("Section 1", "Report claims analysis for PV07.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_failed_kw"),
-        [("Section 1", "Patent claims analysis for PV07.")],
+        [("Section 1", "Report claims analysis for PV07.")],
     )
 
     request = DiscoverRequest(
@@ -996,14 +996,14 @@ async def test_bh_061_keyword_excludes_failed_pipeline(
 
 
 # ---------------------------------------------------------------------------
-# T-0149: Explicit pipeline_status="failed" filter is honored end-to-end
+# Explicit pipeline_status="failed" filter is honored end-to-end
 # ---------------------------------------------------------------------------
 
 
 async def test_explicit_failed_filter_returns_failed_doc_semantic(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """T-0149: explicit pipeline_status=failed filter must surface failed docs in semantic mode.
+    """Explicit pipeline_status=failed filter must surface failed docs in semantic mode.
 
     The storage layer's default_exclude_failed steps aside when the caller passes an
     explicit pipeline_status filter; the service-layer post-filter at _results_to_hits
@@ -1022,18 +1022,18 @@ async def test_explicit_failed_filter_returns_failed_doc_semantic(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_ok_sem_exp"),
-        [("Section 1", "This document discusses patent claims and prior art.")],
+        [("Section 1", "This document discusses report claims and prior art.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_failed_sem_exp"),
-        [("Section 1", "This document discusses patent claims and prior art.")],
+        [("Section 1", "This document discusses report claims and prior art.")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent claims",
+        query="report claims",
         filters=RetrievalFilters(pipeline_status="failed"),
     )
     response = await retrieval_service.discover(request)
@@ -1046,7 +1046,7 @@ async def test_explicit_failed_filter_returns_failed_doc_semantic(
 async def test_explicit_failed_filter_returns_failed_doc_keyword(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """T-0149: explicit pipeline_status=failed filter is honored in non-wildcard keyword mode.
+    """Explicit pipeline_status=failed filter is honored in non-wildcard keyword mode.
 
     Mirrors BH-061 setup but flips the assertion: the caller asked for failed docs and
     must get them. Exercises the _results_to_hits site on the keyword scoring path.
@@ -1061,13 +1061,13 @@ async def test_explicit_failed_filter_returns_failed_doc_keyword(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_ok_kw_exp"),
-        [("Section 1", "Patent claims analysis for PV07.")],
+        [("Section 1", "Report claims analysis for PV07.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_failed_kw_exp"),
-        [("Section 1", "Patent claims analysis for PV07.")],
+        [("Section 1", "Report claims analysis for PV07.")],
     )
 
     request = DiscoverRequest(
@@ -1085,7 +1085,7 @@ async def test_explicit_failed_filter_returns_failed_doc_keyword(
 async def test_explicit_failed_filter_returns_failed_doc_keyword_wildcard(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """T-0149: explicit pipeline_status=failed filter is honored in keyword wildcard mode.
+    """Explicit pipeline_status=failed filter is honored in keyword wildcard mode.
 
     query="*" routes through _list_filtered (the dashboard drill-down path), which has
     its own redundant Python post-filter. The explicit filter must override that gate
@@ -1101,13 +1101,13 @@ async def test_explicit_failed_filter_returns_failed_doc_keyword_wildcard(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_ok_wc_exp"),
-        [("Section 1", "Patent claims analysis.")],
+        [("Section 1", "Report claims analysis.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_failed_wc_exp"),
-        [("Section 1", "Patent claims analysis.")],
+        [("Section 1", "Report claims analysis.")],
     )
 
     request = DiscoverRequest(
@@ -1125,7 +1125,7 @@ async def test_explicit_failed_filter_returns_failed_doc_keyword_wildcard(
 async def test_explicit_failed_filter_returns_failed_doc_metadata_boost(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """T-0149: explicit pipeline_status=failed filter is honored at the metadata-boost site.
+    """Explicit pipeline_status=failed filter is honored at the metadata-boost site.
 
     Targets the third post-filter site (_boost_metadata_matches). To exercise it
     specifically, the test uses a query that matches only the failed doc's metadata
@@ -1147,13 +1147,13 @@ async def test_explicit_failed_filter_returns_failed_doc_metadata_boost(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_ok_boost"),
-        [("Section 1", "Patent claims analysis.")],
+        [("Section 1", "Report claims analysis.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_failed_boost"),
-        [("Section 1", "Patent claims analysis.")],
+        [("Section 1", "Report claims analysis.")],
     )
 
     # Query matches the failed doc's title ("Test <sha>_doc_failed_boost") and
@@ -1190,9 +1190,9 @@ async def test_bh_069_active_lifecycle_ranks_higher(
 
     # Give the archived doc MORE matching terms so it scores higher in BM25.
     # The tier sort must still place the active doc first.
-    active_content = "Patent filing process."
-    archived_content = "Patent filing process for clinical normalization review."
-    completed_content = "Patent filing process for clinical normalization."
+    active_content = "Report filing process."
+    archived_content = "Report filing process for clinical normalization review."
+    completed_content = "Report filing process for clinical normalization."
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
@@ -1214,7 +1214,7 @@ async def test_bh_069_active_lifecycle_ranks_higher(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing clinical normalization",
+        query="report filing clinical normalization",
     )
     response = await retrieval_service.discover(request)
 
@@ -1316,7 +1316,7 @@ async def test_bh_070_recent_documents_rank_higher(
     await graph_store.insert_document(doc_recent)
     await graph_store.insert_document(doc_old)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id in [_id("doc_recent"), _id("doc_old")]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1327,7 +1327,7 @@ async def test_bh_070_recent_documents_rank_higher(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing clinical normalization",
+        query="report filing clinical normalization",
     )
     response = await retrieval_service.discover(request)
 
@@ -1357,7 +1357,7 @@ async def test_bh_070_recency_uses_source_modified_at_fallback(
     await graph_store.insert_document(doc_recent)
     await graph_store.insert_document(doc_old)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id in [_id("doc_recent_fb"), _id("doc_old_fb")]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1368,7 +1368,7 @@ async def test_bh_070_recency_uses_source_modified_at_fallback(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing clinical normalization",
+        query="report filing clinical normalization",
     )
     response = await retrieval_service.discover(request)
 
@@ -1389,7 +1389,7 @@ async def test_bh_070_no_date_documents_not_penalized(
     await graph_store.insert_document(doc_dated)
     await graph_store.insert_document(doc_undated)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id in [_id("doc_dated"), _id("doc_undated")]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1400,7 +1400,7 @@ async def test_bh_070_no_date_documents_not_penalized(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing clinical normalization",
+        query="report filing clinical normalization",
     )
     response = await retrieval_service.discover(request)
 
@@ -1435,7 +1435,7 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
     await graph_store.insert_document(doc_active_old)
     await graph_store.insert_document(doc_archived_recent)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id in [_id("doc_ar"), _id("doc_ao"), _id("doc_sr")]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1446,7 +1446,7 @@ async def test_bh_069_070_combined_active_recent_ranks_highest(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing clinical normalization",
+        query="report filing clinical normalization",
     )
     response = await retrieval_service.discover(request)
 
@@ -1475,7 +1475,7 @@ async def test_prefilter_doc_type_semantic(
     chunks from non-matching doc_types before scoring, rather than
     relying on post-filter depletion.
     """
-    doc_patent = _make_doc(_id("doc_patent"), doc_type="patent_draft")
+    doc_patent = _make_doc(_id("doc_patent"), doc_type="design_spec")
     doc_report = _make_doc(_id("doc_report"), doc_type="report")
     doc_ref = _make_doc(_id("doc_ref"), doc_type="reference_document")
     await graph_store.insert_document(doc_patent)
@@ -1485,7 +1485,7 @@ async def test_prefilter_doc_type_semantic(
     # All documents get identical content so only the filter differentiates
     identical_content = "Clinical pathway integration and normalization process."
     for doc_id, doc_type in [
-        (_id("doc_patent"), "patent_draft"),
+        (_id("doc_patent"), "design_spec"),
         (_id("doc_report"), "report"),
         (_id("doc_ref"), "reference_document"),
     ]:
@@ -1501,7 +1501,7 @@ async def test_prefilter_doc_type_semantic(
         mode=RetrievalMode.SEMANTIC,
         query="clinical pathway",
         scope=RetrievalScope.FILTERED,
-        filters=RetrievalFilters(doc_type="patent_draft"),
+        filters=RetrievalFilters(doc_type="design_spec"),
     )
     response = await retrieval_service.discover(request)
 
@@ -1515,14 +1515,14 @@ async def test_prefilter_doc_type_keyword(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Keyword search with doc_type filter only returns matching documents."""
-    doc_patent = _make_doc(_id("doc_patent_kw"), doc_type="patent_draft")
+    doc_patent = _make_doc(_id("doc_patent_kw"), doc_type="design_spec")
     doc_report = _make_doc(_id("doc_report_kw"), doc_type="report")
     await graph_store.insert_document(doc_patent)
     await graph_store.insert_document(doc_report)
 
     identical_content = "Detailed analysis of PV07 claims and prior art."
     for doc_id, doc_type in [
-        (_id("doc_patent_kw"), "patent_draft"),
+        (_id("doc_patent_kw"), "design_spec"),
         (_id("doc_report_kw"), "report"),
     ]:
         await _index_doc_chunks(
@@ -1536,7 +1536,7 @@ async def test_prefilter_doc_type_keyword(
     request = DiscoverRequest(
         mode=RetrievalMode.KEYWORD,
         query="PV07 claims",
-        filters=RetrievalFilters(doc_type="patent_draft"),
+        filters=RetrievalFilters(doc_type="design_spec"),
     )
     response = await retrieval_service.discover(request)
 
@@ -1549,14 +1549,14 @@ async def test_prefilter_doc_type_hybrid(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Hybrid RRF search with doc_type filter only returns matching documents."""
-    doc_patent = _make_doc(_id("doc_patent_hyb"), doc_type="patent_draft")
+    doc_patent = _make_doc(_id("doc_patent_hyb"), doc_type="design_spec")
     doc_report = _make_doc(_id("doc_report_hyb"), doc_type="report")
     await graph_store.insert_document(doc_patent)
     await graph_store.insert_document(doc_report)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id, doc_type in [
-        (_id("doc_patent_hyb"), "patent_draft"),
+        (_id("doc_patent_hyb"), "design_spec"),
         (_id("doc_report_hyb"), "report"),
     ]:
         await _index_doc_chunks(
@@ -1569,9 +1569,9 @@ async def test_prefilter_doc_type_hybrid(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
+        query="report filing",
         use_hybrid=True,
-        filters=RetrievalFilters(doc_type="patent_draft"),
+        filters=RetrievalFilters(doc_type="design_spec"),
     )
     response = await retrieval_service.discover(request)
 
@@ -1584,14 +1584,14 @@ async def test_prefilter_no_filter_returns_all_doc_types(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Without a doc_type filter, all document types appear in results."""
-    doc_patent = _make_doc(_id("doc_patent_all"), doc_type="patent_draft")
+    doc_patent = _make_doc(_id("doc_patent_all"), doc_type="design_spec")
     doc_report = _make_doc(_id("doc_report_all"), doc_type="report")
     await graph_store.insert_document(doc_patent)
     await graph_store.insert_document(doc_report)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id, doc_type in [
-        (_id("doc_patent_all"), "patent_draft"),
+        (_id("doc_patent_all"), "design_spec"),
         (_id("doc_report_all"), "report"),
     ]:
         await _index_doc_chunks(
@@ -1604,7 +1604,7 @@ async def test_prefilter_no_filter_returns_all_doc_types(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
+        query="report filing",
     )
     response = await retrieval_service.discover(request)
 
@@ -1617,18 +1617,18 @@ async def test_postfilter_project_still_applies_with_prefilter(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
     """Post-filter fields (project) still work alongside doc_type pre-filter."""
-    doc_match = _make_doc(_id("doc_match_both"), doc_type="patent_draft", project="pim_health")
-    doc_wrong_project = _make_doc(_id("doc_wrong_proj"), doc_type="patent_draft", project="other")
-    doc_wrong_type = _make_doc(_id("doc_wrong_type"), doc_type="report", project="pim_health")
+    doc_match = _make_doc(_id("doc_match_both"), doc_type="design_spec", project="example_vault")
+    doc_wrong_project = _make_doc(_id("doc_wrong_proj"), doc_type="design_spec", project="other")
+    doc_wrong_type = _make_doc(_id("doc_wrong_type"), doc_type="report", project="example_vault")
     await graph_store.insert_document(doc_match)
     await graph_store.insert_document(doc_wrong_project)
     await graph_store.insert_document(doc_wrong_type)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id, doc_type, project in [
-        (_id("doc_match_both"), "patent_draft", "pim_health"),
-        (_id("doc_wrong_proj"), "patent_draft", "other"),
-        (_id("doc_wrong_type"), "report", "pim_health"),
+        (_id("doc_match_both"), "design_spec", "example_vault"),
+        (_id("doc_wrong_proj"), "design_spec", "other"),
+        (_id("doc_wrong_type"), "report", "example_vault"),
     ]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1641,8 +1641,8 @@ async def test_postfilter_project_still_applies_with_prefilter(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
-        filters=RetrievalFilters(doc_type="patent_draft", project="pim_health"),
+        query="report filing",
+        filters=RetrievalFilters(doc_type="design_spec", project="example_vault"),
     )
     response = await retrieval_service.discover(request)
 
@@ -1658,19 +1658,19 @@ async def test_prefilter_doc_type_null_chunks_excluded(
     """Chunks without doc_type metadata (pre-migration data) are excluded
     when a doc_type filter is active.
     """
-    doc_typed = _make_doc(_id("doc_typed"), doc_type="patent_draft")
-    doc_untyped = _make_doc(_id("doc_untyped"), doc_type="patent_draft")
+    doc_typed = _make_doc(_id("doc_typed"), doc_type="design_spec")
+    doc_untyped = _make_doc(_id("doc_untyped"), doc_type="design_spec")
     await graph_store.insert_document(doc_typed)
     await graph_store.insert_document(doc_untyped)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     # doc_typed has doc_type on its chunks
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_typed"),
         [("Section 1", identical_content)],
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
     # doc_untyped has no doc_type on chunks (simulates pre-migration data)
     await _index_doc_chunks(
@@ -1683,8 +1683,8 @@ async def test_prefilter_doc_type_null_chunks_excluded(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
-        filters=RetrievalFilters(doc_type="patent_draft"),
+        query="report filing",
+        filters=RetrievalFilters(doc_type="design_spec"),
     )
     response = await retrieval_service.discover(request)
 
@@ -1757,12 +1757,12 @@ async def test_bh_070_document_date_in_summary(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_date_summary"),
-        [("Section 1", "Patent filing process documentation.")],
+        [("Section 1", "Report filing process documentation.")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
+        query="report filing",
     )
     response = await retrieval_service.discover(request)
 
@@ -1785,12 +1785,12 @@ async def test_source_modified_at_in_summary(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_sma_summary"),
-        [("Section 1", "Patent filing process documentation.")],
+        [("Section 1", "Report filing process documentation.")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing",
+        query="report filing",
     )
     response = await retrieval_service.discover(request)
 
@@ -1824,7 +1824,7 @@ async def test_rerank_salience_no_extra_queries(
     await graph_store.insert_document(doc_recent)
     await graph_store.insert_document(doc_old)
 
-    identical_content = "Patent filing process for clinical normalization."
+    identical_content = "Report filing process for clinical normalization."
     for doc_id in [_id("doc_nq_recent"), _id("doc_nq_old")]:
         await _index_doc_chunks(
             stub_content_store,
@@ -1846,7 +1846,7 @@ async def test_rerank_salience_no_extra_queries(
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent filing clinical normalization",
+        query="report filing clinical normalization",
     )
     response = await retrieval_service.discover(request)
 
@@ -1879,12 +1879,12 @@ async def _seed_catalog_docs(graph_store):
     Returns dict mapping doc_id to Document for verification.
     """
     docs = {
-        _id("doc_a"): _make_doc(_id("doc_a"), doc_type="patent_draft", tags=["PV07"]),
-        _id("doc_b"): _make_doc(_id("doc_b"), doc_type="patent_draft", tags=["PV08"]),
+        _id("doc_a"): _make_doc(_id("doc_a"), doc_type="design_spec", tags=["PV07"]),
+        _id("doc_b"): _make_doc(_id("doc_b"), doc_type="design_spec", tags=["PV08"]),
         _id("doc_c"): _make_doc(_id("doc_c"), doc_type="glossary", tags=["PV07"]),
         _id("doc_d"): _make_doc(
             _id("doc_d"),
-            doc_type="patent_draft",
+            doc_type="design_spec",
             tags=["PV07"],
             lifecycle_status="archived",
         ),
@@ -1905,7 +1905,7 @@ async def test_bh_072_catalog_returns_filtered_documents(
     request = DiscoverRequest(
         mode=RetrievalMode.CATALOG,
         scope=RetrievalScope.FILTERED,
-        filters=RetrievalFilters(doc_type="patent_draft"),
+        filters=RetrievalFilters(doc_type="design_spec"),
     )
     response = await retrieval_service.discover(request)
 
@@ -1993,10 +1993,10 @@ async def test_bh_076_catalog_includes_failed_pipeline(
     graph_store,
     retrieval_service,
 ):
-    """Catalog mode includes failed-pipeline documents (T-0148).
+    """Catalog mode includes failed-pipeline documents.
 
     Catalog is filter-only document enumeration; visibility is a property of
-    the document, not of the query. Pre-T-0148 this test asserted exclusion;
+    the document, not of the query. Pre-this test asserted exclusion;
     the BH-020 default-exclude has been narrowed to scoring modes only.
     """
     doc_ok = _make_doc(_id("doc_ok"))
@@ -2020,7 +2020,7 @@ async def test_bh_077_catalog_no_filters_returns_all(
     graph_store,
     retrieval_service,
 ):
-    """Catalog mode with no filters returns all documents, including failed (T-0148)."""
+    """Catalog mode with no filters returns all documents, including failed."""
     await _seed_catalog_docs(graph_store)
     # Add one failed doc
     doc_fail = _make_doc(_id("doc_fail"), pipeline_status=PipelineStatus.FAILED)
@@ -2034,7 +2034,7 @@ async def test_bh_077_catalog_no_filters_returns_all(
 
 
 # ---------------------------------------------------------------------------
-# T-0148: Mode-scoped BH-020 -- catalog enumerates failed; scoring excludes
+# Mode-scoped BH-020 -- catalog enumerates failed; scoring excludes
 # ---------------------------------------------------------------------------
 
 
@@ -2045,7 +2045,7 @@ async def test_t_0148_catalog_returns_failed_pipeline_doc_by_default(
     """Catalog mode returns failed-pipeline docs without an explicit filter.
 
     The headline behaviour change: an active document whose pipeline status
-    is FAILED is enumerable by catalog mode. Pre-T-0148 it was silently
+    is FAILED is enumerable by catalog mode. Pre-it was silently
     excluded at the storage layer.
     """
     doc_ok = _make_doc(_id("t0148_ok"))
@@ -2066,7 +2066,7 @@ async def test_t_0148_catalog_explicit_pipeline_status_filter_still_narrows(
     graph_store,
     retrieval_service,
 ):
-    """Catalog mode still honours an explicit pipeline_status filter (T-0148).
+    """Catalog mode still honours an explicit pipeline_status filter.
 
     The default-exclude moved; positive selection via an explicit filter
     must continue to work the same way it always did.
@@ -2094,7 +2094,7 @@ async def test_t_0148_semantic_still_excludes_failed_by_default(
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """Semantic mode still excludes failed-pipeline docs by default (T-0148).
+    """Semantic mode still excludes failed-pipeline docs by default.
 
     Guards the asymmetry: relaxing catalog must not regress scoring-mode
     behaviour. Chunks are indexed for the failed doc so its exclusion is
@@ -2109,16 +2109,16 @@ async def test_t_0148_semantic_still_excludes_failed_by_default(
         stub_content_store,
         seeded_embedding_provider,
         _id("t0148_sem_ok"),
-        [("Section 1", "This document discusses patent claims and prior art.")],
+        [("Section 1", "This document discusses report claims and prior art.")],
     )
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("t0148_sem_fail"),
-        [("Section 1", "This document discusses patent claims and prior art.")],
+        [("Section 1", "This document discusses report claims and prior art.")],
     )
 
-    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="patent claims")
+    request = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="report claims")
     response = await retrieval_service.discover(request)
 
     doc_ids = [h.document.id for h in response.results]
@@ -2129,7 +2129,7 @@ async def test_t_0148_semantic_still_excludes_failed_by_default(
 async def test_t_0148_storage_query_documents_default_exclude_failed_flag(
     graph_store,
 ):
-    """Storage layer honours the default_exclude_failed flag at both settings (T-0148).
+    """Storage layer honours the default_exclude_failed flag at both settings.
 
     Pins the storage contract directly, independent of the retrieval
     service. Both settings exercised in one test so the assertion shape
@@ -2184,7 +2184,7 @@ async def test_bh_079_catalog_combined_filters(
         mode=RetrievalMode.CATALOG,
         scope=RetrievalScope.FILTERED,
         filters=RetrievalFilters(
-            doc_type="patent_draft",
+            doc_type="design_spec",
             tags=["PV07"],
             lifecycle_status="active",
         ),
@@ -2208,31 +2208,31 @@ async def _seed_catalog_sort_docs(graph_store):
             _id("sort_a"),
             lifecycle_status="active",
             document_date="2026-03-15",
-            doc_type="patent_draft",
+            doc_type="design_spec",
         ),
         _id("sort_b"): _make_doc(
             _id("sort_b"),
             lifecycle_status="archived",
             document_date="2026-04-01",
-            doc_type="patent_draft",
+            doc_type="design_spec",
         ),
         _id("sort_c"): _make_doc(
             _id("sort_c"),
             lifecycle_status="active",
             document_date="2026-02-10",
-            doc_type="patent_draft",
+            doc_type="design_spec",
         ),
         _id("sort_d"): _make_doc(
             _id("sort_d"),
             lifecycle_status="archived",
             document_date="2026-04-10",
-            doc_type="patent_draft",
+            doc_type="design_spec",
         ),
         _id("sort_e"): _make_doc(
             _id("sort_e"),
             lifecycle_status="active",
             document_date=None,
-            doc_type="patent_draft",
+            doc_type="design_spec",
         ),
     }
     for doc in docs.values():
@@ -2311,12 +2311,12 @@ async def test_bh_083_catalog_sort_ignored_by_other_modes(
         stub_content_store,
         seeded_embedding_provider,
         _id("sort_a"),
-        [("Intro", "Test text about patents")],
+        [("Intro", "Test text about reports")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.KEYWORD,
-        query="patents",
+        query="reports",
         sort_by="document_date",
         sort_order="desc",
         limit=10,
@@ -2334,14 +2334,14 @@ async def test_bh_083_catalog_sort_ignored_by_other_modes(
 async def _seed_response_level_docs(graph_store, content_store, embedding_provider):
     """Seed 3 documents with indexed chunks for response_level tests."""
     for doc_id in (_id("rl_a"), _id("rl_b"), _id("rl_c")):
-        doc = _make_doc(doc_id, doc_type="patent_draft")
+        doc = _make_doc(doc_id, doc_type="design_spec")
         await graph_store.insert_document(doc)
         await _index_doc_chunks(
             content_store,
             embedding_provider,
             doc_id,
             [("Section 1", f"Integration testing for {doc_id} document.")],
-            doc_type="patent_draft",
+            doc_type="design_spec",
         )
 
 
@@ -2353,7 +2353,7 @@ async def test_bh_086_response_mode_full_vs_light_preserves_scores_and_order(
 ):
     """response_mode=light produces the same scores, order, heading paths,
     and matched_chunk_counts as response_mode=full; only chunk_content
-    differs (T-0169 retirement of response_level)."""
+    differs (retirement of response_level)."""
     await _seed_response_level_docs(
         graph_store,
         stub_content_store,
@@ -2408,7 +2408,7 @@ async def test_bh_084_multi_chunk_matched_chunk_count(
     retrieval_service,
 ):
     """matched_chunk_count reflects multiple matching chunks per document."""
-    doc = _make_doc(_id("multi_chunk"), doc_type="patent_draft")
+    doc = _make_doc(_id("multi_chunk"), doc_type="design_spec")
     await graph_store.insert_document(doc)
     # Index 3 chunks for the same document
     await _index_doc_chunks(
@@ -2418,9 +2418,9 @@ async def test_bh_084_multi_chunk_matched_chunk_count(
         [
             ("Section 1", "Integration testing for claims."),
             ("Section 2", "Integration of prior art references."),
-            ("Section 3", "Integration with existing patent family."),
+            ("Section 3", "Integration with existing report family."),
         ],
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
 
     request = DiscoverRequest(
@@ -2451,7 +2451,7 @@ async def test_matched_chunk_count_content_only_not_metadata(
     content-store chunks, not be bumped by the metadata match.
     """
     # Title contains "integration" so metadata search will find it too
-    doc = _make_doc(_id("dual_match"), doc_type="patent_draft")
+    doc = _make_doc(_id("dual_match"), doc_type="design_spec")
     doc.title = "Integration Testing Guide"
     await graph_store.insert_document(doc)
     # Index exactly 2 chunks
@@ -2463,7 +2463,7 @@ async def test_matched_chunk_count_content_only_not_metadata(
             ("Section 1", "Integration testing for claims."),
             ("Section 2", "Integration of prior art references."),
         ],
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
 
     request = DiscoverRequest(
@@ -2495,27 +2495,27 @@ async def test_metadata_boost_promotes_existing_low_score_hit(
     leaving code-based lookups at near-zero relevance.
     """
     # Target doc: code "PV13" is in the source_path, content barely matches
-    target = _make_doc(_id("target_pv13"), doc_type="patent_draft")
-    target.source_path = "patents/PV13_AuthoritativeAccumulator.docx"
+    target = _make_doc(_id("target_pv13"), doc_type="design_spec")
+    target.source_path = "reports/PV13_AuthoritativeAccumulator.docx"
     await graph_store.insert_document(target)
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("target_pv13"),
         [("Section 1", "Clinical normalization of respiratory signals.")],
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
 
     # Distractor doc: strong content match for "PV13" but no metadata match
-    distractor = _make_doc(_id("distractor"), doc_type="patent_draft")
-    distractor.source_path = "patents/PV99_Unrelated.docx"
+    distractor = _make_doc(_id("distractor"), doc_type="design_spec")
+    distractor.source_path = "reports/PV99_Unrelated.docx"
     await graph_store.insert_document(distractor)
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("distractor"),
         [("Section 1", "PV13 is referenced in the prior art analysis.")],
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
 
     request = DiscoverRequest(
@@ -2548,7 +2548,7 @@ async def test_bh_087_response_mode_unset_preserves_chunk_content(
     retrieval_service,
 ):
     """Default response_mode (omitted) preserves chunk content on
-    semantic/keyword (post-T-0169 response_level retirement)."""
+    semantic/keyword (post-response_level retirement)."""
     await _seed_response_level_docs(
         graph_store,
         stub_content_store,
@@ -2579,9 +2579,9 @@ async def test_bh_088_response_mode_full_ignored_by_catalog_chunk_content(
     retrieval_service,
 ):
     """Catalog mode never emits chunk_content regardless of response_mode
-    (post-T-0169 response_level retirement)."""
+    (post-response_level retirement)."""
     for doc_id in (_id("cat_a"), _id("cat_b")):
-        doc = _make_doc(doc_id, doc_type="patent_draft")
+        doc = _make_doc(doc_id, doc_type="design_spec")
         await graph_store.insert_document(doc)
 
     # Explicitly request full -- catalog should still return no chunk content
@@ -2614,7 +2614,7 @@ async def test_bh_101_semantic_discover_returns_abstract(
     retrieval_service,
 ):
     """DocumentSummary in semantic discover results includes semantic_abstract."""
-    abstract_text = "This document analyzes patent claim structures for PIM Health."
+    abstract_text = "This document analyzes report claim structures for Example Portfolio."
     doc = _make_doc(_id("abs_doc"), semantic_abstract=abstract_text)
     await graph_store.insert_document(doc)
 
@@ -2622,12 +2622,12 @@ async def test_bh_101_semantic_discover_returns_abstract(
         stub_content_store,
         seeded_embedding_provider,
         _id("abs_doc"),
-        [("Section 1", "Patent claim structures and prior art analysis.")],
+        [("Section 1", "Report claim structures and prior art analysis.")],
     )
 
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent claims",
+        query="report claims",
         include_abstracts=True,
     )
     response = await retrieval_service.discover(request)
@@ -2675,12 +2675,12 @@ async def test_bh_103_catalog_returns_abstract(
     """Catalog mode includes semantic_abstract on DocumentSummary for all documents."""
     doc_with = _make_doc(
         _id("cat_abs"),
-        doc_type="patent_draft",
-        semantic_abstract="Summary of patent draft for metabolic monitoring.",
+        doc_type="design_spec",
+        semantic_abstract="Summary of design draft for metabolic monitoring.",
     )
     doc_without = _make_doc(
         _id("cat_no_abs"),
-        doc_type="patent_draft",
+        doc_type="design_spec",
         pipeline_status=PipelineStatus.ABSTRACTION_SKIPPED,
     )
     await graph_store.insert_document(doc_with)
@@ -2688,7 +2688,7 @@ async def test_bh_103_catalog_returns_abstract(
 
     request = DiscoverRequest(
         mode=RetrievalMode.CATALOG,
-        filters=RetrievalFilters(doc_type="patent_draft"),
+        filters=RetrievalFilters(doc_type="design_spec"),
         limit=10,
         include_abstracts=True,
     )
@@ -2696,13 +2696,13 @@ async def test_bh_103_catalog_returns_abstract(
 
     hits_by_id = {h.document.id: h for h in response.results}
     assert hits_by_id[_id("cat_abs")].document.semantic_abstract == (
-        "Summary of patent draft for metabolic monitoring."
+        "Summary of design draft for metabolic monitoring."
     )
     assert hits_by_id[_id("cat_no_abs")].document.semantic_abstract is None
 
 
 # ---------------------------------------------------------------------------
-# T-0090: tier3_metadata round-trips through the DocumentSummary projection
+# Tier3_metadata round-trips through the DocumentSummary projection
 # in all three retrieval modes (catalog, semantic, keyword). The data is
 # already populated on the underlying Document; the projection used to drop
 # it, forcing callers to issue N filtered queries or per-document reads to
@@ -2876,7 +2876,7 @@ async def test_t0090_keyword_includes_tier3_metadata(
 
 
 # ---------------------------------------------------------------------------
-# T-0091: Catalog mode budget-hint surfacing
+# Catalog mode budget-hint surfacing
 # ---------------------------------------------------------------------------
 
 
@@ -3050,7 +3050,7 @@ async def test_t0091_budget_hint_accounts_for_tier3_metadata(
     retrieval_service,
     monkeypatch,
 ):
-    """T-0090's tier3_metadata projection growth pushes recommended_limit lower."""
+    """tier3_metadata projection growth pushes recommended_limit lower."""
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "2048")
 
     ids_yes = await _seed_portfolio(graph_store, 40, with_tier3=True, id_prefix="t0091_t3_yes")
@@ -3128,7 +3128,7 @@ async def test_bh_104_response_mode_light_preserves_abstract(
     retrieval_service,
 ):
     """response_mode=light suppresses chunk_content but preserves
-    semantic_abstract (post-T-0169 response_level retirement)."""
+    semantic_abstract (post-response_level retirement)."""
     abstract_text = "Overview of insulin pump safety requirements."
     doc = _make_doc(_id("rl_doc"), semantic_abstract=abstract_text)
     await graph_store.insert_document(doc)
@@ -3228,7 +3228,7 @@ async def test_bh_106_abstract_prefilter_does_not_exclude_abstractless_docs(
     """Documents with no abstract still appear in results from chunk search."""
     doc_with = _make_doc(
         _id("has_abs"),
-        semantic_abstract="Patent claim analysis for metabolic biomarkers.",
+        semantic_abstract="Report claim analysis for metabolic biomarkers.",
     )
     doc_without = _make_doc(
         _id("no_abs"),
@@ -3268,7 +3268,7 @@ async def test_bh_107_abstract_prefilter_respects_scope(
     """Abstract-matched documents failing scope gating are excluded."""
     doc_auth = _make_doc(
         _id("auth_abs"),
-        authority_scope="pim_health",
+        authority_scope="example_vault",
         semantic_abstract="Insulin delivery systems safety analysis.",
     )
     doc_noauth = _make_doc(
@@ -3624,7 +3624,7 @@ async def test_bh_114_document_ids_filter_scope_all(
             stub_content_store,
             seeded_embedding_provider,
             doc_id,
-            [("Section 1", "Patent claims analysis for PV07.")],
+            [("Section 1", "Report claims analysis for PV07.")],
         )
 
     request = DiscoverRequest(
@@ -3661,7 +3661,7 @@ async def test_bh_115_document_ids_filter_multiple_ids(
             stub_content_store,
             seeded_embedding_provider,
             doc_id,
-            [("Section 1", "Patent claims analysis for PV07.")],
+            [("Section 1", "Report claims analysis for PV07.")],
         )
 
     request = DiscoverRequest(
@@ -3709,7 +3709,7 @@ async def test_semantic_empty_results_with_hints_when_filtered_out(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_filtered_sem"),
-        [("Section 1", "Interesting patent content about claims.")],
+        [("Section 1", "Interesting report content about claims.")],
     )
 
     # Search matches content but filter by a non-matching project.
@@ -3720,7 +3720,7 @@ async def test_semantic_empty_results_with_hints_when_filtered_out(
     # caller can see why their search was empty.
     request = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
-        query="patent claims",
+        query="report claims",
         filters=RetrievalFilters(project="nonexistent_project"),
     )
     response = await retrieval_service.discover(request)
@@ -3965,7 +3965,7 @@ async def test_min_relevance_keeps_high_scoring_results(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_above"),
-        [("Section 1", "Patent claim analysis for biosensor calibration.")],
+        [("Section 1", "Report claim analysis for biosensor calibration.")],
     )
 
     # Set a very low threshold -- result should survive
@@ -4014,9 +4014,9 @@ async def test_min_relevance_does_not_apply_to_catalog(graph_store, retrieval_se
 # Pre-filter resolution: doc-level filters (lifecycle/project/tags/pipeline)
 # must be resolved to a document_ids set BEFORE the LanceDB top-K cutoff,
 # not post-filtered against the result. Cowork-reported failure: many
-# archived patent_draft chunks dominate top-K vector ranking, the
+# archived design_spec chunks dominate top-K vector ranking, the
 # lifecycle_status=active post-filter drops them all, returning zero hits
-# even though active patent_drafts exist that match the query.
+# even though active design_specs exist that match the query.
 # ---------------------------------------------------------------------------
 
 
@@ -4029,13 +4029,13 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
     The filter must be resolved BEFORE the top-K cutoff, not as a
     post-filter discarding the entire fetched set.
     """
-    # 20 archived patent_drafts that match the query, inserted first so
+    # 20 archived design_specs that match the query, inserted first so
     # they dominate the stable-sort tie-breaking on identical embeddings.
     for i in range(20):
         doc = _make_doc(
             _id(f"archived_{i}"),
             lifecycle_status="archived",
-            doc_type="patent_draft",
+            doc_type="design_spec",
         )
         await graph_store.insert_document(doc)
         await _index_doc_chunks(
@@ -4043,15 +4043,15 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
             seeded_embedding_provider,
             _id(f"archived_{i}"),
             [("Fraud Screening Module", "fraud screening risk score detection")],
-            doc_type="patent_draft",
+            doc_type="design_spec",
             lifecycle_status="archived",
         )
 
-    # 1 active patent_draft with the same matching content.
+    # 1 active design_spec with the same matching content.
     active_doc = _make_doc(
         _id("active_target"),
         lifecycle_status="active",
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
     await graph_store.insert_document(active_doc)
     await _index_doc_chunks(
@@ -4059,7 +4059,7 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
         seeded_embedding_provider,
         _id("active_target"),
         [("Fraud Screening Module", "fraud screening risk score detection")],
-        doc_type="patent_draft",
+        doc_type="design_spec",
         lifecycle_status="active",
     )
 
@@ -4073,7 +4073,7 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
         query="fraud screening",
         limit=1,
         filters=RetrievalFilters(
-            doc_type="patent_draft",
+            doc_type="design_spec",
             lifecycle_status="active",
         ),
     )
@@ -4081,7 +4081,7 @@ async def test_lifecycle_filter_pre_resolves_against_archived_dominance(
 
     doc_ids = [h.document.id for h in response.results]
     assert _id("active_target") in doc_ids, (
-        f"Active patent_draft must surface even when archived versions "
+        f"Active design_spec must surface even when archived versions "
         f"dominate top-K. Got doc_ids: {doc_ids}"
     )
 
@@ -4094,7 +4094,7 @@ async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
         doc = _make_doc(
             _id(f"archived_kw_{i}"),
             lifecycle_status="archived",
-            doc_type="patent_draft",
+            doc_type="design_spec",
         )
         await graph_store.insert_document(doc)
         await _index_doc_chunks(
@@ -4102,14 +4102,14 @@ async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
             seeded_embedding_provider,
             _id(f"archived_kw_{i}"),
             [("Fraud Screening Module", "fraud screening risk score detection")],
-            doc_type="patent_draft",
+            doc_type="design_spec",
             lifecycle_status="archived",
         )
 
     active_doc = _make_doc(
         _id("active_kw_target"),
         lifecycle_status="active",
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
     await graph_store.insert_document(active_doc)
     await _index_doc_chunks(
@@ -4117,7 +4117,7 @@ async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
         seeded_embedding_provider,
         _id("active_kw_target"),
         [("Fraud Screening Module", "fraud screening risk score detection")],
-        doc_type="patent_draft",
+        doc_type="design_spec",
         lifecycle_status="active",
     )
 
@@ -4126,7 +4126,7 @@ async def test_keyword_lifecycle_filter_pre_resolves_against_archived_dominance(
         query="fraud screening",
         limit=1,
         filters=RetrievalFilters(
-            doc_type="patent_draft",
+            doc_type="design_spec",
             lifecycle_status="active",
         ),
     )
@@ -4142,14 +4142,14 @@ async def test_pre_resolved_filters_return_empty_when_zero_docs_match(
     """When the metadata filters (e.g. lifecycle_status) match zero
     documents, the search returns an empty result without querying
     LanceDB at all (or via an impossible ID list)."""
-    doc = _make_doc(_id("doc_only"), lifecycle_status="active", doc_type="patent_draft")
+    doc = _make_doc(_id("doc_only"), lifecycle_status="active", doc_type="design_spec")
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
         stub_content_store,
         seeded_embedding_provider,
         _id("doc_only"),
         [("Section", "fraud screening content")],
-        doc_type="patent_draft",
+        doc_type="design_spec",
     )
 
     # Filter excludes the only document — no docs match.
@@ -4157,7 +4157,7 @@ async def test_pre_resolved_filters_return_empty_when_zero_docs_match(
         mode=RetrievalMode.SEMANTIC,
         query="fraud screening",
         filters=RetrievalFilters(
-            doc_type="patent_draft",
+            doc_type="design_spec",
             lifecycle_status="filed",  # no doc has this status
         ),
     )
@@ -4166,7 +4166,7 @@ async def test_pre_resolved_filters_return_empty_when_zero_docs_match(
 
 
 # ---------------------------------------------------------------------------
-# T-0096: DocumentSummary.from_document factory consolidates 5 retrieval-site
+# DocumentSummary.from_document factory consolidates 5 retrieval-site
 # constructions and folds the two near-duplicate date-parse helpers into
 # sage.utils.date_parsing.parse_document_date. The exhaustive-fields test
 # (T1) is the structural F4 closure: it fails closed when a new field is
@@ -4198,7 +4198,7 @@ def _doc_with_every_summary_field() -> Document:
 def test_from_document_populates_every_summary_field():
     doc = _doc_with_every_summary_field()
     summary = DocumentSummary.from_document(doc)
-    # Three-branch closure-test idiom (T-0144). DocumentSummary has no
+    # Three-branch closure-test idiom. DocumentSummary has no
     # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DocumentSummary.model_fields.items():
         value = getattr(summary, field_name)
@@ -4302,7 +4302,7 @@ def test_parse_document_date_malformed_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# T-0121: DiscoverHit.from_summary factory consolidates 5 retrieval-site
+# DiscoverHit.from_summary factory consolidates 5 retrieval-site
 # constructions of DiscoverHit (sage/services/retrieval.py lines 462, 600,
 # 784, 847, 1059). The exhaustive-fields test below is the structural F4
 # closure: it fails closed when a new field is added to DiscoverHit
@@ -4313,7 +4313,7 @@ def test_parse_document_date_malformed_returns_none():
 def _summary_with_every_discover_hit_field() -> DocumentSummary:
     """Build a DocumentSummary with every field set to a non-default sentinel.
 
-    Reuses ``_doc_with_every_summary_field`` (the T-0096 sentinel Document)
+    Reuses ``_doc_with_every_summary_field`` (the sentinel Document)
     routed through ``DocumentSummary.from_document`` so the document side of
     the projection is non-default at every field. Combined with the
     non-default chunk-field kwargs supplied by the caller, this ensures the
@@ -4323,7 +4323,7 @@ def _summary_with_every_discover_hit_field() -> DocumentSummary:
     return DocumentSummary.from_document(_doc_with_every_summary_field())
 
 
-# T1: exhaustive fields — the keystone F4-closure test for T-0121.
+# T1: exhaustive fields — the keystone F4-closure test for.
 def test_from_summary_populates_every_discover_hit_field():
     summary = _summary_with_every_discover_hit_field()
     hit = DiscoverHit.from_summary(
@@ -4333,7 +4333,7 @@ def test_from_summary_populates_every_discover_hit_field():
         relevance_score=0.875,
         matched_chunk_count=7,
     )
-    # Three-branch closure-test idiom (T-0144). DiscoverHit has no
+    # Three-branch closure-test idiom. DiscoverHit has no
     # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DiscoverHit.model_fields.items():
         value = getattr(hit, field_name)
@@ -4354,7 +4354,7 @@ def test_from_summary_populates_every_discover_hit_field():
 
 
 # ---------------------------------------------------------------------------
-# T-0157: Edge enumeration via sage_discover(target="edges")
+# Edge enumeration via sage_discover(target="edges")
 # ---------------------------------------------------------------------------
 
 
@@ -4617,7 +4617,7 @@ async def test_t0157_target_documents_default_preserves_catalog_behavior(
 
 
 # ---------------------------------------------------------------------------
-# T-0157: DiscoverRequest validator (mode_parameter_mismatch for new combos)
+# DiscoverRequest validator (mode_parameter_mismatch for new combos)
 # ---------------------------------------------------------------------------
 
 
@@ -4739,14 +4739,14 @@ def test_t0157_invalid_target_value_raises_enum_validation_error():
 
 
 # ---------------------------------------------------------------------------
-# T-0158 / T-0169: response_mode unified across sage_discover targets;
+# / Response_mode unified across sage_discover targets;
 # response_level retired.
 # ---------------------------------------------------------------------------
 
 
 def test_t0158_response_mode_light_accepted_with_target_documents():
-    """T-0158: response_mode=light + target=documents is now accepted
-    (was rejected in T-0157 by design)."""
+    """Response_mode=light + target=documents is now accepted
+    (was rejected in by design)."""
     req = DiscoverRequest(
         mode=RetrievalMode.CATALOG,
         target=RetrievalTarget.DOCUMENTS,
@@ -4757,7 +4757,7 @@ def test_t0158_response_mode_light_accepted_with_target_documents():
 
 
 def test_t0158_response_mode_full_accepted_with_target_documents():
-    """T-0158: response_mode=full + target=documents is now accepted."""
+    """Response_mode=full + target=documents is now accepted."""
     req = DiscoverRequest(
         mode=RetrievalMode.CATALOG,
         target=RetrievalTarget.DOCUMENTS,
@@ -4767,8 +4767,8 @@ def test_t0158_response_mode_full_accepted_with_target_documents():
 
 
 def test_t0158_response_mode_unset_with_target_documents_preserves_defaults():
-    """T-0158: when response_mode is not passed, the request builds with
-    response_mode defaulting to None (unset). (T-0169: response_level
+    """When response_mode is not passed, the request builds with
+    response_mode defaulting to None (unset). (Response_level
     field has been removed from DiscoverRequest.)"""
     req = DiscoverRequest(mode=RetrievalMode.SEMANTIC, query="x")
     assert req.response_mode is None
@@ -4777,7 +4777,7 @@ def test_t0158_response_mode_unset_with_target_documents_preserves_defaults():
 async def test_t0158_catalog_documents_light_returns_stripped_summary(
     graph_store, retrieval_service
 ):
-    """T-0158: catalog + target=documents + response_mode=light returns
+    """Catalog + target=documents + response_mode=light returns
     a stripped DocumentSummaryLight carrying only id, title, doc_type,
     lifecycle_status, tier3_metadata.
 
@@ -4839,7 +4839,7 @@ async def test_t0158_catalog_documents_light_returns_stripped_summary(
 
 
 async def test_t0158_catalog_documents_full_returns_current_summary(graph_store, retrieval_service):
-    """T-0158: catalog + target=documents + response_mode=full returns
+    """Catalog + target=documents + response_mode=full returns
     the current DocumentSummary unchanged.
 
     Anti-coincidental: seed a doc with every nullable field populated,
@@ -4886,7 +4886,7 @@ async def test_t0158_catalog_documents_full_returns_current_summary(graph_store,
 async def test_t0160_catalog_documents_light_empty_result_does_not_crash(
     graph_store, retrieval_service
 ):
-    """T-0160: catalog + target=documents + response_mode=light with zero
+    """Catalog + target=documents + response_mode=light with zero
     matching rows returns an empty response envelope without exception.
 
     Pins the empty-result branch that the ticket calls out as the path
@@ -4915,7 +4915,7 @@ async def test_t0160_catalog_documents_light_empty_result_does_not_crash(
 async def test_t0160_catalog_documents_light_nonempty_does_not_crash_on_post_projection_mutation(
     graph_store, retrieval_service
 ):
-    """T-0160: catalog + target=documents + response_mode=light with one
+    """Catalog + target=documents + response_mode=light with one
     or more matching rows does NOT raise ``ValueError`` from the
     post-filter ``hit.document.semantic_abstract = None`` mutation site
     at ``sage/services/retrieval.py``.
@@ -4973,7 +4973,7 @@ async def test_t0160_catalog_documents_light_nonempty_does_not_crash_on_post_pro
 async def test_t0160_catalog_documents_light_explicit_include_abstracts_false_does_not_crash(
     graph_store, retrieval_service
 ):
-    """T-0160: same regression as the default-include_abstracts test,
+    """Same regression as the default-include_abstracts test,
     but with ``include_abstracts=False`` set explicitly on the request.
 
     Pins the contract: post-projection mutation safety must hold
@@ -5023,7 +5023,7 @@ async def test_t0158_semantic_response_mode_light_suppresses_chunk_content(
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """T-0158: semantic + response_mode=light suppresses chunk_content
+    """Semantic + response_mode=light suppresses chunk_content
     but preserves heading_path, matched_chunk_count, and the surrounding
     full DocumentSummary (the catalog stripped-summary shape does NOT
     apply to semantic/keyword).
@@ -5055,7 +5055,7 @@ async def test_t0158_semantic_response_mode_full_includes_chunk_content(
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """T-0158: semantic + response_mode=full includes chunk_content."""
+    """Semantic + response_mode=full includes chunk_content."""
     await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
     req = DiscoverRequest(
         mode=RetrievalMode.SEMANTIC,
@@ -5075,7 +5075,7 @@ async def test_t0158_keyword_response_mode_light_suppresses_chunk_content(
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """T-0158: keyword + response_mode=light mirror of the semantic
+    """Keyword + response_mode=light mirror of the semantic
     light-mode test.
     """
     await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
@@ -5099,7 +5099,7 @@ async def test_t0158_keyword_response_mode_full_includes_chunk_content(
     seeded_embedding_provider,
     retrieval_service,
 ):
-    """T-0158: keyword + response_mode=full includes chunk_content."""
+    """Keyword + response_mode=full includes chunk_content."""
     await _seed_response_level_docs(graph_store, stub_content_store, seeded_embedding_provider)
     req = DiscoverRequest(
         mode=RetrievalMode.KEYWORD,
@@ -5116,7 +5116,7 @@ async def test_t0158_keyword_response_mode_full_includes_chunk_content(
 async def test_t0158_deterministic_response_mode_light_returns_chunk_content(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """T-0158: deterministic mode ignores response_mode (always returns
+    """Deterministic mode ignores response_mode (always returns
     chunk content).
 
     Anti-coincidental: ensures an implementation that uniformly applies
@@ -5147,7 +5147,7 @@ async def test_t0158_deterministic_response_mode_light_returns_chunk_content(
 async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_above_threshold(
     graph_store, retrieval_service
 ):
-    """T-0158: catalog + target=documents with response_mode unset must
+    """Catalog + target=documents with response_mode unset must
     return full DocumentSummary shape even when the result count
     exceeds the edge-side >5 default-light threshold.
 
@@ -5185,7 +5185,7 @@ async def test_t0158_catalog_documents_neither_param_set_returns_full_shape_abov
 
 
 def test_t0169_response_level_field_removed_from_discover_request():
-    """T-0169: the response_level Field has been removed from
+    """The response_level Field has been removed from
     DiscoverRequest. Anti-coincidental: assert the absence of the
     field rather than rely on a [DEPRECATED] marker that no longer
     exists.

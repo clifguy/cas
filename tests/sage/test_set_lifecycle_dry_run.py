@@ -1,4 +1,4 @@
-"""T-0152: `set_lifecycle` dry-run (including the supersede path).
+"""`set_lifecycle` dry-run (including the supersede path).
 
 Three test categories per the plan:
 
@@ -301,12 +301,12 @@ async def test_supersede_dry_run_persists_no_edge(
 
 
 # ---------------------------------------------------------------------------
-# (D) T-0163 `changes` block — dry-run deltas
+# (D) `changes` block — dry-run deltas
 # ---------------------------------------------------------------------------
 
 
 async def test_dry_run_changes_lifecycle_status(graph_store, lifecycle_service, stub_content_store):
-    """T-0163: a non-supersede dry-run carries exactly one FieldChange
+    """A non-supersede dry-run carries exactly one FieldChange
     entry for `lifecycle_status` with the actual before/after values."""
     doc = _make_doc(_id("doc_changes_archive"))
     await graph_store.insert_document(doc)
@@ -331,9 +331,9 @@ async def test_dry_run_changes_lifecycle_status(graph_store, lifecycle_service, 
 async def test_supersede_dry_run_changes_lifecycle_status_only_no_edge_in_changes(
     graph_store, lifecycle_service, stub_content_store
 ):
-    """T-0163: supersede dry-run's `changes` carries only the
+    """Supersede dry-run's `changes` carries only the
     predecessor's `lifecycle_status` delta. The would-be edge surfaces
-    in `created_edge` (existing T-0152 surface) and is NOT duplicated
+    in `created_edge` (existing surface) and is NOT duplicated
     in `changes`. Edge mutations and field-level deltas are separate
     contracts."""
     doc_old = _make_doc(_id("doc_changes_old"))
@@ -351,7 +351,7 @@ async def test_supersede_dry_run_changes_lifecycle_status_only_no_edge_in_change
     )
 
     assert response.dry_run is True
-    # Edge surfaces in created_edge (existing T-0152 surface).
+    # Edge surfaces in created_edge (existing surface).
     assert response.created_edge is not None
     assert response.created_edge.id == DRY_RUN_SENTINEL_EDGE_ID
     # changes carries the lifecycle_status delta — and ONLY that.
@@ -365,7 +365,7 @@ async def test_supersede_dry_run_changes_lifecycle_status_only_no_edge_in_change
 
 
 async def test_real_run_changes_block_absent(graph_store, lifecycle_service, stub_content_store):
-    """T-0163: real-run set_lifecycle responses carry `changes=None`."""
+    """Real-run set_lifecycle responses carry `changes=None`."""
     doc = _make_doc(_id("doc_realrun_archive"))
     await graph_store.insert_document(doc)
 

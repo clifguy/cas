@@ -6,10 +6,10 @@ text, and resolves cross-reference fields via cached display values.
 
 Handles both Word documents (.docx) and Word templates (.dotx). The two
 formats share WordprocessingML body structure; they differ only in the
-main part's OPC content type. python-docx rejects .dotx at load time, so
+main part's OPC content type. python-docx rejects.dotx at load time, so
 the adapter rewrites the content-type entry in a temp copy before loading.
 
-For .dotx files the adapter additionally surfaces a structured style
+For.dotx files the adapter additionally surfaces a structured style
 inventory in metadata["template_style_inventory"] and emits namespaced
 tags via metadata["adapter_tags"] so agentic queries can discover
 templates by defined style and by auto-numbering.
@@ -188,7 +188,7 @@ def _to_roman(n: int) -> str:
 
 
 def _to_letter(n: int) -> str:
-    """Convert integer to lowercase letter (1=a, 2=b, ..., 26=z, 27=aa)."""
+    """Convert integer to lowercase letter (1=a, 2=b,..., 26=z, 27=aa)."""
     result = ""
     while n > 0:
         n -= 1
@@ -368,7 +368,7 @@ class DocxAdapter(SourceAdapter):
         # Template-only enrichment: style inventory, namespaced tags, and
         # a synthesized prose projection derived from the style surface.
         # Gated on extension, not on content heuristics, so document
-        # metadata and text stay lean for .docx files.
+        # metadata and text stay lean for.docx files.
         if is_template:
             inventory = self._build_template_style_inventory(doc)
             metadata["template_style_inventory"] = inventory
@@ -447,9 +447,9 @@ class DocxAdapter(SourceAdapter):
         return "\n".join(lines)
 
     def _open_document(self, source_path: Path, is_template: bool) -> Document:
-        """Load a .docx or .dotx into a python-docx Document.
+        """Load a.docx or.dotx into a python-docx Document.
 
-        python-docx rejects .dotx at load time because the main part's OPC
+        python-docx rejects.dotx at load time because the main part's OPC
         content type is the template flavor, not the document flavor. We
         work around this by copying the ZIP into a temp file and rewriting
         the [Content_Types].xml entry. The body XML and all other parts are

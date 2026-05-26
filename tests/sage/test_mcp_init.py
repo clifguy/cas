@@ -118,7 +118,7 @@ async def test_di_005_no_overrides_constructs_real_providers(
     test suite.
     """
     # Force production path: CI sets SAGE_TEST_STUB_PROVIDERS=1 globally to
-    # keep most tests off the real model (T-0018); this test specifically
+    # keep most tests off the real model; this test specifically
     # verifies the production default and must clear that override.
     monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -159,16 +159,16 @@ async def test_di_006_services_functional_with_stubs(minimal_vault_config_dict, 
 
 
 # ---------------------------------------------------------------------------
-# DI-008..DI-009: per-vault dispatch after CAS-ADR-030 / T-0103
+# DI-008..DI-009: per-vault dispatch after CAS-ADR-030 /
 #
 # The factory dispatch that used to live in initialize_services has moved
 # to the stack-startup helper (build_stack_abstraction_provider; see
 # test_stack_abstraction_dispatch.py for STK-001..005). The per-vault
 # dispatch in initialize_services is reduced to the disabled-gate opt-out:
 #
-#   1. SAGE_TEST_STUB_PROVIDERS=1                 -> Stub (belt-and-suspenders)
-#   2. vault.abstraction.enabled is False         -> Stub (vault opted out)
-#   3. otherwise                                  -> the injected stack provider
+# 1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (belt-and-suspenders)
+# 2. vault.abstraction.enabled is False -> Stub (vault opted out)
+# 3. otherwise -> the injected stack provider
 #
 # DI-007 / DI-010 (env-var short-circuit), DI-011 / DI-012 (model/provider
 # dispatch) move to STK-* at stack scope.

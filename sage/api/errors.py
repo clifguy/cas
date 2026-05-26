@@ -117,7 +117,7 @@ class InvalidDocTypeError(SAGEError):
 
 
 class Tier3SchemaViolationError(SAGEError):
-    """400: tier3_metadata payload failed validation (T-0004).
+    """400: tier3_metadata payload failed validation.
 
     Two failure modes share this error code:
 
@@ -155,7 +155,7 @@ class Tier3SchemaViolationError(SAGEError):
 class Tier3DocTypeChangeStaleKeysError(SAGEError):
     """400: doc_type is being changed in the same call as a tier3_metadata
     ops object, and the merged tier3 dict carries keys that are not in the
-    new doc_type's metadata_schema properties (T-0151).
+    new doc_type's metadata_schema properties.
 
     The post-merge `_validate_tier3` call would catch this as a generic
     `tier3_schema_violation` (additionalProperties: false fires on the first
@@ -195,7 +195,7 @@ class Tier3DocTypeChangeStaleKeysError(SAGEError):
 
 class Tier3UniqueConstraintViolation(SAGEError):
     """409: tier3_metadata field value collides with the declared uniqueness
-    constraint (CAS-ADR-031, T-0115).
+    constraint (CAS-ADR-031).
 
     Raised by the storage substrate when an insert or supersession-insert
     would violate a `unique_keys` declaration on the resolved doc_type.
@@ -354,7 +354,7 @@ class LegacyFormError(SAGEError):
 
 
 class InvalidModeError(SAGEError):
-    """400: discover mode value is not in the RetrievalMode enum (T-0092)."""
+    """400: discover mode value is not in the RetrievalMode enum."""
 
     def __init__(self, mode: str, valid_modes: list[str]) -> None:
         super().__init__(
@@ -366,9 +366,9 @@ class InvalidModeError(SAGEError):
 
 
 class UnknownFilterKeyError(SAGEError):
-    """400: a key in `filters` is not in RetrievalFilters (T-0092).
+    """400: a key in `filters` is not in RetrievalFilters.
 
-    Pre-T-0092, unknown filter keys were silently dropped by Pydantic's
+    Pre-, unknown filter keys were silently dropped by Pydantic's
     default extra="ignore" behavior — a typo footgun where a misspelled
     `tickett_id` matched every row. ``extra="forbid"`` on RetrievalFilters
     now surfaces these typos as a typed error.
@@ -384,7 +384,7 @@ class UnknownFilterKeyError(SAGEError):
 
 
 class InvalidFilterShapeError(SAGEError):
-    """400: a value in `filters` has the wrong type for its field (T-0092).
+    """400: a value in `filters` has the wrong type for its field.
 
     e.g. ``filters={"tags": 42}`` passed an int where ``list[str] | None``
     was expected.
@@ -407,7 +407,7 @@ class InvalidFilterShapeError(SAGEError):
 
 
 class ModeParameterMismatchError(SAGEError):
-    """400: a parameter is set that is forbidden by the chosen discover mode (T-0092).
+    """400: a parameter is set that is forbidden by the chosen discover mode.
 
     Distinct from `missing_*` codes which fire on the inverse case
     (parameter required for the chosen mode but absent — e.g.,
@@ -610,7 +610,7 @@ class VaultAlreadyExistsError(SAGEError):
 
 
 class ReabstractAlreadyInFlightError(SAGEError):
-    """409: a reabstract_deferred operation is already running on the vault (T-0089).
+    """409: a reabstract_deferred operation is already running on the vault.
 
     Single-flight per vault: a second concurrent caller receives this
     structured error with the start_time of the running operation rather
@@ -894,7 +894,7 @@ class IdenticalContentSupersedeError(SAGEError):
 
 class SyncedFromInapplicableEdgeType(SAGEError):
     """400: synced_from_* fields set on an edge_type other than sync_target /
-    derived_from (T-0111).
+    derived_from.
 
     The `synced_from_version` and `synced_from_content_hash` columns are
     semantically meaningful only on `sync_target` (Tier 1) and
@@ -917,7 +917,7 @@ class SyncedFromInapplicableEdgeType(SAGEError):
 
 class SyncedFromVersionNotInSourceChain(SAGEError):
     """400: synced_from_version doc id is not a member of the target's
-    supersedes chain (T-0111).
+    supersedes chain.
 
     Raised when `sage_link` is called with a `synced_from_version` that
     either references a document outside the chain rooted at `target_id`
@@ -944,7 +944,7 @@ class SyncedFromVersionNotInSourceChain(SAGEError):
 
 class AmbiguousDocumentIdentifierError(SAGEError):
     """400: caller supplied both the canonical parameter and an alias
-    for the same logical document identifier (T-0155).
+    for the same logical document identifier.
 
     Some MCP tools accept the canonical name ``document_id`` as an alias
     for a tool-specific name (e.g., ``sage_traverse`` accepts both
@@ -967,9 +967,9 @@ class AmbiguousDocumentIdentifierError(SAGEError):
 
 class MissingDocumentIdentifierError(SAGEError):
     """400: caller supplied neither the canonical parameter nor any
-    accepted alias for the document identifier (T-0155).
+    accepted alias for the document identifier.
 
-    Companion to :class:`AmbiguousDocumentIdentifierError`. Distinct
+    Companion to:class:`AmbiguousDocumentIdentifierError`. Distinct
     from ``document_not_found`` (404) and from a downstream Pydantic
     ``ValidationError``: this code fires before the service layer is
     invoked, when no document identifier was supplied at all. The
@@ -989,7 +989,7 @@ class MissingDocumentIdentifierError(SAGEError):
         )
 
 
-# Field-annotation strings used in InvalidFilterShapeError detail (T-0092).
+# Field-annotation strings used in InvalidFilterShapeError detail.
 # Kept as a small lookup rather than introspected from RetrievalFilters because
 # Pydantic v2's stringified annotations for ``str | None`` shapes are noisy
 # (``typing.Optional[str]`` or ``Union[str, None]`` depending on Python form).
@@ -1008,7 +1008,7 @@ def translate_validation_error(
     exc: ValidationError | RequestValidationError,
 ) -> SAGEError | None:
     """Map a Pydantic ValidationError on DiscoverRequest/RetrievalFilters to a
-    typed ADR-028 SAGEError (T-0092).
+    typed ADR-028 SAGEError.
 
     Walks ``exc.errors()`` and returns the first matching SAGEError. Returns
     ``None`` when no rule matches, signaling the caller to fall back to the
@@ -1102,7 +1102,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         """Translate FastAPI request-body validation errors into ADR-028
-        envelopes for the discover endpoint (T-0092). Falls through to a
+        envelopes for the discover endpoint. Falls through to a
         generic 400 envelope for any unmatched validation error so the HTTP
         and MCP surfaces both stop leaking FastAPI's default 422 shape on
         the discover path."""
@@ -1118,7 +1118,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             )
         # Non-discover validation errors keep FastAPI's default 422 with its
         # native body shape. Returning a custom 422 envelope here would be a
-        # larger blast radius than T-0092 scopes; that's a follow-up.
+        # larger blast radius than scopes; that's a follow-up.
         # ``jsonable_encoder`` handles ctx.error ValueError values that
         # ``json.dumps`` cannot serialize directly.
         return JSONResponse(

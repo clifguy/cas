@@ -1,4 +1,4 @@
-"""Process-level singleton factories for nomic and Qwen3 providers (T-0060).
+"""Process-level singleton factories for nomic and Qwen3 providers.
 
 Verifies that the production embedding and abstraction providers are
 constructed once per process, not once per vault. Per-vault construction
@@ -81,7 +81,7 @@ def reset_singletons():
 
 @requires_embedding
 class TestNomicSingleton:
-    """T-0060: process-level singleton for NomicEmbeddingProvider."""
+    """Process-level singleton for NomicEmbeddingProvider."""
 
     def test_factory_returns_same_instance_on_repeated_calls(self):
         """Two get_nomic_embedding_provider() calls return identical objects.
@@ -118,7 +118,7 @@ class TestNomicSingleton:
 
 @requires_mlx
 class TestQwen3Singleton:
-    """T-0060: process-level singleton for Qwen3AbstractionProvider.
+    """Process-level singleton for Qwen3AbstractionProvider.
 
     Qwen3 __init__ is cheap (MLX loads lazily on first generate_abstract),
     so these tests do not need a model-availability gate beyond the

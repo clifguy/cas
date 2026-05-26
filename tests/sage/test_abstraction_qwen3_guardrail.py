@@ -1,4 +1,4 @@
-"""T-0029 guardrail tests for Qwen3AbstractionProvider.
+"""guardrail tests for Qwen3AbstractionProvider.
 
 Asserts the two MLX/Metal OOM guardrails on
 ``Qwen3AbstractionProvider.generate_abstract``:
@@ -64,7 +64,7 @@ def provider(monkeypatch):
 async def test_t0029_preflight_below_threshold_raises_structured_error(provider, monkeypatch):
     """When free unified memory is below threshold, generate_abstract
     raises UnifiedMemoryExhaustedError with structured detail in place
-    of letting MLX abort the process. Satisfies T-0029 acceptance.
+    of letting MLX abort the process. Satisfies acceptance.
     """
     monkeypatch.setattr(
         "sage.adapters.abstraction_qwen3.free_unified_memory_bytes",

@@ -35,7 +35,7 @@ adapter directly without going through the ingestion pipeline.
 
 **Precondition:** nomic-embed-text model available via sentence-transformers.
 
-**Input:** `embed(["The patent claims a novel method for data synchronization."])`
+**Input:** `embed(["The report claims a novel method for data synchronization."])`
 
 **Expected:**
 - Returns a list containing one vector
@@ -91,7 +91,7 @@ Non-determinism would cause retrieval inconsistency.
 
 **Precondition:** Provider initialized.
 
-**Input:** `embed(["Short text.", "A significantly longer passage with multiple sentences about various topics including patent law, data management, and retrieval systems."])`
+**Input:** `embed(["Short text.", "A significantly longer passage with multiple sentences about various topics including report law, data management, and retrieval systems."])`
 
 **Expected:**
 - For each output vector, `sqrt(sum(v_i^2))` is within 1e-4 of 1.0
@@ -619,7 +619,7 @@ call.
 - The abstract is still coherent (not truncated mid-word or mid-sentence)
 
 **Rationale:** The vault schema defines `max_abstract_tokens` with a minimum of
-50. The PIM Health vault sets this to 500. The provider must honor this bound
+50. The Example Portfolio vault sets this to 500. The provider must honor this bound
 to ensure abstracts are consistently sized for retrieval and display. The
 model's generation parameters (not post-hoc truncation) should enforce this,
 so output remains coherent at the boundary.
@@ -683,7 +683,7 @@ window before generation.
 - The abstract reflects content from the beginning of the input (truncation
   preserves leading content, not trailing)
 
-**Rationale:** PIM patent documents can be lengthy. While the pipeline-level
+**Rationale:** EXAMPLE report documents can be lengthy. While the pipeline-level
 existing-abstract bypass (planned for step 20) will reduce how often long
 documents reach the LLM, the provider must not crash when they do. Truncation
 is preferred over failure because the leading content of a well-structured
@@ -829,7 +829,7 @@ plain body paragraph.
 - `len(result.headings) == 1`.
 - `result.headings[0].level == 1` and `result.headings[0].text == "My Title"`.
 
-**Rationale:** Patent and contract templates use `Title` as the
+**Rationale:** Report and contract templates use `Title` as the
 top-level heading; clinical templates use custom styles like
 `USPTO Section`. A configurable map is the only way to handle this
 without per-vault adapter forks.
@@ -907,7 +907,7 @@ be stable; downstream consumers split on `" > "`.
 - Case 3: `"authoritative" in result.title.lower()` and `"the"` is not
   among the lower-cased title's whitespace-split tokens.
 
-**Rationale:** Patent documents use the `Title` paragraph style for
+**Rationale:** Report documents use the `Title` paragraph style for
 their actual title; `H1` is typically a generic section heading
 ("System Architecture", "Introduction") that misleads search. The
 key-terms fallback is the last-resort path for the rare case where
@@ -979,7 +979,7 @@ with rows `[["Name", "Value"], ["alpha", "1"], ["beta", "2"]]`.
 **Rationale:** Pipe-delimited rows are readable by both BM25 keyword
 search (token-level) and the abstraction provider (the format reads as
 intentional structure, not as garbled text). Skipping tables would
-silently drop the most information-dense parts of patent claim charts
+silently drop the most information-dense parts of report claim charts
 and clinical reference tables.
 
 ### TEST-SAGE-AD-043: Mixed headings, paragraphs, tables in correct order
@@ -1119,7 +1119,7 @@ headings: `H1` "Introduction" (ilvl 0), `H1` "Background" (ilvl 0),
 
 **Rationale:** Word renders numbered headings with the prefix visible
 to the human reader; without it, the projected text loses the
-heading's rendered identity. Patent claims and clinical procedures
+heading's rendered identity. Report claims and clinical procedures
 routinely cross-reference "Section 2.1", and the prefix must be
 present in the text for those references to resolve via search.
 
@@ -1164,10 +1164,10 @@ Section" (ilvl 1), `H3` "First Item" (ilvl 2).
 **Expected:**
 - "I First Chapter", "I.1 First Section", "I.1.a First Item".
 
-**Rationale:** Patent applications and legal briefs use Roman/letter
+**Rationale:** Report applications and legal briefs use Roman/letter
 numbering mixed with decimals (the canonical "I.A.1.a" form). The
 engine must render every supported format correctly; falling back
-to decimal silently would mis-name half the patent corpus.
+to decimal silently would mis-name half the report corpus.
 
 ### TEST-SAGE-AD-051: Cross-ref field cached results in text, instructions excluded
 
@@ -2346,7 +2346,7 @@ still-extractable content streams.
   `contextlib.redirect_stderr` cannot do under pytest's logging plugin.
 
 **Rationale:** A real fraction of PDFs in the wild (the PV01
-patentability search report is one) parse cleanly content-wise but
+feasibility search report is one) parse cleanly content-wise but
 emit a flurry of object-pointer warnings during parsing. Letting these
 leak into the SAGE log creates noise that drowns real diagnostic
 signal. The adapter is the right place to scope the suppression so

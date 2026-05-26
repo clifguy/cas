@@ -1,4 +1,4 @@
-"""Service-layer tests for LifecycleService.bulk_set_lifecycle (T-0087).
+"""Service-layer tests for LifecycleService.bulk_set_lifecycle.
 
 The bulk method holds the per-document lock per item and the per-item
 SQLite transaction; the batch as a whole is NOT atomic. A bad item does

@@ -39,7 +39,7 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
         },
         "document_types": {
             "doc_types": [
-                {"value": "patent_draft", "label": "Patent Draft"},
+                {"value": "design_spec", "label": "Report Draft"},
                 {"value": "checklist", "label": "Checklist"},
                 {"value": "note", "label": "Note"},
             ],
@@ -72,7 +72,7 @@ def _make_vault_config(tmp_path, vault_id: str = "test_vault"):
                 "known_code_patterns": ["^[A-Z][A-Z0-9]{1,7}$"],
                 "keyword_to_doc_type": [],
                 "code_to_doc_type": [
-                    {"code": "PV06", "doc_type": "patent_draft"},
+                    {"code": "PV06", "doc_type": "design_spec"},
                 ],
             },
         },
@@ -109,8 +109,8 @@ async def vault(tmp_path):
     # Create test files
     sources = Path(config.vault.storage_root)
     (sources / "simple.md").write_text("# Simple\n\nBasic content.")
-    (sources / "patent_v1.md").write_text("# Patent v1\n\nFirst version.")
-    (sources / "patent_v2.md").write_text("# Patent v2\n\nSecond version.")
+    (sources / "report_v1.md").write_text("# Report v1\n\nFirst version.")
+    (sources / "report_v2.md").write_text("# Report v2\n\nSecond version.")
 
     yield services, config
 
@@ -179,23 +179,23 @@ class TestEdgeResultTypeConsistency:
                 "test_vault",
                 [
                     {
-                        "file_path": str(sources / "patent_v1.md"),
+                        "file_path": str(sources / "report_v1.md"),
                         "source_type": "markdown",
                         "parsed_metadata": {
-                            "title": "Patent",
+                            "title": "Report",
                             "codes": ["PV06"],
                             "version": "v1",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                     {
-                        "file_path": str(sources / "patent_v2.md"),
+                        "file_path": str(sources / "report_v2.md"),
                         "source_type": "markdown",
                         "parsed_metadata": {
-                            "title": "Patent",
+                            "title": "Report",
                             "codes": ["PV06"],
                             "version": "v2",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                 ],

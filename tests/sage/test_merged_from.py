@@ -2,9 +2,9 @@
 
 Covers TEST-SAGE-CR-029..036. Uses the canonical worked example:
 
-    Chain A: a1 <- a2 <- a3 <- a4 <- a5 <- a6 <- a7 <- a8   (a8 is chain head)
+    Chain A: a1 <- a2 <- a3 <- a4 <- a5 <- a6 <- a7 <- a8 (a8 is chain head)
     Chain B: b1 <- b2 <- b3 <- b4
-    covers:  source=a3, target=b2, policy=transitive_both (anchors a3/b2)
+    covers: source=a3, target=b2, policy=transitive_both (anchors a3/b2)
 
 Chain C is added for the merge (c1, then optionally c2 supersedes c1).
 """

@@ -25,17 +25,17 @@ segments are nullable except title. Codes are extracted as a list.
 **Precondition:** Vault config with known_code_patterns `["^[A-Z]{2,8}$"]` and
 filename_extraction pattern `{date}_{project}_{code}_{title}_{version}`.
 
-**Input:** Filename `2026-03-09_PIM_PV06_Claim-Set_v6_12.docx`
+**Input:** Filename `2026-03-09_EXAMPLE_PV06_Claim-Set_v6_12.docx`
 
 **Expected:**
 - `date`: `"2026-03-09"`
-- `project`: `"PIM"`
+- `project`: `"EXAMPLE"`
 - `codes`: `["PV06"]`
 - `title`: `"Claim-Set"`
 - `version`: `"v6_12"` (raw string; normalization is a separate step)
 - `doc_type`: resolved via code_to_doc_type rules
 
-**Rationale:** The standard PIM Health filename format exercises all five segment
+**Rationale:** The standard Example Portfolio filename format exercises all five segment
 types. The parser must handle the underscore separator while preserving hyphenated
 title segments.
 
@@ -50,12 +50,12 @@ parsed result; the fallback is stored as source_modified_at in the scan result.
 
 **Precondition:** Vault config as above.
 
-**Input:** Filename `PIM_REF_Glossary_v10.docx` with st_mtime `2026-02-15T10:30:00`
+**Input:** Filename `EXAMPLE_REF_Glossary_v10.docx` with st_mtime `2026-02-15T10:30:00`
 
 **Expected:**
 - `date`: null
 - `source_modified_at`: `"2026-02-15T10:30:00"` (from st_mtime)
-- `project`: `"PIM"`
+- `project`: `"EXAMPLE"`
 - `codes`: `["REF"]`
 - `title`: `"Glossary"`
 - `version`: `"v10"`
@@ -74,11 +74,11 @@ code matching but not version chaining.
 
 **Precondition:** Vault config as above.
 
-**Input:** Filename `2026-03-15_PIM_TD_Neural-Pathway-Analysis.docx`
+**Input:** Filename `2026-03-15_EXAMPLE_TD_Neural-Pathway-Analysis.docx`
 
 **Expected:**
 - `date`: `"2026-03-15"`
-- `project`: `"PIM"`
+- `project`: `"EXAMPLE"`
 - `codes`: `["TD"]`
 - `title`: `"Neural-Pathway-Analysis"`
 - `version`: null
@@ -98,14 +98,14 @@ captured.
 **Precondition:** Vault config with known_code_patterns
 `["^[A-Z]{2,8}$", "^[A-Z]+-\\d+$"]`.
 
-**Input:** Filename `2026-03-20_PIM_PV06_CF-1_Integration-Catalog_v3.docx`
+**Input:** Filename `2026-03-20_EXAMPLE_PV06_CF-1_Integration-Catalog_v3.docx`
 
 **Expected:**
 - `codes`: `["PV06", "CF-1"]`
 - `title`: `"Integration-Catalog"`
 - Both codes available for code_to_doc_type and filename_code_match evaluation
 
-**Rationale:** The PIM Health portfolio uses compound code filenames (e.g.,
+**Rationale:** The Example Portfolio portfolio uses compound code filenames (e.g.,
 PV06 + CF-1 for cross-reference integration points). Each code independently
 participates in edge inference.
 
@@ -145,9 +145,9 @@ YYYYMMDD, etc.) are not treated as dates.
 **Precondition:** Vault config as above.
 
 **Input:** Filenames:
-- `2026-03-15_PIM_REF_Doc_v1.docx` (valid date)
-- `03-15-2026_PIM_REF_Doc_v1.docx` (MM-DD-YYYY, not recognized)
-- `20260315_PIM_REF_Doc_v1.docx` (compact, not recognized)
+- `2026-03-15_EXAMPLE_REF_Doc_v1.docx` (valid date)
+- `03-15-2026_EXAMPLE_REF_Doc_v1.docx` (MM-DD-YYYY, not recognized)
+- `20260315_EXAMPLE_REF_Doc_v1.docx` (compact, not recognized)
 
 **Expected:**
 - First: `date` = `"2026-03-15"`
@@ -155,7 +155,7 @@ YYYYMMDD, etc.) are not treated as dates.
 - Third: `date` = null (segment not recognized as date)
 
 **Rationale:** Strict date pattern prevents false positives on numeric segments
-that happen to be 8+ digits. The PIM Health naming convention uses YYYY-MM-DD.
+that happen to be 8+ digits. The Example Portfolio naming convention uses YYYY-MM-DD.
 
 ### TEST-APP-EI-007: Version recognition scans from right
 
@@ -169,7 +169,7 @@ lacks the segment boundary).
 
 **Precondition:** Vault config as above.
 
-**Input:** Filename `2026-03-09_PIM_PV06_Validation-Report_v3.docx`
+**Input:** Filename `2026-03-09_EXAMPLE_PV06_Validation-Report_v3.docx`
 
 **Expected:**
 - `version`: `"v3"`
@@ -195,9 +195,9 @@ uppercase only). Code recognition is independent of doc_type mapping.
 "^[A-Z]+-\\d+$"]`.
 
 **Input:** Filenames:
-- `2026-03-09_PIM_PV06_Title_v1.docx` (PV06 matches `^[A-Z]{2,8}$`)
-- `2026-03-09_PIM_CF-1_Title_v1.docx` (CF-1 matches `^[A-Z]+-\\d+$`)
-- `2026-03-09_PIM_x99_Title_v1.docx` (x99 matches neither pattern)
+- `2026-03-09_EXAMPLE_PV06_Title_v1.docx` (PV06 matches `^[A-Z]{2,8}$`)
+- `2026-03-09_EXAMPLE_CF-1_Title_v1.docx` (CF-1 matches `^[A-Z]+-\\d+$`)
+- `2026-03-09_EXAMPLE_x99_Title_v1.docx` (x99 matches neither pattern)
 
 **Expected:**
 - First: `codes` = `["PV06"]`
@@ -224,17 +224,17 @@ artifacts that contain domain-specific codes in their filenames.
 **Precondition:** Vault config with:
 - keyword_to_doc_type: `[{ keyword: "Checklist", doc_type: "checklist" },
   { keyword: "Work-Plan", doc_type: "work_plan" }]`
-- code_to_doc_type: `[{ code: "PV06", doc_type: "patent_draft" }]`
+- code_to_doc_type: `[{ code: "PV06", doc_type: "design_spec" }]`
 
-**Input:** Filename `2026-03-20_PIM_PV06_Checklist_v3.docx`
+**Input:** Filename `2026-03-20_EXAMPLE_PV06_Checklist_v3.docx`
 
 **Expected:**
 - `doc_type`: `"checklist"` (from keyword match on "Checklist" in title)
-- NOT `"patent_draft"` (code_to_doc_type for PV06 is not evaluated)
+- NOT `"design_spec"` (code_to_doc_type for PV06 is not evaluated)
 
-**Rationale:** A PV06 checklist is a workflow artifact, not a patent draft. The
+**Rationale:** A PV06 checklist is a workflow artifact, not a design draft. The
 checklist keyword in the title is a stronger signal than the PV06 code, which
-indicates the patent the checklist governs, not the document's own type.
+indicates the report the checklist governs, not the document's own type.
 
 ### TEST-APP-EI-010: code_to_doc_type compound key takes precedence
 
@@ -245,18 +245,18 @@ indicates the patent the checklist governs, not the document's own type.
 take precedence over code-only rules. Rules are evaluated
 in order; first match wins. (Unchanged from v0.1 schema, confirmed here.)
 
-**Precondition:** Vault config with PIM Health code_to_doc_type rules (REF +
+**Precondition:** Vault config with Example Portfolio code_to_doc_type rules (REF +
 "Glossary" -> glossary, REF alone -> reference_document).
 
 **Input:** Filenames:
-- `2026-03-15_PIM_REF_Glossary_v10.docx`
-- `2026-03-15_PIM_REF_Architecture-QA_v2.docx`
+- `2026-03-15_EXAMPLE_REF_Glossary_v10.docx`
+- `2026-03-15_EXAMPLE_REF_Architecture-QA_v2.docx`
 
 **Expected:**
 - First: `doc_type` = `"glossary"` (compound match: REF + "Glossary")
 - Second: `doc_type` = `"reference_document"` (code-only match: REF)
 
-**Rationale:** PIM Health uses REF as a shared code across multiple document
+**Rationale:** Example Portfolio uses REF as a shared code across multiple document
 types. Compound keys disambiguate.
 
 ### TEST-APP-EI-011: Case-insensitive keyword matching
@@ -270,9 +270,9 @@ types. Compound keys disambiguate.
 "checklist" }`.
 
 **Input:** Filenames:
-- `PIM_PV06_Checklist_v3.docx`
-- `PIM_PV06_CHECKLIST_v3.docx`
-- `PIM_PV06_checklist_v3.docx`
+- `EXAMPLE_PV06_Checklist_v3.docx`
+- `EXAMPLE_PV06_CHECKLIST_v3.docx`
+- `EXAMPLE_PV06_checklist_v3.docx`
 
 **Expected:** All three resolve to `doc_type` = `"checklist"`.
 
@@ -288,9 +288,9 @@ Case-insensitive matching prevents false negatives.
 match, doc_type is null. The document is ingested without a type; metadata review
 can assign one later.
 
-**Precondition:** Vault config with standard PIM Health rules.
+**Precondition:** Vault config with standard Example Portfolio rules.
 
-**Input:** Filename `2026-03-15_PIM_UNKNOWN_Report_v1.docx` (UNKNOWN matches a
+**Input:** Filename `2026-03-15_EXAMPLE_UNKNOWN_Report_v1.docx` (UNKNOWN matches a
 code pattern but has no code_to_doc_type mapping).
 
 **Expected:**
@@ -341,9 +341,9 @@ Given v1, v3, v7 (gaps allowed), the chain is v7->v3->v1.
 **Precondition:** Three files with same title and project, different versions.
 
 **Input:** Files (all new, no existing vault documents):
-- `2026-03-09_PIM_PV06_Claim-Set_v1.docx`
-- `2026-03-09_PIM_PV06_Claim-Set_v3.docx`
-- `2026-03-09_PIM_PV06_Claim-Set_v7.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v1.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v3.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v7.docx`
 
 **Expected:** Edge plan contains exactly 2 supersedes edges:
 - `Claim-Set_v7` supersedes `Claim-Set_v3`
@@ -366,10 +366,10 @@ different doc_types are in separate chains even if their version numbers overlap
 **Precondition:** Four files, two titles.
 
 **Input:**
-- `2026-03-09_PIM_PV06_Claim-Set_v1.docx`
-- `2026-03-09_PIM_PV06_Claim-Set_v2.docx`
-- `2026-03-09_PIM_TD_Neural-Analysis_v1.docx`
-- `2026-03-09_PIM_TD_Neural-Analysis_v2.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v1.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v2.docx`
+- `2026-03-09_EXAMPLE_TD_Neural-Analysis_v1.docx`
+- `2026-03-09_EXAMPLE_TD_Neural-Analysis_v2.docx`
 
 **Expected:** Two independent chains:
 - `Claim-Set_v2` supersedes `Claim-Set_v1`
@@ -393,16 +393,16 @@ confirmed to be the same kind of document).
 **Precondition:** Edge inference engine initialized.
 
 **Input:** Three files with the same title and project, mixed doc_types:
-- `Claim-Set_v1.docx` (doc_type: `patent_draft`)
+- `Claim-Set_v1.docx` (doc_type: `design_spec`)
 - `Claim-Set_v2.docx` (doc_type: `work_plan`)
-- `Claim-Set_v3.docx` (doc_type: `patent_draft`)
+- `Claim-Set_v3.docx` (doc_type: `design_spec`)
 
 **Expected:** Edge plan contains exactly one supersedes edge:
-- `Claim-Set_v3` supersedes `Claim-Set_v1` (both `patent_draft`)
+- `Claim-Set_v3` supersedes `Claim-Set_v1` (both `design_spec`)
 - No edges involving the `work_plan` v2
 
 **Rationale:** Tightens the inference rule against false positives where two
-unrelated artifacts happen to share a title (e.g., a patent draft and a work
+unrelated artifacts happen to share a title (e.g., a design draft and a work
 plan that governs it, both named "Claim-Set"). A document genuinely changing
 type across versions is rare and is better captured manually than risked as an
 auto-inferred Tier 1 edge.
@@ -420,8 +420,8 @@ chain is v7->v6->v5 (with v5 being the existing document's ID).
 document_id "existing-v5".
 
 **Input:** Batch contains:
-- `2026-03-09_PIM_PV06_Claim-Set_v6.docx`
-- `2026-03-09_PIM_PV06_Claim-Set_v7.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v6.docx`
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v7.docx`
 
 **Expected:** Edge plan:
 - `Claim-Set_v7` supersedes `Claim-Set_v6`
@@ -441,7 +441,7 @@ document.
 
 **Precondition:** Vault empty. Batch has one versioned file.
 
-**Input:** `2026-03-09_PIM_PV06_Claim-Set_v1.docx`
+**Input:** `2026-03-09_EXAMPLE_PV06_Claim-Set_v1.docx`
 
 **Expected:** Edge plan contains no supersedes edges.
 
@@ -459,9 +459,9 @@ documents but are treated as unversioned.
 **Precondition:** Three files with same title.
 
 **Input:**
-- `2026-03-15_PIM_TD_Neural-Analysis.docx` (no version)
-- `2026-03-15_PIM_TD_Neural-Analysis_v1.docx`
-- `2026-03-15_PIM_TD_Neural-Analysis_v2.docx`
+- `2026-03-15_EXAMPLE_TD_Neural-Analysis.docx` (no version)
+- `2026-03-15_EXAMPLE_TD_Neural-Analysis_v1.docx`
+- `2026-03-15_EXAMPLE_TD_Neural-Analysis_v2.docx`
 
 **Expected:**
 - `Neural-Analysis_v2` supersedes `Neural-Analysis_v1`
@@ -482,15 +482,15 @@ incorrect supersedes relationships.
 **Category:** filename_code_match
 
 **Decision:** filename_code_match fires between workflow artifacts (checklist,
-work_plan, session_context, template) and content artifacts (patent_draft,
+work_plan, session_context, template) and content artifacts (design_spec,
 technical_disclosure, glossary, etc.) when they share at least one code.
 Edge type is `covers` (Tier 2, staged for review).
 
-**Precondition:** Vault config with PIM Health doc_types and edge inference rules.
+**Precondition:** Vault config with Example Portfolio doc_types and edge inference rules.
 
 **Input:**
-- `2026-03-20_PIM_PV06_Checklist_v3.docx` (doc_type: checklist)
-- `2026-03-09_PIM_PV06_Claim-Set_v7.docx` (doc_type: patent_draft)
+- `2026-03-20_EXAMPLE_PV06_Checklist_v3.docx` (doc_type: checklist)
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v7.docx` (doc_type: design_spec)
 
 **Expected:** Staging edge plan:
 - source: Checklist (workflow artifact)
@@ -498,7 +498,7 @@ Edge type is `covers` (Tier 2, staged for review).
 - edge_type: `covers`
 - Shared code: `PV06`
 
-**Rationale:** A PV06 checklist governs (covers) the PV06 patent draft. The
+**Rationale:** A PV06 checklist governs (covers) the PV06 design draft. The
 workflow artifact is the source because it describes operations on the content
 artifact.
 
@@ -521,7 +521,7 @@ The workflow artifact is the source; the content artifact is the target.
 
 **Rationale:** The `covers` edge means "this workflow artifact covers (governs)
 this content artifact." Consistent directionality enables traversal queries like
-"what workflow artifacts cover this patent?"
+"what workflow artifacts cover this report?"
 
 ### TEST-APP-EI-021: Workflow-to-workflow pairs get no automatic edge
 
@@ -531,11 +531,11 @@ this content artifact." Consistent directionality enables traversal queries like
 **Decision:** When two workflow artifacts share a code, filename_code_match does
 not fire. Only workflow-to-content pairs produce edges.
 
-**Precondition:** Vault config with PIM Health doc_types.
+**Precondition:** Vault config with Example Portfolio doc_types.
 
 **Input:**
-- `2026-03-20_PIM_PV06_Checklist_v3.docx` (doc_type: checklist)
-- `2026-03-20_PIM_PV06_Work-Plan_v2.docx` (doc_type: work_plan)
+- `2026-03-20_EXAMPLE_PV06_Checklist_v3.docx` (doc_type: checklist)
+- `2026-03-20_EXAMPLE_PV06_Work-Plan_v2.docx` (doc_type: work_plan)
 
 **Expected:** No filename_code_match edges between these two documents.
 
@@ -552,15 +552,15 @@ automatic inference. These edges require manual or orchestrator judgment.
 not fire. Content-to-content relationships (e.g., derived_from, references) are
 Tier 3 (manual only) or require content_reference analysis (Phase 2).
 
-**Precondition:** Vault config with PIM Health doc_types.
+**Precondition:** Vault config with Example Portfolio doc_types.
 
 **Input:**
-- `2026-03-09_PIM_PV06_Claim-Set_v7.docx` (doc_type: patent_draft)
-- `2026-03-09_PIM_PV06_Specification_v3.docx` (doc_type: patent_draft)
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v7.docx` (doc_type: design_spec)
+- `2026-03-09_EXAMPLE_PV06_Specification_v3.docx` (doc_type: design_spec)
 
 **Expected:** No filename_code_match edges between these two documents.
 
-**Rationale:** Two patent drafts sharing a code might be related versions (handled
+**Rationale:** Two report drafts sharing a code might be related versions (handled
 by version_chain) or genuinely distinct documents. filename_code_match cannot
 distinguish these cases.
 
@@ -573,19 +573,19 @@ distinguish these cases.
 A new workflow artifact can be matched against an existing content artifact
 (and vice versa).
 
-**Precondition:** Vault contains a patent_draft document with code PV06,
-document_id "existing-patent".
+**Precondition:** Vault contains a design_spec document with code PV06,
+document_id "existing-report".
 
 **Input:** Batch contains:
-- `2026-03-20_PIM_PV06_Checklist_v3.docx` (doc_type: checklist)
+- `2026-03-20_EXAMPLE_PV06_Checklist_v3.docx` (doc_type: checklist)
 
 **Expected:** Staging edge:
 - source: Checklist (new, workflow)
-- target: existing-patent (existing, content)
+- target: existing-report (existing, content)
 - edge_type: `covers`
 
 **Rationale:** Edge inference must span the full vault state, not just the
-current batch. A new checklist covering an existing patent draft is a valid
+current batch. A new checklist covering an existing design draft is a valid
 and common relationship.
 
 ### TEST-APP-EI-024: Multiple codes produce multiple edges
@@ -596,20 +596,20 @@ and common relationship.
 **Decision:** A document with multiple codes can match against different documents
 on different codes. Each code independently participates in matching.
 
-**Precondition:** Vault config with PIM Health rules.
+**Precondition:** Vault config with Example Portfolio rules.
 
 **Input:**
-- `2026-03-20_PIM_PV06_CF-1_Checklist_v1.docx` (doc_type: checklist,
+- `2026-03-20_EXAMPLE_PV06_CF-1_Checklist_v1.docx` (doc_type: checklist,
   codes: ["PV06", "CF-1"])
-- `2026-03-09_PIM_PV06_Claim-Set_v7.docx` (doc_type: patent_draft)
-- `2026-03-09_PIM_CF-1_Integration-Catalog_v3.docx` (doc_type:
+- `2026-03-09_EXAMPLE_PV06_Claim-Set_v7.docx` (doc_type: design_spec)
+- `2026-03-09_EXAMPLE_CF-1_Integration-Catalog_v3.docx` (doc_type:
   integration_catalog)
 
 **Expected:** Two staging edges:
 - Checklist covers Claim-Set (shared code: PV06)
 - Checklist covers Integration-Catalog (shared code: CF-1)
 
-**Rationale:** A cross-reference checklist (PV06 + CF-1) governs both the patent
+**Rationale:** A cross-reference checklist (PV06 + CF-1) governs both the report
 draft and the integration catalog. Each code match produces an independent edge.
 
 ---
@@ -631,9 +631,9 @@ evidence (shared code, version comparison).
 existing document.
 
 **Input:** Scan result containing:
-- `PIM_PV06_Claim-Set_v6.docx` (new, patent_draft)
-- `PIM_PV06_Claim-Set_v7.docx` (new, patent_draft)
-- `PIM_PV06_Checklist_v3.docx` (new, checklist)
+- `EXAMPLE_PV06_Claim-Set_v6.docx` (new, design_spec)
+- `EXAMPLE_PV06_Claim-Set_v7.docx` (new, design_spec)
+- `EXAMPLE_PV06_Checklist_v3.docx` (new, checklist)
 Existing vault: Claim-Set_v5 (document_id: "existing-v5")
 
 **Expected:** Edge plan:
@@ -746,7 +746,7 @@ the batch or vault) produces an empty edge plan.
 
 **Precondition:** Empty vault. Batch has one file.
 
-**Input:** `2026-03-15_PIM_TD_Neural-Analysis_v1.docx` (no existing vault docs,
+**Input:** `2026-03-15_EXAMPLE_TD_Neural-Analysis_v1.docx` (no existing vault docs,
 no other files in batch with code TD or title Neural-Analysis)
 
 **Expected:** Edge plan is empty.
@@ -821,8 +821,8 @@ and no lifecycle transitions are triggered.
 **Precondition:** SAGE vault with at least one existing document (to confirm
 existing documents are not affected).
 
-**Input:** Batch ingest of two versioned files (e.g., `PIM_PV99_Title_v1.md`
-and `PIM_PV99_Title_v2.md`) with `infer_edges: false`.
+**Input:** Batch ingest of two versioned files (e.g., `EXAMPLE_PV99_Title_v1.md`
+and `EXAMPLE_PV99_Title_v2.md`) with `infer_edges: false`.
 
 **Expected:**
 - Both documents ingested successfully (HTTP 201 each)

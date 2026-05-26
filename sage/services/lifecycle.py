@@ -77,7 +77,7 @@ class LifecycleService:
     ) -> SetLifecycleResponse:
         """Execute a lifecycle state transition (or preview it on dry-run).
 
-        T-0152: when ``request.dry_run`` is True, runs every validator in
+        When ``request.dry_run`` is True, runs every validator in
         the same order as a real run but skips the persistence call
         (``update_document`` / ``supersede_atomic``) and the chunk-store
         sync. The response carries the would-be document and, for
@@ -131,7 +131,7 @@ class LifecycleService:
                     "lifecycle_status": to_state,
                     "updated_at": now.isoformat(),
                 }
-                # T-0152: on dry-run, build the would-be edge with a
+                # On dry-run, build the would-be edge with a
                 # sentinel id so callers can never mistake it for a
                 # persisted edge. On real-run, mint the real uuid up
                 # front so it can be returned alongside the document.
@@ -166,11 +166,11 @@ class LifecycleService:
                     updated_doc = await self._store.update_document(document_id, updates)
 
             # Sync the new lifecycle_status to the chunk store so LanceDB
-            # pre-filter pushdown (T-0077) stays accurate after the
+            # pre-filter pushdown stays accurate after the
             # transition. Best-effort: legacy wiring that omits
             # content_store falls through as a no-op.
             #
-            # T-0152: skipped on dry-run — the chunk-store sync is a
+            # Skipped on dry-run — the chunk-store sync is a
             # persistence side effect and must not run when the caller
             # asked for a preview.
             if self._content is not None and not request.dry_run:
@@ -186,7 +186,7 @@ class LifecycleService:
                     f"lifecycle transition completed but pipeline is still in progress."
                 )
 
-            # T-0163: on dry-run, compute the field-level lifecycle_status
+            # On dry-run, compute the field-level lifecycle_status
             # delta. Real-run responses carry `changes=None`. Skipped if
             # the action is a no-op (e.g., to_state == current state),
             # matching the real-run-absence pattern. The would-be
@@ -240,7 +240,7 @@ class LifecycleService:
         and asyncio scheduling between items; the per-document lock and
         the per-item SQLite transaction are unchanged.
 
-        ``request.response_mode`` (T-0153) controls per-item payload
+        ``request.response_mode`` controls per-item payload
         depth. ``light`` drops the per-item ``document`` body from
         success entries; failure entries always carry the full structured
         error envelope. When unset, the default-resolution rule mirrors
@@ -248,7 +248,7 @@ class LifecycleService:
         ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
         smaller batches default to ``full``.
         """
-        # T-0153: resolve the effective response_mode the same way
+        # Resolve the effective response_mode the same way
         # ``RetrievalService._edges`` does, but driven by ``len(items)``
         # instead of ``total_count``. The default-threshold rule is
         # courtesy for the human-readable single-item call; the bulk
@@ -267,7 +267,7 @@ class LifecycleService:
             single = SetLifecycleRequest(
                 action=item.action,
                 successor_id=item.successor_id,
-                # T-0152: propagate envelope dry_run to each per-item
+                # Propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported.
                 dry_run=request.dry_run,
             )
@@ -277,7 +277,7 @@ class LifecycleService:
                     BulkLifecycleItemResult(
                         document_id=item.document_id,
                         status="success",
-                        # T-0153 light mode: drop the document body. The
+                        # light mode: drop the document body. The
                         # caller already knows the document_id (they
                         # passed it); the body's primary bloat field
                         # (semantic_abstract) and the rest are stripped.
@@ -285,7 +285,7 @@ class LifecycleService:
                             response.document if effective_mode == ResponseMode.FULL else None
                         ),
                         warnings=response.warnings,
-                        # T-0163: propagate the per-item changes block
+                        # Propagate the per-item changes block
                         # from the single-item service. Populated only
                         # on dry-run; small enough to survive light
                         # mode, so the response_mode gate above does
@@ -307,7 +307,7 @@ class LifecycleService:
             success_count=success_count,
             error_count=len(results) - success_count,
             total=len(results),
-            # T-0152: envelope echo so callers can confirm the batch ran
+            # Envelope echo so callers can confirm the batch ran
             # as a preview even when every per-item document was
             # dropped under light response_mode.
             dry_run=request.dry_run,

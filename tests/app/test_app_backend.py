@@ -31,12 +31,12 @@ from sage.services.filename_parser import FilenameParser, normalize_version
 
 
 def _pim_metadata_extraction():
-    """PIM Health-like metadata extraction config."""
+    """Example Portfolio-like metadata extraction config."""
     return {
         "filename_extraction": {
             "pattern": "{date}_{project}_{code}_{title}_{version}",
             "separator": "_",
-            "project_identifier": "PIM",
+            "project_identifier": "EXAMPLE",
             "segment_fields": {
                 "date": "doc_date",
                 "project": "project",
@@ -69,8 +69,8 @@ def _pim_metadata_extraction():
                     "doc_type": "integration_catalog",
                 },
                 {"code": "REF", "doc_type": "reference_document"},
-                {"code": "PVMaster", "doc_type": "patent_draft"},
-                {"code": "PV", "doc_type": "patent_draft"},
+                {"code": "PVMaster", "doc_type": "design_spec"},
+                {"code": "PV", "doc_type": "design_spec"},
                 {"code": "TDMaster", "doc_type": "technical_disclosure"},
                 {"code": "TD", "doc_type": "technical_disclosure"},
             ],
@@ -79,7 +79,7 @@ def _pim_metadata_extraction():
 
 
 def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
-    """Create a vault config dict with PIM-like metadata extraction."""
+    """Create a vault config dict with EXAMPLE-like metadata extraction."""
     brain_dir = tmp_path / vault_id / "brain"
     brain_dir.mkdir(parents=True, exist_ok=True)
     sources_dir = tmp_path / vault_id / "sources"
@@ -96,7 +96,7 @@ def _make_vault_config_dict(tmp_path, vault_id: str, vault_name: str):
         },
         "document_types": {
             "doc_types": [
-                {"value": "patent_draft", "label": "Patent Draft"},
+                {"value": "design_spec", "label": "Report Draft"},
                 {"value": "technical_disclosure", "label": "Technical Disclosure"},
                 {"value": "glossary", "label": "Glossary"},
                 {"value": "reference_document", "label": "Reference Document"},
@@ -164,9 +164,9 @@ class TestFilenameParserSegments:
     def test_ei_001_standard_filename(self):
         """Parse standard filename with all segments."""
         p = self._parser()
-        result = p.parse("2026-03-09_PIM_PV06_Claim-Set_v6")
+        result = p.parse("2026-03-09_EXAMPLE_PV06_Claim-Set_v6")
         assert result.date == "2026-03-09"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert "PV06" in result.codes
         assert result.title == "Claim-Set"
         assert result.version == "v6.0"
@@ -174,9 +174,9 @@ class TestFilenameParserSegments:
     def test_ei_002_missing_date(self):
         """Parse filename missing date."""
         p = self._parser()
-        result = p.parse("PIM_REF_Glossary_v10")
+        result = p.parse("EXAMPLE_REF_Glossary_v10")
         assert result.date is None
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert "REF" in result.codes
         assert result.title == "Glossary"
         assert result.version == "v10.0"
@@ -184,9 +184,9 @@ class TestFilenameParserSegments:
     def test_ei_003_missing_version(self):
         """Parse filename missing version."""
         p = self._parser()
-        result = p.parse("2026-03-15_PIM_TD_Neural-Pathway-Analysis")
+        result = p.parse("2026-03-15_EXAMPLE_TD_Neural-Pathway-Analysis")
         assert result.date == "2026-03-15"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert "TD" in result.codes
         assert "Neural-Pathway-Analysis" in result.title
         assert result.version is None
@@ -194,7 +194,7 @@ class TestFilenameParserSegments:
     def test_ei_004_multiple_codes(self):
         """Parse filename with multiple codes."""
         p = self._parser()
-        result = p.parse("2026-03-20_PIM_PV06_CF-1_Integration-Catalog_v3")
+        result = p.parse("2026-03-20_EXAMPLE_PV06_CF-1_Integration-Catalog_v3")
         assert "PV06" in result.codes
         assert "CF-1" in result.codes
         assert len(result.codes) == 2
@@ -214,19 +214,19 @@ class TestFilenameParserSegments:
         """Only YYYY-MM-DD recognized as date."""
         p = self._parser()
         # Valid
-        r1 = p.parse("2026-03-15_PIM_REF_Doc_v1")
+        r1 = p.parse("2026-03-15_EXAMPLE_REF_Doc_v1")
         assert r1.date == "2026-03-15"
         # MM-DD-YYYY not recognized
-        r2 = p.parse("03-15-2026_PIM_REF_Doc_v1")
+        r2 = p.parse("03-15-2026_EXAMPLE_REF_Doc_v1")
         assert r2.date is None
         # Compact not recognized
-        r3 = p.parse("20260315_PIM_REF_Doc_v1")
+        r3 = p.parse("20260315_EXAMPLE_REF_Doc_v1")
         assert r3.date is None
 
     def test_ei_007_version_from_right(self):
         """Version identified by v-prefix scanning from right."""
         p = self._parser()
-        result = p.parse("2026-03-09_PIM_PV06_Validation-Report_v3")
+        result = p.parse("2026-03-09_EXAMPLE_PV06_Validation-Report_v3")
         assert result.version == "v3.0"
         assert "Validation-Report" in result.title
         assert "PV06" in result.codes
@@ -235,13 +235,13 @@ class TestFilenameParserSegments:
         """Codes recognized via known_code_patterns from vault config."""
         p = self._parser()
         # PV06 matches ^[A-Z][A-Z0-9]{1,7}$
-        r1 = p.parse("2026-03-09_PIM_PV06_Title_v1")
+        r1 = p.parse("2026-03-09_EXAMPLE_PV06_Title_v1")
         assert "PV06" in r1.codes
         # CF-1 matches ^[A-Z]+-\d+$
-        r2 = p.parse("2026-03-09_PIM_CF-1_Title_v1")
+        r2 = p.parse("2026-03-09_EXAMPLE_CF-1_Title_v1")
         assert "CF-1" in r2.codes
         # x99 matches neither (lowercase x, case-sensitive)
-        r3 = p.parse("2026-03-09_PIM_x99_Title_v1")
+        r3 = p.parse("2026-03-09_EXAMPLE_x99_Title_v1")
         assert "x99" not in r3.codes
 
 
@@ -257,31 +257,31 @@ class TestFilenameParserDocType:
     def test_ei_009_keyword_before_code(self):
         """keyword_to_doc_type evaluated before code_to_doc_type."""
         p = self._parser()
-        result = p.parse("2026-03-20_PIM_PV06_Checklist_v3")
-        assert result.doc_type == "checklist"  # keyword match, not patent_draft
+        result = p.parse("2026-03-20_EXAMPLE_PV06_Checklist_v3")
+        assert result.doc_type == "checklist"  # keyword match, not design_spec
 
     def test_ei_010_compound_key_precedence(self):
         """code_to_doc_type compound key takes precedence."""
         p = self._parser()
-        r1 = p.parse("2026-03-15_PIM_REF_Glossary_v10")
+        r1 = p.parse("2026-03-15_EXAMPLE_REF_Glossary_v10")
         assert r1.doc_type == "glossary"  # compound: REF + Glossary
-        r2 = p.parse("2026-03-15_PIM_REF_Architecture-QA_v2")
+        r2 = p.parse("2026-03-15_EXAMPLE_REF_Architecture-QA_v2")
         assert r2.doc_type == "reference_document"  # code-only: REF
 
     def test_ei_011_case_insensitive_keyword(self):
         """Keyword matching is case-insensitive."""
         p = self._parser()
-        r1 = p.parse("PIM_PV06_Checklist_v3")
+        r1 = p.parse("EXAMPLE_PV06_Checklist_v3")
         assert r1.doc_type == "checklist"
-        r2 = p.parse("PIM_PV06_CHECKLIST_v3")
+        r2 = p.parse("EXAMPLE_PV06_CHECKLIST_v3")
         assert r2.doc_type == "checklist"
-        r3 = p.parse("PIM_PV06_checklist_v3")
+        r3 = p.parse("EXAMPLE_PV06_checklist_v3")
         assert r3.doc_type == "checklist"
 
     def test_ei_012_no_match_null_doc_type(self):
         """No rules match -> doc_type is null."""
         p = self._parser()
-        result = p.parse("2026-03-15_PIM_UNKNOWN_Report_v1")
+        result = p.parse("2026-03-15_EXAMPLE_UNKNOWN_Report_v1")
         # UNKNOWN matches a code pattern but has no code_to_doc_type mapping
         assert "UNKNOWN" in result.codes
         assert result.doc_type is None
@@ -289,7 +289,7 @@ class TestFilenameParserDocType:
     def test_keyword_word_boundary_no_substring(self):
         """Keyword 'Plan' must not substring-match inside 'PlanPortability'."""
         p = self._parser()
-        result = p.parse("2026-01-12_PIM_TD11_PlanPortability_v1_4")
+        result = p.parse("2026-01-12_EXAMPLE_TD11_PlanPortability_v1_4")
         assert result.doc_type == "technical_disclosure"  # code TD, not keyword Plan
         assert "TD11" in result.codes
         assert result.title == "PlanPortability"
@@ -297,15 +297,15 @@ class TestFilenameParserDocType:
     def test_keyword_word_boundary_standalone_matches(self):
         """Keyword 'Plan' matches when it appears as a standalone word."""
         p = self._parser()
-        result = p.parse("2026-01-12_PIM_Work-Plan_v2")
+        result = p.parse("2026-01-12_EXAMPLE_Work-Plan_v2")
         assert result.doc_type == "work_plan"
 
     def test_tdmaster_code_recognized(self):
         """TDMaster is recognized as a code and resolves to technical_disclosure."""
         p = self._parser()
-        result = p.parse("2026-01-07_PIM_TDMaster_PIM-Integration_v1_1")
+        result = p.parse("2026-01-07_EXAMPLE_TDMaster_EXAMPLE-Integration_v1_1")
         assert "TDMaster" in result.codes
-        assert result.title == "PIM-Integration"
+        assert result.title == "EXAMPLE-Integration"
         assert result.doc_type == "technical_disclosure"
 
 
@@ -323,7 +323,7 @@ class TestFilenameParserSourceTypeConstraint:
 
     def _parser(self):
         doc_types = [
-            {"value": "patent_draft", "source_types": ["docx"]},
+            {"value": "design_spec", "source_types": ["docx"]},
             {"value": "technical_disclosure", "source_types": ["docx"]},
             {"value": "checklist"},  # no constraint
             {"value": "report"},
@@ -332,43 +332,43 @@ class TestFilenameParserSourceTypeConstraint:
         return FilenameParser(_pim_metadata_extraction(), doc_types=doc_types)
 
     def test_constrained_doc_type_matches_adapter(self):
-        """PV code resolves to patent_draft when adapter is docx."""
+        """PV code resolves to design_spec when adapter is docx."""
         p = self._parser()
-        result = p.parse("PIM_PV06_Claim-Set_v6", adapter="docx")
-        assert result.doc_type == "patent_draft"
+        result = p.parse("EXAMPLE_PV06_Claim-Set_v6", adapter="docx")
+        assert result.doc_type == "design_spec"
 
     def test_constrained_doc_type_skipped_for_wrong_adapter(self):
-        """PV code does not resolve to patent_draft for markdown adapter."""
+        """PV code does not resolve to design_spec for markdown adapter."""
         p = self._parser()
-        result = p.parse("PIM_PV06_Terminology_Audit_v1_0", adapter="markdown")
-        assert result.doc_type != "patent_draft"
+        result = p.parse("EXAMPLE_PV06_Terminology_Audit_v1_0", adapter="markdown")
+        assert result.doc_type != "design_spec"
 
     def test_constrained_doc_type_skipped_for_no_adapter(self):
-        """PV code does not resolve to patent_draft when adapter is None."""
+        """PV code does not resolve to design_spec when adapter is None."""
         p = self._parser()
-        result = p.parse("PIM_PV06_SomeFile_v1", adapter=None)
-        assert result.doc_type != "patent_draft"
+        result = p.parse("EXAMPLE_PV06_SomeFile_v1", adapter=None)
+        assert result.doc_type != "design_spec"
 
     def test_unconstrained_doc_type_any_adapter(self):
         """Doc type without source_types resolves for any adapter."""
         p = self._parser()
-        r1 = p.parse("PIM_PV06_Checklist_v3", adapter="markdown")
+        r1 = p.parse("EXAMPLE_PV06_Checklist_v3", adapter="markdown")
         assert r1.doc_type == "checklist"
-        r2 = p.parse("PIM_PV06_Checklist_v3", adapter="docx")
+        r2 = p.parse("EXAMPLE_PV06_Checklist_v3", adapter="docx")
         assert r2.doc_type == "checklist"
 
     def test_no_doc_types_config_ignores_constraint(self):
         """Parser without doc_types config behaves as before (no constraint)."""
         p = FilenameParser(_pim_metadata_extraction())
-        result = p.parse("PIM_PV06_Claim-Set_v6", adapter="markdown")
-        assert result.doc_type == "patent_draft"  # no constraint applied
+        result = p.parse("EXAMPLE_PV06_Claim-Set_v6", adapter="markdown")
+        assert result.doc_type == "design_spec"  # no constraint applied
 
     def test_constrained_doc_type_matches_with_explicit_adapter(self):
         """Constraint only passes when adapter explicitly matches."""
         p = self._parser()
-        r_docx = p.parse("PIM_TD08_Analysis_v1", adapter="docx")
+        r_docx = p.parse("EXAMPLE_TD08_Analysis_v1", adapter="docx")
         assert r_docx.doc_type == "technical_disclosure"
-        r_md = p.parse("PIM_TD08_Analysis_v1", adapter="markdown")
+        r_md = p.parse("EXAMPLE_TD08_Analysis_v1", adapter="markdown")
         assert r_md.doc_type != "technical_disclosure"
 
 
@@ -394,18 +394,18 @@ class TestFilenameParserPreSplit:
         """Date followed by space instead of underscore is still extracted."""
         p = self._parser()
         # Note: the space is in the stem because Path.stem preserves it
-        result = p.parse("2025-12-20 PIM_Portfolio_Refactoring_Checklist_v2")
+        result = p.parse("2025-12-20 EXAMPLE_Portfolio_Refactoring_Checklist_v2")
         assert result.date == "2025-12-20"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert result.title == "Portfolio_Refactoring_Checklist"
         assert result.version == "v2.0"
 
     def test_underscore_separated_date(self):
         """Date followed by underscore still works (no regression)."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2")
         assert result.date == "2025-12-20"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert result.title == "Portfolio_Refactoring_Checklist"
         assert result.version == "v2.0"
 
@@ -414,32 +414,32 @@ class TestFilenameParserPreSplit:
     def test_version_underscore_minor(self):
         """Version with underscore minor component: v2_3 parsed as single version."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_3")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2_3")
         assert result.version == "v2.3"
         assert result.title == "Portfolio_Refactoring_Checklist"
         assert result.date == "2025-12-20"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
 
     def test_version_underscore_two_parts(self):
         """Version v2_4 captured intact, not split."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_4")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2_4")
         assert result.version == "v2.4"
         assert result.title == "Portfolio_Refactoring_Checklist"
 
     def test_version_dot_minor(self):
         """Version with dot minor component: v2.1 parsed correctly."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2.1")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2.1")
         assert result.version == "v2.1"
         assert result.title == "Portfolio_Refactoring_Checklist"
         assert result.date == "2025-12-20"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
 
     def test_version_three_part_underscore(self):
         """Three-part version with underscores: v8_4_1."""
         p = self._parser()
-        result = p.parse("PIM_REF_Doc_v8_4_1")
+        result = p.parse("EXAMPLE_REF_Doc_v8_4_1")
         assert result.version == "v8.4.1"
         assert result.title == "Doc"
         assert "REF" in result.codes
@@ -450,11 +450,11 @@ class TestFilenameParserPreSplit:
         """All five test files produce identical (title, project) for grouping."""
         p = self._parser()
         stems = [
-            "2025-12-20 PIM_Portfolio_Refactoring_Checklist_v2",
-            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_3",
-            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_4",
-            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2_5",
-            "2025-12-20_PIM_Portfolio_Refactoring_Checklist_v2.1",
+            "2025-12-20 EXAMPLE_Portfolio_Refactoring_Checklist_v2",
+            "2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2_3",
+            "2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2_4",
+            "2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2_5",
+            "2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v2.1",
         ]
         results = [p.parse(s) for s in stems]
 
@@ -464,7 +464,7 @@ class TestFilenameParserPreSplit:
 
         # All projects identical
         projects = {r.project for r in results}
-        assert projects == {"PIM"}, f"Got projects: {projects}"
+        assert projects == {"EXAMPLE"}, f"Got projects: {projects}"
 
         # All dates identical
         dates = {r.date for r in results}
@@ -486,9 +486,9 @@ class TestFilenameParserPreSplit:
     def test_standard_filename_unchanged(self):
         """Standard underscore-only filename still parses correctly."""
         p = self._parser()
-        result = p.parse("2026-03-09_PIM_PV06_Claim-Set_v6")
+        result = p.parse("2026-03-09_EXAMPLE_PV06_Claim-Set_v6")
         assert result.date == "2026-03-09"
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert "PV06" in result.codes
         assert result.title == "Claim-Set"
         assert result.version == "v6.0"
@@ -496,46 +496,46 @@ class TestFilenameParserPreSplit:
     def test_no_version_no_date(self):
         """Filename with neither date nor version still parses title."""
         p = self._parser()
-        result = p.parse("PIM_REF_Glossary")
+        result = p.parse("EXAMPLE_REF_Glossary")
         assert result.date is None
         assert result.version is None
-        assert result.project == "PIM"
+        assert result.project == "EXAMPLE"
         assert "REF" in result.codes
         assert result.title == "Glossary"
 
     def test_version_case_insensitive(self):
         """Uppercase V prefix is recognized and normalized to lowercase."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Doc_V3_2")
+        result = p.parse("2025-12-20_EXAMPLE_Doc_V3_2")
         assert result.version == "v3.2"
         assert normalize_version(result.version) == (3, 2, 0)
 
-    # -- Trailing suffix tolerance (T-0083) --
+    # -- Trailing suffix tolerance --
 
     def test_version_with_uppercase_annotation_suffix(self):
         """_FIXED annotation after version: version extracted, annotation preserved on title."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v1_0_FIXED")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v1_0_FIXED")
         assert result.version == "v1.0"
         assert "FIXED" in result.title
 
     def test_version_with_finder_copy_suffix(self):
         """Finder ' copy' suffix is stripped; version extracted."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v4_3 copy")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v4_3 copy")
         assert result.version == "v4.3"
         assert result.title == "Portfolio_Refactoring_Checklist"
 
     def test_version_with_finder_copy_numbered(self):
         """Finder ' copy 2' (numbered duplicate) is stripped; version extracted."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v6_3 copy 2")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v6_3 copy 2")
         assert result.version == "v6.3"
 
     def test_version_with_finder_paren_numbered_suffix(self):
         """Finder ' (1)' paren-numbered duplicate is stripped; version extracted."""
         p = self._parser()
-        result = p.parse("2025-12-20_PIM_Portfolio_Refactoring_Checklist_v1_2 (1)")
+        result = p.parse("2025-12-20_EXAMPLE_Portfolio_Refactoring_Checklist_v1_2 (1)")
         assert result.version == "v1.2"
         assert result.title == "Portfolio_Refactoring_Checklist"
 
@@ -555,7 +555,7 @@ class TestFilenameParserPreSplit:
 async def scan_app(tmp_path):
     """App with a vault and test files for scanning."""
     config = VaultConfig.model_validate(
-        _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
+        _make_vault_config_dict(tmp_path, "example_vault", "Example Portfolio")
     )
     app = create_app(config=config)
     await _initialize_services(
@@ -588,7 +588,7 @@ class TestScanEndpoint:
         resp = await client.post(
             "/app/scan",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "directory": "/nonexistent/path",
             },
         )
@@ -605,13 +605,13 @@ class TestScanEndpoint:
         # Create test files in a scan directory
         scan_dir = tmp_path / "scan_inbox"
         scan_dir.mkdir()
-        (scan_dir / "2026-03-09_PIM_PV06_Claim-Set_v7.md").write_text("# Claim Set v7")
+        (scan_dir / "2026-03-09_EXAMPLE_PV06_Claim-Set_v7.md").write_text("# Claim Set v7")
         (scan_dir / "notes.txt").write_text("Just notes")  # no adapter
 
         resp = await client.post(
             "/app/scan",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "directory": str(scan_dir),
             },
         )
@@ -619,7 +619,7 @@ class TestScanEndpoint:
         body = resp.json()
         files = body["files"]
 
-        # Find the .md file
+        # Find the.md file
         md_files = [f for f in files if f["file_path"].endswith(".md")]
         assert len(md_files) == 1
         md = md_files[0]
@@ -651,7 +651,7 @@ class TestScanEndpoint:
         resp = await client.post(
             "/app/scan",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "directory": str(scan_dir),
                 "max_depth": 0,
             },
@@ -673,7 +673,7 @@ class TestScanEndpoint:
         resp = await client.post(
             "/app/scan",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "directory": str(scan_dir),
             },
         )
@@ -683,7 +683,7 @@ class TestScanEndpoint:
 
     async def test_scan_rejects_negative_max_depth(self, scan_client, tmp_path):
         """Pydantic ge=0 constraint on ScanRequest.max_depth rejects negatives
-        with 422 at the boundary (T-0043)."""
+        with 422 at the boundary."""
         client, _config = scan_client
         scan_dir = tmp_path / "depth_test"
         scan_dir.mkdir()
@@ -691,7 +691,7 @@ class TestScanEndpoint:
         resp = await client.post(
             "/app/scan",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "directory": str(scan_dir),
                 "max_depth": -1,
             },
@@ -710,7 +710,7 @@ class TestScanEndpoint:
         resp = await client.post(
             "/app/scan",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "directory": str(scan_dir),
             },
         )
@@ -728,7 +728,7 @@ class TestScanEndpoint:
 async def ingest_app(tmp_path):
     """App with vault and test files for ingest."""
     config = VaultConfig.model_validate(
-        _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
+        _make_vault_config_dict(tmp_path, "example_vault", "Example Portfolio")
     )
     app = create_app(config=config)
     await _initialize_services(
@@ -765,7 +765,7 @@ class TestBatchIngest:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
@@ -782,7 +782,7 @@ class TestBatchIngest:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
@@ -814,7 +814,7 @@ class TestBatchIngest:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [{"file_path": str(doc), "source_type": "markdown"}],
             },
         )
@@ -841,17 +841,17 @@ class TestBatchIngest:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [
                     {
                         "file_path": str(doc),
                         "source_type": "markdown",
                         "parsed_metadata": {
                             "title": "Meta Test",
-                            "project": "PIM",
+                            "project": "EXAMPLE",
                             "codes": ["PV06"],
                             "version": "v1",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     }
                 ],
@@ -877,7 +877,7 @@ class TestBatchIngest:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [
                     {"file_path": str(good), "source_type": "markdown"},
                     {"file_path": "/nonexistent/bad.md", "source_type": "markdown"},
@@ -904,7 +904,7 @@ class TestBatchIngest:
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [],
             },
         )
@@ -917,15 +917,15 @@ class TestBatchIngest:
         sources = Path(config.vault.storage_root)
 
         # Create two versions of the same document
-        v1 = sources / "2026-03-09_PIM_PV06_Claim-Set_v1.md"
+        v1 = sources / "2026-03-09_EXAMPLE_PV06_Claim-Set_v1.md"
         v1.write_text("# Claim Set v1\n\nFirst version.")
-        v2 = sources / "2026-03-09_PIM_PV06_Claim-Set_v2.md"
+        v2 = sources / "2026-03-09_EXAMPLE_PV06_Claim-Set_v2.md"
         v2.write_text("# Claim Set v2\n\nSecond version.")
 
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [
                     {
                         "file_path": str(v1),
@@ -934,7 +934,7 @@ class TestBatchIngest:
                             "title": "Claim-Set",
                             "codes": ["PV06"],
                             "version": "v1",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                     {
@@ -944,7 +944,7 @@ class TestBatchIngest:
                             "title": "Claim-Set",
                             "codes": ["PV06"],
                             "version": "v2",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                 ],
@@ -964,37 +964,37 @@ class TestBatchIngest:
         client, config = ingest_client
         sources = Path(config.vault.storage_root)
 
-        # Patent + checklist (code match) + versions (version chain)
-        v1 = sources / "patent_v1.md"
-        v1.write_text("# Patent v1")
-        v2 = sources / "patent_v2.md"
-        v2.write_text("# Patent v2")
+        # Report + checklist (code match) + versions (version chain)
+        v1 = sources / "report_v1.md"
+        v1.write_text("# Report v1")
+        v2 = sources / "report_v2.md"
+        v2.write_text("# Report v2")
         chk = sources / "checklist.md"
         chk.write_text("# Checklist")
 
         resp = await client.post(
             "/app/ingest",
             json={
-                "vault_id": "pim_health",
+                "vault_id": "example_vault",
                 "files": [
                     {
                         "file_path": str(v1),
                         "source_type": "markdown",
                         "parsed_metadata": {
-                            "title": "Patent",
+                            "title": "Report",
                             "codes": ["PV06"],
                             "version": "v1",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                     {
                         "file_path": str(v2),
                         "source_type": "markdown",
                         "parsed_metadata": {
-                            "title": "Patent",
+                            "title": "Report",
                             "codes": ["PV06"],
                             "version": "v2",
-                            "doc_type": "patent_draft",
+                            "doc_type": "design_spec",
                         },
                     },
                     {

@@ -1,8 +1,8 @@
-"""Chain-selector bulk purge (T-0108, permanently out-of-band per CAS-ADR-029).
+"""Chain-selector bulk purge (permanently out-of-band per CAS-ADR-029).
 
 Removes every member of a named edge chain (default ``supersedes``) from a
 SAGE vault as a single operator-invoked action. Shares the per-document
-cascade with ``purge_document`` (T-0105) via
+cascade with ``purge_document`` via
 ``sage.maintenance._internal._purge_one`` and adds a chain-level
 confirmation gate: typed head id + typed chain length.
 
@@ -21,15 +21,15 @@ Safeguards (SAGE-Architecture v2.1 §6.4 No-Delete Invariant; CAS-ADR-029 v1.1):
   non-terminal ``pipeline_status``. No partial proceed.
 - ``--apply`` prompts for the head id and the chain length, separately.
   Mismatch on either refuses the batch.
-- Per-member cascade is the same as T-0105: document row + tags + edges +
+- Per-member cascade is the same as Document row + tags + edges +
   staging edges + LanceDB chunks. Audit record is written **before** each
   member's SQLite mutation; on a per-member failure the loop halts and
   earlier members stay deleted with audit records.
 - Each invocation generates a UUID ``chain_id`` that is shared across every
-  audit entry from the same run, distinct from T-0106's ``batch_id``.
+  audit entry from the same run, distinct from ``batch_id``.
 
 This module is operator-only by architectural invariant: nothing in
-``sage.mcp_server`` or ``sage.api`` may import it (enforced by T-0107).
+``sage.mcp_server`` or ``sage.api`` may import it (enforced by).
 
 Usage::
 
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
             "Operator-only; dry-run by default."
         ),
     )
-    parser.add_argument("--vault", required=True, help="Vault id (e.g. pim_health).")
+    parser.add_argument("--vault", required=True, help="Vault id (e.g. example_vault).")
     parser.add_argument(
         "--head-id",
         required=True,

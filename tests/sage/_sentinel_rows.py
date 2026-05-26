@@ -1,7 +1,7 @@
-"""Shared sentinel-row scaffold for SQLite-Row closure tests (T-0145).
+"""Shared sentinel-row scaffold for SQLite-Row closure tests.
 
-The T-0109 cohort's `sqlite3.Row` projection closure tests
-(T-0123 ``_row_to_edge``, T-0124 parity, T-0125 ``_row_to_staging_edge``)
+The cohort's `sqlite3.Row` projection closure tests
+(``_row_to_edge``, parity, ``_row_to_staging_edge``)
 each need a real ``sqlite3.Row`` carrying a column->value sentinel
 mapping. A real row, not a ``dict`` stand-in, is required because the
 production factories use ``"<col>" in row.keys()`` defensive reads and
@@ -9,7 +9,7 @@ column-lookup semantics that differ from dict (see e.g.
 ``GraphStore._row_to_edge`` in ``sage/storage/graph_store.py``).
 
 The scaffold for building such a row (open an in-memory connection, set
-``row_factory=sqlite3.Row``, ``SELECT ? AS col, ? AS col, ...``, fetch
+``row_factory=sqlite3.Row``, ``SELECT ? AS col, ? AS col,...``, fetch
 one, close) is identical across the three closure tests. Only the
 column list and sentinel values vary. This module extracts the
 scaffold; per the *Projection-Point Closure Cohort -- Canonical

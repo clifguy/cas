@@ -22,7 +22,7 @@
         },
         "project_identifier": {
           "type": "string",
-          "description": "Optional project identifier string (e.g. 'PIM') used to disambiguate the first filename segment from a code. When set, a leading short-uppercase segment whose value matches this string (case-insensitive) is classified as the document's project rather than as a code, even when the segment also matches a known_code_patterns regex. Independent of pattern segment names."
+          "description": "Optional project identifier string (e.g. 'EXAMPLE') used to disambiguate the first filename segment from a code. When set, a leading short-uppercase segment whose value matches this string (case-insensitive) is classified as the document's project rather than as a code, even when the segment also matches a known_code_patterns regex. Independent of pattern segment names."
         },
         "segment_fields": {
           "type": "object",

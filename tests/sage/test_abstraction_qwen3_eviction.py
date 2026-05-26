@@ -1,15 +1,15 @@
-"""T-0068 eviction-primitive tests for Qwen3AbstractionProvider.
+"""eviction-primitive tests for Qwen3AbstractionProvider.
 
-T-0068 adds the prevention half of the F8 GPU OOM pattern: a deliberate,
+adds the prevention half of the F8 GPU OOM pattern: a deliberate,
 caller-controllable eviction primitive that releases the resident ~16 GB
 Qwen3 footprint on demand, plus an idle-policy helper that callers can
-use to drive eviction. T-0029's preflight check and asyncio lock remain
+use to drive eviction. preflight check and asyncio lock remain
 in place and are exercised by ``test_abstraction_qwen3_guardrail.py``;
 this file covers the new surface only:
 
-  * ``unload()``         — clear resident model state (idempotent).
+  * ``unload()`` — clear resident model state (idempotent).
   * ``evict_if_idle(s)`` — unload iff idle longer than threshold AND loaded.
-  * ``_last_used_at``    — monotonic timestamp updated by ``generate_abstract``.
+  * ``_last_used_at`` — monotonic timestamp updated by ``generate_abstract``.
 
 The tests do not load Qwen3. They short-circuit ``_ensure_loaded`` so the
 deferred-state machinery is satisfied without touching mlx-lm.

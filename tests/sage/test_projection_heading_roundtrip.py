@@ -1,4 +1,4 @@
-"""T-0081: SAGE projection emit preserves ATX heading marks.
+"""SAGE projection emit preserves ATX heading marks.
 
 `_chunk_projection` previously stored only the body text of each heading
 in `chunk.content`, so `read_projection` reconstructed prose with no
@@ -172,7 +172,7 @@ async def test_tc5_fenced_code_block_with_hashes_does_not_promote(
     # The phantom heading text survives inside the fence as code content.
     assert "## Phantom Inside Fence" in first_text
 
-    # T-0070 interlock: the phantom heading does not become a real heading.
+    # interlock: the phantom heading does not become a real heading.
     assert second_paths == ["Real"]
 
 
@@ -196,7 +196,7 @@ async def test_tc6_yaml_frontmatter_stripped_headings_below_preserved(
     assert "\n# Real" in "\n" + first_text
     assert "body" in first_text
 
-    # T-0071 interlock: round-trip preserves the heading below frontmatter.
+    # interlock: round-trip preserves the heading below frontmatter.
     assert second_paths == ["Real"]
 
 

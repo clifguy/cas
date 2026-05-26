@@ -30,7 +30,7 @@ class StubContentStore(ContentStore):
         self._store[document_id] = chunks
 
     async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
-        """Replace the synthetic header chunk for a document (T-0038).
+        """Replace the synthetic header chunk for a document.
 
         Drops any existing chunk with
         ``heading_path == SYNTHETIC_HEADER_HEADING_PATH`` and inserts the
@@ -135,7 +135,7 @@ class StubContentStore(ContentStore):
     async def get_heading_paths(self, document_id: str) -> list[str]:
         """Return distinct heading paths in document order.
 
-        Excludes the synthetic header chunk marker (T-0038); that chunk
+        Excludes the synthetic header chunk marker; that chunk
         is an internal retrieval surface and is not a real heading.
         """
         chunks = self._store.get(document_id, [])

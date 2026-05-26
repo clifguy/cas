@@ -198,21 +198,21 @@ async def test_cr_004_source_anchor_outside_lineage(graph_store, graph_ops_servi
 
 
 async def test_cr_005_transitive_source_stores_null_target_anchor(graph_store, graph_ops_service):
-    await _seed(graph_store, _id("patent_v3"), _id("uspto_template_v2"))
+    await _seed(graph_store, _id("report_v3"), _id("uspto_template_v2"))
 
     edge = (
         await graph_ops_service.link(
             LinkRequest(
-                source_id=_id("patent_v3"),
+                source_id=_id("report_v3"),
                 target_id=_id("uspto_template_v2"),
                 edge_type=EdgeType.DERIVED_FROM,
-                source_valid_from_version=_id("patent_v3"),
+                source_valid_from_version=_id("report_v3"),
             )
         )
     ).edge
 
     assert edge.resolution_policy == ResolutionPolicy.TRANSITIVE_SOURCE
-    assert edge.source_valid_from_version == _id("patent_v3")
+    assert edge.source_valid_from_version == _id("report_v3")
     assert edge.target_valid_from_version is None
 
     # Round-trip through the DB confirms the null is persisted, not just
@@ -230,15 +230,15 @@ async def test_cr_005_transitive_source_stores_null_target_anchor(graph_store, g
 async def test_cr_006_transitive_source_explicit_target_anchor_rejected(
     graph_store, graph_ops_service
 ):
-    await _seed(graph_store, _id("patent_v3"), _id("uspto_template_v2"))
+    await _seed(graph_store, _id("report_v3"), _id("uspto_template_v2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
         await graph_ops_service.link(
             LinkRequest(
-                source_id=_id("patent_v3"),
+                source_id=_id("report_v3"),
                 target_id=_id("uspto_template_v2"),
                 edge_type=EdgeType.DERIVED_FROM,
-                source_valid_from_version=_id("patent_v3"),
+                source_valid_from_version=_id("report_v3"),
                 target_valid_from_version=_id("uspto_template_v1"),
             )
         )

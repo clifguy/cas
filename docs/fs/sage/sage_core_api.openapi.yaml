@@ -128,7 +128,7 @@ paths:
         - `cas` vault: `ingest`, `supersede`, `complete`, `archive`,
           `reactivate`.
 
-        - `pim_health` vault: `ingest`, `supersede`, `complete`,
+        - `example_vault` vault: `ingest`, `supersede`, `complete`,
           `archive`, `reactivate`, `file`.
 
 
@@ -2363,7 +2363,7 @@ components:
       enum: [active, completed, archived]
       description: >-
         Base lifecycle states. Vaults may define additional domain-specific
-        states (e.g., "filed" in PIM Health). The base set is always
+        states (e.g., "filed" in Example Portfolio). The base set is always
         present.
 
     LifecycleAction:
@@ -2371,7 +2371,7 @@ components:
       enum: [supersede, complete, archive, reactivate]
       description: >-
         Base lifecycle transition actions. Vaults may define additional
-        domain-specific actions (e.g., "file" in PIM Health).
+        domain-specific actions (e.g., "file" in Example Portfolio).
 
     RetrievalMode:
       type: string
@@ -3060,7 +3060,7 @@ components:
             vault-config-defined; see `lifecycle.transitions` in the
             vault config for the authoritative list. Examples seen in
             practice: `supersede`, `complete`, `archive`, `reactivate`
-            (cas vault) plus `file` (pim_health vault). Neither vault
+            (cas vault) plus `file` (example_vault vault). Neither vault
             defines `activate`; the action for `archived → active` is
             `reactivate`.
         successor_id:
@@ -4822,7 +4822,7 @@ components:
       properties:
         value:
           type: string
-          description: Doc type identifier (e.g. "patent_draft").
+          description: Doc type identifier (e.g. "design_spec").
         label:
           type: string
           description: Human-readable label for UI display.

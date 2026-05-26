@@ -48,7 +48,7 @@ async def _build_app(config: VaultConfig):
 
 @pytest.fixture
 async def pim_app(tmp_vault_dir):
-    """SAGE app whose vault has PIM-style filename_extraction enabled."""
+    """SAGE app whose vault has EXAMPLE-style filename_extraction enabled."""
     config = VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
     app = await _build_app(config)
     yield app
@@ -90,7 +90,7 @@ async def test_ad021_010_parse_returns_parsed_fields(pim_client):
     resp = await pim_client.post(
         "/sage_vaults/test_metadata_vault/parse-filename",
         json={
-            "filename": "2026-03-09_PIM_PV06_Claim-Set_v6.md",
+            "filename": "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
             "source_type": "markdown",
         },
     )
@@ -98,10 +98,10 @@ async def test_ad021_010_parse_returns_parsed_fields(pim_client):
     body = resp.json()
 
     assert body["title"] == "Claim-Set"
-    assert body["project"] == "PIM"
+    assert body["project"] == "EXAMPLE"
     assert body["version_label"] == "v6.0"
     assert body["document_date"] == "2026-03-09"
-    assert body["doc_type"] == "patent_draft"
+    assert body["doc_type"] == "design_spec"
     assert body["codes"] == ["PV06"]
 
 
@@ -124,7 +124,7 @@ async def test_ad021_011_parse_is_side_effect_free(pim_client, pim_app):
         resp = await pim_client.post(
             "/sage_vaults/test_metadata_vault/parse-filename",
             json={
-                "filename": "2026-03-09_PIM_PV06_Claim-Set_v6.md",
+                "filename": "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
                 "source_type": "markdown",
             },
         )
@@ -147,7 +147,7 @@ async def test_ad021_012_parse_no_pattern_returns_nulls(no_pattern_client):
     resp = await no_pattern_client.post(
         "/sage_vaults/test_metadata_vault/parse-filename",
         json={
-            "filename": "2026-03-09_PIM_PV06_Claim-Set_v6.md",
+            "filename": "2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
             "source_type": "markdown",
         },
     )

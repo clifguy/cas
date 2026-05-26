@@ -1,4 +1,4 @@
-"""Tests for the abstraction-provider benchmark harness (T-0084).
+"""Tests for the abstraction-provider benchmark harness.
 
 The harness exercises a candidate ``AbstractionProvider`` against a
 stratified corpus and emits a per-candidate scorecard. The core is

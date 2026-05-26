@@ -163,7 +163,7 @@ async def rechunk_vault(vault_id: str, *, execute: bool, batch_size: int) -> int
 
                 # Build body chunks using the new chunking logic (one chunk
                 # per heading, including empty-content headings) and prepend
-                # the standalone synthetic header chunk (T-0038, mirroring
+                # the standalone synthetic header chunk (, mirroring
                 # the production pipeline).
                 body_chunks = ingestion._chunk_projection(doc.id, projection)
 

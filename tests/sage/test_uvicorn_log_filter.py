@@ -1,4 +1,4 @@
-"""T-0063: drop uvicorn.access records for /mcp/messages/.
+"""Drop uvicorn.access records for /mcp/messages/.
 
 Verifies that the ``_DropMcpMessagesAccessLogs`` filter (a) drops
 records whose request path starts with ``/mcp/messages/``, (b) keeps

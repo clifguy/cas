@@ -233,7 +233,7 @@ def main() -> None:
             "(content-integrity repair only; see script docstring)."
         )
     )
-    parser.add_argument("vault_id", help="Vault id (e.g. pim_health)")
+    parser.add_argument("vault_id", help="Vault id (e.g. example_vault)")
     parser.add_argument("document_id", help="Document id to remove")
     parser.add_argument(
         "--execute",

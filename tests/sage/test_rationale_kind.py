@@ -1,4 +1,4 @@
-"""T-0080 tests: rationale_kind helper, backfill parity, and column wiring.
+"""tests: rationale_kind helper, backfill parity, and column wiring.
 
 Covers T1 (helper round-trip), T2 (helper / backfill SQL parity), and T9
 (EXPLAIN QUERY PLAN uses idx_edges_rationale_kind). Migration + idempotency
@@ -6,7 +6,7 @@ coverage lives in tests/sage/test_migrate_flag.py; write-path coverage
 lives in tests/app/test_batch_ingest_service.py and
 tests/sage/test_mcp_server.py.
 
-CAS-ADR-019 / T-0080.
+CAS-ADR-019 /.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ async def test_t9_index_idx_edges_rationale_kind_is_used(tmp_path):
     """T9. ``EXPLAIN QUERY PLAN`` on a rationale-kind predicate names
     ``idx_edges_rationale_kind``.
 
-    The whole point of T-0080 is that future inference rules and
+    The whole point of is that future inference rules and
     telemetry queries that filter edges by provenance can hit a B-tree
     index instead of scanning. Without an EXPLAIN-plan assertion we
     cannot tell whether the index was actually created on the right

@@ -1,4 +1,4 @@
-"""HTTP integration tests for the bulk-link endpoint (T-0165).
+"""HTTP integration tests for the bulk-link endpoint.
 
 POST /sage_vaults/{vault_id}/edges/bulk.
 
@@ -188,7 +188,7 @@ async def test_bulk_endpoint_response_mode_light_strips_edge_body(seeded_app):
         # FastAPI default serializer leaves None-valued Optional fields
         # either absent or null; both representations are acceptable.
         assert entry.get("edge") is None
-        # T-0079 signals preserved under light per the response_mode contract.
+        # signals preserved under light per the response_mode contract.
         assert entry["created"] is True
 
 

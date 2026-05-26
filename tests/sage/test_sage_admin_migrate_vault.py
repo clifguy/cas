@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_admin_migrate_vault (T-0086, CAS-ADR-029).
+"""MCP tool tests for sage_admin_migrate_vault (CAS-ADR-029).
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, and successful round-trip of the MigrationReport
@@ -51,7 +51,7 @@ async def test_sage_admin_migrate_vault_returns_report_dict(tmp_path, monkeypatc
         assert report.vault_id == vault_id
         assert len(report.columns_added) > 0, "expected pending alters on legacy DB"
     finally:
-        # T-0135: close the post-migration graph_store currently bound to
+        # Close the post-migration graph_store currently bound to
         # the local registry; the in-tool reload swapped a fresh
         # SAGEServices in here whose graph_store would otherwise leak.
         await _close_registry_vault(registry, vault_id)

@@ -1,4 +1,4 @@
-"""T-0152: `unlink` dry-run.
+"""`unlink` dry-run.
 
 unlink takes no request body (path param edge_id), so ``dry_run`` is a
 separate method parameter on the service (and a query parameter on the

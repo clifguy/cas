@@ -1,7 +1,7 @@
 """Rationale-prefix to ``RationaleKind`` mapping and derivation helper.
 
 CAS-ADR-019 introduced a rationale-text prefix convention as the
-provenance discriminator for auto-inferred edges. T-0080 promoted that
+provenance discriminator for auto-inferred edges. promoted that
 convention to a typed, indexed column on the edges table.
 
 This module is the single source of truth for the prefix → kind map.

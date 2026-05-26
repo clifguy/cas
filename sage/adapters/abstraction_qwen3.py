@@ -17,7 +17,7 @@ from sage.utils.unified_memory import (
 
 logger = logging.getLogger(__name__)
 
-# Module-level lock serializing all MLX generate_abstract calls (T-0029
+# Module-level lock serializing all MLX generate_abstract calls (
 # guardrail 2). Two concurrent ingest pipelines previously could both
 # drive Qwen3 toward the unified-memory ceiling at once; this lock
 # enforces single-flight discipline.
@@ -90,7 +90,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._generate_fn = None
         self._greedy_sampler = None
 
-        # Idle tracker for the T-0068 eviction policy. Updated at the
+        # Idle tracker for the eviction policy. Updated at the
         # end of every successful generate_abstract; consulted by
         # evict_if_idle. None means "never served a call since the
         # last (re)load" — treated as "not idle" rather than
@@ -235,7 +235,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             raise RuntimeError("Cannot generate abstract from empty document text")
 
         async with _generation_lock:
-            # Preflight unified-memory check (T-0029 guardrail 1).
+            # Preflight unified-memory check (guardrail 1).
             # Surfaces a structured error to the MCP caller in place of
             # an MLX-side process abort or kernel panic (F8).
             free = free_unified_memory_bytes()
@@ -272,31 +272,31 @@ class Qwen3AbstractionProvider(AbstractionProvider):
                 f"Abstraction model returned empty output for {len(text)} chars of input"
             )
 
-        # Publish idle tracker for the T-0068 eviction policy. Set
+        # Publish idle tracker for the eviction policy. Set
         # only on a successful generation so a failed call does not
         # extend the "last used" window.
         self._last_used_at = time.monotonic()
 
         return abstract
 
-    # ── T-0068: idle-driven eviction primitive ───────────────────────
+    # ── Idle-driven eviction primitive ───────────────────────
     #
-    # Prevention half of the F8 GPU OOM pattern. T-0029 added the
+    # Prevention half of the F8 GPU OOM pattern. added the
     # reactive half (preflight raise + single-flight lock); without
     # an eviction path, the resident ~16 GB Qwen3 footprint sits in
     # unified memory until process exit, regardless of idle time.
     #
-    # Pattern options weighed (T-0068 acceptance criteria):
-    #   - LFU/LRU eviction of model contexts — CHOSEN. CAS holds one
-    #     resident MLX model, so this reduces to "unload the one
-    #     model when it has been idle longer than the threshold."
-    #   - Watchdog process monitoring resident memory — rejected.
-    #     Adds a second long-lived component (lifecycle, supervisor,
-    #     IPC) disproportionate to the single-developer Mac setup.
-    #   - Graceful degradation (smaller model, batched generation) —
-    #     rejected. Changes output characteristics; different concern.
-    #   - Hybrid — already achieved: T-0029 (reactive) + T-0068
-    #     (preventive) compose. Nothing is replaced.
+    # Pattern options weighed (acceptance criteria):
+    # - LFU/LRU eviction of model contexts — CHOSEN. CAS holds one
+    # resident MLX model, so this reduces to "unload the one
+    # model when it has been idle longer than the threshold."
+    # - Watchdog process monitoring resident memory — rejected.
+    # Adds a second long-lived component (lifecycle, supervisor,
+    # IPC) disproportionate to the single-developer Mac setup.
+    # - Graceful degradation (smaller model, batched generation) —
+    # rejected. Changes output characteristics; different concern.
+    # - Hybrid — already achieved: (reactive) +
+    # (preventive) compose. Nothing is replaced.
     #
     # Residual: caller-side wiring (a supervisor, a periodic task,
     # an external signal) is deliberately out of scope. This module
@@ -367,7 +367,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         return await self.unload()
 
 
-# ── Process-level singleton (T-0060) ─────────────────────────────────
+# ── Process-level singleton ─────────────────────────────────
 #
 # initialize_services() in sage/mcp_init.py used to construct a fresh
 # Qwen3AbstractionProvider per vault. __init__ is cheap, but each instance

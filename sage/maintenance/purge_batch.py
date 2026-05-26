@@ -1,4 +1,4 @@
-"""Bulk purge by ingestion-time window (T-0106, permanently out-of-band per CAS-ADR-029).
+"""Bulk purge by ingestion-time window (permanently out-of-band per CAS-ADR-029).
 
 Recovery tool for the wrong-vault-dump scenario: an ingest run targeted
 the wrong vault, the operator noticed within seconds or minutes, and
@@ -24,7 +24,7 @@ Safeguards (SAGE-Architecture v2.1 §6.4 No-Delete Invariant, ADR-029 v1.1):
   one invocation.
 
 This module is unreachable from the SAGE Core API and MCP server by
-architectural invariant (T-0107 import-topology test).
+architectural invariant (import-topology test).
 
 Usage::
 
@@ -306,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
             "Operator-only; dry-run by default."
         ),
     )
-    parser.add_argument("--vault", required=True, help="Vault id (e.g. pim_health).")
+    parser.add_argument("--vault", required=True, help="Vault id (e.g. example_vault).")
     parser.add_argument(
         "--ingested-since",
         required=True,

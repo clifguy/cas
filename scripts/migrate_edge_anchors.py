@@ -22,11 +22,11 @@ type registry:
 Idempotent: rows whose resolution_policy is already non-NULL are skipped.
 
 Usage:
-    python scripts/migrate_edge_anchors.py                  # dry-run
-    python scripts/migrate_edge_anchors.py --execute        # apply backfill
+    python scripts/migrate_edge_anchors.py # dry-run
+    python scripts/migrate_edge_anchors.py --execute # apply backfill
     python scripts/migrate_edge_anchors.py --vault OTHER_ID # different vault
-    python scripts/migrate_edge_anchors.py --reverse        # dry-run reverse
-    python scripts/migrate_edge_anchors.py --reverse --execute  # null columns
+    python scripts/migrate_edge_anchors.py --reverse # dry-run reverse
+    python scripts/migrate_edge_anchors.py --reverse --execute # null columns
 
 `--reverse` nulls all five ADR-017 edge columns (resolution_policy,
 source_valid_from_version, target_valid_from_version, valid_until_version,
@@ -290,8 +290,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--vault",
-        default="pim_health",
-        help="Vault ID (default: pim_health)",
+        default="example_vault",
+        help="Vault ID (default: example_vault)",
     )
     parser.add_argument(
         "--execute",

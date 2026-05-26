@@ -81,7 +81,7 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         return [vec.tolist() for vec in embeddings]
 
 
-# ── Process-level singleton (T-0060) ─────────────────────────────────
+# ── Process-level singleton ─────────────────────────────────
 #
 # initialize_services() in sage/mcp_init.py used to construct a fresh
 # NomicEmbeddingProvider per vault; with N discovered vaults, the server

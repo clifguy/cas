@@ -1,5 +1,5 @@
 """Tests for the ``scripts.reabstract_deferred`` worklist filter and
-``--all`` flag wiring (T-0101).
+``--all`` flag wiring.
 
 The production change extracts an inline list comprehension into a pure
 ``_build_worklist`` helper and adds an ``--all`` argparse flag that

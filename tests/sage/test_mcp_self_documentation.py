@@ -1,9 +1,9 @@
-"""T-0154: SAGE MCP self-documentation conformance.
+"""SAGE MCP self-documentation conformance.
 
 Asserts that the MCP tool surface documents valid vocabulary, payload
 shapes, and response-size characteristics directly via tool signatures
 and docstrings, so callers do not have to learn by erroring. Anchored
-in the field-use report consolidated into T-0154.
+in the field-use report consolidated into.
 
 Each criterion in the ticket maps to one or more tests below. The tests
 prefer structural assertions (set-equality against source-of-truth
@@ -114,7 +114,7 @@ def test_discover_mode_signature_is_enum():
 def test_set_lifecycle_action_docstring_points_at_vault_config():
     """T1.3 — sage_set_lifecycle.action description must point at vault_config.
 
-    Per the T-0154 scope resolution: action stays a free-form ``str``
+    Per the scope resolution: action stays a free-form ``str``
     (values are vault-config-defined), but the documentation must direct
     callers at the authoritative source — ``sage_get_vault_config`` —
     rather than leaving them to discover the action set by erroring.
@@ -135,9 +135,9 @@ def test_set_lifecycle_action_docstring_points_at_vault_config():
 
 
 def test_set_lifecycle_signature_exposes_dry_run():
-    """T-0162 — sage_set_lifecycle must expose ``dry_run: bool = False`` at the wrapper.
+    """— sage_set_lifecycle must expose ``dry_run: bool = False`` at the wrapper.
 
-    The dry-run rollout (T-0152) shipped on every other mutation tool
+    The dry-run rollout shipped on every other mutation tool
     but skipped the single-form ``sage_set_lifecycle`` wrapper. The
     underlying ``SetLifecycleRequest`` already carries ``dry_run`` and
     ``LifecycleService.set_lifecycle`` honors it; the gap was at the
@@ -168,8 +168,8 @@ def test_discover_filters_args_documents_closed_key_set():
     """T1.5 — sage_discover.filters Args docstring must list the closed key set.
 
     Filters can't be typed as ``RetrievalFilters | None`` at the MCP
-    boundary because T-0092 routes the raw dict through DiscoverRequest
-    so the ValidationError loc carries the ``("filters", ...)`` prefix
+    boundary because routes the raw dict through DiscoverRequest
+    so the ValidationError loc carries the ``("filters",...)`` prefix
     that the error translator needs. The documentation must compensate:
     explicitly list the accepted keys AND state that no other keys are
     accepted.
@@ -371,7 +371,7 @@ def test_bulk_set_lifecycle_docstring_carries_response_mode_note():
       (b) the 5-item default-to-light threshold rule,
       (c) the inline budget / 24 KiB callout.
 
-    Regression guard for the existing T-0153 documentation, extended to
+    Regression guard for the existing documentation, extended to
     require the 24 KiB anchor for parity with sage_discover.
     """
     doc = _docstring(sage_bulk_set_lifecycle)

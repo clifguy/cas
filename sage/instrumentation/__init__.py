@@ -1,8 +1,8 @@
 """SAGE observability helpers.
 
 Layer-agnostic instrumentation utilities consumed by storage, content store,
-and retrieval. Currently exports the query-timing helper introduced in T-0073
-to support before/after measurement for the T-0072 storage audit's
+and retrieval. Currently exports the query-timing helper introduced in
+to support before/after measurement for the storage audit's
 remediation sub-tickets.
 """
 

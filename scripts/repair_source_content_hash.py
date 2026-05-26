@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Repair source_content_hash values persisted in bare-hex form.
 
-Records ingested before T-0026 part 3/3 (commit 764b448) stored
+Records ingested before part 3/3 (commit 764b448) stored
 ``source_content_hash`` as bare 64-char hex (``hashlib.sha256(...).hexdigest()``).
 The boundary canonicalization at
 ``sage/services/ingestion.py`` now emits the prefixed shape

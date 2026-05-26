@@ -225,7 +225,7 @@ class VaultRegistryService:
         services: Any,
         projects: list[str] | None = None,
     ) -> VaultSummary:
-        """Build a VaultSummary from a config and services instance (T-0122).
+        """Build a VaultSummary from a config and services instance.
 
         Single owner of the ``VaultConfig`` -> ``VaultSummary`` projection per
         the *CAS Projection-Point Audit Conventions* steering document

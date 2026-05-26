@@ -133,7 +133,7 @@ async def unlink(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> UnlinkResponse:
-    # T-0152: dry_run is a query parameter (DELETE endpoints have no
+    # Dry_run is a query parameter (DELETE endpoints have no
     # body; the schema-side convention used for other tools doesn't
     # apply). When true, the edge-existence check still runs and
     # raises edge_not_found, but no delete is performed.

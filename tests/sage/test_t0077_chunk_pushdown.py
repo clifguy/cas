@@ -1,4 +1,4 @@
-"""T-0077: Expand LanceDB pre-filter coverage to include lifecycle_status and project.
+"""Expand LanceDB pre-filter coverage to include lifecycle_status and project.
 
 Block 1 tests — Schema, Chunk dataclass, ingest row population, and
 schema-migration null-fill for the two new columns.
@@ -12,7 +12,7 @@ resolution.
 Block 3 tests — Tiered over-fetch multiplier: pure-pushdown filters
 warrant a smaller fetch headroom than mixed-filter cases.
 
-Implements the parent audit ticket T-0072 finding F-7. Reduces the
+Implements the parent audit ticket finding F-7. Reduces the
 hybrid RRF over-fetch multiplier dependency by letting LanceDB
 pre-filter on these document-level scalars at chunk-search time
 instead of resolving them via a graph-store document_id IN clause.
@@ -156,7 +156,7 @@ async def test_t0077_replace_synthetic_header_writes_lifecycle_status_and_projec
     tmp_path,
 ):
     """The synthetic header chunk path must also persist the new
-    columns. T-0038 writes this chunk separately at Stage-3 abstraction
+    columns. writes this chunk separately at Stage-3 abstraction
     completion, and it must carry the same lifecycle_status/project as
     the body chunks so the pre-filter is consistent across header and
     body rows.
@@ -220,7 +220,7 @@ if _HAS_LANCEDB:
     )
 
     def _build_pre_t0077_lancedb(brain_root: Path, *, n_rows: int = 1) -> None:
-        """Create a LanceDB chunks table at the pre-T-0077 schema
+        """Create a LanceDB chunks table at the pre-schema
         (doc_type only; no lifecycle_status or project columns).
         Mirrors the MIG-007 helper in test_migrate_flag.py for the
         earlier doc_type migration.
@@ -243,7 +243,7 @@ if _HAS_LANCEDB:
 
 @requires_lancedb
 def test_t0077_schema_migration_adds_missing_columns_as_null(tmp_path):
-    """When a vault was built before T-0077 (no lifecycle_status /
+    """When a vault was built before (no lifecycle_status /
     project columns on the chunks table) and the operator runs with
     --migrate, the destructive rebuild must add the new columns and
     leave existing rows with NULL for those columns (backfill is a
@@ -368,7 +368,7 @@ async def test_t0077_content_filter_pushdown_lifecycle_only(
     graph_store, stub_content_store, stub_embedding_provider, minimal_config, monkeypatch
 ):
     """When the only active filter is lifecycle_status, _content_filters
-    must return {"lifecycle_status": ...} with has_doc_constraints=False
+    must return {"lifecycle_status":...} with has_doc_constraints=False
     and must NOT invoke graph_store.query_documents (no IN-clause
     resolution needed).
     """
@@ -906,7 +906,7 @@ async def test_t0077_lifecycle_service_without_content_store_no_op(
     from sage.models.schemas import SetLifecycleRequest
     from sage.services.lifecycle import LifecycleService
 
-    # Omit content_store; this is the pre-T-0077 calling convention.
+    # Omit content_store; this is the pre-calling convention.
     service = LifecycleService(graph_store, lock_manager, minimal_config)
 
     doc = _make_doc("doc_lc_no_cs", lifecycle_status="active")
@@ -926,7 +926,7 @@ async def test_t0077_ingest_supersede_syncs_predecessor_chunks(
     LifecycleService.set_lifecycle. Without an explicit chunk-sync
     after that atomic commit, the predecessor's chunks keep their
     stale `lifecycle_status="active"` even though the document is
-    now archived, breaking the T-0077 pre-filter for archived
+    now archived, breaking the pre-filter for archived
     versions.
     """
     from sage.models.schemas import IngestRequest

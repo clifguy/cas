@@ -1,4 +1,4 @@
-"""Unit tests for MaintenanceService (T-0086, CAS-ADR-029).
+"""Unit tests for MaintenanceService (CAS-ADR-029).
 
 Pilot operation of the maintenance/admin surface. Exercises the four
 contracts the service must hold:
@@ -61,7 +61,7 @@ async def _bootstrap_post_migration_vault(
 
 async def _close_registry_vault(registry: dict[str, SAGEServices], vault_id: str) -> None:
     """Close the graph_store of whichever SAGEServices currently occupies
-    registry[vault_id] (T-0135).
+    registry[vault_id].
 
     ``migrate_vault()`` reload paths swap the registry entry for a fresh
     SAGEServices and close the old graph_store as part of the swap; this
@@ -75,7 +75,7 @@ async def _close_registry_vault(registry: dict[str, SAGEServices], vault_id: str
 
 @pytest.fixture
 async def post_migration_vault(tmp_path, monkeypatch):
-    """Pytest-fixture form of ``_bootstrap_post_migration_vault`` (T-0135).
+    """Pytest-fixture form of ``_bootstrap_post_migration_vault``.
 
     Yields ``(registry, services, registry_service)``. On teardown, closes
     the graph_store currently bound to ``registry[vault_id]`` -- which may
@@ -301,7 +301,7 @@ async def test_migrate_vault_reports_backfills(post_migration_vault):
 
 
 async def test_no_resource_warning_on_post_migration_teardown(tmp_path, monkeypatch):
-    """T-0135 regression: the post-migration teardown closes the registry's
+    """regression: the post-migration teardown closes the registry's
     *current* graph_store, not the pre-migration ``services`` reference.
 
     Without the fix, ``maintenance.migrate_vault()`` swaps registry[vault_id]
@@ -527,7 +527,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_post_migration_reload_f
 
 
 # ---------------------------------------------------------------------------
-# T-0111: MaintenanceService.detect_drift
+# MaintenanceService.detect_drift
 # ---------------------------------------------------------------------------
 
 

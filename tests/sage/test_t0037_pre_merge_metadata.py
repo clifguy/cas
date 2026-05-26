@@ -1,13 +1,13 @@
-"""T-0037 pre-merge metadata tests.
+"""pre-merge metadata tests.
 
 Validates the partial-metadata window closure: IngestionService.ingest()
 must compute all metadata in memory before the atomic insert, so a failure
 in any caller-metadata-application path raises before any record is durable.
 
-Test groups (mapped to the plan at /Users/clifguy/.claude/plans/...):
+Test groups:
 
 - Group A: Atomicity guarantees via failure injection.
-- Group B: T-0036 regression (codes-as-list polymorphism), folded in.
+- Group B: regression (codes-as-list polymorphism), folded in.
 - Group C: Precedence parity matrix entries not already covered by
   tests/sage/test_ingestion.py or tests/sage/test_ad021_ingestion.py.
 - Group D: Single-write structural assertion.
@@ -58,7 +58,7 @@ def _content_hash(content: str) -> str:
 
 @pytest.fixture
 def pim_config(tmp_vault_dir):
-    """PIM-style VaultConfig with filename_extraction enabled.
+    """EXAMPLE-style VaultConfig with filename_extraction enabled.
 
     Mirrors tests/sage/test_ad021_ingestion.py::pim_config so filename-parse
     tests have a vault that actually parses filenames.
@@ -91,7 +91,7 @@ def pim_ingestion_service(pim_config, graph_store, lock_manager):
 #
 # The injection target is _build_metadata_updates. Today it runs AFTER the
 # atomic insert, so a raise inside it leaves a partial-metadata orphan
-# record. After the T-0037 rework, the helper is invoked during the
+# record. After the rework, the helper is invoked during the
 # pre-merge phase, so the raise propagates BEFORE any insert touches the
 # store -- no orphan is created.
 
@@ -231,7 +231,7 @@ async def test_a3_failure_on_force_reingest_leaves_existing_record_unchanged(
 
 
 # ---------------------------------------------------------------------------
-# Group B: T-0036 regression (folded into T-0037)
+# Group B: regression (folded into)
 # ---------------------------------------------------------------------------
 
 
@@ -277,11 +277,11 @@ async def test_b2_caller_codes_string_form_still_ingests(
 # ---------------------------------------------------------------------------
 #
 # Coverage already in the suite:
-#   * C1/C2 on no-pred: tests/sage/test_ad021_ingestion.py::AD021-001/002.
-#   * C3/C4 on with-pred: tests/sage/test_ad021_ingestion.py::AD021-004/005.
-#   * C5 on no-pred and force-reingest: tests/sage/test_ingestion.py BH-131/132.
-#   * C6 on no-pred: AD021-001 (True) and AD021-002 (False).
-#   * C7 on no-pred: AD021-001.
+# * C1/C2 on no-pred: tests/sage/test_ad021_ingestion.py::AD021-001/002.
+# * C3/C4 on with-pred: tests/sage/test_ad021_ingestion.py::AD021-004/005.
+# * C5 on no-pred and force-reingest: tests/sage/test_ingestion.py BH-131/132.
+# * C6 on no-pred: AD021-001 (True) and AD021-002 (False).
+# * C7 on no-pred: AD021-001.
 #
 # Tests below fill gaps: predecessor-side and force-reingest sub-paths
 # that no existing test asserts the combined-matrix entry for, plus the

@@ -1,6 +1,6 @@
 """Lifecycle endpoints:
 - POST /sage_vaults/{vault_id}/documents/{document_id}/lifecycle -- set_lifecycle
-- POST /sage_vaults/{vault_id}/lifecycle/bulk -- bulk_set_lifecycle (T-0087)
+- POST /sage_vaults/{vault_id}/lifecycle/bulk -- bulk_set_lifecycle
 """
 
 from fastapi import APIRouter, Depends

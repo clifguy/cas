@@ -30,7 +30,7 @@ These four names match the `jobs:` keys in `ci.yml` verbatim. If a job is rename
 
 ## Activation status
 
-**Active.** Enforcement is in place via the repository ruleset `main-protection` (id `16612539`), configured under **Settings → Rules → Rulesets** in the GitHub UI. The ruleset was activated 2026-05-19 after upgrading the account to GitHub Pro (private-repo protection requires a paid plan).
+**Active.** Enforcement is in place via the repository ruleset `main-protection`, configured under **Settings → Rules → Rulesets** in the GitHub UI. The ruleset was activated 2026-05-19 after upgrading the account to GitHub Pro (private-repo protection requires a paid plan).
 
 **Bypass:** the Repository-admin role has `always`-mode bypass, so the repository owner can push directly to `main` when needed. Use bypass sparingly; the default path is PR-then-merge.
 
@@ -38,11 +38,10 @@ The captured ruleset JSON is reproduced under *Captured ruleset* below as the so
 
 ## Captured ruleset
 
-The following is the live ruleset definition (`gh api repos/clifguy/cas/rulesets/16612539`), reproduced here so the configuration survives any GitHub session. If the UI and this block diverge, treat this block as the source of truth and reconcile the UI.
+The following is the live ruleset definition (captured via `gh api repos/<owner>/<repo>/rulesets/<ruleset-id>`), reproduced here so the configuration survives any GitHub session. If the UI and this block diverge, treat this block as the source of truth and reconcile the UI.
 
 ```json
 {
-  "id": 16612539,
   "name": "main-protection",
   "target": "branch",
   "enforcement": "active",
@@ -79,26 +78,24 @@ The following is the live ruleset definition (`gh api repos/clifguy/cas/rulesets
     }
   ],
   "bypass_actors": [
-    { "actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always" }
+    { "actor_type": "RepositoryRole", "bypass_mode": "always" }
   ]
 }
 ```
 
-`actor_id: 5` is the Repository-admin role; `~DEFAULT_BRANCH` targets `main` and survives any future default-branch rename.
+The bypass actor is the Repository-admin role (`actor_id` omitted — it is a GitHub-internal numeric id that varies per repository). `~DEFAULT_BRANCH` targets `main` and survives any future default-branch rename.
 
 ## Reconciliation procedure
 
 When this document changes (a new status-check job is added, a job is renamed, the review policy changes, etc.), update the ruleset in lockstep:
 
 1. Edit this document.
-2. Apply the corresponding change in the GitHub UI under **Settings → Rules → Rulesets → `main-protection`** (or via `gh api --method PATCH repos/clifguy/cas/rulesets/16612539`).
-3. Re-capture: `gh api repos/clifguy/cas/rulesets/16612539` and update the JSON block above.
+2. Apply the corresponding change in the GitHub UI under **Settings → Rules → Rulesets → `main-protection`** (or via `gh api --method PATCH repos/<owner>/<repo>/rulesets/<ruleset-id>`).
+3. Re-capture via `gh api repos/<owner>/<repo>/rulesets/<ruleset-id>` and update the JSON block above.
 4. Commit both the document and (if applicable) the workflow change in the same commit.
 
 Treat the document as the source of truth and the UI as its reflection.
 
 ## Rationale
 
-This file exists because CAS Tooling Conventions establishes a substrate-recursive principle: methodology discipline should live where it survives any single GitHub session, not in a web-UI configuration that disappears from the agent's view the moment the tab closes. Branch protection is methodology — it encodes a discipline gate on merges — and so its configuration belongs in version control alongside the CI workflow it gates.
-
-The vault-resident steering document that establishes this principle is *CAS Tooling Conventions* (`doc_type=steering_document`, id `aadd731e_cas_tooling_conventions`). See also the gap analysis in *CAS SDLC Methodology Review (Pre-T-0015)* §4.7 (id `55d6bf22_cas_sdlc_methodology_review_pre_t_0015`) that motivated the ticket (T-0067) under which this file was created.
+This file exists because a substrate-recursive principle applies: methodology discipline should live where it survives any single GitHub session, not in a web-UI configuration that disappears from the agent's view the moment the tab closes. Branch protection is methodology — it encodes a discipline gate on merges — and so its configuration belongs in version control alongside the CI workflow it gates.

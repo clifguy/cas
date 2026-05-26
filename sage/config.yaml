@@ -21,7 +21,7 @@ abstraction:
   #
   # Qwen3-8B-4bit (the cas vault was already pinned to this via T-0084;
   # see also the operational note in T-0103). The 30B variant
-  # (pim_health and theology used it previously) trips the RAM warning
+  # (example_vault and editorial used it previously) trips the RAM warning
   # documented in CLAUDE.md (~38 GB resident with the rest of the SAGE
   # process). Existing 30B-generated abstracts in those vaults remain
   # unchanged per the T-0103 ticket ("no reabstract").

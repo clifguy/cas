@@ -6,7 +6,7 @@
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
-    "3": "Domain integration tests: end-to-end validation with PIM Health configs and representative workflows."
+    "3": "Domain integration tests: end-to-end validation with Example Portfolio configs and representative workflows."
   },
   "test_specs": [
     {
@@ -78,11 +78,11 @@
       "title": "Domain Instantiation Tests",
       "status": "specified",
       "covers": [
-        "~/sage_vaults/pim_health/vault_config.yaml",
-        "domains/pim_health/pipeline.yaml",
-        "domains/pim_health/agents.yaml",
-        "domains/pim_health/policies.yaml",
-        "domains/pim_health/workflows.yaml"
+        "~/sage_vaults/example_vault/vault_config.yaml",
+        "domains/example_vault/pipeline.yaml",
+        "domains/example_vault/agents.yaml",
+        "domains/example_vault/policies.yaml",
+        "domains/example_vault/workflows.yaml"
       ],
       "test_count": 11
     },
@@ -265,7 +265,7 @@
     }
   ],
   "fixture_directories": {
-    "valid": "domains/pim_health/ (referenced in place, not copied)",
+    "valid": "domains/example_vault/ (referenced in place, not copied)",
     "invalid": "tests/fixtures/invalid/{sage,root_harness}/"
   },
   "revision_history": [

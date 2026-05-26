@@ -1,4 +1,4 @@
-"""T-0075 — SQLite expression-index additions for tier3_metadata fields.
+"""— SQLite expression-index additions for tier3_metadata fields.
 
 Verifies that:
 

@@ -23,7 +23,7 @@ from sage.instrumentation.timing import VaultTimingThread
 
 # VaultTimingThread is NOT a threading.Thread subclass — it wraps one
 # whose default name is "sage-timing-flush". We identify live timing
-# threads by the inner-thread name and read .is_alive() off the inner
+# threads by the inner-thread name and read.is_alive() off the inner
 # thread (the wrapper does not expose that method).
 _TIMING_FLUSH_NAME_PREFIX = "sage-timing-flush"
 

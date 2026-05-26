@@ -45,7 +45,7 @@ from sage.storage.migrations import (
 
 T = TypeVar("T")
 
-# T-0079: identifies the unique-index IntegrityError raised when a caller
+# Identifies the unique-index IntegrityError raised when a caller
 # attempts to insert an edge or staging edge whose natural-key triple
 # already exists. SQLite's IntegrityError message embeds the index name;
 # matching on the name keeps this distinct from other integrity failures
@@ -58,7 +58,7 @@ def _is_unique_violation(exc: sqlite3.IntegrityError, index_name: str) -> bool:
     """Return True if exc is the unique-index violation on `index_name`.
 
     SQLite renders UNIQUE constraint failures as
-    ``"UNIQUE constraint failed: <table>.<col1>, <table>.<col2>, ..."``
+    ``"UNIQUE constraint failed: <table>.<col1>, <table>.<col2>,..."``
     and includes the index name only via the column list. Match on the
     presence of "UNIQUE" plus the three natural-key columns to be robust
     against SQLite version differences in the message format.
@@ -74,7 +74,7 @@ def _is_unique_violation(exc: sqlite3.IntegrityError, index_name: str) -> bool:
     )
 
 
-# T-0115: SQLite renders partial expression-index UNIQUE violations as
+# SQLite renders partial expression-index UNIQUE violations as
 # ``"UNIQUE constraint failed: index 'idx_name'"`` because there is no
 # single column to name. The tier3 partial indexes are named
 # ``idx_tier3_unique_<doc_type>_<field>``; the regex below extracts the
@@ -86,7 +86,7 @@ _TIER3_UNIQUE_INDEX_NAME_REGEX = re.compile(
 
 
 def _is_tier3_unique_violation(exc: sqlite3.IntegrityError) -> str | None:
-    """Return the colliding tier3 index name (T-0115) or None.
+    """Return the colliding tier3 index name or None.
 
     Format: ``idx_tier3_unique_<doc_type>_<field>``. The doc_type / field
     boundary is recovered by the caller by stripping the known doc_type
@@ -101,7 +101,7 @@ def _is_tier3_unique_violation(exc: sqlite3.IntegrityError) -> str | None:
 
 @dataclass(frozen=True)
 class EdgeQueryRow:
-    """Edge enumeration result row with computed retraction envelope (T-0157).
+    """Edge enumeration result row with computed retraction envelope.
 
     Wraps a hydrated ``Edge`` and adds two fields computed via LEFT JOIN
     against the earliest ``retracts``-type edge that disclaims this row:
@@ -207,8 +207,8 @@ class GraphStore:
         for ddl in TABLES:
             conn.execute(ddl)
         # 2. Detect and (optionally) apply pending ALTER TABLE migrations
-        #    and data backfills (T-0078). Surface both classes of pending
-        #    work together so the operator sees one consolidated message.
+        # and data backfills. Surface both classes of pending
+        # work together so the operator sees one consolidated message.
         pending = pending_migrations(conn, MIGRATION_PLAN)
         pending_bf = pending_backfills(conn, BACKFILL_PLAN)
         if (pending or pending_bf) and not migrate:
@@ -232,21 +232,21 @@ class GraphStore:
                 # but tolerate concurrent migration in tests.
                 pass
         # 3. Run data backfills before indexes; backfills usually need the
-        #    new table itself (created in step 1) but not the post-migration
-        #    indexes. Idempotent: apply() functions tolerate re-running.
-        #    Re-detect after migrations applied so backfills that depend on
-        #    columns added in step 2 (T-0080) are picked up — the initial
-        #    detect runs before migrations and swallows column-missing
-        #    OperationalErrors as "not pending."
+        # new table itself (created in step 1) but not the post-migration
+        # indexes. Idempotent: apply() functions tolerate re-running.
+        # Re-detect after migrations applied so backfills that depend on
+        # columns added in step 2 are picked up — the initial
+        # detect runs before migrations and swallows column-missing
+        # OperationalErrors as "not pending."
         if pending:
             pending_bf = pending_backfills(conn, BACKFILL_PLAN)
         for bf in pending_bf:
             bf.apply(conn)
         # 4. Create indexes (may reference columns added by migrations).
-        #    T-0079: the unique natural-key indexes in POST_MIGRATION_DDL
-        #    raise IntegrityError when the underlying table contains
-        #    duplicates. Translate that into DuplicateEdgesPresentError
-        #    with a remediation pointer to scripts/dedup_edges.py.
+        # The unique natural-key indexes in POST_MIGRATION_DDL
+        # raise IntegrityError when the underlying table contains
+        # duplicates. Translate that into DuplicateEdgesPresentError
+        # with a remediation pointer to scripts/dedup_edges.py.
         for ddl in POST_MIGRATION_DDL:
             try:
                 conn.execute(ddl)
@@ -407,7 +407,7 @@ class GraphStore:
     def _sync_document_tags(conn: sqlite3.Connection, doc_id: str, tags: list[str] | None) -> None:
         """Rewrite the document_tags join rows for ``doc_id`` to match ``tags``.
 
-        T-0078: keeps the derived join table in sync with the JSON
+        Keeps the derived join table in sync with the JSON
         column. Called from _exec_insert_document and from
         _exec_update_document when the update touches `tags`. Runs in
         the caller's transaction; the caller commits.
@@ -448,7 +448,7 @@ class GraphStore:
         """
         if not updates:
             return
-        # T-0078: capture the resolved tag list before in-place serialization
+        # Capture the resolved tag list before in-place serialization
         # so the join-table sync sees the Python list, not the JSON string.
         new_tags: list[str] | None = updates["tags"] if "tags" in updates else None
         # Serialize JSON fields if present
@@ -505,12 +505,12 @@ class GraphStore:
         pipeline_status, tags (list[str], AND semantics), document_ids (list[str]),
         tier3_metadata (dict[str, object], AND semantics, pushed into SQL
         as ``json_extract(tier3_metadata, '$.<key>') = ?`` predicates per
-        T-0075).
+        ).
 
         ``default_exclude_failed`` (default ``True``) controls the BH-020
         default-exclude clause: when the caller does not pass an explicit
         ``pipeline_status`` filter, failed-pipeline documents are dropped.
-        Per T-0148 the retrieval service's catalog mode passes ``False``
+         the retrieval service's catalog mode passes ``False``
         so that filter-only enumeration sees every document; scoring
         modes (semantic, keyword) and all non-retrieval callers inherit
         ``True``. An explicit ``pipeline_status`` filter is honoured at
@@ -551,7 +551,7 @@ class GraphStore:
         where_clauses: list[str] = []
         params: list[object] = []
 
-        # T-0148: BH-020 default-exclude is mode-scoped at the service
+        # BH-020 default-exclude is mode-scoped at the service
         # boundary; catalog mode passes default_exclude_failed=False so
         # filter-only enumeration sees failed-pipeline docs. Scoring
         # modes and all non-retrieval callers inherit True.
@@ -577,7 +577,7 @@ class GraphStore:
                 where_clauses.append(f"id IN ({placeholders})")
                 params.extend(filters["document_ids"])
             if "tags" in filters and filters["tags"]:
-                # T-0078: filter via the document_tags join table so the
+                # Filter via the document_tags join table so the
                 # query is index-driven instead of a full table scan
                 # through json_each. AND-of-tags semantics preserved by
                 # adding one EXISTS clause per requested tag.
@@ -725,7 +725,7 @@ class GraphStore:
         return [self._row_to_document(r) for r in rows]
 
     # ------------------------------------------------------------------
-    # Tier3 uniqueness (T-0115, CAS-ADR-031)
+    # Tier3 uniqueness (CAS-ADR-031)
     # ------------------------------------------------------------------
 
     async def ensure_tier3_unique_index(self, doc_type: str, field: str) -> None:
@@ -790,7 +790,7 @@ class GraphStore:
     ) -> list[tuple[object, list[str]]]:
         """Return chain heads grouped by `tier3_metadata.<field>` value.
 
-        Output: list of ``(value, [doc_id, ...])`` tuples for chain heads
+        Output: list of ``(value, [doc_id,...])`` tuples for chain heads
         (`is_chain_head = 1`) of `doc_type` where the named field is not
         null. Used by the migration scan to detect cross-chain collisions
         before activating a `unique_keys` declaration.
@@ -844,7 +844,7 @@ class GraphStore:
         expected to handle it (or, for atomic operations, allow the
         transaction to roll back).
 
-        Under ``on_conflict="noop"`` (T-0079), a duplicate is converted
+        Under ``on_conflict="noop"``, a duplicate is converted
         to a no-op: the pre-existing edge is loaded and returned with
         ``created=False``; the new edge payload (including its rationale)
         is discarded. Idempotency rationale: the existing rationale is
@@ -875,7 +875,7 @@ class GraphStore:
         """Issue the INSERT for an edge on the given connection without
         committing. Caller handles commit/rollback.
 
-        T-0079: callers using compound atomic operations
+        Callers using compound atomic operations
         (``supersede_atomic``, ``insert_with_supersede_atomic``,
         ``merge_atomic``) must NOT swallow ``sqlite3.IntegrityError``
         from this path. The transaction must roll back so the
@@ -925,7 +925,7 @@ class GraphStore:
         Used by the ``on_conflict="noop"`` path after a unique-index
         IntegrityError to hydrate the pre-existing edge for the caller.
         ``target_id=None`` is treated literally (matches NULL); under
-        the T-0079 constraint with SQLite NULL-distinct semantics this
+        the constraint with SQLite NULL-distinct semantics this
         path is unreachable from the noop branch (NULLs never collide),
         but the helper handles it for completeness.
         """
@@ -972,7 +972,7 @@ class GraphStore:
         self, predecessor_id: str, predecessor_updates: dict, edge: Edge
     ) -> Document | None:
         conn = self._get_connection()
-        # T-0115: flip the predecessor's is_chain_head flag alongside the
+        # Flip the predecessor's is_chain_head flag alongside the
         # caller's lifecycle updates. The supersedes-edge insert below
         # would also trigger the chain-head flip via the substrate trigger
         # (`trg_tier3_chain_head_on_supersedes`), but doing it explicitly
@@ -1017,7 +1017,7 @@ class GraphStore:
         edge: Edge,
     ) -> tuple[Document, Document]:
         conn = self._get_connection()
-        # T-0115: flip the predecessor's is_chain_head flag and apply the
+        # Flip the predecessor's is_chain_head flag and apply the
         # caller-supplied lifecycle updates BEFORE inserting the new
         # document. If the predecessor were still a chain head at successor-
         # insert time, the partial UNIQUE index on (doc_type, tier3 field)
@@ -1078,7 +1078,7 @@ class GraphStore:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[EdgeQueryRow], int]:
-        """Enumerate edges with SQL predicates. Returns (rows, total_count) (T-0157).
+        """Enumerate edges with SQL predicates. Returns (rows, total_count).
 
         Supported filter keys: ``source_id``, ``target_id``, ``edge_type``.
         All three are exact-match; multiple keys AND together. An empty
@@ -1436,7 +1436,7 @@ class GraphStore:
         )
 
     async def get_retracts_for_edges(self, edge_ids: list[str]) -> dict[str, list[Edge]]:
-        """Return {retracted_edge_id: [retracts_edge, ...]} for the given ids.
+        """Return {retracted_edge_id: [retracts_edge,...]} for the given ids.
 
         Batch lookup used by the resolver to decide whether candidate
         edges have been retracted. Only edges of type `retracts` whose
@@ -1535,7 +1535,7 @@ class GraphStore:
         Under ``on_conflict="raise"`` (default), a duplicate natural-key
         triple raises ``sqlite3.IntegrityError``.
 
-        Under ``on_conflict="noop"`` (T-0079), a duplicate is converted
+        Under ``on_conflict="noop"``, a duplicate is converted
         to a no-op: the pre-existing staging edge is loaded and returned
         with ``created=False``. Used by batch_inference to make
         auto-inferred staging edges idempotent under re-ingest.
@@ -1716,9 +1716,9 @@ class GraphStore:
         conn = self._get_connection()
 
         # Build direction-specific column references:
-        #   outbound: follow source_id -> target_id
-        #   inbound:  follow target_id -> source_id
-        #   both:     union of outbound and inbound
+        # outbound: follow source_id -> target_id
+        # inbound: follow target_id -> source_id
+        # both: union of outbound and inbound
         def _edge_select(match_col: str, follow_col: str) -> str:
             """SQL fragment selecting edges in one direction.
 
@@ -1864,7 +1864,7 @@ class GraphStore:
         conn = self._get_connection()
 
         # Recursive CTE: walk both directions from start_id, following
-        # only edges of the specified type.  UNION (not UNION ALL)
+        # only edges of the specified type. UNION (not UNION ALL)
         # prevents infinite loops on cycles.
         sql = """
             WITH RECURSIVE chain AS (
@@ -1926,7 +1926,7 @@ class GraphStore:
         return {"documents": documents, "edges": edges}
 
     async def list_provenance_edges(self, edge_types: list[str]) -> list[dict]:
-        """Return active edges of the given types carrying synced_from_* (T-0111).
+        """Return active edges of the given types carrying synced_from_*.
 
         Detector enumeration helper. "Active" = ``valid_until_version IS
         NULL``. Returns raw dicts with the fields the detector needs to
@@ -1965,7 +1965,7 @@ class GraphStore:
         target_id: str,
         edge_type: str = "supersedes",
     ) -> dict:
-        """Return the head of target_id's chain plus a linearity signal (T-0111).
+        """Return the head of target_id's chain plus a linearity signal.
 
         Used by `MaintenanceService.detect_drift` to look up the current
         canonical revision for each candidate edge in one round-trip.
@@ -2110,7 +2110,7 @@ class GraphStore:
     @staticmethod
     def _row_to_document(row: sqlite3.Row) -> Document:
         # model_construct bypasses Pydantic validation: storage may carry legacy
-        # values (e.g. ISO-with-time document_date written before T-0026) that
+        # values (e.g. ISO-with-time document_date written before) that
         # the request-side validators now reject, and the repair workflow must
         # be able to read those records to fix them. Per the Typed-Alias
         # Boundary Conventions, storage does not police shape on read.
@@ -2150,7 +2150,7 @@ class GraphStore:
 
     @staticmethod
     def _row_to_edge(row: sqlite3.Row) -> Edge:
-        """Build an ``Edge`` from a ``sqlite3.Row`` (T-0123).
+        """Build an ``Edge`` from a ``sqlite3.Row``.
 
         Single owner of the row-dict -> ``Edge`` projection per the *CAS
         Projection-Point Audit Conventions* steering document (cas vault,
@@ -2163,7 +2163,7 @@ class GraphStore:
         ``sage/services/graph_ops.py`` is an architecturally excluded
         site (BH-101: per-row ``model_validate`` cost on the traversal
         hot path); its parity guarantee with this canonical factory is
-        the subject of T-0124.
+        the subject of.
 
         Defensive ``"<col>" in row.keys()`` guards for
         ``resolution_policy``, ``rationale_kind``, the three anchor
@@ -2203,7 +2203,7 @@ class GraphStore:
 
     @staticmethod
     def _row_to_staging_edge(row: sqlite3.Row) -> StagingEdge:
-        """Build a ``StagingEdge`` from a ``sqlite3.Row`` (T-0125).
+        """Build a ``StagingEdge`` from a ``sqlite3.Row``.
 
         Single owner of the row-dict -> ``StagingEdge`` projection per
         the *CAS Projection-Point Audit Conventions* steering document

@@ -10,7 +10,7 @@ declares each surface; per-element parametrized tests assert that the
 MCP surface and the OpenAPI surface agree on names, operation coverage,
 and per-argument shapes. An allowlist drains as drift is remediated.
 
-Conformance interpretation: schema-subset (per T-0059 planning
+Conformance interpretation: schema-subset ( planning
 session). Each MCP tool argument must match a parameter or
 requestBody field of its OpenAPI counterpart by name and compatible
 type. Tools may expose a strict subset of OpenAPI inputs. The MCP
@@ -32,7 +32,7 @@ because it is registered directly on the FastMCP instance in
 ``mcp_server.py`` rather than via ``register_sage_tools``; it has no
 HTTP counterpart by design. The ROOT Harness Orchestration spec
 exists today but no MCP tools yet implement its operations
-(T-0015/T-0016); the entire spec is allowlisted at the operation
+(/); the entire spec is allowlisted at the operation
 level until those tools land.
 """
 
@@ -143,9 +143,9 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
 # must be either remediated (by adding the field to the spec or
 # removing it from the tool) or replaced with a justification for
 # permanent divergence. The test fails on stale entries (drift
-# remediated but allowlist not pruned). Drained to empty by T-0062.
+# remediated but allowlist not pruned). Drained to empty by.
 KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
-    # T-0155: ``document_id`` is an MCP-only alias for ``start_id`` on
+    # ``document_id`` is an MCP-only alias for ``start_id`` on
     # sage_traverse, added to unify document-ID parameter naming across
     # MCP tools after a field report. The HTTP API surface is explicitly
     # out of scope per the ticket (HTTP callers see the OpenAPI schema
@@ -213,7 +213,7 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ("sage_core", "open_document"): "HTTP-only UI affordance.",
     # ROOT Harness Orchestration API: no MCP surface yet. Each
     # operation must drain individually once the orchestrator MCP
-    # tools land (T-0015/T-0016).
+    # tools land (/).
     (
         "root_harness",
         "trigger_workflow",

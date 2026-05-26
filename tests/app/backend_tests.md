@@ -22,7 +22,7 @@ with the running SAGE instance. Each entry includes the vault ID, name,
 description, and storage_root. This endpoint has no vault_id path parameter
 because it operates across vaults.
 
-**Precondition:** SAGE instance running with two vaults (pim_health,
+**Precondition:** SAGE instance running with two vaults (example_vault,
 personal_notes).
 
 **Input:** `GET /sage_vaults`
@@ -70,7 +70,7 @@ not cached.
 
 **Precondition:** Vault with documents, edges, and staging edges.
 
-**Input:** `GET /sage_vaults/pim_health/stats`
+**Input:** `GET /sage_vaults/example_vault/stats`
 
 **Expected:**
 - 200 response
@@ -101,7 +101,7 @@ and failed_ingestion_count.
 
 **Precondition:** Vault with items in each health category.
 
-**Input:** `GET /sage_vaults/pim_health/stats`
+**Input:** `GET /sage_vaults/example_vault/stats`
 
 **Expected:**
 - Body includes `health` object with:
@@ -170,9 +170,9 @@ without side effects.
 
 **Input:**
 ```json
-POST /sage_vaults/pim_health/hash-check
+POST /sage_vaults/example_vault/hash-check
 {
-  "hashes": ["sha256:abc123def456", "sha256:unknown", "sha256:patent456"]
+  "hashes": ["sha256:abc123def456", "sha256:unknown", "sha256:design456"]
 }
 ```
 
@@ -181,7 +181,7 @@ POST /sage_vaults/pim_health/hash-check
 - Body is an object mapping hashes to results:
   - `"sha256:abc123def456"`: `{ "exists": true, "document_id": "doc-001" }`
   - `"sha256:unknown"`: `{ "exists": false }`
-  - `"sha256:patent456"`: `{ "exists": true, "document_id": "doc-003" }`
+  - `"sha256:design456"`: `{ "exists": true, "document_id": "doc-003" }`
 
 **Rationale:** Bulk hash check in a single request avoids N+1 queries during
 directory scan. The endpoint is read-only (no side effects).
@@ -197,7 +197,7 @@ directory scan. The endpoint is read-only (no side effects).
 
 **Input:**
 ```json
-POST /sage_vaults/pim_health/hash-check
+POST /sage_vaults/example_vault/hash-check
 { "hashes": [] }
 ```
 
@@ -238,7 +238,7 @@ target_id, edge_type, inference_evidence, and confidence_tier.
 
 **Precondition:** Vault with staging edges.
 
-**Input:** `GET /sage_vaults/pim_health/staging-edges`
+**Input:** `GET /sage_vaults/example_vault/staging-edges`
 
 **Expected:**
 - 200 response
@@ -260,7 +260,7 @@ The staging edge is deleted and a corresponding production edge is created.
 
 **Precondition:** Staging edge exists.
 
-**Input:** `POST /sage_vaults/pim_health/staging-edges/staging-001/confirm`
+**Input:** `POST /sage_vaults/example_vault/staging-edges/staging-001/confirm`
 
 **Expected:**
 - 200 response
@@ -282,7 +282,7 @@ production edge is created.
 
 **Precondition:** Staging edge exists.
 
-**Input:** `POST /sage_vaults/pim_health/staging-edges/staging-002/dismiss`
+**Input:** `POST /sage_vaults/example_vault/staging-edges/staging-002/dismiss`
 
 **Expected:**
 - 200 response
@@ -302,7 +302,7 @@ was already confirmed/dismissed) returns 404.
 
 **Precondition:** No staging edge with ID "gone-001".
 
-**Input:** `POST /sage_vaults/pim_health/staging-edges/gone-001/confirm`
+**Input:** `POST /sage_vaults/example_vault/staging-edges/gone-001/confirm`
 
 **Expected:** 404 response.
 
@@ -324,7 +324,7 @@ includes the document record and the extracted fields with source annotations.
 
 **Precondition:** Vault with documents pending metadata confirmation.
 
-**Input:** `GET /sage_vaults/pim_health/pending-metadata`
+**Input:** `GET /sage_vaults/example_vault/pending-metadata`
 
 **Expected:**
 - 200 response
@@ -348,7 +348,7 @@ support inline editing.
 
 **Precondition:** Vault with all metadata confirmed.
 
-**Input:** `GET /sage_vaults/pim_health/pending-metadata`
+**Input:** `GET /sage_vaults/example_vault/pending-metadata`
 
 **Expected:**
 - 200 response
@@ -374,7 +374,7 @@ failed, abstraction_skipped).
 
 **Input:**
 ```json
-POST /sage_vaults/pim_health/discover
+POST /sage_vaults/example_vault/discover
 {
   "mode": "deterministic",
   "scope": "filtered",
@@ -409,7 +409,7 @@ message.
 **Input:**
 ```json
 POST /app/scan
-{ "vault_id": "pim_health", "directory": "/nonexistent/path" }
+{ "vault_id": "example_vault", "directory": "/nonexistent/path" }
 ```
 
 **Expected:**
@@ -439,8 +439,8 @@ known_code_patterns and keyword_to_doc_type.
 ```json
 POST /app/scan
 {
-  "vault_id": "pim_health",
-  "directory": "/Users/clifguy/pim_inbox"
+  "vault_id": "example_vault",
+  "directory": "/path/to/example_inbox"
 }
 ```
 
@@ -487,8 +487,8 @@ includes immediate children only.
 ```json
 POST /app/scan
 {
-  "vault_id": "pim_health",
-  "directory": "/Users/clifguy/pim_inbox",
+  "vault_id": "example_vault",
+  "directory": "/path/to/example_inbox",
   "max_depth": 1
 }
 ```
@@ -511,7 +511,7 @@ comparisons against the vault are valid.
 
 **Precondition:** Directory with files.
 
-**Input:** `POST /app/scan { "vault_id": "pim_health", "directory": "..." }`
+**Input:** `POST /app/scan { "vault_id": "example_vault", "directory": "..." }`
 
 **Expected:**
 - Hashes computed for all files with matching adapters
@@ -532,7 +532,7 @@ are reported as warnings in the response, not as fatal errors.
 
 **Precondition:** Directory with one unreadable subdirectory.
 
-**Input:** `POST /app/scan { "vault_id": "pim_health", "directory": "..." }`
+**Input:** `POST /app/scan { "vault_id": "example_vault", "directory": "..." }`
 
 **Expected:**
 - 200 response (not 500)
@@ -563,10 +563,10 @@ Each event reports progress for one file. The content type is
 ```json
 POST /app/ingest
 {
-  "vault_id": "pim_health",
+  "vault_id": "example_vault",
   "files": [
-    { "path": "/Users/clifguy/pim_inbox/doc1.docx", "source_type": "docx" },
-    { "path": "/Users/clifguy/pim_inbox/doc2.md", "source_type": "markdown" }
+    { "path": "/path/to/example_inbox/doc1.docx", "source_type": "docx" },
+    { "path": "/path/to/example_inbox/doc2.md", "source_type": "markdown" }
   ]
 }
 ```
@@ -658,7 +658,7 @@ from scan.
 - Each call includes `adapter`, `source` (file path), and `metadata` dict
 - metadata dict contains parsed filename segments:
   `{ "title": "...", "date": "...", "project": "...", "codes": "PV06,CF-1",
-  "version": "v7", "doc_type": "patent_draft" }`
+  "version": "v7", "doc_type": "design_spec" }`
 - Results from each call contribute to the summary event
 
 **Rationale:** The metadata dict enables single-call ingestion with filename-
@@ -725,7 +725,7 @@ that immediately emits a summary with all-zero counts.
 **Input:**
 ```json
 POST /app/ingest
-{ "vault_id": "pim_health", "files": [] }
+{ "vault_id": "example_vault", "files": [] }
 ```
 
 **Expected:**
@@ -755,22 +755,22 @@ before any SAGE ingest calls are made.
 ```json
 POST /app/ingest
 {
-  "vault_id": "pim_health",
+  "vault_id": "example_vault",
   "files": [
     {
-      "file_path": "/Users/clifguy/pim_inbox/2026-03-09_PIM_PV06_Claim-Set_v6.docx",
+      "file_path": "/path/to/example_inbox/2026-03-09_EXAMPLE_PV06_Sample-Set_v6.docx",
       "source_type": "docx",
       "parsed_metadata": {
-        "title": "Claim-Set", "date": "2026-03-09", "project": "PIM",
-        "codes": ["PV06"], "version": "v6", "doc_type": "patent_draft"
+        "title": "Claim-Set", "date": "2026-03-09", "project": "EXAMPLE",
+        "codes": ["PV06"], "version": "v6", "doc_type": "design_spec"
       }
     },
     {
-      "file_path": "/Users/clifguy/pim_inbox/2026-03-09_PIM_PV06_Claim-Set_v7.docx",
+      "file_path": "/path/to/example_inbox/2026-03-09_EXAMPLE_PV06_Sample-Set_v7.docx",
       "source_type": "docx",
       "parsed_metadata": {
-        "title": "Claim-Set", "date": "2026-03-09", "project": "PIM",
-        "codes": ["PV06"], "version": "v7", "doc_type": "patent_draft"
+        "title": "Claim-Set", "date": "2026-03-09", "project": "EXAMPLE",
+        "codes": ["PV06"], "version": "v7", "doc_type": "design_spec"
       }
     }
   ]
@@ -896,7 +896,7 @@ the filename parser provided a date code, `"default"` when the value fell
 back to source_modified_at.
 
 **Precondition:** Vault with a document ingested from a file whose name
-contains a date code (e.g., `2026-04-10_PIM_PV07_checklist_v1.md`).
+contains a date code (e.g., `2026-04-10_EXAMPLE_PV07_checklist_v1.md`).
 Metadata not yet confirmed.
 
 **Input:** `GET /sage_vaults/{vault_id}/pending-metadata`

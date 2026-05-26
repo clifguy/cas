@@ -20,11 +20,11 @@ class MarkdownAdapter(SourceAdapter):
     # (Word-Find equivalence for empty-content parents).
     # 0.4.0: CommonMark-compliant heading extraction via markdown-it-py.
     # Suppresses ATX heading-shaped lines inside fenced and indented code
-    # blocks (T-0070).
+    # blocks.
     # 0.5.0: enables mdit-py-plugins front_matter_plugin so YAML
     # frontmatter is recognized as a block-level construct rather than
     # binding its closing `---` to the preceding YAML body as a setext
-    # H2 underline (T-0071).
+    # H2 underline.
     VERSION = "0.5.0"
     EXTENSIONS = [".md", ".markdown"]
 

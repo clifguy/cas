@@ -1,5 +1,5 @@
 """Benchmark harness for evaluating candidate ``AbstractionProvider``
-implementations (T-0084).
+implementations.
 
 The harness is read-only against any vault graph: it pulls projection
 text from the content store, invokes the provider directly, and never

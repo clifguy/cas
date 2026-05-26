@@ -4,7 +4,7 @@ POST /app/scan -- directory scan with filename parsing
 POST /app/ingest -- batch ingest with edge inference and SSE streaming
 
 Service resolution flows through the FastAPI ``Depends`` factories in
-``app.backend.dependencies`` (T-0049), so each handler reduces to a
+``app.backend.dependencies``, so each handler reduces to a
 single-statement dispatch matching the SAGE F1 canonical shape.
 """
 

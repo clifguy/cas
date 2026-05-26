@@ -42,10 +42,10 @@ const mockVault: VaultSummary = {
   name: 'Test Vault',
   description: null,
   storage_root: '/tmp/test',
-  doc_types: [{ value: 'patent_draft', label: 'Patent Draft' }],
+  doc_types: [{ value: 'design_spec', label: 'Design Spec' }],
   lifecycle_states: [{ value: 'active', label: 'Active', is_terminal: false }],
   adapters: [],
-  projects: ['pim_health'],
+  projects: ['example_vault'],
 };
 
 const mockDoc: Document = {
@@ -55,10 +55,10 @@ const mockDoc: Document = {
   source_path: '/vault/Test.docx',
   lifecycle_status: 'active',
   version_label: null,
-  project: 'pim_health',
+  project: 'example_vault',
   tags: [],
   authority_scope: null,
-  doc_type: 'patent_draft',
+  doc_type: 'design_spec',
   source_content_hash: 'abc',
   adapter_version: '1.0',
   created_by: 'test',

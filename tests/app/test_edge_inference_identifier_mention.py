@@ -1,57 +1,57 @@
-"""Tests for the identifier_mention edge-inference rule (T-0016).
+"""Tests for the identifier_mention edge-inference rule.
 
 Spec (plain English):
 
 T1 -- Happy path: ADR mention creates a `references` edge.
-  Inputs:  Pre-seeded ADR document with tag `adr` and title `ADR-099: ...`.
+  Inputs: Pre-seeded ADR document with tag `adr` and title `ADR-099:...`.
            A new ticket markdown whose body contains the literal `CAS-ADR-099`.
-  Expect:  One `references` edge from the ticket's just-ingested doc id to
+  Expect: One `references` edge from the ticket's just-ingested doc id to
            the ADR's doc id; rationale_kind == REFERENCES_MENTION; evidence
            starts with `[references_mention]`.
-  Why:     Core acceptance criterion of T-0016.
+  Why: Core acceptance criterion of.
 
 T2 -- Happy path: ticket id mention creates a `references` edge.
-  Inputs:  Pre-seeded ticket document with tag `id:T-0042`. New doc whose
-           body mentions `T-0042`.
-  Expect:  One `references` edge from the new doc to the T-0042 ticket.
-  Why:     Covers the second default pattern surface.
+  Inputs: Pre-seeded ticket document with tag `id:`. New doc whose
+           body mentions ``.
+  Expect: One `references` edge from the new doc to the ticket.
+  Why: Covers the second default pattern surface.
 
 T3 -- Happy path: failure record mention creates a `references` edge.
-  Inputs:  Pre-seeded failure record with tag `id:F-3`. New doc whose body
+  Inputs: Pre-seeded failure record with tag `id:F-3`. New doc whose body
            mentions `F-3`.
-  Expect:  One `references` edge from the new doc to the F-3 record.
-  Why:     Covers the third default pattern surface.
+  Expect: One `references` edge from the new doc to the F-3 record.
+  Why: Covers the third default pattern surface.
 
 T4 -- Idempotency under re-ingest.
-  Inputs:  Same source markdown as T1, ingested twice.
-  Expect:  Only one `references` edge between the (source, target) pair
+  Inputs: Same source markdown as T1, ingested twice.
+  Expect: Only one `references` edge between the (source, target) pair
            after the second ingest.
-  Why:     Re-ingest is the ticket's stated natural answer to ambiguity (a)
+  Why: Re-ingest is the ticket's stated natural answer to ambiguity (a)
            on first-vs-every ingest; duplicates would inflate traversal
            counts.
 
 T5 -- Unresolved identifier is silently skipped.
-  Inputs:  New doc whose body mentions `CAS-ADR-999` (no such ADR exists
+  Inputs: New doc whose body mentions `CAS-ADR-999` (no such ADR exists
            in the vault).
-  Expect:  No edge is created; ingest completes successfully.
-  Why:     The most likely failure mode -- an unresolved identifier must not
+  Expect: No edge is created; ingest completes successfully.
+  Why: The most likely failure mode -- an unresolved identifier must not
            break ingestion. Mentions of identifiers that haven't been ingested
            yet are common (forward references, drafts).
 
 T6 -- Manual `references` edges are not touched.
-  Inputs:  Pre-existing manual `references` edge (rationale_kind=MANUAL)
+  Inputs: Pre-existing manual `references` edge (rationale_kind=MANUAL)
            from doc A to an ADR. Ingest doc A's body with no inline mention
            of the ADR.
-  Expect:  The manual edge survives; no inferred edge is added; manual
+  Expect: The manual edge survives; no inferred edge is added; manual
            edge's rationale_kind remains MANUAL.
-  Why:     Regression guard for the CAS-ADR-019 provenance gate. The rule
+  Why: Regression guard for the CAS-ADR-019 provenance gate. The rule
            must not displace or rewrite hand-curated edges.
 
 T7 -- Pattern config drives behavior (per-vault configurability).
-  Inputs:  Vault config that omits the `T-NNNN` pattern. Ingest a doc whose
-           body mentions both `CAS-ADR-099` and `T-0042`.
-  Expect:  ADR edge created; no ticket edge created.
-  Why:     The ticket requires per-vault pattern configurability; vaults
+  Inputs: Vault config that omits the `T-NNNN` pattern. Ingest a doc whose
+           body mentions both `CAS-ADR-099` and ``.
+  Expect: ADR edge created; no ticket edge created.
+  Why: The ticket requires per-vault pattern configurability; vaults
            that don't use ticket grammar must be able to disable that
            pattern.
 """
@@ -335,10 +335,10 @@ async def test_t1_adr_mention_creates_references_edge(tmp_path, services):
 
 @pytest.mark.asyncio
 async def test_t2_ticket_mention_creates_references_edge(tmp_path, services):
-    """T-0139: ticket mentions resolve via tier3_metadata.ticket_id, not tags.
+    """Ticket mentions resolve via tier3_metadata.ticket_id, not tags.
 
-    The seeded ticket carries `tier3_metadata={"ticket_id": "T-0042"}` and
-    no `id:T-0042` tag, matching the cas vault's post-T-0039 ticket
+    The seeded ticket carries `tier3_metadata={"ticket_id": ""}` and
+    no `id:` tag, matching the cas vault's post-ticket
     convention (CAS-ADR-028). A decoy ticket seeded after the target
     ensures the assertion fails if the resolver falls back to a
     doc_type-only lookup — the decoy would win on `updated_at`.
@@ -376,7 +376,7 @@ async def test_t2_ticket_mention_creates_references_edge(tmp_path, services):
 
 @pytest.mark.asyncio
 async def test_t2b_ticket_mention_distinguishes_among_tickets(tmp_path, services):
-    """T-0139 anti-coincidence: tier3 filter must discriminate among tickets.
+    """anti-coincidence: tier3 filter must discriminate among tickets.
 
     Without the tier3 filter, the resolver would return the most-recently-
     updated active ticket (a doc_type-only query). The decoy is seeded
@@ -419,13 +419,13 @@ async def test_t2b_ticket_mention_distinguishes_among_tickets(tmp_path, services
 
 @pytest.mark.asyncio
 async def test_t2c_unresolved_ticket_mention_creates_no_edge(tmp_path, services):
-    """T-0139: a T-NNNN mention with no matching tier3.ticket_id produces no edge.
+    """A T-NNNN mention with no matching tier3.ticket_id produces no edge.
 
-    A decoy ticket (T-0050, not mentioned) is seeded so the trap is real:
+    A decoy ticket (not mentioned) is seeded so the trap is real:
     without the tier3 filter, the resolver's doc_type-only fallback
     would return the decoy and emit a spurious edge. The fix's tier3
     filter rejects the decoy because its ticket_id does not match
-    T-9999.
+    .
     """
     decoy_id = _doc_id("ticket_decoy_t2c")
     await _seed_document(
@@ -701,15 +701,15 @@ async def test_t7_disabled_pattern_skips_matches(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# T8 -- T-0150 family: failed-pipeline target still resolves
+# T8 -- family: failed-pipeline target still resolves
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_t8_failed_pipeline_target_still_resolves(tmp_path, services):
-    """T-0150 family: a pipeline_status=FAILED target must remain resolvable.
+    """family: a pipeline_status=FAILED target must remain resolvable.
 
-    The chain-identity argument from T-0150 applies here too: tags,
+    The chain-identity argument from applies here too: tags,
     tier3_metadata, and doc_type are populated by adapters at ingest time,
     BEFORE the abstraction pipeline runs. A document whose abstraction
     failed still carries valid identifier-resolution metadata and should
@@ -760,13 +760,13 @@ async def test_t8_failed_pipeline_target_still_resolves(tmp_path, services):
 
 
 # ---------------------------------------------------------------------------
-# T-0129: sage_ingest pathway tests
+# Sage_ingest pathway tests
 #
 # The tests above exercise BatchIngestService.run() with wait_for_pipeline=True
 # (implicit). The tests below exercise the per-document sage_ingest pathway:
 # IngestionService.ingest() with wait_for_pipeline=False, followed by polling
 # for terminal pipeline_status. Both pathways must produce identical edge
-# sets because T-0129 relocates identifier_mention inference into the SAGE
+# sets because relocates identifier_mention inference into the SAGE
 # substrate so all ingest pathways honor the vault's declared rules.
 # ---------------------------------------------------------------------------
 
@@ -790,7 +790,7 @@ async def _ingest_via_sage_ingest_and_get_edges(
     Mirrors the production sage_ingest MCP-tool dispatch shape: fire-and-
     forget Stages 2-3, then poll the document's pipeline_status until it
     reaches a terminal state. Identifier_mention edges must be present
-    by the time terminal status is observed (T-0129 acceptance criterion).
+    by the time terminal status is observed (acceptance criterion).
     """
     request = IngestRequest(
         source=file_path,
@@ -828,7 +828,7 @@ async def _ingest_via_sage_ingest_and_get_edges(
 
 @pytest.mark.asyncio
 async def test_t1_sage_ingest_adr_mention_creates_references_edge(tmp_path, services):
-    """T-0129: sage_ingest path also produces identifier_mention edges."""
+    """Sage_ingest path also produces identifier_mention edges."""
     adr_id = _doc_id("adr_099")
     await _seed_document(
         services,
@@ -856,7 +856,7 @@ async def test_t1_sage_ingest_adr_mention_creates_references_edge(tmp_path, serv
 
 @pytest.mark.asyncio
 async def test_t2_sage_ingest_ticket_mention_creates_references_edge(tmp_path, services):
-    """T-0139 + T-0129: tier3-resolved ticket edges also fire on sage_ingest path.
+    """+ Tier3-resolved ticket edges also fire on sage_ingest path.
 
     Same decoy guard as the batch T2: a second ticket with a different
     tier3.ticket_id is seeded so the test fails if the resolver falls
@@ -1004,7 +1004,7 @@ async def test_t6_sage_ingest_manual_references_edge_is_preserved(tmp_path, serv
 
 @pytest.mark.asyncio
 async def test_t9_batch_ingest_service_does_not_import_identifier_mention():
-    """T-0129 boundary: BatchIngestService source no longer references the
+    """boundary: BatchIngestService source no longer references the
     relocated inference function or the new sage module.
 
     This is a structural anti-coincidental-pass check: if a future commit
@@ -1029,7 +1029,7 @@ async def test_t9_batch_ingest_service_does_not_import_identifier_mention():
 
 @pytest.mark.asyncio
 async def test_t10_wait_for_pipeline_independence(tmp_path, services):
-    """T-0129: edges produced are identical regardless of wait_for_pipeline.
+    """Edges produced are identical regardless of wait_for_pipeline.
 
     Ingest one file with wait_for_pipeline=True (batch semantics) and a
     different file containing the same identifier mention with
@@ -1077,7 +1077,7 @@ async def test_t10_wait_for_pipeline_independence(tmp_path, services):
 
 
 # ---------------------------------------------------------------------------
-# T-0139: identifier_mention pattern-schema contract tests
+# Identifier_mention pattern-schema contract tests
 #
 # The schema must (a) accept a pattern with target_tier3 only (no
 # target_tags) and (b) reject a pattern with neither target_tags nor
@@ -1110,7 +1110,7 @@ def _edge_inference_block_with_pattern(pattern: dict) -> dict:
 def test_pattern_schema_accepts_target_tier3_only():
     """A pattern with target_tier3 and no target_tags must validate.
 
-    This is the post-T-0139 shape used by the cas vault's ticket pattern.
+    This is the post-shape used by the cas vault's ticket pattern.
     """
     schema = _load_edge_inference_schema()
     pattern = {
@@ -1142,7 +1142,7 @@ def test_pattern_schema_still_accepts_target_tags_only():
     """Regression guard: the existing target_tags-only path stays valid.
 
     The cas vault's ADR and failure-record patterns continue to use
-    target_tags after T-0139.
+    target_tags after.
     """
     schema = _load_edge_inference_schema()
     pattern = {

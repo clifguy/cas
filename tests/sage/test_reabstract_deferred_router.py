@@ -1,8 +1,8 @@
-"""HTTP integration tests for the reabstract-deferred router (T-0089, T-0134).
+"""HTTP integration tests for the reabstract-deferred router.
 
 POST /sage_vaults/{vault_id}/admin/reabstract-deferred.
 
-T-0134 replaces the synchronous JSON 200 response with an SSE stream of
+replaces the synchronous JSON 200 response with an SSE stream of
 per-document progress events followed by a summary event. The error
 paths (404 vault_not_found and 409 reabstract_already_in_flight) still
 resolve synchronously BEFORE the stream opens, returning the
@@ -271,7 +271,7 @@ async def test_post_reabstract_deferred_409_when_already_in_flight(
 
             resp_b = await client.post(f"/sage_vaults/{vault_id}/admin/reabstract-deferred")
             assert resp_b.status_code == 409, resp_b.text
-            # T-0134 no-leak guard: the 409 path must resolve BEFORE the
+            # no-leak guard: the 409 path must resolve BEFORE the
             # StreamingResponse is constructed -- content-type is
             # application/json and the body carries the ErrorResponse
             # envelope, not an SSE stream with an in-stream error event.

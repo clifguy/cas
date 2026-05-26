@@ -1,4 +1,4 @@
-"""T-0073: structured query-timing instrumentation across SAGE layers.
+"""Structured query-timing instrumentation across SAGE layers.
 
 Each test holds the line on one acceptance criterion from the plan:
 
@@ -405,7 +405,7 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
             for handler in list(logger.handlers):
                 logger.removeHandler(handler)
             # Restore propagation so later caplog-based tests can still
-            # capture records on these loggers (T-0073 mcp_init disables
+            # capture records on these loggers (mcp_init disables
             # propagation when wiring per-vault file handlers).
             logger.propagate = True
 

@@ -35,7 +35,7 @@ class StagingEdgesService:
         Mints a new production-edge UUID, copies source/target/edge_type
         from the staging record, sequences insert + delete.
 
-        Confirm idempotency on natural-key collision (T-0079):
+        Confirm idempotency on natural-key collision:
         If the staging edge's natural-key triple
         ``(source_id, target_id, edge_type)`` already exists in the
         production edges table -- for example, because a parallel
@@ -55,10 +55,10 @@ class StagingEdgesService:
         succeeds, the staging row persists alongside the production edge;
         the natural-key triple then exists in both tables until a
         subsequent confirm consumes the orphaned staging row (which is
-        itself a T-0079 silent-idempotent no-op per the rule above).
+        itself a silent-idempotent no-op per the rule above).
         Callers should treat confirm as "at-least-once" for the
         production-edge insert and rely on the natural-key UNIQUE
-        constraint plus T-0079 idempotency to absorb retries.
+        constraint plus idempotency to absorb retries.
         """
         staging = await self._store.get_staging_edge(edge_id)
         if staging is None:
@@ -73,7 +73,7 @@ class StagingEdgesService:
             notes=f"Confirmed from staging edge {edge_id}",
             rationale=staging.inference_evidence,
         )
-        # T-0079: if the natural-key triple already exists in production
+        # If the natural-key triple already exists in production
         # (e.g., a parallel sage_link or earlier auto-inference path
         # already created the edge), confirm-staging is idempotent:
         # consume the staging row and surface the existing production

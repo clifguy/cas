@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_admin_detect_drift (T-0111).
+"""MCP tool tests for sage_admin_detect_drift.
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, and successful round-trip of the DriftReport payload

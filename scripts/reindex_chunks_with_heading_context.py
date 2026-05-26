@@ -228,7 +228,7 @@ def main() -> None:
             "See script docstring for full details."
         )
     )
-    parser.add_argument("vault_id", help="Vault id (e.g. pim_health)")
+    parser.add_argument("vault_id", help="Vault id (e.g. example_vault)")
     parser.add_argument(
         "--execute",
         action="store_true",

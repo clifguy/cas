@@ -1,4 +1,4 @@
-"""Tests for the purge_chain maintenance script (T-0108).
+"""Tests for the purge_chain maintenance script.
 
 Exercises the service-level entry point ``sage.maintenance.purge_chain.purge_chain``
 against a real SQLite + LanceDB vault. The script enforces the

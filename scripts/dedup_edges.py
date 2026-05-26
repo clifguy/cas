@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Dedup the edges and staging_edges tables before T-0079's UNIQUE index lands.
+"""Dedup the edges and staging_edges tables before UNIQUE index lands.
 
-The T-0079 migration adds a UNIQUE index on (source_id, target_id, edge_type)
+The migration adds a UNIQUE index on (source_id, target_id, edge_type)
 to both ``edges`` and ``staging_edges``. SQLite's CREATE UNIQUE INDEX
 fails if the underlying table already contains duplicates, so this script
 must run first to backfill the deduplication.
@@ -44,7 +44,7 @@ from typing import Iterable
 
 import yaml
 
-# Tables targeted by T-0079, with their natural-key column tuple and
+# Tables targeted by, with their natural-key column tuple and
 # a per-table label used in the JSON audit trail.
 _TARGET_TABLES: tuple[tuple[str, tuple[str, str, str]], ...] = (
     ("edges", ("source_id", "target_id", "edge_type")),

@@ -44,7 +44,7 @@ from tests.sage.test_ingestion_metadata_extraction import (
 
 @pytest.fixture
 def pim_config(tmp_vault_dir):
-    """PIM-style VaultConfig with filename_extraction enabled."""
+    """EXAMPLE-style VaultConfig with filename_extraction enabled."""
     return VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
 
 
@@ -75,16 +75,16 @@ def pim_ingestion_service(pim_config, graph_store, lock_manager):
 
 async def test_ad021_001_default_skips_filename_inference(tmp_vault_dir, pim_ingestion_service):
     # Filename matches the vault's pattern -- under the legacy ME path
-    # this would populate project="PIM", document_date="2026-03-09",
-    # version_label="v6.0", tags=["PV06"], doc_type="patent_draft".
+    # this would populate project="EXAMPLE", document_date="2026-03-09",
+    # version_label="v6.0", tags=["PV06"], doc_type="design_spec".
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        "reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         body="# A Heading\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         source_type=SourceType.MARKDOWN,
         metadata={"title": "Caller Title"},
     )
@@ -114,12 +114,12 @@ async def test_ad021_002_needs_review_true_runs_filename_inference(
 ):
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        "reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         body="# A Heading\n\nBody.\n",
     )
 
     request = IngestRequest(
-        source="patents/2026-03-09_PIM_PV06_Claim-Set_v6.md",
+        source="reports/2026-03-09_EXAMPLE_PV06_Claim-Set_v6.md",
         source_type=SourceType.MARKDOWN,
         needs_review=True,
     )
@@ -129,10 +129,10 @@ async def test_ad021_002_needs_review_true_runs_filename_inference(
     # Filename inference ran (matches TEST-SAGE-ME-001 expectations)
     assert doc.title == "Claim-Set"
     assert doc.document_date == "2026-03-09"
-    assert doc.project == "PIM"
+    assert doc.project == "EXAMPLE"
     assert doc.tags == ["PV06"]
     assert doc.version_label == "v6.0"
-    assert doc.doc_type == "patent_draft"
+    assert doc.doc_type == "design_spec"
     # Held in review queue
     assert doc.metadata_confirmed is False
 
@@ -163,13 +163,13 @@ async def test_ad021_004_chain_inheritance_fills_full_trio(tmp_vault_dir, pim_in
             source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
-                "project": "PIM",
+                "project": "EXAMPLE",
                 "authority_scope": "domain",
             },
         )
     )
     assert v1.document.doc_type == "checklist"
-    assert v1.document.project == "PIM"
+    assert v1.document.project == "EXAMPLE"
     assert v1.document.authority_scope == "domain"
 
     v2 = await pim_ingestion_service.ingest(
@@ -180,7 +180,7 @@ async def test_ad021_004_chain_inheritance_fills_full_trio(tmp_vault_dir, pim_in
         )
     )
     assert v2.document.doc_type == "checklist"
-    assert v2.document.project == "PIM"
+    assert v2.document.project == "EXAMPLE"
     assert v2.document.authority_scope == "domain"
 
 
@@ -202,7 +202,7 @@ async def test_ad021_005_per_field_inheritance_caller_overrides_one(
             source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
-                "project": "PIM",
+                "project": "EXAMPLE",
                 "authority_scope": "domain",
             },
         )
@@ -219,7 +219,7 @@ async def test_ad021_005_per_field_inheritance_caller_overrides_one(
     # Caller wins on the supplied field
     assert v2.document.doc_type == "work_plan"
     # Other two trio fields inherit from predecessor
-    assert v2.document.project == "PIM"
+    assert v2.document.project == "EXAMPLE"
     assert v2.document.authority_scope == "domain"
 
 
@@ -241,7 +241,7 @@ async def test_ad021_006_caller_supplies_all_three_no_inheritance(
             source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
-                "project": "PIM",
+                "project": "EXAMPLE",
                 "authority_scope": "domain",
             },
         )
@@ -284,7 +284,7 @@ async def test_ad021_007_no_predecessor_no_inheritance(tmp_vault_dir, pim_ingest
             source_type=SourceType.MARKDOWN,
             metadata={
                 "doc_type": "checklist",
-                "project": "PIM",
+                "project": "EXAMPLE",
                 "authority_scope": "domain",
             },
         )
@@ -351,7 +351,7 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
     # and populates project/doc_type. authority_scope is set by the caller.
     _write_md(
         tmp_vault_dir,
-        "patents/2026-03-09_PIM_PV06_A_v1.md",
+        "reports/2026-03-09_EXAMPLE_PV06_A_v1.md",
         body="# A\n\nBody.\n",
     )
     # v2 filename has no project/code/version segments, so the parser
@@ -359,26 +359,26 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
     # must fill the gaps.
     _write_md(
         tmp_vault_dir,
-        "patents/Standalone-Note.md",
+        "reports/Standalone-Note.md",
         body="# Standalone Note\n\nBody.\n",
     )
 
     v1 = await pim_ingestion_service.ingest(
         IngestRequest(
-            source="patents/2026-03-09_PIM_PV06_A_v1.md",
+            source="reports/2026-03-09_EXAMPLE_PV06_A_v1.md",
             source_type=SourceType.MARKDOWN,
             needs_review=True,
             metadata={"authority_scope": "domain"},
         )
     )
     # Sanity: filename inference + caller metadata seeded the predecessor.
-    assert v1.document.project == "PIM"
-    assert v1.document.doc_type == "patent_draft"
+    assert v1.document.project == "EXAMPLE"
+    assert v1.document.doc_type == "design_spec"
     assert v1.document.authority_scope == "domain"
 
     v2 = await pim_ingestion_service.ingest(
         IngestRequest(
-            source="patents/Standalone-Note.md",
+            source="reports/Standalone-Note.md",
             source_type=SourceType.MARKDOWN,
             predecessor_id=v1.document.id,
             needs_review=True,
@@ -386,8 +386,8 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
     )
     # The bare filename parses cleanly but yields no trio values; chain
     # inheritance must fill in from the predecessor.
-    assert v2.document.project == "PIM"
-    assert v2.document.doc_type == "patent_draft"
+    assert v2.document.project == "EXAMPLE"
+    assert v2.document.doc_type == "design_spec"
     assert v2.document.authority_scope == "domain"
 
 

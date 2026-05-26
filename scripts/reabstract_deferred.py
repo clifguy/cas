@@ -4,7 +4,7 @@
 Standalone fallback for operator workflows (cron-style, no MCP server
 running). Agents should call the ``sage_admin_reabstract_deferred_vault``
 MCP tool instead -- it reuses the running MCP server's already-loaded
-AbstractionProvider so the dual-Qwen3 RAM hazard does not apply (T-0089,
+AbstractionProvider so the dual-Qwen3 RAM hazard does not apply (,
 F-8). The ``--all`` mode (full-vault sweep regardless of pipeline_status)
 is still operator-only and remains the reason this script lives on.
 
@@ -34,7 +34,7 @@ Behavior:
     * Sequential. Calls ``IngestionService.reabstract`` (fire-and-forget),
       then polls the document row until pipeline_status is terminal
       (``abstraction_complete`` or ``failed``).
-    * Prints ``[i/N]  title  vN`` on each completion, plus a final summary.
+    * Prints ``[i/N] title vN`` on each completion, plus a final summary.
 
 Usage::
 
@@ -225,7 +225,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "regardless of pipeline_status. See script docstring."
         )
     )
-    parser.add_argument("vault_id", help="Vault id (e.g. pim_health)")
+    parser.add_argument("vault_id", help="Vault id (e.g. example_vault)")
     parser.add_argument(
         "--all",
         action="store_true",

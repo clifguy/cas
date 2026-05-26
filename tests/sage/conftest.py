@@ -56,7 +56,7 @@ async def initialize_services_for_test(config, **kwargs):
     Guarantees that on exit (normal or exceptional) the per-vault
     ``VaultTimingThread`` is stopped and the graph store is closed.
     Replaces the
-    ``services = await initialize_services(...); try: ...; finally:
+    ``services = await initialize_services(...); try:...; finally:
     await services.graph_store.close()`` pattern, which historically
     forgot to stop the timing thread and leaked it into subsequent
     tests, polluting their caplog windows on the timing loggers.

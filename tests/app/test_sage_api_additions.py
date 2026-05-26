@@ -204,7 +204,7 @@ def _make_staging_edge(
 async def multi_vault_app(tmp_path):
     """App with two vaults registered in the canonical registry."""
     config1 = VaultConfig.model_validate(
-        _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
+        _make_vault_config_dict(tmp_path, "example_vault", "Example Portfolio")
     )
     config2 = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "personal_notes", "Personal Notes")
@@ -245,7 +245,7 @@ async def empty_vault_app(tmp_path):
 async def single_vault_app(tmp_path):
     """App with one vault containing test data."""
     config = VaultConfig.model_validate(
-        _make_vault_config_dict(tmp_path, "pim_health", "PIM Health")
+        _make_vault_config_dict(tmp_path, "example_vault", "Example Portfolio")
     )
     app = create_app(config=config)
     await _initialize_services(
@@ -304,7 +304,7 @@ class TestVaultListing:
         assert isinstance(body, list)
         assert len(body) == 2
         ids = {v["id"] for v in body}
-        assert ids == {"pim_health", "personal_notes"}
+        assert ids == {"example_vault", "personal_notes"}
         for v in body:
             assert "id" in v
             assert "name" in v
@@ -327,7 +327,7 @@ class TestVaultStatistics:
     async def test_be_003_stats_returns_all_fields(self, multi_vault_app, multi_client):
         """GET /sage_vaults/{vault_id}/stats returns all ten statistics."""
         # Insert test data
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         doc1 = _make_document("doc-1", doc_type="note")
@@ -353,7 +353,7 @@ class TestVaultStatistics:
         staging = _make_staging_edge(_STG_1, "doc-1", "doc-2")
         await gs.insert_staging_edge(staging)
 
-        resp = await multi_client.get("/sage_vaults/pim_health/stats")
+        resp = await multi_client.get("/sage_vaults/example_vault/stats")
         assert resp.status_code == 200
         body = resp.json()
 
@@ -372,7 +372,7 @@ class TestVaultStatistics:
 
     async def test_be_004_stats_includes_health_indicators(self, multi_vault_app, multi_client):
         """Stats response includes health indicator counts."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         # Documents in various states
@@ -401,7 +401,7 @@ class TestVaultStatistics:
         staging = _make_staging_edge(_STG_H1, "doc-ok", "doc-pending")
         await gs.insert_staging_edge(staging)
 
-        resp = await multi_client.get("/sage_vaults/pim_health/stats")
+        resp = await multi_client.get("/sage_vaults/example_vault/stats")
         assert resp.status_code == 200
         health = resp.json()["health"]
 
@@ -437,7 +437,7 @@ class TestVaultStatistics:
 class TestHashCheck:
     async def test_be_007_hash_check_returns_matches(self, multi_vault_app, multi_client):
         """POST hash-check returns matches with document IDs."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         DOC1_ID = "dddddddd_doc_001"
@@ -452,7 +452,7 @@ class TestHashCheck:
         await gs.insert_document(doc3)
 
         resp = await multi_client.post(
-            "/sage_vaults/pim_health/hash-check",
+            "/sage_vaults/example_vault/hash-check",
             json={
                 "hashes": [
                     HASH_DOC1,
@@ -474,7 +474,7 @@ class TestHashCheck:
     async def test_be_008_hash_check_empty_array(self, multi_client):
         """Hash check with empty array returns empty result."""
         resp = await multi_client.post(
-            "/sage_vaults/pim_health/hash-check",
+            "/sage_vaults/example_vault/hash-check",
             json={"hashes": []},
         )
         assert resp.status_code == 200
@@ -497,7 +497,7 @@ class TestHashCheck:
 class TestStagingEdges:
     async def test_be_010_list_staging_edges(self, multi_vault_app, multi_client):
         """GET staging-edges lists Tier 2 staging edges."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         doc1 = _make_document("doc-s1")
@@ -510,11 +510,11 @@ class TestStagingEdges:
             "doc-s1",
             "doc-s2",
             EdgeType.COVERS,
-            "Status report mentions CD-04 patent code",
+            "Status report mentions CD-04 report code",
         )
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.get("/sage_vaults/pim_health/staging-edges")
+        resp = await multi_client.get("/sage_vaults/example_vault/staging-edges")
         assert resp.status_code == 200
         body = resp.json()
         assert isinstance(body, list)
@@ -531,7 +531,7 @@ class TestStagingEdges:
 
     async def test_be_011_confirm_staging_edge(self, multi_vault_app, multi_client):
         """POST confirm moves staging edge to production."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         doc1 = _make_document("doc-c1")
@@ -542,7 +542,9 @@ class TestStagingEdges:
         stg = _make_staging_edge(_STG_001, "doc-c1", "doc-c2")
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.post(f"/sage_vaults/pim_health/staging-edges/{_STG_001}/confirm")
+        resp = await multi_client.post(
+            f"/sage_vaults/example_vault/staging-edges/{_STG_001}/confirm"
+        )
         assert resp.status_code == 200
 
         # Staging edge should be gone
@@ -558,7 +560,7 @@ class TestStagingEdges:
 
     async def test_be_012_dismiss_staging_edge(self, multi_vault_app, multi_client):
         """POST dismiss deletes staging edge without creating production edge."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         doc1 = _make_document("doc-d1")
@@ -569,7 +571,9 @@ class TestStagingEdges:
         stg = _make_staging_edge(_STG_002, "doc-d1", "doc-d2")
         await gs.insert_staging_edge(stg)
 
-        resp = await multi_client.post(f"/sage_vaults/pim_health/staging-edges/{_STG_002}/dismiss")
+        resp = await multi_client.post(
+            f"/sage_vaults/example_vault/staging-edges/{_STG_002}/dismiss"
+        )
         assert resp.status_code == 200
 
         # Staging edge should be gone
@@ -583,7 +587,9 @@ class TestStagingEdges:
 
     async def test_be_013_confirm_nonexistent_staging_edge(self, multi_client):
         """Confirm non-existent staging edge returns 404."""
-        resp = await multi_client.post(f"/sage_vaults/pim_health/staging-edges/{_GONE_001}/confirm")
+        resp = await multi_client.post(
+            f"/sage_vaults/example_vault/staging-edges/{_GONE_001}/confirm"
+        )
         assert resp.status_code == 404
 
 
@@ -595,7 +601,7 @@ class TestStagingEdges:
 class TestPendingMetadata:
     async def test_be_014_pending_metadata_returns_documents(self, multi_vault_app, multi_client):
         """GET pending-metadata returns documents with extracted fields."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         # Unconfirmed document
@@ -615,7 +621,7 @@ class TestPendingMetadata:
         )
         await gs.insert_document(doc_confirmed)
 
-        resp = await multi_client.get("/sage_vaults/pim_health/pending-metadata")
+        resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
         body = resp.json()
         assert isinstance(body, list)
@@ -637,7 +643,7 @@ class TestPendingMetadata:
     ):
         """Pending metadata extracted_fields includes document_date with
         correct source annotation (BE-036)."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         # Document with filename-derived date (source_path has date pattern)
@@ -646,7 +652,7 @@ class TestPendingMetadata:
             title="Checklist",
             metadata_confirmed=False,
         )
-        doc_filename.source_path = "test/2026-04-10_PIM_PV07_checklist_v1.md"
+        doc_filename.source_path = "test/2026-04-10_EXAMPLE_PV07_checklist_v1.md"
         doc_filename.document_date = "2026-04-10"
         await gs.insert_document(doc_filename)
 
@@ -656,11 +662,11 @@ class TestPendingMetadata:
             title="Notes",
             metadata_confirmed=False,
         )
-        doc_fallback.source_path = "test/PIM_PV07_notes.md"
+        doc_fallback.source_path = "test/EXAMPLE_PV07_notes.md"
         doc_fallback.document_date = "2025-06-15"
         await gs.insert_document(doc_fallback)
 
-        resp = await multi_client.get("/sage_vaults/pim_health/pending-metadata")
+        resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
         body = resp.json()
 
@@ -682,13 +688,13 @@ class TestPendingMetadata:
         self, multi_vault_app, multi_client
     ):
         """Pending metadata returns empty array when none pending."""
-        services = multi_vault_app.state.vault_registry["pim_health"]
+        services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         doc = _make_document("doc-pm3", metadata_confirmed=True)
         await gs.insert_document(doc)
 
-        resp = await multi_client.get("/sage_vaults/pim_health/pending-metadata")
+        resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -701,7 +707,7 @@ class TestPendingMetadata:
 class TestPipelineStatusFilter:
     async def test_be_016_discover_pipeline_status_filter(self, single_vault_app, client):
         """Discover endpoint accepts pipeline_status filter."""
-        services = single_vault_app.state.vault_registry["pim_health"]
+        services = single_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
         # Insert documents with various pipeline states
@@ -735,7 +741,7 @@ class TestPipelineStatusFilter:
         # which returns empty results for semantic search, we verify the filter
         # is accepted without error and doesn't crash.
         resp = await client.post(
-            "/sage_vaults/pim_health/discover",
+            "/sage_vaults/example_vault/discover",
             json={
                 "mode": "semantic",
                 "query": "test query",

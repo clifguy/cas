@@ -173,7 +173,7 @@ FunctionIdStr = Annotated[str, AfterValidator(_validate_function_id)]
 
 
 class FieldChange(BaseModel):
-    """T-0163: A single field-level delta inside a dry-run response.
+    """A single field-level delta inside a dry-run response.
 
     Used by `UpdateMetadataResponse`, `SetLifecycleResponse`,
     `BulkLifecycleItemResult`, and `BulkMetadataItemResult` to enumerate
@@ -422,7 +422,7 @@ class DocumentSummary(BaseModel):
 
     @classmethod
     def from_document(cls, doc: "Document") -> "DocumentSummary":
-        """Build a DocumentSummary from a Document (T-0096).
+        """Build a DocumentSummary from a Document.
 
         Single owner of the Document → DocumentSummary projection. Adding a
         field to DocumentSummary requires updating exactly one site; the
@@ -449,7 +449,7 @@ class DocumentSummary(BaseModel):
 
     @classmethod
     def from_traversal_row(cls, row: dict) -> "DocumentSummary":
-        """Build a DocumentSummary from a graph-traversal CTE row dict (T-0118).
+        """Build a DocumentSummary from a graph-traversal CTE row dict.
 
         Single owner of the CTE-row → DocumentSummary projection per the
         *CAS Projection-Point Audit Conventions* steering document (cas
@@ -460,7 +460,7 @@ class DocumentSummary(BaseModel):
 
         Sibling to ``from_document``: traversal hits flow through this
         path on the BH-101 hot path (per the *Projection-Point Closure
-        Cohort — Canonical Decisions* reference document, T-0118 routes
+        Cohort — Canonical Decisions* reference document, routes
         directly from the row dict rather than reconstructing a Document
         per row). The two factories project to the same model from
         different source shapes; each owns its own exhaustive-fields
@@ -501,7 +501,7 @@ class DocumentSummary(BaseModel):
 
 class DocumentSummaryLight(BaseModel):
     """Stripped DocumentSummary returned by ``sage_discover`` with
-    ``target="documents", mode="catalog", response_mode="light"`` (T-0158).
+    ``target="documents", mode="catalog", response_mode="light"``.
 
     Carries only the identity columns plus the two fields most callers
     need for triage (``doc_type`` and ``tier3_metadata``). Other
@@ -534,7 +534,7 @@ class DocumentSummaryLight(BaseModel):
 
     @classmethod
     def from_document(cls, doc: "Document") -> "DocumentSummaryLight":
-        """Build a DocumentSummaryLight from a Document (T-0158)."""
+        """Build a DocumentSummaryLight from a Document."""
         return cls(
             id=doc.id,
             title=doc.title,
@@ -913,7 +913,7 @@ class SetLifecycleRequest(BaseModel):
             "vault-config-defined; see `lifecycle.transitions` in the vault "
             "config for the authoritative list. Examples seen in practice: "
             "`supersede`, `complete`, `archive`, `reactivate` (cas vault) "
-            "plus `file` (pim_health vault). Neither vault defines "
+            "plus `file` (example_vault vault). Neither vault defines "
             "`activate`; the action for `archived → active` is `reactivate`."
         )
     )
@@ -1493,7 +1493,7 @@ class BulkMetadataResponse(BaseModel):
 
 
 class UpdateMetadataResponse(BaseModel):
-    """T-0152 wrapper for single-item `update_metadata`.
+    """wrapper for single-item `update_metadata`.
 
     Promotes the bare-Document return so the dry-run flag has a home.
     The `document` field is the post-patch state — persisted on a real
@@ -1696,9 +1696,9 @@ class LinkRequest(BaseModel):
 
 
 class LinkResponse(BaseModel):
-    """T-0152 wrapper for `sage_link` return.
+    """wrapper for `sage_link` return.
 
-    Promotes the previously-hand-constructed `{edge, created, ...}`
+    Promotes the previously-hand-constructed `{edge, created,...}`
     dict to a real schema so the dry-run flag has a home.
     """
 
@@ -1741,7 +1741,7 @@ class LinkResponse(BaseModel):
 
 
 class BulkLinkItem(BaseModel):
-    """One edge-creation request inside a bulk batch (T-0165).
+    """One edge-creation request inside a bulk batch.
 
     Mirrors ``LinkRequest`` field-for-field except for the envelope-level
     ``dry_run`` (which lives on ``BulkLinkRequest`` and is propagated to
@@ -1803,7 +1803,7 @@ class BulkLinkItem(BaseModel):
 
 
 class BulkLinkRequest(BaseModel):
-    """Request body for the bulk-link endpoint (T-0165).
+    """Request body for the bulk-link endpoint.
 
     Carries an ordered list of per-item edge-creation requests. The list
     may be empty; the response then has an empty ``results`` array.
@@ -1856,7 +1856,7 @@ class BulkLinkRequest(BaseModel):
 
 
 class BulkLinkItemResult(BaseModel):
-    """Outcome record for a single item inside a bulk-link response (T-0165)."""
+    """Outcome record for a single item inside a bulk-link response."""
 
     source_id: DocumentIdStr = Field(
         description="Echoed from the request item for caller correlation."
@@ -1920,7 +1920,7 @@ class BulkLinkItemResult(BaseModel):
 
 
 class BulkLinkResponse(BaseModel):
-    """Response body for the bulk-link endpoint (T-0165).
+    """Response body for the bulk-link endpoint.
 
     Carries per-item outcomes plus aggregate counts. Aggregate counts are
     redundant with iterating ``results`` and exist for caller ergonomics.
@@ -2082,7 +2082,7 @@ class TraversalNode(BaseModel):
         depth: int,
         edge_counts: dict[str, int],
     ) -> "TraversalNode":
-        """Build a TraversalNode from its component parts (T-0119).
+        """Build a TraversalNode from its component parts.
 
         Single owner of the (DocumentSummary, Edge, depth, edge_counts) →
         TraversalNode projection per the *CAS Projection-Point Audit
@@ -2170,7 +2170,7 @@ class ChainEntry(BaseModel):
 
     @classmethod
     def from_chain_row(cls, row: dict, position: int) -> "ChainEntry":
-        """Build a ChainEntry from a chain-walk CTE row dict and position (T-0120).
+        """Build a ChainEntry from a chain-walk CTE row dict and position.
 
         Single owner of the chain-walk row dict -> ChainEntry projection per the
         *CAS Projection-Point Audit Conventions* steering document (cas vault,
@@ -2263,9 +2263,9 @@ class RetrievalFilters(BaseModel):
     constraints with other scopes.
     """
 
-    # extra="forbid" (T-0092): unknown filter keys raise rather than silently
-    # drop. The pre-T-0092 default ("ignore") turned a typo like
-    # ``{"tickett_id": "T-0001"}`` into a no-op match-everything filter; the
+    # extra="forbid": unknown filter keys raise rather than silently
+    # drop. The pre-default ("ignore") turned a typo like
+    # ``{"tickett_id": ""}`` into a no-op match-everything filter; the
     # translator in sage.api.errors now converts the extra_forbidden
     # ValidationError into a typed UnknownFilterKeyError envelope.
     model_config = ConfigDict(extra="forbid")
@@ -2302,7 +2302,7 @@ class RetrievalFilters(BaseModel):
             "dict is treated as no filter."
         ),
     )
-    # Edge-only filter keys (T-0157). Valid only when the DiscoverRequest
+    # Edge-only filter keys. Valid only when the DiscoverRequest
     # targets edges; document-targeting requests that set these are rejected
     # at the DiscoverRequest model_validator (mode_parameter_mismatch).
     source_id: DocumentIdStr | None = Field(
@@ -2335,7 +2335,7 @@ class RetrievalFilters(BaseModel):
     )
 
 
-# T-0157: document-only filter keys that must NOT be set when target="edges".
+# Document-only filter keys that must NOT be set when target="edges".
 _DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "doc_type",
     "project",
@@ -2346,7 +2346,7 @@ _DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "tier3_metadata",
 )
 
-# T-0157: edge-only filter keys that must NOT be set when target="documents".
+# Edge-only filter keys that must NOT be set when target="documents".
 _EDGE_ONLY_FILTER_KEYS: tuple[str, ...] = (
     "source_id",
     "target_id",
@@ -2501,7 +2501,7 @@ class DiscoverRequest(BaseModel):
     @model_validator(mode="after")
     def _reject_mode_parameter_mismatch(self) -> "DiscoverRequest":
         """Reject parameter/mode combinations that have no defined semantics
-        (T-0092). Required-but-absent cases (e.g., semantic mode without
+        . Required-but-absent cases (e.g., semantic mode without
         ``query``) are still handled at the service layer via
         ``MissingFieldError`` to preserve the existing ``missing_*`` typed
         codes. This validator only catches the inverse case: a parameter is
@@ -2544,7 +2544,7 @@ class DiscoverRequest(BaseModel):
                 },
             )
 
-        # T-0157: target=edges is valid only with mode=catalog.
+        # Target=edges is valid only with mode=catalog.
         if self.target == RetrievalTarget.EDGES and self.mode != RetrievalMode.CATALOG:
             raise PydanticCustomError(
                 "mode_parameter_mismatch",
@@ -2556,7 +2556,7 @@ class DiscoverRequest(BaseModel):
                 },
             )
 
-        # T-0157: target=edges rejects document-only filter keys.
+        # Target=edges rejects document-only filter keys.
         if self.target == RetrievalTarget.EDGES and self.filters is not None:
             for key in _DOC_ONLY_FILTER_KEYS:
                 if getattr(self.filters, key) not in (None, [], {}):
@@ -2575,7 +2575,7 @@ class DiscoverRequest(BaseModel):
                         },
                     )
 
-        # T-0157: target=documents rejects edge-only filter keys.
+        # Target=documents rejects edge-only filter keys.
         if self.target == RetrievalTarget.DOCUMENTS and self.filters is not None:
             for key in _EDGE_ONLY_FILTER_KEYS:
                 if getattr(self.filters, key) is not None:
@@ -2594,7 +2594,7 @@ class DiscoverRequest(BaseModel):
                         },
                     )
 
-        # T-0157: target=edges rejects doc-only request parameters. Only
+        # Target=edges rejects doc-only request parameters. Only
         # explicitly non-default values are flagged so callers can leave
         # the other knobs alone without triggering this branch.
         if self.target == RetrievalTarget.EDGES:
@@ -2675,7 +2675,7 @@ class DiscoverHit(BaseModel):
         relevance_score: float | None = None,
         matched_chunk_count: int | None = None,
     ) -> "DiscoverHit":
-        """Build a DiscoverHit from a DocumentSummary plus optional chunk fields (T-0121).
+        """Build a DiscoverHit from a DocumentSummary plus optional chunk fields.
 
         Single owner of the DocumentSummary → DiscoverHit projection per the *CAS
         Projection-Point Audit Conventions* steering document (cas vault,
@@ -2685,7 +2685,7 @@ class DiscoverHit(BaseModel):
         DiscoverHit but not wired through this factory.
 
         ``document`` accepts either the full ``DocumentSummary`` or the
-        stripped ``DocumentSummaryLight`` (T-0158). The light variant is
+        stripped ``DocumentSummaryLight``. The light variant is
         only returned by the catalog+documents+response_mode=light path;
         every other path supplies a full ``DocumentSummary``.
         """
@@ -2699,7 +2699,7 @@ class DiscoverHit(BaseModel):
 
 
 class EdgeHit(BaseModel):
-    """A single edge enumeration result (T-0157).
+    """A single edge enumeration result.
 
     Returned by ``sage_discover`` when ``target="edges"``. Field
     population depends on ``response_mode``: ``light`` returns only
@@ -2874,7 +2874,7 @@ class ReadProjectionResponse(BaseModel):
 
     @classmethod
     def from_document(cls, doc: "Document", projection_text: str) -> "ReadProjectionResponse":
-        """Build a ReadProjectionResponse from a Document plus projection text (T-0126).
+        """Build a ReadProjectionResponse from a Document plus projection text.
 
         Single owner of the Document → ReadProjectionResponse projection per the
         *CAS Projection-Point Audit Conventions* steering document (cas vault,
@@ -2912,7 +2912,7 @@ class ReadSectionResponse(BaseModel):
         chunk_count: int,
         section_text: str,
     ) -> "ReadSectionResponse":
-        """Build a ReadSectionResponse from a Document plus section fields (T-0126).
+        """Build a ReadSectionResponse from a Document plus section fields.
 
         Single owner of the Document → ReadSectionResponse projection per the
         *CAS Projection-Point Audit Conventions* steering document (cas vault,
@@ -2941,7 +2941,7 @@ class ListHeadingsResponse(BaseModel):
 
     @classmethod
     def from_document(cls, doc: "Document", headings: list[str]) -> "ListHeadingsResponse":
-        """Build a ListHeadingsResponse from a Document plus heading list (T-0126).
+        """Build a ListHeadingsResponse from a Document plus heading list.
 
         Single owner of the Document → ListHeadingsResponse projection per the
         *CAS Projection-Point Audit Conventions* steering document (cas vault,
@@ -2986,7 +2986,7 @@ class MigrationReportEntry(BaseModel):
 
 
 class Tier3UniquenessCollision(BaseModel):
-    """One value held by multiple chain heads of the same doc_type (T-0115).
+    """One value held by multiple chain heads of the same doc_type.
 
     Surfaced by the migration scan when a vault's `unique_keys` declaration
     cannot be activated because the existing portfolio violates the
@@ -3011,7 +3011,7 @@ class Tier3UniquenessCollision(BaseModel):
 
 class Tier3UniquenessActivation(BaseModel):
     """One (doc_type, field) pair whose partial UNIQUE index was created or
-    confirmed by the migration (T-0115)."""
+    confirmed by the migration."""
 
     doc_type: str = Field(description="Document type opted into uniqueness.")
     field: str = Field(description="The tier3_metadata field whose values are now unique.")
@@ -3115,13 +3115,13 @@ class ReabstractReport(BaseModel):
 
 
 class DriftEntry(BaseModel):
-    """Per-edge entry in a DriftReport (T-0111).
+    """Per-edge entry in a DriftReport.
 
     Surfaced when the recorded `synced_from_*` provenance on a
     `sync_target` / `derived_from` edge no longer matches the current
     head of the source chain (`content_drift`), the chain has advanced
     without content change (`chain_advanced_no_content_change`), the
-    edge predates the T-0110 columns (`recorded_null`), or the source
+    edge predates the columns (`recorded_null`), or the source
     chain is forked (`chain_nonlinear`). Hash is the authoritative
     comparator; version label is a display key.
     """
@@ -3188,7 +3188,7 @@ class DriftEntry(BaseModel):
 
 
 class DriftReport(BaseModel):
-    """Result of a `sage_admin_detect_drift` call (T-0111).
+    """Result of a `sage_admin_detect_drift` call.
 
     Per-vault audit of `sync_target` / `derived_from` edges whose
     recorded provenance has diverged from the current source-chain head.
@@ -3221,7 +3221,7 @@ class DriftReport(BaseModel):
 
 
 class ReabstractProgressEvent(BaseModel):
-    """SSE `progress` event payload for reabstract-deferred (T-0134).
+    """SSE `progress` event payload for reabstract-deferred.
 
     Emitted twice per non-PDF document (a `started` event before
     dispatch, then a `completed` or `failed` event after the polling
@@ -3289,7 +3289,7 @@ class ReabstractProgressEvent(BaseModel):
 
 
 class ReabstractSummaryEvent(BaseModel):
-    """SSE `summary` event payload for reabstract-deferred (T-0134).
+    """SSE `summary` event payload for reabstract-deferred.
 
     Emitted once at the end of the stream, after all per-document
     progress events. Payload fields (sans the `event_type`
@@ -3342,7 +3342,7 @@ class EvalRetrievalResult(BaseModel):
 
 
 class VaultDocTypeEntry(BaseModel):
-    value: str = Field(description='Doc type identifier (e.g. "patent_draft").')
+    value: str = Field(description='Doc type identifier (e.g. "design_spec").')
     label: str = Field(description="Human-readable label for UI display.")
 
 
@@ -3565,7 +3565,7 @@ class CreateVaultRequest(BaseModel):
 
 
 class VaultConfigPreview(BaseModel):
-    """T-0152: structural diff of a would-be vault config update.
+    """Structural diff of a would-be vault config update.
 
     Populated only on dry-run responses; lists which top-level sections
     of the vault config would change if the request were committed.

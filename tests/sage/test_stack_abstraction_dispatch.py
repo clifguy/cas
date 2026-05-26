@@ -1,16 +1,16 @@
 """Tests for the SAGE-stack-wide abstraction provider dispatch helper
-(CAS-ADR-030, T-0103).
+(CAS-ADR-030).
 
-The factory dispatch that used to live inside `initialize_services` (per-vault,
-T-0099) is re-anchored at stack scope by ADR-030. The helper under test is
-`sage.mcp_init.build_stack_abstraction_provider`. It implements:
+The factory dispatch that used to live inside `initialize_services`
+(per-vault) is re-anchored at stack scope by ADR-030. The helper under
+test is `sage.mcp_init.build_stack_abstraction_provider`. It implements:
 
-    1. SAGE_TEST_STUB_PROVIDERS=1               -> Stub (env override)
-    2. stack.abstraction.provider == "stub"      -> Stub (explicit opt-out)
+    1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (env override)
+    2. stack.abstraction.provider == "stub" -> Stub (explicit opt-out)
     3. stack.abstraction.provider == "qwen3-mlx"
-       and stack.abstraction.model is None       -> raise ConfigError
+       and stack.abstraction.model is None -> raise ConfigError
     4. stack.abstraction.provider == "qwen3-mlx"
-       and stack.abstraction.model is not None   -> Qwen3 (factory)
+       and stack.abstraction.model is not None -> Qwen3 (factory)
 
 Test IDs follow STK-NNN (Stack abstraction dispatch).
 """
@@ -89,7 +89,7 @@ def test_stk_002_provider_stub_does_not_call_qwen3_factory(monkeypatch):
 def test_stk_003_env_var_short_circuits_before_provider_field(monkeypatch):
     """`SAGE_TEST_STUB_PROVIDERS=1` short-circuits to Stub even when
     provider="qwen3-mlx" with a non-null model would otherwise dispatch to
-    Qwen3 (preserves T-0029 / F-8 guardrail at the new layer).
+    Qwen3 (preserves / F-8 guardrail at the new layer).
 
     Anti-coincidental-pass: paired with STK-001 (same config minus the env
     var gets Qwen3 via factory). The difference between the two outcomes

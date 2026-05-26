@@ -103,7 +103,7 @@
                     },
                     "condition": {
                       "type": "string",
-                      "description": "Optional condition expression for when this rule applies. Example: 'lifecycle_status == active' or 'doc_type in [patent_draft, glossary]'. If omitted, the rule applies unconditionally for the named operation."
+                      "description": "Optional condition expression for when this rule applies. Example: 'lifecycle_status == active' or 'doc_type in [design_spec, glossary]'. If omitted, the rule applies unconditionally for the named operation."
                     }
                   }
                 }

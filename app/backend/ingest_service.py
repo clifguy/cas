@@ -201,7 +201,7 @@ class BatchIngestService:
         if infer_edges:
             edge_plan = await self._build_edge_plan(files, vault_services)
 
-        # Phase 2: Per-file ingestion. T-0129: identifier_mention inference
+        # Phase 2: Per-file ingestion. Identifier_mention inference
         # now runs inside IngestionService.ingest itself (after Stage 2,
         # before Stage 3), so all ingest pathways honor the rule. This
         # service retains pre-ingest plan construction (Phase 1) and Tier-2
@@ -283,7 +283,7 @@ class BatchIngestService:
 
         The app layer's job is the ``FileDescriptor`` -> ``InferenceItem``
         adapter; the vault-querying and rule application moved to the
-        SAGE substrate per T-0138 (``sage.services.batch_inference``).
+        SAGE substrate (``sage.services.batch_inference``).
         """
         scan_items: list[InferenceItem] = []
         for fd in files:
