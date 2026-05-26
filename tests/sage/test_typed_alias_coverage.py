@@ -276,9 +276,8 @@ def _shape_bearing_fields() -> list[tuple[type[BaseModel], str, type]]:
     name matches the shape registry *and* whose annotation carries a
     ``str`` arm. Inherited fields are not re-walked; each class accounts
     only for fields declared in its own body. Non-``str`` fields whose
-    names happen to match a suffix (e.g. ``DocumentSummary.document_date:
-    datetime | None``) are filtered out — bare ``datetime`` is acceptable
-    per the convention.
+    names happen to match a suffix are filtered out — bare ``datetime``
+    is acceptable per the convention.
     """
     rows: list[tuple[type[BaseModel], str, type]] = []
     for cls in _discover_basemodels():

@@ -417,13 +417,16 @@ async def test_bh_029_deterministic_prefix_match(
     for hit in response.results:
         assert hit.relevance_score is None
 
-    # Deterministic site previously dropped source_modified_at and
-    # passed document_date through as a raw string. The from_document
-    # consolidation fixes both; assert the consumer-surface round-trip.
+    # Deterministic site previously dropped source_modified_at. The
+    # from_document consolidation fixes that; assert the consumer-surface
+    # round-trip. document_date is a bare YYYY-MM-DD calendar-date string —
+    # the projection deliberately does not promote it to a UTC-anchored
+    # datetime, because doing so would shift the wire-side calendar for
+    # non-UTC consumers.
     summary = response.results[0].document
     assert summary.source_modified_at == deterministic_smt
-    assert isinstance(summary.document_date, datetime)
-    assert summary.document_date == datetime(2026, 5, 15, tzinfo=timezone.utc)
+    assert type(summary.document_date) is str
+    assert summary.document_date == "2026-05-15"
 
 
 # ---------------------------------------------------------------------------
@@ -1767,9 +1770,11 @@ async def test_bh_070_document_date_in_summary(
     response = await retrieval_service.discover(request)
 
     hit = next(h for h in response.results if h.document.id == _id("doc_date_summary"))
-    # document_date is now datetime, not str
-    assert isinstance(hit.document.document_date, datetime)
-    assert hit.document.document_date == datetime(2026, 3, 15, tzinfo=timezone.utc)
+    # document_date is a bare YYYY-MM-DD calendar-date string on the
+    # DocumentSummary projection (no UTC-datetime promotion at the
+    # projection boundary). The on-disk Document carries the same shape.
+    assert type(hit.document.document_date) is str
+    assert hit.document.document_date == "2026-03-15"
 
 
 async def test_source_modified_at_in_summary(
@@ -4218,12 +4223,54 @@ def test_from_document_populates_every_summary_field():
             assert value is not None, f"DocumentSummary.{field_name} not populated by from_document"
 
 
-# T2: document_date is parsed to datetime, not passed through as a string.
-def test_from_document_parses_document_date():
+# T2: document_date passes through as a bare calendar-date string — the
+# projection does not promote it to a UTC-anchored datetime. Promoting a
+# calendar date to a UTC instant introduces a non-invertible shift for
+# consumers in non-UTC zones (the source of the search-page off-by-one
+# class of bug); the projection keeps the calendar-date shape, and any
+# consumer needing a datetime parses at the use site.
+def test_from_document_passes_document_date_through_as_string():
     doc = _make_doc(_id("doc_dated"), document_date="2026-05-15")
     summary = DocumentSummary.from_document(doc)
-    assert isinstance(summary.document_date, datetime)
-    assert summary.document_date == datetime(2026, 5, 15, tzinfo=timezone.utc)
+    # `type(...) is str` rather than `isinstance(..., str)` — a datetime
+    # subclassing str (hypothetical) would slip past isinstance. The intent
+    # is "the projection did not promote the type", and `type(...) is str`
+    # says exactly that.
+    assert type(summary.document_date) is str
+    assert summary.document_date == "2026-05-15"
+
+
+# T2a: DocumentSummary serializes document_date as a bare YYYY-MM-DD string
+# on the wire, not as an ISO datetime. Catches a regression in which a
+# Pydantic field decorator or serializer is added that re-promotes the
+# value before serialization.
+def test_documentsummary_serializes_document_date_as_bare_calendar_string():
+    doc = _make_doc(_id("doc_dated_wire"), document_date="2026-05-15")
+    summary = DocumentSummary.from_document(doc)
+    payload = summary.model_dump_json()
+    # Exact-string match (not regex prefix). A regex like
+    # r'"document_date":"\d{4}-\d{2}-\d{2}' would pass on the
+    # category-error form "2026-05-15T00:00:00Z" because the prefix matches.
+    assert '"document_date":"2026-05-15"' in payload
+    assert '"2026-05-15T' not in payload  # no datetime form anywhere in the payload
+
+
+# T2b: RetrievalService._resolve_document_date parses the bare calendar-date
+# string into a UTC datetime for recency scoring. The parse helper lives at
+# the consumer, where calendar-to-instant conversion is semantically
+# appropriate (the caller does date math: ``(now - ref).total_seconds()``).
+def test_resolve_document_date_parses_string_document_date():
+    doc = _make_doc(_id("doc_resolve"), document_date="2026-05-15")
+    summary = DocumentSummary.from_document(doc)
+    now = datetime(2026, 5, 20, tzinfo=timezone.utc)
+    resolved = RetrievalService._resolve_document_date(summary, now)
+    # Anti-coincidental: assert the *result type and value* match a datetime
+    # — if the consumer forgot to parse and returned the raw string, the
+    # equality comparison against a datetime would raise TypeError on the
+    # caller's `(now - ref_date).total_seconds()` expression in production,
+    # but the assertion below would simply fail the == on its own.
+    assert isinstance(resolved, datetime)
+    assert resolved == datetime(2026, 5, 15, tzinfo=timezone.utc)
 
 
 # T3: None document_date round-trips to None without raising.

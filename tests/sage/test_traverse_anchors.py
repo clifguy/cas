@@ -762,7 +762,10 @@ async def _seed_simple_ref_pair(graph_store, target_doc_date: str | None):
 
 
 async def test_traverse_document_date_yyyy_mm_dd(graph_store, graph_ops_service):
-    """Contract-shape document_date round-trips as midnight UTC."""
+    """Contract-shape document_date passes through as a calendar-date
+    string — the projection deliberately does not promote it to a UTC-
+    anchored datetime. Calendar dates are labels, not instants; promotion
+    would shift the wire-side calendar for non-UTC consumers."""
     await _seed_simple_ref_pair(graph_store, "2026-05-05")
 
     out = await graph_ops_service.traverse(
@@ -774,11 +777,13 @@ async def test_traverse_document_date_yyyy_mm_dd(graph_store, graph_ops_service)
         )
     )
     assert [n.document.id for n in out.nodes] == [_id("tgt")]
-    assert out.nodes[0].document.document_date == datetime(2026, 5, 5, tzinfo=timezone.utc)
+    assert out.nodes[0].document.document_date == "2026-05-05"
 
 
 async def test_traverse_document_date_iso_with_z(graph_store, graph_ops_service):
-    """Bug repro: ISO-with-Z document_date must not crash traverse."""
+    """Bug repro: ISO-with-Z document_date must not crash traverse. The
+    projection's tolerant normalization (parse_document_date + strftime)
+    coerces legacy ISO-shaped values to the canonical calendar-date string."""
     await _seed_simple_ref_pair(graph_store, "2026-05-05T00:00:00Z")
 
     out = await graph_ops_service.traverse(
@@ -790,7 +795,7 @@ async def test_traverse_document_date_iso_with_z(graph_store, graph_ops_service)
         )
     )
     assert [n.document.id for n in out.nodes] == [_id("tgt")]
-    assert out.nodes[0].document.document_date == datetime(2026, 5, 5, tzinfo=timezone.utc)
+    assert out.nodes[0].document.document_date == "2026-05-05"
 
 
 async def test_traverse_document_date_malformed(graph_store, graph_ops_service):
