@@ -32,7 +32,12 @@ FIXTURE_DOC_TYPE = "misc"
 FIXTURE_TITLES = ("e2e-doc-1", "e2e-doc-2", "e2e-doc-3")
 
 # Maintenance panel e2e — one document in abstraction_skipped so the
-# reabstract worklist is non-empty when the panel mounts.
+# reabstract worklist is non-empty when the panel mounts. The maintenance
+# fixture lives in the smoke-test vault so the reabstract worklist on cas
+# stays free of test sediment (SAGE has no hard-delete; archived
+# predecessors persist in the graph store across runs).
+MAINTENANCE_VAULT_ID = "test"
+MAINTENANCE_FIXTURE_DOC_TYPE = "document"
 MAINTENANCE_FIXTURE_TAG = "e2e-maintenance-fixture"
 MAINTENANCE_FIXTURE_TITLE = "e2e-deferred-abstract-fixture"
 TERMINAL_PIPELINE_STATUSES = frozenset({"abstraction_complete", "abstraction_skipped", "failed"})
@@ -121,14 +126,14 @@ def ingest_fresh_fixtures(backend: str) -> None:
 
 
 def get_vault_config(backend: str) -> dict:
-    status, body = http_request("GET", f"{backend}/sage_vaults/{VAULT_ID}/config")
+    status, body = http_request("GET", f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/config")
     if status != 200 or not isinstance(body, dict):
         raise SystemExit(f"GET vault config failed: {status} {body!r}")
     return body
 
 
 def set_abstraction_enabled(backend: str, enabled: bool) -> None:
-    """Patch the cas vault config to toggle vault-scope abstraction.
+    """Patch the maintenance vault config to toggle vault-scope abstraction.
 
     The ingestion pipeline reads ``vault_config.abstraction.enabled`` at
     Stage 3 (see sage/services/ingestion.py:730 — BH-025). When False,
@@ -136,11 +141,13 @@ def set_abstraction_enabled(backend: str, enabled: bool) -> None:
     dispatching to the abstraction provider. This is the only HTTP-level
     seam that produces an abstraction_skipped document on a vault whose
     abstraction is otherwise enabled; pipeline_status itself is not a
-    user-mutable field.
+    user-mutable field. The smoke-test vault ships with abstraction
+    disabled, so this toggle is typically a no-op there; the logic is
+    kept defensive in case the target vault's config changes.
     """
     status, body = http_request(
         "PUT",
-        f"{backend}/sage_vaults/{VAULT_ID}/config",
+        f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/config",
         {"abstraction": {"enabled": enabled}},
     )
     if status != 200:
@@ -160,7 +167,7 @@ def archive_prior_maintenance_fixtures(backend: str) -> int:
     for lifecycle in ("active", "completed"):
         status, body = http_request(
             "POST",
-            f"{backend}/sage_vaults/{VAULT_ID}/discover",
+            f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/discover",
             {
                 "mode": "catalog",
                 "filters": {"tags": [MAINTENANCE_FIXTURE_TAG], "lifecycle_status": lifecycle},
@@ -175,7 +182,7 @@ def archive_prior_maintenance_fixtures(backend: str) -> int:
         items = [{"document_id": r["document"]["id"], "action": "archive"} for r in results]
         http_request(
             "POST",
-            f"{backend}/sage_vaults/{VAULT_ID}/lifecycle/bulk",
+            f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/lifecycle/bulk",
             {"items": items},
         )
         archived += len(items)
@@ -187,7 +194,7 @@ def wait_for_terminal(backend: str, document_id: str, timeout: float = 30.0) -> 
     deadline = time.time() + timeout
     while time.time() < deadline:
         status, body = http_request(
-            "GET", f"{backend}/sage_vaults/{VAULT_ID}/documents/{document_id}"
+            "GET", f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/documents/{document_id}"
         )
         if status == 200 and isinstance(body, dict):
             ps = body.get("pipeline_status")
@@ -211,12 +218,14 @@ def ingest_maintenance_fixture(backend: str) -> str:
         "source_type": "markdown",
         "metadata": {
             "title": MAINTENANCE_FIXTURE_TITLE,
-            "doc_type": FIXTURE_DOC_TYPE,
+            "doc_type": MAINTENANCE_FIXTURE_DOC_TYPE,
             "tags": [MAINTENANCE_FIXTURE_TAG],
         },
         "needs_review": False,
     }
-    status, body = http_request("POST", f"{backend}/sage_vaults/{VAULT_ID}/documents", payload)
+    status, body = http_request(
+        "POST", f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/documents", payload
+    )
     if status not in (200, 201) or not isinstance(body, dict):
         raise SystemExit(f"ingest of maintenance fixture failed: {status} {body!r}")
     # IngestResponse wraps the Document under the `document` key alongside
@@ -232,10 +241,11 @@ def seed_maintenance_fixture(backend: str) -> None:
     """Seed at least one document with pipeline_status=abstraction_skipped.
 
     Approach: archive prior fixtures, temporarily disable vault-scope
-    abstraction, ingest a marker document, wait for it to reach a terminal
-    pipeline_status, then restore abstraction. The toggle window is bounded
-    by the wait + a try/finally, so a crash mid-seed cannot leave the cas
-    vault with abstraction disabled.
+    abstraction (if it was enabled), ingest a marker document, wait for it
+    to reach a terminal pipeline_status, then restore abstraction. The
+    toggle window is bounded by the wait + a try/finally, so a crash
+    mid-seed cannot leave the maintenance vault with abstraction
+    disabled.
 
     Per sage/services/ingestion.py:730-740, ingestion with
     abstraction.enabled=False transitions documents directly to
@@ -273,14 +283,16 @@ def main() -> int:
     args = parser.parse_args()
     backend = args.backend.rstrip("/")
 
-    print(f"seeding {VAULT_ID} fixtures (tag={FIXTURE_TAG}) via {backend}")
+    print(f"seeding fixtures via {backend}")
+    print(f"  bulk fixtures (tag={FIXTURE_TAG}) → vault={VAULT_ID}")
+    print(f"  maintenance fixture (tag={MAINTENANCE_FIXTURE_TAG}) → vault={MAINTENANCE_VAULT_ID}")
     archive_prior_fixtures(backend)
-    # Maintenance fixture goes first so its disable-ingest-wait-enable
-    # window completes before the bulk ingests start; otherwise mid-flight
-    # bulk docs could land in abstraction_skipped instead of abstraction_complete.
     seed_maintenance_fixture(backend)
     ingest_fresh_fixtures(backend)
-    print(f"seed complete: 3 bulk fixtures + 1 deferred-abstract fixture in {VAULT_ID}")
+    print(
+        f"seed complete: 3 bulk fixtures in {VAULT_ID}, "
+        f"1 deferred-abstract fixture in {MAINTENANCE_VAULT_ID}"
+    )
     return 0
 
 

@@ -1,17 +1,21 @@
-// Playwright e2e for the Settings → Maintenance panel (T-0117).
+// Playwright e2e for the Settings → Maintenance panel.
 //
-// Coverage scope (per the approved T-0117 plan):
-//   - C1: the Maintenance tab is present in Settings for the cas vault.
+// Coverage scope:
+//   - C1: the Maintenance tab is present in Settings for the maintenance
+//         vault.
 //   - C2: with at least one abstraction_skipped fixture seeded, the panel
 //         surfaces the count and the reabstract button is enabled.
 //
 // The full reabstract round-trip is NOT exercised here — Qwen3-MLX inference
 // would dominate the wall-clock time and the MaintenancePanel.test.tsx
 // component tests (mocked-API) cover the running and completion states.
+//
+// The fixture lives in the smoke-test vault so the reabstract worklist on
+// cas stays free of test sediment (SAGE has no hard-delete).
 
 import { test, expect } from '@playwright/test';
 
-const VAULT_ID = 'cas';
+const VAULT_ID = 'test';
 const BACKEND = 'http://localhost:8000';
 const MAINTENANCE_FIXTURE_TAG = 'e2e-maintenance-fixture';
 
@@ -43,9 +47,10 @@ test('maintenance panel shows deferred count and enables the reabstract button',
   // a count-of-zero bug from a real-but-tiny deferred set).
   expect(await activeMaintenanceFixtureCount()).toBeGreaterThanOrEqual(1);
 
-  // Land on dashboard and ensure cas is the active vault. (See the same
-  // pattern in bulk-actions.spec.ts for the rationale: vault list sort
-  // order is not stable so the default-vault choice depends on the data.)
+  // Land on dashboard and ensure the maintenance vault is active. (See
+  // the same pattern in bulk-actions.spec.ts for the rationale: vault list
+  // sort order is not stable so the default-vault choice depends on the
+  // data.)
   await page.goto('/dashboard');
   const vaultSelector = page.getByRole('combobox').first();
   await vaultSelector.waitFor({ state: 'visible' });
@@ -70,9 +75,9 @@ test('maintenance panel shows deferred count and enables the reabstract button',
   await expect(page.getByTestId('maintenance-panel')).toBeVisible();
 
   // C2: count displayed and button enabled.
-  // The cas vault may contain other abstraction_skipped docs unrelated to
-  // this fixture (real CAS work that landed there), so we assert >= 1
-  // rather than == 1.
+  // The maintenance vault may contain abstraction_skipped docs unrelated
+  // to this fixture across runs (SAGE has no hard-delete), so we assert
+  // >= 1 rather than == 1.
   const countLocator = page.getByTestId('reabstract-count');
   await expect(countLocator).toBeVisible();
   await expect(countLocator).not.toHaveText('… deferred');
