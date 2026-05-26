@@ -35,9 +35,18 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 
 # ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ContentBlock
-from pydantic import TypeAdapter
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ContentBlock, TextContent
+from pydantic import TypeAdapter, ValidationError
 
+# Side-effect import: monkey-patches ArgModelBase.model_config to add
+# extra="forbid", so every FastMCP per-tool argument model rejects
+# unknown JSON-RPC kwargs at the framework boundary. Must precede any
+# tool registration (register_sage_tools, register_app_tools, the
+# @mcp.tool()-decorated entries below) because Tool.from_function()
+# snapshots the Pydantic config at subclass construction. Substrate
+# decision: CAS-ADR-037.
+import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
 from sage.api.errors import SAGEError
 from sage.app_tools import register_app_tools
@@ -217,6 +226,68 @@ def _envelope_error_kind(result: Any) -> str | None:
     return None
 
 
+def _unknown_parameter_envelope(
+    tool_name: str,
+    exc: ToolError,
+    tool_manager: Any,
+) -> list[TextContent] | None:
+    """Translate an ``extra_forbidden`` ToolError into the SAGE error envelope.
+
+    FastMCP wraps every per-tool exception in ``ToolError`` at
+    ``Tool.run`` (``mcp/server/fastmcp/tools/base.py``); the original
+    Pydantic ``ValidationError`` survives as ``ToolError.__cause__``. When
+    the cause carries one or more errors of type ``extra_forbidden`` —
+    the signal that ``ArgModelBase``'s ``extra="forbid"`` rejected a
+    caller-supplied kwarg — the SAGE substrate translates the failure
+    into the ``unknown_parameter`` envelope at the framework boundary
+    (CAS-ADR-037).
+
+    Returns ``None`` when the ToolError is not the result of an
+    ``extra_forbidden`` rejection — the cause is a different
+    ``ValidationError`` category (type coercion, missing required
+    field) or a non-validation tool-body failure. The caller continues
+    to propagate the ToolError unchanged in that case.
+
+    The envelope detail enumerates the rejected parameter names and the
+    full set of valid parameters declared in the tool's signature, so
+    the caller can correct the invocation in one round-trip without
+    consulting external documentation. The envelope is wrapped as
+    ``[TextContent(text=<json>)]`` to match the production wire shape
+    that ``_envelope_error_kind`` already understands, so the existing
+    WARNING-log path covers the new error kind without duplication.
+    """
+    cause = exc.__cause__
+    if not isinstance(cause, ValidationError):
+        return None
+    rejected = [
+        err["loc"][0]
+        for err in cause.errors()
+        if err.get("type") == "extra_forbidden" and err.get("loc")
+    ]
+    if not rejected:
+        return None
+
+    tool = tool_manager.get_tool(tool_name)
+    if tool is not None:
+        valid_params = sorted(tool.parameters.get("properties", {}).keys())
+    else:  # pragma: no cover -- defensive; ToolError implies the tool exists
+        valid_params = []
+    rejected_sorted = sorted(set(rejected))
+
+    sage_err = SAGEError(
+        code="unknown_parameter",
+        message=(f"Tool {tool_name!r} received unknown parameter(s): {rejected_sorted}."),
+        status_code=400,
+        detail={
+            "tool": tool_name,
+            "rejected_params": rejected_sorted,
+            "valid_params": valid_params,
+        },
+    )
+    envelope = _error_response(sage_err)
+    return [TextContent(type="text", text=_json.dumps(envelope))]
+
+
 class _LoggingFastMCP(FastMCP):
     """FastMCP subclass that distinguishes tool outcomes in the console log.
 
@@ -235,6 +306,15 @@ class _LoggingFastMCP(FastMCP):
       FastMCP wraps SAGE dict returns into. []
     - raised exception → INFO plus one ERROR line
       (`mcp tool failed: <name>`) with traceback, and re-raise.
+
+    The ``ToolError`` branch additionally checks whether the cause is an
+    ``extra_forbidden`` Pydantic ``ValidationError`` — the signal that
+    ``ArgModelBase``'s ``extra="forbid"`` rejected a caller-supplied
+    kwarg. When it is, the translation returns the SAGE
+    ``unknown_parameter`` envelope (wrapped to match the production
+    ``[TextContent(text=<json>)]`` wire shape) and falls through to the
+    existing ``_envelope_error_kind`` warning path; the ToolError is
+    NOT re-raised. Substrate decision: CAS-ADR-037.
     """
 
     async def call_tool(
@@ -244,6 +324,12 @@ class _LoggingFastMCP(FastMCP):
         logger.info("mcp tool: %s", name)
         try:
             result = await super().call_tool(name, arguments)
+        except ToolError as e:
+            envelope = _unknown_parameter_envelope(name, e, self._tool_manager)
+            if envelope is None:
+                logger.exception("mcp tool failed: %s", name)
+                raise
+            result = envelope
         except Exception:
             logger.exception("mcp tool failed: %s", name)
             raise

@@ -125,6 +125,57 @@ def test_error_response_vault_not_found_returns_unknown_vault():
 
 
 # ---------------------------------------------------------------------------
+# Unknown-parameter rejection at the FastMCP boundary (CAS-ADR-037).
+# Integration test: invoking a real registered SAGE MCP tool through the
+# FastMCP wire path with a misspelled kwarg returns the unknown_parameter
+# envelope rather than silently dropping the kwarg or surfacing a
+# misleading downstream error. Goes through _LoggingFastMCP.call_tool
+# (the JSON-RPC dispatch seam), not the direct-Python tool function,
+# because the strict-args rejection is a FastMCP-middleware property.
+# ---------------------------------------------------------------------------
+
+
+async def test_call_tool_rejects_misspelled_kwarg_on_registered_sage_tool():
+    """Misspelled kwarg on a real registered SAGE tool produces the envelope.
+
+    Control (action 1) confirms the tool itself is reachable and the
+    same wire path returns success under correct invocation. Subject
+    (action 2) confirms the unknown_parameter envelope shape on the
+    same wire path. Two actions on the same fixture rule out
+    coincidental pass: a tool that rejected every call would fail action
+    1; a tool that accepted every call would fail action 2.
+
+    sage_list_vaults is chosen because it has no required state setup
+    and exercises the JSON-RPC dispatch the same as every other tool.
+    """
+    from mcp.types import TextContent
+
+    # Action 1 (control): correct invocation returns success.
+    control = await _mcp.mcp.call_tool("sage_list_vaults", {})
+    assert isinstance(control, list)
+    assert len(control) >= 1
+    assert isinstance(control[0], TextContent)
+    control_payload = json.loads(control[0].text)
+    # Success payload is whatever sage_list_vaults returns -- here we
+    # just assert it's NOT the unknown_parameter envelope.
+    assert control_payload.get("error") != "unknown_parameter"
+
+    # Action 2 (subject): misspelled kwarg returns the envelope.
+    subject = await _mcp.mcp.call_tool("sage_list_vaults", {"misspelled": "x"})
+    assert isinstance(subject, list)
+    assert len(subject) == 1
+    assert isinstance(subject[0], TextContent)
+    envelope = json.loads(subject[0].text)
+    assert envelope["error"] == "unknown_parameter"
+    assert envelope["detail"]["tool"] == "sage_list_vaults"
+    assert envelope["detail"]["rejected_params"] == ["misspelled"]
+    # valid_params reflects the tool's declared signature; we don't
+    # pin the exact list to keep the test resilient to future signature
+    # changes, but we do confirm the field is populated.
+    assert isinstance(envelope["detail"]["valid_params"], list)
+
+
+# ---------------------------------------------------------------------------
 # Ingestion
 # ---------------------------------------------------------------------------
 

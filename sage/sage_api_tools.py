@@ -454,22 +454,6 @@ def register_sage_tools(
         decision to invoke this tool IS the confirmation signal,
         independent of whether any field-patch parameter accompanies it.
 
-        Compound-risk warning (FastMCP silent-drop interaction):
-        FastMCP's ``ArgModelBase`` silently drops unknown JSON-RPC kwargs
-        at the MCP framework boundary (see
-        ``.venv/lib/python3.14/site-packages/mcp/server/fastmcp/utilities/func_metadata.py``).
-        This compounds with the empty-call confirmation-flip behavior: a
-        caller who misspells a kwarg name (e.g., types ``patch={...}``
-        instead of the declared ``tier3_metadata={...}``) reduces their
-        call to the all-None code path and silently triggers the
-        confirmation flip with no semantic edit. The MCP envelope
-        returns success; nothing in the response signals that the
-        intended edit was dropped. **If your response indicates success
-        but the document state did not change as expected, check for a
-        misspelled parameter name -- unknown kwargs are silently dropped
-        at the MCP framework boundary, which can reduce your call to
-        the empty-call confirmation flip.**
-
         See CAS-ADR-028 for the ingest-vs-update shape asymmetry
         rationale: ``sage_ingest`` still takes ``tags`` as a list and
         ``tier3_metadata`` as a dict (creation supplies full state);
@@ -2310,25 +2294,6 @@ def register_sage_tools(
         the original exception; no manual ``sage_reload_vault`` is
         required to reconcile disk and memory after a failed update.
 
-        Compound-risk warning (FastMCP silent-drop interaction):
-        FastMCP's ``ArgModelBase`` silently drops unknown JSON-RPC
-        kwargs at the MCP framework boundary (see and
-        ``.venv/lib/python3.14/site-packages/mcp/server/fastmcp/utilities/func_metadata.py``).
-        This compounds with the all-None real-run code path: when
-        every section parameter is omitted or None (or every section
-        kwarg is misspelled — e.g., ``doctypes={...}`` instead of
-        ``document_types={...}``), and ``dry_run=False``, the tool
-        still revalidates the current in-memory config, writes a
-        byte-identical ``vault_config.yaml`` to disk, and triggers a
-        full ``_registry_service.reload``. The MCP envelope returns
-        ``status="updated"`` with empty warnings; nothing in the
-        response signals that no intended section edit reached the
-        config. **If your response indicates success but the vault
-        config did not change as expected, check for a misspelled
-        section kwarg name -- unknown kwargs are silently dropped at
-        the MCP framework boundary, which can reduce your call to
-        the all-None no-op-with-reload path.**
-
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed
           ``VaultIdStr`` typed-alias validation at the boundary (per
@@ -3057,20 +3022,6 @@ def register_sage_tools(
         to the HTTP route's SSE stream directly; the MCP tool exists
         for the report-and-return access pattern.
 
-        Framework boundary -- ``include_pdf`` silent-drop compound risk:
-        If your response indicates success but PDF documents were not
-        processed as expected, check for a misspelled ``include_pdf``
-        parameter name (e.g. ``includePdf``, ``includepdfs``, or
-        ``pdf=True``). Unknown kwargs are silently dropped at the
-        FastMCP framework boundary, which means the tool runs with
-        ``include_pdf=False`` -- its default -- and PDFs are silently
-        skipped despite caller intent to include them. The diagnostic
-        signal is a successful ReabstractReport whose ``pdf_skipped``
-        count matches the vault's PDF count even though the caller
-        believed they had opted PDFs in. See (framework-level
-        FastMCP ``extra=forbid`` finding) and the v2 cross-
-        cutting compound-risk note for the underlying mechanism.
-
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``reabstract_already_in_flight`` (409): a reabstract is
@@ -3085,9 +3036,6 @@ def register_sage_tools(
             include_pdf: When False (default), source_type=pdf documents
                 are skipped (scanned PDFs typically have no extractable
                 text). When True, PDFs are included in the worklist.
-                Note the FastMCP silent-drop compound risk documented
-                above: a typo in this parameter name is dropped at the
-                framework boundary and falls back to the False default.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
