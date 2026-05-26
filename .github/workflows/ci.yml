@@ -96,6 +96,11 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      # gitleaks-action has not shipped a Node 24 release; opt this
+      # job's JavaScript actions into Node 24 to silence the deprecation
+      # warning until upstream catches up or this action is replaced.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v6
         with:
