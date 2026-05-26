@@ -386,9 +386,16 @@ class DocumentSummary(BaseModel):
         default_factory=list,
         description="Caller-supplied tags applied to the document.",
     )
-    document_date: datetime | None = Field(
+    document_date: DocumentDateStr = Field(
         default=None,
-        description="Authoritative content date when available.",
+        description=(
+            "Authoritative content date in YYYY-MM-DD format (calendar date, "
+            "not a UTC-anchored instant). Matches the on-disk Document.document_date "
+            "shape — the projection passes the string through unchanged so the wire "
+            "serialization stays a bare calendar date. Consumers that need a "
+            "datetime (e.g., recency scoring) parse at the use site via "
+            "sage.utils.date_parsing.parse_document_date."
+        ),
     )
     source_modified_at: datetime | None = Field(
         default=None,
@@ -429,7 +436,17 @@ class DocumentSummary(BaseModel):
         exhaustive-fields test in tests/sage/test_retrieval.py fails closed
         if a future field is added to the schema but not to this factory.
         """
+        # Normalize document_date to the strict YYYY-MM-DD calendar-date
+        # string. Legacy records on disk may carry ISO-shape or malformed
+        # values that the strict DocumentDateStr validator on the projection
+        # field would reject; parse_document_date tolerantly handles those
+        # (returning None for the truly unparseable), and strftime emits the
+        # canonical calendar shape. The factory encapsulates this read-path
+        # tolerance so the projection's published contract stays strict.
         from sage.utils.date_parsing import parse_document_date
+
+        parsed_dd = parse_document_date(doc.document_date)
+        document_date = parsed_dd.strftime("%Y-%m-%d") if parsed_dd else None
 
         return cls(
             id=doc.id,
@@ -441,7 +458,7 @@ class DocumentSummary(BaseModel):
             project=doc.project,
             doc_type=doc.doc_type,
             tags=doc.tags,
-            document_date=parse_document_date(doc.document_date),
+            document_date=document_date,
             source_modified_at=doc.source_modified_at,
             semantic_abstract=doc.semantic_abstract,
             tier3_metadata=doc.tier3_metadata,
@@ -476,10 +493,15 @@ class DocumentSummary(BaseModel):
         """
         import json
 
+        # Normalize document_date to the strict YYYY-MM-DD calendar-date
+        # string — same shape as from_document; see the comment there for
+        # the read-path tolerance rationale.
         from sage.utils.date_parsing import parse_document_date
 
         source_modified_at_raw = row.get("d_source_modified_at")
         tags_raw = row.get("d_tags")
+        parsed_dd = parse_document_date(row.get("d_document_date"))
+        document_date = parsed_dd.strftime("%Y-%m-%d") if parsed_dd else None
         return cls(
             id=row["doc_id"],
             title=row["d_title"],
@@ -490,7 +512,7 @@ class DocumentSummary(BaseModel):
             project=row["d_project"],
             doc_type=row["d_doc_type"],
             tags=json.loads(tags_raw) if tags_raw else [],
-            document_date=parse_document_date(row.get("d_document_date")),
+            document_date=document_date,
             source_modified_at=(
                 datetime.fromisoformat(source_modified_at_raw) if source_modified_at_raw else None
             ),

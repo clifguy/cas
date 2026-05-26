@@ -57,7 +57,7 @@ function makeHit(id: string, title: string, overrides?: Partial<DiscoverHit>): D
       project: 'example_vault',
       doc_type: 'design_spec',
       tags: [],
-      document_date: '2026-03-15T00:00:00Z',
+      document_date: '2026-03-15',
       source_modified_at: null,
     },
     chunk_content: null,

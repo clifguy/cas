@@ -1869,7 +1869,7 @@ def _document_summary_with_every_field() -> DocumentSummary:
         project="proj-T",
         doc_type="ticket",
         tags=["alpha", "beta"],
-        document_date=datetime(2026, 5, 15, tzinfo=timezone.utc),
+        document_date="2026-05-15",
         source_modified_at=datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc),
         semantic_abstract="an abstract for the traversal sentinel",
         tier3_metadata={"ticket_id": "T-0119", "ticket_priority": "high"},
@@ -1985,6 +1985,20 @@ def _traversal_row_with_every_document_summary_field() -> dict:
         "d_semantic_abstract": "T-0118 sentinel semantic abstract",
         "d_tier3_metadata": {"ticket_id": "T-0118", "ticket_priority": "high"},
     }
+
+
+# document_date passes through from_traversal_row as a bare calendar-date
+# string, not promoted to a UTC-anchored datetime. The field must stay a
+# calendar date through the projection so the wire serialization is
+# YYYY-MM-DD and downstream consumers (frontend formatter, recency scorer)
+# do not receive a UTC-shifted value.
+def test_from_traversal_row_passes_document_date_through_as_string():
+    row = _traversal_row_with_every_document_summary_field()
+    summary = DocumentSummary.from_traversal_row(row)
+    # `type(...) is str` rather than `isinstance` — see test_retrieval.py
+    # equivalent for the anti-coincidental reasoning.
+    assert type(summary.document_date) is str
+    assert summary.document_date == "2026-05-15"
 
 
 def test_from_traversal_row_populates_every_document_summary_field():

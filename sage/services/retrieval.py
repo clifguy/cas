@@ -63,6 +63,7 @@ from sage.models.schemas import (
     EdgeHit,
 )
 from sage.storage.graph_store import EdgeQueryRow, GraphStore
+from sage.utils.date_parsing import parse_document_date
 
 # RRF constant (standard value from the original Reciprocal Rank Fusion paper).
 _RRF_K = 60
@@ -1121,9 +1122,18 @@ class RetrievalService:
 
         Priority: document_date > source_modified_at.
         Returns None if neither is available.
+
+        ``document_date`` is a bare YYYY-MM-DD calendar-date string on
+        DocumentSummary; parse it to a UTC-anchored datetime here, at
+        the consumer, since the caller does date math
+        (``(now - ref_date).total_seconds()``). Calendar-to-instant
+        conversion belongs at the use site where the instant is needed,
+        not at the projection boundary where it would re-promote a
+        calendar date to a UTC instant and shift the wire-side calendar
+        for non-UTC consumers.
         """
         if summary.document_date:
-            return summary.document_date
+            return parse_document_date(summary.document_date)
 
         if summary.source_modified_at:
             return summary.source_modified_at
