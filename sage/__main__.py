@@ -118,6 +118,18 @@ UVICORN_LOG_CONFIG: dict = {
             "level": "INFO",
             "propagate": False,
         },
+        # Surface ``sage.*`` INFO records (per-tool ``mcp tool: <name>`` line
+        # in ``_LoggingFastMCP.call_tool``, embedding/abstraction model-load
+        # lines, ingestion progress) through the same formatted handler
+        # uvicorn uses. Without this entry, INFO records depend on the
+        # RichHandler that ``mcp.server.fastmcp.utilities.logging
+        # .configure_logging`` installs on the root logger via
+        # ``logging.basicConfig``; that install is a third-party side effect
+        # outside SAGE's substrate boundary and can be defeated by any
+        # upstream change that reorders or removes it. Pinning the
+        # convention here makes successful-call visibility a SAGE-owned
+        # contract instead.
+        "sage": {"handlers": ["default"], "level": "INFO", "propagate": False},
     },
 }
 

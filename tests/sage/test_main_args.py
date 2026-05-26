@@ -4,15 +4,19 @@ Covers:
   - The parser accepts no positional args (vaults are discovered, not listed).
   - --migrate is removed from the parser (migration moved to sage.migrate).
   - Vault-root resolution: flag → SAGE_VAULT_ROOT env → ~/sage_vaults default.
+  - UVICORN_LOG_CONFIG surfaces sage.* records at INFO without depending on
+    upstream side effects (e.g., mcp's configure_logging RichHandler install).
 """
 
 from __future__ import annotations
 
+import logging
+import logging.config
 from pathlib import Path
 
 import pytest
 
-from sage.__main__ import _build_parser, _resolve_vault_root
+from sage.__main__ import UVICORN_LOG_CONFIG, _build_parser, _resolve_vault_root
 
 # ---------------------------------------------------------------------------
 # Surface 3a: parser shape
@@ -90,3 +94,88 @@ def test_resolve_flag_overrides_env(tmp_path):
     )
 
     assert result == flag_path
+
+
+# ---------------------------------------------------------------------------
+# Surface 3c: UVICORN_LOG_CONFIG console-logging contract
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _isolated_logging_state():
+    """Snapshot and restore root + ``sage`` logger state across a test.
+
+    ``logging.config.dictConfig`` mutates global logger state. Without
+    isolation, this test would either depend on or corrupt the state
+    other tests in the same process rely on (Python's logging module
+    has no built-in transaction primitive).
+    """
+    root = logging.getLogger()
+    saved_root_handlers = list(root.handlers)
+    saved_root_level = root.level
+    saved_root_filters = list(root.filters)
+
+    sage_logger = logging.getLogger("sage")
+    saved_sage_handlers = list(sage_logger.handlers)
+    saved_sage_level = sage_logger.level
+    saved_sage_propagate = sage_logger.propagate
+
+    yield
+
+    root.handlers = saved_root_handlers
+    root.level = saved_root_level
+    root.filters = saved_root_filters
+    sage_logger.handlers = saved_sage_handlers
+    sage_logger.level = saved_sage_level
+    sage_logger.propagate = saved_sage_propagate
+
+
+def test_uvicorn_log_config_surfaces_sage_info_records(_isolated_logging_state):
+    """``sage.mcp_server`` is reachable at INFO with a console handler.
+
+    The per-tool log line ``mcp tool: <name>`` emitted by
+    ``_LoggingFastMCP.call_tool`` is the only success-path signal that
+    surfaces the called tool's name in the SAGE console. Its visibility
+    must NOT depend on a third-party side effect — specifically the
+    RichHandler install in ``mcp.server.fastmcp.utilities.logging
+    .configure_logging``, which is invoked from ``FastMCP.__init__`` but
+    is outside SAGE's substrate boundary. This test asserts the
+    visibility contract holds against ``UVICORN_LOG_CONFIG`` alone.
+
+    Pre-test: clear the root logger to mimic a process that has not had
+    upstream's ``configure_logging`` run. If the contract holds only
+    when that upstream side effect has fired, the test catches the
+    drift and the SAGE console silently drops every successful tool
+    call's INFO line.
+    """
+    root = logging.getLogger()
+    root.handlers = []
+    root.setLevel(logging.WARNING)
+
+    logging.config.dictConfig(UVICORN_LOG_CONFIG)
+
+    target = logging.getLogger("sage.mcp_server")
+    assert target.getEffectiveLevel() <= logging.INFO, (
+        f"sage.mcp_server effective level is "
+        f"{logging.getLevelName(target.getEffectiveLevel())}; INFO records "
+        f"would be dropped before reaching any handler"
+    )
+
+    # Walk up the parent chain (stop at the first logger that doesn't
+    # propagate) and assert at least one handler is reachable. Either a
+    # handler directly on sage / sage.mcp_server or a handler on root
+    # satisfies the contract; both make INFO records visible.
+    current: logging.Logger | None = target
+    found = False
+    while current is not None:
+        if current.handlers:
+            found = True
+            break
+        if not current.propagate:
+            break
+        current = current.parent
+    assert found, (
+        "no handler is reachable from sage.mcp_server via the configured "
+        "propagation chain; UVICORN_LOG_CONFIG must attach a handler to "
+        "either the sage logger or the root"
+    )
