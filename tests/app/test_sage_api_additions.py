@@ -10,6 +10,7 @@ Covers TEST-APP-BE-001 through TEST-APP-BE-016:
 """
 
 import asyncio
+import contextlib
 import hashlib
 import re
 import uuid
@@ -28,6 +29,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+from tests.sage.conftest import initialize_services_for_test
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -212,23 +214,21 @@ async def multi_vault_app(tmp_path):
     app = create_app(configs=[config1, config2])
 
     from sage.app import _ensure_registry_service
-    from sage.mcp_init import initialize_services
 
     registry_service = _ensure_registry_service(app)
-    for cfg in [config1, config2]:
-        services = await initialize_services(
-            cfg,
-            content_store=StubContentStore(),
-            embedding_provider=StubEmbeddingProvider(),
-            abstraction_provider=StubAbstractionProvider(),
-            registry_service=registry_service,
-        )
-        app.state.vault_registry[cfg.vault.id] = services
-
-    yield app
-
-    for services in app.state.vault_registry.values():
-        await services.graph_store.close()
+    async with contextlib.AsyncExitStack() as stack:
+        for cfg in [config1, config2]:
+            services = await stack.enter_async_context(
+                initialize_services_for_test(
+                    cfg,
+                    content_store=StubContentStore(),
+                    embedding_provider=StubEmbeddingProvider(),
+                    abstraction_provider=StubAbstractionProvider(),
+                    registry_service=registry_service,
+                )
+            )
+            app.state.vault_registry[cfg.vault.id] = services
+        yield app
 
 
 @pytest.fixture

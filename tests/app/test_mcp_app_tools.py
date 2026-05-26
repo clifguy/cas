@@ -22,7 +22,6 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.config import VaultConfig
-from sage.mcp_init import initialize_services
 from sage.mcp_server import (
     app_batch_ingest,
     app_scan_directory,
@@ -38,6 +37,7 @@ from sage.mcp_server import (
 )
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+from tests.sage.conftest import initialize_services_for_test
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -176,28 +176,28 @@ async def two_vaults(tmp_path):
     c2 = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "second_vault", "Second Vault")
     )
-    s1 = await initialize_services(
-        c1,
-        content_store=StubContentStore(),
-        embedding_provider=StubEmbeddingProvider(),
-        abstraction_provider=StubAbstractionProvider(),
-    )
-    s2 = await initialize_services(
-        c2,
-        content_store=StubContentStore(),
-        embedding_provider=StubEmbeddingProvider(),
-        abstraction_provider=StubAbstractionProvider(),
-    )
-    _mcp._vaults["test_vault"] = s1
-    _mcp._vaults["second_vault"] = s2
-
-    yield s1, s2
-
-    await asyncio.sleep(0.1)
-    await s1.graph_store.close()
-    await s2.graph_store.close()
-    _mcp._vaults.pop("test_vault", None)
-    _mcp._vaults.pop("second_vault", None)
+    async with (
+        initialize_services_for_test(
+            c1,
+            content_store=StubContentStore(),
+            embedding_provider=StubEmbeddingProvider(),
+            abstraction_provider=StubAbstractionProvider(),
+        ) as s1,
+        initialize_services_for_test(
+            c2,
+            content_store=StubContentStore(),
+            embedding_provider=StubEmbeddingProvider(),
+            abstraction_provider=StubAbstractionProvider(),
+        ) as s2,
+    ):
+        _mcp._vaults["test_vault"] = s1
+        _mcp._vaults["second_vault"] = s2
+        try:
+            yield s1, s2
+        finally:
+            await asyncio.sleep(0.1)
+            _mcp._vaults.pop("test_vault", None)
+            _mcp._vaults.pop("second_vault", None)
 
 
 @pytest.fixture
@@ -206,23 +206,23 @@ async def single_vault(tmp_path):
     config = VaultConfig.model_validate(
         _make_vault_config_dict(tmp_path, "test_vault", "Test Vault")
     )
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    _mcp._vaults["test_vault"] = services
+    ) as services:
+        _mcp._vaults["test_vault"] = services
 
-    # Create test source files
-    sources = Path(config.vault.storage_root)
-    (sources / "sample.md").write_text("# Sample\n\nContent.")
-    (sources / "second.md").write_text("# Second\n\nMore content.")
+        # Create test source files
+        sources = Path(config.vault.storage_root)
+        (sources / "sample.md").write_text("# Sample\n\nContent.")
+        (sources / "second.md").write_text("# Second\n\nMore content.")
 
-    yield services, config
-
-    await asyncio.sleep(0.3)
-    await services.graph_store.close()
-    _mcp._vaults.pop("test_vault", None)
+        try:
+            yield services, config
+        finally:
+            await asyncio.sleep(0.3)
+            _mcp._vaults.pop("test_vault", None)
 
 
 @pytest.fixture
@@ -597,41 +597,41 @@ class TestSagePendingMetadata:
         """
         cfg_dict = _make_vault_config_dict(tmp_path, "review_vault", "Review Required Vault")
         config = VaultConfig.model_validate(cfg_dict)
-        services = await initialize_services(
+        async with initialize_services_for_test(
             config,
             content_store=StubContentStore(),
             embedding_provider=StubEmbeddingProvider(),
             abstraction_provider=StubAbstractionProvider(),
-        )
-        _mcp._vaults["review_vault"] = services
-        try:
-            now = datetime.now(timezone.utc)
-            pending_doc = Document(
-                id=_id("pending-doc-1"),
-                title="Pending Sample",
-                source_type=SourceType.MARKDOWN,
-                source_path="sample.md",
-                lifecycle_status="active",
-                source_content_hash=_sha("pending-doc-1"),
-                adapter_version="1.0",
-                created_by="testuser",
-                created_at=now,
-                last_modified_by="testuser",
-                updated_at=now,
-                projected_at=now,
-                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
-                metadata_confirmed=False,
-            )
-            await services.graph_store.insert_document(pending_doc)
+        ) as services:
+            _mcp._vaults["review_vault"] = services
+            try:
+                now = datetime.now(timezone.utc)
+                pending_doc = Document(
+                    id=_id("pending-doc-1"),
+                    title="Pending Sample",
+                    source_type=SourceType.MARKDOWN,
+                    source_path="sample.md",
+                    lifecycle_status="active",
+                    source_content_hash=_sha("pending-doc-1"),
+                    adapter_version="1.0",
+                    created_by="testuser",
+                    created_at=now,
+                    last_modified_by="testuser",
+                    updated_at=now,
+                    projected_at=now,
+                    pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                    metadata_confirmed=False,
+                )
+                await services.graph_store.insert_document(pending_doc)
 
-            result = _parse(await sage_pending_metadata("review_vault"))
-            assert result["vault_id"] == "review_vault"
-            assert result["count"] >= 1
-            assert result["status"] == "pending_review"
-            assert "document" in result["items"][0]
-        finally:
-            await asyncio.sleep(0.3)
-            await services.graph_store.close()
+                result = _parse(await sage_pending_metadata("review_vault"))
+                assert result["vault_id"] == "review_vault"
+                assert result["count"] >= 1
+                assert result["status"] == "pending_review"
+                assert "document" in result["items"][0]
+            finally:
+                await asyncio.sleep(0.3)
+                _mcp._vaults.pop("review_vault", None)
             _mcp._vaults.pop("review_vault", None)
 
     async def test_mcp_014_empty_when_none(self, single_vault):

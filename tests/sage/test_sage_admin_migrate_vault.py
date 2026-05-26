@@ -34,27 +34,30 @@ async def test_sage_admin_migrate_vault_returns_report_dict(tmp_path, monkeypatc
     """Happy path: returns a dict that round-trips through MigrationReport."""
     # Build the same registry/services structure as the service tests, then
     # publish it on mcp_server._vaults so the MCP tool's get_vault finds it.
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
-    vault_id = services.config.vault.id
-    try:
-        _db_path, _maintenance = await _swap_in_legacy_db(registry, services, registry_service)
-        # mcp_server._vaults IS the registry that mcp_server._get_vault reads.
-        # Mirror the entry we just built so the tool sees it.
-        mcp_server._vaults[vault_id] = registry[vault_id]
+    async with _bootstrap_post_migration_vault(tmp_path, monkeypatch) as (
+        registry,
+        services,
+        registry_service,
+    ):
+        vault_id = services.config.vault.id
+        try:
+            _db_path, _maintenance = await _swap_in_legacy_db(registry, services, registry_service)
+            # mcp_server._vaults IS the registry that mcp_server._get_vault
+            # reads. Mirror the entry we just built so the tool sees it.
+            mcp_server._vaults[vault_id] = registry[vault_id]
 
-        result = await mcp_server.sage_admin_migrate_vault(vault_id=vault_id)
+            result = await mcp_server.sage_admin_migrate_vault(vault_id=vault_id)
 
-        # The tool returns a dict that must validate cleanly as a MigrationReport.
-        report = MigrationReport.model_validate(result)
-        assert report.vault_id == vault_id
-        assert len(report.columns_added) > 0, "expected pending alters on legacy DB"
-    finally:
-        # Close the post-migration graph_store currently bound to
-        # the local registry; the in-tool reload swapped a fresh
-        # SAGEServices in here whose graph_store would otherwise leak.
-        await _close_registry_vault(registry, vault_id)
+            # The tool returns a dict that must validate cleanly as a
+            # MigrationReport.
+            report = MigrationReport.model_validate(result)
+            assert report.vault_id == vault_id
+            assert len(report.columns_added) > 0, "expected pending alters on legacy DB"
+        finally:
+            # Close the post-migration graph_store currently bound to
+            # the local registry; the in-tool reload swapped a fresh
+            # SAGEServices in here whose graph_store would otherwise leak.
+            await _close_registry_vault(registry, vault_id)
 
 
 async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_envelope(

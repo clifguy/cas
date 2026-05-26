@@ -33,27 +33,29 @@ def empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_sage_admin_detect_drift_returns_report_dict(tmp_path, monkeypatch, empty_registry):
     """Happy path: an empty vault returns a DriftReport with zero entries
     that round-trips through the Pydantic model."""
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
-    vault_id = services.config.vault.id
-    try:
-        mcp_server._vaults[vault_id] = registry[vault_id]
+    async with _bootstrap_post_migration_vault(tmp_path, monkeypatch) as (
+        registry,
+        services,
+        _registry_service,
+    ):
+        vault_id = services.config.vault.id
+        try:
+            mcp_server._vaults[vault_id] = registry[vault_id]
 
-        result = await mcp_server.sage_admin_detect_drift(vault_id=vault_id)
+            result = await mcp_server.sage_admin_detect_drift(vault_id=vault_id)
 
-        report = DriftReport.model_validate(result)
-        assert report.vault_id == vault_id
-        assert report.total_edges_walked == 0
-        assert report.entries == []
-        assert report.summary == {
-            "content_drift": 0,
-            "chain_advanced_no_content_change": 0,
-            "recorded_null": 0,
-            "chain_nonlinear": 0,
-        }
-    finally:
-        await _close_registry_vault(registry, vault_id)
+            report = DriftReport.model_validate(result)
+            assert report.vault_id == vault_id
+            assert report.total_edges_walked == 0
+            assert report.entries == []
+            assert report.summary == {
+                "content_drift": 0,
+                "chain_advanced_no_content_change": 0,
+                "recorded_null": 0,
+                "chain_nonlinear": 0,
+            }
+        finally:
+            await _close_registry_vault(registry, vault_id)
 
 
 async def test_sage_admin_detect_drift_invalid_vault_id_shape_returns_error_envelope(

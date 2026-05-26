@@ -345,7 +345,7 @@ def test_vault_config_back_compat_no_timing_block(minimal_vault_config_dict):
 
 async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dict, monkeypatch):
     """initialize_services attaches a per-vault FileHandler to the three timing loggers."""
-    from sage.mcp_init import initialize_services
+    from tests.sage.conftest import initialize_services_for_test
 
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
 
@@ -364,50 +364,52 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
     except ImportError:
         pytest.skip("lancedb not installed; mcp_init wiring test skipped")
 
-    services = await initialize_services(config)
-    try:
-        # All three loggers got a handler pointing at brain_root/timing.log
-        brain_root = Path(config.vault.brain_root)
-        timing_log = brain_root / "timing.log"
-        for name in (
-            "sage.storage.timing",
-            "sage.content.timing",
-            "sage.retrieval.timing",
-        ):
-            logger = logging.getLogger(name)
-            file_handlers = [
-                h
-                for h in logger.handlers
-                if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == timing_log
-            ]
-            assert len(file_handlers) == 1, (
-                f"{name} should have one FileHandler pointing at {timing_log}; "
-                f"got {logger.handlers}"
-            )
+    async with initialize_services_for_test(config) as services:
+        try:
+            # All three loggers got a handler pointing at brain_root/timing.log
+            brain_root = Path(config.vault.brain_root)
+            timing_log = brain_root / "timing.log"
+            for name in (
+                "sage.storage.timing",
+                "sage.content.timing",
+                "sage.retrieval.timing",
+            ):
+                logger = logging.getLogger(name)
+                file_handlers = [
+                    h
+                    for h in logger.handlers
+                    if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == timing_log
+                ]
+                assert len(file_handlers) == 1, (
+                    f"{name} should have one FileHandler pointing at {timing_log}; "
+                    f"got {logger.handlers}"
+                )
 
-        # The services should have non-null timer attributes (a real
-        # QueryTimer, not the NULL_QUERY_TIMER singleton — note that
-        # QueryTimer subclasses NullQueryTimer so isinstance(real, NullQT)
-        # is True; identity check against the singleton is the right test).
-        assert services.graph_store._query_timer is not NULL_QUERY_TIMER
-        assert services.content_store._query_timer is not NULL_QUERY_TIMER
-        assert services.retrieval_service._query_timer is not NULL_QUERY_TIMER
+            # The services should have non-null timer attributes (a real
+            # QueryTimer, not the NULL_QUERY_TIMER singleton — note that
+            # QueryTimer subclasses NullQueryTimer so isinstance(real, NullQT)
+            # is True; identity check against the singleton is the right test).
+            assert services.graph_store._query_timer is not NULL_QUERY_TIMER
+            assert services.content_store._query_timer is not NULL_QUERY_TIMER
+            assert services.retrieval_service._query_timer is not NULL_QUERY_TIMER
 
-        # The vault timing thread should be running.
-        assert services.timing_thread is not None
-    finally:
-        # Best-effort teardown.
-        if services.timing_thread is not None:
-            services.timing_thread.stop(timeout=1.0)
-        await services.graph_store.close()
-        for name in ("sage.storage.timing", "sage.content.timing", "sage.retrieval.timing"):
-            logger = logging.getLogger(name)
-            for handler in list(logger.handlers):
-                logger.removeHandler(handler)
-            # Restore propagation so later caplog-based tests can still
-            # capture records on these loggers (mcp_init disables
-            # propagation when wiring per-vault file handlers).
-            logger.propagate = True
+            # The vault timing thread should be running.
+            assert services.timing_thread is not None
+        finally:
+            # Handler cleanup runs before the helper exits. The helper
+            # then stops the timing thread and closes the graph store.
+            for name in (
+                "sage.storage.timing",
+                "sage.content.timing",
+                "sage.retrieval.timing",
+            ):
+                logger = logging.getLogger(name)
+                for handler in list(logger.handlers):
+                    logger.removeHandler(handler)
+                # Restore propagation so later caplog-based tests can still
+                # capture records on these loggers (mcp_init disables
+                # propagation when wiring per-vault file handlers).
+                logger.propagate = True
 
 
 # ── 10. VaultTimingThread smoke test ─────────────────────────────────

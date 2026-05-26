@@ -73,6 +73,10 @@ async def test_initialize_services_cleans_up_timing_thread_on_failure(
 
     monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
 
+    # Raw initialize_services: this test exercises the failure path
+    # (pytest.raises below), so initialize_services_for_test is the wrong
+    # shape — its async-context-manager exit never runs when the wrapped
+    # initialize_services call raises.
     with pytest.raises(SAGEError, match="N5 failure injection"):
         await initialize_services(
             vault_config_with_timing,
@@ -134,6 +138,10 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
 
     monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
 
+    # Raw initialize_services: this test exercises the failure path
+    # (pytest.raises below), so initialize_services_for_test is the wrong
+    # shape — its async-context-manager exit never runs when the wrapped
+    # initialize_services call raises.
     with pytest.raises(SAGEError, match="N6 failure injection"):
         await initialize_services(
             config,
@@ -191,6 +199,10 @@ async def test_initialize_services_cleanup_does_not_mask_original_exception(
 
     # The original exception (SAGEError with "N7 ORIGINAL") must propagate.
     # The cleanup exception (RuntimeError with "N7 CLEANUP") must NOT.
+    # Raw initialize_services: this test exercises the failure path
+    # (pytest.raises below), so initialize_services_for_test is the wrong
+    # shape — its async-context-manager exit never runs when the wrapped
+    # initialize_services call raises.
     with pytest.raises(SAGEError, match="N7 ORIGINAL exception"):
         await initialize_services(
             vault_config_with_timing,

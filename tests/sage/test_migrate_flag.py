@@ -34,6 +34,7 @@ from sage.storage.migrations import (
     SchemaMigrationRequired,
     pending_migrations,
 )
+from tests.sage.conftest import initialize_services_for_test
 
 # ── LanceDB skip guard ───────────────────────────────────────────────
 
@@ -714,6 +715,10 @@ async def test_mig_010_initialize_services_propagates_flag(tmp_path):
     brain = Path(config.vault.brain_root)
     _build_legacy_db(brain / "graph.db")
 
+    # Raw initialize_services: this branch exercises the failure path
+    # (pytest.raises below), so initialize_services_for_test is the wrong
+    # shape — its async-context-manager exit never runs when the wrapped
+    # initialize_services call raises.
     with pytest.raises(SchemaMigrationRequired):
         await initialize_services(
             config,
@@ -726,18 +731,17 @@ async def test_mig_010_initialize_services_propagates_flag(tmp_path):
     # graph.db unchanged.
     assert "metadata_confirmed" not in _columns(brain / "graph.db", "documents")
 
-    # With migrate=True it succeeds.
-    services = await initialize_services(
+    # With migrate=True it succeeds. The services bundle itself is
+    # unused; the test asserts on the on-disk schema produced by
+    # initialize_services_for_test's side effects.
+    async with initialize_services_for_test(
         config,
         migrate=True,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    try:
+    ):
         assert "metadata_confirmed" in _columns(brain / "graph.db", "documents")
-    finally:
-        await services.graph_store.close()
 
 
 # ── MIG-011, MIG-012 retired ──────────────────────────────────────
@@ -754,19 +758,16 @@ async def test_mig_010_initialize_services_propagates_flag(tmp_path):
 async def test_mig_013_owner_bootstrap_always_runs(tmp_path):
     config = _minimal_config(tmp_path)
 
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         migrate=False,  # no schema migration needed on a fresh vault
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    try:
+    ) as services:
         owner = await services.graph_store.get_user_by_display_name(config.vault.owner)
         assert owner is not None
         assert owner.display_name == config.vault.owner
-    finally:
-        await services.graph_store.close()
 
 
 # ── Index-migration framework + UNIQUE on edges/staging_edges ──

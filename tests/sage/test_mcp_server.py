@@ -46,6 +46,7 @@ from sage.mcp_server import (
 )
 from sage.models.enums import EdgeType as _EdgeType
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
+from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 
 
@@ -53,26 +54,26 @@ from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
     """Initialize SAGE services and register them in the MCP vault registry."""
     config = VaultConfig.model_validate(minimal_vault_config_dict)
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    _mcp._vaults["test_vault"] = services
+    ) as services:
+        _mcp._vaults["test_vault"] = services
 
-    # Create a test source file
-    sources = tmp_vault_dir / "sources"
-    test_dir = sources / "test"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
-    (test_dir / "second.md").write_text("# Second Document\n\nDifferent content.")
+        # Create a test source file
+        sources = tmp_vault_dir / "sources"
+        test_dir = sources / "test"
+        test_dir.mkdir(parents=True, exist_ok=True)
+        (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
+        (test_dir / "second.md").write_text("# Second Document\n\nDifferent content.")
 
-    yield services
-
-    await asyncio.sleep(0.5)
-    await services.graph_store.close()
-    _mcp._vaults.pop("test_vault", None)
+        try:
+            yield services
+        finally:
+            await asyncio.sleep(0.5)
+            _mcp._vaults.pop("test_vault", None)
 
 
 def _parse(result: str | dict) -> dict:
@@ -168,19 +169,18 @@ async def pim_vault_services(tmp_vault_dir):
     its config-declared id (test_metadata_vault).
     """
     config = VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    _mcp._vaults["test_metadata_vault"] = services
-
-    yield services
-
-    await asyncio.sleep(0.5)
-    await services.graph_store.close()
-    _mcp._vaults.pop("test_metadata_vault", None)
+    ) as services:
+        _mcp._vaults["test_metadata_vault"] = services
+        try:
+            yield services
+        finally:
+            await asyncio.sleep(0.5)
+            _mcp._vaults.pop("test_metadata_vault", None)
 
 
 async def test_ad021_013_sage_ingest_accepts_metadata_and_needs_review(
@@ -1390,29 +1390,34 @@ async def test_reload_vault_preserves_content_store_factory_across_two_reloads(
         return StubContentStore()
 
     config = VaultConfig.model_validate(minimal_vault_config_dict)
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store_factory=my_factory,
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    _mcp._vaults["factory_vault"] = services
-    try:
-        assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
+    ) as services:
+        _mcp._vaults["factory_vault"] = services
+        try:
+            assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
 
-        # First reload
-        result1 = _parse(await sage_reload_vault("factory_vault"))
-        assert result1["reloaded"] is True
-        assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
+            # First reload
+            result1 = _parse(await sage_reload_vault("factory_vault"))
+            assert result1["reloaded"] is True
+            assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
 
-        # Second reload — the real anti-coincidental check
-        result2 = _parse(await sage_reload_vault("factory_vault"))
-        assert result2["reloaded"] is True
-        assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
-        assert isinstance(_mcp._vaults["factory_vault"].content_store, StubContentStore)
-    finally:
-        await _mcp._vaults["factory_vault"].graph_store.close()
-        _mcp._vaults.pop("factory_vault", None)
+            # Second reload — the real anti-coincidental check
+            result2 = _parse(await sage_reload_vault("factory_vault"))
+            assert result2["reloaded"] is True
+            assert _mcp._vaults["factory_vault"].content_store_factory is my_factory
+            assert isinstance(_mcp._vaults["factory_vault"].content_store, StubContentStore)
+        finally:
+            # Post-reload registry slot may be a fresh bundle; close it
+            # before the helper exits. The helper only closes the
+            # original ``services`` (idempotent if reload already did).
+            current = _mcp._vaults.get("factory_vault")
+            if current is not None and current is not services:
+                await current.graph_store.close()
+            _mcp._vaults.pop("factory_vault", None)
 
 
 async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_vault_dir, tmp_path):
@@ -1432,34 +1437,39 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
     config_path.write_text(_yaml.safe_dump(initial_config_dict))
 
     config = load_vault_config(config_path)
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
         config_path=config_path,
-    )
-    _mcp._vaults["yaml_reload_vault"] = services
-    try:
-        # Sanity check: starting state matches what we wrote
-        assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is True
+    ) as services:
+        _mcp._vaults["yaml_reload_vault"] = services
+        try:
+            # Sanity check: starting state matches what we wrote
+            assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is True
 
-        # Edit the YAML on disk
-        edited = _copy_dict(initial_config_dict)
-        edited["abstraction"]["enabled"] = False
-        config_path.write_text(_yaml.safe_dump(edited))
+            # Edit the YAML on disk
+            edited = _copy_dict(initial_config_dict)
+            edited["abstraction"]["enabled"] = False
+            config_path.write_text(_yaml.safe_dump(edited))
 
-        # Reload
-        result = _parse(await sage_reload_vault("yaml_reload_vault"))
-        assert result["reloaded"] is True
+            # Reload
+            result = _parse(await sage_reload_vault("yaml_reload_vault"))
+            assert result["reloaded"] is True
 
-        # In-memory config now reflects the edit
-        assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is False, (
-            "sage_reload_vault did not re-read the YAML from disk"
-        )
-    finally:
-        await _mcp._vaults["yaml_reload_vault"].graph_store.close()
-        _mcp._vaults.pop("yaml_reload_vault", None)
+            # In-memory config now reflects the edit
+            assert _mcp._vaults["yaml_reload_vault"].config.abstraction.enabled is False, (
+                "sage_reload_vault did not re-read the YAML from disk"
+            )
+        finally:
+            # Post-reload registry slot may be a fresh bundle; close it
+            # before the helper exits. The helper only closes the
+            # original ``services`` (idempotent if reload already did).
+            current = _mcp._vaults.get("yaml_reload_vault")
+            if current is not None and current is not services:
+                await current.graph_store.close()
+            _mcp._vaults.pop("yaml_reload_vault", None)
 
 
 def _copy_dict(d: dict) -> dict:
@@ -1490,22 +1500,26 @@ async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir,
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     registry_service = VaultRegistryService(_mcp._vaults, initialize_services)
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         registry_service=registry_service,
         content_store_factory=lambda _brain: StubContentStore(),
-    )
-    _mcp._vaults["test_vault"] = services
-
-    yield services
-
-    await asyncio.sleep(0.1)
-    # Re-read the registry at teardown -- a successful migrate or reload
-    # swaps the slot, and the local ``services`` binding becomes stale.
-    current = _mcp._vaults.get("test_vault")
-    if current is not None:
-        await current.graph_store.close()
-    _mcp._vaults.pop("test_vault", None)
+    ) as services:
+        _mcp._vaults["test_vault"] = services
+        try:
+            yield services
+        finally:
+            await asyncio.sleep(0.1)
+            # Re-read the registry at teardown -- a successful migrate or
+            # reload swaps the slot, and the local ``services`` binding
+            # becomes stale. If the slot was swapped, the post-swap bundle
+            # needs an explicit close here; the helper's exit only closes
+            # the original ``services.graph_store`` (idempotent if reload
+            # already closed it).
+            current = _mcp._vaults.get("test_vault")
+            if current is not None and current is not services:
+                await current.graph_store.close()
+            _mcp._vaults.pop("test_vault", None)
 
 
 async def test_sage_update_vault_config_atomicity_via_mcp_surface(

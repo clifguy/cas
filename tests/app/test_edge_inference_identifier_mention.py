@@ -74,13 +74,14 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.config import VaultConfig
-from sage.mcp_init import SAGEServices, initialize_services
+from sage.mcp_init import SAGEServices
 from sage.models.enums import EdgeType, RationaleKind, SourceType
 from sage.models.schemas import Document, IngestRequest, LinkRequest
 from sage.services.identifier_mention_inference import (
     IDENTIFIER_MENTION_RATIONALE_PREFIX,
     infer_identifier_mentions_for_document,
 )
+from tests.sage.conftest import initialize_services_for_test
 
 # ---------------------------------------------------------------------------
 # Fixture: vault config with the new identifier_mention rule
@@ -181,16 +182,13 @@ async def services(tmp_path, monkeypatch) -> SAGEServices:
     """SAGEServices bundle with stub providers and identifier_mention enabled."""
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = VaultConfig.model_validate(_vault_config_dict(tmp_path))
-    svc = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    try:
+    ) as svc:
         yield svc
-    finally:
-        await svc.graph_store.close()
 
 
 def _doc_id(slug: str) -> str:
@@ -659,13 +657,12 @@ async def test_t7_disabled_pattern_skips_matches(tmp_path, monkeypatch):
         patterns=[ADR_PATTERN],  # only ADR; T-NNNN and F-N omitted
     )
     config = VaultConfig.model_validate(config_dict)
-    svc = await initialize_services(
+    async with initialize_services_for_test(
         config,
         content_store=StubContentStore(),
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
-    )
-    try:
+    ) as svc:
         adr_id = _doc_id("adr_007")
         ticket_id = _doc_id("ticket_0042b")
         await _seed_document(
@@ -696,8 +693,6 @@ async def test_t7_disabled_pattern_skips_matches(tmp_path, monkeypatch):
         ticket_inbound = await svc.graph_store.get_edges_by_target(ticket_id, "references")
         assert len(adr_inbound) == 1
         assert ticket_inbound == []
-    finally:
-        await svc.graph_store.close()
 
 
 # ---------------------------------------------------------------------------

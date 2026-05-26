@@ -15,6 +15,7 @@ contracts the service must hold:
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import gc
 import sqlite3
@@ -32,31 +33,37 @@ from sage.services.maintenance import MaintenanceService
 from sage.services.vault_registry import VaultRegistryService
 from sage.storage.graph_store import GraphStore
 from sage.storage.migrations import MIGRATION_PLAN
+from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_migrate_flag import _build_legacy_db, _minimal_config
 
 
+@contextlib.asynccontextmanager
 async def _bootstrap_post_migration_vault(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[dict[str, SAGEServices], SAGEServices, VaultRegistryService]:
-    """Initialize a vault with a fully-migrated DB.
+):
+    """Async context manager that initializes a vault with a fully-migrated DB.
 
-    Returns the registry, the registered SAGEServices bundle, and the
-    registry_service used to construct it. Stub providers throughout so
+    Yields ``(registry, services, registry_service)``. On exit the timing
+    thread is stopped (via ``initialize_services_for_test``) and the
+    original ``services.graph_store`` is closed; if the test body
+    swapped the registry slot via ``maintenance.migrate_vault()``,
+    callers must close the post-swap bundle explicitly inside the body
+    (see ``_close_registry_vault``). Stub providers throughout so
     the test does not require a Nomic/Qwen3 model on disk.
     """
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = _minimal_config(tmp_path)
     registry: dict[str, SAGEServices] = {}
     registry_service = VaultRegistryService(registry, initialize_services)
-    services = await initialize_services(
+    async with initialize_services_for_test(
         config,
         migrate=True,
         registry_service=registry_service,
         content_store_factory=lambda _brain: StubContentStore(),
-    )
-    registry[config.vault.id] = services
-    return registry, services, registry_service
+    ) as services:
+        registry[config.vault.id] = services
+        yield registry, services, registry_service
 
 
 async def _close_registry_vault(registry: dict[str, SAGEServices], vault_id: str) -> None:
@@ -83,13 +90,15 @@ async def post_migration_vault(tmp_path, monkeypatch):
     ``maintenance.migrate_vault()``. Reading the registry at teardown time
     (not capturing ``services`` up front) is what closes the actual leak.
     """
-    registry, services, registry_service = await _bootstrap_post_migration_vault(
-        tmp_path, monkeypatch
-    )
-    try:
-        yield registry, services, registry_service
-    finally:
-        await _close_registry_vault(registry, services.config.vault.id)
+    async with _bootstrap_post_migration_vault(tmp_path, monkeypatch) as (
+        registry,
+        services,
+        registry_service,
+    ):
+        try:
+            yield registry, services, registry_service
+        finally:
+            await _close_registry_vault(registry, services.config.vault.id)
 
 
 async def _swap_in_legacy_db(
@@ -316,14 +325,16 @@ async def test_no_resource_warning_on_post_migration_teardown(tmp_path, monkeypa
     """
 
     async def _exercise() -> None:
-        registry, services, registry_service = await _bootstrap_post_migration_vault(
-            tmp_path, monkeypatch
-        )
-        _db_path, maintenance = await _swap_in_legacy_db(registry, services, registry_service)
-        await maintenance.migrate_vault()
-        # The exact teardown step under test: read the registry at teardown
-        # time and close the current graph_store.
-        await _close_registry_vault(registry, services.config.vault.id)
+        async with _bootstrap_post_migration_vault(tmp_path, monkeypatch) as (
+            registry,
+            services,
+            registry_service,
+        ):
+            _db_path, maintenance = await _swap_in_legacy_db(registry, services, registry_service)
+            await maintenance.migrate_vault()
+            # The exact teardown step under test: read the registry at
+            # teardown time and close the current graph_store.
+            await _close_registry_vault(registry, services.config.vault.id)
 
     await _exercise()
 

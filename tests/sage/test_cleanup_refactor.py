@@ -12,10 +12,10 @@ import pytest
 
 import sage.mcp_server as _mcp
 from sage.config import VaultConfig
-from sage.mcp_init import initialize_services
 from sage.mcp_server import app_batch_ingest
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
+from tests.sage.conftest import initialize_services_for_test
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -103,20 +103,20 @@ def _parse(result: str | dict) -> dict:
 async def vault(tmp_path):
     """Register a single vault in the MCP vault registry."""
     config = VaultConfig.model_validate(_make_vault_config(tmp_path))
-    services = await initialize_services(config)
-    _mcp._vaults["test_vault"] = services
+    async with initialize_services_for_test(config) as services:
+        _mcp._vaults["test_vault"] = services
 
-    # Create test files
-    sources = Path(config.vault.storage_root)
-    (sources / "simple.md").write_text("# Simple\n\nBasic content.")
-    (sources / "report_v1.md").write_text("# Report v1\n\nFirst version.")
-    (sources / "report_v2.md").write_text("# Report v2\n\nSecond version.")
+        # Create test files
+        sources = Path(config.vault.storage_root)
+        (sources / "simple.md").write_text("# Simple\n\nBasic content.")
+        (sources / "report_v1.md").write_text("# Report v1\n\nFirst version.")
+        (sources / "report_v2.md").write_text("# Report v2\n\nSecond version.")
 
-    yield services, config
-
-    await asyncio.sleep(0.3)
-    await services.graph_store.close()
-    _mcp._vaults.pop("test_vault", None)
+        try:
+            yield services, config
+        finally:
+            await asyncio.sleep(0.3)
+            _mcp._vaults.pop("test_vault", None)
 
 
 # ---------------------------------------------------------------------------
