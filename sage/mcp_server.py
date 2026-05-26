@@ -298,24 +298,36 @@ async def sage_reload_vault(vault_id: str) -> dict:
     (timing thread is stopped, graph store is closed, any internally-
     constructed content store is released).
 
-    In-flight SQLite transactions are silently rolled back:
-    ``graph_store.close()`` shuts down the executor (waiting for queued
-    tasks) then closes each SQLite connection. Connections holding
-    open transactions are rolled back by SQLite's implicit-close
-    semantics -- no explicit ROLLBACK is issued, no notification to
-    any caller. A long-running query racing with reload is silently
-    truncated.
+    Close-time barrier and in-flight drain (per CAS-ADR-036):
+    ``graph_store.close()`` is a barrier, not a label. It marks the
+    store closed *before* releasing resources, then drains queued
+    executor work via ``shutdown(wait=True)``, then closes each
+    registered SQLite connection. Dispatches that had already entered
+    the store's ``_run`` boundary before the barrier was set complete
+    normally against their pre-close-acquired connections (a worker
+    holding an open transaction commits or rolls back on its own
+    timeline before close returns). Dispatches that reach ``_run``
+    after the barrier is set raise ``RuntimeError("GraphStore is
+    closed")`` at the dispatch boundary — they do not silently
+    re-acquire a SQLite handle via asyncio's default executor.
 
-    No pipeline-quiescence precondition:
+    No pipeline-quiescence precondition; Stage 2-3 stamping is
+    best-effort under the barrier:
     Stage 2-3 background tasks dispatched by ``IngestionService.ingest``
-    with ``wait_for_pipeline=False`` may still be running at reload time.
-    The reload closes the graph store out from under them; the tasks
-    fail and are stamped ``pipeline_status=failed`` (and
-    ``pipeline_error="<closed>"``) on the new graph store with no
-    record of the in-flight work in the prior store. The MCP-side
-    ``sage_ingest`` always uses ``wait_for_pipeline=True`` so this is
-    primarily a hazard for HTTP / FastAPI callers that pass
-    ``wait_for_pipeline=False`` explicitly.
+    with ``wait_for_pipeline=False`` are asyncio tasks closed over the
+    old ``IngestionService``'s old ``GraphStore`` reference; reload
+    tears the two down together. Once ``close()`` returns, any further
+    dispatch from those background tasks raises ``RuntimeError`` at the
+    ``_run`` barrier. The ``except`` handler in
+    ``IngestionService._run_stages_2_3`` that attempts to stamp
+    ``pipeline_status=failed`` calls ``update_document`` against the
+    same now-closed store, so the stamping *itself* raises and is lost
+    — the document is left at whatever transitional pipeline_status it
+    carried at the moment of close, not stamped failed. The MCP-side
+    ``sage_ingest`` always uses ``wait_for_pipeline=True``, so MCP
+    callers cannot trigger this race; HTTP / FastAPI callers that pass
+    ``wait_for_pipeline=False`` explicitly are the only consumers
+    exposed.
 
     Error modes (registry slot is preserved on all failure paths; the old
     services remain installed and functional, and the caller can retry):

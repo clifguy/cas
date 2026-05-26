@@ -1178,7 +1178,10 @@ async def test_reload_vault_reinitializes_services(vault_services):
 
 
 async def test_reload_vault_closes_old_graph_store(vault_services):
-    """Old GraphStore connections are closed after reload."""
+    """Old GraphStore connections are closed after reload, and the
+    closed store enforces the CAS-ADR-036 barrier: post-close dispatch
+    raises rather than silently re-opening a connection.
+    """
     old_graph_store = vault_services.graph_store
     assert old_graph_store._executor is not None
 
@@ -1187,6 +1190,11 @@ async def test_reload_vault_closes_old_graph_store(vault_services):
     # Old store should be shut down
     assert old_graph_store._executor is None
     assert old_graph_store._all_connections == []
+
+    # Barrier semantics: dispatch through the closed store's _run
+    # boundary raises rather than silently degrading.
+    with pytest.raises(RuntimeError, match="closed"):
+        await old_graph_store.list_all_documents()
 
 
 async def test_reload_vault_unknown_vault_returns_error(vault_services):

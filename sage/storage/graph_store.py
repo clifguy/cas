@@ -165,6 +165,7 @@ class GraphStore:
         self._all_connections: list[sqlite3.Connection] = []
         self._all_connections_lock = threading.Lock()
         self._query_timer = query_timer
+        self._closed: bool = False
 
     def _get_connection(self) -> sqlite3.Connection:
         """Return the thread-local connection, creating one if needed."""
@@ -180,7 +181,19 @@ class GraphStore:
         return conn
 
     async def _run(self, fn: Callable[..., T], *args: Any) -> T:
-        """Dispatch a sync callable to the connection-pool executor."""
+        """Dispatch a sync callable to the connection-pool executor.
+
+        Per CAS-ADR-036, the dispatch boundary is the barrier check for
+        terminator semantics: once ``close()`` has run, every operation
+        through this method raises ``RuntimeError``. A single check here
+        covers the entire public surface; placing it before the executor
+        lookup defeats the silent-degrade path where
+        ``loop.run_in_executor(None, ...)`` would otherwise fall through
+        to asyncio's default executor and transparently re-open a SQLite
+        handle on a fresh worker thread.
+        """
+        if self._closed:
+            raise RuntimeError("GraphStore is closed")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
 
@@ -269,6 +282,17 @@ class GraphStore:
         conn.commit()
 
     async def close(self) -> None:
+        """Terminate the store per CAS-ADR-036 barrier semantics.
+
+        Marks the store closed *before* releasing resources so any
+        operation racing with close either completes against pre-close
+        state or fails at the dispatch boundary against post-close
+        state; never silently observes a half-released store.
+        Idempotent: a second call returns cleanly.
+        """
+        if self._closed:
+            return
+        self._closed = True
         if self._executor is not None:
             executor = self._executor
             self._executor = None

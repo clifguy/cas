@@ -12,6 +12,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
+import pytest
 from pydantic_core import PydanticUndefined
 
 from sage.models.enums import (
@@ -1170,3 +1171,92 @@ async def test_t0157_query_edges_null_target_on_retracts_preserved(graph_store):
     assert len(rows) == 1
     assert rows[0].edge.target_id is None
     assert rows[0].edge.id == r_id
+
+
+# ---------------------------------------------------------------------------
+# Close() barrier semantics per CAS-ADR-036
+# ---------------------------------------------------------------------------
+
+
+async def test_close_sets_closed_flag_idempotent(graph_store):
+    """A second close() returns cleanly; _closed stays True; bookkeeping
+    stays released. Idempotency is the ADR-036 contract for nested
+    cleanup paths (a rollback during partial allocation may
+    double-terminate).
+    """
+    assert graph_store._closed is False
+    assert graph_store._executor is not None
+
+    await graph_store.close()
+    assert graph_store._closed is True
+    assert graph_store._executor is None
+    assert graph_store._all_connections == []
+
+    await graph_store.close()
+    assert graph_store._closed is True
+    assert graph_store._executor is None
+    assert graph_store._all_connections == []
+
+
+async def test_run_raises_on_closed_store(graph_store):
+    """Post-close dispatch through the _run boundary raises
+    RuntimeError naming the closed state. Simplest expression of the
+    barrier contract.
+    """
+    await graph_store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        await graph_store.list_all_documents()
+
+
+async def test_run_raises_from_fresh_thread_after_close(graph_store):
+    """Post-close dispatch raises even when the dispatch would otherwise
+    fall through to asyncio's default executor (with `self._executor` set
+    to None, `loop.run_in_executor(None, ...)` spawns a fresh worker
+    thread; `_get_connection()` opens a brand-new SQLite handle against
+    the on-disk file; pre-fix the query returned rows silently). The
+    warm-up call ensures the store's own executor pool cached at least
+    one thread-local connection, isolating this test's failure mode from
+    the no-warm-up case.
+    """
+    await graph_store.list_all_documents()
+    await graph_store.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        await graph_store.list_all_documents()
+
+
+async def test_close_during_in_flight_dispatch_completes_then_raises(graph_store):
+    """Three-regime check: in-flight call (already past the _run barrier
+    when close() is awaited) drains via `executor.shutdown(wait=True)`
+    and completes; close() returns; subsequent dispatch raises.
+    """
+    import time
+
+    loop = asyncio.get_running_loop()
+    in_flight_entered = asyncio.Event()
+    in_flight_completed = asyncio.Event()
+    captured: list = []
+
+    original_sync = graph_store._list_all_documents_sync
+
+    def slow_sync(*args, **kwargs):
+        loop.call_soon_threadsafe(in_flight_entered.set)
+        time.sleep(0.2)
+        result = original_sync(*args, **kwargs)
+        loop.call_soon_threadsafe(in_flight_completed.set)
+        return result
+
+    graph_store._list_all_documents_sync = slow_sync
+
+    async def run_in_flight():
+        captured.append(await graph_store.list_all_documents())
+
+    in_flight_task = asyncio.create_task(run_in_flight())
+    await in_flight_entered.wait()
+    await graph_store.close()
+    await in_flight_task
+
+    assert in_flight_completed.is_set()
+    assert isinstance(captured[0], list)
+
+    with pytest.raises(RuntimeError, match="closed"):
+        await graph_store.list_all_documents()
