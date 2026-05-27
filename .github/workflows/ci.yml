@@ -104,7 +104,7 @@ jobs:
       - name: Install gitleaks (pinned)
         env:
           GITLEAKS_VERSION: "8.30.1"
-          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          GITLEAKS_SHA256: "0000000000000000000000000000000000000000000000000000000000000000"
         run: |
           set -euo pipefail
           url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
@@ -140,9 +140,9 @@ jobs:
               ;;
           esac
           if [ -n "$log_opts" ]; then
-            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v --log-opts="$log_opts" || true
+            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v --log-opts="$log_opts"
           else
-            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v || true
+            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v
           fi
 
   lint:
