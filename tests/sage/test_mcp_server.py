@@ -2140,3 +2140,71 @@ def test_t0155_set_lifecycle_docstring_clarifies_successor_id_shape():
         "update_lifecycle Args entry for successor_id must clarify "
         "it is a documents.id / document_id value"
     )
+
+
+# ---------------------------------------------------------------------------
+# Server-level operational tools — registration-surface conformance
+# ---------------------------------------------------------------------------
+
+
+def test_reload_vault_and_get_stack_config_in_sage_tools_registry():
+    """``reload_vault`` and ``get_stack_config`` are registered through
+    ``register_sage_tools`` and the module-level re-exports point at the
+    same callables.
+
+    The two tools have no HTTP counterpart by design and are
+    operationally MCP-only; they nonetheless ride the canonical
+    registration path so the conformance gates and the ``_sage_tools``
+    registry view cover them on the same terms as every other tool.
+
+    Anti-coincidental: identity (``is``) check against the module-level
+    re-export rules out bare-key stubs (``_sage_tools["reload_vault"] =
+    None``) and cross-wired keys (e.g. both keys pointing at the same
+    function); equality (``==``) would tolerate distinct wrappers.
+    """
+    import sage.mcp_server as _mcp_server
+
+    assert "reload_vault" in _mcp_server._sage_tools, (
+        "reload_vault must be registered through register_sage_tools; "
+        "an @mcp.tool() definition at module scope in sage/mcp_server.py "
+        "would bypass the conformance registry view and is not the "
+        "supported registration site."
+    )
+    assert "get_stack_config" in _mcp_server._sage_tools, (
+        "get_stack_config must be registered through register_sage_tools; "
+        "an @mcp.tool() definition at module scope in sage/mcp_server.py "
+        "would bypass the conformance registry view and is not the "
+        "supported registration site."
+    )
+    assert _mcp_server._sage_tools["reload_vault"] is _mcp_server.reload_vault, (
+        "_sage_tools['reload_vault'] must be the same callable as the "
+        "sage.mcp_server.reload_vault re-export; an identity mismatch means "
+        "the re-export points at a stale or different function."
+    )
+    assert _mcp_server._sage_tools["get_stack_config"] is _mcp_server.get_stack_config, (
+        "_sage_tools['get_stack_config'] must be the same callable as the "
+        "sage.mcp_server.get_stack_config re-export; an identity mismatch "
+        "means the re-export points at a stale or different function."
+    )
+
+
+def test_no_get_stack_config_shadow_alias_in_mcp_server():
+    """``sage.mcp_server`` does not bind ``_get_stack_config``.
+
+    The alias name would only exist as a workaround for a module-level
+    ``async def get_stack_config(...)`` tool function shadowing a same-named
+    import from ``sage.mcp_init``. Because the tool function is registered
+    inside ``register_sage_tools`` in ``sage.sage_api_tools`` rather than at
+    module scope in ``sage.mcp_server``, the shadow does not exist and the
+    alias must not be re-introduced.
+    """
+    import sage.mcp_server as _mcp_server
+
+    assert not hasattr(_mcp_server, "_get_stack_config"), (
+        "sage.mcp_server binds `_get_stack_config`; this name should only "
+        "exist as a workaround for a module-level tool function shadowing "
+        "the sage.mcp_init.get_stack_config import. Remove the alias and "
+        "ensure the tool function lives inside register_sage_tools, where "
+        "the qualified `sage.mcp_init.get_stack_config()` call resolves "
+        "without a shadow."
+    )
