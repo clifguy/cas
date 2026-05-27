@@ -1,4 +1,4 @@
-"""`sage_link` dry-run, including the natural-key pre-check.
+"""`create_edge` dry-run, including the natural-key pre-check.
 
 Three test categories per the plan:
 

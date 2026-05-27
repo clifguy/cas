@@ -146,7 +146,7 @@ class SAGEServices:
     # lifespan); the production lifespan always supplies one.
     maintenance_service: MaintenanceService | None = None
     config_path: Path | None = None
-    # Test-only hook: when set, reload paths (sage_reload_vault,
+    # Test-only hook: when set, reload paths (reload_vault,
     # reload_vault_in_registry) re-invoke this factory with the vault's
     # brain_root instead of constructing a LanceDBContentStore. Carried on
     # the services tuple so the factory survives across reloads without
@@ -167,7 +167,7 @@ _stack_config: SageCoreConfig | None = None
 def get_stack_config() -> SageCoreConfig:
     """Return the loaded stack config, or an empty default if none is set.
 
-    Used by `sage_get_stack_config` (MCP) and by FastAPI lifespan paths
+    Used by `get_stack_config` (MCP) and by FastAPI lifespan paths
     that need to thread the stack config into per-vault initialization.
     Returns the module-level singleton when set; otherwise a default
     SageCoreConfig (defaults are stack-stub-effective when combined with
@@ -301,7 +301,7 @@ async def initialize_services(
             store and content store. If False (default), raise
             ``SchemaMigrationRequired`` when a migration is needed.
         config_path: Source path of the vault_config.yaml file. Stored on
-            the returned ``SAGEServices`` so that ``sage_reload_vault`` can
+            the returned ``SAGEServices`` so that ``reload_vault`` can
             re-read the file from disk to pick up edits made externally.
         registry_service: Singleton VaultRegistryService used by
             VaultConfigService.update_config to perform the registry-mutation
@@ -524,7 +524,7 @@ async def reload_vault_in_registry(
 
     Used by:
     - ``VaultRegistryService.reload`` (FastAPI PUT-config endpoint).
-    - ``sage_reload_vault`` MCP tool (via delegation).
+    - ``reload_vault`` MCP tool (via delegation).
 
     Carries the predecessor's ``content_store_factory`` and (when the caller
     does not supply one) ``config_path`` forward so hermetic-lifespan-test

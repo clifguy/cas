@@ -62,7 +62,7 @@ paths:
 
   /app/scan:
     post:
-      operationId: app_scan_directory
+      operationId: list_directory
       summary: Scan a filesystem directory and return file status with parsed metadata.
       description: >-
         Walks a directory (optionally bounded by max_depth), classifies each
@@ -126,7 +126,7 @@ paths:
 
   /app/ingest:
     post:
-      operationId: app_batch_ingest
+      operationId: bulk_ingest_document
       summary: Ingest a batch of files with two-phase edge inference, streamed via Server-Sent Events.
       description: >-
         Three-phase pipeline implemented by app.backend.ingest_service.BatchIngestService:

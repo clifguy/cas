@@ -48,18 +48,22 @@ from pydantic import TypeAdapter, ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
+from sage._tool_rename_mapping import REMOVED_TOOLS, RENAME_MAPPING
 from sage.api.errors import SAGEError
 from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
 from sage.mcp_init import (
     SAGEServices,
     build_stack_abstraction_provider,
-    get_stack_config,
     initialize_services,
     load_stack_config_or_default,
     reload_vault_in_registry,
     set_stack_config,
 )
+
+# Aliased to avoid shadowing by the tool function below that bears the
+# same name post the verb-convention rename (CAS-ADR-033).
+from sage.mcp_init import get_stack_config as _get_stack_config
 from sage.models.schemas import VaultIdStr
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
@@ -288,6 +292,35 @@ def _unknown_parameter_envelope(
     return [TextContent(type="text", text=_json.dumps(envelope))]
 
 
+#: Calendar date by which the deprecation alias layer is scheduled
+#: for removal. The follow-up change that removes the alias rewrites
+#: this module and the ``RENAME_MAPPING`` / ``REMOVED_TOOLS`` entries
+#: in ``sage/_tool_rename_mapping.py``. The date is surfaced in the
+#: per-call deprecation log so callers see when their old-name usage
+#: stops working.
+_ALIAS_REMOVAL_DATE: str = "2026-06-15"
+
+
+def _removed_tool_envelope(name: str) -> Sequence[ContentBlock]:
+    """Build an envelope-shaped error for a removed tool name.
+
+    Returned in place of dispatch when an old-name call targets a tool
+    that was dropped from the MCP surface entirely (e.g. folded into
+    another tool, or retained as REST-only). The envelope matches the
+    production ``[TextContent(text=<json>)]`` shape so existing
+    envelope-error logging picks it up.
+    """
+    envelope = {
+        "error": "tool_removed",
+        "message": (
+            f"Tool {name!r} has been removed from the MCP surface. "
+            "See sage._tool_rename_mapping.REMOVED_TOOLS for the disposition "
+            "of each removed name."
+        ),
+    }
+    return [TextContent(type="text", text=_json.dumps(envelope))]
+
+
 class _LoggingFastMCP(FastMCP):
     """FastMCP subclass that distinguishes tool outcomes in the console log.
 
@@ -315,12 +348,40 @@ class _LoggingFastMCP(FastMCP):
     ``[TextContent(text=<json>)]`` wire shape) and falls through to the
     existing ``_envelope_error_kind`` warning path; the ToolError is
     NOT re-raised. Substrate decision: CAS-ADR-037.
+
+    Pre-dispatch alias resolution (transitional, removal date
+    ``_ALIAS_REMOVAL_DATE``):
+    Before dispatch, the requested ``name`` is checked against
+    ``RENAME_MAPPING`` (verb convention per CAS-ADR-033, prefix
+    simplification per CAS-ADR-034). An old name is rewritten to its
+    current target and a per-call deprecation WARNING is logged so
+    callers see both the old name, the current target, and the
+    scheduled removal date. Old names listed in ``REMOVED_TOOLS``
+    return an envelope-shaped ``tool_removed`` error rather than
+    dispatching. New names (the value side of ``RENAME_MAPPING``)
+    bypass the rewrite and dispatch directly.
     """
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any]
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         logger = _logging.getLogger(__name__)
+        # Pre-dispatch alias resolution. Old names rewrite to their
+        # current target; removed names short-circuit to an envelope
+        # error. New names fall through unchanged.
+        if name in REMOVED_TOOLS:
+            logger.warning("mcp tool removed: %s (no replacement on MCP surface)", name)
+            return _removed_tool_envelope(name)
+        if name in RENAME_MAPPING:
+            target = RENAME_MAPPING[name]
+            logger.warning(
+                "mcp tool deprecated: %r is aliased to %r; "
+                "the alias is scheduled for removal on %s",
+                name,
+                target,
+                _ALIAS_REMOVAL_DATE,
+            )
+            name = target
         logger.info("mcp tool: %s", name)
         try:
             result = await super().call_tool(name, arguments)
@@ -351,7 +412,7 @@ mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan)
 
 
 @mcp.tool()
-async def sage_reload_vault(vault_id: str) -> dict:
+async def reload_vault(vault_id: str) -> dict:
     """Reload a vault by closing its current services and reinitializing.
 
     When the vault was originally loaded from a YAML file (the production
@@ -369,7 +430,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
     abstraction-provider singleton per CAS-ADR-030) is captured at
     process startup and is NOT re-read on per-vault reload. Edits to
     stack config require a process restart to take effect; callers
-    can verify the in-memory stack config via ``sage_get_stack_config``.
+    can verify the in-memory stack config via ``get_stack_config``.
 
     Reload is atomic with respect to the registry slot:
     Internally this delegates to ``reload_vault_in_registry``, which
@@ -410,7 +471,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
     same now-closed store, so the stamping *itself* raises and is lost
     — the document is left at whatever transitional pipeline_status it
     carried at the moment of close, not stamped failed. The MCP-side
-    ``sage_ingest`` always uses ``wait_for_pipeline=True``, so MCP
+    ``ingest_document`` always uses ``wait_for_pipeline=True``, so MCP
     callers cannot trigger this race; HTTP / FastAPI callers that pass
     ``wait_for_pipeline=False`` explicitly are the only consumers
     exposed.
@@ -428,7 +489,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
     - ``schema_migration_required`` (409): the vault's ``graph.db``
       has pending ALTER TABLE migrations or backfills, so the new
       graph store cannot ``initialize(migrate=False)``. Run
-      ``sage_admin_migrate_vault`` to apply pending migrations
+      ``migrate_vault`` to apply pending migrations
       before retrying the reload.
     - ``duplicate_edges_present`` (409): the vault's ``edges`` or
       ``staging_edges`` table has duplicate rows on the natural-key
@@ -441,7 +502,7 @@ async def sage_reload_vault(vault_id: str) -> dict:
       (see scope note above). A stack config with
       ``provider="qwen3-mlx"`` and ``model=None`` raises ``ValueError``
       during the build. Verify the in-memory stack config via
-      ``sage_get_stack_config`` before reloading if you suspect drift.
+      ``get_stack_config`` before reloading if you suspect drift.
 
     Args:
         vault_id: Target vault identifier. Validated against
@@ -495,12 +556,12 @@ async def sage_reload_vault(vault_id: str) -> dict:
 
 
 @mcp.tool()
-async def sage_get_stack_config() -> dict:
+async def get_stack_config() -> dict:
     """Return the SAGE-stack-wide configuration (CAS-ADR-030).
 
     Stack-wide config governs resources whose enforcement spans the whole
     SAGE process (e.g., the abstraction provider singleton). Per-vault
-    knobs live in `sage_get_vault_config`.
+    knobs live in `get_vault_config`.
 
     Today the response carries one section, `abstraction`, with:
       - `provider`: dispatch key (`"qwen3-mlx"` or `"stub"`).
@@ -510,7 +571,7 @@ async def sage_get_stack_config() -> dict:
     The shape is forward-compatible: new top-level sections can be added
     without changing the contract of existing callers.
     """
-    cfg = get_stack_config()
+    cfg = _get_stack_config()
     return cfg.model_dump(mode="json")
 
 
@@ -521,43 +582,43 @@ _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 
 # ---------------------------------------------------------------------------
 # Re-export tool functions for backward-compatible imports
-# (e.g. from sage.mcp_server import sage_ingest)
+# (e.g. from sage.mcp_server import ingest_document)
 # ---------------------------------------------------------------------------
 
-sage_ingest = _sage_tools["sage_ingest"]
-sage_parse_filename = _sage_tools["sage_parse_filename"]
-sage_reabstract = _sage_tools["sage_reabstract"]
-sage_get_document = _sage_tools["sage_get_document"]
-sage_update_metadata = _sage_tools["sage_update_metadata"]
-sage_set_lifecycle = _sage_tools["sage_set_lifecycle"]
-sage_bulk_set_lifecycle = _sage_tools["sage_bulk_set_lifecycle"]
-sage_bulk_link = _sage_tools["sage_bulk_link"]
-sage_bulk_update_metadata = _sage_tools["sage_bulk_update_metadata"]
-sage_link = _sage_tools["sage_link"]
-sage_unlink = _sage_tools["sage_unlink"]
-sage_check_preconditions = _sage_tools["sage_check_preconditions"]
-sage_traverse = _sage_tools["sage_traverse"]
-sage_chain = _sage_tools["sage_chain"]
-sage_discover = _sage_tools["sage_discover"]
-sage_read_projection = _sage_tools["sage_read_projection"]
-sage_read_section = _sage_tools["sage_read_section"]
-sage_list_headings = _sage_tools["sage_list_headings"]
-sage_refresh_views = _sage_tools["sage_refresh_views"]
-sage_list_vaults = _sage_tools["sage_list_vaults"]
-sage_create_vault = _sage_tools["sage_create_vault"]
-sage_get_vault_config = _sage_tools["sage_get_vault_config"]
-sage_update_vault_config = _sage_tools["sage_update_vault_config"]
-sage_vault_stats = _sage_tools["sage_vault_stats"]
-sage_hash_check = _sage_tools["sage_hash_check"]
-sage_list_staging_edges = _sage_tools["sage_list_staging_edges"]
-sage_update_staging_edge = _sage_tools["sage_update_staging_edge"]
-sage_pending_metadata = _sage_tools["sage_pending_metadata"]
-sage_admin_migrate_vault = _sage_tools["sage_admin_migrate_vault"]
-sage_admin_detect_drift = _sage_tools["sage_admin_detect_drift"]
-sage_admin_reabstract_deferred_vault = _sage_tools["sage_admin_reabstract_deferred_vault"]
+ingest_document = _sage_tools["ingest_document"]
+get_filename_metadata = _sage_tools["get_filename_metadata"]
+recompute_abstract = _sage_tools["recompute_abstract"]
+get_document = _sage_tools["get_document"]
+update_metadata = _sage_tools["update_metadata"]
+update_lifecycle = _sage_tools["update_lifecycle"]
+bulk_update_lifecycle = _sage_tools["bulk_update_lifecycle"]
+bulk_create_edge = _sage_tools["bulk_create_edge"]
+bulk_update_metadata = _sage_tools["bulk_update_metadata"]
+create_edge = _sage_tools["create_edge"]
+delete_edge = _sage_tools["delete_edge"]
+verify_preconditions = _sage_tools["verify_preconditions"]
+traverse = _sage_tools["traverse"]
+chain = _sage_tools["chain"]
+search = _sage_tools["search"]
+read_projection = _sage_tools["read_projection"]
+read_section = _sage_tools["read_section"]
+list_headings = _sage_tools["list_headings"]
+recompute_views = _sage_tools["recompute_views"]
+list_vaults = _sage_tools["list_vaults"]
+create_vault = _sage_tools["create_vault"]
+get_vault_config = _sage_tools["get_vault_config"]
+update_vault_config = _sage_tools["update_vault_config"]
+get_vault_stats = _sage_tools["get_vault_stats"]
+verify_hash = _sage_tools["verify_hash"]
+list_staging_edges = _sage_tools["list_staging_edges"]
+update_staging_edge = _sage_tools["update_staging_edge"]
+list_pending_metadata = _sage_tools["list_pending_metadata"]
+migrate_vault = _sage_tools["migrate_vault"]
+verify_vault_drift = _sage_tools["verify_vault_drift"]
+recompute_deferred_vault_abstracts = _sage_tools["recompute_deferred_vault_abstracts"]
 
-app_scan_directory = _app_tools["app_scan_directory"]
-app_batch_ingest = _app_tools["app_batch_ingest"]
+list_directory = _app_tools["list_directory"]
+bulk_ingest_document = _app_tools["bulk_ingest_document"]
 
 # ---------------------------------------------------------------------------
 # Mounting on FastAPI (shared-process mode)

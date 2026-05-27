@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_admin_detect_drift.
+"""MCP tool tests for verify_vault_drift.
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, and successful round-trip of the DriftReport payload
@@ -42,7 +42,7 @@ async def test_sage_admin_detect_drift_returns_report_dict(tmp_path, monkeypatch
         try:
             mcp_server._vaults[vault_id] = registry[vault_id]
 
-            result = await mcp_server.sage_admin_detect_drift(vault_id=vault_id)
+            result = await mcp_server.verify_vault_drift(vault_id=vault_id)
 
             report = DriftReport.model_validate(result)
             assert report.vault_id == vault_id
@@ -63,7 +63,7 @@ async def test_sage_admin_detect_drift_invalid_vault_id_shape_returns_error_enve
 ):
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
     and surfaces as a standard error envelope, not a raised exception."""
-    result = await mcp_server.sage_admin_detect_drift(vault_id="not a vault id!")
+    result = await mcp_server.verify_vault_drift(vault_id="not a vault id!")
 
     assert isinstance(result, dict)
     assert "error" in result, f"expected error envelope, got {result!r}"
@@ -74,7 +74,7 @@ async def test_sage_admin_detect_drift_unknown_vault_returns_error_envelope(
     empty_registry,
 ):
     """An unregistered vault_id returns the unknown_vault envelope."""
-    result = await mcp_server.sage_admin_detect_drift(vault_id="ghost")
+    result = await mcp_server.verify_vault_drift(vault_id="ghost")
 
     assert isinstance(result, dict)
     assert result.get("error") == "unknown_vault", (

@@ -5,7 +5,7 @@ caller input. Today's gap: ``document_date`` is typed ``str | None`` and
 the schema/OpenAPI specifies the YYYY-MM-DD shape, but no validator
 enforces it. As a result, callers passing datetime-ISO strings such as
 ``2026-05-05T00:00:00Z`` poisoned the live Example Portfolio vault and made
-``sage_traverse`` raise ``ValueError`` from ``strptime``.
+``traverse`` raise ``ValueError`` from ``strptime``.
 
 These tests pin the strict-reject contract on the two boundary models
 that accept ``document_date`` from callers: ``UpdateMetadataRequest``

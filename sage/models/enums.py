@@ -38,7 +38,7 @@ class EdgeType(StrEnum):
     `retracts` is a meta-edge pointing at an earlier edge instance that the
     retracting chain now disclaims. The retracting edge requires the
     `edge_id` of the edge it disclaims; that id is discoverable via
-    ``sage_discover(target="edges", filters={"source_id":..., "edge_type":...})``
+    ``search(target="edges", filters={"source_id":..., "edge_type":...})``
     . `merged_from` is a meta-edge recording that a successor chain
     absorbs predecessor chains, tombstoning their downstream edges.
     """
@@ -65,7 +65,7 @@ class RationaleKind(StrEnum):
     future inference rules filter via SQL rather than Python `startswith()`.
 
     `manual` is the default for edges with no recognized rationale prefix
-    (hand-curated via sage_link, legacy edges without a prefix, edges
+    (hand-curated via create_edge, legacy edges without a prefix, edges
     written before this column was added). The column is NOT NULL with
     DEFAULT 'manual' in storage.
     """
@@ -157,7 +157,7 @@ class RetrievalScope(StrEnum):
 
 
 class RetrievalTarget(StrEnum):
-    """Discriminates whether ``sage_discover`` enumerates documents or edges.
+    """Discriminates whether ``search`` enumerates documents or edges.
 
     `documents` (default) preserves the historical surface: results are
     ``DiscoverHit`` rows backed by ``DocumentSummary``. `edges` switches
@@ -172,11 +172,11 @@ class RetrievalTarget(StrEnum):
 
 
 class ResponseMode(StrEnum):
-    """Payload depth for ``sage_discover`` results (,).
+    """Payload depth for ``search`` results (,).
 
     `light` returns identity columns only and omits rationale, retraction
     envelope, and other large fields. `full` returns the complete envelope.
-    When unset, ``sage_discover`` applies a default-threshold rule
+    When unset, ``search`` applies a default-threshold rule
     (>5 results → light, otherwise full) so single-item calls keep their
     contextual richness while bulk enumerations stay inside the MCP inline
     budget. Canonical name across SAGE surfaces.
@@ -193,14 +193,14 @@ class ResponseMode(StrEnum):
 # FULL (so single-item-style calls keep their contextual richness).
 #
 # Originally tied to edge-enumeration default; extends
-# the same rule to the bulk mutation tools (``sage_bulk_update_metadata``
-# and ``sage_bulk_set_lifecycle``). The 5-item figure comes from
+# the same rule to the bulk mutation tools (``bulk_update_metadata``
+# and ``bulk_update_lifecycle``). The 5-item figure comes from
 # field-use report (a 28-item bulk_update_metadata batch overflowed the
 # MCP inline budget by returning a full ``semantic_abstract`` per item).
 #
 # The scope of this default is per-surface (see "Scope of the
 # threshold-default stance" design note for why the rule is NOT applied
-# to ``sage_discover`` document-target results).
+# to ``search`` document-target results).
 LIGHT_DEFAULT_THRESHOLD = 5
 
 

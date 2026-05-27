@@ -288,7 +288,7 @@ class IngestionService:
         self._adapters = source_adapters or {}
         self._lifecycle_service = lifecycle_service
         # Identifier_mention inference runs inside the per-document
-        # pipeline so all ingest pathways (bulk and sage_ingest) honor the
+        # pipeline so all ingest pathways (bulk and ingest_document) honor the
         # vault's declared rules. Optional in the constructor signature so
         # legacy call sites that don't yet pass it still construct; inference
         # silently no-ops when absent.
@@ -411,7 +411,7 @@ class IngestionService:
         `asyncio.create_task` and the call returns after projection,
         record insertion, metadata application, and the supersede
         lifecycle transition (if requested) have committed. Used by the
-        MCP `sage_ingest` tool to stay under the 60-second MCP client
+        MCP `ingest_document` tool to stay under the 60-second MCP client
         timeout on documents whose abstraction latency would otherwise
         exceed it. The supersede transition runs synchronously
         regardless of this flag (BH-129): the version chain must be
@@ -1019,7 +1019,7 @@ class IngestionService:
         the actual abstraction work in a background asyncio.Task.
         Returns immediately with a status dict.
 
-        The caller can poll sage_get_document to observe when
+        The caller can poll get_document to observe when
         pipeline_status transitions to ABSTRACTION_COMPLETE (success)
         or FAILED (error).
 

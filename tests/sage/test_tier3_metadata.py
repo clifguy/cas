@@ -6,14 +6,14 @@ Coverage:
 * VaultConfig.tier3_validator returns None for doc_types with no
   metadata_schema; the service layer treats that as 400 (strict
   no-loose-mode per the design).
-* sage_ingest validates tier3_metadata against the resolved doc_type's
+* ingest_document validates tier3_metadata against the resolved doc_type's
   schema BEFORE inserting the document; failures raise
   Tier3SchemaViolationError without creating a row.
-* sage_update_metadata takes Tier3Patch (`{set, unset}`) and applies
+* update_metadata takes Tier3Patch (`{set, unset}`) and applies
   the patch in memory; the merged result is validated against the
   (possibly newly-set) doc_type. Strict-conflict on `unset` of an
   absent key.
-* sage_discover catalog and semantic filters honor the new tier3 clause;
+* search catalog and semantic filters honor the new tier3 clause;
   a null filter value matches absent-or-null stored fields.
 * A malformed metadata_schema in vault config surfaces at construction
   time as VaultConfigValidationError, not at first ingest.

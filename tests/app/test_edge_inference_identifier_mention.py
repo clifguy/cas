@@ -758,7 +758,7 @@ async def test_t8_failed_pipeline_target_still_resolves(tmp_path, services):
 # Sage_ingest pathway tests
 #
 # The tests above exercise BatchIngestService.run() with wait_for_pipeline=True
-# (implicit). The tests below exercise the per-document sage_ingest pathway:
+# (implicit). The tests below exercise the per-document ingest_document pathway:
 # IngestionService.ingest() with wait_for_pipeline=False, followed by polling
 # for terminal pipeline_status. Both pathways must produce identical edge
 # sets because relocates identifier_mention inference into the SAGE
@@ -782,7 +782,7 @@ async def _ingest_via_sage_ingest_and_get_edges(
 ) -> tuple[str, list]:
     """Run IngestionService.ingest with wait_for_pipeline=False and poll.
 
-    Mirrors the production sage_ingest MCP-tool dispatch shape: fire-and-
+    Mirrors the production ingest_document MCP-tool dispatch shape: fire-and-
     forget Stages 2-3, then poll the document's pipeline_status until it
     reaches a terminal state. Identifier_mention edges must be present
     by the time terminal status is observed (acceptance criterion).
@@ -851,7 +851,7 @@ async def test_t1_sage_ingest_adr_mention_creates_references_edge(tmp_path, serv
 
 @pytest.mark.asyncio
 async def test_t2_sage_ingest_ticket_mention_creates_references_edge(tmp_path, services):
-    """+ Tier3-resolved ticket edges also fire on sage_ingest path.
+    """+ Tier3-resolved ticket edges also fire on ingest_document path.
 
     Same decoy guard as the batch T2: a second ticket with a different
     tier3.ticket_id is seeded so the test fails if the resolver falls
@@ -957,7 +957,7 @@ async def test_t5_sage_ingest_unresolved_identifier_creates_no_edge_with_positiv
 
 @pytest.mark.asyncio
 async def test_t6_sage_ingest_manual_references_edge_is_preserved(tmp_path, services):
-    """Pre-existing manual edge survives sage_ingest with a matching mention.
+    """Pre-existing manual edge survives ingest_document with a matching mention.
 
     Strengthened over the batch T6: this version's ingested doc DOES
     mention the ADR, so identifier_mention inference fires and calls
@@ -1028,7 +1028,7 @@ async def test_t10_wait_for_pipeline_independence(tmp_path, services):
 
     Ingest one file with wait_for_pipeline=True (batch semantics) and a
     different file containing the same identifier mention with
-    wait_for_pipeline=False (sage_ingest semantics). The two source docs
+    wait_for_pipeline=False (ingest_document semantics). The two source docs
     must each produce exactly one edge to the same target, with the same
     rationale_kind and rationale prefix.
 

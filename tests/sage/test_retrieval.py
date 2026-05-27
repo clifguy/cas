@@ -4401,7 +4401,7 @@ def test_from_summary_populates_every_discover_hit_field():
 
 
 # ---------------------------------------------------------------------------
-# Edge enumeration via sage_discover(target="edges")
+# Edge enumeration via search(target="edges")
 # ---------------------------------------------------------------------------
 
 
@@ -4786,7 +4786,7 @@ def test_t0157_invalid_target_value_raises_enum_validation_error():
 
 
 # ---------------------------------------------------------------------------
-# / Response_mode unified across sage_discover targets;
+# / Response_mode unified across search targets;
 # response_level retired.
 # ---------------------------------------------------------------------------
 

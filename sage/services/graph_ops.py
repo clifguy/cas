@@ -253,7 +253,7 @@ class GraphOpsService:
 
         Used by ``batch_inference.resolve_and_execute`` and
         ``identifier_mention_inference`` (which rely on idempotency for
-        re-ingest of auto-inferred edges) and by the ``sage_link`` MCP
+        re-ingest of auto-inferred edges) and by the ``create_edge`` MCP
         tool (which wraps the tuple in a ``LinkResponse`` to surface
         ``existing_rationale`` and the ``dry_run`` echo).
 
@@ -292,7 +292,7 @@ class GraphOpsService:
         bulk operations programmatically may pass ``items=[]`` without
         special-casing the call site.
 
-        The performance win versus N sequential ``sage_link`` MCP calls
+        The performance win versus N sequential ``create_edge`` MCP calls
         comes from eliminating per-call MCP framing overhead and the
         asyncio scheduling between items; the process-wide ``_link_lock``
         and the per-item SQLite transaction are unchanged.

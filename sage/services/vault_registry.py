@@ -57,7 +57,7 @@ class VaultRegistryService:
 
         Callers that want to spin up a vault with sensible defaults pass
         the result of this method as the ``config`` argument to
-        ``sage_create_vault`` (or to the REST create-vault endpoint).
+        ``create_vault`` (or to the REST create-vault endpoint).
         """
         return {
             "vault": {

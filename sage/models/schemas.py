@@ -522,7 +522,7 @@ class DocumentSummary(BaseModel):
 
 
 class DocumentSummaryLight(BaseModel):
-    """Stripped DocumentSummary returned by ``sage_discover`` with
+    """Stripped DocumentSummary returned by ``search`` with
     ``target="documents", mode="catalog", response_mode="light"``.
 
     Carries only the identity columns plus the two fields most callers
@@ -532,7 +532,7 @@ class DocumentSummaryLight(BaseModel):
     are intentionally absent to keep bulk catalog enumerations inside
     the MCP inline-output budget. Callers who need the omitted fields
     pass ``response_mode="full"`` (returns ``DocumentSummary``) or fall
-    back to ``sage_get_document`` per id.
+    back to ``get_document`` per id.
     """
 
     id: DocumentIdStr = Field(description="Unique document identifier.")
@@ -593,7 +593,7 @@ class Edge(BaseModel):
             "row so later registry edits do not retroactively change "
             "resolution behavior for existing edges. Null when an Edge "
             "is constructed without policy resolution (e.g., the "
-            "traversal-node Edge views returned by sage_traverse)."
+            "traversal-node Edge views returned by traverse)."
         ),
     )
     source_valid_from_version: str | None = Field(
@@ -662,7 +662,7 @@ class Edge(BaseModel):
             "asserted. Semantically meaningful on `sync_target` (Tier 1, "
             "populated automatically at re-ingestion when the Tier-1 "
             "inference subsystem ships) and `derived_from` (Tier 3, "
-            "agent-supplied via sage_link). Distinct from "
+            "agent-supplied via create_edge). Distinct from "
             "`source_valid_from_version`, which records chain-scoped "
             "edge visibility per CAS-ADR-017 — the two must not be "
             "conflated. Unset = explicit null; never inferred from chain "
@@ -768,7 +768,7 @@ class IngestRequest(BaseModel):
             "ignored. Unknown field names are stored but have no "
             "schema-enforced semantics. Values are strings except tags, "
             "which may be supplied as a list of strings or as a "
-            "comma-separated string (parity with sage_update_metadata's "
+            "comma-separated string (parity with update_metadata's "
             "list-typed tags field)."
         ),
     )
@@ -1181,7 +1181,7 @@ class BulkLifecycleResponse(BaseModel):
 
 
 class TagsPatch(BaseModel):
-    """Patch operations on a document's tag set, used by sage_update_metadata.
+    """Patch operations on a document's tag set, used by update_metadata.
 
     Strict-conflict semantics enforced at the service layer (add of an
     already-present tag and remove of an absent tag both 400). The model
@@ -1586,7 +1586,7 @@ class IngestResponse(BaseModel):
 
     The REST endpoint is synchronous: `pipeline_status` is at a terminal
     value (`abstraction_complete`, `abstraction_skipped`, or `failed`)
-    by the time this response is returned. The MCP `sage_ingest` wrapper
+    by the time this response is returned. The MCP `ingest_document` wrapper
     inverts this and returns early with a non-terminal status; that
     behavior is MCP-specific and does not affect the REST surface.
     """
@@ -1680,7 +1680,7 @@ class LinkRequest(BaseModel):
             "asserted. Semantically meaningful on `sync_target` (Tier 1, "
             "populated automatically at re-ingestion when the Tier-1 "
             "inference subsystem ships) and `derived_from` (Tier 3, "
-            "agent-supplied via sage_link). Distinct from "
+            "agent-supplied via create_edge). Distinct from "
             "`source_valid_from_version`, which records chain-scoped "
             "edge visibility per CAS-ADR-017 — the two must not be "
             "conflated. Unset = explicit null; never inferred from chain "
@@ -1718,7 +1718,7 @@ class LinkRequest(BaseModel):
 
 
 class LinkResponse(BaseModel):
-    """wrapper for `sage_link` return.
+    """wrapper for `create_edge` return.
 
     Promotes the previously-hand-constructed `{edge, created,...}`
     dict to a real schema so the dry-run flag has a home.
@@ -2723,7 +2723,7 @@ class DiscoverHit(BaseModel):
 class EdgeHit(BaseModel):
     """A single edge enumeration result.
 
-    Returned by ``sage_discover`` when ``target="edges"``. Field
+    Returned by ``search`` when ``target="edges"``. Field
     population depends on ``response_mode``: ``light`` returns only
     identity columns (``edge_id``, ``source_id``, ``target_id``,
     ``edge_type``); ``full`` returns the complete envelope including
@@ -3201,7 +3201,7 @@ class DriftEntry(BaseModel):
         description=(
             "Number of heads observed when `staleness_basis = "
             "chain_nonlinear`; null otherwise. Operators follow up via "
-            "`sage_chain` for full forensics."
+            "`chain` for full forensics."
         ),
     )
     staleness_basis: StalenessBasis = Field(
@@ -3210,7 +3210,7 @@ class DriftEntry(BaseModel):
 
 
 class DriftReport(BaseModel):
-    """Result of a `sage_admin_detect_drift` call.
+    """Result of a `verify_vault_drift` call.
 
     Per-vault audit of `sync_target` / `derived_from` edges whose
     recorded provenance has diverged from the current source-chain head.

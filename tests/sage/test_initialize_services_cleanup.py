@@ -6,7 +6,7 @@ released before the exception propagates. The original exception is the one
 that propagates; cleanup-time exceptions are logged, not re-raised.
 
 These three tests exercise the transactional contract directly against
-``initialize_services``. The end-to-end integration via ``sage_reload_vault``
+``initialize_services``. The end-to-end integration via ``reload_vault``
 is covered in ``tests/sage/test_mcp_server.py`` (the N1/N2 reload-failure
 tests for).
 """

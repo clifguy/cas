@@ -219,7 +219,7 @@ INDEXES = [
         "CREATE INDEX IF NOT EXISTS idx_documents_doc_type_lifecycle "
         "ON documents(doc_type, lifecycle_status);"
     ),
-    # Composite edge indexes for sage_traverse(edge_type=X). The
+    # Composite edge indexes for traverse(edge_type=X). The
     # left-prefix rule lets these cover the source-only / target-only
     # scans previously served by idx_edges_source / idx_edges_target,
     # which are dropped below.

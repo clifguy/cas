@@ -1,4 +1,4 @@
-"""MCP tool tests for sage_admin_reabstract_deferred_vault (CAS-ADR-029).
+"""MCP tool tests for recompute_deferred_vault_abstracts (CAS-ADR-029).
 
 Exercises the boundary contract: vault_id shape validation, registry
 membership check, ReabstractReport serialization on the happy path, and
@@ -102,7 +102,7 @@ async def test_sage_admin_reabstract_deferred_vault_happy_path(
     async with _publish_vault(tmp_path, monkeypatch) as (vault_id, services):
         doc_id = await _seed_one_skipped(services, doc_id_label="tool_happy")
         try:
-            result = await mcp_server.sage_admin_reabstract_deferred_vault(vault_id=vault_id)
+            result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
 
             assert isinstance(result, dict)
             assert "error" not in result, f"expected report dict, got {result!r}"
@@ -134,12 +134,12 @@ async def test_sage_admin_reabstract_deferred_vault_returns_structured_409(
         try:
             before = datetime.now(timezone.utc)
             task_a = asyncio.create_task(
-                mcp_server.sage_admin_reabstract_deferred_vault(vault_id=vault_id)
+                mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
             )
             await asyncio.wait_for(gated.entered.wait(), timeout=5.0)
             after = datetime.now(timezone.utc)
 
-            result_b = await mcp_server.sage_admin_reabstract_deferred_vault(vault_id=vault_id)
+            result_b = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
             assert isinstance(result_b, dict)
             assert result_b.get("error") == "reabstract_already_in_flight", (
                 f"expected reabstract_already_in_flight envelope, got {result_b!r}"
@@ -161,8 +161,8 @@ async def test_sage_admin_reabstract_deferred_vault_unknown_vault_returns_error_
     empty_registry,
 ):
     """An unregistered vault id returns the unknown_vault envelope rather
-    than raising; matches the existing sage_admin_migrate_vault contract."""
-    result = await mcp_server.sage_admin_reabstract_deferred_vault(vault_id="ghost")
+    than raising; matches the existing migrate_vault contract."""
+    result = await mcp_server.recompute_deferred_vault_abstracts(vault_id="ghost")
 
     assert isinstance(result, dict)
     assert result.get("error") == "unknown_vault", (
@@ -219,7 +219,7 @@ async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
             )
 
         try:
-            result = await mcp_server.sage_admin_reabstract_deferred_vault(vault_id=vault_id)
+            result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
 
             assert isinstance(result, dict)
             assert "error" not in result, f"expected report dict, got {result!r}"

@@ -2,7 +2,7 @@
 """Re-run abstraction for documents in a vault.
 
 Standalone fallback for operator workflows (cron-style, no MCP server
-running). Agents should call the ``sage_admin_reabstract_deferred_vault``
+running). Agents should call the ``recompute_deferred_vault_abstracts``
 MCP tool instead -- it reuses the running MCP server's already-loaded
 AbstractionProvider so the dual-Qwen3 RAM hazard does not apply (,
 F-8). The ``--all`` mode (full-vault sweep regardless of pipeline_status)
@@ -19,7 +19,7 @@ bypassed (provider unavailable, vault config previously disabled,
 empty projection text). The records carry no ``semantic_abstract``.
 Indexing completed before the skip decision (see
 ``IngestionService._run_background_pipeline``), so the chunks are
-present in the content store and ``sage_reabstract`` can rebuild the
+present in the content store and ``recompute_abstract`` can rebuild the
 projection text and write a fresh abstract.
 
 Behavior:
@@ -54,8 +54,8 @@ Operational note: the script loads its own Qwen3 MLX abstraction
 provider (~16 GB resident for the 30B; ~5 GB for the 8B). The running
 SAGE MCP server lazily loads its own provider on first abstraction
 call -- do not invoke any abstraction-triggering MCP tool
-(``sage_ingest`` without ``abstraction.enabled=false``,
-``sage_reabstract``) while this script is running, or both processes
+(``ingest_document`` without ``abstraction.enabled=false``,
+``recompute_abstract``) while this script is running, or both processes
 will hold the model and oversubscribe RAM (F-8 precedent). For ``--all``
 passes that switch the vault's abstraction model, stop the MCP server,
 edit ``vault_config.yaml``, then run this script in a separate process.

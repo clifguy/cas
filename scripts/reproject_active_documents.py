@@ -247,7 +247,7 @@ async def reproject_vault_with_services(
             await ingestion._stage2_indexing(doc.id, projection)
 
             # Restore prior terminal pipeline_status so that
-            # `sage_discover filter pipeline_status=abstraction_complete`
+            # `search filter pipeline_status=abstraction_complete`
             # continues to return this doc.
             if prior_status in _TERMINAL_PIPELINE_STATES:
                 await graph.update_document(

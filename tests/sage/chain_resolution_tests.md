@@ -6,7 +6,7 @@ frozen in `CAS-ADR-017_implementation.md`: the edge-type `resolution_policy`
 registry, anchor columns (`source_valid_from_version`,
 `target_valid_from_version`, `valid_until_version`), the `retracts` and
 `merged_from` meta-edges, and the `resolution_path` debug payload on
-`sage_traverse`.
+`traverse`.
 
 **Test ID prefix:** `TEST-SAGE-CR-NNN`.
 
@@ -166,7 +166,7 @@ cases produce 400 with the documented error code.
 
 All tests in this section use the canonical worked example (Chain A,
 Chain B, `covers` edge anchored at a3/b2) unless otherwise noted. They
-exercise `sage_traverse` after Chunk 4 lands. No retraction or tombstoning
+exercise `traverse` after Chunk 4 lands. No retraction or tombstoning
 is in play here.
 
 ### TEST-SAGE-CR-013: query from (a5, b3) surfaces the covers edge

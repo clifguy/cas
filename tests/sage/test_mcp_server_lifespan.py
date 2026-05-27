@@ -222,7 +222,7 @@ async def test_sage_reload_vault_threads_registry_service_into_initialize_servic
     vault_root,
     minimal_vault_config_dict,
 ):
-    """F13 conformance for the reload path: sage_reload_vault must pass
+    """F13 conformance for the reload path: reload_vault must pass
     registry_service=_vault_registry_service to initialize_services."""
     config_path = _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
     monkeypatch.setattr(mcp_server, "_vault_root", vault_root)
@@ -265,11 +265,11 @@ async def test_sage_reload_vault_threads_registry_service_into_initialize_servic
         lambda _cfg: object(),
     )
 
-    await mcp_server.sage_reload_vault("vault_a")
+    await mcp_server.reload_vault("vault_a")
 
     assert len(captured) == 1
     assert captured[0].get("registry_service") is mcp_server._vault_registry_service, (
-        "sage_reload_vault must thread _vault_registry_service into "
+        "reload_vault must thread _vault_registry_service into "
         "initialize_services; without it, the post-reload services bundle has "
         "maintenance_service=None and the admin tools refuse the call (F13)"
     )

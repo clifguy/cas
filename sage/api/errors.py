@@ -919,7 +919,7 @@ class SyncedFromVersionNotInSourceChain(SAGEError):
     """400: synced_from_version doc id is not a member of the target's
     supersedes chain.
 
-    Raised when `sage_link` is called with a `synced_from_version` that
+    Raised when `create_edge` is called with a `synced_from_version` that
     either references a document outside the chain rooted at `target_id`
     or references a document id that does not resolve at all. Surfaced
     as this dedicated code (not `document_not_found`) so operators can
@@ -947,7 +947,7 @@ class AmbiguousDocumentIdentifierError(SAGEError):
     for the same logical document identifier.
 
     Some MCP tools accept the canonical name ``document_id`` as an alias
-    for a tool-specific name (e.g., ``sage_traverse`` accepts both
+    for a tool-specific name (e.g., ``traverse`` accepts both
     ``start_id`` and ``document_id``). Supplying both is treated as
     ambiguous — even when the values are equal — to keep the call-shape
     contract simple: exactly one must be supplied.

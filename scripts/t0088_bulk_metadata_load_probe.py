@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""acceptance benchmark: sage_bulk_update_metadata vs sequential calls.
+"""acceptance benchmark: bulk_update_metadata vs sequential calls.
 
 Compares wall-clock for two paths that apply a tag-add metadata patch to
 N documents:
 
-1. N sequential ``sage_update_metadata`` MCP calls (baseline).
-2. One ``sage_bulk_update_metadata`` MCP call with N items.
+1. N sequential ``update_metadata`` MCP calls (baseline).
+2. One ``bulk_update_metadata`` MCP call with N items.
 
 Two run modes:
 
@@ -185,7 +185,7 @@ async def _run_sequential_fastmcp(vault_id: str, doc_ids: list[str]) -> float:
     start = time.perf_counter()
     for doc_id in doc_ids:
         raw = await mcp.call_tool(
-            "sage_update_metadata",
+            "update_metadata",
             {
                 "vault_id": vault_id,
                 "document_id": doc_id,
@@ -199,11 +199,11 @@ async def _run_sequential_fastmcp(vault_id: str, doc_ids: list[str]) -> float:
 
 
 async def _run_bulk_fastmcp(vault_id: str, doc_ids: list[str]) -> float:
-    """Single in-process FastMCP.call_tool dispatch for sage_bulk_update_metadata."""
+    """Single in-process FastMCP.call_tool dispatch for bulk_update_metadata."""
     mcp = mcp_server.mcp
     items = [{"document_id": d, "tags": {"add": ["bulk_test"]}} for d in doc_ids]
     start = time.perf_counter()
-    raw = await mcp.call_tool("sage_bulk_update_metadata", {"vault_id": vault_id, "items": items})
+    raw = await mcp.call_tool("bulk_update_metadata", {"vault_id": vault_id, "items": items})
     elapsed = time.perf_counter() - start
     payload = _decode_call_tool_result(raw)
     if "error" in payload:
@@ -231,7 +231,7 @@ async def _run_sequential_stdio(session: ClientSession, vault_id: str, doc_ids: 
     start = time.perf_counter()
     for doc_id in doc_ids:
         resp = await session.call_tool(
-            "sage_update_metadata",
+            "update_metadata",
             {
                 "vault_id": vault_id,
                 "document_id": doc_id,
@@ -247,9 +247,7 @@ async def _run_sequential_stdio(session: ClientSession, vault_id: str, doc_ids: 
 async def _run_bulk_stdio(session: ClientSession, vault_id: str, doc_ids: list[str]) -> float:
     items = [{"document_id": d, "tags": {"add": ["bulk_test"]}} for d in doc_ids]
     start = time.perf_counter()
-    resp = await session.call_tool(
-        "sage_bulk_update_metadata", {"vault_id": vault_id, "items": items}
-    )
+    resp = await session.call_tool("bulk_update_metadata", {"vault_id": vault_id, "items": items})
     elapsed = time.perf_counter() - start
     payload = _parse_call_tool_response(resp)
     if "error" in payload:

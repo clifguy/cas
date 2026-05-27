@@ -243,7 +243,7 @@ def create_app(
             that vault's ``ContentStore`` instead of constructing a
             ``LanceDBContentStore``. Forwarded to ``initialize_services``
             via ``_initialize_vault`` and persisted on ``SAGEServices`` so
-            ``sage_reload_vault`` reuses the same stub on disk-driven
+            ``reload_vault`` reuses the same stub on disk-driven
             reload. Sibling embedding and abstraction stubs are gated by
             ``SAGE_TEST_STUB_PROVIDERS=1``; no factory parameters are
             exposed for those.

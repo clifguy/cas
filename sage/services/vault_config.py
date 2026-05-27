@@ -131,9 +131,9 @@ class VaultConfigService:
 
         Malformed hashes:
         This service does NOT validate the format of input hash
-        strings. The ``sage_hash_check`` MCP wrapper constructs
+        strings. The ``verify_hash`` MCP wrapper constructs
         ``HashCheckRequest`` via ``model_construct`` to round-trip
-        the bare-hex form ``sage_ingest`` emits, so malformed entries
+        the bare-hex form ``ingest_document`` emits, so malformed entries
         (truncated hex, non-hex characters, wrong length) reach
         ``find_documents_by_hashes`` as-is, miss every row, and
         surface in the result with ``exists=False`` indistinguishable

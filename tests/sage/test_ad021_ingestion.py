@@ -393,7 +393,7 @@ async def test_ad021_009_chain_inherit_fills_after_filename_parse(
 
 # ---------------------------------------------------------------------------
 # TEST-AD021-010: caller-supplied tags as a list land on the document.
-# Parity with sage_update_metadata's tags: list[str] contract.
+# Parity with update_metadata's tags: list[str] contract.
 # ---------------------------------------------------------------------------
 
 
@@ -412,7 +412,7 @@ async def test_ad021_010_caller_tags_list_form(tmp_vault_dir, pim_ingestion_serv
 
 # ---------------------------------------------------------------------------
 # TEST-AD021-011: caller-supplied tags as a comma-separated string land on
-# the document. Honors the sage_ingest docstring contract.
+# the document. Honors the ingest_document docstring contract.
 # ---------------------------------------------------------------------------
 
 

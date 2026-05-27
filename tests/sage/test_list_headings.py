@@ -261,26 +261,26 @@ async def test_list_headings_matches_heading_not_found_available_headings(
 
 
 def test_mcp_tool_registered_with_expected_name():
-    """sage_list_headings is exposed in the MCP tool registry."""
+    """list_headings is exposed in the MCP tool registry."""
     from sage import mcp_server
 
-    assert "sage_list_headings" in mcp_server._sage_tools
+    assert "list_headings" in mcp_server._sage_tools
 
 
 def test_mcp_tool_top_level_alias():
-    """sage_list_headings is re-exported as a module-level attribute on mcp_server,
+    """list_headings is re-exported as a module-level attribute on mcp_server,
     matching the convention used for every other tool."""
     from sage import mcp_server
 
-    assert hasattr(mcp_server, "sage_list_headings")
-    assert mcp_server.sage_list_headings is mcp_server._sage_tools["sage_list_headings"]
+    assert hasattr(mcp_server, "list_headings")
+    assert mcp_server.list_headings is mcp_server._sage_tools["list_headings"]
 
 
 def test_mcp_tool_signature_has_only_vault_id_and_document_id():
     """The tool exposes exactly vault_id and document_id — no drift."""
     from sage import mcp_server
 
-    tool = mcp_server._sage_tools["sage_list_headings"]
+    tool = mcp_server._sage_tools["list_headings"]
     params = list(inspect.signature(tool).parameters)
 
     assert params == ["vault_id", "document_id"]
@@ -291,7 +291,7 @@ def test_mcp_tool_docstring_retires_wrong_path_trick():
     readers do not re-invent it."""
     from sage import mcp_server
 
-    tool = mcp_server._sage_tools["sage_list_headings"]
+    tool = mcp_server._sage_tools["list_headings"]
     doc = (tool.__doc__ or "").lower()
 
     # Reference to the antipattern: either 'wrong' or 'deliberately wrong' or

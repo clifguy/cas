@@ -309,7 +309,7 @@ class MetadataService:
         bulk operations programmatically may pass ``items=[]`` without
         special-casing the call site.
 
-        The performance win versus N sequential ``sage_update_metadata``
+        The performance win versus N sequential ``update_metadata``
         MCP calls comes from eliminating per-call MCP framing overhead
         and asyncio scheduling between items; the per-document lock and
         the per-item SQLite transaction are unchanged.
@@ -318,7 +318,7 @@ class MetadataService:
         depth. ``light`` drops the per-item ``document`` body from
         success entries; failure entries always carry the full structured
         error envelope. When unset, the default-resolution rule mirrors
-        ``sage_discover``: batches with more than
+        ``search``: batches with more than
         ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
         smaller batches default to ``full``.
         """

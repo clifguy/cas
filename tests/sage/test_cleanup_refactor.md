@@ -7,7 +7,7 @@ review on 2026-04-10. Tests are organized by issue number from the review.
 
 ## TEST-CLN-001: EdgeResult type consistency in batch ingest summary
 
-**Artifact:** `sage/mcp_server.py` (app_batch_ingest), `app/backend/router.py` (ingest_endpoint)
+**Artifact:** `sage/mcp_server.py` (bulk_ingest_document), `app/backend/router.py` (ingest_endpoint)
 **Category:** type safety, API contract
 **Decision:** `edges_created` and `edges_staged` in the summary response are always
 `dict[str, int]`, never `int`. When no edge inference runs, they are `{}`.
@@ -15,16 +15,16 @@ review on 2026-04-10. Tests are organized by issue number from the review.
 **Precondition:** SAGE vault initialized with markdown adapter.
 
 **Test A -- No edge inference:**
-- Input: Call `app_batch_ingest` with `infer_edges=False` and one valid file.
+- Input: Call `bulk_ingest_document` with `infer_edges=False` and one valid file.
 - Expected: Summary JSON has `"edges_created": {}` and `"edges_staged": {}` (empty dicts, not `0`).
 
 **Test B -- With edge inference, no edges produced:**
-- Input: Call `app_batch_ingest` with `infer_edges=True` and one file whose metadata
+- Input: Call `bulk_ingest_document` with `infer_edges=True` and one file whose metadata
   produces no edge plan.
 - Expected: Summary JSON has `"edges_created": {}` and `"edges_staged": {}`.
 
 **Test C -- With edge inference, edges produced:**
-- Input: Call `app_batch_ingest` with two versioned files that trigger a supersedes edge.
+- Input: Call `bulk_ingest_document` with two versioned files that trigger a supersedes edge.
 - Expected: `"edges_created"` is `{"supersedes": 1}` (dict with edge type keys and int counts).
 
 **Rationale:** Frontend (`Ingest.tsx`) calls `Object.keys()` on these fields. Sending `0`
@@ -133,7 +133,7 @@ and `is_new: bool`) instead of `tuple[Document, int]`. Callers use `.document` a
 - Expected: `result.is_new` is False.
 
 **Test C -- All existing callers updated:**
-- `sage/mcp_server.py` (sage_ingest, app_batch_ingest)
+- `sage/mcp_server.py` (ingest_document, bulk_ingest_document)
 - `app/backend/router.py` (ingest_endpoint)
 - `sage/api/routers/ingestion.py`
 - All test files in `tests/sage/test_ingestion.py`
@@ -149,17 +149,17 @@ the service layer. `is_new` is the semantic signal callers actually need.
 **Category:** code duplication, module size
 **Decision:** Extract the three-phase batch ingest logic (edge plan, per-file ingest,
 edge execution) into `app/backend/batch_ingest.py` as a shared service function.
-Both MCP `app_batch_ingest` and the router's `ingest_endpoint` call this function.
+Both MCP `bulk_ingest_document` and the router's `ingest_endpoint` call this function.
 
 The MCP server file is split:
 - `sage/mcp_server.py` -- server setup, vault registry, entry point, and imports
   the tool modules.
-- `sage/mcp_tools_core.py` -- SAGE Core API tools (sage_ingest through sage_refresh_views).
-- `sage/mcp_tools_app.py` -- Application tools (sage_list_vaults through app_batch_ingest).
+- `sage/mcp_tools_core.py` -- SAGE Core API tools (ingest_document through recompute_views).
+- `sage/mcp_tools_app.py` -- Application tools (list_vaults through bulk_ingest_document).
 
 **Test A -- MCP tool registration:**
 - All tools previously registered on `mcp` are still discoverable after the split.
-- `sage_ingest`, `sage_get_document`, `app_batch_ingest`, etc. are callable.
+- `ingest_document`, `get_document`, `bulk_ingest_document`, etc. are callable.
 
 **Test B -- Shared batch ingest function:**
 - Input: Call `batch_ingest_files(vault_services, files, infer_edges=True)`.

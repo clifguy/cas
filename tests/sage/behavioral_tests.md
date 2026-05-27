@@ -2044,7 +2044,7 @@ were never retrieved.
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
 **Category:** graph, chain
-**Decision:** `sage_chain` walks to both ends of a linear edge chain from any
+**Decision:** `chain` walks to both ends of a linear edge chain from any
 starting node via recursive CTE, returning an ordered list with positional
 metadata.
 
@@ -2193,7 +2193,7 @@ validation pattern).
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
 **Category:** graph, chain
-**Decision:** `sage_chain` is edge-type-generic. Any edge type that forms a
+**Decision:** `chain` is edge-type-generic. Any edge type that forms a
 linear chain can be walked. The `edge_type` parameter is required (no default).
 
 **Precondition:** doc_a -> doc_b -> doc_c via `references` edges (outbound direction).
@@ -2320,7 +2320,7 @@ and (in Phase 2) two-pass abstract-boosted retrieval.
 **Decision:** When a document has a `semantic_abstract`, the `DocumentSummary`
 returned in every `DiscoverHit` must include it. This enables steward agents
 and vault-steward discovery to access the abstract without a second
-`sage_get_document` call.
+`get_document` call.
 
 **Precondition:** A document with `semantic_abstract` set to a non-empty string
 is indexed with at least one chunk.
@@ -3061,7 +3061,7 @@ the ingestion service.
   via polling.
 
 **Rationale:** Fast-ack is the core correctness property that rescues
-sage_ingest from the 60s MCP client ceiling. The test pins both
+ingest_document from the 60s MCP client ceiling. The test pins both
 directions (fast path fast; sync path still waits) so regressions in
 either are caught.
 
