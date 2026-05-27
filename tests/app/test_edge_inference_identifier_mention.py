@@ -79,6 +79,7 @@ from sage.models.enums import EdgeType, RationaleKind, SourceType
 from sage.models.schemas import Document, IngestRequest, LinkRequest
 from sage.services.identifier_mention_inference import (
     IDENTIFIER_MENTION_RATIONALE_PREFIX,
+    _title_matches_prefix,
     infer_identifier_mentions_for_document,
 )
 from tests.sage.conftest import initialize_services_for_test
@@ -1147,3 +1148,209 @@ def test_pattern_schema_still_accepts_target_tags_only():
         "target_doc_type": "adr",
     }
     jsonschema.validate(_edge_inference_block_with_pattern(pattern), schema)
+
+
+# ---------------------------------------------------------------------------
+# target_title_prefix resolver semantics
+#
+# The cas-style ADR pattern below pairs a regex that matches identifiers like
+# `CAS-ADR-038` with a title-prefix filter `ADR-{adr_num}:`. The two
+# placeholders carry different meanings: {id} is the full literal that the
+# regex matched (e.g., `CAS-ADR-038`), while {adr_num} is the trailing
+# numeric run (e.g., `038`). After substitution, the filter requires each
+# candidate document's title to start with the *bare* `ADR-NNN:` prefix.
+# A candidate whose title starts with `CAS-ADR-NNN:` is silently filtered
+# out by `_title_matches_prefix`, the resolver returns None, and no edge
+# is written. The tests below pin both halves of that contract: the
+# conforming positive path (tag + title together) and the violating
+# negative path (correct tag, non-conforming title). See
+# `sage/services/identifier_mention_inference.py::_resolve_identifier`
+# and `_title_matches_prefix` for the implementation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_t11_same_session_fresh_adr_resolves_when_title_conforms(tmp_path, services):
+    """Conforming ADR seeded mid-session resolves on the very next ingest.
+
+    Anti-coincidence guard: this test directly refutes a "cache warmed at
+    MCP-server boot, never refreshed" hypothesis for the resolver. The
+    `services` fixture initializes a fresh `SAGEServices` instance with no
+    boot-time priming of any ADR-target lookup table; the ADR is seeded
+    *after* the fixture starts and *before* the ingest that mentions it.
+    If the resolver did rely on a boot-warmed cache, the seeded ADR would
+    be invisible to the lookup and no edge would appear. The conforming
+    title prefix (`ADR-099:`) ensures the title-prefix filter does not
+    interfere — this test isolates the "freshness" axis.
+
+    A decoy ADR with a different number is also seeded so a buggy resolver
+    that returned an arbitrary doc_type=adr match would fail the
+    target-id assertion.
+    """
+    target_id = _doc_id("adr_099_conforming")
+    decoy_id = _doc_id("adr_200_decoy")
+    await _seed_document(
+        services,
+        doc_id=target_id,
+        title="ADR-099: Same-session freshness target with conforming prefix",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    await _seed_document(
+        services,
+        doc_id=decoy_id,
+        title="ADR-200: Decoy ADR not mentioned in the source body",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "note_mentions_adr_099.md",
+        "# Note\n\nThis note cites CAS-ADR-099 and nothing else.\n",
+    )
+
+    src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1, (
+        f"Expected one references edge to ADR-099 seeded mid-session, got "
+        f"{len(edges)}. Zero edges here would mean either (a) the resolver "
+        f"in fact relies on a boot-time-warmed cache that this fixture "
+        f"would not have populated, or (b) the fixture or ingest pathway "
+        f"is broken in a way that masks the resolver entirely."
+    )
+    edge = edges[0]
+    assert edge.target_id == target_id
+    assert edge.source_id == src_doc_id
+    assert edge.rationale_kind == RationaleKind.REFERENCES_MENTION
+    # Decoy must remain edge-free; otherwise the resolver is returning
+    # arbitrary doc_type=adr matches and the target_id check above passed
+    # by luck of `updated_at` ordering.
+    decoy_inbound = await services.graph_store.get_edges_by_target(decoy_id, "references")
+    assert decoy_inbound == []
+
+
+@pytest.mark.asyncio
+async def test_t12_adr_with_violating_title_prefix_silently_fails_to_resolve(tmp_path, services):
+    """Conforming and title-violating ADRs side-by-side: only the conforming one resolves.
+
+    Pins the title-prefix filter's discrimination boundary. Two ADRs are
+    seeded under identical conditions — same session, same tags
+    (`["adr"]`), same doc_type (`adr`), same lifecycle (`active`),
+    identical seeding order proximity — and differ only in title shape:
+
+    - `ADR-100:` is the conforming form expected by the cas vault's
+      `target_title_prefix: "ADR-{adr_num}:"`.
+    - `CAS-ADR-101:` violates the prefix convention. The substitution
+      step produces filter `ADR-101:`; `title.startswith("ADR-101:")`
+      returns False because the title starts with `CAS-ADR-101:`. The
+      candidate is filtered out and the resolver returns None.
+
+    Expected current behavior (the bug this test pins): exactly one
+    inbound `references` edge — to the conforming ADR-100. Zero edges
+    to the title-violating ADR-101.
+
+    Future-fix flip: when remediation lands (either resolver tolerance
+    for `CAS-ADR-NNN:` prefixes, or migration to tier3-based ADR-id
+    resolution), the second half of this assertion flips from `== []`
+    to `== [one edge]`. That one-line flip is the regression-prevention
+    signal for the fix.
+
+    Anti-coincidence guards:
+    1. Positive control (ADR-100 resolves) ensures the inference rule is
+       actually firing — without it, a "zero edges to ADR-101" assertion
+       could pass because the rule was silently disabled.
+    2. Both ADRs carry the same `tags=["adr"]` and `doc_type="adr"`, so
+       the only filter that could discriminate between them is the
+       title-prefix narrowing.
+    3. Both seeded before the source ingest, in the same session: any
+       "freshness" or "ordering" axis is controlled out — only title
+       shape varies.
+    """
+    conforming_id = _doc_id("adr_100_conforming")
+    violator_id = _doc_id("adr_101_violator")
+    await _seed_document(
+        services,
+        doc_id=conforming_id,
+        title="ADR-100: Conforming title prefix",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    await _seed_document(
+        services,
+        doc_id=violator_id,
+        title="CAS-ADR-101: Title starts with CAS- prefix and is silently dropped",
+        doc_type="adr",
+        tags=["adr"],
+    )
+    src_path = _write_md(
+        tmp_path,
+        "note_mentions_both_adrs.md",
+        "# Note\n\nMentions CAS-ADR-100 and CAS-ADR-101 in the same body.\n",
+    )
+
+    src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    # Positive control: the conforming ADR must resolve.
+    assert len(edges) == 1, (
+        f"Expected exactly one references edge — to ADR-100 (conforming). "
+        f"Got {len(edges)} edges: {[(e.source_id, e.target_id) for e in edges]}. "
+        f"Two edges would mean the title-prefix filter is no longer "
+        f"discriminating; zero edges would mean the inference rule is "
+        f"silently disabled and the negative assertion below is meaningless."
+    )
+    assert edges[0].target_id == conforming_id
+    assert edges[0].source_id == src_doc_id
+    assert edges[0].rationale_kind == RationaleKind.REFERENCES_MENTION
+
+    # Negative case — pins the current resolver behavior. Flip to
+    # `len == 1` when remediation lands.
+    violator_inbound = await services.graph_store.get_edges_by_target(violator_id, "references")
+    assert violator_inbound == [], (
+        f"Expected zero references edges to the title-violating ADR-101 "
+        f"under current resolver behavior. Got "
+        f"{[(e.source_id, e.target_id, e.rationale) for e in violator_inbound]}. "
+        f"If this assertion fails, either (a) the resolver gained tolerance "
+        f"for `CAS-ADR-NNN:` title prefixes (remediation landed — flip this "
+        f"to `assert len(violator_inbound) == 1`), or (b) the title-prefix "
+        f"filter was removed entirely (which would also need a config-side "
+        f"change to drop the `target_title_prefix` field)."
+    )
+
+
+def test_title_matches_prefix_rejects_cas_adr_prefix_when_template_is_bare_adr():
+    """Pure-function pin of `_title_matches_prefix` against the violating shape.
+
+    Direct call against the filter function with the exact inputs the
+    resolver constructs from the cas vault's ADR pattern. The function
+    substitutes {adr_num} with the trailing numeric run of the identifier
+    (`038`) and tests `title.startswith("ADR-038:")`. Documents whose
+    titles start with `CAS-ADR-038:` rather than `ADR-038:` are filtered
+    out.
+
+    This unit-level pin complements the integration tests above by
+    isolating the filter semantics from the resolver pipeline, the
+    fixture, and the ingest flow — so a future refactor that touches
+    `_title_matches_prefix` gets an immediate, narrowly-scoped signal.
+    """
+    # Negative case — the documented bug shape.
+    assert (
+        _title_matches_prefix(
+            title="CAS-ADR-038: SAGE concurrency-safety primitives for multi-agent vault access",
+            prefix_template="ADR-{adr_num}:",
+            identifier="CAS-ADR-038",
+        )
+        is False
+    )
+
+    # Positive case — the conforming shape that every other active cas
+    # vault ADR uses. Without this assertion, a degenerate
+    # `_title_matches_prefix` that returned False for *every* input would
+    # also pass the negative assertion above.
+    assert (
+        _title_matches_prefix(
+            title="ADR-038: SAGE concurrency-safety primitives for multi-agent vault access",
+            prefix_template="ADR-{adr_num}:",
+            identifier="CAS-ADR-038",
+        )
+        is True
+    )
