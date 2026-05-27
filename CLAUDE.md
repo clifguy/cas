@@ -30,8 +30,6 @@ Database files (SQLite, LanceDB) live outside the repository at paths configured
 
 Direct mutation breaks provenance (source hashes, chain-head invariants, supersession edges) and silently desynchronizes the graph and content stores. Direct reads bypass projections and lifecycle filtering and return stale or misleading content. The "explicitly authorized" carveout exists for genuine forensics; assume it does not apply by default — when in doubt, ask before touching the vault tree.
 
-See the `sage-documents-immutable` memory for the full create/update procedure.
-
 ## Harness permissions
 
 `.claude/settings.json` (checked in) carries the project-scoped Claude Code permission rules. It currently denies bare `git push --force:*` and narrowly allows `git push --force-with-lease:*` so the `/merge` skill's force-with-lease push runs without a per-invocation prompt while plain force-pushes stay blocked. User-specific overrides belong in `.claude/settings.local.json` (gitignored), not here.
