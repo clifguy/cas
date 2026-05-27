@@ -53,6 +53,7 @@ from sage.models.schemas import (
     UpdateVaultConfigRequest,
     VaultIdStr,
 )
+from sage.services.metadata import MetadataService
 from sage.services.vault_registry import VaultRegistryService
 
 # Module-scope TypeAdapters for Pattern 2 boundary validation on FastMCP tool
@@ -74,7 +75,8 @@ def _check_legacy_patch_form(field: str, value: object) -> None:
 
     Catches the two common pre-patch shapes that Pydantic would otherwise
     reject with a generic validation error:
-      - tags=["a", "b"]: bare list, the old replacement form.
+      - bare list for a list-valued metadata field (every field in
+        ``MetadataService.LIST_VALUED_METADATA_FIELDS``).
       - tier3_metadata={"ticket_priority": "high"}: bare dict with no
         recognized patch verb. A dict that contains only the keys
         ``set`` and/or ``unset`` is a valid Tier3Patch; anything else
@@ -82,10 +84,10 @@ def _check_legacy_patch_form(field: str, value: object) -> None:
     """
     if value is None:
         return
-    if field == "tags":
+    if field in MetadataService.LIST_VALUED_METADATA_FIELDS:
         if isinstance(value, list):
             raise LegacyFormError(
-                field="tags",
+                field=field,
                 received_type="list",
                 example='{"add": [...]} or {"remove": [...]}',
             )
@@ -448,10 +450,14 @@ def register_sage_tools(
 
         Scalars (``title``, ``version_label``, ``project``, ``doc_type``,
         ``authority_scope``, ``document_date``) use set-or-omit
-        semantics: pass to set, omit to leave unchanged. The collection
-        fields ``tags`` and ``tier3_metadata`` take ops-object patches;
-        the bare-list / bare-dict forms are no longer accepted (see
-        ``legacy_form`` below).
+        semantics: pass to set, omit to leave unchanged. List-valued
+        metadata fields (today: ``tags``) take a ``ListFieldPatch``
+        ops-object (``{add, remove}``); ``tier3_metadata`` takes a
+        ``Tier3Patch`` ops-object (``{set, unset}``). The bare-list /
+        bare-dict forms are no longer accepted (see ``legacy_form``
+        below). The ops-object shape is the substrate's
+        concurrency-safety contract (CAS-ADR-038): parallel adds of
+        distinct values to the same list-valued field commute.
 
         Per CAS-ADR-021, any successful call sets ``metadata_confirmed=true``
         on the document (it leaves the metadata-review queue if it was
@@ -477,14 +483,14 @@ def register_sage_tools(
         ``tier3_metadata`` as a dict (creation supplies full state);
         ``update_metadata`` patches existing state.
 
-        Tags patch shape (``tags``)::
+        List-valued field patch shape (e.g. ``tags``)::
 
             {"add": ["x",...], "remove": ["y",...]}
 
-        At least one key required and non-empty. ``add`` keys must NOT
-        be present; ``remove`` keys MUST be present (strict conflict).
-        ``add`` and ``remove`` must be disjoint and individually
-        deduplicated. Worked examples:
+        At least one key required and non-empty. ``add`` values must
+        NOT be present on the field; ``remove`` values MUST be present
+        (strict conflict). ``add`` and ``remove`` must be disjoint and
+        individually deduplicated. Worked examples:
 
         - Add a single tag: ``tags={"add": ["urgent"]}``
         - Remove one, add another: ``tags={"add": ["new"], "remove": ["old"]}``
@@ -506,11 +512,13 @@ def register_sage_tools(
         Error modes:
         - ``document_not_found`` (404): no document with that id.
         - ``invalid_doc_type`` (400): ``doc_type`` not in vault config.
-        - ``tag_add_conflict`` (400): one or more ``tags.add`` entries
-          are already present. Detail carries ``document_id``, ``tags``
-          (the conflicting subset), and ``current_tags``.
-        - ``tag_remove_conflict`` (400): one or more ``tags.remove``
-          entries are absent. Detail mirrors ``tag_add_conflict``.
+        - ``{field}_add_conflict`` (400): one or more ``add`` entries on
+          the named list-valued field are already present. For ``tags``,
+          the code is ``tags_add_conflict``; detail carries
+          ``document_id``, the field name keying the conflicting subset,
+          and ``current_{field}`` (e.g., ``current_tags``).
+        - ``{field}_remove_conflict`` (400): one or more ``remove``
+          entries are absent. Detail mirrors the add-conflict shape.
         - ``tag_patch_overlap`` (400): ``add`` and ``remove`` share
           entries, or one list contains duplicates.
         - ``tier3_unset_conflict`` (400): one or more ``unset`` keys
@@ -1050,13 +1058,14 @@ def register_sage_tools(
         operations programmatically may pass ``items=[]`` without
         special-casing the call site.
 
-        Tags patch shape (per item ``tags``)::
+        List-valued field patch shape (per item ``tags``)::
 
             {"add": ["x",...], "remove": ["y",...]}
 
-        At least one key required and non-empty. ``add`` keys must NOT be
-        present; ``remove`` keys MUST be present (strict conflict). See
-        ``update_metadata`` for the full grammar (CAS-ADR-028).
+        At least one key required and non-empty. ``add`` values must NOT
+        be present on the field; ``remove`` values MUST be present
+        (strict conflict). See ``update_metadata`` for the full grammar
+        (CAS-ADR-028; CAS-ADR-038 for the concurrency-safety contract).
 
         Tier3 patch shape (per item ``tier3_metadata``)::
 
@@ -1067,10 +1076,10 @@ def register_sage_tools(
 
         Per-item error modes (surfaced inside the response envelope):
         ``document_not_found`` (404), ``invalid_doc_type`` (400),
-        ``tag_add_conflict`` / ``tag_remove_conflict`` /
-        ``tag_patch_overlap`` (400), ``tier3_unset_conflict`` /
-        ``tier3_patch_overlap`` / ``patch_empty`` (400),
-        ``tier3_schema_violation`` (400), and
+        ``{field}_add_conflict`` / ``{field}_remove_conflict`` (400,
+        e.g., ``tags_add_conflict``), ``tag_patch_overlap`` (400),
+        ``tier3_unset_conflict`` / ``tier3_patch_overlap`` /
+        ``patch_empty`` (400), ``tier3_schema_violation`` (400), and
         ``tier3_doc_type_change_stale_keys`` (400). See
         ``update_metadata`` for detail-envelope shape.
 
@@ -1091,7 +1100,7 @@ def register_sage_tools(
             items: List of per-item patch requests. Each item must
                 conform to the ``BulkMetadataItem`` shape:
                 ``{document_id: str, title?: str, version_label?: str,
-                project?: str, tags?: TagsPatch, doc_type?: str,
+                project?: str, tags?: ListFieldPatch, doc_type?: str,
                 authority_scope?: str, document_date?: str,
                 tier3_metadata?: Tier3Patch}``. Shape validation runs up
                 front; a single malformed item rejects the entire batch

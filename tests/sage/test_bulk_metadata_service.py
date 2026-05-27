@@ -14,7 +14,7 @@ from sage.config import VaultConfig
 from sage.models.schemas import (
     BulkMetadataItem,
     BulkMetadataRequest,
-    TagsPatch,
+    ListFieldPatch,
     Tier3Patch,
 )
 from sage.services.metadata import MetadataService
@@ -78,7 +78,7 @@ async def test_bulk_update_metadata_happy_path_scalar_and_tag_changes(
                 BulkMetadataItem(
                     document_id=doc_id,
                     title=f"renamed {doc_id}",
-                    tags=TagsPatch(add=["b"]),
+                    tags=ListFieldPatch(add=["b"]),
                     tier3_metadata=Tier3Patch(set={"ticket_priority": "high"}),
                 )
                 for doc_id in ids
@@ -152,9 +152,9 @@ async def test_bulk_update_metadata_mixed_valid_invalid_partial_success(
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=ids[0], tags=TagsPatch(add=["x"])),
-                BulkMetadataItem(document_id=ids[1], tags=TagsPatch(add=["already_present"])),
-                BulkMetadataItem(document_id=ids[2], tags=TagsPatch(add=["y"])),
+                BulkMetadataItem(document_id=ids[0], tags=ListFieldPatch(add=["x"])),
+                BulkMetadataItem(document_id=ids[1], tags=ListFieldPatch(add=["already_present"])),
+                BulkMetadataItem(document_id=ids[2], tags=ListFieldPatch(add=["y"])),
             ]
         ),
         modified_by="testuser",
@@ -167,7 +167,7 @@ async def test_bulk_update_metadata_mixed_valid_invalid_partial_success(
     assert response.results[0].status == "success"
     assert response.results[1].status == "error"
     assert response.results[1].document_id == ids[1]
-    assert response.results[1].error["error"] == "tag_add_conflict"
+    assert response.results[1].error["error"] == "tags_add_conflict"
     assert "document_id" in response.results[1].error["detail"]
     assert "current_tags" in response.results[1].error["detail"]
     assert response.results[2].status == "success"
@@ -470,8 +470,8 @@ async def test_bulk_update_metadata_unknown_document_id_per_item_error(
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=real, tags=TagsPatch(add=["b"])),
-                BulkMetadataItem(document_id=ghost, tags=TagsPatch(add=["b"])),
+                BulkMetadataItem(document_id=real, tags=ListFieldPatch(add=["b"])),
+                BulkMetadataItem(document_id=ghost, tags=ListFieldPatch(add=["b"])),
             ]
         ),
         modified_by="testuser",
@@ -504,7 +504,7 @@ async def test_bulk_update_metadata_invalid_doc_type_per_item_error(
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=a, tags=TagsPatch(add=["b"])),
+                BulkMetadataItem(document_id=a, tags=ListFieldPatch(add=["b"])),
                 BulkMetadataItem(document_id=b, doc_type="not_in_vault_config"),
             ]
         ),
@@ -537,9 +537,9 @@ async def test_bulk_update_metadata_duplicate_document_id_serializes_via_per_doc
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["a"])),
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["b"])),
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["c"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["a"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["b"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["c"])),
             ]
         ),
         modified_by="testuser",
@@ -579,8 +579,8 @@ async def test_bulk_update_metadata_per_item_transactions_no_batch_rollback(
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=real, tags=TagsPatch(add=["b"])),
-                BulkMetadataItem(document_id=ghost, tags=TagsPatch(add=["b"])),
+                BulkMetadataItem(document_id=real, tags=ListFieldPatch(add=["b"])),
+                BulkMetadataItem(document_id=ghost, tags=ListFieldPatch(add=["b"])),
             ]
         ),
         modified_by="testuser",
@@ -622,7 +622,8 @@ async def test_bulk_update_metadata_sets_metadata_confirmed_on_each_success(
     response = await bulk_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["b"])) for doc_id in ids
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["b"]))
+                for doc_id in ids
             ]
         ),
         modified_by="testuser",

@@ -300,12 +300,12 @@ async def test_t0153_t5_error_envelope_intact_in_light_mode(
     seeded_six_with_abstracts,
 ):
     """T5 — An error item in light mode keeps the full error envelope,
-    including the structured `detail` payload (tag_add_conflict carries
+    including the structured `detail` payload (tags_add_conflict carries
     `current_tags` in detail). Round-trip against the same shape in full
     mode; envelopes must be byte-identical."""
     vault_id, seeded_ids = seeded_six_with_abstracts
     # 'a' is already present on seeded docs, so add of 'a' raises
-    # tag_add_conflict with detail={'current_tags': ['a']}. Use a
+    # tags_add_conflict with detail={'current_tags': ['a']}. Use a
     # different success-item per call so the calls don't need state
     # reset between them.
     light_items = [
@@ -333,7 +333,7 @@ async def test_t0153_t5_error_envelope_intact_in_light_mode(
     assert light_err["error"] == full_err["error"], (
         f"light mode must not strip error envelope; light={light_err!r} full={full_err!r}"
     )
-    assert light_err["error"]["error"] == "tag_add_conflict"
+    assert light_err["error"]["error"] == "tags_add_conflict"
     assert "detail" in light_err["error"]
 
 
@@ -352,7 +352,7 @@ async def test_t0153_t6_error_envelope_intact_in_full_mode(
     )
 
     assert result["results"][1]["status"] == "error"
-    assert result["results"][1]["error"]["error"] == "tag_add_conflict"
+    assert result["results"][1]["error"]["error"] == "tags_add_conflict"
 
 
 async def test_t0153_t7_mixed_batch_in_light_mode(seeded_six_with_abstracts):
@@ -375,7 +375,7 @@ async def test_t0153_t7_mixed_batch_in_light_mode(seeded_six_with_abstracts):
     assert result["results"][0]["status"] == "success"
     assert "document" not in result["results"][0]
     assert result["results"][1]["status"] == "error"
-    assert result["results"][1]["error"]["error"] == "tag_add_conflict"
+    assert result["results"][1]["error"]["error"] == "tags_add_conflict"
     assert result["results"][2]["status"] == "success"
     assert "document" not in result["results"][2]
 

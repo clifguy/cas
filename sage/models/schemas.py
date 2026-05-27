@@ -1180,47 +1180,56 @@ class BulkLifecycleResponse(BaseModel):
     )
 
 
-class TagsPatch(BaseModel):
-    """Patch operations on a document's tag set, used by update_metadata.
+class ListFieldPatch(BaseModel):
+    """Patch operations on a list-valued metadata field (CAS-ADR-038
+    Primitive A).
 
-    Strict-conflict semantics enforced at the service layer (add of an
-    already-present tag and remove of an absent tag both 400). The model
-    validators here enforce shape-level invariants that don't require
-    knowing the stored state: at least one non-empty operation must be
-    present, add and remove must be disjoint, and neither list may
-    contain internal duplicates.
+    Generic ops-object: ``{add: [...], remove: [...]}``. Either list may
+    be omitted but at least one must be present and non-empty.
+    Strict-conflict semantics are enforced at the service layer (add of
+    an already-present value and remove of an absent value both raise
+    400). The model validators here enforce shape-level invariants that
+    don't require knowing the stored state: at least one non-empty
+    operation must be present, ``add`` and ``remove`` must be disjoint,
+    and neither list may contain internal duplicates.
+
+    The model is field-name-agnostic — the service-layer applier carries
+    the field name through to the error envelope so codes like
+    ``tags_add_conflict`` derive from the field rather than the patch
+    type.
     """
 
     model_config = {"extra": "forbid"}
 
     add: list[str] | None = Field(
         default=None,
-        description=("Tags to add. None may already be present on the document."),
+        description=("Values to add. None may already be present on the field."),
     )
     remove: list[str] | None = Field(
         default=None,
-        description=("Tags to remove. All must currently be present on the document."),
+        description=("Values to remove. All must currently be present on the field."),
     )
 
     @model_validator(mode="after")
-    def _validate(self) -> "TagsPatch":
+    def _validate(self) -> "ListFieldPatch":
         if not self.add and not self.remove:
             raise ValueError(
-                "tags patch carries no actionable operation; supply non-empty 'add' and/or 'remove'"
+                "list-field patch carries no actionable operation; "
+                "supply non-empty 'add' and/or 'remove'"
             )
         if self.add is not None and len(self.add) != len(set(self.add)):
             seen: set[str] = set()
             dups = [t for t in self.add if t in seen or seen.add(t)]  # type: ignore[func-returns-value]
-            raise ValueError(f"tags.add contains duplicates: {sorted(set(dups))!r}")
+            raise ValueError(f"list-field add contains duplicates: {sorted(set(dups))!r}")
         if self.remove is not None and len(self.remove) != len(set(self.remove)):
             seen2: set[str] = set()
             dups2 = [t for t in self.remove if t in seen2 or seen2.add(t)]  # type: ignore[func-returns-value]
-            raise ValueError(f"tags.remove contains duplicates: {sorted(set(dups2))!r}")
+            raise ValueError(f"list-field remove contains duplicates: {sorted(set(dups2))!r}")
         if self.add and self.remove:
             overlap = set(self.add) & set(self.remove)
             if overlap:
                 raise ValueError(
-                    f"tags.add and tags.remove must be disjoint; overlap: {sorted(overlap)!r}"
+                    f"list-field add and remove must be disjoint; overlap: {sorted(overlap)!r}"
                 )
         return self
 
@@ -1271,10 +1280,12 @@ class UpdateMetadataRequest(BaseModel):
     """Partial update of mutable document metadata.
 
     Only fields present in the request are modified. Scalar fields use
-    set-or-omit semantics. ``tags`` and ``tier3_metadata`` take ops
-    objects (``TagsPatch`` / ``Tier3Patch``); the bare-list / bare-dict
-    forms are no longer accepted. See CAS-ADR-028 for the ingest-vs-update
-    shape asymmetry rationale.
+    set-or-omit semantics. List-valued metadata fields (today: ``tags``)
+    take a ``ListFieldPatch`` ops-object; ``tier3_metadata`` takes a
+    ``Tier3Patch`` ops-object. The bare-list / bare-dict forms are no
+    longer accepted. See CAS-ADR-028 for the ingest-vs-update shape
+    asymmetry rationale and CAS-ADR-038 for the concurrency-safety
+    contract behind the ops-object form.
     """
 
     model_config = {"extra": "forbid"}
@@ -1288,12 +1299,12 @@ class UpdateMetadataRequest(BaseModel):
     project: str | None = Field(
         default=None, description="New project scope for the document; omit to leave unchanged."
     )
-    tags: TagsPatch | None = Field(
+    tags: ListFieldPatch | None = Field(
         default=None,
         description=(
             "Patch operations on the tag set: {add?: list[str], remove?: list[str]}. "
             "At least one key required. Strict-conflict on add-present / "
-            "remove-absent. See TagsPatch."
+            "remove-absent. See ListFieldPatch."
         ),
     )
     doc_type: str | None = Field(
@@ -1363,7 +1374,7 @@ class BulkMetadataItem(BaseModel):
         default=None,
         description="New project scope for the document; omit to leave unchanged.",
     )
-    tags: TagsPatch | None = Field(
+    tags: ListFieldPatch | None = Field(
         default=None,
         description=(
             "Patch operations on the tag set: {add?: list[str], remove?: list[str]}. "

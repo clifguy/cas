@@ -673,3 +673,148 @@ def test_mcp_tool_args_conform_to_openapi(surface_name: str, tool_name: str):
         "Adjust either side so the types line up (consult the type-compat "
         "table in the test module docstring)."
     )
+
+
+# ---------------------------------------------------------------------------
+# List-valued metadata field discipline (CAS-ADR-038 Primitive A)
+# ---------------------------------------------------------------------------
+#
+# Every list-valued metadata field exposed through `update_metadata` (and
+# its equivalents) must accept the `{add, remove}` ops-object form, not a
+# bare list. This is the surface-level enforcement of CAS-ADR-038's
+# binding-scope clause: callers never read-modify-write a list, so two
+# parallel adds of distinct values are commutative by construction.
+#
+# Two gates:
+#   - D1 scans the relevant Pydantic models and asserts no bare `list[...]`
+#     field slips back in.
+#   - D2 asserts every list-valued field discovered is registered for
+#     dispatch in `MetadataService.LIST_VALUED_METADATA_FIELDS`. The
+#     registry is the runtime side of the same contract; without it,
+#     adding a `ListFieldPatch` field to a request model would be a
+#     silent no-op at the service layer.
+#
+# `KNOWN_BARE_LIST_FIELDS` is a forensic-only carveout. It is empty by
+# convention; non-empty entries must carry a justification comment.
+
+KNOWN_BARE_LIST_FIELDS: frozenset[tuple[str, str]] = frozenset()
+
+
+def _iter_list_typed_fields(model_cls) -> list[tuple[str, Any]]:
+    """Yield (field_name, annotation) for every field on ``model_cls``
+    whose declared annotation resolves to `list[...]` or
+    `Optional[list[...]]` (including `list[...] | None`).
+
+    The `ListFieldPatch` patch type is NOT list-typed at the Pydantic
+    level — it's a sub-model whose ``add`` / ``remove`` fields hold the
+    lists. This helper deliberately surfaces only the wholesale-list
+    shape that the gate forbids.
+    """
+    hits: list[tuple[str, Any]] = []
+    for field_name, field_info in model_cls.model_fields.items():
+        annotation = field_info.annotation
+        if _annotation_is_bare_list(annotation):
+            hits.append((field_name, annotation))
+    return hits
+
+
+def _annotation_is_bare_list(annotation: Any) -> bool:
+    """True iff the annotation is `list[...]` or a union that contains
+    `list[...]` alongside only `None` / `NoneType`."""
+    origin = typing.get_origin(annotation)
+    if origin is list:
+        return True
+    if origin in (typing.Union, types.UnionType):
+        args = typing.get_args(annotation)
+        non_none = [a for a in args if a is not type(None)]
+        return len(non_none) == 1 and typing.get_origin(non_none[0]) is list
+    return False
+
+
+def _patch_request_models() -> dict[str, type]:
+    """Return the request models the gate scans.
+
+    Centralized so adding a new mutation surface (a future bulk-edge
+    request, etc.) is a one-line registry addition rather than a
+    test-by-test sprawl.
+    """
+    from sage.models.schemas import (
+        BulkMetadataItem,
+        UpdateMetadataRequest,
+    )
+
+    return {
+        "UpdateMetadataRequest": UpdateMetadataRequest,
+        "BulkMetadataItem": BulkMetadataItem,
+    }
+
+
+def test_list_valued_metadata_request_fields_use_ops_object_patch():
+    """No field on a metadata-mutation request model may be declared as a
+    bare `list[...]`. List-valued fields go through `ListFieldPatch` so
+    the ops-object commutativity contract is uniform across the surface.
+
+    Forensic-only carveouts live in ``KNOWN_BARE_LIST_FIELDS``; the gate
+    fails when a model carries an unallowlisted bare-list field AND when
+    the allowlist is stale (an entry that no longer corresponds to a
+    real bare-list field).
+    """
+    found: set[tuple[str, str]] = set()
+    for model_name, model_cls in _patch_request_models().items():
+        for field_name, _annotation in _iter_list_typed_fields(model_cls):
+            found.add((model_name, field_name))
+
+    unallowed = found - KNOWN_BARE_LIST_FIELDS
+    assert not unallowed, (
+        f"Metadata-mutation request model(s) carry bare-list field(s): "
+        f"{sorted(unallowed)!r}. Use ListFieldPatch instead so parallel "
+        "callers can mutate the list without read-modify-write. If this "
+        "field genuinely cannot be expressed under the ops-object contract, "
+        "add it to KNOWN_BARE_LIST_FIELDS with an inline justification."
+    )
+
+    stale_allowlist = KNOWN_BARE_LIST_FIELDS - found
+    assert not stale_allowlist, (
+        f"KNOWN_BARE_LIST_FIELDS is stale: entries {sorted(stale_allowlist)!r} "
+        "no longer correspond to a real bare-list field on a tracked model. "
+        "Remove them."
+    )
+
+
+def test_list_valued_metadata_fields_registered_for_dispatch():
+    """Every `ListFieldPatch`-typed field on a tracked request model must
+    appear in `MetadataService.LIST_VALUED_METADATA_FIELDS`. Catches the
+    silent-noop class: a `ListFieldPatch` field added to a model but
+    never wired into the service-layer dispatch loop.
+    """
+    from sage.models.schemas import ListFieldPatch
+    from sage.services.metadata import MetadataService
+
+    patch_field_names: set[str] = set()
+    for model_cls in _patch_request_models().values():
+        for field_name, field_info in model_cls.model_fields.items():
+            if _annotation_resolves_to(field_info.annotation, ListFieldPatch):
+                patch_field_names.add(field_name)
+
+    registry = MetadataService.LIST_VALUED_METADATA_FIELDS
+    missing = patch_field_names - set(registry)
+    assert not missing, (
+        f"ListFieldPatch field(s) {sorted(missing)!r} present in a metadata-"
+        "mutation request model but not registered in "
+        "MetadataService.LIST_VALUED_METADATA_FIELDS. Register the field so "
+        "the service-layer dispatcher picks it up; otherwise the patch is "
+        "validated by Pydantic but silently ignored at apply time."
+    )
+
+
+def _annotation_resolves_to(annotation: Any, target: type) -> bool:
+    """True iff the annotation is exactly ``target`` or ``Optional[target]``
+    (including ``target | None``)."""
+    if annotation is target:
+        return True
+    origin = typing.get_origin(annotation)
+    if origin in (typing.Union, types.UnionType):
+        args = typing.get_args(annotation)
+        non_none = [a for a in args if a is not type(None)]
+        return len(non_none) == 1 and non_none[0] is target
+    return False

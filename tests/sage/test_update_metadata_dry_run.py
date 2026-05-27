@@ -27,14 +27,14 @@ import pytest
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidDocTypeError,
-    TagAddConflictError,
+    ListFieldAddConflictError,
     Tier3DocTypeChangeStaleKeysError,
     Tier3SchemaViolationError,
 )
 from sage.models.enums import SourceType
 from sage.models.schemas import (
     IngestRequest,
-    TagsPatch,
+    ListFieldPatch,
     Tier3Patch,
     UpdateMetadataRequest,
     UpdateMetadataResponse,
@@ -92,7 +92,7 @@ async def test_dry_run_returns_post_patch_document_without_writing(
 async def test_dry_run_with_tags_patch_does_not_persist(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service, graph_store, stub_content_store
 ):
-    """Same proof on the tags surface: dry-run with TagsPatch.add returns
+    """Same proof on the tags surface: dry-run with ListFieldPatch.add returns
     the would-be tag list but does not write."""
     _write_md(tmp_vault_dir, "doc.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
@@ -107,7 +107,7 @@ async def test_dry_run_with_tags_patch_does_not_persist(
 
     response = await tier3_metadata_service.update_metadata(
         initial.document.id,
-        UpdateMetadataRequest(tags=TagsPatch(add=["new"]), dry_run=True),
+        UpdateMetadataRequest(tags=ListFieldPatch(add=["new"]), dry_run=True),
         modified_by="tester",
     )
 
@@ -236,10 +236,10 @@ async def test_invalid_doc_type_envelope_identical_under_dry_run(
     assert real_info.value.detail == dry_info.value.detail
 
 
-async def test_tag_add_conflict_envelope_identical_under_dry_run(
+async def test_tags_add_conflict_envelope_identical_under_dry_run(
     tmp_vault_dir, tier3_ingestion_service, tier3_metadata_service
 ):
-    """TagAddConflictError raised by both paths when adding a tag that
+    """ListFieldAddConflictError raised by both paths when adding a tag that
     is already present on the document."""
     _write_md(tmp_vault_dir, "d.md", "# Doc\n\nBody.")
     initial = await tier3_ingestion_service.ingest(
@@ -250,17 +250,17 @@ async def test_tag_add_conflict_envelope_identical_under_dry_run(
         )
     )
 
-    with pytest.raises(TagAddConflictError) as real_info:
+    with pytest.raises(ListFieldAddConflictError) as real_info:
         await tier3_metadata_service.update_metadata(
             initial.document.id,
-            UpdateMetadataRequest(tags=TagsPatch(add=["already_here"])),
+            UpdateMetadataRequest(tags=ListFieldPatch(add=["already_here"])),
             modified_by="tester",
         )
 
-    with pytest.raises(TagAddConflictError) as dry_info:
+    with pytest.raises(ListFieldAddConflictError) as dry_info:
         await tier3_metadata_service.update_metadata(
             initial.document.id,
-            UpdateMetadataRequest(tags=TagsPatch(add=["already_here"]), dry_run=True),
+            UpdateMetadataRequest(tags=ListFieldPatch(add=["already_here"]), dry_run=True),
             modified_by="tester",
         )
 
@@ -279,14 +279,14 @@ async def test_document_not_found_envelope_identical_under_dry_run(tier3_metadat
     with pytest.raises(DocumentNotFoundError) as real_info:
         await tier3_metadata_service.update_metadata(
             missing,
-            UpdateMetadataRequest(tags=TagsPatch(add=["x"])),
+            UpdateMetadataRequest(tags=ListFieldPatch(add=["x"])),
             modified_by="tester",
         )
 
     with pytest.raises(DocumentNotFoundError) as dry_info:
         await tier3_metadata_service.update_metadata(
             missing,
-            UpdateMetadataRequest(tags=TagsPatch(add=["x"]), dry_run=True),
+            UpdateMetadataRequest(tags=ListFieldPatch(add=["x"]), dry_run=True),
             modified_by="tester",
         )
 
@@ -319,7 +319,7 @@ async def test_dry_run_does_not_advance_updated_at_or_metadata_confirmed(
 
     await tier3_metadata_service.update_metadata(
         initial.document.id,
-        UpdateMetadataRequest(tags=TagsPatch(add=["fresh"]), dry_run=True),
+        UpdateMetadataRequest(tags=ListFieldPatch(add=["fresh"]), dry_run=True),
         modified_by="tester",
     )
 
@@ -476,7 +476,7 @@ async def test_dry_run_changes_tags_uses_full_before_after_lists(
     before = await state_snapshot(graph_store, stub_content_store)
     response = await tier3_metadata_service.update_metadata(
         initial.document.id,
-        UpdateMetadataRequest(tags=TagsPatch(add=["c"], remove=["a"]), dry_run=True),
+        UpdateMetadataRequest(tags=ListFieldPatch(add=["c"], remove=["a"]), dry_run=True),
         modified_by="tester",
     )
     after = await state_snapshot(graph_store, stub_content_store)

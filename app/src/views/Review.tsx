@@ -198,9 +198,9 @@ function MetadataReview({
       const merged: Record<string, unknown> = { ...baseline, ...edits[docId] };
 
       // Partition into CAS-ADR-028 ops-object shape: Tier-1 scalars go on the
-      // body root, `tags` becomes a TagsPatch.add, anything else becomes a
-      // Tier3Patch.set entry. Empty patches are omitted because the backend
-      // rejects TagsPatch / Tier3Patch carrying no actionable operation.
+      // body root, `tags` becomes a ListFieldPatch.add, anything else becomes
+      // a Tier3Patch.set entry. Empty patches are omitted because the backend
+      // rejects ListFieldPatch / Tier3Patch carrying no actionable operation.
       const body: UpdateMetadataRequest = {};
       const tier3Set: Record<string, unknown> = {};
       for (const [field, value] of Object.entries(merged)) {

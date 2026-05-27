@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Dialog } from './Dialog';
 import { bulkUpdateMetadata } from '../api/bulk';
-import type { BulkMetadataItem, BulkMetadataResponse, TagsPatch, Tier3Patch } from '../api/types';
+import type { BulkMetadataItem, BulkMetadataResponse, ListFieldPatch, Tier3Patch } from '../api/types';
 
 const BULK_CONFIRM_THRESHOLD = 10;
 
@@ -51,7 +51,7 @@ export function BulkMetadataDialog({ vaultId, selectedIds, onResolved, onClose }
   const applyDisabled = !hasAnyOp || hasOverlap || phase === 'submitting';
 
   function buildItems(): BulkMetadataItem[] {
-    const tags: TagsPatch | undefined =
+    const tags: ListFieldPatch | undefined =
       addList.length > 0 || removeList.length > 0
         ? {
             ...(addList.length > 0 ? { add: addList } : {}),

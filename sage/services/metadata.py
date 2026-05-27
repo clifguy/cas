@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime, timezone
+from typing import Callable, NamedTuple
 
 import jsonschema
 
@@ -9,9 +10,9 @@ from sage.adapters.interfaces import ContentStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidDocTypeError,
+    ListFieldAddConflictError,
+    ListFieldRemoveConflictError,
     SAGEError,
-    TagAddConflictError,
-    TagRemoveConflictError,
     Tier3DocTypeChangeStaleKeysError,
     Tier3SchemaViolationError,
     Tier3UnsetConflictError,
@@ -25,8 +26,8 @@ from sage.models.schemas import (
     Document,
     ExtractedField,
     FieldChange,
+    ListFieldPatch,
     PendingMetadataItem,
-    TagsPatch,
     Tier3Patch,
     UpdateMetadataRequest,
     UpdateMetadataResponse,
@@ -91,7 +92,38 @@ def _compute_metadata_changes(pre_doc: Document, updates: dict) -> list[FieldCha
     return changes
 
 
+class ListFieldDescriptor(NamedTuple):
+    """How `MetadataService` finds a list-valued metadata field's stored
+    value and dispatches a `ListFieldPatch` against it.
+
+    ``accessor`` reads the field's current list off a ``Document``. The
+    field name is also the attribute on ``UpdateMetadataRequest`` that
+    carries the ``ListFieldPatch`` payload, and the key under which the
+    applier writes the post-patch list into the ``updates`` dict.
+
+    The registry that maps field name → descriptor implements
+    CAS-ADR-038 Primitive A's binding-scope clause: every list-valued
+    metadata field SAGE exposes for mutation must register here so the
+    ops-object contract applies uniformly. Tier-3 properties whose
+    values happen to be lists are deliberately excluded — tier-3 patch
+    semantics live on `Tier3Patch.set` / `unset` at the property level,
+    not on the per-property value.
+    """
+
+    accessor: Callable[["Document"], list[str] | None]
+
+
 class MetadataService:
+    # Field name → descriptor for every list-valued metadata field that
+    # accepts a `ListFieldPatch` on `update_metadata`. The dispatch loop
+    # walks this registry; the conformance gate (`test_mcp_tool_
+    # conformance.py`) asserts every `ListFieldPatch`-typed field on a
+    # mutation request model is registered here, catching the
+    # silent-noop class.
+    LIST_VALUED_METADATA_FIELDS: dict[str, ListFieldDescriptor] = {
+        "tags": ListFieldDescriptor(accessor=lambda doc: doc.tags),
+    }
+
     def __init__(
         self,
         graph_store: GraphStore,
@@ -115,7 +147,7 @@ class MetadataService:
         Scalar fields (``title``, ``version_label``, ``project``,
         ``doc_type``, ``authority_scope``, ``document_date``) use
         set-or-omit semantics. ``tags`` and ``tier3_metadata`` take ops
-        objects (``TagsPatch`` / ``Tier3Patch``) and apply patch
+        objects (``ListFieldPatch`` / ``Tier3Patch``) and apply patch
         operations to the stored state with strict-conflict semantics:
         adding a tag already present, removing a tag absent, or
         unsetting a tier3 key absent each raise 400. ``set`` on an
@@ -147,8 +179,11 @@ class MetadataService:
         Raises:
             DocumentNotFoundError: document_id does not exist.
             InvalidDocTypeError: doc_type not in vault config.
-            TagAddConflictError: TagsPatch.add includes already-present tags.
-            TagRemoveConflictError: TagsPatch.remove includes absent tags.
+            ListFieldAddConflictError: a ListFieldPatch.add includes
+                already-present values on the named list-valued field
+                (e.g., ``tags_add_conflict``).
+            ListFieldRemoveConflictError: a ListFieldPatch.remove
+                includes absent values on the named list-valued field.
             Tier3UnsetConflictError: Tier3Patch.unset includes absent keys.
             Tier3SchemaViolationError: merged tier3 invalid for the
                 resolved doc_type, or the doc_type has no metadata_schema
@@ -166,8 +201,15 @@ class MetadataService:
                 updates["version_label"] = request.version_label
             if request.project is not None:
                 updates["project"] = request.project
-            if request.tags is not None:
-                updates["tags"] = self._apply_tags_patch(document_id, doc.tags, request.tags)
+            for field_name, descriptor in self.LIST_VALUED_METADATA_FIELDS.items():
+                patch = getattr(request, field_name, None)
+                if patch is not None:
+                    updates[field_name] = self._apply_list_field_patch(
+                        document_id=document_id,
+                        current=descriptor.accessor(doc),
+                        patch=patch,
+                        field_name=field_name,
+                    )
             if request.authority_scope is not None:
                 updates["authority_scope"] = request.authority_scope
             if request.doc_type is not None:
@@ -392,28 +434,46 @@ class MetadataService:
         )
 
     @staticmethod
-    def _apply_tags_patch(
-        document_id: str, current_tags: list[str] | None, patch: TagsPatch
+    def _apply_list_field_patch(
+        document_id: str,
+        current: list[str] | None,
+        patch: ListFieldPatch,
+        field_name: str,
     ) -> list[str]:
-        """Apply a TagsPatch to ``current_tags``, returning the new ordered list.
+        """Apply a ListFieldPatch to ``current``, returning the new ordered list.
 
         Order discipline: survivors keep their stored position; new
         additions append in the order the caller supplied them. Raises
-        on strict-conflict (add of present, remove of absent).
+        on strict-conflict (add of present, remove of absent); error
+        envelopes derive their code and detail keys from ``field_name``
+        (e.g., ``tags_add_conflict``, ``detail["current_tags"]``).
+
+        This is the generic apply path for CAS-ADR-038 Primitive A; every
+        list-valued metadata field flows through it.
         """
-        current = list(current_tags or [])
-        current_set = set(current)
+        stored = list(current or [])
+        stored_set = set(stored)
         if patch.add:
-            already = [t for t in patch.add if t in current_set]
+            already = [t for t in patch.add if t in stored_set]
             if already:
-                raise TagAddConflictError(document_id, already, current)
+                raise ListFieldAddConflictError(
+                    field=field_name,
+                    document_id=document_id,
+                    values=already,
+                    current=stored,
+                )
         if patch.remove:
-            absent = [t for t in patch.remove if t not in current_set]
+            absent = [t for t in patch.remove if t not in stored_set]
             if absent:
-                raise TagRemoveConflictError(document_id, absent, current)
+                raise ListFieldRemoveConflictError(
+                    field=field_name,
+                    document_id=document_id,
+                    values=absent,
+                    current=stored,
+                )
         removed_set: set[str] = set(patch.remove or [])
         added_in_order = list(patch.add or [])
-        survivors = [t for t in current if t not in removed_set]
+        survivors = [t for t in stored if t not in removed_set]
         return [*survivors, *added_in_order]
 
     @staticmethod

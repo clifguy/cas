@@ -250,16 +250,16 @@ describe('Review view: Confirm-One sends CAS-ADR-028 ops-object metadata (T-0127
 
     const body = lastUpdateMetadataBody();
     expect(body.title).toBe('Doc Two');
-    // Backend rejects empty TagsPatch / Tier3Patch (no actionable operation).
+    // Backend rejects empty ListFieldPatch / Tier3Patch (no actionable operation).
     // The keys must be absent, not present-with-empty-shape.
     expect(body).not.toHaveProperty('tags');
     expect(body).not.toHaveProperty('tier3_metadata');
   });
 
-  it('T4: user-edited tags string also flows through TagsPatch.add', async () => {
+  it('T4: user-edited tags string also flows through ListFieldPatch.add', async () => {
     // Baseline has an empty `tags` field so the row renders with an input
     // the user can type into. After the user types, the edits map overlays
-    // the baseline and the partition logic must still produce TagsPatch.add.
+    // the baseline and the partition logic must still produce ListFieldPatch.add.
     vi.mocked(listPendingMetadata).mockResolvedValue([
       makePendingWithFields('D4', 'Doc Four', {
         tags: { value: '', source: 'content' },

@@ -25,9 +25,9 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestRequest,
     LinkRequest,
+    ListFieldPatch,
     RetrievalFilters,
     SetLifecycleRequest,
-    TagsPatch,
     Tier3Patch,
     TraverseRequest,
     UpdateMetadataRequest,
@@ -334,61 +334,61 @@ def test_retrieval_filters_accepts_empty_tier3_metadata_dict():
 
 
 # ---------------------------------------------------------------------------
-# TagsPatch / Tier3Patch validators (CAS-ADR-028 update revision)
+# ListFieldPatch / Tier3Patch validators (CAS-ADR-028 update revision)
 # ---------------------------------------------------------------------------
 
 
 def test_tags_patch_requires_at_least_one_op():
     with pytest.raises(ValidationError) as excinfo:
-        TagsPatch()
+        ListFieldPatch()
     assert "actionable operation" in str(excinfo.value)
 
 
 def test_tags_patch_rejects_two_empty_lists():
     """{add: [], remove: []} is degenerate -- equivalent to no operation."""
     with pytest.raises(ValidationError):
-        TagsPatch(add=[], remove=[])
+        ListFieldPatch(add=[], remove=[])
 
 
 def test_tags_patch_accepts_add_only():
-    patch = TagsPatch(add=["urgent"])
+    patch = ListFieldPatch(add=["urgent"])
     assert patch.add == ["urgent"]
     assert patch.remove is None
 
 
 def test_tags_patch_accepts_remove_only():
-    patch = TagsPatch(remove=["stale"])
+    patch = ListFieldPatch(remove=["stale"])
     assert patch.remove == ["stale"]
     assert patch.add is None
 
 
 def test_tags_patch_accepts_both_disjoint():
-    patch = TagsPatch(add=["new"], remove=["old"])
+    patch = ListFieldPatch(add=["new"], remove=["old"])
     assert patch.add == ["new"]
     assert patch.remove == ["old"]
 
 
 def test_tags_patch_rejects_add_remove_overlap():
     with pytest.raises(ValidationError) as excinfo:
-        TagsPatch(add=["x"], remove=["x"])
+        ListFieldPatch(add=["x"], remove=["x"])
     assert "disjoint" in str(excinfo.value)
 
 
 def test_tags_patch_rejects_duplicates_in_add():
     with pytest.raises(ValidationError) as excinfo:
-        TagsPatch(add=["x", "x"])
+        ListFieldPatch(add=["x", "x"])
     assert "duplicates" in str(excinfo.value)
 
 
 def test_tags_patch_rejects_duplicates_in_remove():
     with pytest.raises(ValidationError):
-        TagsPatch(remove=["y", "y"])
+        ListFieldPatch(remove=["y", "y"])
 
 
 def test_tags_patch_rejects_extra_keys():
     """extra='forbid' rejects unknown ops to keep the verb vocabulary tight."""
     with pytest.raises(ValidationError):
-        TagsPatch(add=["x"], replace=["y"])  # type: ignore[call-arg]
+        ListFieldPatch(add=["x"], replace=["y"])  # type: ignore[call-arg]
 
 
 def test_tier3_patch_requires_at_least_one_op():
