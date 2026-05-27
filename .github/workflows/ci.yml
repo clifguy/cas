@@ -96,20 +96,54 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    env:
-      # gitleaks-action has not shipped a Node 24 release; opt this
-      # job's JavaScript actions into Node 24 to silence the deprecation
-      # warning until upstream catches up or this action is replaced.
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+      - name: Install gitleaks (pinned)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "$url" -o /tmp/gitleaks.tar.gz
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          mkdir -p /tmp/gitleaks
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp/gitleaks
+          chmod +x /tmp/gitleaks/gitleaks
+          /tmp/gitleaks/gitleaks version
+
+      - name: Run gitleaks
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT_NAME" in
+            pull_request)
+              log_opts="--no-merges --first-parent ${PR_BASE_SHA}^..${PR_HEAD_SHA}"
+              ;;
+            push)
+              if [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+                log_opts="-1"
+              else
+                log_opts="--no-merges --first-parent ${PUSH_BEFORE_SHA}..${PUSH_AFTER_SHA}"
+              fi
+              ;;
+            *)
+              log_opts=""
+              ;;
+          esac
+          if [ -n "$log_opts" ]; then
+            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v --log-opts="$log_opts"
+          else
+            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v
+          fi
 
   lint:
     runs-on: ubuntu-latest
