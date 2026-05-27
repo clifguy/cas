@@ -27,13 +27,9 @@ OpenAPI operation must have an MCP tool (allowlisted in
 predate the gate are pinned in ``KNOWN_ARG_DRIFT`` until reconciled.
 All three allowlists fail when stale.
 
-``reload_vault`` is intentionally outside the gated registries
-because it is registered directly on the FastMCP instance in
-``mcp_server.py`` rather than via ``register_sage_tools``; it has no
-HTTP counterpart by design. The ROOT Harness Orchestration spec
-exists today but no MCP tools yet implement its operations
-(/); the entire spec is allowlisted at the operation
-level until those tools land.
+The ROOT Harness Orchestration spec exists today but no MCP tools
+yet implement its operations (/); the entire spec is
+allowlisted at the operation level until those tools land.
 """
 
 from __future__ import annotations
@@ -133,6 +129,24 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
         "per the SAGE MCP Tool Surface enumeration discipline (CAS-ADR-035). "
         "REST exposes the two operations separately; MCP collapses them via the "
         "action parameter."
+    ),
+    (
+        "sage_core",
+        "reload_vault",
+    ): (
+        "MCP-only operational tool: closes a vault's services and "
+        "re-initializes them after on-disk vault_config.yaml edits or "
+        "external DB writes. No HTTP counterpart by design — the FastAPI "
+        "vault-config PUT endpoint owns the reload path on the REST side."
+    ),
+    (
+        "sage_core",
+        "get_stack_config",
+    ): (
+        "MCP-only introspection of the SAGE-stack-wide config singleton "
+        "(CAS-ADR-030). No HTTP counterpart by design; the stack config is "
+        "process-scoped and only the MCP transport carries the agent-facing "
+        "read."
     ),
 }
 

@@ -37,7 +37,7 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ContentBlock, TextContent
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 # Side-effect import: monkey-patches ArgModelBase.model_config to add
 # extra="forbid", so every FastMCP per-tool argument model rejects
@@ -57,22 +57,10 @@ from sage.mcp_init import (
     build_stack_abstraction_provider,
     initialize_services,
     load_stack_config_or_default,
-    reload_vault_in_registry,
     set_stack_config,
 )
-
-# Aliased to avoid shadowing by the tool function below that bears the
-# same name post the verb-convention rename (CAS-ADR-033).
-from sage.mcp_init import get_stack_config as _get_stack_config
-from sage.models.schemas import VaultIdStr
 from sage.sage_api_tools import register_sage_tools
 from sage.services.vault_registry import VaultRegistryService
-
-# Module-scope TypeAdapter for Pattern 2 boundary validation on the
-# server-level tool below. See the parallel adapter declarations in
-# ``sage/sage_api_tools.py`` and the Typed-Alias Boundary Conventions
-# steering document.
-_VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 
 # ---------------------------------------------------------------------------
 # Vault registry
@@ -94,6 +82,22 @@ _vault_registry_service: VaultRegistryService = VaultRegistryService(
 def get_vault_registry_service() -> VaultRegistryService:
     """Return the module-level VaultRegistryService singleton."""
     return _vault_registry_service
+
+
+def _get_vaults() -> dict[str, SAGEServices]:
+    """Return the module-level vault registry dict.
+
+    Used as a call-time getter passed to ``register_sage_tools`` so that
+    tools resolving the registry dict pick up the *current* binding rather
+    than freezing on whatever was bound at registration time. This matters
+    because ``tests/sage/test_cleanup_refactor.py::test_cln_003_import_succeeds``
+    invokes ``importlib.reload(sage.mcp_server)`` and then rebinds
+    ``_vaults`` and ``_vault_registry_service`` to their pre-reload
+    instances to keep other modules consistent — a getter resolves the
+    rebound original, whereas a captured instance would freeze on the
+    reload-time orphan.
+    """
+    return _vaults
 
 
 class VaultNotFoundError(ValueError):
@@ -406,177 +410,8 @@ mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan)
 # Register tools from submodules
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Server-level tools (not SAGE protocol or app tools)
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-async def reload_vault(vault_id: str) -> dict:
-    """Reload a vault by closing its current services and reinitializing.
-
-    When the vault was originally loaded from a YAML file (the production
-    path), the file is re-read from disk so on-disk edits to vault_config.yaml
-    take effect. Vaults initialized from an in-memory ``VaultConfig`` (for
-    example, in tests that bypass the file system) reuse the existing config.
-
-    Use this after modifying vault_config.yaml on disk, or when external
-    database changes (FastAPI server, another MCP client, direct DB writes)
-    leave the current MCP session with stale data.
-
-    Scope of "reload" (per-vault, NOT stack-wide):
-    Only the target vault's ``vault_config.yaml`` is re-read from disk.
-    The SAGE-stack-wide config (``sage/config.yaml``, governing the
-    abstraction-provider singleton per CAS-ADR-030) is captured at
-    process startup and is NOT re-read on per-vault reload. Edits to
-    stack config require a process restart to take effect; callers
-    can verify the in-memory stack config via ``get_stack_config``.
-
-    Reload is atomic with respect to the registry slot:
-    Internally this delegates to ``reload_vault_in_registry``, which
-    builds the new services first and only tears down the old services
-    on success. If construction raises (schema migration, duplicate edges,
-    abstraction-provider build failure, etc.), the registry slot is left
-    pointing at the **still-functional** old services — graph store still
-    open, timing thread still running — and an error envelope is returned
-    describing the failure. The caller can retry the reload after
-    addressing the underlying cause. Partial-allocation cleanup of the
-    failed new services is best-effort inside ``initialize_services``
-    (timing thread is stopped, graph store is closed, any internally-
-    constructed content store is released).
-
-    Close-time barrier and in-flight drain (per CAS-ADR-036):
-    ``graph_store.close()`` is a barrier, not a label. It marks the
-    store closed *before* releasing resources, then drains queued
-    executor work via ``shutdown(wait=True)``, then closes each
-    registered SQLite connection. Dispatches that had already entered
-    the store's ``_run`` boundary before the barrier was set complete
-    normally against their pre-close-acquired connections (a worker
-    holding an open transaction commits or rolls back on its own
-    timeline before close returns). Dispatches that reach ``_run``
-    after the barrier is set raise ``RuntimeError("GraphStore is
-    closed")`` at the dispatch boundary — they do not silently
-    re-acquire a SQLite handle via asyncio's default executor.
-
-    No pipeline-quiescence precondition; Stage 2-3 stamping is
-    best-effort under the barrier:
-    Stage 2-3 background tasks dispatched by ``IngestionService.ingest``
-    with ``wait_for_pipeline=False`` are asyncio tasks closed over the
-    old ``IngestionService``'s old ``GraphStore`` reference; reload
-    tears the two down together. Once ``close()`` returns, any further
-    dispatch from those background tasks raises ``RuntimeError`` at the
-    ``_run`` barrier. The ``except`` handler in
-    ``IngestionService._run_stages_2_3`` that attempts to stamp
-    ``pipeline_status=failed`` calls ``update_document`` against the
-    same now-closed store, so the stamping *itself* raises and is lost
-    — the document is left at whatever transitional pipeline_status it
-    carried at the moment of close, not stamped failed. The MCP-side
-    ``ingest_document`` always uses ``wait_for_pipeline=True``, so MCP
-    callers cannot trigger this race; HTTP / FastAPI callers that pass
-    ``wait_for_pipeline=False`` explicitly are the only consumers
-    exposed.
-
-    Error modes (registry slot is preserved on all failure paths; the old
-    services remain installed and functional, and the caller can retry):
-    - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
-      typed-alias validation at the boundary (per CAS Typed-Alias
-      Boundary Conventions). The alias enforces a non-empty
-      slug-shaped identifier; malformed inputs are caught here rather
-      than at a downstream lookup.
-    - ``unknown_vault`` (404): ``vault_id`` did not validate as a
-      registered vault. The error detail enumerates the available
-      vaults at the time of the call.
-    - ``schema_migration_required`` (409): the vault's ``graph.db``
-      has pending ALTER TABLE migrations or backfills, so the new
-      graph store cannot ``initialize(migrate=False)``. Run
-      ``migrate_vault`` to apply pending migrations
-      before retrying the reload.
-    - ``duplicate_edges_present`` (409): the vault's ``edges`` or
-      ``staging_edges`` table has duplicate rows on the natural-key
-      triple ``(source_id, target_id, edge_type)``, so UNIQUE index
-      creation fails during ``GraphStore.initialize()``. Run
-      ``scripts/dedup_edges.py`` to dedupe the offending table before
-      retrying the reload.
-    - Abstraction-provider build failure: reload constructs the
-      abstraction provider from the **current in-memory stack config**
-      (see scope note above). A stack config with
-      ``provider="qwen3-mlx"`` and ``model=None`` raises ``ValueError``
-      during the build. Verify the in-memory stack config via
-      ``get_stack_config`` before reloading if you suspect drift.
-
-    Args:
-        vault_id: Target vault identifier. Validated against
-            ``VaultIdStr`` (typed-alias boundary check; see
-            ``invalid_vault_id`` above) before the registered-vault
-            lookup.
-    """
-    try:
-        vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-    except (SAGEError, ValueError) as e:
-        return _error_response(e)
-    if vault_id not in _vaults:
-        return _error_response(
-            VaultNotFoundError(
-                f"Unknown vault_id: {vault_id}. "
-                f"Available vaults: {', '.join(sorted(_vaults.keys())) or '(none)'}"
-            )
-        )
-
-    old_services = _vaults[vault_id]
-    config_path = old_services.config_path
-    if config_path is not None:
-        config = load_vault_config(config_path)
-    else:
-        config = old_services.config
-
-    # Delegate to the registry-aware reload. ``reload_vault_in_registry``
-    # builds new services first; only on success does it stop the old timing
-    # thread, close the old graph store, and install the new services in the
-    # registry. On failure the exception propagates here with the registry
-    # untouched, so ``_vaults[vault_id]`` continues to point at the still-
-    # functional old services and the caller can retry.
-    try:
-        new_services = await reload_vault_in_registry(
-            _vaults,
-            vault_id,
-            config,
-            config_path=config_path,
-            registry_service=_vault_registry_service,
-        )
-    except (SAGEError, ValueError) as e:
-        return _error_response(e)
-
-    # Return confirmation with basic stats
-    total_docs = len(await new_services.graph_store.list_all_documents())
-    return {
-        "vault_id": vault_id,
-        "reloaded": True,
-        "document_count": total_docs,
-    }
-
-
-@mcp.tool()
-async def get_stack_config() -> dict:
-    """Return the SAGE-stack-wide configuration (CAS-ADR-030).
-
-    Stack-wide config governs resources whose enforcement spans the whole
-    SAGE process (e.g., the abstraction provider singleton). Per-vault
-    knobs live in `get_vault_config`.
-
-    Today the response carries one section, `abstraction`, with:
-      - `provider`: dispatch key (`"qwen3-mlx"` or `"stub"`).
-      - `model`: the model identifier passed to the provider's factory
-        (string, or null when the stack is stub-only).
-
-    The shape is forward-compatible: new top-level sections can be added
-    without changing the contract of existing callers.
-    """
-    cfg = _get_stack_config()
-    return cfg.model_dump(mode="json")
-
-
 _sage_tools = register_sage_tools(
-    mcp, _get_vault, _serialize, _error_response, _vaults, _vault_registry_service
+    mcp, _get_vault, _serialize, _error_response, _get_vaults, get_vault_registry_service
 )
 _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 
@@ -616,6 +451,8 @@ list_pending_metadata = _sage_tools["list_pending_metadata"]
 migrate_vault = _sage_tools["migrate_vault"]
 verify_vault_drift = _sage_tools["verify_vault_drift"]
 recompute_deferred_vault_abstracts = _sage_tools["recompute_deferred_vault_abstracts"]
+reload_vault = _sage_tools["reload_vault"]
+get_stack_config = _sage_tools["get_stack_config"]
 
 list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]
