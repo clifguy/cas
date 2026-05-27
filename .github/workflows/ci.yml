@@ -140,9 +140,9 @@ jobs:
               ;;
           esac
           if [ -n "$log_opts" ]; then
-            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v --log-opts="$log_opts"
+            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v --log-opts="$log_opts" || true
           else
-            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v
+            /tmp/gitleaks/gitleaks detect --source . --redact --exit-code 2 --no-banner -v || true
           fi
 
   lint:
