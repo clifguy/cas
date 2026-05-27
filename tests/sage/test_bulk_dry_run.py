@@ -6,7 +6,7 @@ D. Envelope echo — bulk response carries `dry_run=True`; per-item
    document bodies are populated on success.
 E. Per-item independence (documented limitation) — item N adds tag X,
    item N+1 also adds tag X to the same document. Real run: N succeeds,
-   N+1 raises TagAddConflictError. Dry run: both report success because
+   N+1 raises ListFieldAddConflictError. Dry run: both report success because
    each item's dry-run is evaluated against the committed state at
    batch start; no item's would-be effects are visible to subsequent
    items.
@@ -32,7 +32,7 @@ from sage.models.schemas import (
     BulkMetadataItem,
     BulkMetadataRequest,
     IngestRequest,
-    TagsPatch,
+    ListFieldPatch,
 )
 from tests.sage._dry_run_helpers import assert_state_unchanged, state_snapshot
 from tests.sage.test_lifecycle import _id, _make_doc
@@ -69,7 +69,7 @@ async def test_bulk_update_metadata_envelope_echoes_dry_run(
             items=[
                 BulkMetadataItem(
                     document_id=initial.document.id,
-                    tags=TagsPatch(add=["new_tag"]),
+                    tags=ListFieldPatch(add=["new_tag"]),
                 )
             ],
             response_mode=ResponseMode.FULL,
@@ -127,7 +127,7 @@ async def test_bulk_metadata_dry_run_does_not_simulate_prior_item_effects(
 
     Scenario: item N adds tag X; item N+1 tries to add the same tag
     X to the same document.
-    - Real-run: N succeeds (X is added), N+1 raises tag_add_conflict.
+    - Real-run: N succeeds (X is added), N+1 raises tags_add_conflict.
     - Dry-run: BOTH report success because the per-item dry-run sees
       the original (pre-N) tag set when validating N+1.
 
@@ -149,8 +149,8 @@ async def test_bulk_metadata_dry_run_does_not_simulate_prior_item_effects(
     dry_response = await tier3_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["shared"])),
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["shared"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["shared"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["shared"])),
             ],
             response_mode=ResponseMode.FULL,
             dry_run=True,
@@ -165,8 +165,8 @@ async def test_bulk_metadata_dry_run_does_not_simulate_prior_item_effects(
     real_response = await tier3_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["fresh"])),
-                BulkMetadataItem(document_id=doc_id, tags=TagsPatch(add=["fresh"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["fresh"])),
+                BulkMetadataItem(document_id=doc_id, tags=ListFieldPatch(add=["fresh"])),
             ],
             response_mode=ResponseMode.FULL,
         ),
@@ -176,7 +176,7 @@ async def test_bulk_metadata_dry_run_does_not_simulate_prior_item_effects(
     assert real_response.success_count == 1
     assert real_response.error_count == 1
     assert real_response.results[1].status == "error"
-    assert real_response.results[1].error["error"] == "tag_add_conflict"
+    assert real_response.results[1].error["error"] == "tags_add_conflict"
 
 
 # ---------------------------------------------------------------------------
@@ -206,8 +206,8 @@ async def test_bulk_metadata_dry_run_mixed_results_same_shape_as_real(
     dry = await tier3_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=good.document.id, tags=TagsPatch(add=["t1"])),
-                BulkMetadataItem(document_id=missing_id, tags=TagsPatch(add=["t1"])),
+                BulkMetadataItem(document_id=good.document.id, tags=ListFieldPatch(add=["t1"])),
+                BulkMetadataItem(document_id=missing_id, tags=ListFieldPatch(add=["t1"])),
             ],
             response_mode=ResponseMode.FULL,
             dry_run=True,
@@ -411,7 +411,9 @@ async def test_bulk_update_metadata_real_run_per_item_changes_absent(
     response = await tier3_metadata_service.bulk_update_metadata(
         BulkMetadataRequest(
             items=[
-                BulkMetadataItem(document_id=initial.document.id, tags=TagsPatch(add=["realtag"]))
+                BulkMetadataItem(
+                    document_id=initial.document.id, tags=ListFieldPatch(add=["realtag"])
+                )
             ],
             response_mode=ResponseMode.FULL,
         ),

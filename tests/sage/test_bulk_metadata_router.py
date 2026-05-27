@@ -92,7 +92,7 @@ async def test_bulk_metadata_endpoint_partial_failure_still_returns_200(seeded_a
     body = {
         "items": [
             {"document_id": seeded_ids[0], "tags": {"add": ["b"]}},
-            # 'a' is already present on seeded_ids[1]; tag_add_conflict.
+            # 'a' is already present on seeded_ids[1]; tags_add_conflict.
             {"document_id": seeded_ids[1], "tags": {"add": ["a"]}},
         ]
     }
@@ -106,7 +106,7 @@ async def test_bulk_metadata_endpoint_partial_failure_still_returns_200(seeded_a
     assert response.success_count == 1
     assert response.error_count == 1
     assert response.results[1].status == "error"
-    assert response.results[1].error["error"] == "tag_add_conflict"
+    assert response.results[1].error["error"] == "tags_add_conflict"
 
 
 async def test_bulk_metadata_endpoint_empty_items_returns_200(seeded_app):
@@ -291,7 +291,7 @@ async def test_t0153_t5_http_error_envelope_intact_in_light_mode(seeded_six_app)
     assert light_err["error"] == full_err["error"], (
         f"light mode must not strip error envelope; light={light_err!r} full={full_err!r}"
     )
-    assert light_err["error"]["error"] == "tag_add_conflict"
+    assert light_err["error"]["error"] == "tags_add_conflict"
     assert "detail" in light_err["error"]
 
 
@@ -312,7 +312,7 @@ async def test_t0153_t6_http_error_envelope_intact_in_full_mode(seeded_six_app):
 
     raw = resp.json()
     assert raw["results"][1]["status"] == "error"
-    assert raw["results"][1]["error"]["error"] == "tag_add_conflict"
+    assert raw["results"][1]["error"]["error"] == "tags_add_conflict"
 
 
 async def test_t0153_t7_http_mixed_batch_in_light_mode(seeded_six_app):
@@ -338,7 +338,7 @@ async def test_t0153_t7_http_mixed_batch_in_light_mode(seeded_six_app):
     assert raw["results"][0]["status"] == "success"
     assert _entry_lacks_document(raw["results"][0])
     assert raw["results"][1]["status"] == "error"
-    assert raw["results"][1]["error"]["error"] == "tag_add_conflict"
+    assert raw["results"][1]["error"]["error"] == "tags_add_conflict"
     assert raw["results"][2]["status"] == "success"
     assert _entry_lacks_document(raw["results"][2])
 

@@ -25,8 +25,8 @@ from sage.models.enums import (
 from sage.models.schemas import (
     Document,
     Edge,
+    ListFieldPatch,
     StagingEdge,
-    TagsPatch,
     UpdateMetadataRequest,
 )
 from sage.services.identity import generate_document_id
@@ -658,14 +658,14 @@ async def test_t0078_fk_cascade_on_document_delete(graph_store):
 
 
 async def test_t0078_metadata_service_e2e(metadata_service, graph_store):
-    """#12: TagsPatch through MetadataService syncs the join table."""
+    """#12: ListFieldPatch through MetadataService syncs the join table."""
     doc = _make_doc_with_tags(_id("doc_e2e"), ["initial"])
     await graph_store.insert_document(doc)
     assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "initial")]
 
     await metadata_service.update_metadata(
         doc.id,
-        UpdateMetadataRequest(tags=TagsPatch(add=["new1", "new2"], remove=["initial"])),
+        UpdateMetadataRequest(tags=ListFieldPatch(add=["new1", "new2"], remove=["initial"])),
         modified_by="testuser",
     )
     rows = _join_rows(graph_store._db_path, doc.id)

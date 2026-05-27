@@ -307,7 +307,7 @@ paths:
 
         Per-item patch semantics (tags, tier3_metadata, scalar fields)
         are identical to single-item `update_metadata` (CAS-ADR-028).
-        Strict-conflict errors (`tag_add_conflict`,
+        Strict-conflict errors (`tags_add_conflict`,
         `tier3_unset_conflict`, `tier3_schema_violation`, etc.) surface
         as per-item error envelopes inside the response rather than as
         batch-level 400s.
@@ -380,20 +380,21 @@ paths:
         confirmation, use `GET /pending-metadata`.
 
 
-        The `tags` and `tier3_metadata` fields take patch operations,
-        not replacement values. `tags` accepts `{add, remove}`;
-        `tier3_metadata` accepts `{set, unset}`. Strict-conflict
-        semantics: adding a tag that is already present, removing a
-        tag that is absent, or unsetting a tier3 key that is absent
-        all return 400. `set` on an existing tier3 key overwrites
-        (the verb is literal). Tier-3 post-merge validation runs
-        against the resolved doc_type's `metadata_schema` after
-        applying the patch in memory. See CAS-ADR-028 for the
-        ingest-vs-update shape asymmetry rationale. The `doc_type`
-        value must be one of the values defined under
-        `document_types.doc_types` in the vault config -- the set is
-        vault-config-defined; query `GET /sage_vaults/{vault_id}/config`
-        for the authoritative list.
+        List-valued metadata fields (today: `tags`) take patch
+        operations, not replacement values, via `ListFieldPatch`:
+        `{add, remove}`. `tier3_metadata` takes its own patch
+        ops-object: `{set, unset}`. Strict-conflict semantics: adding a
+        value already present, removing a value absent, or unsetting a
+        tier3 key that is absent all return 400. `set` on an existing
+        tier3 key overwrites (the verb is literal). Tier-3 post-merge
+        validation runs against the resolved doc_type's
+        `metadata_schema` after applying the patch in memory. See
+        CAS-ADR-028 for the ingest-vs-update shape asymmetry rationale,
+        and CAS-ADR-038 for the concurrency-safety contract that the
+        ops-object shape implements. The `doc_type` value must be one
+        of the values defined under `document_types.doc_types` in the
+        vault config -- the set is vault-config-defined; query `GET
+        /sage_vaults/{vault_id}/config` for the authoritative list.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -3157,12 +3158,13 @@ components:
         Partial update of mutable document metadata. Only fields present
         in the request are modified. Scalar fields (title, version_label,
         project, doc_type, authority_scope, document_date) use set-or-omit
-        semantics: pass a value to set, omit to leave unchanged. The
-        `tags` and `tier3_metadata` fields take patch operation objects;
-        see `TagsPatch` and `Tier3Patch`. The signature deliberately
-        omits a wholesale-replace mode; the patch shape is the single
-        path for collection-field edits. See CAS-ADR-028 for the
-        ingest-vs-update shape asymmetry rationale.
+        semantics: pass a value to set, omit to leave unchanged. List-
+        valued metadata fields (today: `tags`) take a `ListFieldPatch`
+        ops-object; `tier3_metadata` takes a `Tier3Patch`. The signature
+        deliberately omits a wholesale-replace mode; the patch shape is
+        the single path for collection-field edits. See CAS-ADR-028 for
+        the ingest-vs-update shape asymmetry rationale and CAS-ADR-038
+        for the concurrency-safety contract behind the ops-object form.
       properties:
         title:
           type: string
@@ -3174,7 +3176,7 @@ components:
           type: string
           description: New project scope for the document; omit to leave unchanged.
         tags:
-          $ref: "#/components/schemas/TagsPatch"
+          $ref: "#/components/schemas/ListFieldPatch"
         doc_type:
           type: string
           description: Must be a valid value in the vault's document_types configuration.
@@ -3205,30 +3207,32 @@ components:
             acquired so the preview is consistent with concurrent
             mutations.
 
-    TagsPatch:
+    ListFieldPatch:
       type: object
       additionalProperties: false
       minProperties: 1
       description: >-
-        Patch operations on the document's tag set. At least one of
-        `add` or `remove` must be present and non-empty. Adding a tag
-        already present, or removing a tag not present, returns 400
-        (`tag_add_conflict` / `tag_remove_conflict`). `add` and `remove`
-        must be disjoint; duplicates within either list are rejected
-        at request validation.
+        Patch operations on a list-valued metadata field. At least one
+        of `add` or `remove` must be present and non-empty. Adding a
+        value already present, or removing a value not present, returns
+        400 (`{field}_add_conflict` / `{field}_remove_conflict`, e.g.
+        `tags_add_conflict`). `add` and `remove` must be disjoint;
+        duplicates within either list are rejected at request validation.
+        See CAS-ADR-038 for the concurrency-safety contract this shape
+        implements (parallel adds of distinct values are commutative).
       properties:
         add:
           type: array
           items:
             type: string
           minItems: 1
-          description: Tags to add. None may already be present on the document.
+          description: Values to add. None may already be present on the field.
         remove:
           type: array
           items:
             type: string
           minItems: 1
-          description: Tags to remove. All must currently be present on the document.
+          description: Values to remove. All must currently be present on the field.
 
     Tier3Patch:
       type: object
@@ -4310,7 +4314,7 @@ components:
           type: string
           description: New project scope for the document; omit to leave unchanged.
         tags:
-          $ref: "#/components/schemas/TagsPatch"
+          $ref: "#/components/schemas/ListFieldPatch"
         doc_type:
           type: string
           description: Must be a valid value in the vault's document_types configuration.

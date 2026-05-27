@@ -234,45 +234,69 @@ class Tier3UniqueConstraintViolation(SAGEError):
         )
 
 
-class TagAddConflictError(SAGEError):
-    """400: TagsPatch.add includes one or more tags already present on the document."""
+class ListFieldAddConflictError(SAGEError):
+    """400: a ListFieldPatch.add carries one or more values already present
+    on the named list-valued field (CAS-ADR-038 Primitive A).
 
-    def __init__(self, document_id: str, tags: list[str], current_tags: list[str]) -> None:
+    The error code derives from the field name: ``{field}_add_conflict``.
+    The detail envelope carries ``document_id``, the conflicting subset
+    keyed by the field name, and the stored list keyed
+    ``current_{field}``.
+    """
+
+    def __init__(
+        self,
+        field: str,
+        document_id: str,
+        values: list[str],
+        current: list[str],
+    ) -> None:
         super().__init__(
-            "tag_add_conflict",
-            f"Cannot add tags already present on document {document_id}: {sorted(tags)!r}",
+            f"{field}_add_conflict",
+            (f"Cannot add {field} already present on document {document_id}: {sorted(values)!r}"),
             400,
             {
                 "document_id": document_id,
-                "tags": sorted(tags),
-                "current_tags": current_tags,
+                field: sorted(values),
+                f"current_{field}": current,
             },
         )
 
 
-class TagRemoveConflictError(SAGEError):
-    """400: TagsPatch.remove includes one or more tags absent from the document."""
+class ListFieldRemoveConflictError(SAGEError):
+    """400: a ListFieldPatch.remove carries one or more values absent from
+    the named list-valued field (CAS-ADR-038 Primitive A).
 
-    def __init__(self, document_id: str, tags: list[str], current_tags: list[str]) -> None:
+    Code: ``{field}_remove_conflict``. Detail envelope mirrors
+    ``ListFieldAddConflictError``.
+    """
+
+    def __init__(
+        self,
+        field: str,
+        document_id: str,
+        values: list[str],
+        current: list[str],
+    ) -> None:
         super().__init__(
-            "tag_remove_conflict",
-            f"Cannot remove tags absent from document {document_id}: {sorted(tags)!r}",
+            f"{field}_remove_conflict",
+            (f"Cannot remove {field} absent from document {document_id}: {sorted(values)!r}"),
             400,
             {
                 "document_id": document_id,
-                "tags": sorted(tags),
-                "current_tags": current_tags,
+                field: sorted(values),
+                f"current_{field}": current,
             },
         )
 
 
 class TagPatchOverlapError(SAGEError):
-    """400: TagsPatch.add and remove lists share entries, or one list contains duplicates."""
+    """400: ListFieldPatch.add and remove lists share entries, or one list contains duplicates."""
 
     def __init__(self, violation: str, tags: list[str]) -> None:
         super().__init__(
             "tag_patch_overlap",
-            f"TagsPatch invalid: {violation}",
+            f"ListFieldPatch invalid: {violation}",
             400,
             {"violation": violation, "tags": sorted(tags)},
         )

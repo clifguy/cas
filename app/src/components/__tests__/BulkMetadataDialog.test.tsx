@@ -19,7 +19,7 @@ function makeResponse(succeeded: string[], failed: { id: string; message: string
         status: 'error' as const,
         document: null,
         warnings: null,
-        error: { error: 'tag_add_conflict', message: f.message, detail: {} },
+        error: { error: 'tags_add_conflict', message: f.message, detail: {} },
       })),
     ],
     success_count: succeeded.length,

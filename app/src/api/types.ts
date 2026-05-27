@@ -414,7 +414,7 @@ export interface UpdateConfigResponse {
 
 // --- Metadata update (CAS-ADR-028 ops-object shape) ---
 
-export interface TagsPatch {
+export interface ListFieldPatch {
   add?: string[];
   remove?: string[];
 }
@@ -428,7 +428,7 @@ export interface UpdateMetadataRequest {
   title?: string;
   version_label?: string;
   project?: string;
-  tags?: TagsPatch;
+  tags?: ListFieldPatch;
   doc_type?: string;
   authority_scope?: string;
   document_date?: string;
@@ -473,7 +473,7 @@ export interface BulkMetadataItem {
   title?: string;
   version_label?: string;
   project?: string;
-  tags?: TagsPatch;
+  tags?: ListFieldPatch;
   doc_type?: string;
   authority_scope?: string;
   document_date?: string;

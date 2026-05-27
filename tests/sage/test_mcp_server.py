@@ -378,7 +378,7 @@ async def test_update_metadata_invalid_doc_type(vault_services):
 
 
 # ---------------------------------------------------------------------------
-# Update metadata: TagsPatch flow through the MCP boundary (CAS-ADR-028)
+# Update metadata: ListFieldPatch flow through the MCP boundary (CAS-ADR-028)
 # ---------------------------------------------------------------------------
 
 
@@ -424,7 +424,7 @@ async def test_update_metadata_tags_add_and_remove(vault_services):
 
 
 async def test_update_metadata_tags_add_conflict(vault_services):
-    """Adding a tag already present returns 400 tag_add_conflict
+    """Adding a tag already present returns 400 tags_add_conflict
     carrying current_tags in the detail."""
     ingest_result = _parse(
         await ingest_document(
@@ -434,7 +434,7 @@ async def test_update_metadata_tags_add_conflict(vault_services):
     doc_id = ingest_result["id"]
 
     result = _parse(await update_metadata("test_vault", doc_id, tags={"add": ["alpha"]}))
-    assert result["error"] == "tag_add_conflict"
+    assert result["error"] == "tags_add_conflict"
     assert result["detail"]["tags"] == ["alpha"]
     assert "alpha" in result["detail"]["current_tags"]
 
@@ -448,7 +448,7 @@ async def test_update_metadata_tags_remove_conflict(vault_services):
     doc_id = ingest_result["id"]
 
     result = _parse(await update_metadata("test_vault", doc_id, tags={"remove": ["never_here"]}))
-    assert result["error"] == "tag_remove_conflict"
+    assert result["error"] == "tags_remove_conflict"
     assert result["detail"]["tags"] == ["never_here"]
 
 
@@ -463,6 +463,109 @@ async def test_update_metadata_tags_legacy_form_rejected(vault_services):
     assert result["error"] == "legacy_form"
     assert result["detail"]["field"] == "tags"
     assert "add" in result["detail"]["example"]
+
+
+# ---------------------------------------------------------------------------
+# update_metadata: commutative concurrency on list-valued metadata fields
+# (CAS-ADR-038 Primitive A)
+# ---------------------------------------------------------------------------
+
+
+async def test_update_metadata_tags_parallel_distinct_adds_both_land(vault_services):
+    """Two parallel `update_metadata` calls each adding a distinct value to
+    `tags` on the same document both land. The Primitive A contract:
+    callers never read-modify-write a list, so commutative adds are
+    set-based and order-independent. Repeated 25 times with distinct
+    values per iteration to surface interleaving races.
+    """
+    ingest_result = _parse(
+        await ingest_document("test_vault", "test/sample.md", "markdown", metadata={"tags": "seed"})
+    )
+    doc_id = ingest_result["id"]
+
+    expected: set[str] = {"seed"}
+    for i in range(25):
+        x = f"x{i}"
+        y = f"y{i}"
+        results = await asyncio.gather(
+            update_metadata("test_vault", doc_id, tags={"add": [x]}),
+            update_metadata("test_vault", doc_id, tags={"add": [y]}),
+        )
+        for r in results:
+            parsed = _parse(r)
+            assert "error" not in parsed, f"iteration {i}: unexpected error: {parsed!r}"
+
+        expected.update({x, y})
+        after = _parse(await get_document("test_vault", doc_id))
+        assert set(after["tags"]) == expected, (
+            f"iteration {i}: both parallel adds must land; expected {expected!r}, "
+            f"got {after['tags']!r}"
+        )
+        # Set-based: no duplicates within the iteration's accumulated state.
+        assert len(after["tags"]) == len(set(after["tags"])), (
+            f"iteration {i}: final tags must contain no duplicates; got {after['tags']!r}"
+        )
+
+
+async def test_update_metadata_tags_parallel_same_add_one_wins_one_conflicts(
+    vault_services,
+):
+    """Two parallel adds of the same value: exactly one succeeds, the
+    other returns 400 `tags_add_conflict` carrying `current_tags` with
+    the value present once. Set-based semantics: the value lands at
+    most once.
+    """
+    ingest_result = _parse(
+        await ingest_document("test_vault", "test/sample.md", "markdown", metadata={"tags": "seed"})
+    )
+    doc_id = ingest_result["id"]
+
+    results = await asyncio.gather(
+        update_metadata("test_vault", doc_id, tags={"add": ["dup"]}),
+        update_metadata("test_vault", doc_id, tags={"add": ["dup"]}),
+    )
+    parsed = [_parse(r) for r in results]
+    successes = [p for p in parsed if "error" not in p]
+    failures = [p for p in parsed if p.get("error") == "tags_add_conflict"]
+    assert len(successes) == 1, f"expected exactly one success; got {parsed!r}"
+    assert len(failures) == 1, f"expected exactly one tags_add_conflict; got {parsed!r}"
+    assert failures[0]["detail"]["tags"] == ["dup"]
+    assert "dup" in failures[0]["detail"]["current_tags"]
+
+    after = _parse(await get_document("test_vault", doc_id))
+    assert after["tags"].count("dup") == 1, (
+        f"set-based semantics: 'dup' must appear exactly once; got {after['tags']!r}"
+    )
+
+
+async def test_update_metadata_tags_parallel_add_and_remove_disjoint_both_land(
+    vault_services,
+):
+    """Parallel add of one value and remove of another (disjoint) both
+    succeed regardless of interleaving. Final state is the union of the
+    two operations applied to the seed."""
+    ingest_result = _parse(
+        await ingest_document(
+            "test_vault",
+            "test/sample.md",
+            "markdown",
+            metadata={"tags": "seed,drop"},
+        )
+    )
+    doc_id = ingest_result["id"]
+
+    results = await asyncio.gather(
+        update_metadata("test_vault", doc_id, tags={"add": ["new"]}),
+        update_metadata("test_vault", doc_id, tags={"remove": ["drop"]}),
+    )
+    for r in results:
+        parsed = _parse(r)
+        assert "error" not in parsed, f"unexpected error: {parsed!r}"
+
+    after = _parse(await get_document("test_vault", doc_id))
+    assert set(after["tags"]) == {"seed", "new"}, (
+        f"disjoint add+remove must compose: expected {{seed, new}}, got {after['tags']!r}"
+    )
 
 
 async def test_update_metadata_tier3_legacy_form_rejected(vault_services):
