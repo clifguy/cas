@@ -5,6 +5,7 @@ Stores document chunks with embeddings for semantic and keyword search.
 """
 
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 import lancedb
@@ -15,6 +16,7 @@ from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     Chunk,
     ContentStore,
+    ContentStoreOptimizeSnapshot,
     SearchResult,
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
@@ -294,6 +296,74 @@ class LanceDBContentStore(ContentStore):
             if table is None:
                 return 0
             return table.count_rows()
+
+    def _lancedb_dir_bytes(self) -> int:
+        """Sum of file sizes under the LanceDB directory (recursive walk).
+
+        Mirrors the pattern in sage/services/vault_config.py:88-93. Used
+        by ``optimize`` to capture pre/post on-disk byte counts.
+        """
+        lancedb_dir = self._brain_root / "lancedb"
+        if not lancedb_dir.exists():
+            return 0
+        return sum(f.stat().st_size for f in lancedb_dir.rglob("*") if f.is_file())
+
+    async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
+        """Compact fragments and prune old dataset versions.
+
+        Captures the chunks table's pre-optimize state (directory byte
+        sum, Table.list_versions() length, Table.stats() fragment
+        counts), calls Table.optimize(cleanup_older_than=...), then
+        captures the post-optimize state and returns both. LanceDB's
+        Table.optimize() returns None in the pinned version (0.30.2);
+        the snapshots are the caller-visible evidence of reclamation.
+
+        cleanup_older_than is forwarded verbatim to LanceDB. The latest
+        version is never removed regardless of the threshold.
+
+        No-op when the chunks table has not yet been created (returns
+        all-zero snapshot). delete_unverified is deliberately not
+        exposed: the running SAGE process holds the dataset open, so
+        LanceDB's safety floor (7-day age) must be respected.
+        """
+        table = self._get_table()
+        if table is None:
+            return ContentStoreOptimizeSnapshot(
+                pre_bytes=0,
+                post_bytes=0,
+                pre_versions=0,
+                post_versions=0,
+                pre_fragments=0,
+                post_fragments=0,
+                pre_small_fragments=0,
+                post_small_fragments=0,
+            )
+
+        with self._query_timer.measure("optimize"):
+            pre_bytes = self._lancedb_dir_bytes()
+            pre_versions = len(table.list_versions())
+            pre_stats = table.stats()
+            pre_fragments = pre_stats["fragment_stats"]["num_fragments"]
+            pre_small_fragments = pre_stats["fragment_stats"]["num_small_fragments"]
+
+            table.optimize(cleanup_older_than=cleanup_older_than)
+
+            post_bytes = self._lancedb_dir_bytes()
+            post_versions = len(table.list_versions())
+            post_stats = table.stats()
+            post_fragments = post_stats["fragment_stats"]["num_fragments"]
+            post_small_fragments = post_stats["fragment_stats"]["num_small_fragments"]
+
+        return ContentStoreOptimizeSnapshot(
+            pre_bytes=pre_bytes,
+            post_bytes=post_bytes,
+            pre_versions=pre_versions,
+            post_versions=post_versions,
+            pre_fragments=pre_fragments,
+            post_fragments=post_fragments,
+            pre_small_fragments=pre_small_fragments,
+            post_small_fragments=post_small_fragments,
+        )
 
     async def remove_document(self, document_id: str) -> None:
         """Remove all chunks for a document (AD-014, AD-015).

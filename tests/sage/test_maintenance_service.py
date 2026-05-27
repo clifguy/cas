@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import gc
+import json
 import sqlite3
 import warnings
 from datetime import datetime, timezone
@@ -25,10 +26,18 @@ from pathlib import Path
 
 import pytest
 
+from sage.adapters.content_store_lancedb import LanceDBContentStore
+from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubContentStore
 from sage.mcp_init import SAGEServices, initialize_services
 from sage.models.enums import EdgeType, PipelineStatus, SourceType, StalenessBasis
-from sage.models.schemas import Document, DriftReport, Edge, MigrationReport
+from sage.models.schemas import (
+    Document,
+    DriftReport,
+    Edge,
+    MigrationReport,
+    OptimizeContentStoreReport,
+)
 from sage.services.maintenance import MaintenanceService
 from sage.services.vault_registry import VaultRegistryService
 from sage.storage.graph_store import GraphStore
@@ -129,6 +138,7 @@ async def _swap_in_legacy_db(
         graph_store=legacy_gs,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
     registry[services.config.vault.id] = dataclasses.replace(
         services,
@@ -260,6 +270,7 @@ async def test_migrate_vault_is_idempotent_on_current_schema(post_migration_vaul
         graph_store=services.graph_store,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
     pre_call_services = registry[services.config.vault.id]
 
@@ -423,6 +434,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_migration_fails(
         graph_store=services.graph_store,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
 
     pre_call_services = registry[services.config.vault.id]
@@ -519,6 +531,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_post_migration_reload_f
         graph_store=services.graph_store,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
 
     pre_call_services = registry[services.config.vault.id]
@@ -626,6 +639,7 @@ async def test_t0111_detect_drift_multi_basket(post_migration_vault):
         graph_store=gs,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
 
     # Chain T1 (tail) → T2 (head, supersedes T1).
@@ -721,6 +735,7 @@ async def test_t0111_detect_drift_nonlinear_chain(post_migration_vault):
         graph_store=gs,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
 
     # Fork: T1 has TWO superseding successors → two heads.
@@ -778,6 +793,7 @@ async def test_t0111_detect_drift_version_only(post_migration_vault):
         graph_store=gs,
         config=services.config,
         registry_service=registry_service,
+        content_store=services.content_store,
     )
 
     # Chain: T1 (oldest, hash_old) → T2 (middle, SAME hash as head) → T3 (head, hash_head).
@@ -846,3 +862,223 @@ async def test_t0111_detect_drift_version_only(post_migration_vault):
     )
     assert bases["44444444-4444-4444-8444-444444444444"] == StalenessBasis.CONTENT_DRIFT
     assert "22222222-2222-4222-8222-222222222222" not in bases
+
+
+# ============================================================================
+# optimize_vault_content_store tests
+# ============================================================================
+
+
+@contextlib.asynccontextmanager
+async def _bootstrap_lancedb_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Async context manager: ephemeral vault wired to a real LanceDB store.
+
+    Yields ``(registry, services, vault_dir)``. Distinct from
+    ``_bootstrap_post_migration_vault`` (which substitutes
+    StubContentStore for ~700 unrelated test paths): the optimize
+    operation needs the LanceDB substrate to observe real on-disk
+    reclamation. The vault's MaintenanceService is rewired so its
+    audit log lands under ``tmp_path`` rather than the canonical
+    ``~/sage_vaults/<vault_id>/`` location (which doesn't exist in
+    test environments).
+    """
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    config = _minimal_config(tmp_path)
+    registry: dict[str, SAGEServices] = {}
+    registry_service = VaultRegistryService(registry, initialize_services)
+    async with initialize_services_for_test(
+        config,
+        migrate=True,
+        registry_service=registry_service,
+        content_store_factory=lambda brain: LanceDBContentStore(brain),
+    ) as services:
+        registry[config.vault.id] = services
+        services.maintenance_service._vault_dir = tmp_path
+        yield registry, services, tmp_path
+
+
+@pytest.fixture
+async def lancedb_vault(tmp_path, monkeypatch):
+    """Pytest-fixture form of ``_bootstrap_lancedb_vault``.
+
+    Yields ``(registry, services, vault_dir)``. Mirrors the teardown
+    contract of ``post_migration_vault``: closes whichever graph_store
+    currently occupies ``registry[vault_id]`` so test-induced reloads
+    don't leak handles.
+    """
+    async with _bootstrap_lancedb_vault(tmp_path, monkeypatch) as (
+        registry,
+        services,
+        vault_dir,
+    ):
+        try:
+            yield registry, services, vault_dir
+        finally:
+            await _close_registry_vault(registry, services.config.vault.id)
+
+
+def _make_chunk(document_id: str, revision: int) -> Chunk:
+    """Build a synthetic chunk with deterministic content per (doc, rev)."""
+    return Chunk(
+        document_id=document_id,
+        heading_path="root",
+        content=f"{document_id} content revision {revision}",
+        chunk_index=0,
+    )
+
+
+async def _churn_chunks(content_store: LanceDBContentStore, cycles: int) -> None:
+    """Drive ``cycles`` mutations against the chunks table.
+
+    Each cycle replaces a document's chunks (an internal delete + add
+    inside ``index_chunks``), so a vault that began empty accumulates
+    roughly ``cycles`` retained LanceDB versions plus header / FTS
+    rebuilds. Spread across three doc_ids so the fragment count grows
+    in addition to the version count.
+    """
+    doc_ids = ("doc_a", "doc_b", "doc_c")
+    for i in range(cycles):
+        doc = doc_ids[i % len(doc_ids)]
+        await content_store.index_chunks(doc, [_make_chunk(doc, i)])
+    # One outright deletion so a deletion-shaped manifest exists.
+    await content_store.remove_document("doc_c")
+
+
+async def test_optimize_content_store_reclaims_disk_after_churn(lancedb_vault):
+    """Churn → optimize → bytes/versions/fragments collapse;
+    audit log records the call.
+    """
+    _registry, services, vault_dir = lancedb_vault
+    content_store = services.content_store
+    maintenance = services.maintenance_service
+
+    await _churn_chunks(content_store, cycles=30)
+
+    report = await maintenance.optimize_content_store(cleanup_older_than_days=0)
+
+    assert isinstance(report, OptimizeContentStoreReport)
+    assert report.vault_id == services.config.vault.id
+    # Reclamation evidence: at least one of the three signals must
+    # show measurable shrinkage. Bytes is the headline metric; versions
+    # are the strongest signal because cleanup_older_than_days=0
+    # prunes everything but the latest.
+    assert report.pre_versions > report.post_versions, (
+        f"expected version-history shrinkage, got pre={report.pre_versions} "
+        f"post={report.post_versions}"
+    )
+    assert report.post_versions >= 1, "the latest version is never removed"
+    assert report.pre_bytes > report.post_bytes, (
+        f"expected on-disk byte shrinkage, got pre={report.pre_bytes} post={report.post_bytes}"
+    )
+    assert report.bytes_reclaimed == report.pre_bytes - report.post_bytes
+    assert report.cleanup_older_than_days == 0
+    assert report.finished_at >= report.started_at
+
+    # Table remains queryable after optimize.
+    assert await content_store.count_chunks() > 0
+
+    # Audit log: one JSONL line that round-trips and matches the report.
+    audit_path = vault_dir / ".maintenance_log.jsonl"
+    assert audit_path.exists(), "audit log should be written"
+    lines = audit_path.read_text().strip().splitlines()
+    assert len(lines) == 1, f"expected exactly one audit line, got {len(lines)}"
+    entry = json.loads(lines[0])
+    assert entry["operation"] == "optimize_vault_content_store"
+    assert entry["vault_id"] == report.vault_id
+    assert entry["cleanup_older_than_days"] == 0
+    assert entry["pre_bytes"] == report.pre_bytes
+    assert entry["post_bytes"] == report.post_bytes
+    assert entry["pre_versions"] == report.pre_versions
+    assert entry["post_versions"] == report.post_versions
+
+
+async def test_optimize_content_store_is_noop_on_clean_table(lancedb_vault):
+    """A second call against an already-optimized table reports
+    no further reclamation; the table remains queryable.
+    """
+    _registry, services, _vault_dir = lancedb_vault
+    content_store = services.content_store
+    maintenance = services.maintenance_service
+
+    await _churn_chunks(content_store, cycles=30)
+    await maintenance.optimize_content_store(cleanup_older_than_days=0)
+
+    report = await maintenance.optimize_content_store(cleanup_older_than_days=0)
+    # No further version pruning -- everything already at the latest.
+    assert report.pre_versions == report.post_versions
+    # Fragments may already be merged; if they were, count stays put.
+    assert report.pre_fragments == report.post_fragments
+    # bytes_reclaimed is bounded at zero so a tiny rewrite can't go negative.
+    assert report.bytes_reclaimed >= 0
+    # Table remains queryable.
+    assert await content_store.count_chunks() > 0
+
+
+@pytest.mark.parametrize(
+    "cleanup_days,expect_pruning",
+    [(0, True), (999999, False)],
+)
+async def test_optimize_content_store_threshold_controls_pruning(
+    tmp_path, monkeypatch, cleanup_days: int, expect_pruning: bool
+):
+    """cleanup_older_than_days=0 prunes everything-but-latest;
+    cleanup_older_than_days=999999 prunes nothing (recent test churn
+    is well within any sane retention window).
+
+    Anti-coincidental-pass note: a code path that ignores
+    cleanup_older_than_days and passes LanceDB's default (7 days)
+    cannot be discriminated by observed pruning alone in a
+    synchronous test (all version timestamps are <1s old, so the 7-day
+    default prunes nothing either). The honoring of the parameter is
+    additionally asserted through the report and audit-log fields,
+    and via the focused observable here that days=0 prunes a churned
+    vault aggressively while days=999999 prunes no historic version.
+    """
+    async with _bootstrap_lancedb_vault(tmp_path, monkeypatch) as (
+        _registry,
+        services,
+        _vault_dir,
+    ):
+        content_store = services.content_store
+        maintenance = services.maintenance_service
+
+        try:
+            await _churn_chunks(content_store, cycles=10)
+
+            report = await maintenance.optimize_content_store(cleanup_older_than_days=cleanup_days)
+            assert report.cleanup_older_than_days == cleanup_days
+
+            if expect_pruning:
+                assert report.pre_versions > report.post_versions, (
+                    f"days=0 should prune historic versions; got "
+                    f"pre={report.pre_versions} post={report.post_versions}"
+                )
+                assert report.post_versions >= 1
+            else:
+                # Recent churn cannot be older than 999999 days;
+                # therefore no historic version may be pruned. Optimize
+                # may add new versions for compaction work, so
+                # post_versions >= pre_versions is the right bound (it
+                # is never less when no pruning occurred).
+                assert report.post_versions >= report.pre_versions, (
+                    f"days={cleanup_days} must not prune any historic version; "
+                    f"got pre={report.pre_versions} post={report.post_versions}"
+                )
+        finally:
+            await _close_registry_vault(_registry, services.config.vault.id)
+
+
+async def test_optimize_content_store_rejects_negative_days(lancedb_vault):
+    """Negative cleanup_older_than_days is a service-level
+    precondition violation -- the validation must live on the service
+    method itself, not only on the Pydantic request model, because the
+    MCP-tool surface calls the service directly.
+    """
+    _registry, services, vault_dir = lancedb_vault
+
+    with pytest.raises(ValueError, match="cleanup_older_than_days must be >= 0"):
+        await services.maintenance_service.optimize_content_store(cleanup_older_than_days=-1)
+
+    # The audit log must NOT be appended on a rejected call.
+    audit_path = vault_dir / ".maintenance_log.jsonl"
+    assert not audit_path.exists(), "audit log should not be written on a rejected call"

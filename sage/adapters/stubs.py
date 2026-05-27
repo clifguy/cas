@@ -4,12 +4,14 @@ These return predictable results and require no external services.
 """
 
 import math
+from datetime import timedelta
 
 from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     AbstractionProvider,
     Chunk,
     ContentStore,
+    ContentStoreOptimizeSnapshot,
     EmbeddingProvider,
     SearchResult,
 )
@@ -161,6 +163,24 @@ class StubContentStore(ContentStore):
     async def count_chunks(self) -> int:
         """Return the total number of chunk rows across all documents."""
         return sum(len(chunks) for chunks in self._store.values())
+
+    async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
+        """No-op: the in-memory stub has no on-disk presence to reclaim.
+
+        Returns a zero-valued snapshot so callers that route
+        substrate-agnostically through the ContentStore interface receive
+        a well-formed payload without special-casing.
+        """
+        return ContentStoreOptimizeSnapshot(
+            pre_bytes=0,
+            post_bytes=0,
+            pre_versions=0,
+            post_versions=0,
+            pre_fragments=0,
+            post_fragments=0,
+            pre_small_fragments=0,
+            post_small_fragments=0,
+        )
 
 
 def _chunk_matches_filters(

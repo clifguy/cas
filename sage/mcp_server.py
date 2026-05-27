@@ -451,6 +451,7 @@ list_pending_metadata = _sage_tools["list_pending_metadata"]
 migrate_vault = _sage_tools["migrate_vault"]
 verify_vault_drift = _sage_tools["verify_vault_drift"]
 recompute_deferred_vault_abstracts = _sage_tools["recompute_deferred_vault_abstracts"]
+optimize_vault_content_store = _sage_tools["optimize_vault_content_store"]
 reload_vault = _sage_tools["reload_vault"]
 get_stack_config = _sage_tools["get_stack_config"]
 
