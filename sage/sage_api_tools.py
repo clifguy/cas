@@ -103,13 +103,23 @@ def register_sage_tools(
     get_vault: Callable[[str], SAGEServices],
     serialize: Callable[[object], dict],
     error_response: Callable[[SAGEError | ValueError], dict],
-    vaults: dict[str, SAGEServices],
-    vault_registry_service: VaultRegistryService,
+    get_vaults: Callable[[], dict[str, SAGEServices]],
+    get_vault_registry_service: Callable[[], VaultRegistryService],
 ) -> dict[str, Callable]:
     """Register all SAGE protocol and API tools on the MCP server.
 
     Returns a dict mapping tool function names to the actual functions,
     for re-export from mcp_server.
+
+    ``get_vaults`` and ``get_vault_registry_service`` are call-time getters
+    rather than instance arguments because the registration site
+    (``sage.mcp_server``) is exposed to ``importlib.reload`` by
+    ``tests/sage/test_cleanup_refactor.py``. After a reload, the module
+    rebinds ``_vaults`` and ``_vault_registry_service`` to the original
+    instances so that other modules keep working; resolving the values via
+    getters at call time picks up the rebound originals, whereas capturing
+    the instances at registration time would freeze the closures on the
+    orphan reload-time objects.
     """
 
     # -------------------------------------------------------------------
@@ -2083,7 +2093,7 @@ def register_sage_tools(
         across all registered vaults.
         """
         try:
-            summaries = await vault_registry_service.list_vaults()
+            summaries = await get_vault_registry_service().list_vaults()
             return {
                 "vaults": [
                     {
@@ -2205,7 +2215,9 @@ def register_sage_tools(
                 doc_type-schema validation that runs at create time.
         """
         try:
-            summary = await vault_registry_service.create_vault(CreateVaultRequest(config=config))
+            summary = await get_vault_registry_service().create_vault(
+                CreateVaultRequest(config=config)
+            )
             return {
                 "vault_id": summary.id,
                 "name": summary.name,
@@ -3176,15 +3188,18 @@ def register_sage_tools(
             # builds new services first; only on success does it stop the old
             # timing thread, close the old graph store, and install the new
             # services in the registry. On failure the exception propagates
-            # here with the registry untouched, so the closure-captured
-            # ``vaults`` dict continues to point at the still-functional old
-            # services and the caller can retry.
+            # here with the registry untouched, so the live ``_vaults`` dict
+            # continues to point at the still-functional old services and the
+            # caller can retry. The dict and registry service are resolved
+            # via call-time getters; see ``register_sage_tools``' docstring
+            # for the rationale (interaction with ``importlib.reload``-based
+            # tests that rebind the module-level state).
             new_services = await reload_vault_in_registry(
-                vaults,
+                get_vaults(),
                 vault_id,
                 config,
                 config_path=config_path,
-                registry_service=vault_registry_service,
+                registry_service=get_vault_registry_service(),
             )
         except (SAGEError, ValueError) as e:
             return error_response(e)

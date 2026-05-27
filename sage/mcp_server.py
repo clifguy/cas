@@ -84,6 +84,22 @@ def get_vault_registry_service() -> VaultRegistryService:
     return _vault_registry_service
 
 
+def _get_vaults() -> dict[str, SAGEServices]:
+    """Return the module-level vault registry dict.
+
+    Used as a call-time getter passed to ``register_sage_tools`` so that
+    tools resolving the registry dict pick up the *current* binding rather
+    than freezing on whatever was bound at registration time. This matters
+    because ``tests/sage/test_cleanup_refactor.py::test_cln_003_import_succeeds``
+    invokes ``importlib.reload(sage.mcp_server)`` and then rebinds
+    ``_vaults`` and ``_vault_registry_service`` to their pre-reload
+    instances to keep other modules consistent — a getter resolves the
+    rebound original, whereas a captured instance would freeze on the
+    reload-time orphan.
+    """
+    return _vaults
+
+
 class VaultNotFoundError(ValueError):
     """Raised when a tool is called with a vault_id that is not registered.
 
@@ -395,7 +411,7 @@ mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan)
 # ---------------------------------------------------------------------------
 
 _sage_tools = register_sage_tools(
-    mcp, _get_vault, _serialize, _error_response, _vaults, _vault_registry_service
+    mcp, _get_vault, _serialize, _error_response, _get_vaults, get_vault_registry_service
 )
 _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 
