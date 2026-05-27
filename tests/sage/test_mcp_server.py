@@ -32,6 +32,7 @@ from sage.mcp_server import (
     migrate_vault,
     read_projection,
     recompute_abstract,
+    recompute_pipeline,
     recompute_views,
     reload_vault,
     search,
@@ -1827,6 +1828,114 @@ async def test_sage_reabstract_mcp_tool_returns_409_on_concurrent_call(vault_ser
         assert second["error"] == "reabstract_document_already_in_flight"
         assert second["detail"]["document_id"] == doc_id
         # detail["start_time"] is an ISO 8601 string; just confirm it parses.
+        datetime.fromisoformat(second["detail"]["start_time"])
+    finally:
+        gate.set()
+        await asyncio.sleep(0.3)
+
+
+# ---------------------------------------------------------------------------
+# Recompute pipeline (operator-driven Stage 1-3 re-run)
+# ---------------------------------------------------------------------------
+
+
+async def test_recompute_pipeline_tool_returns_started_status(vault_services):
+    """recompute_pipeline MCP tool returns the fire-and-forget envelope with
+    status='recompute_pipeline_started' and the dispatched document_id.
+    """
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    # Wait for the initial ingest to commit chunks so recompute_pipeline has
+    # the steady-state "re-run from terminal" path; the stuck-recovery path
+    # is exercised at the service layer (test_ingestion.py B1).
+    for _ in range(200):
+        doc = _parse(await get_document("test_vault", doc_id))
+        if doc.get("pipeline_status") in {
+            "indexing_complete",
+            "abstraction_in_progress",
+            "abstraction_complete",
+            "abstraction_skipped",
+        }:
+            break
+        await asyncio.sleep(0.05)
+
+    result = _parse(await recompute_pipeline("test_vault", doc_id))
+    assert "error" not in result
+    assert result["status"] == "recompute_pipeline_started"
+    assert result["document_id"] == doc_id
+
+
+async def test_recompute_pipeline_tool_unknown_vault_returns_envelope(vault_services):
+    """Unknown vault_id must surface as the unknown_vault envelope."""
+    result = _parse(await recompute_pipeline("nonexistent_vault", "deadbeef_doc"))
+    assert result["error"] == "unknown_vault"
+
+
+async def test_recompute_pipeline_tool_unknown_document_returns_envelope(vault_services):
+    """Unknown document_id (valid vault) must surface as the document_not_found
+    envelope -- not a propagated exception.
+    """
+    result = _parse(await recompute_pipeline("test_vault", "deadbeef_nonexistent"))
+    assert result["error"] == "document_not_found"
+
+
+async def test_recompute_pipeline_tool_invalid_document_id_returns_envelope(vault_services):
+    """An empty document_id must fail typed-alias validation at the tool
+    boundary and surface as a structured error envelope (the convention
+    catches the pydantic ValidationError as ``ValueError`` and funnels it
+    through ``_error_response``, which maps it to ``internal_error``; see
+    ``test_sage_admin_migrate_vault.py``).
+    """
+    result = _parse(await recompute_pipeline("test_vault", ""))
+    assert "error" in result
+    assert result["error"] == "internal_error"
+
+
+async def test_recompute_pipeline_tool_concurrent_returns_409(vault_services):
+    """A second concurrent recompute_pipeline against the same document_id
+    while the first is mid-flight must return the structured 409 envelope
+    (no exception propagated past the MCP boundary).
+    """
+    from datetime import datetime
+
+    ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_id = ingest_result["id"]
+
+    for _ in range(200):
+        doc = _parse(await get_document("test_vault", doc_id))
+        if doc.get("pipeline_status") in {
+            "indexing_complete",
+            "abstraction_in_progress",
+            "abstraction_complete",
+            "abstraction_skipped",
+        }:
+            break
+        await asyncio.sleep(0.05)
+
+    # Gate embed so the first recompute_pipeline call holds its
+    # reservation while the second attempts entry.
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    original_embed = vault_services.ingestion_service._embedding.embed
+
+    async def gated_embed(texts):
+        entered.set()
+        await gate.wait()
+        return await original_embed(texts)
+
+    vault_services.ingestion_service._embedding.embed = gated_embed
+
+    first = _parse(await recompute_pipeline("test_vault", doc_id))
+    assert first["status"] == "recompute_pipeline_started"
+
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    assert not gate.is_set()
+
+    try:
+        second = _parse(await recompute_pipeline("test_vault", doc_id))
+        assert second["error"] == "recompute_pipeline_already_in_flight"
+        assert second["detail"]["document_id"] == doc_id
         datetime.fromisoformat(second["detail"]["start_time"])
     finally:
         gate.set()

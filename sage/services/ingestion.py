@@ -40,6 +40,7 @@ from sage.api.errors import (
     IdenticalContentSupersedeError,
     NoProjectionError,
     ReabstractDocumentAlreadyInFlightError,
+    RecomputePipelineAlreadyInFlightError,
     SourceFileNotFoundError,
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
@@ -299,6 +300,22 @@ class IngestionService:
         # value is the start_time embedded in the 409 raised on contention.
         self._reabstract_in_flight: dict[str, datetime] = {}
 
+        # Per-document recompute_pipeline single-flight tracker. Same shape
+        # and contract as ``_reabstract_in_flight``; tracked separately
+        # because a recompute_pipeline and a reabstract may legitimately
+        # overlap on different documents (or on the same document if the
+        # operator wants to interleave the recoveries).
+        self._recompute_pipeline_in_flight: dict[str, datetime] = {}
+
+        # Strong references to dispatched background pipeline tasks. The
+        # asyncio event loop only keeps weak references to scheduled tasks,
+        # so a bare ``asyncio.create_task(...)`` whose return value is
+        # discarded can be garbage-collected mid-execution, leaving the
+        # document at a non-terminal ``pipeline_status`` with no chunks --
+        # the silent-loss failure mode this set closes structurally. Tasks
+        # are added on dispatch and removed by their own ``done`` callback.
+        self._background_tasks: set[asyncio.Task] = set()
+
         # Build the vault's FilenameParser once per service instance (CAS-ADR-015).
         # Only active when the vault's metadata_extraction block declares a
         # filename_extraction.pattern; otherwise filename parsing is skipped
@@ -321,6 +338,23 @@ class IngestionService:
     def registered_adapters(self) -> dict[SourceType, SourceAdapter]:
         """Return the runtime adapter registry."""
         return dict(self._adapters)
+
+    def _dispatch_background(self, coro) -> asyncio.Task:
+        """Schedule a background pipeline coroutine and retain a strong reference.
+
+        Wraps ``asyncio.create_task`` with two safeguards against the
+        weak-only-reference silent-loss class: the returned task is added to
+        ``_background_tasks`` immediately (supplementing the event loop's
+        weak reference with a strong one), and an ``add_done_callback`` is
+        registered to drain the entry when the task terminates (success,
+        failure, or cancellation alike). Callers must route every
+        fire-and-forget pipeline dispatch through this helper rather than
+        calling ``asyncio.create_task`` directly.
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def _merge_adapter_config(
         self, source_type: SourceType, request_config: dict | None
@@ -755,16 +789,18 @@ class IngestionService:
         # caller's wait_for_pipeline choice (BH-026, BH-130). Sequential
         # execution (wait_for_pipeline=True) caps peak memory at one
         # document's embeddings and abstraction context -- the bulk
-        # ingest path. Fire-and-forget (wait_for_pipeline=False) returns
-        # immediately so MCP clients avoid the 60s RPC timeout on long
-        # abstractions; the task survives client disconnection because
-        # asyncio.create_task detaches it from the request-handling
-        # task.
+        # ingest path. Fire-and-forget (wait_for_pipeline=False) hands
+        # the work to ``_dispatch_background`` so the IngestionService
+        # holds a strong reference to the task until it terminates,
+        # closing the GC silent-loss window (event loop keeps only weak
+        # references to scheduled tasks).
         if wait_for_pipeline:
             await self._run_background_pipeline(doc.id, projection, doc.doc_type)
             doc = await self._store.get_document(doc.id) or doc
         else:
-            asyncio.create_task(self._run_background_pipeline(doc.id, projection, doc.doc_type))
+            self._dispatch_background(
+                self._run_background_pipeline(doc.id, projection, doc.doc_type)
+            )
 
         return IngestResult(document=doc, is_new=is_new)
 
@@ -1069,7 +1105,7 @@ class IngestionService:
             self._reabstract_in_flight.pop(document_id, None)
             raise
 
-        asyncio.create_task(self._reabstract_background(document_id, doc.doc_type))
+        self._dispatch_background(self._reabstract_background(document_id, doc.doc_type))
 
         now = datetime.now(timezone.utc)
         logger.info("reabstract dispatched for %s at %s", document_id, now.isoformat())
@@ -1128,6 +1164,114 @@ class IngestionService:
             # Release the per-document single-flight reservation regardless of
             # whether the background task succeeded or terminated in FAILED.
             self._reabstract_in_flight.pop(document_id, None)
+
+    async def recompute_pipeline(self, document_id: str) -> dict:
+        """Re-run Stages 1-3 against an existing document (fire-and-forget).
+
+        Operator-facing repair for documents stuck at
+        ``pipeline_status=projection_complete`` with no LanceDB chunks --
+        the silent-loss state that can occur when a Stage 2 background
+        dispatch is garbage-collected or its host process dies mid-
+        execution. Re-projects from the document's ``source_path``
+        (synchronously, so source-missing errors surface in the caller's
+        response envelope) and dispatches Stage 2-3 via
+        ``_dispatch_background`` so the new task is held in
+        ``_background_tasks`` until terminal.
+
+        Per-document single-flight: a second concurrent caller against the
+        same ``document_id`` raises
+        ``RecomputePipelineAlreadyInFlightError`` rather than queueing.
+
+        Args:
+            document_id: ID of the document to re-run.
+
+        Returns:
+            Dict with status='recompute_pipeline_started', document_id,
+            and dispatched_at.
+
+        Raises:
+            DocumentNotFoundError: Document does not exist.
+            AdapterNotFoundError: No adapter registered for the document's
+                source_type.
+            SourceFileNotFoundError: Source file resolved from
+                ``document.source_path`` does not exist on disk.
+            RecomputePipelineAlreadyInFlightError: A recompute_pipeline is
+                already running for this document_id.
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(document_id)
+
+        adapter = self._adapters.get(doc.source_type)
+        if adapter is None:
+            raise AdapterNotFoundError(doc.source_type)
+
+        if doc.source_path is None:
+            raise SourceFileNotFoundError("(none)")
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        source_path = storage_root / doc.source_path
+        if not source_path.exists():
+            raise SourceFileNotFoundError(doc.source_path)
+
+        # Per-document single-flight: synchronous check + reservation write
+        # within the same scheduling slice (no await between them).
+        if document_id in self._recompute_pipeline_in_flight:
+            raise RecomputePipelineAlreadyInFlightError(
+                document_id, self._recompute_pipeline_in_flight[document_id]
+            )
+        start_time = datetime.now(timezone.utc)
+        self._recompute_pipeline_in_flight[document_id] = start_time
+
+        # Stage 1 (projection) runs synchronously so adapter / source errors
+        # surface in the caller's response envelope rather than as a FAILED
+        # stamp on the document. Drop the reservation on synchronous failure
+        # so the operator can retry without restarting the service.
+        try:
+            merged_config = self._merge_adapter_config(doc.source_type, None)
+            projection = await adapter.project(source_path, merged_config)
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
+                    "pipeline_error": None,
+                    "projected_at": start_time.isoformat(),
+                    "updated_at": start_time.isoformat(),
+                },
+            )
+        except Exception:
+            self._recompute_pipeline_in_flight.pop(document_id, None)
+            raise
+
+        # Wipe stale chunks so Stage 2 re-indexes from scratch. Idempotent on
+        # an empty store.
+        await self._content_store.remove_document(document_id)
+
+        self._dispatch_background(
+            self._recompute_pipeline_background(document_id, projection, doc.doc_type)
+        )
+
+        logger.info(
+            "recompute_pipeline dispatched for %s at %s", document_id, start_time.isoformat()
+        )
+        return {
+            "status": "recompute_pipeline_started",
+            "document_id": document_id,
+            "dispatched_at": start_time.isoformat(),
+        }
+
+    async def _recompute_pipeline_background(
+        self,
+        document_id: str,
+        projection: ProjectionResult,
+        doc_type: str | None,
+    ) -> None:
+        """Background worker for recompute_pipeline: re-runs Stages 2-3 and
+        releases the single-flight reservation in a ``finally`` block.
+        """
+        try:
+            await self._run_background_pipeline(document_id, projection, doc_type)
+        finally:
+            self._recompute_pipeline_in_flight.pop(document_id, None)
 
     @staticmethod
     def _resolve_doc_type_for_tier3(
