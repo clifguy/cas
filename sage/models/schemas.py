@@ -3087,6 +3087,96 @@ class ReabstractRequest(BaseModel):
     )
 
 
+class OptimizeContentStoreRequest(BaseModel):
+    cleanup_older_than_days: int = Field(
+        default=7,
+        ge=0,
+        description=(
+            "Number of days. LanceDB dataset versions older than this "
+            "threshold are pruned; the latest version is never removed. "
+            "Default 7 days matches LanceDB's own default. Set to 0 to "
+            "remove every version except the latest."
+        ),
+    )
+
+
+class OptimizeContentStoreReport(BaseModel):
+    vault_id: VaultIdStr = Field(
+        description="Identifier of the vault whose content store was optimized."
+    )
+    cleanup_older_than_days: int = Field(
+        ge=0,
+        description=(
+            "The pruning threshold the operation ran with. Echoes the "
+            "request body value (or the 7-day default when no body was "
+            "sent) for audit-log alignment."
+        ),
+    )
+    started_at: datetime = Field(
+        description="UTC timestamp recorded immediately before the optimize call."
+    )
+    finished_at: datetime = Field(
+        description="UTC timestamp recorded immediately after the optimize call returns."
+    )
+    pre_bytes: int = Field(
+        ge=0,
+        description=(
+            "Sum of file sizes under the LanceDB table directory "
+            "(recursive walk) immediately before optimize was called."
+        ),
+    )
+    post_bytes: int = Field(
+        ge=0,
+        description=(
+            "Sum of file sizes under the LanceDB table directory "
+            "immediately after optimize returned."
+        ),
+    )
+    bytes_reclaimed: int = Field(
+        ge=0,
+        description=(
+            "max(0, pre_bytes - post_bytes). Bounded at zero because "
+            "optimize can occasionally produce a slightly larger "
+            "directory (rewritten compact fragments) on near-clean "
+            "tables."
+        ),
+    )
+    pre_versions: int = Field(
+        ge=0,
+        description=(
+            "Count returned by Table.list_versions() before optimize. "
+            "Each retained version is a manifest plus its referenced "
+            "(possibly shared) data files."
+        ),
+    )
+    post_versions: int = Field(
+        ge=0,
+        description="Count returned by Table.list_versions() after optimize.",
+    )
+    pre_fragments: int = Field(
+        ge=0,
+        description=(
+            "Total fragment count from "
+            'Table.stats()["fragment_stats"]["num_fragments"] before '
+            "optimize."
+        ),
+    )
+    post_fragments: int = Field(
+        ge=0,
+        description="Total fragment count from Table.stats() after optimize.",
+    )
+    pre_small_fragments: int = Field(
+        ge=0,
+        description=(
+            "Small-fragment count (fragments below LanceDB's compaction threshold) before optimize."
+        ),
+    )
+    post_small_fragments: int = Field(
+        ge=0,
+        description="Small-fragment count after optimize.",
+    )
+
+
 class ReabstractReportEntry(BaseModel):
     document_id: DocumentIdStr = Field(
         description="Document id whose reabstract outcome this entry records."

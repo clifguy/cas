@@ -2,8 +2,8 @@
 
 Pilot operation: POST /sage_vaults/{vault_id}/admin/migrate. The first
 operation on the SAGE Core API maintenance surface; subsequent
-``sage_admin_*`` operations are added here with the same three-layer
-shape.
+operations on the maintenance/admin surface are added here with the
+same three-layer shape (router -> service -> MCP tool registration).
 """
 
 from collections.abc import AsyncGenerator
@@ -17,6 +17,8 @@ from sage.models.schemas import (
     DriftReport,
     ErrorResponse,
     MigrationReport,
+    OptimizeContentStoreReport,
+    OptimizeContentStoreRequest,
     ReabstractRequest,
     VaultIdStr,
 )
@@ -124,4 +126,24 @@ async def admin_reabstract_deferred(
     return StreamingResponse(
         _format_reabstract_stream(events),
         media_type="text/event-stream",
+    )
+
+
+@router.post(
+    "/admin/optimize-content-store",
+    response_model=OptimizeContentStoreReport,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def admin_optimize_content_store(
+    body: OptimizeContentStoreRequest = Body(default_factory=OptimizeContentStoreRequest),
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: MaintenanceService = Depends(get_maintenance_service),
+) -> OptimizeContentStoreReport:
+    return await service.optimize_content_store(
+        cleanup_older_than_days=body.cleanup_older_than_days,
     )
