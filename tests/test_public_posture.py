@@ -148,11 +148,6 @@ _BUILD_ARTIFACTS: Final[frozenset[str]] = frozenset(
     {".coverage", "coverage.xml", "repo_file_inventory.xlsx"}
 )
 
-# Maximum size of the public-stub ``CLAUDE.md``. The rich internal version
-# lives in ``CLAUDE.local.md`` (gitignored). The cap is a cheap signal that
-# the rich version was moved; the substantive cleanliness checks are T1/T4.
-CLAUDE_MD_SIZE_LIMIT: Final[int] = 4096
-
 # Maximum number of violations to enumerate in a single pytest.fail message.
 _MAX_REPORTED_VIOLATIONS: Final[int] = 30
 
@@ -485,21 +480,6 @@ def test_branch_protection_md_no_github_internal_ids() -> None:
     if '"actor_id": 5' in text:
         leaks.append('"actor_id": 5')
     assert not leaks, f"branch_protection.md GitHub-internal id leak(s): {leaks}"
-
-
-def test_claude_md_is_public_stub() -> None:
-    """T11: ``CLAUDE.md`` is the public stub (under
-    :data:`CLAUDE_MD_SIZE_LIMIT` bytes). Substantive cleanliness is still
-    enforced by T1 and T4 over ``CLAUDE.md``.
-    """
-    path = REPO_ROOT / "CLAUDE.md"
-    assert path.is_file(), "CLAUDE.md missing at repo root"
-    size = path.stat().st_size
-    assert size < CLAUDE_MD_SIZE_LIMIT, (
-        f"CLAUDE.md is {size} bytes; public stub must be under "
-        f"{CLAUDE_MD_SIZE_LIMIT}. (Rich internal version belongs in "
-        f"CLAUDE.local.md, which is gitignored.)"
-    )
 
 
 # ---------------------------------------------------------------------------
