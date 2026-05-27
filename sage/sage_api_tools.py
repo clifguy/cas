@@ -439,7 +439,15 @@ def register_sage_tools(
         title: str | None = None,
         version_label: str | None = None,
         project: str | None = None,
-        tags: dict | None = None,
+        # ``dict | list | None`` (not ``dict | None``) so a bare-list shape
+        # reaches the body-level ``_check_legacy_patch_form`` guard rather
+        # than being rejected by FastMCP's per-tool argument model at the
+        # framework boundary. The bare list is a deprecation grace shape:
+        # accepted only to surface the structured ``legacy_form`` envelope
+        # on real MCP transport. Callers MUST send the ``ListFieldPatch``
+        # ops object ({"add": [...], "remove": [...]}). See CAS-ADR-028
+        # for the ops-object patch grammar.
+        tags: dict | list | None = None,
         doc_type: str | None = None,
         authority_scope: str | None = None,
         document_date: str | None = None,
