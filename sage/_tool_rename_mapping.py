@@ -71,6 +71,7 @@ RENAME_MAPPING: Final[dict[str, str]] = {
     "sage_bulk_update_metadata": "bulk_update_metadata",
     # Maintenance / admin surface (sage_admin server)
     "sage_reabstract": "recompute_abstract",
+    "sage_recompute_pipeline": "recompute_pipeline",
     "sage_refresh_views": "recompute_views",
     "sage_hash_check": "verify_hash",
     "sage_admin_detect_drift": "verify_vault_drift",
@@ -223,6 +224,7 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "bulk_update_metadata": "sage_admin",
     "bulk_ingest_document": "sage_admin",
     "recompute_abstract": "sage_admin",
+    "recompute_pipeline": "sage_admin",
     "recompute_views": "sage_admin",
     "verify_hash": "sage_admin",
     "verify_vault_drift": "sage_admin",

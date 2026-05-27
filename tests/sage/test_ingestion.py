@@ -1521,6 +1521,229 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
 
 
 # ---------------------------------------------------------------------------
+# IngestionService.recompute_pipeline -- operator-driven recovery for documents
+# stuck at pipeline_status=projection_complete with no chunks. Each call re-runs
+# Stage 1 (projection from source_path) + Stages 2-3 in the background; the
+# synchronous prefix surfaces unknown_document / unknown_vault /
+# source_file_not_found / 409 in-flight errors.
+# ---------------------------------------------------------------------------
+
+
+_TERMINAL_PIPELINE_STATES = {
+    PipelineStatus.ABSTRACTION_COMPLETE,
+    PipelineStatus.ABSTRACTION_SKIPPED,
+    PipelineStatus.FAILED,
+}
+
+
+async def _await_pipeline_terminal(graph_store, doc_id, *, attempts: int = 400):
+    """Poll the document until it reaches a terminal pipeline_status."""
+    import asyncio
+
+    for _ in range(attempts):
+        doc = await graph_store.get_document(doc_id)
+        if doc is not None and doc.pipeline_status in _TERMINAL_PIPELINE_STATES:
+            return doc
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"document {doc_id} did not reach terminal status in time")
+
+
+async def test_recompute_pipeline_recovers_stuck_projection_complete(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+    stub_content_store,
+):
+    """A document forced into ``projection_complete`` with no chunks must
+    reach a terminal state with chunks present after one
+    ``recompute_pipeline`` call.
+    """
+
+    _create_test_file(tmp_vault_dir, "samples/recpl1.md", "# RecPL1\n\nContent.")
+
+    request = IngestRequest(source="samples/recpl1.md", source_type=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+
+    # Force the document into the stuck silent-loss state: clear chunks and
+    # rewind ``pipeline_status`` to ``projection_complete``.
+    await stub_content_store.remove_document(doc_id)
+    await graph_store.update_document(
+        doc_id,
+        {
+            "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
+            "indexed_at": None,
+            "semantic_abstract": None,
+        },
+    )
+    pre = await graph_store.get_document(doc_id)
+    assert pre.pipeline_status == PipelineStatus.PROJECTION_COMPLETE
+    assert await stub_content_store.get_all_chunks(doc_id) == []
+
+    response = await ingestion_service.recompute_pipeline(doc_id)
+    assert response["status"] == "recompute_pipeline_started"
+    assert response["document_id"] == doc_id
+    assert "dispatched_at" in response
+
+    # Wait for the background task to drive Stage 2-3 to terminal state.
+    terminal = await _await_pipeline_terminal(graph_store, doc_id)
+    assert terminal.pipeline_status in {
+        PipelineStatus.ABSTRACTION_COMPLETE,
+        PipelineStatus.ABSTRACTION_SKIPPED,
+    }
+    chunks = await stub_content_store.get_all_chunks(doc_id)
+    assert chunks, "recompute_pipeline must re-populate chunks"
+
+
+async def test_recompute_pipeline_idempotent_on_terminal_document(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+    stub_content_store,
+):
+    """Calling ``recompute_pipeline`` on an already-terminal document must
+    succeed (re-runs Stages 1-3 cleanly) without leaving the document in
+    ``FAILED``. The pipeline_status must observably cycle through
+    ``indexing_in_progress`` before reaching terminal -- proves the call
+    actually re-ran Stage 2 rather than no-op'ing.
+    """
+    import asyncio
+
+    _create_test_file(tmp_vault_dir, "samples/recpl2.md", "# RecPL2\n\nContent.")
+
+    request = IngestRequest(source="samples/recpl2.md", source_type=SourceType.MARKDOWN)
+    result = await ingestion_service.ingest(request)
+    doc_id = result.document.id
+
+    initial = await graph_store.get_document(doc_id)
+    assert initial.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+    # Gate embed so we can observe ``indexing_in_progress`` before the
+    # second pipeline run completes.
+    gate = asyncio.Event()
+    original_embed = ingestion_service._embedding.embed
+
+    async def gated_embed(texts):
+        await gate.wait()
+        return await original_embed(texts)
+
+    ingestion_service._embedding.embed = gated_embed
+
+    response = await ingestion_service.recompute_pipeline(doc_id)
+    assert response["status"] == "recompute_pipeline_started"
+
+    # Allow Stage 2 to enter and write the in-progress status, then verify.
+    for _ in range(200):
+        doc = await graph_store.get_document(doc_id)
+        if doc.pipeline_status == PipelineStatus.INDEXING_IN_PROGRESS:
+            break
+        await asyncio.sleep(0.005)
+    else:
+        gate.set()
+        await asyncio.sleep(0.2)
+        pytest.fail("recompute_pipeline did not observably re-run Stage 2")
+
+    gate.set()
+    terminal = await _await_pipeline_terminal(graph_store, doc_id)
+    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    chunks = await stub_content_store.get_all_chunks(doc_id)
+    assert chunks
+
+
+async def test_recompute_pipeline_unknown_document_raises(ingestion_service):
+    """Unknown document_id must raise ``DocumentNotFoundError`` synchronously
+    (before background dispatch)."""
+    from sage.api.errors import DocumentNotFoundError
+
+    with pytest.raises(DocumentNotFoundError):
+        await ingestion_service.recompute_pipeline("deadbeef_nonexistent")
+
+
+async def test_recompute_pipeline_single_flight_409(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """A second ``recompute_pipeline`` against the same document_id while the
+    first is mid-flight must raise ``RecomputePipelineAlreadyInFlightError``
+    (409). The lock is per-document.
+    """
+    import asyncio
+
+    from sage.api.errors import RecomputePipelineAlreadyInFlightError
+
+    _create_test_file(tmp_vault_dir, "samples/recpl4.md", "# RecPL4\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/recpl4.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+
+    # Gate the embed step so the first recompute_pipeline holds its
+    # reservation through the contention window.
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    original_embed = ingestion_service._embedding.embed
+
+    async def gated_embed(texts):
+        entered.set()
+        await gate.wait()
+        return await original_embed(texts)
+
+    ingestion_service._embedding.embed = gated_embed
+
+    window_before = datetime.now(timezone.utc)
+    first = await ingestion_service.recompute_pipeline(doc_id)
+    assert first["status"] == "recompute_pipeline_started"
+    window_after = datetime.now(timezone.utc)
+
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    assert not gate.is_set()
+
+    try:
+        with pytest.raises(RecomputePipelineAlreadyInFlightError) as excinfo:
+            await ingestion_service.recompute_pipeline(doc_id)
+
+        err = excinfo.value
+        assert err.code == "recompute_pipeline_already_in_flight"
+        assert err.status_code == 409
+        assert err.detail["document_id"] == doc_id
+        observed_start = datetime.fromisoformat(err.detail["start_time"])
+        assert window_before <= observed_start <= window_after
+    finally:
+        gate.set()
+        await asyncio.sleep(0.3)
+
+
+async def test_recompute_pipeline_source_path_missing_raises(
+    tmp_vault_dir,
+    ingestion_service,
+    graph_store,
+):
+    """A document whose source file no longer exists on disk must surface
+    ``SourceFileNotFoundError`` synchronously when ``recompute_pipeline``
+    tries to re-project. The error must not be swallowed into ``FAILED`` on
+    the background task -- the operator needs the synchronous error envelope.
+    """
+    from sage.api.errors import SourceFileNotFoundError
+
+    full_path = _create_test_file(tmp_vault_dir, "samples/recpl5.md", "# RecPL5\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source="samples/recpl5.md", source_type=SourceType.MARKDOWN)
+    )
+    doc_id = result.document.id
+
+    full_path.unlink()
+    assert not full_path.exists()
+
+    with pytest.raises(SourceFileNotFoundError):
+        await ingestion_service.recompute_pipeline(doc_id)
+
+    # The reservation must NOT be held after a synchronous failure -- otherwise
+    # the operator would have to restart the service to retry.
+    assert doc_id not in ingestion_service._recompute_pipeline_in_flight
+
+
+# ---------------------------------------------------------------------------
 # BH-131, BH-132, BH-133: Adapter-emitted tags merge into document.tags
 # ---------------------------------------------------------------------------
 #

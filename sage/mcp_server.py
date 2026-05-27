@@ -423,6 +423,7 @@ _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
 ingest_document = _sage_tools["ingest_document"]
 get_filename_metadata = _sage_tools["get_filename_metadata"]
 recompute_abstract = _sage_tools["recompute_abstract"]
+recompute_pipeline = _sage_tools["recompute_pipeline"]
 get_document = _sage_tools["get_document"]
 update_metadata = _sage_tools["update_metadata"]
 update_lifecycle = _sage_tools["update_lifecycle"]

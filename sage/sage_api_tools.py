@@ -2779,6 +2779,96 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    @mcp.tool()
+    async def recompute_pipeline(
+        vault_id: str,
+        document_id: str,
+    ) -> dict:
+        """Re-run the full ingestion pipeline against an existing document
+        (fire-and-forget). Operator-facing repair for documents stuck at
+        ``pipeline_status=projection_complete`` with no LanceDB chunks --
+        the silent-loss state that can occur when a Stage 2 background
+        dispatch is garbage-collected or its host process dies mid-execution.
+
+        Stage 1 (projection) is re-run synchronously from
+        ``document.source_path`` so any adapter / source-file errors surface
+        in this call's response envelope rather than as a ``pipeline_status=
+        failed`` stamp. Stages 2-3 (indexing, abstraction) then dispatch as a
+        background task whose strong reference is held in
+        ``IngestionService._background_tasks`` until terminal, closing the
+        garbage-collection silent-loss window.
+
+        Fire-and-forget semantics (caller-expectation-mismatch class):
+        This tool returns immediately after Stage 1 + dispatch with::
+
+            {"status": "recompute_pipeline_started",
+             "document_id": "<id>",
+             "dispatched_at": "<iso8601 timestamp>"}
+
+        The background task is what re-indexes the chunks, regenerates the
+        semantic abstract, and flips ``pipeline_status`` to
+        ``abstraction_complete`` / ``abstraction_skipped`` (success) or
+        ``failed`` (Stage 2/3 error). To observe terminal state, poll
+        ``get_document`` and read ``pipeline_status``; the call is complete
+        when that field is no longer ``indexing_in_progress`` or
+        ``abstraction_in_progress``.
+
+        Per-document single-flight lock:
+        Concurrent ``recompute_pipeline`` calls against the same
+        ``document_id`` while a prior recompute is still in-flight produce a
+        structured 409 (``recompute_pipeline_already_in_flight``) rather than
+        dispatching a parallel background task. Concurrent calls against
+        different document_ids in the same vault continue to run in
+        parallel.
+
+        Process-crash stuck-state recovery:
+        After a process-level kill (``SIGKILL``, OOM kill) interrupted a
+        prior recompute_pipeline or ingest mid-Stage-2, enumerate stuck
+        documents via ``search(mode="catalog", filters={"pipeline_status":
+        "projection_complete"})`` and re-issue ``recompute_pipeline``
+        against each id.
+
+        Error modes:
+        - ``internal_error`` (500): ``vault_id`` or ``document_id`` failed
+          its typed-alias validation at the boundary (pydantic
+          ``ValidationError`` funnels through the generic ``ValueError``
+          branch of the MCP error envelope; see the framework convention
+          in ``sage/mcp_server.py``).
+        - ``unknown_vault``: ``vault_id`` is not a registered vault.
+        - ``document_not_found`` (404): no document with that id.
+        - ``adapter_not_found`` (400): no source adapter registered for
+          the document's ``source_type``.
+        - ``source_file_not_found`` (404): the document's
+          ``source_path`` no longer resolves to a readable file on disk.
+        - ``recompute_pipeline_already_in_flight`` (409): a recompute is
+          already running on this ``document_id``. ``detail`` carries
+          ``document_id`` and the ISO 8601 ``start_time`` of the in-flight
+          call.
+
+        Note: error modes above are raised synchronously and reported in
+        the call's response envelope. Background-task failures (embedding
+        provider error, content-store write failure, abstraction provider
+        error) are NOT surfaced in this tool's response; they manifest as
+        ``pipeline_status=failed`` and a populated ``pipeline_error`` field
+        on the document, observable via ``get_document``.
+
+        Args:
+            vault_id: Target vault identifier. Validated through the
+                ``VaultIdStr`` typed alias at the MCP boundary.
+            document_id: Document to re-run the pipeline against. Validated
+                through the ``DocumentIdStr`` typed alias at the MCP
+                boundary. The fire-and-forget dispatch and polling recipe
+                are described in "Fire-and-forget semantics" above.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            v = get_vault(vault_id)
+            result = await v.ingestion_service.recompute_pipeline(document_id)
+            return serialize(result)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     # -------------------------------------------------------------------
     # SAGE admin / maintenance API tools (CAS-ADR-029)
     #
@@ -3303,6 +3393,7 @@ def register_sage_tools(
         "ingest_document": ingest_document,
         "get_filename_metadata": get_filename_metadata,
         "recompute_abstract": recompute_abstract,
+        "recompute_pipeline": recompute_pipeline,
         "get_document": get_document,
         "update_metadata": update_metadata,
         "update_lifecycle": update_lifecycle,

@@ -123,6 +123,15 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     ): "Agent-only abstraction refresh; no HTTP route by design.",
     (
         "sage_core",
+        "recompute_pipeline",
+    ): (
+        "Operator-only ingestion-pipeline repair for documents stuck at "
+        "pipeline_status=projection_complete with no chunks; no HTTP route by "
+        "design -- the recovery surface lives on the MCP transport alongside "
+        "recompute_abstract."
+    ),
+    (
+        "sage_core",
         "update_staging_edge",
     ): (
         "MCP-only consolidation of confirm_staging_edge + dismiss_staging_edge "
