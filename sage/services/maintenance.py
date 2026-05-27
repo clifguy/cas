@@ -1,21 +1,23 @@
 """Vault-scoped maintenance/admin operations (CAS-ADR-029).
 
 Pilot operation: schema migration for a single vault in the running
-session. Subsequent ``sage_admin_*`` operations slot into the same
+session. Subsequent admin operations on this surface slot into the same
 three-layer service + router + MCP-tool shape.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sqlite3
 import tempfile
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sage.adapters.interfaces import ContentStore
 from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, ReabstractOutcome, StalenessBasis
@@ -24,6 +26,7 @@ from sage.models.schemas import (
     DriftReport,
     MigrationReport,
     MigrationReportEntry,
+    OptimizeContentStoreReport,
     ReabstractProgressEvent,
     ReabstractReport,
     ReabstractReportEntry,
@@ -42,6 +45,7 @@ from sage.storage.migrations import (
     pending_backfills,
     pending_migrations,
 )
+from sage.vault_management import config_path_for_vault
 
 # Union type for events yielded by reabstract_deferred_events.
 ReabstractEvent = ReabstractProgressEvent | ReabstractSummaryEvent
@@ -117,14 +121,23 @@ class MaintenanceService:
         graph_store: GraphStore,
         config: VaultConfig,
         registry_service: "VaultRegistryService | None",
+        content_store: ContentStore,
         ingestion_service: "IngestionService | None" = None,
+        vault_dir: Path | None = None,
     ) -> None:
         self._vault_id = vault_id
         self._db_path = db_path
         self._graph_store = graph_store
         self._config = config
         self._registry_service = registry_service
+        self._content_store = content_store
         self._ingestion = ingestion_service
+        # vault_dir resolves where the audit log lives. Production
+        # invocations through mcp_init don't pass it -- the canonical
+        # ~/sage_vaults/<vault_id>/ location is derived on demand from
+        # vault_management.config_path_for_vault. Tests with ephemeral
+        # vaults outside that root pass the path explicitly.
+        self._vault_dir = vault_dir
         # Per-vault single-flight lock for reabstract_deferred.
         # Non-blocking check: a second caller raises rather than queueing
         # (reabstract passes can run for minutes against the in-process
@@ -237,6 +250,79 @@ class MaintenanceService:
             summary=summary,
             entries=entries,
         )
+
+    async def optimize_content_store(
+        self,
+        cleanup_older_than_days: int = 7,
+    ) -> OptimizeContentStoreReport:
+        """Reclaim disk in the LanceDB content store and audit the call.
+
+        Captures pre/post substrate observations (directory bytes,
+        retained version count, fragment count) around the
+        ContentStore.optimize() call so the caller sees what was
+        reclaimed. Appends a JSONL line to ``<vault_dir>/.maintenance_log.jsonl``
+        following the per-document purge precedent.
+
+        cleanup_older_than_days must be a non-negative integer. The
+        latest dataset version is never removed regardless of the
+        threshold. LanceDB's safety floor on partial-write detection
+        is preserved (``delete_unverified`` is not exposed): the running
+        SAGE process holds the dataset open, so the floor must apply.
+        """
+        if cleanup_older_than_days < 0:
+            raise ValueError("cleanup_older_than_days must be >= 0")
+
+        started_at = datetime.now(timezone.utc)
+        snapshot = await self._content_store.optimize(
+            cleanup_older_than=timedelta(days=cleanup_older_than_days)
+        )
+        finished_at = datetime.now(timezone.utc)
+
+        report = OptimizeContentStoreReport(
+            vault_id=self._vault_id,
+            cleanup_older_than_days=cleanup_older_than_days,
+            started_at=started_at,
+            finished_at=finished_at,
+            bytes_reclaimed=max(0, snapshot["pre_bytes"] - snapshot["post_bytes"]),
+            **snapshot,
+        )
+
+        self._append_optimize_audit_record(report)
+        return report
+
+    def _append_optimize_audit_record(self, report: OptimizeContentStoreReport) -> None:
+        """Append one JSONL line capturing this optimize call to the vault's
+        ``.maintenance_log.jsonl``.
+
+        Mirrors the per-document purge precedent at
+        sage/maintenance/_internal.py:_write_audit_record. Stays inline
+        here rather than borrowing from sage.maintenance._internal --
+        that module's docstring asserts package-internal scope, and the
+        per-document audit record carries document-shaped fields that
+        do not apply to an optimize call.
+        """
+        vault_dir = self._vault_dir or config_path_for_vault(self._vault_id).parent
+        audit_path = vault_dir / ".maintenance_log.jsonl"
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "operation": "optimize_vault_content_store",
+            "vault_id": report.vault_id,
+            "cleanup_older_than_days": report.cleanup_older_than_days,
+            "started_at": report.started_at.isoformat(),
+            "finished_at": report.finished_at.isoformat(),
+            "pre_bytes": report.pre_bytes,
+            "post_bytes": report.post_bytes,
+            "bytes_reclaimed": report.bytes_reclaimed,
+            "pre_versions": report.pre_versions,
+            "post_versions": report.post_versions,
+            "pre_fragments": report.pre_fragments,
+            "post_fragments": report.post_fragments,
+            "pre_small_fragments": report.pre_small_fragments,
+            "post_small_fragments": report.post_small_fragments,
+        }
+        with open(audit_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
 
     async def _classify_edge_for_drift(self, edge: dict) -> DriftEntry | None:
         """Build a DriftEntry for one edge, or None if the edge is current.

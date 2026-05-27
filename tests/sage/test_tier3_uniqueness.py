@@ -165,13 +165,16 @@ def unique_keys_ingestion_service(
 
 
 @pytest.fixture
-def unique_keys_maintenance_service(graph_store, unique_keys_config, tmp_vault_dir):
+def unique_keys_maintenance_service(
+    graph_store, unique_keys_config, tmp_vault_dir, stub_content_store
+):
     return MaintenanceService(
         vault_id="test_tier3_unique_vault",
         db_path=tmp_vault_dir / "brain" / "graph.db",
         graph_store=graph_store,
         config=unique_keys_config,
         registry_service=None,
+        content_store=stub_content_store,
     )
 
 

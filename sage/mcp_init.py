@@ -445,6 +445,7 @@ async def initialize_services(
                 graph_store=graph_store,
                 config=config,
                 registry_service=registry_service,
+                content_store=content_store,
                 ingestion_service=ingestion_service,
             )
 

@@ -175,14 +175,16 @@ def _build_maintenance(
     *,
     graph_store,
     config,
+    content_store,
     ingestion_service: IngestionService | None,
 ) -> MaintenanceService:
     """Construct a MaintenanceService with the ingestion dependency.
 
-    db_path and registry_service are not exercised by reabstract_deferred
-    (only migrate_vault touches them); we still pass concrete values so
-    the constructor signature is satisfied. registry_service is None,
-    matching test paths that do not exercise the migration reload.
+    db_path, registry_service, and content_store are not exercised by
+    reabstract_deferred (migrate_vault, optimize_content_store, etc.
+    touch those); we still pass concrete values so the constructor
+    signature is satisfied. registry_service is None, matching test
+    paths that do not exercise the migration reload.
     """
     from pathlib import Path
 
@@ -192,6 +194,7 @@ def _build_maintenance(
         graph_store=graph_store,
         config=config,
         registry_service=None,
+        content_store=content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -205,12 +208,14 @@ async def test_reabstract_deferred_empty_returns_zero_report(
     graph_store,
     ingestion_service,
     minimal_config,
+    stub_content_store,
 ):
     """Vault with no documents in abstraction_skipped returns an empty
     report; no work is dispatched."""
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -243,6 +248,7 @@ async def test_reabstract_deferred_promotes_one_skipped_document(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -278,6 +284,7 @@ async def test_reabstract_deferred_skips_pdfs_by_default(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -312,6 +319,7 @@ async def test_reabstract_deferred_includes_pdfs_when_flag_set(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -364,6 +372,7 @@ async def test_reabstract_deferred_records_per_document_failure(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion,
     )
 
@@ -417,6 +426,7 @@ async def test_reabstract_deferred_second_concurrent_call_raises_in_flight_error
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion,
     )
 
@@ -456,6 +466,7 @@ async def test_reabstract_deferred_second_concurrent_call_raises_in_flight_error
 async def test_reabstract_deferred_hard_errors_when_no_ingestion_service(
     graph_store,
     minimal_config,
+    stub_content_store,
 ):
     """MaintenanceService constructed with ingestion_service=None must
     raise RuntimeError naming the missing dependency rather than
@@ -468,6 +479,7 @@ async def test_reabstract_deferred_hard_errors_when_no_ingestion_service(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=None,
     )
 
@@ -513,6 +525,7 @@ async def test_reabstract_deferred_events_yields_started_then_completed_per_docu
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -585,6 +598,7 @@ async def test_reabstract_deferred_events_emits_skipped_for_pdf_when_include_pdf
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -649,6 +663,7 @@ async def test_reabstract_deferred_events_emits_failed_then_continues(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion,
     )
 
@@ -706,6 +721,7 @@ async def test_reabstract_deferred_events_summary_payload_is_reabstract_report_s
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 
@@ -774,6 +790,7 @@ async def test_reabstract_deferred_events_raises_in_flight_before_first_yield(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion,
     )
 
@@ -815,6 +832,7 @@ async def test_reabstract_deferred_aggregator_consumes_event_stream(
     ingestion_service,
     minimal_config,
     monkeypatch,
+    stub_content_store,
 ):
     """reabstract_deferred() builds its ReabstractReport by consuming the
     reabstract_deferred_events() generator. Monkeypatching the generator
@@ -830,6 +848,7 @@ async def test_reabstract_deferred_aggregator_consumes_event_stream(
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
+        content_store=stub_content_store,
         ingestion_service=ingestion_service,
     )
 

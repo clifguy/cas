@@ -2782,7 +2782,7 @@ def register_sage_tools(
     # -------------------------------------------------------------------
     # SAGE admin / maintenance API tools (CAS-ADR-029)
     #
-    # Family-shared preconditions for every ``sage_admin_*`` tool below:
+    # Family-shared preconditions for every admin-family tool below:
     #
     # 1. ``vault_id`` is validated through the ``VaultIdStr`` typed alias
     # (``_VAULT_ID_ADAPTER.validate_python``) before any vault lookup.
@@ -2815,7 +2815,7 @@ def register_sage_tools(
         registry so subsequent operations observe the new schema.
 
         Common preconditions:
-        See the ``sage_admin_*`` family preconditions block above for
+        See the admin-family family preconditions block above for
         shared rules (``vault_id`` typed-alias validation,
         ``maintenance_service`` wiring requirement).
 
@@ -2920,7 +2920,7 @@ def register_sage_tools(
         terminology-remediation workflows.
 
         Common preconditions (CAS-ADR-029):
-        See the ``sage_admin_*`` family preconditions block above for
+        See the admin-family family preconditions block above for
         shared rules (``vault_id`` typed-alias validation,
         ``maintenance_service`` wiring requirement).
 
@@ -2963,7 +2963,7 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier. See the
-                ``sage_admin_*`` family preconditions block above.
+                admin-family family preconditions block above.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2991,7 +2991,7 @@ def register_sage_tools(
         ReabstractReport with per-document outcomes and aggregate counts.
 
         Common preconditions:
-        See the ``sage_admin_*`` family preconditions block above for
+        See the admin-family family preconditions block above for
         shared rules (``vault_id`` typed-alias validation,
         ``maintenance_service`` wiring requirement).
 
@@ -3064,6 +3064,70 @@ def register_sage_tools(
                     "registry_service; maintenance_service is unavailable."
                 )
             report = await v.maintenance_service.reabstract_deferred(include_pdf=include_pdf)
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool()
+    async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
+        """Compact LanceDB content-store fragments and prune retained versions.
+
+        Operator-invoked reclamation operation on the maintenance/admin
+        API surface (CAS-ADR-029). Wraps ``Table.optimize()`` against
+        the per-vault chunks table: merges small fragment files, prunes
+        retained dataset versions older than the threshold, and folds
+        incremental rows into existing vector indexes without a full
+        rebuild.
+
+        LanceDB is copy-on-write with version retention -- every add,
+        update, or delete writes a new fragment and a new manifest, and
+        nothing is reclaimed unless this operation is called explicitly.
+        Disk usage on actively-churned vaults can grow to hundreds of
+        times the size of current data without periodic optimize calls.
+
+        Common preconditions:
+        See the admin-family preconditions block above for shared
+        rules (``vault_id`` typed-alias validation,
+        ``maintenance_service`` wiring requirement).
+
+        Runs synchronously against the LanceDB connection this MCP
+        server already holds open; ``delete_unverified`` is deliberately
+        not exposed (LanceDB's safety floor assumes single-writer
+        ownership of the dataset, which the running server provides).
+        On a first run against a highly-churned vault the call may take
+        minutes and exceed an MCP client's call timeout; subsequent
+        runs settle to seconds.
+
+        Returns an OptimizeContentStoreReport dict carrying pre/post
+        observations: directory byte sum, retained version count, and
+        fragment counts. LanceDB's ``Table.optimize()`` itself returns
+        None in the pinned version; the deltas in this report are the
+        caller-visible evidence of reclamation. ``cleanup_older_than_days``
+        is echoed in the report for audit-log alignment.
+
+        Error modes:
+        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``ValueError``: ``cleanup_older_than_days`` is negative.
+
+        Args:
+            vault_id: Target vault identifier. See the
+                admin-family preconditions block above.
+            cleanup_older_than_days: Days. Dataset versions older than
+                this threshold are pruned; the latest version is never
+                removed. Default 7 days matches LanceDB's own default.
+                Set to 0 to remove every version except the latest.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            if v.maintenance_service is None:
+                raise RuntimeError(
+                    f"Vault {vault_id!r} was initialized without a "
+                    "registry_service; maintenance_service is unavailable."
+                )
+            report = await v.maintenance_service.optimize_content_store(
+                cleanup_older_than_days=cleanup_older_than_days
+            )
             return serialize(report)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -3267,6 +3331,7 @@ def register_sage_tools(
         "migrate_vault": migrate_vault,
         "verify_vault_drift": verify_vault_drift,
         "recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
+        "optimize_vault_content_store": optimize_vault_content_store,
         "reload_vault": reload_vault,
         "get_stack_config": get_stack_config,
     }

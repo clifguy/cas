@@ -7,6 +7,8 @@ provide deterministic behavior for testing.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import timedelta
+from typing import TypedDict
 
 # Reserved heading_path marker for the per-document synthetic header chunk
 # carrying title, source filename stem, tags, semantic_abstract, and
@@ -37,6 +39,24 @@ class SearchResult:
     heading_path: str
     content: str
     score: float
+
+
+class ContentStoreOptimizeSnapshot(TypedDict):
+    """Pre/post observations captured around ContentStore.optimize().
+
+    Substrates with no on-disk presence (StubContentStore) return zeros.
+    LanceDB returns measured directory byte sum, Table.list_versions()
+    length, and Table.stats() fragment counts.
+    """
+
+    pre_bytes: int
+    post_bytes: int
+    pre_versions: int
+    post_versions: int
+    pre_fragments: int
+    post_fragments: int
+    pre_small_fragments: int
+    post_small_fragments: int
 
 
 class ContentStore(ABC):
@@ -142,6 +162,21 @@ class ContentStore(ABC):
         """Return the total number of chunk rows across all documents.
 
         Returns 0 when the underlying table has not been created yet.
+        """
+
+    @abstractmethod
+    async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
+        """Reclaim disk by compacting fragments and pruning old versions.
+
+        Snapshots substrate state immediately before and after the
+        reclamation call; returns the pair so callers can observe
+        what changed. Substrates with no on-disk presence
+        (StubContentStore) return zeros; LanceDB returns measured
+        directory bytes, version count, and fragment counts.
+
+        cleanup_older_than: how old a retained dataset version must be
+        to be eligible for pruning. timedelta(0) prunes every version
+        except the latest. LanceDB's own default is 7 days.
         """
 
 

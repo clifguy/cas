@@ -76,6 +76,7 @@ RENAME_MAPPING: Final[dict[str, str]] = {
     "sage_admin_detect_drift": "verify_vault_drift",
     "sage_admin_migrate_vault": "migrate_vault",
     "sage_admin_reabstract_deferred_vault": "recompute_deferred_vault_abstracts",
+    "sage_admin_optimize_vault": "optimize_vault_content_store",
     "sage_reload_vault": "reload_vault",
     "sage_create_vault": "create_vault",
     "sage_update_vault_config": "update_vault_config",
@@ -133,9 +134,13 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
         "ingest",
         "recompute",
         "verify",
-        # Admin-only outlier verbs (accepted on the sage_admin surface only)
+        # Admin-only outlier verbs (accepted on the sage_admin surface only).
+        # `optimize` joins the precedent of `reload`/`migrate`: maintenance
+        # operations on substrate state whose intent does not fit the
+        # read-spine / mutation / derivation / validation taxonomy.
         "reload",
         "migrate",
+        "optimize",
     }
 )
 
@@ -223,6 +228,7 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "verify_vault_drift": "sage_admin",
     "migrate_vault": "sage_admin",
     "recompute_deferred_vault_abstracts": "sage_admin",
+    "optimize_vault_content_store": "sage_admin",
     "reload_vault": "sage_admin",
     "create_vault": "sage_admin",
     "update_vault_config": "sage_admin",

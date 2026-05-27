@@ -2230,6 +2230,67 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/admin/optimize-content-store:
+    post:
+      operationId: optimize_vault_content_store
+      summary: Compact LanceDB content-store fragments and prune retained versions for a single vault.
+      description: >-
+        Per-vault content-store reclamation operation for the SAGE Core
+        API maintenance surface (CAS-ADR-029). Wraps LanceDB's
+        ``Table.optimize()`` against the per-vault chunks table, which
+        performs three reclamation tasks in one pass: merge small
+        fragment files, prune dataset versions older than the
+        ``cleanup_older_than_days`` threshold, and fold incremental rows
+        into existing vector indexes without a full rebuild.
+
+
+        LanceDB is copy-on-write with version retention; every add,
+        update, or delete writes a new fragment and a new manifest, and
+        nothing is reclaimed unless this operation is called explicitly.
+        Disk usage on actively-churned vaults can grow to hundreds of
+        times the size of current data without periodic optimize calls.
+
+
+        Runs synchronously against the LanceDB connection the running
+        SAGE process already holds open; a parallel connection is
+        deliberately avoided (LanceDB's ``delete_unverified`` safety
+        floor depends on the dataset being held by a single writer, so
+        the parameter is not exposed). On a first run against a highly
+        churned vault the call may take minutes and exceed an MCP
+        client's call timeout; subsequent runs against the same vault
+        settle to seconds.
+
+
+        LanceDB's ``Table.optimize()`` returns ``None`` in the pinned
+        version (0.30.2); the caller-visible evidence of reclamation
+        comes from the pre/post observations of on-disk byte count,
+        ``Table.list_versions()`` length, and ``Table.stats()``
+        fragment counts captured by this report.
+      tags: [Maintenance]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OptimizeContentStoreRequest"
+      responses:
+        "200":
+          description: >-
+            Optimization completed. Pre/post byte, version, and fragment
+            counts let the caller observe the reclamation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OptimizeContentStoreReport"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 
 # =============================================================================
 # Components
@@ -5533,6 +5594,115 @@ components:
             skipped: scanned PDFs typically have no extractable text and
             reabstract returns a degenerate abstract. When True, PDFs are
             included in the worklist.
+
+    OptimizeContentStoreRequest:
+      type: object
+      description: Request body for optimize_vault_content_store.
+      properties:
+        cleanup_older_than_days:
+          type: integer
+          minimum: 0
+          default: 7
+          description: >-
+            Number of days. LanceDB dataset versions older than this
+            threshold are pruned; the latest version is never removed.
+            Default 7 days matches LanceDB's own default. Set to 0 to
+            remove every version except the latest.
+
+    OptimizeContentStoreReport:
+      type: object
+      required:
+        - vault_id
+        - cleanup_older_than_days
+        - started_at
+        - finished_at
+        - pre_bytes
+        - post_bytes
+        - bytes_reclaimed
+        - pre_versions
+        - post_versions
+        - pre_fragments
+        - post_fragments
+        - pre_small_fragments
+        - post_small_fragments
+      description: >-
+        Result of an optimize_vault_content_store call. LanceDB's
+        Table.optimize() returns None in the pinned version (0.30.2);
+        the caller-visible evidence of reclamation is the delta
+        between pre- and post-optimize observations of on-disk byte
+        count, version-history length, and fragment counts captured by
+        this report.
+      properties:
+        vault_id:
+          $ref: "#/components/schemas/VaultId"
+          description: Identifier of the vault whose content store was optimized.
+        cleanup_older_than_days:
+          type: integer
+          minimum: 0
+          description: >-
+            The pruning threshold the operation ran with. Echoes the
+            request body value (or the 7-day default when no body was
+            sent) for audit-log alignment.
+        started_at:
+          type: string
+          format: date-time
+          description: UTC timestamp recorded immediately before the optimize call.
+        finished_at:
+          type: string
+          format: date-time
+          description: UTC timestamp recorded immediately after the optimize call returns.
+        pre_bytes:
+          type: integer
+          minimum: 0
+          description: >-
+            Sum of file sizes under the LanceDB table directory
+            (recursive walk) immediately before optimize was called.
+        post_bytes:
+          type: integer
+          minimum: 0
+          description: >-
+            Sum of file sizes under the LanceDB table directory
+            immediately after optimize returned.
+        bytes_reclaimed:
+          type: integer
+          minimum: 0
+          description: >-
+            max(0, pre_bytes - post_bytes). Bounded at zero because
+            optimize can occasionally produce a slightly larger
+            directory (rewritten compact fragments) on near-clean
+            tables.
+        pre_versions:
+          type: integer
+          minimum: 0
+          description: >-
+            Count returned by Table.list_versions() before optimize.
+            Each retained version is a manifest plus its referenced
+            (possibly shared) data files.
+        post_versions:
+          type: integer
+          minimum: 0
+          description: Count returned by Table.list_versions() after optimize.
+        pre_fragments:
+          type: integer
+          minimum: 0
+          description: >-
+            Total fragment count from
+            Table.stats()["fragment_stats"]["num_fragments"] before
+            optimize.
+        post_fragments:
+          type: integer
+          minimum: 0
+          description: Total fragment count from Table.stats() after optimize.
+        pre_small_fragments:
+          type: integer
+          minimum: 0
+          description: >-
+            Small-fragment count (fragments below LanceDB's compaction
+            threshold) before optimize.
+        post_small_fragments:
+          type: integer
+          minimum: 0
+          description: Small-fragment count after optimize.
 
     ReabstractReportEntry:
       type: object
