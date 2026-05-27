@@ -20,6 +20,18 @@ The SAGE MCP server runs from `.venv/bin/python -m sage.mcp_server`. Edits to SA
 
 Database files (SQLite, LanceDB) live outside the repository at paths configured in `sage/config.yaml`. They are not touched by `git reset` or `git clean`.
 
+## SAGE vault discipline — non-negotiable
+
+**Everything inside a SAGE vault tree (`~/sage_vaults/<vault_id>/`, including `sources/`, `imports/`, the graph store, and the content store) is exclusively SAGE-managed.** Never plan, propose, or execute a direct create, read, write, move, or delete against any file or directory inside a vault — neither with `Read`/`Edit`/`Write`/`Bash` tools nor by suggesting the user do so — unless the user has explicitly authorized the specific operation in the current turn. This rule applies in planning, in subagent dispatch, in skill execution, and in autonomous loops; no skill, cohort, or workflow may override it.
+
+- **Create or update a document.** Stage the source under `/tmp/...` and call `ingest_document` (with `predecessor_id` for supersessions). SAGE copies into `imports/` itself.
+- **Read a document.** Use SAGE MCP tools — `get_document`, `read_section`, `read_projection`, `search`. Do not `cat`/`Read` files under `~/sage_vaults/`.
+- **Inspect graph or content stores.** Use SAGE MCP tools. Never open the SQLite or LanceDB files directly.
+
+Direct mutation breaks provenance (source hashes, chain-head invariants, supersession edges) and silently desynchronizes the graph and content stores. Direct reads bypass projections and lifecycle filtering and return stale or misleading content. The "explicitly authorized" carveout exists for genuine forensics; assume it does not apply by default — when in doubt, ask before touching the vault tree.
+
+See the `sage-documents-immutable` memory for the full create/update procedure.
+
 ## Harness permissions
 
 `.claude/settings.json` (checked in) carries the project-scoped Claude Code permission rules. It currently denies bare `git push --force:*` and narrowly allows `git push --force-with-lease:*` so the `/merge` skill's force-with-lease push runs without a per-invocation prompt while plain force-pushes stay blocked. User-specific overrides belong in `.claude/settings.local.json` (gitignored), not here.
