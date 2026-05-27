@@ -20,6 +20,10 @@ The SAGE MCP server runs from `.venv/bin/python -m sage.mcp_server`. Edits to SA
 
 Database files (SQLite, LanceDB) live outside the repository at paths configured in `sage/config.yaml`. They are not touched by `git reset` or `git clean`.
 
+## Harness permissions
+
+`.claude/settings.json` (checked in) carries the project-scoped Claude Code permission rules. It currently denies bare `git push --force:*` and narrowly allows `git push --force-with-lease:*` so the `/merge` skill's force-with-lease push runs without a per-invocation prompt while plain force-pushes stay blocked. User-specific overrides belong in `.claude/settings.local.json` (gitignored), not here.
+
 ## Standing architectural principles
 
 1. **Single source of truth.** Every concept has one authoritative home. Do not duplicate data across files.
