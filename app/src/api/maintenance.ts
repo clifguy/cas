@@ -9,7 +9,11 @@
 //   Maintenance panel can size the worklist without fetching rows.
 
 import { apiPost, apiStream, readSSEStream } from './client';
-import type { DiscoverResponse, ReabstractEvent } from './types';
+import type {
+  DiscoverResponse,
+  OptimizeContentStoreReport,
+  ReabstractEvent,
+} from './types';
 
 function isReabstractEvent(data: Record<string, unknown>): boolean {
   return data.event_type === 'progress' || data.event_type === 'summary';
@@ -57,4 +61,20 @@ export async function getDeferredCount(vaultId: string): Promise<number> {
     },
   );
   return resp.total_available;
+}
+
+/**
+ * Compact the vault's LanceDB content store. Synchronous JSON POST: the
+ * backend optimize call blocks until LanceDB returns, then sends the
+ * pre/post snapshot back in one shot. `cleanupOlderThanDays` defaults to
+ * 7 (LanceDB's own default); 0 prunes every version except the latest.
+ */
+export async function startOptimizeContentStore(
+  vaultId: string,
+  cleanupOlderThanDays: number,
+): Promise<OptimizeContentStoreReport> {
+  return apiPost<OptimizeContentStoreReport>(
+    `/sage_vaults/${vaultId}/admin/optimize-content-store`,
+    { cleanup_older_than_days: cleanupOlderThanDays },
+  );
 }

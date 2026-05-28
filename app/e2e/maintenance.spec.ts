@@ -1,10 +1,11 @@
-// Playwright e2e for the Settings → Maintenance panel.
+// Playwright e2e for the top-level Maintenance page.
 //
 // Coverage scope:
-//   - C1: the Maintenance tab is present in Settings for the maintenance
-//         vault.
-//   - C2: with at least one abstraction_skipped fixture seeded, the panel
-//         surfaces the count and the reabstract button is enabled.
+//   - C1: /maintenance is reachable via the sidebar nav entry.
+//   - C2: with at least one abstraction_skipped fixture seeded, the
+//         reabstract row surfaces the count and the button is enabled.
+//   - C3: the optimize-content-store row is present and the operation
+//         can be triggered end-to-end (POST stubbed with page.route()).
 //
 // The full reabstract round-trip is NOT exercised here — Qwen3-MLX inference
 // would dominate the wall-clock time and the MaintenancePanel.test.tsx
@@ -38,7 +39,7 @@ async function activeMaintenanceFixtureCount(): Promise<number> {
   return body.total_available;
 }
 
-test('maintenance panel shows deferred count and enables the reabstract button', async ({
+test('maintenance page surfaces reabstract count and is reachable via the sidebar', async ({
   page,
 }) => {
   // Precondition: the seed produced at least one tagged fixture doc in
@@ -59,22 +60,14 @@ test('maintenance panel shows deferred count and enables the reabstract button',
     await expect(vaultSelector).toHaveValue(VAULT_ID);
   }
 
-  // In-app navigation to Settings — pushState preserves React state
-  // (page.goto would full-reload and reset activeVault back to vaults[0]).
-  await page.evaluate(() => {
-    window.history.pushState({}, '', '/settings');
-    window.dispatchEvent(new PopStateEvent('popstate'));
-  });
-
-  // C1: Maintenance tab exists and is selectable.
-  const maintenanceTab = page.getByRole('button', { name: 'Maintenance' });
-  await expect(maintenanceTab).toBeVisible();
-  await maintenanceTab.click();
-
-  // Panel mounts.
+  // C1: Maintenance nav entry exists in the sidebar and routes to /maintenance.
+  const maintenanceNav = page.getByRole('link', { name: 'Maintenance' });
+  await expect(maintenanceNav).toBeVisible();
+  await maintenanceNav.click();
+  await expect(page).toHaveURL(/\/maintenance$/);
   await expect(page.getByTestId('maintenance-panel')).toBeVisible();
 
-  // C2: count displayed and button enabled.
+  // C2: reabstract row present, count surfaced, button enabled.
   // The maintenance vault may contain abstraction_skipped docs unrelated
   // to this fixture across runs (SAGE has no hard-delete), so we assert
   // >= 1 rather than == 1.
@@ -86,4 +79,51 @@ test('maintenance panel shows deferred count and enables the reabstract button',
   expect(count).toBeGreaterThanOrEqual(1);
 
   await expect(page.getByTestId('reabstract-button')).toBeEnabled();
+});
+
+test('optimize-content-store row triggers the backend and renders the report', async ({
+  page,
+}) => {
+  // C3: stub the optimize endpoint so the test doesn't actually touch
+  // LanceDB. A recognizable bytes_reclaimed value (999999) makes a route
+  // mismatch (stub never fires) loudly visible in the assertion.
+  await page.route(`${BACKEND}/sage_vaults/${VAULT_ID}/admin/optimize-content-store`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        vault_id: VAULT_ID,
+        cleanup_older_than_days: 7,
+        started_at: '2026-05-28T12:00:00Z',
+        finished_at: '2026-05-28T12:00:05Z',
+        pre_bytes: 10_000,
+        post_bytes: 1,
+        bytes_reclaimed: 999999,
+        pre_versions: 20,
+        post_versions: 17,
+        pre_fragments: 30,
+        post_fragments: 28,
+        pre_small_fragments: 5,
+        post_small_fragments: 2,
+      }),
+    });
+  });
+
+  await page.goto('/dashboard');
+  const vaultSelector = page.getByRole('combobox').first();
+  await vaultSelector.waitFor({ state: 'visible' });
+  if ((await vaultSelector.inputValue()) !== VAULT_ID) {
+    await vaultSelector.selectOption(VAULT_ID);
+    await expect(vaultSelector).toHaveValue(VAULT_ID);
+  }
+
+  await page.getByRole('link', { name: 'Maintenance' }).click();
+  await expect(page.getByTestId('optimize-operation')).toBeVisible();
+
+  // Default value (7) is already pre-filled; click through.
+  await page.getByTestId('optimize-button').click();
+  await page.getByTestId('optimize-confirm-apply').click();
+
+  await expect(page.getByTestId('optimize-summary')).toBeVisible();
+  await expect(page.getByTestId('optimize-bytes-reclaimed')).toContainText('999999');
 });

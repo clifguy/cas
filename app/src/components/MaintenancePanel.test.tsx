@@ -16,6 +16,7 @@ import * as maintenanceApi from '../api/maintenance';
 import { ApiError } from '../api/client';
 import type { VaultContext } from '../App';
 import type {
+  OptimizeContentStoreReport,
   ReabstractEvent,
   ReabstractProgressEvent,
   ReabstractSummaryEvent,
@@ -32,14 +33,22 @@ vi.mock('react-router-dom', async () => {
 vi.mock('../api/maintenance', () => ({
   startReabstract: vi.fn(),
   getDeferredCount: vi.fn(),
+  startOptimizeContentStore: vi.fn(),
 }));
 
 const startReabstractMock = vi.mocked(maintenanceApi.startReabstract);
 const getDeferredCountMock = vi.mocked(maintenanceApi.getDeferredCount);
+const startOptimizeContentStoreMock = vi.mocked(
+  maintenanceApi.startOptimizeContentStore,
+);
 
 beforeEach(() => {
   startReabstractMock.mockReset();
   getDeferredCountMock.mockReset();
+  startOptimizeContentStoreMock.mockReset();
+  // Default the deferred-count stub so the optimize-only tests don't
+  // wedge waiting for ReabstractOperation's mount-time fetch.
+  getDeferredCountMock.mockResolvedValue(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -312,5 +321,203 @@ describe('MaintenancePanel — error handling', () => {
     );
     expect(screen.getByTestId('reabstract-error')).toHaveTextContent('Something broke');
     expect(screen.queryByTestId('reabstract-conflict')).not.toBeInTheDocument();
+  });
+});
+
+// ===========================================================================
+// OptimizeOperation
+// ===========================================================================
+
+// Helper: build an OptimizeContentStoreReport fixture with distinct values
+// so a JSX field-swap in the summary produces a visible miss.
+function makeReport(
+  overrides: Partial<OptimizeContentStoreReport> = {},
+): OptimizeContentStoreReport {
+  return {
+    vault_id: 'v1',
+    cleanup_older_than_days: 7,
+    started_at: '2026-05-28T12:00:00Z',
+    finished_at: '2026-05-28T12:00:05Z',
+    pre_bytes: 10_000,
+    post_bytes: 8_766,
+    bytes_reclaimed: 1234,
+    pre_versions: 10,
+    post_versions: 5,
+    pre_fragments: 12,
+    post_fragments: 4,
+    pre_small_fragments: 6,
+    post_small_fragments: 2,
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Idle / validation (O1–O4)
+// ---------------------------------------------------------------------------
+
+describe('OptimizeOperation — idle + validation', () => {
+  it('O1: idle pre-fills the days input with the backend default (7) and enables the button', async () => {
+    render(<MaintenancePanel />);
+
+    const input = await screen.findByTestId('optimize-days-input');
+    expect(input).toHaveValue(7);
+    expect(screen.getByTestId('optimize-button')).not.toBeDisabled();
+  });
+
+  it('O2: negative days disables the button and shows the validation error', async () => {
+    render(<MaintenancePanel />);
+    const input = await screen.findByTestId('optimize-days-input');
+
+    await userEvent.clear(input);
+    await userEvent.type(input, '-1');
+
+    expect(screen.getByTestId('optimize-button')).toBeDisabled();
+    expect(screen.getByTestId('optimize-days-error')).toBeInTheDocument();
+  });
+
+  it('O3: non-integer input (3.5) disables the button', async () => {
+    render(<MaintenancePanel />);
+    const input = await screen.findByTestId('optimize-days-input');
+
+    await userEvent.clear(input);
+    await userEvent.type(input, '3.5');
+
+    expect(screen.getByTestId('optimize-button')).toBeDisabled();
+    expect(screen.getByTestId('optimize-days-error')).toBeInTheDocument();
+  });
+
+  it('O4: zero is accepted (lower bound of ge=0)', async () => {
+    render(<MaintenancePanel />);
+    const input = await screen.findByTestId('optimize-days-input');
+
+    await userEvent.clear(input);
+    await userEvent.type(input, '0');
+
+    expect(input).toHaveValue(0);
+    expect(screen.getByTestId('optimize-button')).not.toBeDisabled();
+    expect(screen.queryByTestId('optimize-days-error')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Confirmation flow (O5, O6)
+// ---------------------------------------------------------------------------
+
+describe('OptimizeOperation — confirmation flow', () => {
+  it('O5: clicking the button shows the confirm panel and does NOT fire the API', async () => {
+    render(<MaintenancePanel />);
+    await userEvent.click(await screen.findByTestId('optimize-button'));
+
+    expect(screen.getByTestId('optimize-confirm')).toBeInTheDocument();
+    expect(startOptimizeContentStoreMock).not.toHaveBeenCalled();
+  });
+
+  it('O6: cancel from confirming returns to idle with no API call', async () => {
+    render(<MaintenancePanel />);
+    await userEvent.click(await screen.findByTestId('optimize-button'));
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    expect(screen.queryByTestId('optimize-confirm')).not.toBeInTheDocument();
+    expect(screen.getByTestId('optimize-button')).toBeInTheDocument();
+    expect(startOptimizeContentStoreMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Confirm-apply fires the API with the typed value (O7)
+// ---------------------------------------------------------------------------
+
+describe('OptimizeOperation — apply', () => {
+  it('O7: confirm-apply fires startOptimizeContentStore with the typed days value (14, not the default 7)', async () => {
+    // Promise never resolves — pins the panel in 'running' so the
+    // call-args assertion isn't racing teardown.
+    startOptimizeContentStoreMock.mockImplementation(
+      () => new Promise<OptimizeContentStoreReport>(() => {}),
+    );
+
+    render(<MaintenancePanel />);
+    const input = await screen.findByTestId('optimize-days-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '14');
+
+    await userEvent.click(screen.getByTestId('optimize-button'));
+    await userEvent.click(screen.getByTestId('optimize-confirm-apply'));
+
+    expect(startOptimizeContentStoreMock).toHaveBeenCalledTimes(1);
+    expect(startOptimizeContentStoreMock).toHaveBeenCalledWith('v1', 14);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Running state (O8)
+// ---------------------------------------------------------------------------
+
+describe('OptimizeOperation — running state', () => {
+  it('O8: in-flight state hides the optimize button and shows the running panel', async () => {
+    startOptimizeContentStoreMock.mockImplementation(
+      () => new Promise<OptimizeContentStoreReport>(() => {}),
+    );
+
+    render(<MaintenancePanel />);
+    await userEvent.click(await screen.findByTestId('optimize-button'));
+    await userEvent.click(screen.getByTestId('optimize-confirm-apply'));
+
+    expect(screen.getByTestId('optimize-running')).toBeInTheDocument();
+    expect(screen.queryByTestId('optimize-button')).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Completion (O9)
+// ---------------------------------------------------------------------------
+
+describe('OptimizeOperation — completion', () => {
+  it('O9: summary renders bytes_reclaimed, versions cleaned, and fragments merged with distinct values', async () => {
+    startOptimizeContentStoreMock.mockResolvedValue(
+      makeReport({
+        bytes_reclaimed: 1234,
+        pre_versions: 10,
+        post_versions: 5, // → 5 cleaned
+        pre_fragments: 12,
+        post_fragments: 4, // → 8 merged
+      }),
+    );
+
+    render(<MaintenancePanel />);
+    await userEvent.click(await screen.findByTestId('optimize-button'));
+    await userEvent.click(screen.getByTestId('optimize-confirm-apply'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('optimize-summary')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('optimize-bytes-reclaimed')).toHaveTextContent('1234');
+    expect(screen.getByTestId('optimize-versions-cleaned')).toHaveTextContent('5');
+    expect(screen.getByTestId('optimize-fragments-merged')).toHaveTextContent('8');
+
+    // Dismiss → back to idle.
+    await userEvent.click(screen.getByTestId('optimize-dismiss'));
+    expect(screen.queryByTestId('optimize-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('optimize-button')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error handling (O10)
+// ---------------------------------------------------------------------------
+
+describe('OptimizeOperation — error handling', () => {
+  it('O10: generic ApiError surfaces the error alert and returns to idle', async () => {
+    const err = new ApiError('internal_error', 'compaction broke');
+    startOptimizeContentStoreMock.mockRejectedValue(err);
+
+    render(<MaintenancePanel />);
+    await userEvent.click(await screen.findByTestId('optimize-button'));
+    await userEvent.click(screen.getByTestId('optimize-confirm-apply'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('optimize-error')).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId('optimize-error')).toHaveTextContent('compaction broke');
+    expect(screen.getByTestId('optimize-button')).toBeInTheDocument();
   });
 });

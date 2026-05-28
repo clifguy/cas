@@ -15,6 +15,7 @@ const navItems = [
   { to: '/ingest', label: 'Ingest' },
   { to: '/review', label: 'Review' },
   { to: '/search', label: 'Search' },
+  { to: '/maintenance', label: 'Maintenance' },
   { to: '/settings', label: 'Settings' },
 ];
 

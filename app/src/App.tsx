@@ -6,6 +6,7 @@ import Ingest from './views/Ingest';
 import Review from './views/Review';
 import Search from './views/Search';
 import Settings from './views/Settings';
+import MaintenancePanel from './components/MaintenancePanel';
 import DocumentDetail from './views/DocumentDetail';
 import GraphExplorer from './views/GraphExplorer';
 import { listVaults } from './api/vaults';
@@ -80,6 +81,7 @@ export default function App() {
           <Route path="ingest" element={<Ingest />} />
           <Route path="review" element={<Review />} />
           <Route path="search" element={<Search />} />
+          <Route path="maintenance" element={<MaintenancePanel />} />
           <Route path="settings" element={<Settings />} />
           <Route path="documents/:id" element={<DocumentDetail />} />
           <Route path="documents/:id/graph" element={<GraphExplorer />} />
