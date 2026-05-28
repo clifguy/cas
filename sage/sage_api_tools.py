@@ -126,6 +126,7 @@ def register_sage_tools(
         created_by: str | None = None,
         force: bool = False,
         predecessor_id: str | None = None,
+        expected_head_version: str | None = None,
         needs_review: bool = False,
         metadata: dict | None = None,
         tier3_metadata: dict | None = None,
@@ -211,6 +212,19 @@ def register_sage_tools(
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; supersede chains require
           distinct content per step.
+        - ``stale_chain_head`` (409): ``expected_head_version`` was
+          supplied and did not match the predecessor's current
+          ``updated_at`` at supersede time. The detail envelope carries
+          ``predecessor_id``, ``expected_head_version``,
+          ``current_head_id``, and ``current_head_version``; the caller
+          can pivot ``predecessor_id`` to ``current_head_id`` and
+          ``expected_head_version`` to ``current_head_version`` to
+          retry through the advanced chain (CAS-ADR-038 Primitive C).
+        - ``expected_head_version_requires_predecessor`` (400):
+          ``expected_head_version`` was supplied without
+          ``predecessor_id``. The token is bound to the chain head
+          identified by the predecessor; supplying it on a fresh-chain
+          ingest has no defined meaning.
         - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set
           but the resolved doc_type has no ``metadata_schema`` declared
           in vault config, or the payload failed validation against the
@@ -263,6 +277,16 @@ def register_sage_tools(
                 non-None; to override any trio field on a supersede,
                 pass the new value explicitly in ``metadata``. See
                 "Trio-field inheritance on supersede" above.
+            expected_head_version: Optimistic-concurrency token on the
+                chain head identified by ``predecessor_id`` (CAS-ADR-038
+                Primitive C). When supplied, the substrate verifies it
+                against the predecessor's current ``updated_at`` inside
+                the per-predecessor lock at supersede time; mismatch
+                rejects the call with the structured ``stale_chain_head``
+                409 envelope. Pass the value as observed on a prior
+                ``get_document`` read (canonical wire form: ISO 8601 with
+                ``Z`` suffix). Omit to keep the pre-Primitive-C
+                last-writer-wins behavior. Requires ``predecessor_id``.
             needs_review: When true, the document enters the
                 metadata-review queue (metadata_confirmed=false) and
                 filename inference fills in fields the caller did not
@@ -304,6 +328,7 @@ def register_sage_tools(
                 created_by=created_by,
                 force=force,
                 predecessor_id=predecessor_id,
+                expected_head_version=expected_head_version,
                 needs_review=needs_review,
                 metadata=metadata,
                 tier3_metadata=tier3_metadata,

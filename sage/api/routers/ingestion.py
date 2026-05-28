@@ -19,7 +19,11 @@ router = APIRouter(tags=["Ingestion"])
             "description": (
                 "`adapter_not_found`: `source_type` is not an enabled "
                 "adapter on this vault. See `source_adapters.adapters` in "
-                "the vault config."
+                "the vault config.\n\n"
+                "`expected_head_version_requires_predecessor`: "
+                "`expected_head_version` was supplied without "
+                "`predecessor_id`. The token is bound to the chain head "
+                "identified by the predecessor (CAS-ADR-038 Primitive C)."
             ),
         },
         404: {
@@ -42,7 +46,12 @@ router = APIRouter(tags=["Ingestion"])
                 "`POST /documents/{id}/lifecycle` before retrying.\n\n"
                 "`identical_content_supersede`: the new file's content hash "
                 "matches the predecessor's; supersede chains require "
-                "distinct content per step."
+                "distinct content per step.\n\n"
+                "`stale_chain_head`: `expected_head_version` was supplied "
+                "and did not match the predecessor's current `updated_at` "
+                "at supersede time. Detail carries the current head id and "
+                "version so the caller can pivot through the chain and "
+                "retry (CAS-ADR-038 Primitive C)."
             ),
         },
         422: {
