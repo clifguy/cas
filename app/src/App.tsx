@@ -10,6 +10,7 @@ import DocumentDetail from './views/DocumentDetail';
 import GraphExplorer from './views/GraphExplorer';
 import { listVaults } from './api/vaults';
 import type { VaultSummary } from './api/types';
+import { VAULT_STORAGE_KEY, resolveInitialVaultId } from './activeVault';
 
 export interface VaultContext {
   vaultId: string;
@@ -23,14 +24,20 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  const persistAndSetActiveVault = useCallback((id: string) => {
+    localStorage.setItem(VAULT_STORAGE_KEY, id);
+    setActiveVault(id);
+  }, []);
+
   const refreshVaults = useCallback((selectVaultId?: string) => {
     listVaults()
       .then(vaults => {
         setVaultList(vaults);
         if (selectVaultId) {
-          setActiveVault(selectVaultId);
+          persistAndSetActiveVault(selectVaultId);
         } else if (vaults.length > 0 && !activeVault) {
-          setActiveVault(vaults[0].id);
+          const persisted = localStorage.getItem(VAULT_STORAGE_KEY);
+          persistAndSetActiveVault(resolveInitialVaultId(vaults, persisted));
         }
         setLoading(false);
       })
@@ -38,7 +45,7 @@ export default function App() {
         setError(err.message ?? 'Failed to load vaults');
         setLoading(false);
       });
-  }, [activeVault]);
+  }, [activeVault, persistAndSetActiveVault]);
 
   useEffect(() => {
     refreshVaults();
@@ -62,7 +69,7 @@ export default function App() {
         <Route element={
           <Layout
             activeVault={activeVault}
-            onVaultChange={setActiveVault}
+            onVaultChange={persistAndSetActiveVault}
             onVaultCreated={(id: string) => refreshVaults(id)}
             vaultList={vaultList}
             currentVault={currentVault}
