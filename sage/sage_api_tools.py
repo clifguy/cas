@@ -28,6 +28,7 @@ from sage.api.errors import (
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, reload_vault_in_registry
 from sage.models.enums import EdgeType, RationaleKind, RetrievalMode, SourceType
+from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
     BulkLifecycleItem,
     BulkLifecycleRequest,
@@ -53,7 +54,6 @@ from sage.models.schemas import (
     UpdateVaultConfigRequest,
     VaultIdStr,
 )
-from sage.services.metadata import MetadataService
 from sage.services.vault_registry import VaultRegistryService
 
 # Module-scope TypeAdapters for Pattern 2 boundary validation on FastMCP tool
@@ -71,33 +71,22 @@ _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 
 def _check_legacy_patch_form(field: str, value: object) -> None:
-    """Raise LegacyFormError when a caller passes the pre-patch shape.
+    """Raise ``LegacyFormError`` when ``value`` is the pre-patch shape for ``field``.
 
-    Catches the two common pre-patch shapes that Pydantic would otherwise
-    reject with a generic validation error:
-      - bare list for a list-valued metadata field (every field in
-        ``MetadataService.LIST_VALUED_METADATA_FIELDS``).
-      - tier3_metadata={"ticket_priority": "high"}: bare dict with no
-        recognized patch verb. A dict that contains only the keys
-        ``set`` and/or ``unset`` is a valid Tier3Patch; anything else
-        is the legacy "this is the new state" form.
+    Thin wrapper around ``detect_legacy_form`` that translates the
+    pure-data detection result into the public-facing exception. The
+    MCP tool surface uses this directly; the FastAPI surface goes
+    through ``PydanticCustomError(type='legacy_form')`` raised inside
+    request-model validators, which ``translate_validation_error``
+    converts to ``LegacyFormError`` for the wire.
     """
-    if value is None:
-        return
-    if field in MetadataService.LIST_VALUED_METADATA_FIELDS:
-        if isinstance(value, list):
-            raise LegacyFormError(
-                field=field,
-                received_type="list",
-                example='{"add": [...]} or {"remove": [...]}',
-            )
-    elif field == "tier3_metadata":
-        if isinstance(value, dict) and value and not (set(value) <= {"set", "unset"}):
-            raise LegacyFormError(
-                field="tier3_metadata",
-                received_type="dict (bare key/value pairs)",
-                example='{"set": {"key": "value"}} or {"unset": ["key"]}',
-            )
+    details = detect_legacy_form(field, value)
+    if details is not None:
+        raise LegacyFormError(
+            field=details.field,
+            received_type=details.received_type,
+            example=details.example,
+        )
 
 
 def register_sage_tools(
