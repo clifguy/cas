@@ -577,18 +577,29 @@ class IngestionService:
             else None
         )
 
-        # Validate tier3_metadata against the resolved doc_type's
-        # metadata_schema. Done before any side effects (the
+        # Resolve tier3_metadata with caller-precedence over adapter
+        # extraction (CAS-ADR-021). The markdown adapter may surface
+        # filename-derived tier3 fields (e.g. ``adr_id`` from
+        # ``cas-adr-NNN_*``) via ``ProjectionResult.metadata
+        # ["adapter_tier3_metadata"]``; caller-supplied
+        # ``request.tier3_metadata`` wins on conflict.
+        adapter_tier3 = projection.metadata.get("adapter_tier3_metadata") or None
+        final_tier3 = (
+            request.tier3_metadata if request.tier3_metadata is not None else adapter_tier3
+        )
+
+        # Validate the resolved tier3_metadata against the resolved
+        # doc_type's metadata_schema. Done before any side effects (the
         # adapter projection runs above but is read-only on disk). Resolution
         # mirrors the precedence chain applied below by update_document
         # calls: caller > filename parse > predecessor inheritance > "misc".
         # A None validator (doc_type has no metadata_schema declared) is a
         # hard 400 per the strict no-loose-mode decision.
-        if request.tier3_metadata is not None:
+        if final_tier3 is not None:
             resolved_dt = self._resolve_doc_type_for_tier3(
                 request=request, parsed=parsed, predecessor=predecessor
             )
-            self._validate_tier3_payload(resolved_dt, request.tier3_metadata)
+            self._validate_tier3_payload(resolved_dt, final_tier3)
 
         # Resolve title with precedence: caller > filename parse > adapter.
         # The adapter's ProjectionResult.title is a content-extraction
@@ -677,10 +688,12 @@ class IngestionService:
             }
             updates.update(field_updates)
             # Tier3 metadata override (caller authority on force-reingest,
-            # ). Pre-validated above against the resolved doc_type's
-            # schema; storage replacement is top-level.
-            if request.tier3_metadata is not None:
-                updates["tier3_metadata"] = request.tier3_metadata
+            # CAS-ADR-021). Pre-validated above against the resolved
+            # doc_type's schema; storage replacement is top-level.
+            # Resolved tier3 may come from caller or from the adapter's
+            # filename extraction; caller wins per the precedence above.
+            if final_tier3 is not None:
+                updates["tier3_metadata"] = final_tier3
             # Title reaffirmation (force branch): when filename parse
             # contributed, refresh title from the freshly-resolved value
             # in case the filename changed between ingestions.
@@ -730,7 +743,7 @@ class IngestionService:
                 projected_at=now,
                 source_modified_at=source_modified_at,
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
-                tier3_metadata=request.tier3_metadata,
+                tier3_metadata=final_tier3,
             )
             doc = Document(**{**base, **field_updates})
             if predecessor is not None and self._lifecycle_service is not None:

@@ -28,7 +28,12 @@ from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
 
-from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
+from sage.source_adapters.base import (
+    HeadingNode,
+    ProjectionResult,
+    SourceAdapter,
+    extract_adr_id_from_filename,
+)
 
 # OPC content types for the main document part.
 _DOCX_CONTENT_TYPE = (
@@ -362,6 +367,9 @@ class DocxAdapter(SourceAdapter):
         source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
         metadata: dict = {"source_modified_at": source_mtime.isoformat()}
+        adapter_tier3 = extract_adr_id_from_filename(source_path.stem)
+        if adapter_tier3 is not None:
+            metadata["adapter_tier3_metadata"] = adapter_tier3
 
         projected_text = "\n".join(text_parts)
 

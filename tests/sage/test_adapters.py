@@ -1093,6 +1093,65 @@ class TestMarkdownAdapterFrontmatterStripping:
         assert texts == ["H1", "H2"]
 
 
+class TestMarkdownAdapterADRTier3Extraction:
+    """Markdown adapter extracts ``adr_id`` from ``cas-adr-NNN_*`` filenames.
+
+    The cas vault names ADR sources with the lowercase ``cas-adr-NNN_<title>``
+    convention. Per CAS-ADR-021, the adapter surfaces this filename-derived
+    tier3 fact via ``ProjectionResult.metadata["adapter_tier3_metadata"]``.
+    The ingestion service merges it below caller-supplied tier3 (caller wins).
+    """
+
+    async def test_adr_filename_emits_adr_id_in_adapter_tier3(self, tmp_path):
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / "cas-adr-038_Some_Title.md"
+        test_file.write_text("# ADR-038: Some Title\n\nBody.\n")
+
+        result = await adapter.project(test_file)
+
+        assert result.metadata.get("adapter_tier3_metadata") == {"adr_id": "038"}
+
+    async def test_non_adr_markdown_emits_no_adapter_tier3(self, tmp_path):
+        """Anti-coincidence: only ``cas-adr-NNN_*`` filenames emit tier3."""
+        adapter = MarkdownAdapter()
+
+        date_prefixed = tmp_path / "2026-05-27_CAS_Some_Note.md"
+        date_prefixed.write_text("# Note\n\nBody.\n")
+        result_a = await adapter.project(date_prefixed)
+        assert "adapter_tier3_metadata" not in result_a.metadata
+
+        bare_name = tmp_path / "not-an-adr_file.md"
+        bare_name.write_text("# Title\n\nBody.\n")
+        result_b = await adapter.project(bare_name)
+        assert "adapter_tier3_metadata" not in result_b.metadata
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "cas-adr-9_Title.md",  # too few digits
+            "cas-adr-9999_Title.md",  # too many digits
+            "CAS-ADR-099_Title.md",  # uppercase
+            "cas-adr-099.md",  # no trailing title segment
+        ],
+    )
+    async def test_malformed_adr_filenames_emit_no_adapter_tier3(self, tmp_path, filename):
+        """The extraction regex rejects shapes that violate the convention.
+
+        The convention is strict: lowercase ``cas-adr-`` prefix, exactly
+        three digits, an underscore separator, then a title segment.
+        Anything else is not an ADR for extraction purposes — the adapter
+        emits no tier3 hint and the ingestion path falls back to the
+        caller (or to no tier3 at all).
+        """
+        adapter = MarkdownAdapter()
+        test_file = tmp_path / filename
+        test_file.write_text("# Title\n\nBody.\n")
+
+        result = await adapter.project(test_file)
+
+        assert "adapter_tier3_metadata" not in result.metadata
+
+
 # ── Docx Adapter ────────────────────────────────────────────────────
 
 import hashlib  # noqa: E402 -- grouped with the docx-adapter test section below
@@ -1672,6 +1731,65 @@ class TestDocxAdapter:
         assert result.headings[3].text == "I.1.b Detail B"
         assert result.headings[4].text == "II Beta"
         assert result.headings[5].text == "II.1 Sub Beta"
+
+
+@requires_docx
+class TestDocxAdapterADRTier3Extraction:
+    """Docx adapter extracts ``adr_id`` from ``cas-adr-NNN_*`` filenames.
+
+    Mirrors the markdown adapter behaviour. The cas vault's ADR doc_type
+    declares ``source_types: [docx, markdown]``; both adapters share the
+    helper at ``sage.source_adapters.base.extract_adr_id_from_filename``.
+    """
+
+    async def test_adr_docx_filename_emits_adr_id_in_adapter_tier3(self, tmp_path):
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("ADR-038: Some Title", style="Heading 1")
+        doc.add_paragraph("Body.")
+        path = tmp_path / "cas-adr-038_Some_Title.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert result.metadata.get("adapter_tier3_metadata") == {"adr_id": "038"}
+
+    async def test_non_adr_docx_emits_no_adapter_tier3(self, tmp_path):
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Some Note", style="Heading 1")
+        path = tmp_path / "2026-05-27_CAS_Some_Note.docx"
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert "adapter_tier3_metadata" not in result.metadata
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "cas-adr-9_Title.docx",  # too few digits
+            "cas-adr-9999_Title.docx",  # too many digits
+            "CAS-ADR-099_Title.docx",  # uppercase
+            "cas-adr-099.docx",  # no trailing title segment
+        ],
+    )
+    async def test_malformed_adr_docx_filenames_emit_no_adapter_tier3(self, tmp_path, filename):
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        adapter = DocxAdapter()
+        doc = docx.Document()
+        doc.add_paragraph("Title", style="Heading 1")
+        path = tmp_path / filename
+        doc.save(str(path))
+
+        result = await adapter.project(path)
+
+        assert "adapter_tier3_metadata" not in result.metadata
 
 
 # ── Docx Adapter:.dotx template support ──────────────────────────
