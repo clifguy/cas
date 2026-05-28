@@ -1336,6 +1336,20 @@ class UpdateMetadataRequest(BaseModel):
             "against the resolved doc_type's metadata_schema. See Tier3Patch."
         ),
     )
+    expected_version: str | None = Field(
+        default=None,
+        description=(
+            "Optimistic-concurrency token (CAS-ADR-038 Primitive B). When "
+            "supplied, the substrate verifies it against the document's "
+            "current version inside the per-document lock at write time; "
+            "on mismatch the write is rejected with a structured "
+            "`stale_read` 409 carrying the current version in detail. When "
+            "omitted (the default), behavior is last-writer-wins and "
+            "unchanged from the pre-Primitive-B contract. The version "
+            "source is the document's `updated_at` value as observed on "
+            "a prior read."
+        ),
+    )
     dry_run: bool = Field(
         default=False,
         description=(
@@ -1438,6 +1452,18 @@ class BulkMetadataItem(BaseModel):
         description=(
             "Patch operations on tier3_metadata: {set?: dict, unset?: list[str]}. "
             "Same semantics as `UpdateMetadataRequest.tier3_metadata`."
+        ),
+    )
+    expected_version: str | None = Field(
+        default=None,
+        description=(
+            "Optimistic-concurrency token (CAS-ADR-038 Primitive B). Same "
+            "semantics as `UpdateMetadataRequest.expected_version`: when "
+            "supplied, verified against the per-item document's current "
+            "version inside its per-document lock; mismatch surfaces a "
+            "structured `stale_read` per-item error envelope without "
+            "aborting the batch (CAS-ADR-029 partial-success semantics). "
+            "When omitted, the per-item write is last-writer-wins."
         ),
     )
 

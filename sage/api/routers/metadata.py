@@ -36,6 +36,16 @@ router = APIRouter(tags=["Document Metadata"])
             "model": ErrorResponse,
             "description": "`document_not_found`: no document with that id; or vault not found.",
         },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`stale_read`: `expected_version` does not match the "
+                "document's current version (CAS-ADR-038 Primitive B). "
+                "Detail carries `document_id`, `expected_version`, and "
+                "`current_version`; the caller refetches and retries "
+                "with the current version."
+            ),
+        },
     },
 )
 async def update_metadata(
