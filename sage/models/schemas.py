@@ -29,6 +29,7 @@ from sage.models.enums import (
     TraversalDirection,
     UserType,
 )
+from sage.models.legacy_form import detect_legacy_form
 
 # ---------------------------------------------------------------------------
 # Shape-bearing primitive aliases.
@@ -1351,6 +1352,45 @@ class UpdateMetadataRequest(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_metadata_patch_forms(cls, data: Any) -> Any:
+        """Surface the structured ``legacy_form`` envelope on the FastAPI transport.
+
+        Without this guard, a caller passing the deprecated bare-list
+        ``tags`` or bare-dict ``tier3_metadata`` shape would hit
+        ``ListFieldPatch`` / ``Tier3Patch`` field validation and surface
+        FastAPI's generic 422 envelope instead of the structured
+        ``LegacyFormError`` envelope (CAS-ADR-028 ops-object patch
+        grammar). Raising ``PydanticCustomError(type='legacy_form')``
+        before field validation puts a recognisable type on Pydantic's
+        ``ValidationError``; ``sage.api.errors.translate_validation_error``
+        recognises that type, reconstructs ``LegacyFormError`` from the
+        embedded ``ctx``, and the registered ``SAGEError`` handler
+        emits the 400 envelope. The indirection exists because the
+        ``sage.models`` layer cannot import ``sage.api.errors``
+        directly under the import-linter "Models are a leaf layer"
+        contract; the same pattern is already used for
+        ``mode_parameter_mismatch`` on ``DiscoverRequest``.
+        """
+        if isinstance(data, dict):
+            for field in ("tags", "tier3_metadata"):
+                details = detect_legacy_form(field, data.get(field))
+                if details is not None:
+                    raise PydanticCustomError(
+                        "legacy_form",
+                        (
+                            "{field} no longer accepts the {received_type} form. "
+                            "Use the ops object: {example}"
+                        ),
+                        {
+                            "field": details.field,
+                            "received_type": details.received_type,
+                            "example": details.example,
+                        },
+                    )
+        return data
+
 
 class BulkMetadataItem(BaseModel):
     """One metadata patch request inside a bulk batch.
@@ -1400,6 +1440,34 @@ class BulkMetadataItem(BaseModel):
             "Same semantics as `UpdateMetadataRequest.tier3_metadata`."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_metadata_patch_forms(cls, data: Any) -> Any:
+        """Surface the structured ``legacy_form`` envelope on the bulk FastAPI transport.
+
+        Mirror of the validator on ``UpdateMetadataRequest``; the bulk
+        endpoint parses each item against ``BulkMetadataItem``, so the
+        per-item bare-list / bare-dict shapes need the same pre-parse
+        guard. See ``UpdateMetadataRequest._reject_legacy_metadata_patch_forms``.
+        """
+        if isinstance(data, dict):
+            for field in ("tags", "tier3_metadata"):
+                details = detect_legacy_form(field, data.get(field))
+                if details is not None:
+                    raise PydanticCustomError(
+                        "legacy_form",
+                        (
+                            "{field} no longer accepts the {received_type} form. "
+                            "Use the ops object: {example}"
+                        ),
+                        {
+                            "field": details.field,
+                            "received_type": details.received_type,
+                            "example": details.example,
+                        },
+                    )
+        return data
 
 
 class BulkMetadataRequest(BaseModel):

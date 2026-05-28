@@ -807,6 +807,33 @@ def test_list_valued_metadata_fields_registered_for_dispatch():
     )
 
 
+def test_list_valued_metadata_field_names_match_across_layers():
+    """``sage.models.legacy_form.LIST_VALUED_METADATA_FIELD_NAMES`` must equal
+    ``MetadataService.LIST_VALUED_METADATA_FIELDS.keys()``.
+
+    Two registries exist by necessity: ``MetadataService`` carries the
+    dispatcher's descriptor registry (with per-field accessors that read
+    a ``Document``), and ``sage.models.legacy_form`` carries the name-only
+    set used by the request-body legacy-form guard. The accessor field
+    keeps the descriptor registry in the service layer; the leaf-layer
+    contract keeps the guard's set in ``sage.models``. This gate catches
+    silent drift between them: a new list-valued metadata field added to
+    one registry but not the other would either fail to dispatch or fail
+    to reject its bare-list legacy shape with the structured envelope.
+    """
+    from sage.models.legacy_form import LIST_VALUED_METADATA_FIELD_NAMES
+    from sage.services.metadata import MetadataService
+
+    descriptor_names = frozenset(MetadataService.LIST_VALUED_METADATA_FIELDS.keys())
+    assert descriptor_names == LIST_VALUED_METADATA_FIELD_NAMES, (
+        "List-valued metadata field names diverged between the two registries:\n"
+        f"  MetadataService.LIST_VALUED_METADATA_FIELDS: {sorted(descriptor_names)!r}\n"
+        f"  sage.models.legacy_form.LIST_VALUED_METADATA_FIELD_NAMES: "
+        f"{sorted(LIST_VALUED_METADATA_FIELD_NAMES)!r}\n"
+        "Add the field to both, or remove it from both."
+    )
+
+
 def _annotation_resolves_to(annotation: Any, target: type) -> bool:
     """True iff the annotation is exactly ``target`` or ``Optional[target]``
     (including ``target | None``)."""

@@ -1098,6 +1098,20 @@ def translate_validation_error(
                 allowed_modes=list(ctx.get("allowed_modes") or []),
             )
 
+        # 0a) Custom ``legacy_form`` raised from the UpdateMetadataRequest
+        # and BulkMetadataItem model_validators via PydanticCustomError.
+        # Same leaf-layer-contract reasoning as ``mode_parameter_mismatch``:
+        # the validator can't construct ``LegacyFormError`` itself, so it
+        # embeds the envelope fields in ``ctx`` and we rebuild here. Drives
+        # the structured ``legacy_form`` 400 envelope on the FastAPI surface
+        # (CAS-ADR-028 ops-object patch grammar).
+        if err_type == "legacy_form":
+            return LegacyFormError(
+                field=str(ctx.get("field", "")),
+                received_type=str(ctx.get("received_type", "")),
+                example=str(ctx.get("example", "")),
+            )
+
         # 1) Invalid `mode` enum value: caller passed a string not in RetrievalMode.
         if loc and loc[0] == "mode" and err_type in ("enum", "literal_error"):
             valid_modes = [m.value for m in RetrievalMode]
@@ -1147,11 +1161,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def request_validation_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        """Translate FastAPI request-body validation errors into ADR-028
-        envelopes for the discover endpoint. Falls through to a
-        generic 400 envelope for any unmatched validation error so the HTTP
-        and MCP surfaces both stop leaking FastAPI's default 422 shape on
-        the discover path."""
+        """Translate FastAPI request-body validation errors into structured
+        SAGE envelopes for the cases ``translate_validation_error``
+        recognises (today: ADR-028 envelopes for the discover endpoint and
+        the ``legacy_form`` envelope for ``update_metadata`` /
+        ``bulk_update_metadata`` bare-list / bare-dict callers). Falls
+        through to FastAPI's default 422 envelope for any unmatched
+        validation error."""
         sage_err = translate_validation_error(exc)
         if sage_err is not None:
             return JSONResponse(
