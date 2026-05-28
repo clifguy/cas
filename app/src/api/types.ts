@@ -566,3 +566,21 @@ export interface ReabstractSummaryEvent {
 }
 
 export type ReabstractEvent = ReabstractProgressEvent | ReabstractSummaryEvent;
+
+// LanceDB content-store compaction report. Returned by
+// POST /sage_vaults/{vault_id}/admin/optimize-content-store.
+export interface OptimizeContentStoreReport {
+  vault_id: string;
+  cleanup_older_than_days: number;
+  started_at: string;
+  finished_at: string;
+  pre_bytes: number;
+  post_bytes: number;
+  bytes_reclaimed: number;
+  pre_versions: number;
+  post_versions: number;
+  pre_fragments: number;
+  post_fragments: number;
+  pre_small_fragments: number;
+  post_small_fragments: number;
+}

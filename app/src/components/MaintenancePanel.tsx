@@ -1,35 +1,37 @@
-// Maintenance panel for the Settings view (T-0117).
+// Top-level Maintenance page.
 //
 // Structured as a list-of-operations component: the panel renders an
-// outer wrapper + per-operation rows. T-0117 ships with one operation
-// (reabstract deferred documents). Future admin operations slot in by
-// adding another row component to the panel body.
-//
-// The single operation today is "kick off and observe": the SSE route
-// (T-0134) streams per-document progress events while a Qwen3-bound
-// batch runs. The row's state machine drives a confirm step, an
-// observable progress view, and a final summary.
+// outer wrapper + per-operation rows. Each row is its own state
+// machine (idle → confirming → running → done). Operations:
+//   - ReabstractOperation: SSE-streamed Qwen3 reabstract.
+//   - OptimizeOperation: synchronous LanceDB content-store compaction.
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import type { VaultContext } from '../App';
 import type {
+  OptimizeContentStoreReport,
   ReabstractEvent,
   ReabstractProgressEvent,
   ReabstractSummaryEvent,
 } from '../api/types';
-import { startReabstract, getDeferredCount } from '../api/maintenance';
+import {
+  startReabstract,
+  getDeferredCount,
+  startOptimizeContentStore,
+} from '../api/maintenance';
 import { ApiError } from '../api/client';
 
 export default function MaintenancePanel() {
   const { vaultId } = useOutletContext<VaultContext>();
   return (
     <div data-testid="maintenance-panel">
-      <h2 style={{ margin: '0 0 8px' }}>Maintenance</h2>
+      <h1 style={{ margin: '0 0 16px' }}>Maintenance</h1>
       <p style={{ margin: '0 0 16px', fontSize: 13, color: '#666' }}>
         Per-vault administrative operations. Scoped to the active vault.
       </p>
       <ReabstractOperation vaultId={vaultId} />
+      <OptimizeOperation vaultId={vaultId} />
     </div>
   );
 }
@@ -299,6 +301,193 @@ function ReabstractOperation({ vaultId }: { vaultId: string }) {
             onClick={handleDismissSummary}
             style={secondaryBtnStyle}
             data-testid="reabstract-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+type OptimizePhase = 'idle' | 'confirming' | 'running' | 'done';
+
+const DEFAULT_CLEANUP_DAYS = 7;
+
+function OptimizeOperation({ vaultId }: { vaultId: string }) {
+  const [daysInput, setDaysInput] = useState<string>(String(DEFAULT_CLEANUP_DAYS));
+  const [phase, setPhase] = useState<OptimizePhase>('idle');
+  const [report, setReport] = useState<OptimizeContentStoreReport | null>(null);
+  const [opError, setOpError] = useState<string | null>(null);
+
+  const parsed = Number(daysInput);
+  // Non-negative integer: rejects negative, fractional, and NaN.
+  const daysValid =
+    daysInput.trim() !== '' && Number.isInteger(parsed) && parsed >= 0;
+
+  const handleConfirmClick = () => {
+    if (!daysValid) return;
+    setPhase('confirming');
+    setOpError(null);
+  };
+
+  const handleCancel = () => {
+    setPhase('idle');
+  };
+
+  const handleStart = async () => {
+    if (!daysValid) return;
+    setPhase('running');
+    setReport(null);
+    setOpError(null);
+    try {
+      const result = await startOptimizeContentStore(vaultId, parsed);
+      setReport(result);
+      setPhase('done');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Optimize failed';
+      setOpError(msg);
+      setPhase('idle');
+    }
+  };
+
+  const handleDismiss = () => {
+    setReport(null);
+    setPhase('idle');
+  };
+
+  return (
+    <section data-testid="optimize-operation" style={sectionStyle}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 8,
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: 15 }}>Optimize content store</h3>
+      </div>
+      <p style={{ margin: '0 0 12px', fontSize: 13, color: '#666' }}>
+        Compact LanceDB tables and prune old dataset versions. Reclaims disk
+        space; the latest version is never removed.
+      </p>
+
+      {opError && (
+        <div data-testid="optimize-error" style={errorStyle}>
+          Optimize failed: {opError}
+        </div>
+      )}
+
+      {(phase === 'idle' || phase === 'confirming') && (
+        <div style={{ marginBottom: 12 }}>
+          <label
+            htmlFor="optimize-days-input"
+            style={{ fontSize: 13, color: '#444', marginRight: 8 }}
+          >
+            Prune versions older than
+          </label>
+          <input
+            id="optimize-days-input"
+            data-testid="optimize-days-input"
+            type="number"
+            min={0}
+            step={1}
+            value={daysInput}
+            onChange={(e) => setDaysInput(e.target.value)}
+            disabled={phase === 'confirming'}
+            style={{
+              width: 70,
+              padding: '4px 6px',
+              border: '1px solid #ccc',
+              borderRadius: 3,
+              fontSize: 13,
+            }}
+          />
+          <span style={{ fontSize: 13, color: '#444', marginLeft: 6 }}>days</span>
+          {!daysValid && (
+            <div
+              data-testid="optimize-days-error"
+              style={{ fontSize: 12, color: '#c62828', marginTop: 4 }}
+            >
+              Enter a non-negative integer.
+            </div>
+          )}
+        </div>
+      )}
+
+      {phase === 'idle' && (
+        <button
+          data-testid="optimize-button"
+          onClick={handleConfirmClick}
+          disabled={!daysValid}
+          style={daysValid ? primaryBtnStyle : disabledBtnStyle}
+        >
+          Optimize content store
+        </button>
+      )}
+
+      {phase === 'confirming' && (
+        <div data-testid="optimize-confirm" style={confirmPanelStyle}>
+          <p style={{ margin: '0 0 8px', fontSize: 13 }}>
+            Compact this vault's LanceDB tables
+            {parsed > 0 ? (
+              <>
+                {' '}
+                and prune dataset versions older than{' '}
+                <strong>{parsed}</strong> day{parsed === 1 ? '' : 's'}
+              </>
+            ) : (
+              <>
+                {' '}
+                and prune <strong>every</strong> non-latest dataset version
+              </>
+            )}
+            ? <strong>This is not undoable.</strong>
+          </p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={handleCancel} style={secondaryBtnStyle}>
+              Cancel
+            </button>
+            <button
+              onClick={handleStart}
+              style={primaryBtnStyle}
+              data-testid="optimize-confirm-apply"
+            >
+              Confirm and optimize
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase === 'running' && (
+        <div data-testid="optimize-running" style={runningStyle}>
+          <strong>Optimizing…</strong>
+        </div>
+      )}
+
+      {phase === 'done' && report && (
+        <div data-testid="optimize-summary" style={summaryStyle}>
+          <div style={{ marginBottom: 8 }}>
+            <strong>Optimize complete.</strong>
+          </div>
+          <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 13 }}>
+            <li data-testid="optimize-bytes-reclaimed">
+              Bytes reclaimed: <strong>{report.bytes_reclaimed}</strong>
+            </li>
+            <li data-testid="optimize-versions-cleaned">
+              Versions cleaned up:{' '}
+              <strong>{report.pre_versions - report.post_versions}</strong>
+            </li>
+            <li data-testid="optimize-fragments-merged">
+              Fragments merged:{' '}
+              <strong>{report.pre_fragments - report.post_fragments}</strong>
+            </li>
+          </ul>
+          <button
+            onClick={handleDismiss}
+            style={secondaryBtnStyle}
+            data-testid="optimize-dismiss"
           >
             Dismiss
           </button>
