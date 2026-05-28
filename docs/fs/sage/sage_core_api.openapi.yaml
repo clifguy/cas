@@ -530,6 +530,12 @@ paths:
             `adapter_not_found`: `source_type` is not an enabled
             adapter on this vault. See `source_adapters.adapters` in
             the vault config.
+
+
+            `expected_head_version_requires_predecessor`:
+            `expected_head_version` was supplied without
+            `predecessor_id`. The token is bound to the chain head
+            identified by the predecessor (CAS-ADR-038 Primitive C).
           content:
             application/json:
               schema:
@@ -559,6 +565,13 @@ paths:
             `identical_content_supersede`: the new file's content hash
             matches the predecessor's; supersede chains require
             distinct content per step.
+
+
+            `stale_chain_head`: `expected_head_version` was supplied
+            and did not match the predecessor's current `updated_at`
+            at supersede time. Detail carries the current head id and
+            version so the caller can pivot through the chain and
+            retry (CAS-ADR-038 Primitive C).
           content:
             application/json:
               schema:
@@ -3385,6 +3398,25 @@ components:
             validation (exists + active + different content hash) runs
             before projection; failures return 404/409 before any
             pipeline work begins.
+        expected_head_version:
+          type: string
+          nullable: true
+          description: >-
+            Optimistic-concurrency token on the chain head identified
+            by `predecessor_id` (CAS-ADR-038 Primitive C). When
+            supplied, the substrate verifies it against the
+            predecessor's current `updated_at` inside the
+            per-predecessor lock at supersede time; on mismatch the
+            supersede is rejected with a structured `stale_chain_head`
+            409 carrying the current head id and version in detail.
+            When omitted (the default), the supersede proceeds without
+            a version check (back-compat for callers that have not
+            adopted the contract). The version source is the
+            predecessor's `updated_at` value as observed on a prior
+            `GET /documents/{id}` read, in its canonical wire form
+            (ISO 8601 with `Z` suffix). Requires `predecessor_id`;
+            supplying this token on a fresh-chain ingest returns 400
+            `expected_head_version_requires_predecessor`.
         tier3_metadata:
           type: object
           additionalProperties: true

@@ -786,6 +786,25 @@ class IngestRequest(BaseModel):
             "failures return 404/409 before any pipeline work begins."
         ),
     )
+    expected_head_version: str | None = Field(
+        default=None,
+        description=(
+            "Optimistic-concurrency token on the chain head identified by "
+            "`predecessor_id` (CAS-ADR-038 Primitive C). When supplied, the "
+            "substrate verifies it against the predecessor's current "
+            "`updated_at` inside the per-predecessor lock at supersede time; "
+            "on mismatch the supersede is rejected with a structured "
+            "`stale_chain_head` 409 carrying the current head id and version "
+            "in detail. When omitted (the default), the supersede proceeds "
+            "without a version check (back-compat for callers that have not "
+            "adopted the contract). The version source is the predecessor's "
+            "`updated_at` value as observed on a prior `get_document` read, "
+            "in its canonical wire form (ISO 8601 with `Z` suffix). Requires "
+            "`predecessor_id`; supplying this token on a fresh-chain ingest "
+            "(no predecessor) returns 400 "
+            "`expected_head_version_requires_predecessor`."
+        ),
+    )
     tier3_metadata: dict | None = Field(
         default=None,
         description=(

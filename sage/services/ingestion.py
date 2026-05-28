@@ -37,11 +37,13 @@ from sage.api.errors import (
     AdapterNotFoundError,
     DocumentNotFoundError,
     DuplicateContentError,
+    ExpectedHeadVersionRequiresPredecessorError,
     IdenticalContentSupersedeError,
     NoProjectionError,
     ReabstractDocumentAlreadyInFlightError,
     RecomputePipelineAlreadyInFlightError,
     SourceFileNotFoundError,
+    StaleChainHeadError,
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
     Tier3UniqueConstraintViolation,
@@ -57,6 +59,7 @@ from sage.models.schemas import (
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
+from sage.services.metadata import _wire_version
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
@@ -526,6 +529,13 @@ class IngestionService:
         if adapter is None:
             raise AdapterNotFoundError(request.source_type)
 
+        # CAS-ADR-038 Primitive C: expected_head_version is bound to the
+        # chain head identified by predecessor_id. Without a predecessor
+        # the token has no defined meaning; reject the caller bug loudly
+        # rather than silently dropping the parameter.
+        if request.expected_head_version is not None and request.predecessor_id is None:
+            raise ExpectedHeadVersionRequiresPredecessorError()
+
         # Pre-validate the supersede predecessor BEFORE running projection
         # (BH-121, BH-122, BH-124). Fail-fast keeps pipeline work behind
         # cheap validity checks. The identical-content check happens
@@ -712,6 +722,19 @@ class IngestionService:
             # transition on the predecessor. The doc record was reused
             # (no new insert) so atomicity collapses to lifecycle.set_lifecycle's
             # own atomic primitive (BH-135).
+            #
+            # CAS-ADR-038 Primitive C coverage gap: when force=True drives
+            # this branch, `request.expected_head_version` is currently
+            # ignored. The transition runs through
+            # `LifecycleService.set_lifecycle`, which acquires its own
+            # per-predecessor lock; layering the version check here without
+            # deadlocking would require threading the token through
+            # `SetLifecycleRequest` so the check runs inside that lock.
+            # The new-document branch below covers the primary supersede
+            # path; force-reingest is a rare back door whose caller has
+            # already opted into duplicate-content bypass, and the
+            # incremental safety cost is acceptable until a caller needs
+            # the contract here.
             if predecessor is not None and self._lifecycle_service is not None:
                 await self._lifecycle_service.set_lifecycle(
                     predecessor.id,
@@ -747,40 +770,66 @@ class IngestionService:
             )
             doc = Document(**{**base, **field_updates})
             if predecessor is not None and self._lifecycle_service is not None:
-                # Re-read the predecessor inside the (about-to-commit)
-                # window to catch a concurrent archive that happened
-                # after pre-validation. prepare_supersede consults the
-                # transition table without writing.
-                fresh_pred = await self._store.get_document(predecessor.id)
-                if fresh_pred is None:
-                    raise DocumentNotFoundError(predecessor.id)
-                transition = self._lifecycle_service.prepare_supersede(fresh_pred, doc.id)
-                try:
-                    doc, _updated_pred = await self._store.insert_with_supersede_atomic(
-                        doc,
-                        fresh_pred.id,
-                        transition.predecessor_updates,
-                        transition.edge,
-                    )
-                except Tier3UniqueViolation as exc:
-                    raise Tier3UniqueConstraintViolation(
-                        doc_type=exc.doc_type,
-                        field=exc.field,
-                        colliding_value=exc.colliding_value,
-                        existing_document_id=exc.existing_document_id,
-                    ) from exc
-                # Sync the predecessor's new lifecycle_status to its
-                # chunks. insert_with_supersede_atomic commits the flip
-                # directly in SQL (BH-136 atomicity), bypassing
-                # LifecycleService.set_lifecycle's chunk-sync hook.
-                # pre-filter pushdown requires the chunk-level
-                # lifecycle_status column to stay aligned with the
-                # document's current state.
-                new_pred_lifecycle = transition.predecessor_updates.get("lifecycle_status")
-                if new_pred_lifecycle is not None:
-                    await self._content_store.update_chunk_metadata(
-                        fresh_pred.id, {"lifecycle_status": new_pred_lifecycle}
-                    )
+                # CAS-ADR-038 Primitive C: serialize same-predecessor
+                # supersedes under a per-predecessor lock so the fresh
+                # re-read + expected_head_version check + atomic insert
+                # form one critical section. Without the lock, two
+                # parallel supersedes could each pass the pre-validation
+                # and both reach insert_with_supersede_atomic on the
+                # still-active predecessor, forking the supersedes chain
+                # into a tree and violating CAS-ADR-023's linear-chain
+                # invariant.
+                async with self._locks.lock(predecessor.id):
+                    # Re-read the predecessor inside the lock to catch a
+                    # concurrent archive (or version bump) that happened
+                    # after pre-validation. prepare_supersede consults
+                    # the transition table without writing.
+                    fresh_pred = await self._store.get_document(predecessor.id)
+                    if fresh_pred is None:
+                        raise DocumentNotFoundError(predecessor.id)
+                    # Optimistic-concurrency check (Primitive C). Only
+                    # fires when the caller opts in; omission preserves
+                    # the pre-Primitive-C contract (with the side-benefit
+                    # that the lock above still prevents silent forks).
+                    # Version source is the predecessor's updated_at in
+                    # canonical wire form, matching what callers see via
+                    # get_document.
+                    if request.expected_head_version is not None:
+                        current_head_version = _wire_version(fresh_pred.updated_at)
+                        if current_head_version != request.expected_head_version:
+                            raise StaleChainHeadError(
+                                predecessor_id=fresh_pred.id,
+                                expected_head_version=request.expected_head_version,
+                                current_head_id=fresh_pred.id,
+                                current_head_version=current_head_version,
+                            )
+                    transition = self._lifecycle_service.prepare_supersede(fresh_pred, doc.id)
+                    try:
+                        doc, _updated_pred = await self._store.insert_with_supersede_atomic(
+                            doc,
+                            fresh_pred.id,
+                            transition.predecessor_updates,
+                            transition.edge,
+                        )
+                    except Tier3UniqueViolation as exc:
+                        raise Tier3UniqueConstraintViolation(
+                            doc_type=exc.doc_type,
+                            field=exc.field,
+                            colliding_value=exc.colliding_value,
+                            existing_document_id=exc.existing_document_id,
+                        ) from exc
+                    # Sync the predecessor's new lifecycle_status to its
+                    # chunks. insert_with_supersede_atomic commits the flip
+                    # directly in SQL (BH-136 atomicity), bypassing
+                    # LifecycleService.set_lifecycle's chunk-sync hook.
+                    # pre-filter pushdown requires the chunk-level
+                    # lifecycle_status column to stay aligned with the
+                    # document's current state.
+                    new_pred_lifecycle = transition.predecessor_updates.get("lifecycle_status")
+                    if new_pred_lifecycle is not None:
+                        await self._content_store.update_chunk_metadata(
+                            fresh_pred.id, {"lifecycle_status": new_pred_lifecycle}
+                        )
             else:
                 try:
                     await self._store.insert_document(doc)

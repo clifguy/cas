@@ -225,6 +225,68 @@ class StaleReadError(SAGEError):
         )
 
 
+class StaleChainHeadError(SAGEError):
+    """409: caller's `expected_head_version` does not match the chain
+    head's current version at supersede time (CAS-ADR-038 Primitive C).
+
+    Raised when an ingest with `predecessor_id` supplies an
+    `expected_head_version` that does not equal the predecessor's
+    current `updated_at` at the moment the supersede is about to run.
+    The detail envelope carries the current head id and version so the
+    caller can pivot through the chain (use `current_head_id` as the
+    next supersede's `predecessor_id`) and retry without an extra
+    round-trip. Preserves the linear-chain invariant in CAS-ADR-023 by
+    surfacing the conflict instead of letting two concurrent supersedes
+    each create their own version, forking the chain into a tree.
+    """
+
+    def __init__(
+        self,
+        predecessor_id: str,
+        expected_head_version: str,
+        current_head_id: str,
+        current_head_version: str,
+    ) -> None:
+        super().__init__(
+            "stale_chain_head",
+            (
+                f"Chain head version mismatch for predecessor {predecessor_id!r}: "
+                f"expected {expected_head_version!r}, current head "
+                f"{current_head_id!r} at {current_head_version!r}"
+            ),
+            409,
+            {
+                "predecessor_id": predecessor_id,
+                "expected_head_version": expected_head_version,
+                "current_head_id": current_head_id,
+                "current_head_version": current_head_version,
+            },
+        )
+
+
+class ExpectedHeadVersionRequiresPredecessorError(SAGEError):
+    """400: `expected_head_version` was supplied without a `predecessor_id`.
+
+    The two parameters anchor each other: `expected_head_version` is a
+    compare-and-swap token bound to the chain head identified by
+    `predecessor_id`. Without a predecessor there is no chain head to
+    compare against, so the parameter has no defined meaning. Surface
+    the conflict explicitly rather than silently ignoring the token.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "expected_head_version_requires_predecessor",
+            (
+                "`expected_head_version` requires `predecessor_id`; "
+                "the version token is bound to the chain head identified "
+                "by the predecessor."
+            ),
+            400,
+            None,
+        )
+
+
 class Tier3UniqueConstraintViolation(SAGEError):
     """409: tier3_metadata field value collides with the declared uniqueness
     constraint (CAS-ADR-031).
