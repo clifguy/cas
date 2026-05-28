@@ -432,6 +432,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            `stale_read`: `expected_version` does not match the
+            document's current version (CAS-ADR-038 Primitive B). Detail
+            carries `document_id`, `expected_version`, and
+            `current_version`; the caller refetches and retries with
+            the current version.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   # ---------------------------------------------------------------------------
   # Ingestion
@@ -3192,6 +3203,19 @@ components:
             fallback-derived dates that misattributed across UTC midnight.
         tier3_metadata:
           $ref: "#/components/schemas/Tier3Patch"
+        expected_version:
+          type: string
+          nullable: true
+          description: >-
+            Optimistic-concurrency token (CAS-ADR-038 Primitive B). When
+            supplied, the substrate verifies it against the document's
+            current version inside the per-document lock at write time;
+            on mismatch the write is rejected with a structured
+            `stale_read` 409 carrying the current version in detail. When
+            omitted (the default), behavior is last-writer-wins and
+            unchanged from the pre-Primitive-B contract. The version
+            source is the document's `updated_at` value as observed on
+            a prior read.
         dry_run:
           type: boolean
           default: false
@@ -4328,6 +4352,17 @@ components:
           description: Document calendar date (YYYY-MM-DD).
         tier3_metadata:
           $ref: "#/components/schemas/Tier3Patch"
+        expected_version:
+          type: string
+          nullable: true
+          description: >-
+            Optimistic-concurrency token (CAS-ADR-038 Primitive B). Same
+            semantics as `UpdateMetadataRequest.expected_version`: when
+            supplied, verified against the per-item document's current
+            version inside its per-document lock; mismatch surfaces a
+            structured `stale_read` per-item error envelope without
+            aborting the batch (CAS-ADR-029 partial-success semantics).
+            When omitted, the per-item write is last-writer-wins.
 
     BulkMetadataRequest:
       type: object

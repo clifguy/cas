@@ -193,6 +193,38 @@ class Tier3DocTypeChangeStaleKeysError(SAGEError):
         )
 
 
+class StaleReadError(SAGEError):
+    """409: caller's `expected_version` does not match the document's
+    current version at write time (CAS-ADR-038 Primitive B).
+
+    Raised when a scalar-metadata write supplies an `expected_version`
+    that does not equal the document's current `updated_at`. The detail
+    envelope carries the current version so the caller can refetch
+    and retry without an extra round-trip. Mirror of
+    `Tier3UniqueConstraintViolation` shape per CAS-ADR-031.
+    """
+
+    def __init__(
+        self,
+        document_id: str,
+        expected_version: str,
+        current_version: str,
+    ) -> None:
+        super().__init__(
+            "stale_read",
+            (
+                f"Document {document_id!r} version mismatch: "
+                f"expected {expected_version!r}, current {current_version!r}"
+            ),
+            409,
+            {
+                "document_id": document_id,
+                "expected_version": expected_version,
+                "current_version": current_version,
+            },
+        )
+
+
 class Tier3UniqueConstraintViolation(SAGEError):
     """409: tier3_metadata field value collides with the declared uniqueness
     constraint (CAS-ADR-031).

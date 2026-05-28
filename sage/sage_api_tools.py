@@ -441,6 +441,7 @@ def register_sage_tools(
         authority_scope: str | None = None,
         document_date: str | None = None,
         tier3_metadata: dict | None = None,
+        expected_version: str | None = None,
         dry_run: bool = False,
     ) -> dict:
         """Patch mutable metadata fields on a document.
@@ -538,6 +539,12 @@ def register_sage_tools(
         - ``legacy_form`` (400): caller passed the deprecated bare-list
           form for ``tags`` or bare-dict form for ``tier3_metadata``.
           Detail names the new ops-object shape.
+        - ``stale_read`` (409): the caller supplied ``expected_version``
+          and it does not match the document's current version at write
+          time (CAS-ADR-038 Primitive B). Detail carries
+          ``document_id``, ``expected_version``, and ``current_version``.
+          The caller refetches and retries with the current version
+          (retry is appropriate here, unlike the strict-conflict 400s).
 
         Strict-conflict errors are planning bugs, not retry conditions;
         the caller should adjust its model of the document state rather
@@ -586,6 +593,14 @@ def register_sage_tools(
             document_date: Document calendar date (YYYY-MM-DD).
             tier3_metadata: Tier-3 patch object ``{set?, unset?}``.
                 See above.
+            expected_version: Optimistic-concurrency token
+                (CAS-ADR-038 Primitive B). When supplied, the substrate
+                verifies it against the document's current version at
+                write time; on mismatch the write is rejected with a
+                structured ``stale_read`` 409. When omitted (default),
+                behavior is last-writer-wins. The version source is the
+                document's ``updated_at`` value as observed on a prior
+                read.
             dry_run: /. When True, run all validators
                 and compute the would-be projection of the post-patch
                 state, but do NOT persist. The response carries a
@@ -609,6 +624,7 @@ def register_sage_tools(
                 authority_scope=authority_scope,
                 document_date=document_date,
                 tier3_metadata=tier3_metadata,
+                expected_version=expected_version,
                 dry_run=dry_run,
             )
             response = await v.metadata_service.update_metadata(
@@ -1076,9 +1092,11 @@ def register_sage_tools(
         ``{field}_add_conflict`` / ``{field}_remove_conflict`` (400,
         e.g., ``tags_add_conflict``), ``tag_patch_overlap`` (400),
         ``tier3_unset_conflict`` / ``tier3_patch_overlap`` /
-        ``patch_empty`` (400), ``tier3_schema_violation`` (400), and
-        ``tier3_doc_type_change_stale_keys`` (400). See
-        ``update_metadata`` for detail-envelope shape.
+        ``patch_empty`` (400), ``tier3_schema_violation`` (400),
+        ``tier3_doc_type_change_stale_keys`` (400), and ``stale_read``
+        (409, when a per-item ``expected_version`` does not match the
+        target document's current version per CAS-ADR-038 Primitive B).
+        See ``update_metadata`` for detail-envelope shape.
 
         Batch-level error modes (surfaced as the tool's error envelope):
         ``legacy_form`` (a per-item ``tags`` is a bare list or per-item
@@ -1099,9 +1117,10 @@ def register_sage_tools(
                 ``{document_id: str, title?: str, version_label?: str,
                 project?: str, tags?: ListFieldPatch, doc_type?: str,
                 authority_scope?: str, document_date?: str,
-                tier3_metadata?: Tier3Patch}``. Shape validation runs up
-                front; a single malformed item rejects the entire batch
-                before any per-item work executes.
+                tier3_metadata?: Tier3Patch, expected_version?: str}``.
+                Shape validation runs up front; a single malformed item
+                rejects the entire batch before any per-item work
+                executes.
             response_mode: Per-item payload depth. ``"full"``
                 returns each success item's complete ``document`` body
                 (including the potentially-large ``semantic_abstract``);

@@ -1,7 +1,7 @@
 """Metadata update logic for the update_metadata endpoint (BH-005, BH-006)."""
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, NamedTuple
 
 import jsonschema
@@ -13,6 +13,7 @@ from sage.api.errors import (
     ListFieldAddConflictError,
     ListFieldRemoveConflictError,
     SAGEError,
+    StaleReadError,
     Tier3DocTypeChangeStaleKeysError,
     Tier3SchemaViolationError,
     Tier3UnsetConflictError,
@@ -35,6 +36,22 @@ from sage.models.schemas import (
 from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
+
+
+def _wire_version(ts: datetime) -> str:
+    """Render a document version (`updated_at`) in the canonical wire form.
+
+    Pydantic v2 serializes UTC datetimes to ISO 8601 with a `Z` suffix
+    in JSON output; this mirrors that form so callers can round-trip
+    the value as `expected_version` without timezone normalization on
+    their side. Non-UTC timestamps fall through to the default
+    isoformat — they never appear in practice because document
+    timestamps are stamped as `datetime.now(timezone.utc)`.
+    """
+    iso = ts.isoformat()
+    if ts.tzinfo is not None and ts.utcoffset() == timedelta(0):
+        return iso.replace("+00:00", "Z")
+    return iso
 
 
 def _compute_metadata_changes(pre_doc: Document, updates: dict) -> list[FieldChange]:
@@ -193,6 +210,23 @@ class MetadataService:
             doc = await self._store.get_document(document_id)
             if doc is None:
                 raise DocumentNotFoundError(document_id)
+
+            # CAS-ADR-038 Primitive B compare-and-swap. The check runs
+            # inside the per-document lock so a concurrent winner has
+            # already advanced updated_at before the loser observes it.
+            # `updated_at` is the per-document monotonic version source;
+            # equality is over the canonical wire string (Pydantic's
+            # JSON form for UTC datetimes uses a `Z` suffix), so the
+            # value matches what callers see across the MCP / HTTP
+            # transports on a prior read.
+            if request.expected_version is not None:
+                current_version = _wire_version(doc.updated_at)
+                if current_version != request.expected_version:
+                    raise StaleReadError(
+                        document_id=document_id,
+                        expected_version=request.expected_version,
+                        current_version=current_version,
+                    )
 
             updates: dict = {}
             if request.title is not None:
@@ -386,6 +420,7 @@ class MetadataService:
                 authority_scope=item.authority_scope,
                 document_date=item.document_date,
                 tier3_metadata=item.tier3_metadata,
+                expected_version=item.expected_version,
                 # Propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported; the
                 # envelope is the single source of truth for the batch.
