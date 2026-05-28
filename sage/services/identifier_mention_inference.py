@@ -86,28 +86,26 @@ def _identifier_mention_rules(edge_inference_config: object) -> list[dict]:
     return patterns
 
 
-def _format_tag(tag_template: str, *, identifier: str) -> str:
-    """Substitute the {id} placeholder; pass through tags that lack one."""
-    return tag_template.replace("{id}", identifier)
+def _format_tag(template: str, *, identifier: str) -> str:
+    """Substitute identifier-derived placeholders in tag and tier3 templates.
 
+    Supported placeholders:
 
-def _title_matches_prefix(title: str | None, prefix_template: str, identifier: str) -> bool:
-    """Apply the title-prefix filter for ADR-style identifiers.
+    * ``{id}`` — the full identifier literal that the regex matched
+      (e.g., ``CAS-ADR-042`` or ``F12``).
+    * ``{adr_num}`` — the trailing numeric run of the identifier
+      (e.g., ``042`` for ``CAS-ADR-042``). Empty when the identifier
+      has no trailing digits. Equivalent to ``{id}`` when the identifier
+      is purely numeric.
 
-    The configured prefix may contain ``{adr_num}`` (or ``{id}``)
-    placeholders. For ADR identifiers like ``CAS-ADR-099``, ``{adr_num}``
-    is the numeric suffix ``099``; ``{id}`` is the full literal. The
-    match is a strict string-prefix on the document's title.
+    Templates that lack these placeholders pass through unchanged.
     """
-    if not title:
-        return False
-    expanded = prefix_template.replace("{id}", identifier)
-    adr_num = ""
-    m = re.search(r"(\d+)\s*$", identifier)
-    if m:
-        adr_num = m.group(1)
-    expanded = expanded.replace("{adr_num}", adr_num)
-    return title.startswith(expanded)
+    expanded = template.replace("{id}", identifier)
+    if "{adr_num}" in expanded:
+        m = re.search(r"(\d+)\s*$", identifier)
+        adr_num = m.group(1) if m else ""
+        expanded = expanded.replace("{adr_num}", adr_num)
+    return expanded
 
 
 async def _resolve_identifier(
@@ -118,13 +116,11 @@ async def _resolve_identifier(
 ) -> str | None:
     """Resolve an identifier literal to a vault document id.
 
-    Returns the matched document's id, or None when no unique active
-    document matches the pattern's filters. Lookup is two-step:
-      1. catalog query against the graph store with tag, tier3, and
-         (optional) doc_type filters. Tags and tier3 entries each may
-         contain ``{id}`` placeholders substituted with the matched
-         literal (for tags; for tier3).
-      2. optional title-prefix narrowing among the catalog candidates.
+    Single-pass catalog query against the graph store with tag, tier3,
+    and (optional) doc_type filters. Tag and tier3-value templates may
+    contain ``{id}`` or ``{adr_num}`` placeholders substituted from the
+    matched identifier via :func:`_format_tag`.
+
     Among multiple matches, an ``active`` lifecycle status wins; among
     multiple active matches, the most recently updated wins.
     """
@@ -145,12 +141,6 @@ async def _resolve_identifier(
     docs, _ = await graph_store.query_documents(
         filters=filters, limit=50, default_exclude_failed=False
     )
-    if not docs:
-        return None
-
-    prefix = pattern.get("target_title_prefix")
-    if prefix:
-        docs = [d for d in docs if _title_matches_prefix(d.title, prefix, identifier)]
     if not docs:
         return None
 

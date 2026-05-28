@@ -10,7 +10,12 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 from mdit_py_plugins.front_matter import front_matter_plugin
 
-from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
+from sage.source_adapters.base import (
+    HeadingNode,
+    ProjectionResult,
+    SourceAdapter,
+    extract_adr_id_from_filename,
+)
 
 
 class MarkdownAdapter(SourceAdapter):
@@ -38,13 +43,18 @@ class MarkdownAdapter(SourceAdapter):
 
         source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
 
+        metadata: dict = {"source_modified_at": source_mtime.isoformat()}
+        adapter_tier3 = extract_adr_id_from_filename(source_path.stem)
+        if adapter_tier3 is not None:
+            metadata["adapter_tier3_metadata"] = adapter_tier3
+
         return ProjectionResult(
             text=text,
             headings=headings,
             content_hash=content_hash,
             adapter_version=self.VERSION,
             title=title,
-            metadata={"source_modified_at": source_mtime.isoformat()},
+            metadata=metadata,
         )
 
     def _parse_headings(self, text: str) -> list[HeadingNode]:
