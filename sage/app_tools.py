@@ -103,127 +103,91 @@ def register_app_tools(
         """Ingest multiple files with optional edge inference. Returns a
         summary when complete.
 
-        Companion to ``list_directory``: the caller decides which
-        scanned files to ingest, optionally adjusts the parsed
-        metadata, and submits the curated list here. Per-file ingest
-        applies the same precedence chain as ``ingest_document`` (per
-        CAS-ADR-021): caller-supplied metadata wins over filename
-        inference. Pipeline staging (projection, indexing,
-        abstraction) is dispatched fire-and-forget; the response
-        summary reports synchronous status, and ``get_document``
-        is used to poll terminal pipeline_status if needed.
+        Companion to ``list_directory``: the caller decides which scanned
+        files to ingest, optionally adjusts the parsed metadata, and submits
+        the curated list here. Per-file ingest applies the same precedence
+        chain as ``ingest_document`` (caller-supplied metadata wins over
+        filename inference). Pipeline staging (projection, indexing,
+        abstraction) dispatches fire-and-forget; the summary reports
+        synchronous status, and ``get_document`` polls terminal
+        pipeline_status if needed.
 
-        When ``infer_edges=True``, the two-phase edge inference runs
-        across the entire batch after all documents are inserted:
-        Tier 1 edges (e.g. supersedes via version_chain) land as
-        production edges; Tier 2 candidates are deposited in the
-        staging-edge table for review via
+        When ``infer_edges=True``, two-phase edge inference runs across the
+        whole batch after all documents are inserted: Tier 1 edges (e.g.
+        supersedes via version_chain) land as production edges; Tier 2
+        candidates are deposited in the staging-edge table for review via
         ``list_staging_edges``.
 
-        Divergence from ``ingest_document`` (hard-coded ``needs_review=True``):
-        This tool's behavior differs from ``ingest_document``'s in that
-        every document it ingests lands with
-        ``metadata_confirmed=False`` and is added to the
-        metadata-review queue, regardless of caller intent. The
-        ``ingest_document`` default is the opposite (caller-authoritative
-        metadata, ``metadata_confirmed=True``). This is intentional
-        per CAS-ADR-021: the batch flow is a confirmation-queue
-        feeder by design — callers curate filenames/metadata
-        up-front, then a human (or follow-up agent) confirms each
-        record via ``update_metadata``. See ``ingest_document`` for
-        the contrasting caller-authoritative default.
+        Divergence from ``ingest_document``: every document this tool ingests
+        lands with ``metadata_confirmed=False`` in the metadata-review queue
+        regardless of caller intent (``ingest_document``'s default is the
+        opposite). Because ``needs_review=True`` is hard-coded, the vault's
+        ``FilenameParser`` always runs and may populate ``date``,
+        ``project``, ``codes``, ``version``, and ``doc_type`` from the
+        filename when the caller omits them from ``parsed_metadata`` (the
+        exact fields are vault-config-defined under
+        ``metadata_extraction.filename_extraction.segment_fields``; see
+        ``admin_get_vault_config``). The batch flow is a confirmation-queue
+        feeder by design: callers curate metadata up-front, then a human or
+        follow-up agent confirms each record via ``update_metadata``. Call
+        ``get_filename_metadata`` first to preview the parser's output.
 
-        Divergence from ``ingest_document`` (filename parsing always runs):
-        Because ``needs_review=True`` is hard-coded (see above), the
-        vault's ``FilenameParser`` always runs on every file. It may
-        populate ``date``, ``project``, ``codes``, ``version``, and
-        ``doc_type`` from the filename when the caller omits those
-        keys from ``parsed_metadata`` — the exact fields the parser
-        extracts are vault-config-defined under
-        ``metadata_extraction.filename_extraction.segment_fields``
-        (see ``admin_get_vault_config``). The historical claim in the
-        ``files`` parameter description that omitting ``parsed_metadata``
-        leaves "no other fields pre-populated" is structurally false
-        for any vault that declares a filename pattern. Call
-        ``get_filename_metadata`` first if you want to preview the
-        parser's output before ingest. See ``ingest_document`` for the
-        contrasting default (filename parsing only runs when
-        ``needs_review=True`` is opted into).
-
-        Per-file failure isolation (CAS-ADR-029):
-        The batch is NOT atomic. Per-file exceptions are caught into
-        ``summary.errors[]`` as ``{filename, message}`` entries (with
-        ``summary.error_count`` advancing in lockstep); the batch
-        continues with the remaining files and post-ingest edge
-        inference still runs across whatever did insert. Earlier or
-        later items are not rolled back. Mirrors the
-        ``create_edges`` / ``update_lifecycles`` /
+        Per-file failure isolation: the batch is NOT atomic. Per-file
+        exceptions are caught into ``summary.errors[]`` as
+        ``{filename, message}`` (with ``summary.error_count`` advancing); the
+        batch continues and post-ingest edge inference still runs across
+        whatever inserted. Earlier or later items are not rolled back —
+        mirrors the ``create_edges`` / ``update_lifecycles`` /
         ``update_metadata`` atomicity contract.
 
-        Predecessor auto-archive on Tier-1 supersedes inference:
-        When ``infer_edges=True`` and post-ingest edge inference
-        creates a Tier-1 ``supersedes`` edge via version-chain
-        inference, the target document silently transitions from
-        ``active`` to ``archived`` as part of edge execution — no
-        explicit ``update_lifecycles(action="archive")`` call is
-        required and none surfaces in the response. Lifecycle
-        transition failures during this phase are collected as
-        warnings in ``summary.edge_warnings`` only; they do not raise
-        and do not appear in ``summary.errors``.
+        Predecessor auto-archive on Tier-1 supersedes inference: when
+        ``infer_edges=True`` and inference creates a Tier-1 ``supersedes``
+        edge via version chain, the target silently transitions
+        ``active -> archived`` as part of edge execution — no explicit
+        ``update_lifecycles(action="archive")`` is required and none surfaces
+        in the response. Lifecycle-transition failures during this phase are
+        collected in ``summary.edge_warnings`` only; they do not raise.
 
-        Tier-1 provenance-gate downgrade:
-        Tier-1 ``supersedes`` adds are gated on provenance: if any
-        existing edge in a candidate version chain has a non-
-        ``version_chain`` rationale (e.g., a human-curated
-        ``manual_review`` edge in the same chain), the entire group's
-        Tier-1 adds are silently downgraded to Tier-2 (deposited in
-        the staging-edge table for review via
-        ``list_staging_edges`` rather than landing as production
-        edges; the predecessor auto-archive above does NOT fire on a
-        downgraded group). The production-vs-staging outcome of a
-        batch is therefore rule-dependent on the vault's prior edge
-        graph, not deterministic from the input files alone.
+        Tier-1 provenance-gate downgrade: Tier-1 ``supersedes`` adds are
+        gated on provenance — if any existing edge in a candidate version
+        chain has a non-``version_chain`` rationale (e.g. a human-curated
+        edge in the same chain), the entire group's Tier-1 adds are silently
+        downgraded to Tier-2 (staged for review rather than landing as
+        production edges; the predecessor auto-archive above does NOT fire on
+        a downgraded group). A batch's production-vs-staging outcome is
+        therefore rule-dependent on the vault's prior edge graph, not
+        deterministic from the input files alone.
 
-        Per-file precondition surface inherited from ``ingest_document``:
-        Every per-file ingest runs the full ``ingest_document``
-        precondition pipeline. Failures surface as entries in
-        ``summary.errors[]`` (per the per-file isolation contract
-        above) and include — by inherited shape from ``ingest_document``
-        — ``adapter_not_found``, ``document_not_found``,
+        Per-file precondition surface: every per-file ingest runs the full
+        ``ingest_document`` precondition pipeline. Failures surface as
+        ``summary.errors[]`` entries and include — by inherited shape from
+        ``ingest_document`` — ``adapter_not_found``, ``document_not_found``,
         ``source_file_not_found``, ``identical_content_supersede``,
         ``duplicate_content``, ``supersede_target_not_active``,
-        ``tier3_unique_constraint_violation``, and
-        ``tier3_schema_violation``. See ``ingest_document`` for the
-        authoritative per-file precondition surface. Mirrors the
-        bulk-tool cross-reference pattern established by
-        ``create_edges`` / ``update_lifecycles`` /
-        ``update_metadata``.
+        ``tier3_unique_constraint_violation``, and ``tier3_schema_violation``.
+        See ``ingest_document`` for the authoritative surface.
 
         Error modes:
-        - ``unknown_vault`` (400): ``vault_id`` is not a registered
-          vault on this SAGE instance. Call ``admin_list_vaults`` for
-          the registered set. This is a batch-boundary check (raised
-          before any per-file work begins); per-file failures do not
-          surface here, they accumulate in ``summary.errors[]``.
-        - ``empty_file_list`` (string in response): ``files`` was
-          empty. Choose at least one file or skip the call.
+        - ``unknown_vault`` (400): ``vault_id`` is not a registered vault
+          (call ``admin_list_vaults`` for the set). A batch-boundary check
+          raised before any per-file work; per-file failures accumulate in
+          ``summary.errors[]`` instead.
+        - ``empty_file_list`` (string in response): ``files`` was empty.
 
         Args:
             vault_id: Target vault identifier.
-            files: List of file objects. Each has: ``file_path`` (str),
-                ``source_type`` (str — closed ``SourceType``
-                vocabulary: ``markdown``, ``docx``, ``xlsx``, ``pdf``;
-                the vault's actually-enabled subset is whatever
-                appears under ``source_adapters.adapters`` in
-                ``admin_get_vault_config``), and optional
-                ``parsed_metadata`` (dict with ``title``, ``date``,
-                ``project``, ``codes``, ``version``, ``doc_type``).
+            files: List of file objects. Each has ``file_path`` (str),
+                ``source_type`` (str — closed ``SourceType`` vocabulary:
+                ``markdown``, ``docx``, ``xlsx``, ``pdf``; the vault's
+                actually-enabled subset is whatever appears under
+                ``source_adapters.adapters`` in ``admin_get_vault_config``),
+                and optional ``parsed_metadata`` (dict with ``title``,
+                ``date``, ``project``, ``codes``, ``version``, ``doc_type``).
                 When ``parsed_metadata`` is omitted, the stem of
-                ``file_path`` is used as the title; the vault's
-                ``FilenameParser`` still runs and may populate the
-                remaining fields from the filename (see "Divergence
-                from ``ingest_document`` (filename parsing always runs)"
-                above; call ``get_filename_metadata`` to preview).
+                ``file_path`` is used as the title and the vault's
+                ``FilenameParser`` still runs on the remaining fields (see
+                the divergence note above; ``get_filename_metadata`` to
+                preview).
             infer_edges: When True (default), run two-phase edge inference
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle

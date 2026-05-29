@@ -127,190 +127,123 @@ def register_sage_tools(
         metadata: dict | None = None,
         tier3_metadata: dict | None = None,
     ) -> dict:
-        """Ingest a source file into SAGE. Runs the three-stage pipeline:
-        projection, indexing, and abstraction.
+        """Ingest a source file into SAGE, running the projection ->
+        indexing -> abstraction pipeline.
 
-        This tool dispatches Stages 2-3 (indexing, abstraction) as a
-        background task and returns in seconds with `pipeline_status`
-        typically non-terminal (projection_complete or
-        indexing_in_progress). Poll `get_document` to observe
-        terminal status (abstraction_complete, abstraction_skipped, or
-        failed). The fire-and-forget dispatch keeps the RPC under the
-        60-second MCP client timeout for documents whose abstraction
-        latency would otherwise exceed it. The supersede lifecycle
-        transition (if requested) runs synchronously with record
-        insertion, so the version chain is complete when this tool
-        returns.
+        Stages 2-3 (indexing, abstraction) dispatch as a background task;
+        the call returns in seconds with ``pipeline_status`` typically
+        non-terminal (projection_complete or indexing_in_progress), keeping
+        the RPC under the 60-second MCP client timeout. Poll
+        ``get_document`` for the terminal status: ``abstraction_complete``
+        (the happy path), ``abstraction_skipped`` (the vault sets
+        ``abstraction.enabled=false`` or the projection is empty, so Stage 3
+        is bypassed), or ``failed`` (any Stage exception; ``pipeline_error``
+        is populated). A requested supersede transition runs synchronously,
+        so the version chain is complete on return.
 
-        Per CAS-ADR-021, callers are authoritative for metadata. Pass
-        prepared values via `metadata` and leave `needs_review` at the
-        default false; the document is committed with caller-supplied
-        values authoritative and metadata_confirmed=true. Set
-        needs_review=true to defer to the metadata-review queue:
-        filename inference runs, parsed values populate fields the
-        caller did not supply (the specific fields are vault-config-
-        defined; see ``metadata_extraction.filename_extraction`` in
-        ``admin_get_vault_config``), and the document is held with
-        metadata_confirmed=false until a reviewer confirms via
-        update_metadata.
+        Metadata is caller-authoritative. Pass prepared values via
+        ``metadata`` and leave ``needs_review=false``; the document commits
+        with ``metadata_confirmed=true``. Set ``needs_review=true`` to defer
+        to the review queue: filename inference fills fields the caller
+        omitted (the field set is vault-config-defined under
+        ``metadata_extraction.filename_extraction``; see
+        ``admin_get_vault_config``) and the document is held with
+        ``metadata_confirmed=false`` until confirmed via ``update_metadata``.
 
-        Trio-field inheritance on supersede (CAS-ADR-021): when
-        ``predecessor_id`` is set and the caller omits any of
-        ``doc_type``, ``project``, or ``authority_scope`` from
-        ``metadata``, the omitted fields inherit from the predecessor's
-        value (when non-None). A caller who *wants* to change one of
-        these trio fields on a supersede must pass the new value
-        explicitly in ``metadata``; otherwise the predecessor's value
-        carries forward silently. No error is raised either way --
-        inheritance is the documented default, override is the
-        opt-in.
+        Trio-field inheritance on supersede: when ``predecessor_id`` is set
+        and the caller omits ``doc_type``, ``project``, or
+        ``authority_scope`` from ``metadata``, each omitted field inherits
+        the predecessor's non-None value silently. Pass the field
+        explicitly to override.
 
-        Tier3 uniqueness (CAS-ADR-031): doc_types declaring a
-        ``unique`` constraint in their ``metadata_schema`` (see
+        Tier3 uniqueness: a doc_type declaring a ``unique`` constraint in
+        its ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in
-        ``admin_get_vault_config``) enforce per-vault uniqueness on the
-        named tier3 field at ingest time. In the ``cas`` vault,
-        ``ticket.ticket_id`` is the live example: re-ingesting a
-        document with a ticket_id already in use raises
-        ``tier3_unique_constraint_violation``. Uniqueness is checked
-        in the same SQLite transaction as the row insert, so the
-        existing document is never disturbed.
-
-        ``pipeline_status`` outcomes (per CAS-ADR-021): the terminal
-        status observed by a poll of ``get_document`` depends on
-        vault config and runtime outcome. ``abstraction_complete`` is
-        the caller-authoritative happy path: projection + indexing +
-        abstraction all succeed, ``metadata_confirmed=true``.
-        ``abstraction_skipped`` is the deferred-abstraction branch:
-        the vault has ``abstraction.enabled=false`` in its config (or
-        the projection produced empty text); Stages 1-2 ran but Stage
-        3 was bypassed. ``failed`` is the catch-all for any
-        Stage-1/2/3 exception; the document persists with
-        ``pipeline_error`` populated. Inspect
-        ``abstraction.enabled`` in ``admin_get_vault_config`` to know
-        which terminal state to expect on a given vault.
+        ``admin_get_vault_config``) enforces per-vault uniqueness on the
+        named tier3 field at ingest time, checked in the same transaction
+        as the row insert so the existing document is never disturbed. In
+        the ``cas`` vault, ``ticket.ticket_id`` is the live example.
 
         Error modes:
         - ``adapter_not_found`` (400): ``source_type`` is not an enabled
-          adapter on this vault. See
-          ``source_adapters.adapters`` in ``admin_get_vault_config``.
-        - ``source_file_not_found`` (404): ``source`` does not resolve
-          to a readable file on disk.
+          adapter (see ``source_adapters.adapters`` in
+          ``admin_get_vault_config``).
+        - ``source_file_not_found`` (404): ``source`` does not resolve to a
+          readable file.
         - ``duplicate_content`` (409): a document with the same
-          ``source_path`` and content hash already exists. Override
-          with ``force=true`` to re-ingest.
-        - ``supersede_target_not_active`` (409):
-          ``predecessor_id`` was set but the predecessor is
-          not in ``active``. For completed, filed, or otherwise
-          non-active predecessors, run the archive -> reactivate dance
-          via ``update_lifecycles`` before retrying. See the
-          ``update_lifecycles`` docstring for the full pattern.
+          ``source_path`` and content hash exists. Override with
+          ``force=true``.
+        - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
+          but the predecessor is not ``active``. Run the archive ->
+          reactivate dance via ``update_lifecycles`` before retrying.
         - ``identical_content_supersede`` (409): the new file's content
-          hash matches the predecessor's; supersede chains require
-          distinct content per step.
-        - ``stale_chain_head`` (409): ``expected_head_version`` was
-          supplied and did not match the predecessor's current
-          ``updated_at`` at supersede time. The detail envelope carries
-          ``predecessor_id``, ``expected_head_version``,
-          ``current_head_id``, and ``current_head_version``; the caller
-          can pivot ``predecessor_id`` to ``current_head_id`` and
-          ``expected_head_version`` to ``current_head_version`` to
-          retry through the advanced chain (CAS-ADR-038 Primitive C).
+          hash matches the predecessor's; chains require distinct content
+          per step.
+        - ``stale_chain_head`` (409): ``expected_head_version`` did not
+          match the predecessor's current ``updated_at`` at supersede time.
+          Detail carries ``predecessor_id``, ``expected_head_version``,
+          ``current_head_id``, and ``current_head_version`` so the caller
+          can pivot to the current head and retry.
         - ``expected_head_version_requires_predecessor`` (400):
-          ``expected_head_version`` was supplied without
-          ``predecessor_id``. The token is bound to the chain head
-          identified by the predecessor; supplying it on a fresh-chain
-          ingest has no defined meaning.
-        - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set
-          but the resolved doc_type has no ``metadata_schema`` declared
-          in vault config, or the payload failed validation against the
-          declared schema. Detail carries ``doc_type``, ``path`` (JSON
-          Pointer to the offending field; empty when the doc_type has
-          no schema), ``message``, and ``instance`` (the payload that
-          failed).
-        - ``tier3_unique_constraint_violation`` (409): the resolved
-          doc_type declares a ``unique`` constraint on a tier3 field
-          (see ``document_types.doc_types[].metadata_schema`` in
-          ``admin_get_vault_config``) and ``tier3_metadata`` supplied a
-          value already in use by another document. Detail carries
-          ``doc_type``, ``field``, ``colliding_value``, and
-          ``existing_document_id``. ``force=true`` does NOT override
-          this -- uniqueness is independent of content-hash
-          deduplication (CAS-ADR-031).
+          ``expected_head_version`` supplied without ``predecessor_id`` (the
+          token is bound to the predecessor's chain head).
+        - ``tier3_schema_violation`` (400): ``tier3_metadata`` is set but
+          the resolved doc_type has no ``metadata_schema``, or the payload
+          failed validation. Detail carries ``doc_type``, ``path`` (JSON
+          Pointer; empty when the doc_type has no schema), ``message``, and
+          ``instance``.
+        - ``tier3_unique_constraint_violation`` (409): ``tier3_metadata``
+          supplied a value already in use on a ``unique`` tier3 field.
+          Detail carries ``doc_type``, ``field``, ``colliding_value``, and
+          ``existing_document_id``. ``force=true`` does NOT override this --
+          uniqueness is independent of content-hash deduplication.
 
         Args:
             vault_id: Target vault identifier.
             source: Source file path relative to the vault's storage_root,
-                or an absolute path to an external file. External files are
-                copied verbatim into the vault's imports/ directory. The
-                vault's internal copy at storage_root/source_path is the
-                authoritative file after ingestion; the path passed here
-                is temporary and can be deleted by the caller.
-            source_type: Source artifact format (markdown, docx, pdf,
-                email, onenote, teams_chat). Determines which source
-                adapter processes the artifact.
-            config: Adapter-specific configuration (optional). Each
-                adapter declares its own required-config schema; this
-                payload is **not** a SAGE-wide shape. Inspect
-                ``source_adapters.adapters[].config`` in
-                ``admin_get_vault_config`` for the per-adapter
-                required-config shape on the target vault. Caller-
-                supplied keys are deep-merged over the vault's
-                adapter-config defaults at ingest time; unknown keys
-                are rejected by the adapter when it validates the
-                merged payload.
+                or an absolute path to an external file (copied verbatim
+                into the vault's imports/ directory). The vault's internal
+                copy at storage_root/source_path is authoritative after
+                ingest; the path passed here is temporary.
+            source_type: Source artifact format (markdown, docx, pdf, email,
+                onenote, teams_chat). Selects the source adapter.
+            config: Adapter-specific configuration (optional). Not a
+                SAGE-wide shape; inspect ``source_adapters.adapters[].config``
+                in ``admin_get_vault_config`` for the per-adapter shape.
+                Deep-merged over the vault's adapter-config defaults; unknown
+                keys are rejected by the adapter.
             created_by: Creator name. Defaults to vault owner.
             force: Allow re-ingestion of duplicate content.
-            predecessor_id: When provided, the ingested document
-                supersedes this predecessor. SAGE applies the `supersede`
-                lifecycle transition synchronously with record insertion:
-                creates a `supersedes` edge (new -> old) and archives
-                the predecessor. The predecessor must be active and its
-                content hash must differ from the new file. Per
-                CAS-ADR-021, the trio fields (doc_type, project,
-                authority_scope) inherit from the predecessor when the
-                caller omits them and the predecessor's value is
-                non-None; to override any trio field on a supersede,
-                pass the new value explicitly in ``metadata``. See
-                "Trio-field inheritance on supersede" above.
-            expected_head_version: Optimistic-concurrency token on the
-                chain head identified by ``predecessor_id`` (CAS-ADR-038
-                Primitive C). When supplied, the substrate verifies it
-                against the predecessor's current ``updated_at`` inside
-                the per-predecessor lock at supersede time; mismatch
-                rejects the call with the structured ``stale_chain_head``
-                409 envelope. Pass the value as observed on a prior
-                ``get_document`` read (canonical wire form: ISO 8601 with
-                ``Z`` suffix). Omit to keep the pre-Primitive-C
-                last-writer-wins behavior. Requires ``predecessor_id``.
-            needs_review: When true, the document enters the
-                metadata-review queue (metadata_confirmed=false) and
-                filename inference fills in fields the caller did not
-                supply. Default false: filename inference is skipped
-                and caller metadata is committed authoritatively. Use
-                get_filename_metadata ahead of ingest if you want
-                filename-based suggestions without entering the review
-                queue.
-            metadata: Caller-supplied metadata fields applied to the
-                document at ingest. Per the CAS-ADR-021 precedence
-                chain, caller values win over filename parse, chain
-                inheritance, and vault defaults on a per-field basis.
-                Recognized keys are the mutable document fields
-                (title, version_label, project, doc_type,
-                authority_scope, document_date, tags). Tags may be
-                supplied as a list of strings or as a comma-separated
-                string; whitespace is trimmed and empty fragments are
-                dropped in the string form.
-            tier3_metadata: Per-doc_type typed metadata payload.
-                Validated against the JSON Schema fragment declared
-                under ``document_types.doc_types[].metadata_schema`` for
-                the resolved doc_type (see ``admin_get_vault_config``).
-                When the doc_type has no metadata_schema declared and
-                this argument is non-null, ingest fails with 400
-                ``tier3_schema_violation``. Stored verbatim once
-                validated; queryable via ``search`` filters as
-                ``{"tier3_metadata": {"<field>": <value>}}`` with exact
-                equality semantics (null matches absent-or-null fields).
+            predecessor_id: When set, the ingested document supersedes this
+                predecessor: SAGE creates a ``supersedes`` edge (new -> old)
+                and archives the predecessor synchronously. The predecessor
+                must be active with a content hash differing from the new
+                file. Trio fields inherit from it when omitted (see above).
+            expected_head_version: Optimistic-concurrency token on the chain
+                head identified by ``predecessor_id``. Verified against the
+                predecessor's current ``updated_at`` under the
+                per-predecessor lock at supersede time; mismatch rejects with
+                ``stale_chain_head``. Pass the value observed on a prior
+                ``get_document`` read (ISO 8601 with ``Z`` suffix). Omit for
+                last-writer-wins. Requires ``predecessor_id``.
+            needs_review: When true, the document enters the metadata-review
+                queue (metadata_confirmed=false) and filename inference fills
+                omitted fields. Default false: inference is skipped and
+                caller metadata commits authoritatively. Use
+                ``get_filename_metadata`` for suggestions without queuing.
+            metadata: Caller-supplied metadata fields, authoritative per
+                field over filename parse, chain inheritance, and vault
+                defaults. Recognized keys: title, version_label, project,
+                doc_type, authority_scope, document_date, tags. Tags accept a
+                list or a comma-separated string (whitespace trimmed, empty
+                fragments dropped).
+            tier3_metadata: Per-doc_type typed payload, validated against the
+                doc_type's ``metadata_schema`` (see ``admin_get_vault_config``).
+                When the doc_type declares no schema and this is non-null,
+                ingest fails with ``tier3_schema_violation``. Stored verbatim
+                once validated; queryable via ``search`` filters as
+                ``{"tier3_metadata": {"<field>": <value>}}`` (exact equality;
+                null matches absent-or-null fields).
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -343,38 +276,33 @@ def register_sage_tools(
         filename: str,
         source_type: str,
     ) -> dict:
-        """Parse a filename's basename through the vault's
-        FilenameParser and return the extracted metadata. Side-effect
-        free: no document is created and vault state is unchanged.
+        """Parse a filename's basename through the vault's FilenameParser and
+        return the extracted metadata. Side-effect free: no document is
+        created and vault state is unchanged.
 
-        Per CAS-ADR-021, this is the agent-facing companion to
-        ingest_document's caller-authoritative metadata flow. Call this
-        first to obtain filename-derived suggestions, decide which
-        fields to keep, then call ingest_document with metadata=...
-        carrying the resolved values. Fields the parser could not
-        extract come back null. When the vault has no
-        filename_extraction.pattern configured, all fields are null.
+        This is the companion to ``ingest_document``'s caller-authoritative
+        metadata flow: call it first for filename-derived suggestions, decide
+        which fields to keep, then call ``ingest_document`` with
+        ``metadata=...``. Fields the parser could not extract come back null;
+        when the vault has no ``filename_extraction.pattern`` configured, all
+        fields are null.
 
         Which fields the parser extracts is vault-config-defined; see
         ``metadata_extraction.filename_extraction.segment_fields`` in
-        ``admin_get_vault_config`` for the active mapping. In the
-        ``cas`` vault, the configured pattern is
-        ``{date}_{project}_{code}_{title}_{version}``, so the parser
-        returns ``doc_date``, ``project``, ``doc_code``, ``title``,
-        and ``version``. Other vaults may configure a different
-        pattern and emit a different field set.
+        ``admin_get_vault_config``. In the ``cas`` vault the pattern is
+        ``{date}_{project}_{code}_{title}_{version}``, so the parser returns
+        ``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.
 
         Error modes:
-        - ``adapter_not_found`` (400): ``source_type`` is not an
-          enabled adapter on this vault.
+        - ``adapter_not_found`` (400): ``source_type`` is not an enabled
+          adapter on this vault.
 
         Args:
             vault_id: Target vault identifier.
-            filename: Filename to parse. The basename is preferred;
-                directory components are stripped before parsing.
-            source_type: Source artifact format (markdown, docx, pdf,
-                email, onenote, teams_chat). Must be enabled on the
-                vault.
+            filename: Filename to parse; the basename is used (directory
+                components are stripped).
+            source_type: Source artifact format (markdown, docx, pdf, email,
+                onenote, teams_chat). Must be enabled on the vault.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -451,106 +379,74 @@ def register_sage_tools(
     ) -> dict:
         """Apply one or more lifecycle state transitions to documents.
 
-        Accepts ``items`` as a list of N≥1 per-item transition requests.
-        Length-1 is fully supported — a caller with a single transition
-        to apply passes ``items=[{...}]`` rather than the (retired)
-        singleton form. Per CAS-ADR-029 v4 plural-noun convention, this
-        is the sole MCP entry point for lifecycle transitions.
+        Accepts ``items`` as a list of N>=1 per-item transition requests;
+        ``items=[{...}]`` is the single-transition form. This is the sole
+        MCP entry point for lifecycle transitions.
 
         Each item carries ``document_id``, ``action``, and optional
-        ``successor_id``. Items are processed in order, each holding
-        the per-document lock and a per-item SQLite transaction.
+        ``successor_id``. Items are processed in order, each holding the
+        per-document lock and a per-item SQLite transaction.
 
-        The action vocabulary lives in the vault config — it is
-        vault-config-defined, not a fixed SAGE-wide set. Call
-        ``admin_get_vault_config`` and read the
-        ``lifecycle.transitions`` array for the authoritative list of
-        (from_state, action, to_state, creates_edge) tuples in the
-        target vault. Two examples seen in practice:
+        The ``action`` vocabulary is vault-config-defined, not a fixed
+        SAGE-wide set. Read ``lifecycle.transitions`` in the vault config
+        (via ``admin_get_vault_config``) for the authoritative
+        (from_state, action, to_state, creates_edge) tuples. The ``cas``
+        vault uses ``ingest``, ``supersede``, ``complete``, ``archive``,
+        ``reactivate``.
 
-        - ``cas`` vault: ``ingest``, ``supersede``, ``complete``,
-          ``archive``, ``reactivate``.
-        - ``example_vault`` vault: ``ingest``, ``supersede``,
-          ``complete``, ``archive``, ``reactivate``, ``file``.
+        **``supersede`` is the canonical atomic form for replacing one
+        document with another:** it transitions the predecessor
+        (``active -> archived``) AND creates the ``supersedes`` edge
+        (new -> old) in one operation. The two-step alternative —
+        ``create_edges`` with ``edge_type="supersedes"`` then
+        ``update_lifecycles`` with ``action="archive"`` — ends in the same
+        state but is needed only to patch an already-archived predecessor
+        whose edge is missing (``create_edges`` does NOT auto-transition
+        the predecessor's lifecycle).
 
-        **The ``supersede`` action is the canonical atomic form for
-        replacing one document with another.** It both transitions the
-        predecessor (``active -> archived``) and creates the
-        ``supersedes`` edge (new -> old) in a single operation. The
-        alternative two-step pattern — ``create_edges`` with
-        ``edge_type="supersedes"`` followed by ``update_lifecycles``
-        with ``action="archive"`` — ends in the same state but is
-        required only when patching up an already-archived predecessor
-        whose supersedes edge is missing. ``create_edges`` with
-        ``edge_type="supersedes"`` does **not** auto-transition the
-        predecessor's lifecycle.
+        Each item is validated for the full lifecycle precondition surface
+        (vault-config action vocabulary, ``invalid_lifecycle_transition``
+        from the current state, the ``supersede`` chain-head and
+        identical-content guards, ``pipeline_incomplete`` on ``complete``).
 
-        Each per-item entry in ``items`` is validated for the full
-        lifecycle precondition surface (vault-config-defined action
-        vocabulary, ``invalid_lifecycle_transition`` from the current
-        state, the ``supersede`` chain-head and identical-content
-        guards, ``pipeline_incomplete`` on ``complete``, etc.).
-        Item-level errors do NOT roll back earlier or later items
-        (CAS-ADR-029).
-
-        **The batch is NOT atomic.** A per-item SAGEError surfaces in the
-        response's per-item error envelope but does not roll back earlier-
-        or-later successful items. The tool returns a successful response
-        envelope (not an error envelope) when at least one item is processed,
-        even if some items failed; callers must inspect each
-        ``BulkLifecycleItemResult.status`` and the aggregate
-        ``success_count`` / ``error_count`` fields. The tool returns an
-        error envelope only when up-front validation rejects the call
-        (invalid ``vault_id`` shape, malformed ``items`` shape, unknown
-        vault, or invalid ``response_mode`` value).
-
-        Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero. Callers building bulk
-        operations programmatically may pass ``items=[]`` without
-        special-casing the call site.
-
-        Performance: a bulk call is observably faster than N sequential
-        ``update_lifecycles`` calls because MCP framing overhead and
-        inter-call asyncio scheduling are eliminated; the per-document
-        lock and per-item SQLite transaction are unchanged.
+        **The batch is NOT atomic.** A per-item error surfaces in that
+        item's error envelope without rolling back other items; the tool
+        returns a success envelope whenever at least one item is processed,
+        so inspect each ``BulkLifecycleItemResult.status`` and the
+        aggregate ``success_count`` / ``error_count``. An error envelope is
+        returned only when up-front validation rejects the call (invalid
+        ``vault_id``, malformed ``items``, unknown vault, or invalid
+        ``response_mode``). Empty ``items`` is valid: empty ``results``,
+        zero counts.
 
         Args:
             vault_id: Target vault identifier.
-            items: List of per-item transition requests. Each item must
-                conform to the ``BulkLifecycleItem`` shape:
-                ``{document_id: str, action: str, successor_id: str | None}``.
-                Shape validation runs up front; a single malformed item
-                rejects the entire batch before any per-item work
-                executes.
-            response_mode: Per-item payload depth. ``"full"``
-                returns each success item's complete ``document`` body
-                (including the potentially-large ``semantic_abstract``);
-                ``"light"`` strips the per-item ``document`` field
-                entirely, returning only identity + status + warnings +
-                error so the response stays inside the MCP inline-output
-                budget (default 24 KiB; configurable per process via
-                ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries carry the full structured error
-                envelope regardless of mode. When unset, ``response_mode``
-                defaults to ``"light"`` when ``len(items) > 5``, otherwise
-                ``"full"``. The threshold is fixed at the constant
-                ``LIGHT_DEFAULT_THRESHOLD = 5`` (defined in
-                ``sage.services.lifecycle``); pass ``response_mode``
-                explicitly to override. Invalid values surface as an
-                ``internal_error`` envelope before any per-item work runs.
-            dry_run: /. When True, every item runs as
-                a dry-run — validators execute, the would-be
-                projection of the post-state is computed, and each
-                per-item result carries a ``changes`` block
-                enumerating field-level deltas (preserved under
-                ``response_mode=light``). No persistence occurs.
-                Envelope-level only; per-item override is not
-                supported. **Limitation:** each item's dry-run is
-                evaluated against the committed state at batch start;
-                no item's would-be effects are visible to subsequent
-                items. For full preview accuracy under sequential
-                dependencies (e.g., item N supersedes a document and
-                item N+1 tries to mutate it), dry-run each item
-                separately. Default False.
+            items: List of per-item transition requests, each conforming to
+                the ``BulkLifecycleItem`` shape: ``{document_id: str,
+                action: str, successor_id: str | None}``. Shape validation
+                runs up front; one malformed item rejects the whole batch
+                before any per-item work.
+            response_mode: Per-item payload depth. ``"full"`` returns each
+                success item's complete ``document`` body (including the
+                potentially large ``semantic_abstract``); ``"light"`` strips
+                the ``document`` field to identity + status + warnings +
+                error so the response stays inside the MCP inline budget
+                (default 24 KiB; override via
+                ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries always
+                carry the full error envelope. When unset, defaults to
+                ``"light"`` for ``len(items) > 5``, else ``"full"``
+                (threshold ``LIGHT_DEFAULT_THRESHOLD = 5`` in
+                ``sage.services.lifecycle``). Invalid values surface as
+                ``internal_error`` before any per-item work.
+            dry_run: When True, every item runs as a dry-run: validators
+                execute, the would-be post-state projection is computed, and
+                each result carries a ``changes`` block of field-level
+                deltas (kept under ``response_mode=light``). No persistence;
+                envelope-level only. **Limitation:** each item is evaluated
+                against committed state at batch start, so sequential
+                dependencies (item N supersedes a doc, item N+1 mutates it)
+                are not reflected — dry-run such items separately. Default
+                False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -581,180 +477,109 @@ def register_sage_tools(
     ) -> dict:
         """Create one or more typed edges between documents in the graph.
 
-        Accepts ``items`` as a list of N≥1 per-item edge specifications.
-        Length-1 is fully supported — a caller with a single edge to
-        create passes ``items=[{...}]`` rather than the (retired)
-        singleton form. Per CAS-ADR-029 v4 plural-noun convention, this
-        is the sole MCP entry point for edge creation.
+        Accepts ``items`` as a list of N>=1 per-item edge specs;
+        ``items=[{...}]`` is the single-edge form. This is the sole MCP
+        entry point for edge creation.
 
         Each item carries ``source_id``, ``target_id``, ``edge_type``,
         anchor fields, ``retracted_edge_id``, ``rationale``,
-        ``rationale_kind``, ``notes``, and ``synced_from_*`` fields,
-        and is dispatched through the idempotent variant: a duplicate
-        natural-key triple (``source_id``, ``target_id``, ``edge_type``)
-        returns the existing edge with ``created=false`` rather than
-        raising. Items are processed in order, each under the
-        process-wide ``_link_lock`` and a per-item SQLite transaction.
+        ``rationale_kind``, ``notes``, and ``synced_from_*`` fields.
+        Dispatch is idempotent: a duplicate natural-key triple
+        (``source_id``, ``target_id``, ``edge_type``) returns the existing
+        edge with ``created=false`` rather than raising. Items are
+        processed in order, each under the process-wide link lock and a
+        per-item SQLite transaction.
 
-        **For ``supersedes`` edges, prefer
-        ``update_lifecycles`` with ``action="supersede"`` per item**
-        (or ``ingest_document(..., predecessor_id=...)`` when the
-        successor has not yet been ingested). Those tools wire the
-        edge AND archive the predecessor atomically. ``create_edges``
-        with an ``edge_type="supersedes"`` item creates the edge alone
-        and does **not** transition the predecessor's lifecycle; reach
-        for it only when stitching a missing edge into a chain whose
-        lifecycle states are already correct.
+        **For ``supersedes`` edges, prefer ``update_lifecycles`` with
+        ``action="supersede"``** (or ``ingest_document(..., predecessor_id=...)``
+        when the successor is not yet ingested): those wire the edge AND
+        archive the predecessor atomically. ``create_edges`` with an
+        ``edge_type="supersedes"`` item creates the edge alone and does
+        **not** transition the predecessor's lifecycle — use it only to
+        stitch a missing edge into a chain whose lifecycle states are
+        already correct.
 
-        Each per-item entry in ``items`` is validated for the full
-        edge-creation precondition surface (document existence,
-        edge-type registry-declared anchor policy per CAS-ADR-017,
-        ``merged_from`` chain-head invariant, ``retracted_edge_id``
-        shape, natural-key idempotency, etc.). Item-level errors do
-        NOT roll back earlier or later items (CAS-ADR-029).
+        **Per-item anchor fields by edge_type policy bucket.** Each edge
+        type has a registry-declared ``resolution_policy`` dictating which
+        anchor fields the item must carry:
 
-        **Per-item anchor field semantics by edge_type policy bucket
-        (CAS-ADR-017).** Each edge type has a registry-declared
-        ``resolution_policy`` (``none``, ``transitive_source``,
-        ``transitive_both``, or ``TBD``) that dictates which anchor
-        fields the per-item entry must carry:
-
-        - ``none`` (supersedes, retracts, merged_from): meta-edges; no
-          anchor fields. ``retracts`` additionally takes a one-sided
-          ``source_valid_from_version`` and ``retracted_edge_id``
-          (instead of a ``target_id``).
+        - ``none`` (supersedes, retracts, merged_from): meta-edges, no
+          anchor fields. ``retracts`` instead takes a one-sided
+          ``source_valid_from_version`` and ``retracted_edge_id`` (no
+          ``target_id``).
         - ``transitive_source`` (derived_from): requires
-          ``source_valid_from_version`` (anchors the edge in the
-          source chain); no target anchor. For whole-document
-          derivations the convention is to set
-          ``source_valid_from_version`` equal to ``source_id`` itself
-          — the edge is "valid from the source as it exists right now."
+          ``source_valid_from_version`` (anchors the edge in the source
+          chain); no target anchor. For whole-document derivations set
+          ``source_valid_from_version`` equal to ``source_id``.
         - ``transitive_both`` (covers, references, bundles_with,
           depends_on, instantiated_from): requires both
-          ``source_valid_from_version`` and
-          ``target_valid_from_version``.
+          ``source_valid_from_version`` and ``target_valid_from_version``.
 
-        Canonical per-item example — agent-asserted ``derived_from``
-        (e.g., a deliverable that traces to its template). The same
-        per-item field set is shown as kwargs first, then as the
-        items-list dict that ``create_edges`` actually accepts::
+        Canonical ``derived_from`` item (kwarg form shown; pass it as an
+        ``items`` dict)::
 
-            # Per-item field set (kwarg form):
-            #   source_id="<deliverable_id>",
-            #   target_id="<template_id>",
-            #   edge_type="derived_from",
-            #   source_valid_from_version="<deliverable_id>",
-            #   rationale="Template authored by..."
+            edge_type="derived_from", source_id="<deliverable_id>",
+            target_id="<template_id>",
+            source_valid_from_version="<deliverable_id>"
 
-            create_edges(
-                vault_id="cas",
-                items=[
-                    {"source_id": "<deliverable_id>",
-                     "target_id": "<template_id>",
-                     "edge_type": "derived_from",
-                     "source_valid_from_version": "<deliverable_id>",
-                     "rationale": "Template authored by..."},
-                ])
+        **``merged_from`` chain-head precondition.** Both endpoints must be
+        chain heads — neither ``source_id`` nor ``target_id`` may have an
+        outbound ``supersedes`` edge — or the per-item
+        ``merged_from_validation`` envelope is returned. When the source is
+        mid-chain and content reuse is what's wanted, use ``derived_from``
+        instead: its ``source_valid_from_version`` anchor captures the
+        chain-visibility semantics ``merged_from`` lacks.
 
-        **``merged_from`` chain-head precondition.** Both endpoints
-        must be chain heads — i.e., neither ``source_id`` nor
-        ``target_id`` may have an outbound ``supersedes`` edge.
-        Attempting ``merged_from`` from a mid-chain source OR into a
-        mid-chain target returns the per-item
-        ``merged_from_validation`` envelope. When the source is
-        mid-chain and a content-reuse edge is what's actually wanted,
-        use ``derived_from`` instead — its anchor field
-        ``source_valid_from_version`` captures the chain-visibility
-        semantics that ``merged_from`` lacks.
+        **The batch is NOT atomic.** A per-item error surfaces in that
+        item's error envelope without rolling back other items; the tool
+        returns a success envelope whenever at least one item is processed,
+        so inspect each ``BulkLinkItemResult.status`` and the aggregate
+        ``success_count`` / ``error_count``. An error envelope is returned
+        only when up-front validation rejects the call (invalid
+        ``vault_id``, malformed ``items``, unknown vault, or invalid
+        ``response_mode``). Empty ``items`` is valid: empty ``results``,
+        zero counts.
 
-        **The batch is NOT atomic.** A per-item SAGEError surfaces in the
-        response's per-item error envelope but does not roll back earlier-
-        or-later successful items. The tool returns a successful response
-        envelope (not an error envelope) when at least one item is
-        processed, even if some items failed; callers must inspect each
-        ``BulkLinkItemResult.status`` and the aggregate ``success_count``
-        / ``error_count`` fields. The tool returns an error envelope only
-        when up-front validation rejects the call (invalid ``vault_id``
-        shape, malformed ``items`` shape, unknown vault, or invalid
-        ``response_mode`` value).
-
-        Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero. Callers building edge
-        operations programmatically may pass ``items=[]`` without
-        special-casing the call site.
-
-        Per-item error modes (surfaced inside the response envelope):
+        Per-item error modes (inside the response envelope):
         ``self_referential_edge`` (400), ``document_not_found`` (404),
-        ``tbd_policy_edge`` (400), ``edge_anchor_policy_violation``
-        (400), ``retract_target_not_edge`` (400),
-        ``merged_from_validation`` (400),
+        ``tbd_policy_edge`` (400), ``edge_anchor_policy_violation`` (400),
+        ``retract_target_not_edge`` (400), ``merged_from_validation`` (400),
         ``synced_from_inapplicable_edge_type`` (400),
         ``synced_from_version_not_in_source_chain`` (404).
 
-        Worked example. To create three references edges and a fourth
-        depends_on edge in one call::
-
-            create_edges(
-                vault_id="cas",
-                items=[
-                    {"source_id": "a1b2c3d4_doc_a",
-                     "target_id": "e5f6a7b8_doc_b",
-                     "edge_type": "references",
-                     "source_valid_from_version": "a1b2c3d4_doc_a",
-                     "target_valid_from_version": "e5f6a7b8_doc_b",
-                     "rationale": "doc A cites doc B"},
-                    ...
-                ])
-
-        On a dry-run (``dry_run=True``), every per-item ``edge.id``
-        carries the nil-UUID sentinel ``00000000-0000-0000-0000-000000000000``
-        on the create path, or the existing edge's real id on a natural-
-        key hit (with ``created=false``). The envelope echoes
-        ``dry_run=True`` and no edges are persisted.
+        On ``dry_run=True`` no edges persist: each ``edge.id`` carries the
+        nil-UUID sentinel (or the existing id on a natural-key hit with
+        ``created=false``) and the envelope echoes ``dry_run=True``.
 
         Args:
             vault_id: Target vault identifier.
-            items: List of per-item link requests. Each item must
-                conform to the ``BulkLinkItem`` shape:
-                ``{source_id: str, target_id: str | null, edge_type: str,
-                source_valid_from_version: str | null,
-                target_valid_from_version: str | null,
-                retracted_edge_id: str | null, notes: str | null,
-                rationale: str | null, rationale_kind: str | null,
-                synced_from_version: str | null,
-                synced_from_content_hash: str | null}``. Shape
-                validation runs up front; a single malformed item
-                rejects the entire batch before any per-item work
-                executes.
-            response_mode: Per-item payload depth (/).
-                ``"full"`` returns each success item's complete ``edge``
-                body; ``"light"`` strips the per-item ``edge`` field
-                entirely, returning only ``source_id`` / ``target_id`` /
-                ``edge_type`` / ``status`` / ``created`` /
-                ``existing_rationale`` / ``error`` so the response stays
-                inside the MCP inline-output budget. Failure entries
-                carry the full structured error envelope regardless of
-                mode. ``created`` and ``existing_rationale`` are
-                preserved under light because they are the only signals
-                callers have for the natural-key idempotency outcome.
-                When unset, ``response_mode`` defaults to ``"light"``
-                when ``len(items) > 5``, otherwise ``"full"``. The
-                threshold is fixed at the constant
-                ``LIGHT_DEFAULT_THRESHOLD = 5`` (defined in
-                ``sage.services.graph_ops``); pass ``response_mode``
-                explicitly to override. Invalid values surface as an
-                ``internal_error`` envelope before any per-item work
-                runs.
-            dry_run: /. When True, every item runs as a
-                dry-run — validators execute (including the
-                natural-key pre-check), the would-be projection of the
-                edge is computed, and each per-item ``edge.id`` carries
-                the sentinel (or the existing edge id on a natural-key
-                hit). No persistence occurs. Envelope-level only;
-                per-item override is not supported. **Limitation:** each
-                item's dry-run is evaluated against the committed state
-                at batch start; no item's would-be effects are visible
-                to subsequent items. Default False.
+            items: List of per-item link requests, each conforming to the
+                ``BulkLinkItem`` shape: ``{source_id, target_id?,
+                edge_type, source_valid_from_version?,
+                target_valid_from_version?, retracted_edge_id?, notes?,
+                rationale?, rationale_kind?, synced_from_version?,
+                synced_from_content_hash?}``. Shape validation runs up
+                front; one malformed item rejects the whole batch before
+                any per-item work.
+            response_mode: Per-item payload depth. ``"full"`` returns each
+                success item's complete ``edge`` body; ``"light"`` strips
+                it to ``source_id`` / ``target_id`` / ``edge_type`` /
+                ``status`` / ``created`` / ``existing_rationale`` /
+                ``error`` to stay inside the MCP inline budget (``created``
+                and ``existing_rationale`` are kept as the only natural-key
+                idempotency signals). Failure entries always carry the full
+                error envelope. When unset, defaults to ``"light"`` for
+                ``len(items) > 5``, else ``"full"`` (threshold
+                ``LIGHT_DEFAULT_THRESHOLD = 5`` in
+                ``sage.services.graph_ops``). Invalid values surface as
+                ``internal_error`` before any per-item work.
+            dry_run: When True, every item runs as a dry-run: validators
+                execute, the would-be edge projection is computed, and each
+                ``edge.id`` carries the sentinel (or the existing id on a
+                natural-key hit). No persistence; envelope-level only.
+                **Limitation:** each item is evaluated against committed
+                state at batch start, so no item's would-be effects are
+                visible to later items. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -785,153 +610,110 @@ def register_sage_tools(
     ) -> dict:
         """Patch mutable metadata fields on one or more documents.
 
-        Accepts ``items`` as a list of N≥1 per-item patch requests.
-        Length-1 is fully supported — a caller patching a single
-        document passes ``items=[{...}]`` rather than the (retired)
-        singleton form. Per CAS-ADR-029 v4 plural-noun convention,
-        this is the sole MCP entry point for metadata patching.
+        Accepts ``items`` as a list of N>=1 per-item patch requests;
+        ``items=[{...}]`` is the single-document form. This is the sole MCP
+        entry point for metadata patching.
 
-        Each item carries ``document_id`` plus any subset of the
-        patchable fields (``title``, ``version_label``, ``project``,
-        ``tags``, ``doc_type``, ``authority_scope``, ``document_date``,
-        ``tier3_metadata``, ``expected_version``). Items are processed
-        in order, each holding the per-document lock and a per-item
-        SQLite transaction.
+        Each item carries ``document_id`` plus any subset of the patchable
+        fields (``title``, ``version_label``, ``project``, ``tags``,
+        ``doc_type``, ``authority_scope``, ``document_date``,
+        ``tier3_metadata``, ``expected_version``). Items are processed in
+        order, each holding the per-document lock and a per-item SQLite
+        transaction.
 
         Scalars (``title``, ``version_label``, ``project``, ``doc_type``,
-        ``authority_scope``, ``document_date``) use set-or-omit
-        semantics per item: pass to set, omit to leave unchanged.
-        List-valued metadata fields (today: ``tags``) take a
-        ``ListFieldPatch`` ops-object (``{add, remove}``);
+        ``authority_scope``, ``document_date``) use set-or-omit semantics:
+        pass to set, omit to leave unchanged. List-valued fields (today:
+        ``tags``) take a ``ListFieldPatch`` ops-object (``{add, remove}``);
         ``tier3_metadata`` takes a ``Tier3Patch`` ops-object
-        (``{set, unset}``). The bare-list / bare-dict forms are no
-        longer accepted (see ``legacy_form`` below). The ops-object
-        shape is the substrate's concurrency-safety contract
-        (CAS-ADR-038): parallel adds of distinct values to the same
-        list-valued field commute.
+        (``{set, unset}``). Bare-list / bare-dict forms are rejected (see
+        ``legacy_form`` below). The ops-object shape is the
+        concurrency-safety contract: parallel adds of distinct values to
+        the same list-valued field commute.
 
-        Per CAS-ADR-021, each successful per-item patch sets
-        ``metadata_confirmed=true`` on the target document (it leaves
-        the metadata-review queue if it was there). The ``doc_type``
-        value must be one of the values defined under
+        Each successful per-item patch sets ``metadata_confirmed=true`` on
+        the target (it leaves the metadata-review queue if it was there).
+        The ``doc_type`` value must be one declared under
         ``document_types.doc_types`` in the vault config; query
         ``admin_get_vault_config`` for the authoritative list.
 
-        Empty-patch confirmation-flip semantics (CAS-ADR-021): an item
-        carrying only ``document_id`` (no field-patch keys) is a
-        **pure-confirmation flip**, not a no-op. It succeeds and:
-        flips ``metadata_confirmed`` to True, advances ``updated_at``,
-        and stamps ``last_modified_by``. The caller's decision to
-        include the item IS the confirmation signal.
+        Empty-patch confirmation-flip: an item carrying only
+        ``document_id`` (no field-patch keys) is a **pure-confirmation
+        flip**, not a no-op — it flips ``metadata_confirmed`` to True,
+        advances ``updated_at``, and stamps ``last_modified_by``. Including
+        the item IS the confirmation signal.
 
-        Each per-item entry in ``items`` is validated for the full
-        metadata precondition surface (document existence, tag and
-        tier3 patch grammar per CAS-ADR-028, doc_type validation,
-        tier3 schema enforcement against the resolved doc_type,
-        ``metadata_confirmed=true`` side-effect per CAS-ADR-021, etc.).
-        Item-level errors do NOT roll back earlier or later items
-        (CAS-ADR-029).
+        **The batch is NOT atomic.** A per-item error surfaces in that
+        item's error envelope without rolling back other items; the tool
+        returns a success envelope whenever at least one item is processed,
+        so inspect each ``BulkMetadataItemResult.status`` and the aggregate
+        ``success_count`` / ``error_count``. An error envelope is returned
+        only when up-front validation rejects the call (invalid
+        ``vault_id``, malformed ``items``, per-item ``legacy_form`` shape,
+        unknown vault, or invalid ``response_mode``). Empty ``items`` is
+        valid: empty ``results``, zero counts.
 
-        **The batch is NOT atomic.** A per-item SAGEError surfaces in the
-        response's per-item error envelope but does not roll back earlier-
-        or-later successful items. The tool returns a successful response
-        envelope (not an error envelope) when at least one item is
-        processed, even if some items failed; callers must inspect each
-        ``BulkMetadataItemResult.status`` and the aggregate
-        ``success_count`` / ``error_count`` fields. The tool returns an
-        error envelope only when up-front validation rejects the call
-        (invalid ``vault_id`` shape, malformed ``items`` shape, per-item
-        ``legacy_form`` shape, unknown vault, or invalid
-        ``response_mode`` value).
-
-        Per CAS-ADR-021, every successful per-item patch sets
-        ``metadata_confirmed=true`` on the target document (the document
-        leaves the metadata-review queue if it was there).
-
-        Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero. Callers building bulk
-        operations programmatically may pass ``items=[]`` without
-        special-casing the call site.
-
-        List-valued field patch shape (per item ``tags``)::
+        List-valued field patch shape (per-item ``tags``)::
 
             {"add": ["x",...], "remove": ["y",...]}
 
-        At least one key required and non-empty. ``add`` values must NOT
-        be present on the field; ``remove`` values MUST be present
-        (strict conflict). See ``update_metadata`` for the full grammar
-        (CAS-ADR-028; CAS-ADR-038 for the concurrency-safety contract).
+        At least one key required and non-empty; ``add`` values must NOT be
+        present on the field, ``remove`` values MUST be present (strict
+        conflict).
 
-        Tier3 patch shape (per item ``tier3_metadata``)::
+        Tier3 patch shape (per-item ``tier3_metadata``)::
 
             {"set": {"key": "value",...}, "unset": ["other_key",...]}
 
-        Same grammar as ``update_metadata``. The merged result is
-        validated against the resolved doc_type's ``metadata_schema``.
+        The merged result is validated against the resolved doc_type's
+        ``metadata_schema``.
 
-        Per-item error modes (surfaced inside the response envelope):
+        Per-item error modes (inside the response envelope):
         ``document_not_found`` (404), ``invalid_doc_type`` (400),
-        ``{field}_add_conflict`` / ``{field}_remove_conflict`` (400,
-        e.g., ``tags_add_conflict``), ``tag_patch_overlap`` (400),
-        ``tier3_unset_conflict`` / ``tier3_patch_overlap`` /
-        ``patch_empty`` (400), ``tier3_schema_violation`` (400),
-        ``tier3_doc_type_change_stale_keys`` (400), and ``stale_read``
-        (409, when a per-item ``expected_version`` does not match the
-        target document's current version per CAS-ADR-038 Primitive B).
-        See ``update_metadata`` for detail-envelope shape.
+        ``{field}_add_conflict`` / ``{field}_remove_conflict`` (400, e.g.
+        ``tags_add_conflict``), ``tag_patch_overlap`` (400),
+        ``tier3_unset_conflict`` / ``tier3_patch_overlap`` / ``patch_empty``
+        (400), ``tier3_schema_violation`` (400),
+        ``tier3_doc_type_change_stale_keys`` (400), and ``stale_read`` (409,
+        when a per-item ``expected_version`` does not match the target's
+        current version).
 
-        Batch-level error modes (surfaced as the tool's error envelope):
-        ``legacy_form`` (a per-item ``tags`` is a bare list or per-item
-        ``tier3_metadata`` is a bare key/value dict; detail names the new
-        ops-object shape), ``unknown_vault``, and ``internal_error``
-        (malformed ``vault_id`` / ``items`` shape, or invalid
-        ``response_mode``).
-
-        Performance: a bulk call is observably faster than N sequential
-        ``update_metadata`` calls because MCP framing overhead and
-        inter-call asyncio scheduling are eliminated; the per-document
-        lock and per-item SQLite transaction are unchanged.
+        Batch-level error modes (the tool's error envelope): ``legacy_form``
+        (a per-item ``tags`` is a bare list or ``tier3_metadata`` a bare
+        key/value dict; detail names the ops-object shape), ``unknown_vault``,
+        and ``internal_error`` (malformed ``vault_id`` / ``items``, or
+        invalid ``response_mode``).
 
         Args:
             vault_id: Target vault identifier.
-            items: List of per-item patch requests. Each item must
-                conform to the ``BulkMetadataItem`` shape:
-                ``{document_id: str, title?: str, version_label?: str,
-                project?: str, tags?: ListFieldPatch, doc_type?: str,
-                authority_scope?: str, document_date?: str,
-                tier3_metadata?: Tier3Patch, expected_version?: str}``.
-                Shape validation runs up front; a single malformed item
-                rejects the entire batch before any per-item work
-                executes.
-            response_mode: Per-item payload depth. ``"full"``
-                returns each success item's complete ``document`` body
-                (including the potentially-large ``semantic_abstract``);
-                ``"light"`` strips the per-item ``document`` field
-                entirely, returning only identity + status + warnings +
-                error so the response stays inside the MCP inline-output
-                budget (default 24 KiB; configurable per process via
-                ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries carry the full structured error
-                envelope regardless of mode. When unset, ``response_mode``
-                defaults to ``"light"`` when ``len(items) > 5``, otherwise
-                ``"full"``. The threshold is fixed at the constant
-                ``LIGHT_DEFAULT_THRESHOLD = 5`` (defined in
-                ``sage.services.metadata``); pass ``response_mode``
-                explicitly to override. Invalid values surface as an
-                ``internal_error`` envelope before any per-item work runs.
-            dry_run: /. When True, every item runs as
-                a dry-run — validators execute, the would-be
-                projection of the post-state is computed, and each
-                per-item result carries a ``changes`` block
-                enumerating field-level deltas (preserved under
-                ``response_mode=light``). No persistence occurs.
-                Envelope-level only; per-item override is not
-                supported. **Limitation:** each item's dry-run is
-                evaluated against the committed state at batch start;
-                no item's would-be effects are visible to subsequent
-                items. For full preview accuracy under sequential
-                dependencies (e.g., item N adds tag X and item N+1
-                tries to add the same tag), dry-run each item
-                separately. Default False.
+            items: List of per-item patch requests, each conforming to the
+                ``BulkMetadataItem`` shape: ``{document_id: str, title?: str,
+                version_label?: str, project?: str, tags?: ListFieldPatch,
+                doc_type?: str, authority_scope?: str, document_date?: str,
+                tier3_metadata?: Tier3Patch, expected_version?: str}``. Shape
+                validation runs up front; one malformed item rejects the
+                whole batch before any per-item work.
+            response_mode: Per-item payload depth. ``"full"`` returns each
+                success item's complete ``document`` body (including the
+                potentially large ``semantic_abstract``); ``"light"`` strips
+                the ``document`` field to identity + status + warnings +
+                error so the response stays inside the MCP inline budget
+                (default 24 KiB; override via
+                ``SAGE_MCP_INLINE_BUDGET_BYTES``). Failure entries always
+                carry the full error envelope. When unset, defaults to
+                ``"light"`` for ``len(items) > 5``, else ``"full"``
+                (threshold ``LIGHT_DEFAULT_THRESHOLD = 5`` in
+                ``sage.services.metadata``). Invalid values surface as
+                ``internal_error`` before any per-item work.
+            dry_run: When True, every item runs as a dry-run: validators
+                execute, the would-be post-state projection is computed, and
+                each result carries a ``changes`` block of field-level
+                deltas (kept under ``response_mode=light``). No persistence;
+                envelope-level only. **Limitation:** each item is evaluated
+                against committed state at batch start, so sequential
+                dependencies (item N adds tag X, item N+1 adds the same tag)
+                are not reflected — dry-run such items separately. Default
+                False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -968,43 +750,27 @@ def register_sage_tools(
         """Delete a production edge from the graph.
 
         For staging-table edges (pre-confirmation), use
-        ``update_staging_edge(action="dismiss")`` instead. The two
-        tables are distinct and edge ids do not cross between them; an
-        id minted in staging is not valid here once promoted, and vice
-        versa.
+        ``update_staging_edge(action="dismiss")`` instead — the two tables
+        are distinct and edge ids do not cross between them.
 
-        Discovering ``edge_id``: use ``search`` with
-        ``target="edges"`` to enumerate production edges by
-        ``source_id`` / ``target_id`` / ``edge_type``. Example:
-        ``search(vault_id=..., mode="catalog", target="edges",
-        filters={"source_id": "...", "edge_type": "..."})``. The
-        returned ``edge_id`` is the value to pass here.
+        Discovering ``edge_id``: use ``search`` with ``target="edges"`` to
+        enumerate production edges by ``source_id`` / ``target_id`` /
+        ``edge_type``, e.g. ``search(vault_id=..., mode="catalog",
+        target="edges", filters={"source_id": "...", "edge_type": "..."})``.
+        The returned ``edge_id`` is the value to pass here.
 
         Error modes:
-        - ``edge_not_found`` (404): no production edge with that id.
-
-        Dry-run mode:
-        Set ``dry_run=true`` to confirm the edge exists and preview
-        the would-be projection of what would be deleted without
-        persisting. The response carries ``deleted=false``,
-        ``dry_run=true``, and ``preview_edge`` populated with the
-        would-be-deleted edge. A missing edge_id raises the same
-        ``edge_not_found`` error as a real-run.
-
-        Note: unlink is an edge mutation, not a document field
-        mutation, so the change surface is the existing
-        ``preview_edge`` field rather than a separate ``changes``
-        block. ``UnlinkResponse`` does not carry a
-        ``changes`` field.
+        - ``edge_not_found`` (404): no production edge with that id (raised
+          on dry-run too).
 
         Args:
             vault_id: Target vault identifier.
             edge_id: Production edge identifier.
-            dry_run:. When True, preview the would-be
-                projection of the deletion without persisting; the
-                edge surfaces in ``preview_edge``. No separate
-                ``changes`` block; ``preview_edge`` is the
-                change surface. Default False.
+            dry_run: When True, confirm the edge exists and preview the
+                would-be deletion without persisting; the response carries
+                ``deleted=false``, ``dry_run=true``, and the edge in
+                ``preview_edge`` (the change surface — there is no separate
+                ``changes`` block). Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1058,28 +824,26 @@ def register_sage_tools(
     ) -> dict:
         """Walk the document graph from a starting document.
 
-        Traversal honors chain-scoped edge resolution per CAS-ADR-017:
-        anchor fields determine which edges are visible from the query
-        version's lineage; `retracts` edges can suppress downstream
-        edges; `merged_from` tombstones suppress predecessor-chain edges
-        downstream of the termination point.
+        Traversal honors chain-scoped edge resolution: anchor fields
+        determine which edges are visible from the query version's lineage;
+        `retracts` edges can suppress downstream edges; `merged_from`
+        tombstones suppress predecessor-chain edges downstream of the
+        termination point.
 
         **Outbound dedup on ``transitive_both`` edges.** For
         ``transitive_both`` edge types (``covers``, ``references``,
-        ``bundles_with``, ``depends_on``, ``instantiated_from``),
-        outbound traversal deduplicates by target document: at most
-        one representative edge per (source-chain, target) pair is
-        returned, with chain-scoped resolution selecting the winner
-        from the query position's lineage. Distinct edges sourced
-        from different chain members but pointing at the same target
-        are masked. For comprehensive enumeration of every edge into
+        ``bundles_with``, ``depends_on``, ``instantiated_from``), outbound
+        traversal deduplicates by target document: at most one
+        representative edge per (source-chain, target) pair is returned,
+        chain-scoped resolution selecting the winner from the query
+        position's lineage. Distinct edges from different chain members
+        pointing at the same target are masked. To enumerate every edge into
         a target chain, traverse **inbound** from the target instead.
-        The ``edge_counts.{edge_type}`` field in the response reflects
-        the total visible edges from the query position, including
-        those masked by dedup; if ``edge_counts > len(nodes)``, the
-        result has masked siblings. ``supersedes`` is point-to-point
-        and not subject to this dedup; the rule applies only to the
-        five ``transitive_both`` edge types.
+        ``edge_counts.{edge_type}`` reflects total visible edges from the
+        query position including masked ones; if ``edge_counts >
+        len(nodes)`` the result has masked siblings. ``supersedes`` is
+        point-to-point and exempt; the rule applies only to the five
+        ``transitive_both`` types.
 
         Args:
             vault_id: Target vault identifier.
@@ -1301,16 +1065,14 @@ def register_sage_tools(
                 via filter on ``source_id`` / ``target_id`` /
                 ``edge_type`` and is valid only with ``mode="catalog"``.
                 See the *Edge enumeration* section above.
-            response_mode: Canonical payload-depth selector across SAGE
-                surfaces (,). See the
-                *Response-mode semantics across targets* section above
-                for the full behavior matrix. "light" returns the
-                stripped shape (DocumentSummaryLight for
-                catalog+documents, identity columns for edges,
-                chunk_content-suppressed for semantic/keyword); "full"
-                returns the complete envelope. When unset, edges apply
-                the >5-results default-threshold rule; documents
-                preserve full-equivalent behavior unconditionally.
+            response_mode: Canonical payload-depth selector. See the
+                *Response-mode semantics across targets* section above for
+                the full matrix. "light" returns the stripped shape
+                (DocumentSummaryLight for catalog+documents, identity
+                columns for edges, chunk_content-suppressed for
+                semantic/keyword); "full" returns the complete envelope.
+                When unset, edges apply the >5-results default-threshold
+                rule; documents preserve full-equivalent behavior.
             sort_by: Sort key for catalog mode results. One of:
                 "title", "doc_type", "document_date",
                 "lifecycle_status". Ignored by semantic, keyword, and
@@ -1408,12 +1170,6 @@ def register_sage_tools(
           and ``content_size``; ``projection_text`` is null. Preferred
           for large projections that would exceed the MCP tool-result
           inline budget. Mirrors ``get_document(write_to_path=...)``.
-
-        Replaces the pre-audit ``sage_export_projection`` MCP tool, which
-        was folded into this write_to_path mode per the *SAGE MCP Tool
-        Surface* steering doc v3 audit. The REST surface retains the
-        original ``export_projection`` endpoint (storage_root-relative
-        semantics).
 
         Error modes:
         - ``document_not_found`` (404): no document with that id.
@@ -1513,69 +1269,35 @@ def register_sage_tools(
         in the vault's storage root.
 
         Drops and recreates the symlink trees under the vault's
-        ``storage_root``. Useful after bulk metadata updates that
-        moved documents between doc_type or lifecycle buckets. The
-        symlink views are for human Finder/file-browser navigation;
-        no SAGE tool consumes them.
+        ``storage_root``. Useful after bulk metadata updates that moved
+        documents between doc_type or lifecycle buckets. The views are for
+        human file-browser navigation; no SAGE tool consumes them.
 
-        ``doc_type=None`` exclusion (BH-048):
-        Documents whose ``doc_type`` is null are silently excluded from
-        the ``by_doc_type/`` view -- no ``by_doc_type/<null>/`` directory
-        is created and no symlink to the source file appears under
-        ``by_doc_type/``. The asymmetric sibling ``by_lifecycle/`` never
-        drops: every document has a non-null ``lifecycle_status``, so
-        every document is represented under ``by_lifecycle/<status>/``.
-        A document that exists in the graph but never lands under
-        ``by_doc_type/`` is the diagnostic signal that its ``doc_type``
-        is unset -- patch via ``update_metadata(doc_type=...)`` and
-        re-call ``admin_recompute_views`` to populate the missing bucket.
+        ``doc_type=None`` exclusion: documents whose ``doc_type`` is null are
+        silently omitted from ``by_doc_type/`` (no ``<null>/`` bucket). The
+        sibling ``by_lifecycle/`` never drops, since every document has a
+        non-null ``lifecycle_status``. A document present in the graph but
+        absent from ``by_doc_type/`` is the signal that its ``doc_type`` is
+        unset — patch via ``update_metadata`` and re-call.
 
-        Wipe-then-rebuild is NOT atomic:
-        The implementation first removes ``{storage_root}/views/`` in
-        its entirety and then rebuilds the ``by_doc_type/`` and
-        ``by_lifecycle/`` subtrees from the current document list. A
-        failure mid-rebuild (e.g., filesystem permission denial,
-        symlink target missing) leaves ``views/`` partially regenerated
-        with no rollback to the prior state. Recovery is a re-call of
-        ``admin_recompute_views`` once the underlying cause is addressed;
-        the next successful call wipes the partial tree and rebuilds
-        cleanly. Callers must not treat the on-disk state as a
-        transactional snapshot of the graph between calls.
-
-        Empty-vault no-op (``views_generated=0``):
-        On a vault with zero documents (or zero documents that bucket
-        into any non-empty category), the wipe step still runs:
-        ``{storage_root}/views/`` is removed if present and is NOT
-        recreated. The response carries ``views_generated=0``. This
-        is the same response shape as a successful regeneration over
-        an empty graph; callers cannot distinguish "vault is empty"
-        from "every document was filtered out" from the response
-        alone. Check vault population via ``admin_get_vault_stats`` if
+        Wipe-then-rebuild is NOT atomic: ``{storage_root}/views/`` is removed
+        in full and then rebuilt from the current document list. A
+        mid-rebuild failure (permission denial, missing symlink target)
+        leaves ``views/`` partially regenerated with no rollback; recovery is
+        a re-call once the cause is addressed. On an empty (or fully
+        filtered-out) vault the wipe runs and ``views/`` is not recreated;
+        the response carries ``views_generated=0`` — indistinguishable from
+        "every document filtered out", so check ``admin_get_vault_stats`` if
         the distinction matters.
 
-        Common preconditions:
-
-        - ``vault_id`` is validated against ``VaultIdStr`` at the MCP
-          boundary (per CAS Typed-Alias Boundary Conventions); a
-          malformed value (empty string, non-slug shape) fails with
-          ``invalid_vault_id`` before any vault lookup runs.
-        - ``vault_id`` must name a vault registered with the running
-          MCP server; an unregistered value fails with ``unknown_vault``.
-
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
-          typed-alias validation at the boundary. The alias enforces a
-          non-empty slug-shaped identifier; malformed inputs are caught
-          here rather than at a downstream lookup.
-        - ``unknown_vault`` (404): ``vault_id`` did not resolve to a
-          registered vault. The error detail enumerates the available
-          vaults at the time of the call.
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation at the boundary.
+        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
+          Detail enumerates the available vaults.
 
         Args:
-            vault_id: Target vault identifier. Validated against
-                ``VaultIdStr`` (typed-alias boundary check; see
-                ``invalid_vault_id`` above) before the registered-vault
-                lookup (see ``unknown_vault``).
+            vault_id: Target vault identifier.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1615,106 +1337,56 @@ def register_sage_tools(
     async def create_vault(config: dict) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
-        Pass a complete vault config dict. The dict is validated against the
-        vault config schema, directories are created, ``vault_config.yaml``
-        is written under the vault root (default
-        ``~/sage_vaults/<vault_id>/``), services are initialized, and the
-        vault is registered with the running MCP server immediately
-        (no restart needed). The full written config is echoed back in
-        the response so the caller can follow up with
-        admin_update_vault_config to adjust individual sections without
-        a separate read.
+        Pass a complete vault config dict. It is validated against the vault
+        config schema, directories are created, ``vault_config.yaml`` is
+        written under the vault root (default ``~/sage_vaults/<vault_id>/``),
+        services are initialized, and the vault is registered immediately
+        (no restart). The full written config is echoed back so the caller
+        can follow up with ``admin_update_vault_config`` without a separate
+        read.
 
-        A minimal default config (suitable for most one-off vaults) can be
-        produced with
-        ``VaultRegistryService.get_default_config(vault_id, name, owner)``
-        from ``sage.services.vault_registry``; callers that want a tailored
-        vault should construct the dict directly against the vault config
-        schema.
+        Config dict structure: the ``config`` parameter is opaque at the MCP
+        boundary (typed ``dict``); its shape lives in
+        ``docs/fs/sage/vault_config.schema.json``. Six top-level sections are
+        required (``vault``, ``document_types``, ``lifecycle``,
+        ``source_adapters``, ``metadata_extraction``, ``edge_inference``) and
+        three optional (``abstraction``, ``access_control_defaults``,
+        ``retrieval_health``). A minimal default is available from
+        ``VaultRegistryService.get_default_config(vault_id, name, owner)``.
 
-        Config dict structure:
-        The ``config`` parameter is opaque at the MCP boundary (the
-        signature accepts ``dict``); its required shape lives in
-        ``docs/fs/sage/vault_config.schema.json``. Six top-level
-        sections are required -- ``vault``, ``document_types``,
-        ``lifecycle``, ``source_adapters``, ``metadata_extraction``,
-        ``edge_inference`` -- and three are optional --
-        ``abstraction``, ``access_control_defaults``,
-        ``retrieval_health``. Missing required sections (or malformed
-        sub-section payloads) surface as ``vault_config_validation_error``
-        at validation time. Construct against the schema directly, or
-        start from ``VaultRegistryService.get_default_config`` and
-        edit the returned dict.
+        The new vault inherits the running process's stack-wide
+        abstraction-provider singleton (built once at startup); the vault
+        config's ``abstraction`` section governs only enable/disable and
+        per-vault parameters, not provider identity. A different provider
+        requires a stack-config edit and process restart.
 
-        Stack abstraction provider dependency (CAS-ADR-030):
-        The new vault silently inherits the running SAGE process's
-        stack-wide abstraction provider singleton, built once at
-        process startup from ``sage/config.yaml``. There is no
-        per-vault provider override on this tool; the ``abstraction``
-        section in the vault config governs only enable/disable and
-        per-vault parameters, not provider identity. Callers that
-        want a different provider for a new vault must edit the
-        stack config and restart the SAGE process before calling
-        ``admin_create_vault``; verify the in-memory stack config via
-        ``admin_get_stack_config`` if you suspect drift.
+        Creation is not atomic: it runs five sequential steps (config
+        directory, yaml write, service init, registry insertion, owner
+        bootstrap) with no cross-step rollback. A mid-sequence failure can
+        leave ``~/sage_vaults/{vault_id}/`` present with a partial yaml while
+        the registry has no entry; recovery is to remove the directory and
+        re-call. The final step bootstraps the owner user (required for
+        subsequent access-controlled operations); the response carries only
+        the ``VaultSummary`` plus the echoed config, with no field signaling
+        the owner insert.
 
-        Partial-failure non-atomicity:
-        Vault creation runs five sequential steps -- (1) config
-        directory creation, (2) ``vault_config.yaml`` write, (3) service
-        initialization (graph store, content store, abstraction
-        provider wiring), (4) registry insertion, (5) owner bootstrap
-        via ``UserService.bootstrap_owner`` -- with no rollback across
-        step boundaries. A failure mid-sequence (disk error during step
-        2, schema-migration error during step 3, provider build failure
-        during step 3, etc.) leaves the filesystem and the in-memory
-        registry in an intermediate state: ``~/sage_vaults/{vault_id}/``
-        may exist with a partial ``vault_config.yaml`` while the
-        registry has no entry for the vault. Recovery: manually remove
-        ``~/sage_vaults/{vault_id}/`` and call ``admin_create_vault``
-        again.
-
-        ``bootstrap_owner`` side effect:
-        Step 5 of the create sequence creates the owner user (per the
-        vault config's ``access_control_defaults.owner`` value or
-        equivalent) via ``UserService.bootstrap_owner``. This is a
-        silent state mutation -- the response carries only the
-        ``VaultSummary`` projection (id, name, storage_root, plus the
-        echoed config dict), with no field indicating that the owner
-        row was inserted. The owner row is required for subsequent
-        access-controlled operations on the new vault.
-
-        Eager tier3 validator cache build:
-        ``VaultConfig.model_post_init`` builds a JSON Schema validator
-        for every doc_type that declares a ``metadata_schema`` (per
-        CAS-ADR-031) at config construction time, not at first ingest.
-        A malformed ``document_types.doc_types[].metadata_schema``
-        payload (e.g., a non-Draft 2020-12 schema, an unresolvable
-        ``$ref``) surfaces at create time as part of
-        ``vault_config_validation_error`` rather than deferred to the
-        first ``ingest_document`` call that would have used the validator.
-        This is intentional: catching schema authoring errors at vault
-        create time is cheaper than catching them on the first ingest
-        whose ``tier3_metadata`` happens to exercise the offending
-        doc_type.
+        A doc_type's ``metadata_schema`` is compiled into a JSON Schema
+        validator at create time, not first ingest, so a malformed schema
+        (non-Draft 2020-12, unresolvable ``$ref``) surfaces here as
+        ``vault_config_validation_error`` rather than on the first ingest
+        that would exercise it.
 
         Error modes:
-        - ``vault_already_exists`` (409): a vault with that
-          ``vault_id`` is already registered.
-        - ``vault_config_validation_error`` (400): the supplied
-          config fails schema validation. Covers missing or malformed
-          top-level sections (see "Config dict structure" above) and
-          malformed ``document_types.doc_types[].metadata_schema``
-          payloads caught by the eager tier3 validator cache build
-          (see "Eager tier3 validator cache build" above).
+        - ``vault_already_exists`` (409): a vault with that ``vault_id`` is
+          already registered.
+        - ``vault_config_validation_error`` (400): the config fails schema
+          validation — missing/malformed top-level sections, or a malformed
+          ``document_types.doc_types[].metadata_schema``.
 
         Args:
-            config: Full vault config dict. Must validate against the
-                vault config schema at
-                ``docs/fs/sage/vault_config.schema.json`` -- six
-                required top-level sections plus three optional. See
-                "Config dict structure" above for the section list and
-                "Eager tier3 validator cache build" for the
-                doc_type-schema validation that runs at create time.
+            config: Full vault config dict, validating against
+                ``docs/fs/sage/vault_config.schema.json`` (six required
+                top-level sections plus three optional).
         """
         try:
             summary = await get_vault_registry_service().create_vault(
@@ -1783,88 +1455,42 @@ def register_sage_tools(
         """Update vault configuration at the section level.
 
         Each non-null section argument replaces the corresponding top-level
-        section of the config wholesale; sections left as None are
-        preserved unchanged. Partial-section merges are not supported --
-        if you pass ``document_types={"doc_types": [...]}``, the entire
-        ``document_types`` section is replaced by the dict you pass, so
-        include every key of that section you want to keep.
+        config section wholesale; sections left None are preserved.
+        Partial-section merges are not supported — passing
+        ``document_types={"doc_types": [...]}`` replaces the entire
+        ``document_types`` section, so include every key you want to keep.
 
-        If the merged config would remove a doc_type or lifecycle state
-        that still has documents attached, the update is rejected with
-        a ``destructive_config_change`` error and the affected counts
-        are reported in the error detail. Pass force=True to proceed
-        anyway; the warnings then appear in the success response.
+        If the merged config would remove a doc_type or lifecycle state that
+        still has documents attached, the update is rejected with
+        ``destructive_config_change`` and the affected counts in the detail.
+        Pass ``force=True`` to proceed anyway; the warnings then appear in
+        the success response. Changing ``vault.id`` is never permitted
+        regardless of force — use ``admin_create_vault`` for a new vault.
 
-        Changing `vault.id` is never permitted regardless of force -- use
-        admin_create_vault to make a new vault instead.
-
-        The update writes to disk and updates the running config in
-        place; subsequent tool calls see the new vocabulary
-        immediately. Re-load via ``admin_reload_vault`` is only needed
-        if external processes edited ``vault_config.yaml`` outside
-        this MCP server.
-
-        Reload atomicity:
-        A real-run update writes ``vault_config.yaml`` to disk and
-        then invokes ``_registry_service.reload(...)``. The whole
-        sequence is atomic with respect to the registry slot and the
-        on-disk yaml: the reload builds new services before tearing
-        down the old, and if any step raises (schema-migration
-        required, duplicate edges, abstraction-provider build failure,
-        etc.) the yaml is rolled back to its pre-call bytes and the
-        registry continues to serve the previous config. Callers see
-        the original exception; no manual ``admin_reload_vault`` is
-        required to reconcile disk and memory after a failed update.
+        The update writes to disk and updates the running config in place;
+        subsequent calls see the new vocabulary immediately. The
+        write-then-reload sequence is atomic: the reload builds new services
+        before tearing down the old, and if any step raises (schema
+        migration required, duplicate edges, abstraction-provider build
+        failure) the yaml is rolled back to its pre-call bytes and the
+        previous config keeps serving. ``admin_reload_vault`` is needed only
+        when an external process edited the yaml.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed
-          ``VaultIdStr`` typed-alias validation at the boundary (per
-          CAS Typed-Alias Boundary Conventions). The alias enforces a
-          non-empty slug-shaped identifier; malformed inputs are
-          caught here rather than at a downstream lookup.
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation at the boundary.
         - ``destructive_config_change`` (409): see above.
-        - ``vault_config_validation_error`` (400): the merged config
-          fails schema validation, or the request attempts to change
-          ``vault.id``.
+        - ``vault_config_validation_error`` (400): the merged config fails
+          schema validation, or the request attempts to change ``vault.id``.
 
-        Test-fixture concern (``_registry_service`` back-reference):
-        ``VaultConfigService`` requires a registry-service
-        back-reference to perform the post-write reload. Production
-        wiring supplies one automatically; a service constructed in
-        a context that does NOT wire one (e.g., a unit-test fixture
-        that bypasses the registry) raises ``RuntimeError`` on the
-        first real-run call to this tool. Dry-run mode also raises
-        if the back-reference is absent (the guard runs before the
-        dry-run branch). Tests exercising this tool against an
-        ad-hoc service must supply a registry service or stub.
-
-        Dry-run mode:
-        Set ``dry_run=true`` to validate the merged config and preview
-        the would-be projection of which sections would change,
-        without writing yaml or reloading the registry. The response
-        carries ``status="previewed"``, ``dry_run=true``, ``warnings``
-        (always populated when present — dry-run NEVER raises
-        ``destructive_config_change``), and a
-        ``preview.changed_sections`` list naming the top-level
-        sections that would change. ``force`` is a no-op on dry-run.
-
-        Note: vault-config updates are a config mutation, not a
-        document field mutation, so the change surface is the
-        existing ``preview.changed_sections`` list rather than a
-        separate ``changes`` block.
-        ``UpdateVaultConfigResponse`` does not carry a ``changes``
-        field.
-
-        Worked example: ``admin_update_vault_config(vault_id="v",
-        document_types={"doc_types": [...]}, dry_run=True)`` returns
-        the destructive-change warnings (if any) so the caller can
-        decide whether to follow up with ``force=True`` on a real run.
+        Dry-run: ``dry_run=true`` validates the merged config and previews
+        which sections would change without writing yaml or reloading. The
+        response carries ``status="previewed"``, ``dry_run=true``,
+        ``warnings`` (dry-run never raises ``destructive_config_change``),
+        and ``preview.changed_sections``. ``force`` is a no-op on dry-run.
 
         Args:
-            vault_id: Target vault identifier. Validated against
-                ``VaultIdStr`` (typed-alias boundary check; see
-                ``invalid_vault_id`` above) before the registered-vault
-                lookup.
+            vault_id: Target vault identifier.
             vault: Replacement for the vault identity section.
             document_types: Replacement for the document_types section.
             lifecycle: Replacement for the lifecycle section.
@@ -1876,11 +1502,9 @@ def register_sage_tools(
             retrieval_health: Replacement for the retrieval_health section.
             force: When True, proceed even if the update would orphan
                 existing documents. Default False.
-            dry_run:. When True, preview the would-be
-                projection of the change without persisting; never
-                raises destructive_config_change. The change surface
-                is the existing ``preview.changed_sections`` field;
-                no separate ``changes`` block. Default False.
+            dry_run: When True, preview the change
+                (``preview.changed_sections``) without persisting; never
+                raises destructive_config_change. Default False.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1929,58 +1553,36 @@ def register_sage_tools(
     async def verify_hash(vault_id: str, hashes: list[str]) -> dict:
         """Bulk hash existence check against the graph store.
 
-        For each input hash, returns whether an existing document in
-        the vault carries that content hash and, if so, the matching
-        document's id and source_path. Used by the scan-and-batch-
-        ingest flow to identify already-ingested files without
-        re-hashing on the SAGE side. The response is a dict keyed by
-        input hash; missing hashes are simply absent from the result
-        (see *Malformed hashes* below for the caveat that makes the
-        absent-vs-present distinction load-bearing).
+        For each input hash, returns whether an existing document in the
+        vault carries that content hash and, if so, the matching document's
+        id and source_path. Used by the scan-and-batch-ingest flow to
+        identify already-ingested files without re-hashing on the SAGE side.
+        The response is a dict keyed by input hash; missing hashes are simply
+        absent (see *Malformed hashes* for why absent-vs-present is
+        load-bearing).
 
-        Hash format: the canonical request form is the prefixed
-        ``sha256:<hex>``, matching ``ContentHashStr``. The MCP
-        transport additionally accepts bare hex strings (the form
-        ``ingest_document`` emits in its response payload) without
-        rewriting them, so callers can round-trip ingest results
-        directly. Output document records carry the prefixed form.
+        Hash format: the canonical form is the prefixed ``sha256:<hex>``. The
+        MCP transport also accepts bare hex (the form ``ingest_document``
+        emits) without rewriting, so ingest results round-trip directly.
+        Output records carry the prefixed form.
 
-        Vault id validation:
-        ``vault_id`` is validated through the ``VaultIdStr`` typed
-        alias before dispatch. A value that is not a registered
-        vault id surfaces an ``unknown_vault`` error envelope; do
-        not assume the parameter is forwarded raw.
-
-        Empty-list short-circuit:
-        Passing ``hashes=[]`` short-circuits to an empty result dict
-        at the service layer (``VaultConfigService.hash_check``,
-        ``sage/services/vault_config.py:115-116``) without consulting
-        the graph store. The empty response is indistinguishable from
-        "every queried hash is unknown" without inspecting the
-        request payload; callers that branch on result emptiness
+        Empty-list short-circuit: ``hashes=[]`` returns an empty result dict
+        without consulting the graph store — indistinguishable from "every
+        queried hash is unknown", so callers that branch on result emptiness
         should also branch on input emptiness.
 
-        Malformed hashes:
-        Hash strings are accepted through ``HashCheckRequest.model_construct``
-        (see ``sage/sage_api_tools.py:2290-2295``), which bypasses
-        Pydantic validation so the bare-hex form ``ingest_document`` emits
-        can round-trip without rewriting. The consequence is that
-        malformed inputs (truncated hex, non-hex characters, wrong
-        length) are NOT rejected with a validation error: they reach
-        the graph-store lookup as-is, miss every row, and surface in
-        the result as ``exists=False`` entries indistinguishable from
-        well-formed-but-unknown hashes. Callers that rely on a "valid
-        format implies in-store" assumption must pre-validate input
-        shape themselves.
+        Malformed hashes: hash strings bypass validation so the bare-hex form
+        can round-trip. Malformed inputs (truncated, non-hex, wrong length)
+        are NOT rejected — they reach the lookup as-is, miss every row, and
+        surface as ``exists=False`` entries indistinguishable from
+        well-formed-but-unknown hashes. Callers relying on "valid format
+        implies in-store" must pre-validate input shape themselves.
 
         Args:
-            vault_id: Target vault identifier. See *Vault id
-                validation* above for the typed-alias enforcement.
-            hashes: List of content hash strings. Accepts both
-                ``sha256:<hex>`` and bare hex for each entry. An empty
-                list short-circuits per *Empty-list short-circuit*;
-                malformed entries silently surface as ``exists=False``
-                per *Malformed hashes*.
+            vault_id: Target vault identifier.
+            hashes: List of content hash strings (``sha256:<hex>`` or bare
+                hex). An empty list short-circuits; malformed entries
+                silently surface as ``exists=False`` (see above).
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2041,87 +1643,50 @@ def register_sage_tools(
 
         Dispatches by ``action``:
 
-        - ``action="confirm"``: promote the staging edge to production.
-          The staging row is deleted and a new production edge is
-          inserted with the same source, target, and edge_type. The
-          returned envelope carries the production ``edge_id``, which is
-          distinct from the staging id passed in -- staging and production
-          tables do not share an id space.
-        - ``action="dismiss"``: delete the staging edge without creating
-          a production edge. The reviewer's judgment that the inferred
-          edge is wrong. The underlying inference rule is not re-applied
-          for the same (source, target, edge_type) combination during
-          the current ingest cycle, but a future re-ingest that re-triggers
-          the same inference rule will re-stage the candidate.
+        - ``action="confirm"``: promote the staging edge to production. The
+          staging row is deleted and a new production edge is inserted with
+          the same source, target, and edge_type. The returned envelope
+          carries the production ``edge_id``, distinct from the staging id
+          passed in — staging and production tables do not share an id space.
+        - ``action="dismiss"``: delete the staging edge without creating a
+          production edge. The inference rule is not re-applied for the same
+          (source, target, edge_type) during the current ingest cycle, but a
+          future re-ingest that re-triggers it will re-stage the candidate.
 
-        Replaces the pre-audit ``sage_confirm_staging_edge`` and
-        ``sage_dismiss_staging_edge`` MCP tools, which were collapsed into
-        this single parameter-dispatched form per the *SAGE MCP Tool
-        Surface* steering doc v3 audit.
+        Confirm idempotency on natural-key collision: on ``confirm``, if the
+        staging edge's natural-key triple ``(source_id, target_id,
+        edge_type)`` already exists in production — e.g. a parallel
+        ``create_edges`` or an earlier auto-inference already created it —
+        confirm silently returns the existing production edge's id rather
+        than raising, and the staging row is consumed either way. A caller
+        cannot distinguish "I created it" from "I just consumed my staging
+        row"; both surface as a successful confirm with a populated
+        ``production_edge_id``.
 
-        ``vault_id`` typed-alias validation:
-        ``vault_id`` is validated through the ``VaultIdStr`` typed alias
-        before any service-layer dispatch. Empty strings, whitespace-only
-        strings, and other shape violations surface as
-        ``invalid_vault_id`` before the registry lookup runs.
-
-        ``edge_id`` typed-alias validation:
-        ``edge_id`` is validated through the ``EdgeIdStr`` typed alias
-        before any service-layer dispatch. Shape violations surface as
-        ``invalid_edge_id`` before the staging-row lookup runs.
-
-        Confirm idempotency on natural-key collision:
-        On ``action="confirm"``, if the staging edge's natural-key triple
-        ``(source_id, target_id, edge_type)`` already exists in the
-        production edges table -- for example, because a parallel
-        ``create_edges`` call or an earlier auto-inference path already
-        created the production edge -- confirm silently returns the
-        existing production edge's id rather than raising
-        ``IntegrityError``. The staging row is consumed in either case
-        (this is the ``on_conflict="noop"`` insert path in
-        ``StagingEdgesService.confirm_staging_edge``; see
-        ``sage/services/staging_edges.py``). A caller observing the
-        response cannot distinguish "I caused the production edge to be
-        created" from "someone else already created it; I just consumed
-        my staging row" -- both surface as a successful confirm with a
-        populated ``production_edge_id``.
-
-        Insert-then-delete atomicity gap:
-        The confirm path sequences ``insert_edge`` followed by
-        ``delete_staging_edge`` without wrapping the pair in a single
-        transaction. If the delete fails after the insert succeeds, the
-        staging row persists alongside the new production edge; the
-        natural-key triple then exists in both tables until a subsequent
-        confirm consumes the orphaned staging row (which is itself a
-        silent-idempotent no-op per the rule above). Callers
-        building provenance over staging-edge promotion should treat
-        confirm as "at-least-once" for the production-edge insert and
-        rely on the natural-key UNIQUE constraint plus idempotency
-        to absorb retries.
+        Insert-then-delete atomicity gap: confirm sequences insert then
+        delete-staging without a single wrapping transaction. If the delete
+        fails after the insert succeeds, the staging row persists alongside
+        the new production edge until a subsequent confirm consumes the
+        orphan (itself a silent-idempotent no-op per the rule above). Treat
+        confirm as "at-least-once" for the production-edge insert and rely on
+        the natural-key UNIQUE constraint plus idempotency to absorb retries.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed
-          ``VaultIdStr`` typed-alias validation.
-        - ``invalid_edge_id`` (400): ``edge_id`` failed
-          ``EdgeIdStr`` typed-alias validation.
-        - ``staging_edge_not_found`` (404): the id is unknown
-          (already confirmed, already dismissed, or never existed).
-        - ``invalid_action`` (400): ``action`` is not one of
-          ``"confirm"`` or ``"dismiss"``.
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation.
+        - ``invalid_edge_id`` (400): ``edge_id`` failed typed-alias
+          validation.
+        - ``staging_edge_not_found`` (404): the id is unknown (already
+          confirmed, already dismissed, or never existed).
+        - ``invalid_action`` (400): ``action`` is not ``"confirm"`` or
+          ``"dismiss"``.
 
         Args:
-            vault_id: Target vault identifier. Validated through
-                ``VaultIdStr`` (see the ``vault_id`` typed-alias
-                validation paragraph above).
-            edge_id: Staging edge identifier (from
-                ``list_staging_edges``). Validated through
-                ``EdgeIdStr`` (see the ``edge_id`` typed-alias
-                validation paragraph above).
-            action: One of ``"confirm"`` or ``"dismiss"``. On
-                ``"confirm"``, behavior on a natural-key collision is
-                governed by the confirm-idempotency paragraph
-                above, and the insert/delete pair is not atomic per the
-                atomicity-gap paragraph above.
+            vault_id: Target vault identifier.
+            edge_id: Staging edge identifier (from ``list_staging_edges``).
+            action: One of ``"confirm"`` or ``"dismiss"``. On ``"confirm"``,
+                natural-key-collision behavior and the insert/delete
+                atomicity gap are governed by the paragraphs above.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2141,17 +1706,16 @@ def register_sage_tools(
     async def list_pending_metadata(vault_id: str) -> dict:
         """List documents with unconfirmed metadata.
 
-        A document is "pending" when its ``metadata_confirmed`` flag
-        is false. Per CAS-ADR-021, this typically arises from
-        ``ingest_document(needs_review=true)``: the caller deferred metadata
-        to filename inference, which populated fields the caller did
-        not supply and held the document for review. The pending
-        state is cleared on any ``update_metadata`` call against
-        the document (even a single-field update).
+        A document is "pending" when its ``metadata_confirmed`` flag is
+        false. This typically arises from ``ingest_document(needs_review=true)``:
+        the caller deferred metadata to filename inference, which populated
+        omitted fields and held the document for review. The pending state is
+        cleared on any ``update_metadata`` call against the document (even a
+        single-field update).
 
         For the default ``ingest_document`` path (``needs_review=false``),
-        documents land with ``metadata_confirmed=true`` and never
-        appear here.
+        documents land with ``metadata_confirmed=true`` and never appear
+        here.
 
         Args:
             vault_id: Target vault identifier.
@@ -2183,94 +1747,63 @@ def register_sage_tools(
         document_id: str,
     ) -> dict:
         """Re-run abstraction on an existing document (fire-and-forget).
-        Reconstructs projection text from stored chunks and dispatches
-        a new density-proportional semantic abstract as a background
-        task; the abstract is written to the document node by that
-        background task, not by this call.
+        Reconstructs projection text from stored chunks and dispatches a new
+        semantic abstract as a background task; the abstract is written to
+        the document node by that task, not by this call.
 
-        The generation uses the SAGE stack's currently-configured
-        abstraction provider and model (see ``abstraction`` in
-        ``sage/config.yaml``; per CAS-ADR-030 the model identifier is
-        stack-wide, not per-vault). Per-document or per-doc_type prompt
-        overrides are not exposed here. If the new abstract is still
-        off-topic after this call, the lever is a stack-config change
-        to the abstraction model (or the prompt template), not a
-        re-issue of this tool.
+        Generation uses the SAGE stack's configured abstraction provider and
+        model (``abstraction`` in ``sage/config.yaml``; the model identifier
+        is stack-wide, not per-vault). If the new abstract is still
+        off-topic, the lever is a stack-config change, not a re-issue of this
+        tool.
 
-        Fire-and-forget semantics (caller-expectation-mismatch class):
-        This tool does NOT return when the new abstract is persisted.
-        It validates the document, flips
+        Fire-and-forget: this call validates the document, flips
         ``pipeline_status=abstraction_in_progress``, dispatches the
-        abstraction work in an ``asyncio.create_task`` background task,
-        and returns immediately with::
+        abstraction work as a background task, and returns immediately with::
 
             {"status": "reabstract_started",
              "document_id": "<id>",
              "dispatched_at": "<iso8601 timestamp>"}
 
-        The background task is what generates the abstract, persists
-        ``semantic_abstract``, and flips ``pipeline_status`` to
-        ``abstraction_complete`` (success) or ``failed`` (error). To
-        observe terminal state, poll ``get_document`` and read
-        ``pipeline_status``; the call is complete when that field is
-        no longer ``abstraction_in_progress``. Any caller that assumes
-        ``recompute_abstract`` returns a document with the new abstract
-        in place will observe stale state.
+        The background task generates and persists ``semantic_abstract`` and
+        flips ``pipeline_status`` to ``abstraction_complete`` (success) or
+        ``failed`` (error). To observe terminal state, poll ``get_document``
+        until ``pipeline_status`` is no longer ``abstraction_in_progress``.
+        A caller that assumes this tool returns the new abstract in place
+        will observe stale state.
 
-        Per-document single-flight lock:
-        Concurrent ``recompute_abstract`` calls against the same
-        ``document_id`` while a prior reabstract is still in-flight
-        produce a structured 409
-        (``reabstract_document_already_in_flight``) rather than
-        dispatching a parallel background task. The reservation is
-        released when the background task reaches terminal state
-        (``abstraction_complete`` or ``failed``). Concurrent calls
-        against different document_ids in the same vault continue to
-        run in parallel.
+        Per-document single-flight lock: a concurrent call against the same
+        ``document_id`` while a reabstract is in-flight returns a structured
+        409 (``reabstract_document_already_in_flight``) rather than
+        dispatching a parallel task; the reservation releases when the task
+        reaches terminal state. Calls against different document_ids run in
+        parallel.
 
-        Process-crash stuck-state recovery:
-        The background task's exception handler catches Python-level
-        ``Exception`` and stamps ``pipeline_status=failed``, but a
-        process-level kill (``SIGKILL``, OOM kill, kernel panic) during
-        background reabstract leaves the document stuck in
-        ``pipeline_status=abstraction_in_progress`` with no terminal
-        stamp. Recovery after such a crash: after process restart,
-        enumerate documents with
-        ``search(mode="catalog", filters={"pipeline_status":
-        "abstraction_in_progress"})`` and re-issue ``recompute_abstract``
-        against each stuck id.
+        Process-crash recovery: a process-level kill (SIGKILL, OOM) during a
+        background reabstract leaves the document stuck at
+        ``abstraction_in_progress`` with no terminal stamp. After restart,
+        enumerate stuck docs via ``search(mode="catalog",
+        filters={"pipeline_status": "abstraction_in_progress"})`` and
+        re-issue ``recompute_abstract`` against each.
 
-        Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
-          typed-alias validation at the boundary (per CAS Typed-Alias
-          Boundary Conventions). The alias enforces a non-empty
-          slug-shaped identifier; malformed inputs are caught here
-          rather than at a downstream lookup.
-        - ``invalid_document_id`` (400): ``document_id`` failed
-          ``DocumentIdStr`` typed-alias validation at the boundary
-          (per CAS Typed-Alias Boundary Conventions).
+        Error modes (raised synchronously in this call's response;
+        background-task failures are NOT surfaced here — they manifest as
+        ``pipeline_status=failed`` with ``pipeline_error`` populated,
+        observable via ``get_document``):
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation at the boundary.
+        - ``invalid_document_id`` (400): ``document_id`` failed typed-alias
+          validation at the boundary.
         - ``document_not_found`` (404): no document with that id.
-        - ``no_projection`` (404): the document has no stored chunks
-          to abstract from.
-        - ``reabstract_document_already_in_flight`` (409): a reabstract
-          is already running on this ``document_id``. ``detail`` carries
-          ``document_id`` and the ISO 8601 ``start_time`` of the
-          in-flight call.
-
-        Note: error modes above are raised synchronously and reported
-        in the call's response envelope. Background-task failures
-        (abstraction provider error, content-store read failure, etc.)
-        are NOT surfaced in this tool's response; they manifest as
-        ``pipeline_status=failed`` and a populated ``pipeline_error``
-        field on the document, observable via ``get_document``.
+        - ``no_projection`` (404): the document has no stored chunks to
+          abstract from.
+        - ``reabstract_document_already_in_flight`` (409): a reabstract is
+          already running on this ``document_id``. ``detail`` carries
+          ``document_id`` and the in-flight call's ISO 8601 ``start_time``.
 
         Args:
-            vault_id: Target vault identifier. See ``invalid_vault_id``
-                in Error modes.
-            document_id: Document to re-abstract. See
-                ``invalid_document_id`` in Error modes; the fire-and-
-                forget dispatch and polling recipe are described in
-                "Fire-and-forget semantics" above.
+            vault_id: Target vault identifier.
+            document_id: Document to re-abstract.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2287,80 +1820,63 @@ def register_sage_tools(
         document_id: str,
     ) -> dict:
         """Re-run the full ingestion pipeline against an existing document
-        (fire-and-forget). Operator-facing repair for documents stuck at
-        ``pipeline_status=projection_complete`` with no LanceDB chunks --
-        the silent-loss state that can occur when a Stage 2 background
-        dispatch is garbage-collected or its host process dies mid-execution.
+        (fire-and-forget). Operator repair for documents stuck at
+        ``pipeline_status=projection_complete`` with no LanceDB chunks — the
+        silent-loss state when a Stage 2 background dispatch is
+        garbage-collected or its host process dies mid-execution.
 
-        Stage 1 (projection) is re-run synchronously from
-        ``document.source_path`` so any adapter / source-file errors surface
-        in this call's response envelope rather than as a ``pipeline_status=
-        failed`` stamp. Stages 2-3 (indexing, abstraction) then dispatch as a
-        background task whose strong reference is held in
-        ``IngestionService._background_tasks`` until terminal, closing the
-        garbage-collection silent-loss window.
+        Stage 1 (projection) re-runs synchronously from
+        ``document.source_path`` so adapter / source-file errors surface in
+        this call's response rather than as a ``pipeline_status=failed``
+        stamp. Stages 2-3 (indexing, abstraction) then dispatch as a
+        background task whose strong reference is held until terminal,
+        closing the garbage-collection window.
 
-        Fire-and-forget semantics (caller-expectation-mismatch class):
-        This tool returns immediately after Stage 1 + dispatch with::
+        Fire-and-forget: this call returns immediately after Stage 1 +
+        dispatch with::
 
             {"status": "recompute_pipeline_started",
              "document_id": "<id>",
              "dispatched_at": "<iso8601 timestamp>"}
 
-        The background task is what re-indexes the chunks, regenerates the
-        semantic abstract, and flips ``pipeline_status`` to
-        ``abstraction_complete`` / ``abstraction_skipped`` (success) or
-        ``failed`` (Stage 2/3 error). To observe terminal state, poll
-        ``get_document`` and read ``pipeline_status``; the call is complete
-        when that field is no longer ``indexing_in_progress`` or
+        The background task re-indexes the chunks, regenerates the abstract,
+        and flips ``pipeline_status`` to ``abstraction_complete`` /
+        ``abstraction_skipped`` (success) or ``failed`` (Stage 2/3 error). To
+        observe terminal state, poll ``get_document`` until
+        ``pipeline_status`` is no longer ``indexing_in_progress`` or
         ``abstraction_in_progress``.
 
-        Per-document single-flight lock:
-        Concurrent ``recompute_pipeline`` calls against the same
-        ``document_id`` while a prior recompute is still in-flight produce a
-        structured 409 (``recompute_pipeline_already_in_flight``) rather than
-        dispatching a parallel background task. Concurrent calls against
-        different document_ids in the same vault continue to run in
-        parallel.
+        Per-document single-flight lock: a concurrent call against the same
+        ``document_id`` while a recompute is in-flight returns a structured
+        409 (``recompute_pipeline_already_in_flight``) rather than
+        dispatching a parallel task. Calls against different document_ids run
+        in parallel.
 
-        Process-crash stuck-state recovery:
-        After a process-level kill (``SIGKILL``, OOM kill) interrupted a
-        prior recompute_pipeline or ingest mid-Stage-2, enumerate stuck
-        documents via ``search(mode="catalog", filters={"pipeline_status":
-        "projection_complete"})`` and re-issue ``recompute_pipeline``
-        against each id.
+        Process-crash recovery: after a process-level kill (SIGKILL, OOM)
+        interrupted a prior recompute or ingest mid-Stage-2, enumerate stuck
+        docs via ``search(mode="catalog", filters={"pipeline_status":
+        "projection_complete"})`` and re-issue ``recompute_pipeline`` against
+        each.
 
-        Error modes:
+        Error modes (raised synchronously in this call's response;
+        background-task failures are NOT surfaced here — they manifest as
+        ``pipeline_status=failed`` with ``pipeline_error`` populated,
+        observable via ``get_document``):
         - ``internal_error`` (500): ``vault_id`` or ``document_id`` failed
-          its typed-alias validation at the boundary (pydantic
-          ``ValidationError`` funnels through the generic ``ValueError``
-          branch of the MCP error envelope; see the framework convention
-          in ``sage/mcp_server.py``).
+          typed-alias validation at the boundary.
         - ``unknown_vault``: ``vault_id`` is not a registered vault.
         - ``document_not_found`` (404): no document with that id.
-        - ``adapter_not_found`` (400): no source adapter registered for
-          the document's ``source_type``.
-        - ``source_file_not_found`` (404): the document's
-          ``source_path`` no longer resolves to a readable file on disk.
+        - ``adapter_not_found`` (400): no source adapter for the document's
+          ``source_type``.
+        - ``source_file_not_found`` (404): the document's ``source_path`` no
+          longer resolves to a readable file.
         - ``recompute_pipeline_already_in_flight`` (409): a recompute is
           already running on this ``document_id``. ``detail`` carries
-          ``document_id`` and the ISO 8601 ``start_time`` of the in-flight
-          call.
-
-        Note: error modes above are raised synchronously and reported in
-        the call's response envelope. Background-task failures (embedding
-        provider error, content-store write failure, abstraction provider
-        error) are NOT surfaced in this tool's response; they manifest as
-        ``pipeline_status=failed`` and a populated ``pipeline_error`` field
-        on the document, observable via ``get_document``.
+          ``document_id`` and the in-flight call's ISO 8601 ``start_time``.
 
         Args:
-            vault_id: Target vault identifier. Validated through the
-                ``VaultIdStr`` typed alias at the MCP boundary.
-            document_id: Document to re-run the pipeline against. Validated
-                through the ``DocumentIdStr`` typed alias at the MCP
-                boundary. The fire-and-forget dispatch and polling recipe
-                are described in "Fire-and-forget semantics" above.
+            vault_id: Target vault identifier.
+            document_id: Document to re-run the pipeline against.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2392,92 +1908,54 @@ def register_sage_tools(
     # this error rather than a silent no-op. The maintenance/admin
     # API surface is governed by CAS-ADR-029.
     #
-    # Per-tool docstrings cross-reference this block rather than
-    # repeating these two rules inline.
+    # These two preconditions apply to every admin-family tool below;
+    # the per-tool docstrings surface only the caller-facing error codes
+    # they produce (e.g. ``invalid_vault_id``, ``vault_not_found``).
     # -------------------------------------------------------------------
 
     @mcp.tool(name="admin_migrate_vault")
     async def migrate_vault(vault_id: str) -> dict:
         """Apply pending schema migrations to a single vault in the running session.
 
-        Pilot of the maintenance/admin API surface (CAS-ADR-029). Wraps
-        the GraphStore.initialize(migrate=True) codepath: detects pending
-        ALTER TABLE migrations and BACKFILL_PLAN entries, applies them
-        if any are pending, then reloads the vault in this MCP process's
-        registry so subsequent operations observe the new schema.
+        Wraps the ``GraphStore.initialize(migrate=True)`` codepath: detects
+        pending ALTER TABLE migrations and backfills, applies any that are
+        pending, then reloads the vault in this MCP process's registry so
+        subsequent operations observe the new schema.
 
-        Common preconditions:
-        See the admin-family family preconditions block above for
-        shared rules (``vault_id`` typed-alias validation,
-        ``maintenance_service`` wiring requirement).
+        Idempotent: a re-call against an already-migrated vault returns a
+        MigrationReport with empty ``columns_added`` and ``backfills_applied``
+        and no error; the registry reload is skipped on the no-op path.
 
-        Idempotent: a re-call against an already-migrated vault returns
-        a MigrationReport with empty ``columns_added`` and
-        ``backfills_applied`` lists and no error; the registry reload is
-        skipped on the no-op path.
+        Cross-process staleness caveat: the operation closes and reopens this
+        process's view of the vault, but other MCP server processes holding
+        imports of the same vault directory must be restarted to observe the
+        new schema.
 
-        Cross-process staleness caveat (F-10, CAS-ADR-029): the
-        operation closes and reopens this MCP process's view of the
-        vault, but is not bulletproof if other MCP server processes
-        hold imports of the same vault directory. Cross-process
-        staleness requires the caller to restart any other open MCP
-        sessions to observe the new schema.
-
-        Migration atomicity:
-        On the migrate-needed path the flow applies the schema work
-        through a fresh ``GraphStore`` while the original graph_store
-        stays open, then invokes the registry reload to swap in fresh
-        services backed by the migrated schema. If
-        ``fresh.initialize(migrate=True)`` raises (faulty
-        ``MIGRATION_PLAN`` ALTER TABLE, ``BACKFILL_PLAN`` failure,
-        ``Tier3UniqueIndexBlockedError`` surfaced at initialize-time
-        index creation), the original graph_store is untouched and the
-        registry view remains live. If the post-migration reload
-        raises, the migration is durable on disk and the registry
-        continues to serve the pre-migration services; the operator
-        can re-issue the reload after addressing the underlying cause.
-
-        tier3 uniqueness activation (CAS-ADR-031):
-        After the schema-migration step settles, every ``unique_keys``
-        declaration in vault config is scanned. Clean declarations get
-        partial UNIQUE indexes installed under
-        ``(doc_type, json_extract(tier3_metadata, '$.<field>'))``;
-        declarations whose existing data violates the constraint are
-        recorded in MigrationReport's ``tier3_uniqueness_collisions``
-        list, the substrate refuses to activate the index (see
-        ``Tier3UniqueIndexBlockedError`` in the Error modes block
-        below), and any previously-clean partial index for that
-        declaration is preserved (no implicit DROP). Successfully
-        activated declarations are listed in
-        ``tier3_uniqueness_activations``. **Callers must inspect both
-        fields** -- a MigrationReport with empty ``columns_added`` and
-        ``backfills_applied`` may still carry tier3 activations or
-        collisions from this scan. The ``unique_keys`` vocabulary
-        lives in vault config; query ``admin_get_vault_config`` for the
-        authoritative declarations.
+        tier3 uniqueness activation: after the schema step settles, every
+        ``unique_keys`` declaration in vault config is scanned. Clean
+        declarations get partial UNIQUE indexes installed; declarations whose
+        existing data violates the constraint are recorded in
+        ``tier3_uniqueness_collisions``, the index is not activated (see
+        ``Tier3UniqueIndexBlockedError`` below), and any previously-clean
+        index is preserved (no implicit DROP). Activated declarations are
+        listed in ``tier3_uniqueness_activations``. **Callers must inspect
+        both fields** — a report with empty ``columns_added`` /
+        ``backfills_applied`` may still carry tier3 activations or collisions.
+        Query ``admin_get_vault_config`` for the ``unique_keys`` declarations.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
-        - ``schema_migration_required`` (409): raised when a downstream
-          operation detects pending migrations without ``--migrate``;
-          this tool's purpose is precisely to clear that state, but
-          chained operations triggered post-migration may surface it
-          if a second migration is queued behind the first.
-        - MIGRATION_PLAN errors (500): individual ALTER TABLE
-          statements in ``MIGRATION_PLAN`` may fail at
-          ``fresh.initialize(migrate=True)``; the error surface depends
-          on the offending DDL (SQLite ``OperationalError`` rewrapped
-          as the SAGEError envelope). Compounds with the migration-
-          atomicity gap above.
-        - BACKFILL_PLAN errors (500): individual ``BACKFILL_PLAN``
-          entries may fail at the post-schema-update backfill step;
-          same compound behavior as MIGRATION_PLAN errors.
-        - ``Tier3UniqueIndexBlockedError`` (RuntimeError): a tier3
-          ``unique_keys`` declaration's underlying data violates the
-          requested constraint, so the partial UNIQUE index cannot be
-          installed. The collision report is captured in the returned
-          MigrationReport's ``tier3_uniqueness_collisions`` field per
-          the row above; the substrate does not auto-resolve.
+        - ``schema_migration_required`` (409): a chained post-migration
+          operation detected a second migration queued behind the first.
+        - MIGRATION_PLAN errors (500): an ALTER TABLE statement failed at
+          ``initialize(migrate=True)`` (SQLite ``OperationalError`` rewrapped
+          as a SAGEError).
+        - BACKFILL_PLAN errors (500): a backfill entry failed at the
+          post-schema step.
+        - ``Tier3UniqueIndexBlockedError``: a ``unique_keys`` declaration's
+          existing data violates the constraint, so its partial UNIQUE index
+          cannot be installed; the collisions are captured in
+          ``tier3_uniqueness_collisions`` and not auto-resolved.
 
         Args:
             vault_id: Target vault identifier.
@@ -2499,63 +1977,41 @@ def register_sage_tools(
     async def verify_vault_drift(vault_id: str) -> dict:
         """Audit active sync_target / derived_from edges for drift.
 
-        Walks every active provenance-bearing edge in the vault and
-        compares its recorded ``synced_from_*`` fields against the
-        current head of the source's supersedes chain. Returns a
-        DriftReport whose ``entries`` enumerate edges that need
-        operator attention; current edges are absent from the report.
+        Walks every active provenance-bearing edge in the vault and compares
+        its recorded ``synced_from_*`` fields against the current head of the
+        source's supersedes chain. Returns a DriftReport whose ``entries``
+        enumerate edges needing operator attention; current edges are absent.
+        Hash is the authoritative comparator; ``synced_from_version`` is a
+        display key.
 
-        Hash is the authoritative comparator; ``synced_from_version``
-        is a display key.
-
-        Replaces the manual hand-walk phase of the verbatim-sync and
-        terminology-remediation workflows.
-
-        Common preconditions (CAS-ADR-029):
-        See the admin-family family preconditions block above for
-        shared rules (``vault_id`` typed-alias validation,
-        ``maintenance_service`` wiring requirement).
-
-        ``StalenessBasis`` bucket semantics:
-        Each ``DriftEntry`` carries a ``staleness_basis`` field
-        classifying why the edge surfaced. Callers interpret a
-        DriftReport against these four buckets without leaving this
-        docstring:
+        ``StalenessBasis`` buckets — each ``DriftEntry`` carries a
+        ``staleness_basis`` classifying why the edge surfaced:
 
         - ``content_drift``: the recorded ``synced_from_content_hash``
-          differs from the current chain-head hash. Load-bearing
-          "stale, act now" signal — re-sync the dependent artifact.
-        - ``chain_advanced_no_content_change``: the chain has advanced
-          past the recorded version, but the head's content hash
-          still matches what was recorded. Informational — the
-          provenance pointer is behind but the bytes are equivalent.
-        - ``recorded_null``: the edge predates the provenance
-          columns (neither ``synced_from_version`` nor
-          ``synced_from_content_hash`` is recorded). Informational —
-          back-filling the provenance is optional cleanup, not a
-          drift signal.
-        - ``chain_nonlinear``: the source's supersedes chain forks
-          (more than one head). Data-quality flag, not a drift
-          signal; the chain must be reconciled before drift can be
-          assessed against it. ``current_head_*`` fields are null on
-          these entries; ``competing_head_count`` is populated.
+          differs from the current chain-head hash. The "stale, act now"
+          signal — re-sync the dependent artifact.
+        - ``chain_advanced_no_content_change``: the chain advanced past the
+          recorded version but the head's content hash still matches.
+          Informational — the pointer is behind but the bytes are equivalent.
+        - ``recorded_null``: the edge predates the provenance columns
+          (neither ``synced_from_version`` nor ``synced_from_content_hash``
+          recorded). Informational — back-filling is optional cleanup.
+        - ``chain_nonlinear``: the source's supersedes chain forks (more than
+          one head). Data-quality flag, not a drift signal; reconcile the
+          chain first. ``current_head_*`` is null; ``competing_head_count``
+          is populated.
 
         Error modes:
-        - ``vault_not_found`` (404): no vault registered with the
-          given ``vault_id`` in this MCP process.
-        - ``chain_nonlinear`` (surfaced as ``DriftEntry`` rows, not
-          an envelope error): chain forks are reported in-band per
-          the bucket above rather than as a top-level failure, so
-          one forked chain does not mask drift on other edges in the
-          same vault.
-        - Graph-store query failures (500): unexpected SQLite errors
-          while walking provenance edges or resolving chain heads
-          propagate as opaque server errors. These are infrastructure
-          conditions, not caller bugs; retrying is appropriate.
+        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``chain_nonlinear`` (reported as ``DriftEntry`` rows, not an
+          envelope error, per the bucket above, so one forked chain does not
+          mask drift on other edges).
+        - Graph-store query failures (500): unexpected SQLite errors while
+          walking edges or resolving chain heads — infrastructure
+          conditions, retrying is appropriate.
 
         Args:
-            vault_id: Target vault identifier. See the
-                admin-family family preconditions block above.
+            vault_id: Target vault identifier.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2574,78 +2030,41 @@ def register_sage_tools(
     async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
-        Graduation of the standalone scripts/reabstract_deferred.py
-        script to the maintenance API surface (CAS-ADR-029).
-        Enumerates documents in the named vault whose pipeline_status is
-        ``abstraction_skipped``, dispatches IngestionService.reabstract
-        per document, and polls until each reaches terminal status
-        (``abstraction_complete`` or ``failed``). Returns a
-        ReabstractReport with per-document outcomes and aggregate counts.
+        Enumerates documents in the named vault at
+        ``pipeline_status=abstraction_skipped``, dispatches a reabstract per
+        document, and polls until each reaches terminal status
+        (``abstraction_complete`` or ``failed``). Returns a ReabstractReport
+        with per-document outcomes and aggregate counts.
 
-        Common preconditions:
-        See the admin-family family preconditions block above for
-        shared rules (``vault_id`` typed-alias validation,
-        ``maintenance_service`` wiring requirement).
-
-        Reuses the in-process AbstractionProvider that this MCP server
-        loaded at startup; does NOT spin up a second Qwen3 instance
-        (F-8 cautionary tale). The standalone script remains as the
-        operator fallback for cron-style workflows where no MCP server
-        is running.
-
-        Ingestion-service wiring requirement (F-8 guard):
-        ``MaintenanceService.reabstract_deferred_events`` raises
-        ``RuntimeError`` synchronously (before generator iteration
-        starts) when its ``MaintenanceService`` was constructed without
-        an ``ingestion_service`` dependency. This is a defensive guard
-        against the F-8 dual-AbstractionProvider hazard: the operator
-        fallback path (``scripts/reabstract_deferred.py``) runs in a
-        separate OS process and is allowed to self-initialize a
-        provider; this in-process path is not. Production startup
-        wires ``ingestion_service`` in via ``initialize_services``, so
-        the gate fires almost exclusively against test fixtures that
-        construct ``MaintenanceService`` directly without supplying an
-        ingestion dependency. The guard distinguishes "this fixture is
-        missing wiring" from the dual-provider hazard the F-8 rule
-        prohibits.
+        Reuses the in-process AbstractionProvider this MCP server loaded at
+        startup; does NOT spin up a second Qwen3 instance. The standalone
+        ``scripts/reabstract_deferred.py`` remains the operator fallback for
+        cron-style workflows where no MCP server is running.
 
         Single-flight per vault: a concurrent call returns a structured
-        ``reabstract_already_in_flight`` error (409) whose detail
-        carries the ``start_time`` of the in-flight operation. The
-        operation is non-blocking on the rejection path -- a queued
-        long-running second caller would mask client-side coordination
-        bugs.
+        ``reabstract_already_in_flight`` (409) whose detail carries the
+        in-flight operation's ``start_time``.
 
         Long-running: an N-document pass takes roughly N times the
-        per-document abstraction wall-clock (seconds to tens of seconds
-        each against Qwen3-30B MLX, sub-second against the test stub).
-        The MCP tool returns a single ReabstractReport dict once the
-        pass completes; allocate a generous client-side timeout.
-
-        The HTTP route now streams per-document SSE progress
-        events, but the MCP-layer contract is unchanged. Under the
-        hood, ``MaintenanceService.reabstract_deferred`` consumes the
-        streaming generator and re-shapes the final summary event as a
-        ``ReabstractReport``, so the dict this tool returns is
-        structurally identical to the pre-streaming response shape.
-        Callers that want per-document observability should subscribe
-        to the HTTP route's SSE stream directly; the MCP tool exists
-        for the report-and-return access pattern.
+        per-document abstraction wall-clock (seconds to tens of seconds each
+        against Qwen3-30B MLX, sub-second against the test stub). The tool
+        returns a single ReabstractReport once the pass completes; allocate a
+        generous client-side timeout. (The HTTP route streams per-document
+        SSE progress; the MCP contract is report-and-return.)
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
-        - ``reabstract_already_in_flight`` (409): a reabstract is
-          already running on this vault.
-        - ``RuntimeError`` (ingestion-service guard): the vault's
-          ``MaintenanceService`` was constructed without an
-          ``ingestion_service`` dependency. See the Ingestion-service
-          wiring requirement row above; test-fixture concern primarily.
+        - ``reabstract_already_in_flight`` (409): a reabstract is already
+          running on this vault.
+        - ``RuntimeError``: the vault's ``MaintenanceService`` was
+          constructed without an ``ingestion_service`` dependency
+          (test-fixture concern; production wiring supplies it).
 
         Args:
             vault_id: Target vault identifier.
-            include_pdf: When False (default), source_type=pdf documents
-                are skipped (scanned PDFs typically have no extractable
-                text). When True, PDFs are included in the worklist.
+            include_pdf: When False (default), source_type=pdf documents are
+                skipped (scanned PDFs typically have no extractable text).
+                When True, PDFs are included in the worklist.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2664,50 +2083,40 @@ def register_sage_tools(
     async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
         """Compact LanceDB content-store fragments and prune retained versions.
 
-        Operator-invoked reclamation operation on the maintenance/admin
-        API surface (CAS-ADR-029). Wraps ``Table.optimize()`` against
-        the per-vault chunks table: merges small fragment files, prunes
-        retained dataset versions older than the threshold, and folds
-        incremental rows into existing vector indexes without a full
-        rebuild.
+        Wraps ``Table.optimize()`` against the per-vault chunks table: merges
+        small fragment files, prunes retained dataset versions older than the
+        threshold, and folds incremental rows into existing vector indexes
+        without a full rebuild.
 
-        LanceDB is copy-on-write with version retention -- every add,
-        update, or delete writes a new fragment and a new manifest, and
-        nothing is reclaimed unless this operation is called explicitly.
-        Disk usage on actively-churned vaults can grow to hundreds of
-        times the size of current data without periodic optimize calls.
+        LanceDB is copy-on-write with version retention — every add, update,
+        or delete writes a new fragment and manifest, and nothing is
+        reclaimed unless this is called explicitly. Disk usage on
+        actively-churned vaults can grow to hundreds of times the current
+        data size without periodic optimize calls.
 
-        Common preconditions:
-        See the admin-family preconditions block above for shared
-        rules (``vault_id`` typed-alias validation,
-        ``maintenance_service`` wiring requirement).
+        Runs synchronously against the LanceDB connection this MCP server
+        already holds open (``delete_unverified`` is not exposed; LanceDB's
+        safety floor assumes the single-writer ownership the running server
+        provides). A first run against a highly-churned vault may take
+        minutes and exceed an MCP client timeout; subsequent runs settle to
+        seconds.
 
-        Runs synchronously against the LanceDB connection this MCP
-        server already holds open; ``delete_unverified`` is deliberately
-        not exposed (LanceDB's safety floor assumes single-writer
-        ownership of the dataset, which the running server provides).
-        On a first run against a highly-churned vault the call may take
-        minutes and exceed an MCP client's call timeout; subsequent
-        runs settle to seconds.
-
-        Returns an OptimizeContentStoreReport dict carrying pre/post
-        observations: directory byte sum, retained version count, and
-        fragment counts. LanceDB's ``Table.optimize()`` itself returns
-        None in the pinned version; the deltas in this report are the
-        caller-visible evidence of reclamation. ``cleanup_older_than_days``
-        is echoed in the report for audit-log alignment.
+        Returns an OptimizeContentStoreReport with pre/post observations
+        (directory byte sum, retained version count, fragment counts) — the
+        caller-visible evidence of reclamation, since ``Table.optimize()``
+        itself returns None. ``cleanup_older_than_days`` is echoed for
+        audit-log alignment.
 
         Error modes:
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``ValueError``: ``cleanup_older_than_days`` is negative.
 
         Args:
-            vault_id: Target vault identifier. See the
-                admin-family preconditions block above.
-            cleanup_older_than_days: Days. Dataset versions older than
-                this threshold are pruned; the latest version is never
-                removed. Default 7 days matches LanceDB's own default.
-                Set to 0 to remove every version except the latest.
+            vault_id: Target vault identifier.
+            cleanup_older_than_days: Dataset versions older than this
+                threshold are pruned; the latest version is never removed.
+                Default 7 matches LanceDB's default. Set to 0 to remove every
+                version except the latest.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2732,100 +2141,49 @@ def register_sage_tools(
     async def reload_vault(vault_id: str) -> dict:
         """Reload a vault by closing its current services and reinitializing.
 
-        When the vault was originally loaded from a YAML file (the production
-        path), the file is re-read from disk so on-disk edits to vault_config.yaml
-        take effect. Vaults initialized from an in-memory ``VaultConfig`` (for
-        example, in tests that bypass the file system) reuse the existing config.
+        When the vault was loaded from a YAML file (the production path), the
+        file is re-read from disk so on-disk edits to vault_config.yaml take
+        effect. Vaults initialized from an in-memory ``VaultConfig`` (e.g. in
+        tests) reuse the existing config.
 
-        Use this after modifying vault_config.yaml on disk, or when external
-        database changes (FastAPI server, another MCP client, direct DB writes)
-        leave the current MCP session with stale data.
+        Use this after editing vault_config.yaml on disk, or when external
+        database changes (the FastAPI server, another MCP client, direct DB
+        writes) have left this MCP session with stale data.
 
-        Scope of "reload" (per-vault, NOT stack-wide):
-        Only the target vault's ``vault_config.yaml`` is re-read from disk.
-        The SAGE-stack-wide config (``sage/config.yaml``, governing the
-        abstraction-provider singleton per CAS-ADR-030) is captured at
-        process startup and is NOT re-read on per-vault reload. Edits to
-        stack config require a process restart to take effect; callers
-        can verify the in-memory stack config via ``admin_get_stack_config``.
+        Scope is per-vault, NOT stack-wide: only the target vault's
+        ``vault_config.yaml`` is re-read. The stack-wide config
+        (``sage/config.yaml``, governing the abstraction-provider singleton)
+        is captured at process startup and requires a process restart to
+        change; verify it via ``admin_get_stack_config`` if you suspect
+        drift.
 
-        Reload is atomic with respect to the registry slot:
-        Internally this delegates to ``reload_vault_in_registry``, which
-        builds the new services first and only tears down the old services
-        on success. If construction raises (schema migration, duplicate edges,
-        abstraction-provider build failure, etc.), the registry slot is left
-        pointing at the **still-functional** old services — graph store still
-        open, timing thread still running — and an error envelope is returned
-        describing the failure. The caller can retry the reload after
-        addressing the underlying cause. Partial-allocation cleanup of the
-        failed new services is best-effort inside ``initialize_services``
-        (timing thread is stopped, graph store is closed, any internally-
-        constructed content store is released).
+        Reload is atomic with respect to the registry slot: new services are
+        built first and the old ones are torn down only on success. If
+        construction raises (schema migration, duplicate edges,
+        abstraction-provider build failure), the slot keeps pointing at the
+        still-functional old services and an error envelope is returned; the
+        caller can retry after addressing the cause.
 
-        Close-time barrier and in-flight drain (per CAS-ADR-036):
-        ``graph_store.close()`` is a barrier, not a label. It marks the
-        store closed *before* releasing resources, then drains queued
-        executor work via ``shutdown(wait=True)``, then closes each
-        registered SQLite connection. Dispatches that had already entered
-        the store's ``_run`` boundary before the barrier was set complete
-        normally against their pre-close-acquired connections (a worker
-        holding an open transaction commits or rolls back on its own
-        timeline before close returns). Dispatches that reach ``_run``
-        after the barrier is set raise ``RuntimeError("GraphStore is
-        closed")`` at the dispatch boundary — they do not silently
-        re-acquire a SQLite handle via asyncio's default executor.
-
-        No pipeline-quiescence precondition; Stage 2-3 stamping is
-        best-effort under the barrier:
-        Stage 2-3 background tasks dispatched by ``IngestionService.ingest``
-        with ``wait_for_pipeline=False`` are asyncio tasks closed over the
-        old ``IngestionService``'s old ``GraphStore`` reference; reload
-        tears the two down together. Once ``close()`` returns, any further
-        dispatch from those background tasks raises ``RuntimeError`` at the
-        ``_run`` barrier. The ``except`` handler in
-        ``IngestionService._run_stages_2_3`` that attempts to stamp
-        ``pipeline_status=failed`` calls ``update_document`` against the
-        same now-closed store, so the stamping *itself* raises and is lost
-        — the document is left at whatever transitional pipeline_status it
-        carried at the moment of close, not stamped failed. The MCP-side
-        ``ingest_document`` always uses ``wait_for_pipeline=True``, so MCP
-        callers cannot trigger this race; HTTP / FastAPI callers that pass
-        ``wait_for_pipeline=False`` explicitly are the only consumers
-        exposed.
-
-        Error modes (registry slot is preserved on all failure paths; the old
-        services remain installed and functional, and the caller can retry):
-        - ``invalid_vault_id`` (400): ``vault_id`` failed ``VaultIdStr``
-          typed-alias validation at the boundary (per CAS Typed-Alias
-          Boundary Conventions). The alias enforces a non-empty
-          slug-shaped identifier; malformed inputs are caught here rather
-          than at a downstream lookup.
-        - ``unknown_vault`` (404): ``vault_id`` did not validate as a
-          registered vault. The error detail enumerates the available
-          vaults at the time of the call.
-        - ``schema_migration_required`` (409): the vault's ``graph.db``
-          has pending ALTER TABLE migrations or backfills, so the new
-          graph store cannot ``initialize(migrate=False)``. Run
-          ``admin_migrate_vault`` to apply pending migrations
-          before retrying the reload.
-        - ``duplicate_edges_present`` (409): the vault's ``edges`` or
+        Error modes (the registry slot is preserved on every failure path;
+        the old services stay installed and the caller can retry):
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation at the boundary.
+        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
+          Detail enumerates the available vaults.
+        - ``schema_migration_required`` (409): the vault's ``graph.db`` has
+          pending migrations or backfills, so the new graph store cannot
+          ``initialize(migrate=False)``. Run ``admin_migrate_vault`` first.
+        - ``duplicate_edges_present`` (409): the ``edges`` or
           ``staging_edges`` table has duplicate rows on the natural-key
           triple ``(source_id, target_id, edge_type)``, so UNIQUE index
-          creation fails during ``GraphStore.initialize()``. Run
-          ``scripts/dedup_edges.py`` to dedupe the offending table before
-          retrying the reload.
-        - Abstraction-provider build failure: reload constructs the
-          abstraction provider from the **current in-memory stack config**
-          (see scope note above). A stack config with
-          ``provider="qwen3-mlx"`` and ``model=None`` raises ``ValueError``
-          during the build. Verify the in-memory stack config via
-          ``admin_get_stack_config`` before reloading if you suspect drift.
+          creation fails. Dedupe the offending table before retrying.
+        - Abstraction-provider build failure: reload builds the provider
+          from the current in-memory stack config; e.g.
+          ``provider="qwen3-mlx"`` with ``model=None`` raises ``ValueError``.
+          Verify via ``admin_get_stack_config`` if you suspect drift.
 
         Args:
-            vault_id: Target vault identifier. Validated against
-                ``VaultIdStr`` (typed-alias boundary check; see
-                ``invalid_vault_id`` above) before the registered-vault
-                lookup.
+            vault_id: Target vault identifier.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2870,7 +2228,7 @@ def register_sage_tools(
 
     @mcp.tool(name="admin_get_stack_config")
     async def get_stack_config() -> dict:
-        """Return the SAGE-stack-wide configuration (CAS-ADR-030).
+        """Return the SAGE-stack-wide configuration.
 
         Stack-wide config governs resources whose enforcement spans the whole
         SAGE process (e.g., the abstraction provider singleton). Per-vault
