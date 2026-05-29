@@ -3708,7 +3708,7 @@ components:
       type: object
       required: [items]
       description: >-
-        Request body for `POST /sage_vaults/{vault_id}/lifecycle/bulk`.
+        Request body for `POST /sage_vaults/{vault_id}/lifecycles`.
         Carries an ordered list of per-item lifecycle requests. The
         list may be empty; the response then has an empty `results`
         array.
@@ -3908,7 +3908,7 @@ components:
       type: object
       required: [items]
       description: >-
-        Request body for `POST /sage_vaults/{vault_id}/edges/bulk`.
+        Request body for `POST /sage_vaults/{vault_id}/edges`.
         Carries an ordered list of per-item link requests. The list
         may be empty; the response then has an empty `results` array.
       properties:
@@ -4106,7 +4106,7 @@ components:
       type: object
       required: [items]
       description: >-
-        Request body for `POST /sage_vaults/{vault_id}/metadata/bulk`.
+        Request body for `POST /sage_vaults/{vault_id}/metadata`.
         Carries an ordered list of per-item metadata-patch requests. The
         list may be empty; the response then has an empty `results`
         array.
