@@ -241,8 +241,13 @@ def extract_verb(tool_name: str) -> str:
 #: registration site and gives downstream consumers a single canonical
 #: source.
 #:
-#: Until the two-server registration split lands (CAS-ADR-034), every tool
-#: registers on the ``sage`` server regardless of the value here.
+#: The two-server registration split (CAS-ADR-034) is live: the ``sage`` and
+#: ``sage_admin`` stdio servers register their tools by deriving the server
+#: from each tool name's first segment (``sage.mcp_server._surface_of``), so
+#: this table is **not** consumed by registration. It serves as the
+#: conformance oracle — the in-code transcription of the *SAGE MCP Tool
+#: Surface* steering document's server registration map — against which the
+#: partition tests cross-check the prefix-derived split.
 SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     # sage server (ordinary surface)
     "search": "sage",

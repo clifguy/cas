@@ -457,6 +457,52 @@ list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]
 
 # ---------------------------------------------------------------------------
+# Two-server partition (CAS-ADR-034 / CAS-ADR-029)
+# ---------------------------------------------------------------------------
+#
+# The SAGE MCP surface is split across two stdio servers: ``sage`` (the
+# ordinary surface, always enabled) and ``sage_admin`` (the maintenance
+# surface, opt-in additive). Server enablement in the MCP client's settings
+# *is* the role declaration. Server assignment is derived purely from each
+# tool name's first segment per CAS-ADR-029's prefix-encodes-surface rule —
+# there is no per-tool override table. The module-level ``mcp`` above remains
+# the full, unpartitioned surface and is what ``sage/app.py`` mounts at
+# ``/mcp`` (CAS-ADR-034: the CAS app mount stays full-surface).
+
+
+def _surface_of(tool_name: str) -> str:
+    """Return the MCP server a tool registers on, derived from its name.
+
+    Per CAS-ADR-029's prefix-encodes-surface rule: a tool whose name's first
+    segment is ``admin_`` belongs to the maintenance server (``sage_admin``);
+    every other tool belongs to the ordinary server (``sage``).
+    """
+    return "sage_admin" if tool_name.startswith("admin_") else "sage"
+
+
+def build_partitioned_server(surface: str) -> _LoggingFastMCP:
+    """Build a stdio MCP server registering only the tools for ``surface``.
+
+    Both servers share the underlying tool-implementation layer
+    (``register_sage_tools`` / ``register_app_tools``). The partition is
+    applied after registration by dropping every tool whose ``_surface_of``
+    does not match ``surface``, so registration is purely prefix-derived
+    (CAS-ADR-029) with no per-tool override table. The maintenance server
+    therefore does not duplicate the shared read spine, which carries no
+    ``admin_`` prefix and so resolves to ``sage``.
+    """
+    server = _LoggingFastMCP(surface, lifespan=_lifespan)
+    sage_tools = register_sage_tools(
+        server, _get_vault, _serialize, _error_response, _get_vaults, get_vault_registry_service
+    )
+    app_tools = register_app_tools(server, _get_vault, _serialize, _error_response)
+    for name in {**sage_tools, **app_tools}:
+        if _surface_of(name) != surface:
+            server.remove_tool(name)
+    return server
+
+
+# ---------------------------------------------------------------------------
 # Mounting on FastAPI (shared-process mode)
 # ---------------------------------------------------------------------------
 
@@ -478,12 +524,25 @@ def mount_on_app(
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+
+def run_stdio(surface: str, prog: str = "python -m sage.mcp_server") -> None:
+    """Run a partitioned SAGE MCP server over stdio.
+
+    ``surface`` selects which tools register: ``"sage"`` for the ordinary
+    surface, ``"sage_admin"`` for the maintenance surface. Assignment is
+    derived from each tool name's first segment per CAS-ADR-029's
+    prefix-encodes-surface rule (see ``build_partitioned_server``). Vaults
+    are auto-discovered from the vault root, resolved from ``--vault-root``,
+    then ``$SAGE_VAULT_ROOT``, then ``~/sage_vaults``.
+
+    ``prog`` sets the argparse program name so each entry module reports its
+    own ``python -m ...`` invocation in ``--help``.
+    """
+    global _vault_root
     import argparse
-    import os
 
     parser = argparse.ArgumentParser(
-        prog="python -m sage.mcp_server",
+        prog=prog,
         description=(
             "Run the SAGE MCP server over stdio. Vaults are auto-discovered from the vault root."
         ),
@@ -506,4 +565,8 @@ if __name__ == "__main__":
     else:
         _vault_root = Path.home() / "sage_vaults"
 
-    mcp.run(transport="stdio")
+    build_partitioned_server(surface).run(transport="stdio")
+
+
+if __name__ == "__main__":
+    run_stdio("sage", prog="python -m sage.mcp_server")

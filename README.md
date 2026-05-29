@@ -35,7 +35,28 @@ python -m venv .venv
 .venv/bin/pip install -e ".[test,mlx]"
 ```
 
-See `pyproject.toml` for pinned versions. The SAGE MCP server runs from `.venv/bin/python -m sage.mcp_server`; restart Claude Code after editing files in the MCP import path.
+See `pyproject.toml` for pinned versions.
+
+The SAGE MCP surface is split across two stdio servers. The **ordinary** server (`sage.mcp_server`) is always enabled and carries the read spine plus the everyday mutation spine. The **maintenance** server (`sage.mcp_server_admin`) is opt-in and additive — it registers the vault- and stack-level administrative tools (the `admin_*` tools) and does not duplicate the read spine; a maintenance session enables both servers and reads through the ordinary one. Server enablement in the client's MCP settings is the only role declaration.
+
+Configure them in your MCP client (e.g. Claude Code `settings.json`). The default case needs only `sage`; add `sage_admin` when you need maintenance tools:
+
+```json
+{
+  "mcpServers": {
+    "sage": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "sage.mcp_server"]
+    },
+    "sage_admin": {
+      "command": ".venv/bin/python",
+      "args": ["-m", "sage.mcp_server_admin"]
+    }
+  }
+}
+```
+
+Restart the client after editing files in the MCP import path — the running server holds the old import.
 
 ## Status
 

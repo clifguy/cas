@@ -16,7 +16,7 @@ Python 3.14 with FastAPI + uvicorn (SAGE Core API and ROOT Harness Orchestration
 
 macOS on Apple Silicon. Python venv at `.venv/`; always invoke as `.venv/bin/python` (never the system Python). Install with `pip install -e ".[test,mlx]"`.
 
-The SAGE MCP server runs from `.venv/bin/python -m sage.mcp_server`. Edits to SAGE MCP server code require a Claude Code restart to take effect — the running server holds the old import.
+The SAGE MCP surface runs over stdio as two servers: the ordinary surface from `.venv/bin/python -m sage.mcp_server` (always enabled) and the opt-in maintenance surface (`admin_*` tools) from `.venv/bin/python -m sage.mcp_server_admin`. Enable `sage_admin` in MCP-client settings only when maintenance tools are needed; it does not duplicate the read spine. Edits to SAGE MCP server code require a Claude Code restart to take effect — the running server holds the old import.
 
 Database files (SQLite, LanceDB) live outside the repository at paths configured in `sage/config.yaml`. They are not touched by `git reset` or `git clean`.
 
