@@ -1,7 +1,10 @@
 """Partition conformance for the two-server SAGE MCP surface.
 
 Gates the CAS-ADR-034 / CAS-ADR-029 split of the SAGE MCP tool surface
-across two stdio servers:
+across two stdio servers and (per CAS-ADR-034 v7) the matching pair of
+HTTP/SSE mounts on the SAGE app — ``/mcp`` (ordinary) and ``/mcp_admin``
+(maintenance), both built by the same partition factory in the one
+uvicorn process:
 
 - ``sage`` — ordinary surface (read spine + everyday mutation spine +
   multi-record operations); always enabled.
@@ -20,9 +23,18 @@ tautology against the production logic.
 
 from __future__ import annotations
 
+from fastapi import FastAPI
+from starlette.routing import Mount
+
 import sage.mcp_server as mcp_server
 import sage.mcp_server_admin as mcp_server_admin
 from sage._tool_rename_mapping import SERVER_ASSIGNMENT
+from sage.adapters.stubs import (
+    StubAbstractionProvider,
+    StubContentStore,
+    StubEmbeddingProvider,
+)
+from sage.app import _GracefulSSEMiddleware, _initialize_services, create_app
 
 EXPECTED_SAGE = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage"}
 EXPECTED_ADMIN = {name for name, srv in SERVER_ASSIGNMENT.items() if srv == "sage_admin"}
@@ -43,6 +55,12 @@ READ_SPINE = {
 def _registered_names(surface: str) -> set[str]:
     """Tool names registered on a freshly built partitioned server."""
     server = mcp_server.build_partitioned_server(surface)
+    return {tool.name for tool in server._tool_manager.list_tools()}  # noqa: SLF001
+
+
+def _mounted_names(app: FastAPI, path: str) -> set[str]:
+    """Tool names advertised by the partitioned MCP server mounted at ``path``."""
+    server = app.state.mcp_mounts[path]
     return {tool.name for tool in server._tool_manager.list_tools()}  # noqa: SLF001
 
 
@@ -89,18 +107,77 @@ def test_partition_is_disjoint_and_exhaustive():
     )
 
 
-def test_cas_app_mcp_mount_advertises_full_surface():
-    """The ``/mcp`` mount source (module-level ``mcp``) is full/unpartitioned.
+def test_mcp_mount_advertises_ordinary_surface_only(minimal_config):
+    """The ``/mcp`` HTTP/SSE mount advertises exactly the ordinary roster.
 
-    ``sage/app.py`` mounts ``mcp.sse_app()`` at ``/mcp``; that instance must
-    advertise both server rosters combined, with no partition.
+    Revises the prior full-surface assertion: per CAS-ADR-034 v7 the HTTP
+    transport is partitioned like the stdio servers, so ``/mcp`` carries the
+    ``sage`` surface only and no ``admin_*`` tool appears there.
     """
-    full = {tool.name for tool in mcp_server.mcp._tool_manager.list_tools()}  # noqa: SLF001
-    sage = _registered_names("sage")
-    admin = _registered_names("sage_admin")
-    assert sage and admin, "both partitions must be non-empty"
-    assert full == EXPECTED_SAGE | EXPECTED_ADMIN
-    assert full == sage | admin
+    app = create_app(config=minimal_config)
+    names = _mounted_names(app, "/mcp")
+    assert names == EXPECTED_SAGE
+    assert names, "ordinary mount roster must be non-empty"
+    leaked = {n for n in names if n.startswith("admin_")}
+    assert not leaked, f"admin_ tool(s) advertised on /mcp: {sorted(leaked)}"
+
+
+def test_mcp_admin_mount_advertises_maintenance_surface_only(minimal_config):
+    """The ``/mcp_admin`` HTTP/SSE mount advertises exactly the maintenance roster."""
+    app = create_app(config=minimal_config)
+    names = _mounted_names(app, "/mcp_admin")
+    assert names == EXPECTED_ADMIN
+    offenders = {n for n in names if not n.startswith("admin_")}
+    assert not offenders, f"non-admin_ tool(s) on /mcp_admin: {sorted(offenders)}"
+    dup = names & READ_SPINE
+    assert not dup, f"read-spine tool(s) duplicated on /mcp_admin: {sorted(dup)}"
+
+
+def test_both_mcp_mounts_present_in_one_app(minimal_config):
+    """One uvicorn process/app serves both partitioned mounts (CAS-ADR-034 v7)."""
+    app = create_app(config=minimal_config)
+    mounted_paths = {route.path for route in app.routes if isinstance(route, Mount)}
+    assert {"/mcp", "/mcp_admin"} <= mounted_paths
+    assert set(app.state.mcp_mounts) == {"/mcp", "/mcp_admin"}
+
+
+async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
+    """The maintenance mount's tools read the app-shared ``_vaults`` registry.
+
+    A vault initialized through the app populates ``mcp_server._vaults``;
+    calling ``admin_list_vaults`` through the ``/mcp_admin`` mount must then
+    see that vault, proving the mount shares the one registry rather than
+    building its own (no duplicate vault initialization).
+    """
+    app = create_app(config=minimal_config)
+    await _initialize_services(
+        app,
+        minimal_config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    )
+    try:
+        admin_server = app.state.mcp_mounts["/mcp_admin"]
+        result = await admin_server.call_tool("admin_list_vaults", {})
+        assert minimal_config.vault.id in str(result)
+    finally:
+        await app.state.graph_store.close()
+        mcp_server._vaults.pop(minimal_config.vault.id, None)
+
+
+def test_graceful_sse_middleware_applied_to_both_mounts(minimal_config):
+    """``_GracefulSSEMiddleware`` wraps both partitioned SSE mounts."""
+    app = create_app(config=minimal_config)
+    routes = {
+        route.path: route
+        for route in app.routes
+        if isinstance(route, Mount) and route.path in {"/mcp", "/mcp_admin"}
+    }
+    assert set(routes) == {"/mcp", "/mcp_admin"}
+    for path, route in routes.items():
+        applied = any(mw.cls is _GracefulSSEMiddleware for mw in route.app.user_middleware)
+        assert applied, f"_GracefulSSEMiddleware not applied to {path}"
 
 
 def test_sage_admin_entry_module_builds_admin_surface():

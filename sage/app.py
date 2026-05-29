@@ -221,6 +221,38 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     app.state.utilities_service = services.utilities_service
 
 
+def _mount_partitioned_mcp(app: FastAPI) -> None:
+    """Mount the ordinary and maintenance MCP surfaces as SSE sub-apps.
+
+    Realizes the CAS-ADR-034 ordinary/maintenance partition over the
+    HTTP/SSE transport: ``/mcp`` carries the ``sage`` (ordinary) roster and
+    ``/mcp_admin`` the ``sage_admin`` (``admin_*``) roster. Both are built by
+    ``build_partitioned_server`` and run in this one uvicorn process, sharing
+    the app-populated ``_vaults`` registry and the single stack abstraction
+    provider (CAS-ADR-030) — partitioning the transport adds no per-mount
+    vault re-initialization and no second abstraction-model load. The full
+    surface is reached by connecting to both mounts.
+
+    Each SSE app is mounted as a native Starlette sub-application so FastAPI
+    propagates lifespan and request scope, and ``_GracefulSSEMiddleware`` is
+    added to each sub-app's own middleware stack (rather than wrapping it
+    externally, which would obscure the app type and interfere with MCP
+    session initialization). The partitioned server for each path is recorded
+    on ``app.state.mcp_mounts`` (mirroring ``app.state.vault_registry``) so
+    the wiring is inspectable.
+    """
+    from sage.mcp_server import build_partitioned_server
+
+    mounts: dict[str, object] = {}
+    for path, surface in (("/mcp", "sage"), ("/mcp_admin", "sage_admin")):
+        server = build_partitioned_server(surface)
+        sse_app = server.sse_app()
+        sse_app.add_middleware(_GracefulSSEMiddleware)
+        app.mount(path, sse_app)
+        mounts[path] = server
+    app.state.mcp_mounts = mounts
+
+
 def create_app(
     vault_root: Path | None = None,
     config: VaultConfig | None = None,
@@ -335,16 +367,10 @@ def create_app(
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)
 
-    # Mount MCP server (SSE transport) for external clients (e.g. Cowork).
-    # The SSE app is mounted as a native Starlette sub-application so
-    # FastAPI correctly propagates lifespan and request scope.
-    # _GracefulSSEMiddleware is added to the Starlette app's own middleware
-    # stack rather than wrapping it externally, which would obscure the
-    # app type and interfere with MCP session initialization.
-    from sage.mcp_server import mcp
-
-    sse_app = mcp.sse_app()
-    sse_app.add_middleware(_GracefulSSEMiddleware)
-    app.mount("/mcp", sse_app)
+    # Mount the partitioned MCP surfaces (SSE transport) for external
+    # clients (e.g. Cowork). Per CAS-ADR-034 v7 the HTTP transport is
+    # partitioned like the stdio servers: /mcp = ordinary, /mcp_admin =
+    # maintenance. Full surface = connect to both.
+    _mount_partitioned_mcp(app)
 
     return app

@@ -457,17 +457,20 @@ list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]
 
 # ---------------------------------------------------------------------------
-# Two-server partition (CAS-ADR-034 / CAS-ADR-029)
+# Surface partition (CAS-ADR-034 / CAS-ADR-029)
 # ---------------------------------------------------------------------------
 #
-# The SAGE MCP surface is split across two stdio servers: ``sage`` (the
-# ordinary surface, always enabled) and ``sage_admin`` (the maintenance
-# surface, opt-in additive). Server enablement in the MCP client's settings
-# *is* the role declaration. Server assignment is derived purely from each
-# tool name's first segment per CAS-ADR-029's prefix-encodes-surface rule —
-# there is no per-tool override table. The module-level ``mcp`` above remains
-# the full, unpartitioned surface and is what ``sage/app.py`` mounts at
-# ``/mcp`` (CAS-ADR-034: the CAS app mount stays full-surface).
+# The SAGE MCP surface is split into two: ``sage`` (the ordinary surface,
+# always enabled) and ``sage_admin`` (the maintenance surface, opt-in
+# additive). Per CAS-ADR-034 v7 the partition is realized over both
+# transports — two stdio servers, and two HTTP/SSE mounts on the SAGE app
+# (``/mcp`` = ordinary, ``/mcp_admin`` = maintenance; see ``sage/app.py``).
+# Server/mount selection *is* the role declaration. Surface assignment is
+# derived purely from each tool name's first segment per CAS-ADR-029's
+# prefix-encodes-surface rule — there is no per-tool override table. The
+# module-level ``mcp`` above remains the full, unpartitioned surface for
+# standalone use (see ``mount_on_app``); the partitioned servers are built
+# by ``build_partitioned_server`` below.
 
 
 def _surface_of(tool_name: str) -> str:
@@ -511,7 +514,13 @@ def mount_on_app(
     app: "FastAPI",  # noqa: F821 -- imported only at call site
     path: str = "/mcp",
 ) -> None:
-    """Mount the MCP server on an existing FastAPI application.
+    """Mount the full-surface MCP server on an existing FastAPI application.
+
+    Mounts the unpartitioned ``mcp`` singleton (the ordinary and maintenance
+    rosters combined). The SAGE app does not use this — it mounts the two
+    partitioned surfaces directly (CAS-ADR-034 v7; see
+    ``_mount_partitioned_mcp`` in ``sage/app.py``). This helper remains for
+    standalone full-surface mounting.
 
     The caller's lifespan should populate the module-level ``_vaults``
     dict directly (via ``sage.mcp_server._vaults``) so the MCP tools
