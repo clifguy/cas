@@ -592,10 +592,10 @@ async def test_removed_tool_returns_envelope_error(removed_name: str, caplog, mo
 # automatically propagates here, and any drift between the table and
 # the live catalog surfaces on either side as the same diff.
 
-_EXPECTED_T0240_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
+_EXPECTED_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
 
 
-async def test_post_t0240_catalog_matches_expected_set() -> None:
+async def test_live_catalog_matches_expected_set() -> None:
     """The live MCP catalog equals the 34-tool target set defined in
     SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + admin-prefix pass.
 
@@ -607,11 +607,11 @@ async def test_post_t0240_catalog_matches_expected_set() -> None:
     the desired auditable failure mode.
     """
     live = await _live_tool_names()
-    expected = set(_EXPECTED_T0240_CATALOG)
+    expected = set(_EXPECTED_CATALOG)
     missing = expected - live
     extra = live - expected
     assert not missing and not extra, (
-        f"Live MCP catalog differs from the T-0240 target set. "
+        f"Live MCP catalog differs from the CAS-ADR-029 target set. "
         f"Missing from live: {sorted(missing)}; "
         f"Extra in live (not in SERVER_ASSIGNMENT): {sorted(extra)}."
     )
