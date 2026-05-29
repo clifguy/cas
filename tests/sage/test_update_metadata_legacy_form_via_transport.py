@@ -106,34 +106,28 @@ def _decode_envelope(result):
 async def test_update_metadata_tags_bare_list_returns_legacy_form_envelope_via_transport(
     vault_services,
 ):
-    """Bare-list ``tags`` on ``update_metadata`` returns legacy_form via MCP transport.
+    """Bare-list per-item ``tags`` on ``update_metadata`` returns
+    legacy_form via MCP transport (post-CAS-ADR-029 plural-noun shape).
 
-    Pre-fix surface: the tool's ``tags: dict | None`` annotation makes
-    FastMCP's per-tool argument model reject the bare list at the
-    framework boundary; ``_LoggingFastMCP.call_tool`` propagates the
-    resulting ``ValidationError`` as ``ToolError`` (per the T3/T5 split
-    in ``test_fastmcp_strict_args.py``), so ``result`` is never assigned
-    and the test fails with the ``ToolError`` surfaced by pytest.
-
-    Post-fix surface: the annotation widens to ``dict | list | None``;
-    FastMCP accepts the bare list; the body-level
-    ``_check_legacy_patch_form("tags", tags)`` fires; the tool's
-    ``except (SAGEError, ValueError)`` catches the ``LegacyFormError``
-    and returns the structured envelope, which ``call_tool`` wraps in
-    ``[TextContent]`` for the wire.
+    Per CAS-ADR-029 v4 the MCP tool takes ``items: list[dict]``; the
+    per-item dict is opaque to FastMCP's per-tool argument model so
+    the bare-list ``tags`` value inside the item reaches the body-level
+    per-item legacy-form guard. The structured ``legacy_form`` envelope
+    is the result.
 
     Anti-coincidental-pass: assertions target the specific
     ``legacy_form`` envelope shape (error code, field name, worked-
-    example substring), not a generic error class. A test that only
-    asserted ``"error" in envelope`` would pass on any error envelope
-    shape, including the wrong one.
+    example substring), not a generic error class.
     """
     ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
 
     result = await mcp.call_tool(
         "update_metadata",
-        {"vault_id": "test_vault", "document_id": doc_id, "tags": ["a", "b"]},
+        {
+            "vault_id": "test_vault",
+            "items": [{"document_id": doc_id, "tags": ["a", "b"]}],
+        },
     )
     envelope = _decode_envelope(result)
     assert envelope["error"] == "legacy_form"
@@ -144,14 +138,8 @@ async def test_update_metadata_tags_bare_list_returns_legacy_form_envelope_via_t
 async def test_update_metadata_tier3_bare_dict_returns_legacy_form_envelope_via_transport(
     vault_services,
 ):
-    """Bare-dict ``tier3_metadata`` on ``update_metadata`` returns legacy_form via MCP transport.
-
-    The ``tier3_metadata`` legacy form is a dict whose keys are NOT in
-    ``{"set", "unset"}``. The current ``tier3_metadata: dict | None``
-    signature accepts the bare dict at the FastMCP layer; the body-level
-    guard then rejects on the key-set check and returns the structured
-    envelope. Regression guard: pin the wire shape so future changes
-    to the guard or the tool's catch block can't silently drift it.
+    """Bare-dict per-item ``tier3_metadata`` on ``update_metadata``
+    returns legacy_form via MCP transport (post-CAS-ADR-029 plural-noun shape).
     """
     ingest_result = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     doc_id = ingest_result["id"]
@@ -160,8 +148,7 @@ async def test_update_metadata_tier3_bare_dict_returns_legacy_form_envelope_via_
         "update_metadata",
         {
             "vault_id": "test_vault",
-            "document_id": doc_id,
-            "tier3_metadata": {"some_key": "value"},
+            "items": [{"document_id": doc_id, "tier3_metadata": {"some_key": "value"}}],
         },
     )
     envelope = _decode_envelope(result)
@@ -190,10 +177,13 @@ async def test_bulk_update_metadata_item_tags_bare_list_returns_legacy_form_enve
     doc_id = ingest_result["id"]
 
     result = await mcp.call_tool(
-        "bulk_update_metadata",
+        "bulk_update_metadata",  # legacy name; alias-layer routes to update_metadata
         {
             "vault_id": "test_vault",
-            "items": [{"document_id": doc_id, "tags": ["a", "b"]}],
+            "items": [
+                {"document_id": doc_id, "title": "valid"},
+                {"document_id": doc_id, "tags": ["a", "b"]},
+            ],
         },
     )
     envelope = _decode_envelope(result)
@@ -215,10 +205,13 @@ async def test_bulk_update_metadata_item_tier3_bare_dict_returns_legacy_form_env
     doc_id = ingest_result["id"]
 
     result = await mcp.call_tool(
-        "bulk_update_metadata",
+        "bulk_update_metadata",  # legacy name; alias-layer routes to update_metadata
         {
             "vault_id": "test_vault",
-            "items": [{"document_id": doc_id, "tier3_metadata": {"some_key": "value"}}],
+            "items": [
+                {"document_id": doc_id, "title": "valid"},
+                {"document_id": doc_id, "tier3_metadata": {"some_key": "value"}},
+            ],
         },
     )
     envelope = _decode_envelope(result)

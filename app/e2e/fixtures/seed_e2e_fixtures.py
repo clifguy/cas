@@ -88,7 +88,7 @@ def archive_prior_fixtures(backend: str) -> int:
     print(f"  archiving {len(items)} pre-existing fixture documents")
     http_request(
         "POST",
-        f"{backend}/sage_vaults/{VAULT_ID}/lifecycle/bulk",
+        f"{backend}/sage_vaults/{VAULT_ID}/lifecycles",
         {"items": items},
     )
     return len(items)
@@ -182,7 +182,7 @@ def archive_prior_maintenance_fixtures(backend: str) -> int:
         items = [{"document_id": r["document"]["id"], "action": "archive"} for r in results]
         http_request(
             "POST",
-            f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/lifecycle/bulk",
+            f"{backend}/sage_vaults/{MAINTENANCE_VAULT_ID}/lifecycles",
             {"items": items},
         )
         archived += len(items)

@@ -10,12 +10,12 @@ export async function bulkSetLifecycle(
   vaultId: string,
   items: BulkLifecycleItem[],
 ): Promise<BulkLifecycleResponse> {
-  return apiPost<BulkLifecycleResponse>(`/sage_vaults/${vaultId}/lifecycle/bulk`, { items });
+  return apiPost<BulkLifecycleResponse>(`/sage_vaults/${vaultId}/lifecycles`, { items });
 }
 
 export async function bulkUpdateMetadata(
   vaultId: string,
   items: BulkMetadataItem[],
 ): Promise<BulkMetadataResponse> {
-  return apiPost<BulkMetadataResponse>(`/sage_vaults/${vaultId}/metadata/bulk`, { items });
+  return apiPost<BulkMetadataResponse>(`/sage_vaults/${vaultId}/metadata`, { items });
 }

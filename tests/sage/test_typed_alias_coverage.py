@@ -730,7 +730,9 @@ def test_discovered_fastapi_callables_are_nonempty():
     # Spot-check a few well-known endpoints exist in the registry.
     assert "get_document" in endpoint_names, "Missing documents router endpoint"
     assert "check_preconditions" in endpoint_names, "Missing graph_ops endpoint"
-    assert "set_lifecycle" in endpoint_names, "Missing lifecycle endpoint"
+    # Post-CAS-ADR-029 (CAS-ADR-029 v4): the lifecycle router endpoint is
+    # the consolidated plural-noun handler ``update_lifecycles``.
+    assert "update_lifecycles" in endpoint_names, "Missing lifecycle endpoint"
     # Spot-check dependency providers.
     assert "get_vault_id" in provider_names, "Missing get_vault_id provider"
     assert "get_documents_service" in provider_names, "Missing get_documents_service"

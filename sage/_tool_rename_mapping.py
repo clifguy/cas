@@ -13,15 +13,21 @@ rename and inner-prefix simplification of every SAGE MCP tool name:
   name must begin with (after stripping any compound prefix). Anchored
   to CAS-ADR-033.
 - ``COMPOUND_PREFIXES`` — prefixes that compose with the verb taxonomy
-  (currently just ``bulk_``). Anchored to CAS-ADR-029.
+  (currently ``bulk_`` and ``admin_``). Anchored to CAS-ADR-029.
 - ``SERVER_ASSIGNMENT`` — new tool name → MCP server name (``sage`` or
   ``sage_admin``). Consumed by the two-server registration split per
   CAS-ADR-034.
 
-The deprecation window is scheduled to close 2026-06-15. The alias
-middleware and the ``RENAME_MAPPING`` / ``REMOVED_TOOLS`` entries are
-expected to be removed in a follow-up change after that date; the verb
-taxonomy and ``SERVER_ASSIGNMENT`` are durable.
+The alias middleware does a single-step lookup, not transitive
+resolution. When a tool is renamed twice (once by a prior pass, once
+by a subsequent pass), the prior entry's value is updated to the
+current target so the middleware still resolves old names correctly.
+
+The deprecation window for the combined CAS-ADR-029 / CAS-ADR-029 rename aliases
+is scheduled to close 2026-06-15. The alias middleware and the
+``RENAME_MAPPING`` / ``REMOVED_TOOLS`` entries are expected to be
+removed in a follow-up change after that date; the verb taxonomy and
+``SERVER_ASSIGNMENT`` are durable.
 """
 
 from __future__ import annotations
@@ -39,22 +45,27 @@ from typing import Final
 #: naming both the old and new names; see the alias middleware module for
 #: the rewrite point.
 RENAME_MAPPING: Final[dict[str, str]] = {
+    # ------------------------------------------------------------------
+    # Pre-CAS-ADR-029 aliases (sage_* / app_* prefixes).
+    # Values are updated to the post-CAS-ADR-029 targets so the single-step
+    # alias resolution still reaches a live tool name.
+    # ------------------------------------------------------------------
     # Read-spine tools (sage server)
     "sage_discover": "search",
     "sage_get_document": "get_document",
     "sage_read_section": "read_section",
     "sage_read_projection": "read_projection",
     "sage_list_headings": "list_headings",
-    "sage_list_vaults": "list_vaults",
-    "sage_get_vault_config": "get_vault_config",
-    "sage_vault_stats": "get_vault_stats",
+    "sage_list_vaults": "admin_list_vaults",
+    "sage_get_vault_config": "admin_get_vault_config",
+    "sage_vault_stats": "admin_get_vault_stats",
     "sage_traverse": "traverse",
     "sage_chain": "chain",
     # Mutation spine (sage server)
     "sage_ingest": "ingest_document",
-    "sage_link": "create_edge",
+    "sage_link": "create_edges",
     "sage_unlink": "delete_edge",
-    "sage_set_lifecycle": "update_lifecycle",
+    "sage_set_lifecycle": "update_lifecycles",
     "sage_update_metadata": "update_metadata",
     "sage_update_staging_edge": "update_staging_edge",
     "sage_list_staging_edges": "list_staging_edges",
@@ -62,26 +73,60 @@ RENAME_MAPPING: Final[dict[str, str]] = {
     "sage_pending_metadata": "list_pending_metadata",
     "sage_parse_filename": "get_filename_metadata",
     # Edge-level bulk (sage server per CAS-ADR-029)
-    "sage_bulk_link": "bulk_create_edge",
+    "sage_bulk_link": "create_edges",
     # App-tools (server assignment varies per CAS-ADR-034)
     "app_scan_directory": "list_directory",
     "app_batch_ingest": "bulk_ingest_document",
-    # Document-level bulk (sage_admin server per CAS-ADR-029)
-    "sage_bulk_set_lifecycle": "bulk_update_lifecycle",
-    "sage_bulk_update_metadata": "bulk_update_metadata",
+    # Document-level bulk (collapsed under CAS-ADR-029 v4 plural-noun)
+    "sage_bulk_set_lifecycle": "update_lifecycles",
+    "sage_bulk_update_metadata": "update_metadata",
     # Maintenance / admin surface (sage_admin server)
     "sage_reabstract": "recompute_abstract",
     "sage_recompute_pipeline": "recompute_pipeline",
-    "sage_refresh_views": "recompute_views",
-    "sage_hash_check": "verify_hash",
-    "sage_admin_detect_drift": "verify_vault_drift",
-    "sage_admin_migrate_vault": "migrate_vault",
-    "sage_admin_reabstract_deferred_vault": "recompute_deferred_vault_abstracts",
-    "sage_admin_optimize_vault": "optimize_vault_content_store",
-    "sage_reload_vault": "reload_vault",
-    "sage_create_vault": "create_vault",
-    "sage_update_vault_config": "update_vault_config",
-    "sage_get_stack_config": "get_stack_config",
+    "sage_refresh_views": "admin_recompute_views",
+    "sage_hash_check": "verify_hashes",
+    "sage_admin_detect_drift": "admin_verify_vault_drift",
+    "sage_admin_migrate_vault": "admin_migrate_vault",
+    "sage_admin_reabstract_deferred_vault": "admin_recompute_deferred_vault_abstracts",
+    "sage_admin_optimize_vault": "admin_optimize_vault_content_store",
+    "sage_reload_vault": "admin_reload_vault",
+    "sage_create_vault": "admin_create_vault",
+    "sage_update_vault_config": "admin_update_vault_config",
+    "sage_get_stack_config": "admin_get_stack_config",
+    # ------------------------------------------------------------------
+    # CAS-ADR-029 pass: plural-noun convention + admin_ prefix-encodes-surface
+    # rule per CAS-ADR-029 v4, with the five v7 amendments to the
+    # SAGE MCP Tool Surface steering doc's orphan-mappings table.
+    # ------------------------------------------------------------------
+    # Pair collapses to plural-noun on sage
+    "create_edge": "create_edges",
+    "bulk_create_edge": "create_edges",
+    "update_lifecycle": "update_lifecycles",
+    "bulk_update_lifecycle": "update_lifecycles",
+    "bulk_update_metadata": "update_metadata",
+    # Admin prefix added per CAS-ADR-029 v4 (v6-firm renames)
+    "verify_vault_drift": "admin_verify_vault_drift",
+    "migrate_vault": "admin_migrate_vault",
+    "recompute_deferred_vault_abstracts": "admin_recompute_deferred_vault_abstracts",
+    "create_vault": "admin_create_vault",
+    "reload_vault": "admin_reload_vault",
+    "update_vault_config": "admin_update_vault_config",
+    "recompute_views": "admin_recompute_views",
+    "get_stack_config": "admin_get_stack_config",
+    # v6 pending-classification resolved
+    "optimize_vault_content_store": "admin_optimize_vault_content_store",
+    # v7 amendments: scope rule re-applied; admin_ tracks vault/stack scope
+    "list_vaults": "admin_list_vaults",
+    "get_vault_config": "admin_get_vault_config",
+    "get_vault_stats": "admin_get_vault_stats",
+    # v7 amendment: record-collection scope; plural-noun rename, moves
+    # off the maintenance surface
+    "verify_hash": "verify_hashes",
+    # v7 amendment: per-document scope; no rename, but the prior
+    # admin_recompute_abstract mapping needs to point to the unprefixed
+    # name. There is no current-deployed admin_recompute_abstract on
+    # the live surface, so no rename entry is needed for the v7 move;
+    # the only effect is in SERVER_ASSIGNMENT below.
 }
 
 
@@ -148,11 +193,14 @@ CANONICAL_VERBS: Final[frozenset[str]] = frozenset(
 
 #: Prefixes that compose with the verb taxonomy. After stripping a
 #: compound prefix from the beginning of a tool name, the remainder
-#: must begin with a canonical verb. Currently the only compound
-#: prefix is ``bulk`` per CAS-ADR-029.
+#: must begin with a canonical verb. ``bulk`` is retained for the
+#: ``bulk_ingest_document`` tool whose rename to ``ingest_documents``
+#: is deferred to a follow-on revision. ``admin`` is the prefix-
+#: encodes-surface marker per CAS-ADR-029 v4.
 COMPOUND_PREFIXES: Final[frozenset[str]] = frozenset(
     {
         "bulk",
+        "admin",
     }
 )
 
@@ -160,15 +208,15 @@ COMPOUND_PREFIXES: Final[frozenset[str]] = frozenset(
 def extract_verb(tool_name: str) -> str:
     """Return the canonical verb segment of a tool name.
 
-    Strips any leading compound prefix (e.g. ``bulk_``), then returns
-    the first underscore-separated segment of the remainder. Returns
-    the empty string if ``tool_name`` is empty.
+    Strips any leading compound prefix (e.g. ``bulk_``, ``admin_``),
+    then returns the first underscore-separated segment of the
+    remainder. Returns the empty string if ``tool_name`` is empty.
 
     Examples:
         ``extract_verb("get_document")`` returns ``"get"``.
-        ``extract_verb("bulk_create_edge")`` returns ``"create"``.
-        ``extract_verb("migrate_vault")`` returns ``"migrate"``.
-        ``extract_verb("recompute_deferred_vault_abstracts")`` returns ``"recompute"``.
+        ``extract_verb("bulk_ingest_document")`` returns ``"ingest"``.
+        ``extract_verb("admin_migrate_vault")`` returns ``"migrate"``.
+        ``extract_verb("admin_recompute_views")`` returns ``"recompute"``.
     """
     if not tool_name:
         return ""
@@ -183,58 +231,55 @@ def extract_verb(tool_name: str) -> str:
 # ----------------------------------------------------------------------
 
 #: New tool name → MCP server name. The ``sage`` server hosts the
-#: ordinary surface (read spine + edge-level mutation); the
-#: ``sage_admin`` server hosts the maintenance surface (admin-only
-#: tools + document-level bulk mutation + vault-config writes +
-#: substrate maintenance). Server assignment is derivable from the
-#: tool's verb / prefix per CAS-ADR-029 (``admin_*`` was historically
-#: bijective with ``sage_admin``; ``bulk_*`` is split by noun), but
+#: ordinary surface (read spine + mutation spine + record-collection
+#: queries + per-document recomputes); the ``sage_admin`` server hosts
+#: the maintenance surface (vault-state reads and writes + stack-state
+#: reads + substrate maintenance). Server assignment is derivable from
+#: the tool's prefix per CAS-ADR-029 v4's prefix-encodes-surface rule
+#: (``admin_*`` → ``sage_admin``; everything else → ``sage``), but
 #: codifying it here avoids re-deriving the partition at every
 #: registration site and gives downstream consumers a single canonical
 #: source.
 #:
-#: Until the two-server registration split lands, every tool registers
-#: on the ``sage`` server regardless of the value here.
+#: Until the two-server registration split lands (CAS-ADR-034), every tool
+#: registers on the ``sage`` server regardless of the value here.
 SERVER_ASSIGNMENT: Final[dict[str, str]] = {
-    # sage server
+    # sage server (ordinary surface)
     "search": "sage",
     "get_document": "sage",
     "read_section": "sage",
     "read_projection": "sage",
     "list_headings": "sage",
-    "list_vaults": "sage",
-    "get_vault_config": "sage",
-    "get_vault_stats": "sage",
     "traverse": "sage",
     "chain": "sage",
     "ingest_document": "sage",
-    "create_edge": "sage",
+    "create_edges": "sage",
     "delete_edge": "sage",
-    "update_lifecycle": "sage",
+    "update_lifecycles": "sage",
     "update_metadata": "sage",
     "update_staging_edge": "sage",
     "list_staging_edges": "sage",
     "verify_preconditions": "sage",
+    "verify_hashes": "sage",
     "list_pending_metadata": "sage",
     "get_filename_metadata": "sage",
-    "bulk_create_edge": "sage",
     "list_directory": "sage",
-    # sage_admin server
-    "bulk_update_lifecycle": "sage_admin",
-    "bulk_update_metadata": "sage_admin",
-    "bulk_ingest_document": "sage_admin",
-    "recompute_abstract": "sage_admin",
-    "recompute_pipeline": "sage_admin",
-    "recompute_views": "sage_admin",
-    "verify_hash": "sage_admin",
-    "verify_vault_drift": "sage_admin",
-    "migrate_vault": "sage_admin",
-    "recompute_deferred_vault_abstracts": "sage_admin",
-    "optimize_vault_content_store": "sage_admin",
-    "reload_vault": "sage_admin",
-    "create_vault": "sage_admin",
-    "update_vault_config": "sage_admin",
-    "get_stack_config": "sage_admin",
+    "bulk_ingest_document": "sage",
+    "recompute_abstract": "sage",
+    "recompute_pipeline": "sage",
+    # sage_admin server (maintenance surface)
+    "admin_list_vaults": "sage_admin",
+    "admin_get_vault_config": "sage_admin",
+    "admin_get_vault_stats": "sage_admin",
+    "admin_get_stack_config": "sage_admin",
+    "admin_create_vault": "sage_admin",
+    "admin_reload_vault": "sage_admin",
+    "admin_update_vault_config": "sage_admin",
+    "admin_verify_vault_drift": "sage_admin",
+    "admin_migrate_vault": "sage_admin",
+    "admin_recompute_views": "sage_admin",
+    "admin_recompute_deferred_vault_abstracts": "sage_admin",
+    "admin_optimize_vault_content_store": "sage_admin",
 }
 
 

@@ -142,33 +142,31 @@ def _assert_legacy_form_envelope(
 
 
 # ---------------------------------------------------------------------------
-# update_metadata
+# update_metadata (post-CAS-ADR-029 plural-noun consolidation)
 # ---------------------------------------------------------------------------
+#
+# The pre-CAS-ADR-029 singleton ``PATCH /documents/{id}/metadata`` endpoint
+# was retired in favor of the consolidated ``POST /metadata`` endpoint
+# (CAS-ADR-029 v4). The legacy-form rejection still applies, but the
+# rejection point is now in ``BulkMetadataItem`` (per-item Pydantic
+# validation) rather than at the top-level singleton request body. The
+# four tests below pin the rejection through the consolidated endpoint.
 
 
 async def test_update_metadata_tags_bare_list_returns_legacy_form_envelope_via_http(client, doc_id):
-    """Bare-list ``tags`` on ``PATCH .../metadata`` returns legacy_form 400 via HTTP transport.
+    """Bare-list per-item ``tags`` on ``POST .../metadata`` returns legacy_form 400 via HTTP.
 
-    Pre-fix surface: ``UpdateMetadataRequest.tags: ListFieldPatch | None``
-    with ``extra: "forbid"`` rejects the bare list during Pydantic
-    request-body parsing; FastAPI wraps the ``ValidationError`` in
-    ``RequestValidationError`` and ``request_validation_handler`` falls
-    through to the default 422 envelope shape
-    (``{"detail": [{"loc": [...], ...}]}``).
-
-    Post-fix surface: ``UpdateMetadataRequest`` carries a
-    ``@model_validator(mode='before')`` that raises
-    ``PydanticCustomError(type='legacy_form')`` before field validation
-    runs. Pydantic wraps it in ``ValidationError`` and FastAPI re-raises
-    as ``RequestValidationError``; ``request_validation_handler`` calls
-    ``translate_validation_error``, which recognises the ``legacy_form``
-    type, reconstructs ``LegacyFormError`` from the embedded ``ctx``,
-    and the global ``SAGEError`` exception handler emits the structured
-    400 envelope.
+    Pins the structured ``legacy_form`` envelope reachability through
+    the FastAPI body-parse path for the consolidated plural-noun
+    endpoint. ``BulkMetadataItem.tags: ListFieldPatch | None`` rejects
+    the bare-list shape via a ``@model_validator(mode='before')`` that
+    raises ``PydanticCustomError(type='legacy_form')``;
+    ``request_validation_handler`` translates it to the structured
+    ``LegacyFormError`` envelope.
     """
-    resp = await client.patch(
-        f"/sage_vaults/test_vault/documents/{doc_id}/metadata",
-        json={"tags": ["alpha", "beta"]},
+    resp = await client.post(
+        "/sage_vaults/test_vault/metadata",
+        json={"items": [{"document_id": doc_id, "tags": ["alpha", "beta"]}]},
     )
     _assert_legacy_form_envelope(
         resp,
@@ -181,21 +179,15 @@ async def test_update_metadata_tags_bare_list_returns_legacy_form_envelope_via_h
 async def test_update_metadata_tier3_bare_dict_returns_legacy_form_envelope_via_http(
     client, doc_id
 ):
-    """Bare-dict ``tier3_metadata`` on ``PATCH .../metadata`` returns legacy_form 400 via HTTP.
+    """Bare-dict per-item ``tier3_metadata`` on ``POST .../metadata`` returns legacy_form 400.
 
-    The legacy form for ``tier3_metadata`` is a dict whose keys are NOT a
-    subset of ``{"set", "unset"}``. Pre-fix, this fails ``Tier3Patch``
-    field validation with ``extra_forbidden`` for each unknown key.
-    Post-fix, the same ``@model_validator(mode='before')`` on
-    ``UpdateMetadataRequest`` intercepts the raw shape and raises
-    ``PydanticCustomError(type='legacy_form')`` with
-    ``field="tier3_metadata"`` in the embedded ``ctx``;
-    ``translate_validation_error`` reconstructs ``LegacyFormError`` and
-    the ``SAGEError`` handler emits the structured 400 envelope.
+    Same Pydantic-parse argument as the bare-list tags case: the
+    validator on ``BulkMetadataItem`` must intercept before
+    ``Tier3Patch`` field validation rejects the bare dict.
     """
-    resp = await client.patch(
-        f"/sage_vaults/test_vault/documents/{doc_id}/metadata",
-        json={"tier3_metadata": {"some_key": "value"}},
+    resp = await client.post(
+        "/sage_vaults/test_vault/metadata",
+        json={"items": [{"document_id": doc_id, "tier3_metadata": {"some_key": "value"}}]},
     )
     _assert_legacy_form_envelope(
         resp,
@@ -205,30 +197,25 @@ async def test_update_metadata_tier3_bare_dict_returns_legacy_form_envelope_via_
     )
 
 
-# ---------------------------------------------------------------------------
-# bulk_update_metadata
-# ---------------------------------------------------------------------------
-
-
 async def test_bulk_update_metadata_item_tags_bare_list_returns_legacy_form_envelope_via_http(
     client, doc_id
 ):
-    """Bare-list per-item ``tags`` on ``POST .../metadata/bulk`` returns legacy_form 400 via HTTP.
+    """Multi-item batch with a bare-list per-item ``tags`` returns
+    legacy_form 400 at the batch (body-parse) level.
 
-    ``BulkMetadataRequest.items: list[BulkMetadataItem]`` parses each
-    item against ``BulkMetadataItem`` at request-body parse time. The
-    same validator that lives on ``UpdateMetadataRequest`` must also
-    live on ``BulkMetadataItem``, otherwise a bare-list per-item ``tags``
-    surfaces FastAPI's 422 validation envelope at the batch level rather
-    than the structured ``legacy_form`` envelope.
-
-    The expected failure is batch-level (status 400, single envelope),
-    not per-item (status 200 with per-item error). The body-parse
-    rejection happens before any item enters the per-item service loop.
+    The body-parse rejection happens before any item enters the
+    per-item service loop, so the expected failure is batch-level
+    (status 400, single envelope), not per-item (status 200 with
+    per-item error envelope).
     """
     resp = await client.post(
-        "/sage_vaults/test_vault/metadata/bulk",
-        json={"items": [{"document_id": doc_id, "tags": ["alpha", "beta"]}]},
+        "/sage_vaults/test_vault/metadata",
+        json={
+            "items": [
+                {"document_id": doc_id, "title": "valid"},
+                {"document_id": doc_id, "tags": ["alpha", "beta"]},
+            ]
+        },
     )
     _assert_legacy_form_envelope(
         resp,
@@ -241,15 +228,17 @@ async def test_bulk_update_metadata_item_tags_bare_list_returns_legacy_form_enve
 async def test_bulk_update_metadata_item_tier3_bare_dict_returns_legacy_form_envelope_via_http(
     client, doc_id
 ):
-    """Bare-dict per-item ``tier3_metadata`` on ``POST .../metadata/bulk`` returns legacy_form 400.
-
-    Same per-item Pydantic-parse argument as the bare-list tags case:
-    the validator on ``BulkMetadataItem`` must intercept before
-    ``Tier3Patch`` field validation rejects the bare dict.
+    """Multi-item batch with a bare-dict per-item ``tier3_metadata``
+    returns legacy_form 400 at the batch (body-parse) level.
     """
     resp = await client.post(
-        "/sage_vaults/test_vault/metadata/bulk",
-        json={"items": [{"document_id": doc_id, "tier3_metadata": {"some_key": "value"}}]},
+        "/sage_vaults/test_vault/metadata",
+        json={
+            "items": [
+                {"document_id": doc_id, "title": "valid"},
+                {"document_id": doc_id, "tier3_metadata": {"some_key": "value"}},
+            ]
+        },
     )
     _assert_legacy_form_envelope(
         resp,

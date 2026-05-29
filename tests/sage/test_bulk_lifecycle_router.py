@@ -1,6 +1,6 @@
 """HTTP integration tests for the bulk lifecycle endpoint.
 
-POST /sage_vaults/{vault_id}/lifecycle/bulk.
+POST /sage_vaults/{vault_id}/lifecycles.
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ async def test_bulk_endpoint_happy_path_returns_200_and_response_envelope(seeded
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     response = BulkLifecycleResponse.model_validate(resp.json())
@@ -74,7 +74,7 @@ async def test_bulk_endpoint_unknown_vault_returns_404(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/sage_vaults/ghost/lifecycle/bulk", json=body)
+        resp = await client.post("/sage_vaults/ghost/lifecycles", json=body)
 
     assert resp.status_code == 404, resp.text
     assert resp.json()["code"] == "vault_not_found"
@@ -94,7 +94,7 @@ async def test_bulk_endpoint_partial_failure_still_returns_200(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     response = BulkLifecycleResponse.model_validate(resp.json())
@@ -111,7 +111,7 @@ async def test_bulk_endpoint_empty_items_returns_200(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     response = BulkLifecycleResponse.model_validate(resp.json())
@@ -180,7 +180,7 @@ async def test_t0153_t1_http_light_strips_document_and_semantic_abstract(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     raw = resp.json()
@@ -208,7 +208,7 @@ async def test_t0153_t2_http_full_preserves_document_with_semantic_abstract(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     raw = resp.json()
@@ -225,7 +225,7 @@ async def test_t0153_t3_http_default_above_threshold_returns_light(seeded_six_ap
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     raw = resp.json()
@@ -245,7 +245,7 @@ async def test_t0153_t4_http_default_at_or_below_threshold_returns_full(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     raw = resp.json()
@@ -275,8 +275,8 @@ async def test_t0153_t5_http_error_envelope_intact_in_light_mode(seeded_six_app)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        light_resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=light_body)
-        full_resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=full_body)
+        light_resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=light_body)
+        full_resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=full_body)
 
     light_err = light_resp.json()["results"][1]
     full_err = full_resp.json()["results"][1]
@@ -301,7 +301,7 @@ async def test_t0153_t6_http_error_envelope_intact_in_full_mode(seeded_six_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     raw = resp.json()
     assert raw["results"][1]["status"] == "error"
@@ -323,7 +323,7 @@ async def test_t0153_t7_http_mixed_batch_in_light_mode(seeded_six_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     raw = resp.json()
     assert raw["success_count"] == 2
@@ -350,7 +350,7 @@ async def test_t0153_t8_http_invalid_response_mode_rejected_with_422(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 422, resp.text
     # Anti-coincidental: no per-item state was committed.
@@ -370,7 +370,7 @@ async def test_t0153_t9_http_empty_batch_with_explicit_light(seeded_six_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycle/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/lifecycles", json=body)
 
     assert resp.status_code == 200, resp.text
     raw = resp.json()

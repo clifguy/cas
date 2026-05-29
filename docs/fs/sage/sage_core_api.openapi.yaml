@@ -111,149 +111,54 @@ paths:
   # Document Lifecycle and Metadata
   # ---------------------------------------------------------------------------
 
-  /sage_vaults/{vault_id}/documents/{document_id}/lifecycle:
+  /sage_vaults/{vault_id}/lifecycles:
     post:
-      operationId: update_lifecycle
-      summary: Execute a lifecycle transition on a document.
+      operationId: update_lifecycles
+      summary: Apply one or more lifecycle state transitions in a single call.
       description: >-
-        Transitions a document through the vault's lifecycle state machine.
+        Accepts N>=1 per-item transition requests per CAS-ADR-029 v4
+        plural-noun convention. Each item carries `document_id`,
+        `action`, and optional `successor_id`. Items are processed in
+        order, each holding the per-document lock and a per-item
+        SQLite transaction. Length-1 is fully supported.
 
 
         **The action vocabulary is vault-config-defined**, not a fixed
         SAGE-wide set. Read `lifecycle.transitions` in the vault config
-        (`GET /sage_vaults/{vault_id}/config`) for the authoritative list
-        of `(from_state, action, to_state, creates_edge)` tuples in the
-        target vault. Two examples seen in practice:
-
-        - `cas` vault: `ingest`, `supersede`, `complete`, `archive`,
-          `reactivate`.
-
-        - `example_vault` vault: `ingest`, `supersede`, `complete`,
-          `archive`, `reactivate`, `file`.
-
-
-        Neither vault defines `activate`; the action for
-        `archived → active` is `reactivate`.
+        (`GET /sage_vaults/{vault_id}/config`) for the authoritative
+        list of `(from_state, action, to_state, creates_edge)` tuples
+        in the target vault.
 
 
         **The `supersede` action is the canonical atomic form for
         replacing one document with another.** It both transitions the
         predecessor (`active → archived`) AND creates the `supersedes`
-        edge (new → old) in a single operation. The alternative two-step
-        pattern -- `POST /edges` with `edge_type=supersedes` followed by
-        `POST /documents/{id}/lifecycle` with `action=archive` -- ends in
+        edge (new → old) in a single operation. The alternative
+        two-step pattern -- `POST /edges` with `edge_type=supersedes`
+        followed by `POST /lifecycles` with `action=archive` -- ends in
         the same state but is required only when patching up an
         already-archived predecessor whose supersedes edge is missing.
-        `POST /edges` with `edge_type=supersedes` does **not**
-        auto-transition the predecessor's lifecycle. `creates_edge` in
-        the vault config reveals which actions wire edges atomically; in
-        all currently-shipped vault configs, only `supersede` does.
-
-
-        `supersede` is defined only as a transition out of `active`. To
-        supersede a predecessor in `completed`, `filed`, or any other
-        non-active state, run the archive → reactivate dance first, then
-        either set lifecycle with `action=supersede` against the
-        predecessor, or call `POST /documents` (ingest) with
-        `predecessor_id=<predecessor_id>` which applies the same
-        atomic transition synchronously with record insertion. A direct
-        call against a non-active predecessor returns
-        `supersede_target_not_active`.
-      tags: [Document Lifecycle]
-      parameters:
-        - $ref: "#/components/parameters/VaultId"
-        - $ref: "#/components/parameters/DocumentId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SetLifecycleRequest"
-      responses:
-        "200":
-          description: Transition completed. Returns updated document record.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/SetLifecycleResponse"
-        "400":
-          description: >-
-            `invalid_action`: the `action` string is not in any
-            transition table for this vault.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Caller is not a registered editor for this document.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Vault or document not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: >-
-            `invalid_lifecycle_transition`: action is known but not
-            valid from the document's current lifecycle state. Detail
-            includes `current_state`, `attempted_action`, and
-            `valid_actions` (the list of actions valid from the current
-            state).
-
-
-            `supersede_target_not_active`: `action=supersede` was
-            requested against a document not in `active`. Run the
-            archive → reactivate dance first.
-
-
-            `pipeline_incomplete`: emitted by some transitions (e.g.
-            `complete`) when the document's `pipeline_status` is not yet
-            terminal.
-
-
-            `identical_content_supersede`: `action=supersede` with
-            `successor_id` whose content hash matches the
-            predecessor's; supersede chains require distinct content
-            per step.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sage_vaults/{vault_id}/lifecycle/bulk:
-    post:
-      operationId: bulk_update_lifecycle
-      summary: Apply lifecycle transitions to many documents in one call.
-      description: >-
-        First `sage_bulk_*` operation per CAS-ADR-029. Each item carries
-        `document_id`, `action`, and optional `successor_id` with the
-        same semantics as the single-item `set_lifecycle` endpoint;
-        items are processed in order, each holding the per-document
-        lock and a per-item SQLite transaction.
 
 
         **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
         the response's per-item error envelope but does not roll back
-        earlier-or-later successful items. The endpoint returns HTTP 200
-        even when some items fail; callers must inspect each
+        earlier-or-later successful items. The endpoint returns HTTP
+        200 even when some items fail; callers must inspect each
         `BulkLifecycleItemResult.status` and the aggregate
-        `success_count` / `error_count` fields. HTTP 404 is reserved for
-        the unknown-vault case; HTTP 422 covers request-body shape
+        `success_count` / `error_count` fields. HTTP 404 is reserved
+        for the unknown-vault case; HTTP 422 covers request-body shape
         validation.
+
+
+        Per-item error codes: `invalid_action`,
+        `invalid_lifecycle_transition`, `supersede_target_not_active`,
+        `pipeline_incomplete`, `identical_content_supersede`. Each
+        appears as a per-item error envelope rather than as a
+        batch-level 400/409.
 
 
         Empty `items` is valid: the response carries an empty `results`
         array and all counts are zero.
-
-
-        The performance win versus N sequential `set_lifecycle` calls
-        comes from eliminating per-call HTTP/MCP framing overhead and
-        inter-call asyncio scheduling; the per-document lock and
-        per-item transaction semantics are unchanged.
       tags: [Document Lifecycle]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -281,50 +186,58 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
-  /sage_vaults/{vault_id}/metadata/bulk:
+  /sage_vaults/{vault_id}/metadata:
     post:
-      operationId: bulk_update_metadata
-      summary: Apply metadata patches to many documents in one call.
+      operationId: update_metadata
+      summary: Patch mutable metadata fields on one or more documents.
       description: >-
-        Second `sage_bulk_*` operation per CAS-ADR-029. Each item carries
-        `document_id` plus any subset of the single-item `update_metadata`
-        fields (`title`, `version_label`, `project`, `tags`, `doc_type`,
-        `authority_scope`, `document_date`, `tier3_metadata`) with the
-        same semantics as `update_metadata`; items are processed in
-        order, each holding the per-document lock and a per-item SQLite
-        transaction.
+        Accepts N>=1 per-item patch requests per CAS-ADR-029 v4
+        plural-noun convention. Each item carries `document_id` plus
+        any subset of the patchable metadata fields (`title`,
+        `version_label`, `project`, `tags`, `doc_type`,
+        `authority_scope`, `document_date`, `tier3_metadata`,
+        `expected_version`). Items are processed in order, each holding
+        the per-document lock and a per-item SQLite transaction.
+        Length-1 is fully supported.
+
+
+        Scalars use set-or-omit semantics per item; list-valued fields
+        (today: `tags`) take a `ListFieldPatch` ops-object
+        (`{add, remove}`); `tier3_metadata` takes a `Tier3Patch`
+        ops-object (`{set, unset}`). The ops-object shape is the
+        substrate's concurrency-safety contract (CAS-ADR-038). The
+        bare-list / bare-dict forms are no longer accepted.
+
+
+        Per CAS-ADR-021, every successful per-item patch sets
+        `metadata_confirmed=true` on the target document. The
+        `doc_type` value must be one of the values defined under
+        `document_types.doc_types` in the vault config; query
+        `GET /sage_vaults/{vault_id}/config` for the authoritative
+        list.
 
 
         **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
         the response's per-item error envelope but does not roll back
-        earlier-or-later successful items. The endpoint returns HTTP 200
-        even when some items fail; callers must inspect each
+        earlier-or-later successful items. The endpoint returns HTTP
+        200 even when some items fail; callers must inspect each
         `BulkMetadataItemResult.status` and the aggregate
-        `success_count` / `error_count` fields. HTTP 404 is reserved for
-        the unknown-vault case; HTTP 422 covers request-body shape
+        `success_count` / `error_count` fields. HTTP 404 is reserved
+        for the unknown-vault case; HTTP 422 covers request-body shape
         validation.
 
 
-        Per-item patch semantics (tags, tier3_metadata, scalar fields)
-        are identical to single-item `update_metadata` (CAS-ADR-028).
-        Strict-conflict errors (`tags_add_conflict`,
-        `tier3_unset_conflict`, `tier3_schema_violation`, etc.) surface
-        as per-item error envelopes inside the response rather than as
-        batch-level 400s.
-
-
-        Per CAS-ADR-021, every successful per-item patch sets
-        `metadata_confirmed=true` on the target document.
+        Per-item error codes: `document_not_found`, `invalid_doc_type`,
+        `tags_add_conflict`, `tags_remove_conflict`,
+        `tag_patch_overlap`, `tier3_unset_conflict`,
+        `tier3_patch_overlap`, `patch_empty`, `tier3_schema_violation`,
+        `tier3_doc_type_change_stale_keys`, `legacy_form`,
+        `stale_read`. Each appears as a per-item error envelope rather
+        than as a batch-level 400/409.
 
 
         Empty `items` is valid: the response carries an empty `results`
         array and all counts are zero.
-
-
-        The performance win versus N sequential `update_metadata` calls
-        comes from eliminating per-call HTTP/MCP framing overhead and
-        inter-call asyncio scheduling; the per-document lock and per-
-        item transaction semantics are unchanged.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -351,94 +264,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-
-  /sage_vaults/{vault_id}/documents/{document_id}/metadata:
-    patch:
-      operationId: update_metadata
-      summary: Modify mutable metadata fields on a document.
-      description: >-
-        Partial update of mutable metadata fields. Only the fields
-        present in the request body are modified; absent fields are
-        unchanged.
-
-
-        Mutable fields: `title`, `tags`, `project`, `doc_type`,
-        `authority_scope`, `version_label`, `document_date`.
-
-
-        Immutable fields (`id`, `source_type`, `source_path`,
-        `created_by`, `created_at`, `source_content_hash`,
-        `adapter_version`) cannot be modified through this endpoint.
-        System-managed fields (`last_modified_by`, `updated_at`) are
-        set automatically.
-
-
-        Per CAS-ADR-021, any successful call sets
-        `metadata_confirmed=true` on the document (the document leaves
-        the metadata-review queue if it was there), even when only one
-        field is updated. To inspect documents still awaiting
-        confirmation, use `GET /pending-metadata`.
-
-
-        List-valued metadata fields (today: `tags`) take patch
-        operations, not replacement values, via `ListFieldPatch`:
-        `{add, remove}`. `tier3_metadata` takes its own patch
-        ops-object: `{set, unset}`. Strict-conflict semantics: adding a
-        value already present, removing a value absent, or unsetting a
-        tier3 key that is absent all return 400. `set` on an existing
-        tier3 key overwrites (the verb is literal). Tier-3 post-merge
-        validation runs against the resolved doc_type's
-        `metadata_schema` after applying the patch in memory. See
-        CAS-ADR-028 for the ingest-vs-update shape asymmetry rationale,
-        and CAS-ADR-038 for the concurrency-safety contract that the
-        ops-object shape implements. The `doc_type` value must be one
-        of the values defined under `document_types.doc_types` in the
-        vault config -- the set is vault-config-defined; query `GET
-        /sage_vaults/{vault_id}/config` for the authoritative list.
-      tags: [Document Metadata]
-      parameters:
-        - $ref: "#/components/parameters/VaultId"
-        - $ref: "#/components/parameters/DocumentId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateMetadataRequest"
-      responses:
-        "200":
-          description: Metadata updated. Returns updated document record.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Document"
-        "400":
-          description: Invalid field name or value (e.g., unknown doc_type for this vault).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Caller is not a registered editor for this document.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >-
-            `document_not_found`: no document with that id; or vault
-            not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
-            `stale_read`: `expected_version` does not match the
-            document's current version (CAS-ADR-038 Primitive B). Detail
-            carries `document_id`, `expected_version`, and
-            `current_version`; the caller refetches and retries with
-            the current version.
+            `stale_read`: a per-item `expected_version` does not match
+            the target document's current version (CAS-ADR-038
+            Primitive B). Detail carries `document_id`,
+            `expected_version`, and `current_version`.
           content:
             application/json:
               schema:
@@ -697,167 +528,42 @@ paths:
 
   /sage_vaults/{vault_id}/edges:
     post:
-      operationId: create_edge
-      summary: Create a typed graph edge between two documents.
+      operationId: create_edges
+      summary: Create one or more typed graph edges between documents.
       description: >-
-        Creates a directed edge from `source_id` to `target_id` with the
-        specified edge type. Optional `notes` and `rationale` fields
-        provide human-readable context.
-
-
-        **For `supersedes` edges, prefer `POST /documents/{id}/lifecycle`
-        with `action=supersede`** (or `POST /documents` with
-        `predecessor_id=...` when the successor has not yet been
-        ingested). Those operations wire the edge AND archive the
-        predecessor atomically. `POST /edges` with `edge_type=supersedes`
-        creates the edge alone and does **not** transition the
-        predecessor's lifecycle; reach for it only when stitching a
-        missing edge into a chain whose lifecycle states are already
-        correct.
-
-
-        Edge type semantics are defined in the Edge Type Taxonomy (SAGE
-        Architecture Reference Section 4.6). The edge is created
-        directly in the production edge table (not staged) regardless
-        of the vault's edge inference tier assignments, because this is
-        an explicit human-or-agent action, not an inference.
-
-
-        Per CAS-ADR-017, each edge type has a registry-declared
-        `resolution_policy` (see `edge_type_registry.schema.json`) that
-        dictates which anchor fields are required or forbidden:
-
-        - `none` (supersedes, retracts, merged_from): meta-edges; no
-          anchor fields. `retracts` additionally takes a one-sided
-          `source_valid_from_version` (anchor in the retracting chain)
-          and `retracted_edge_id` (the edge being retracted) instead of
-          a `target_id`.
-
-        - `transitive_source` (derived_from): requires
-          `source_valid_from_version`; no target anchor.
-
-        - `transitive_both` (covers, references, bundles_with,
-          depends_on, instantiated_from): requires both
-          `source_valid_from_version` and `target_valid_from_version`.
-
-
-        Anchor values are `documents.id` strings, not version labels --
-        passing a version label (e.g. `"v9.0"`) returns
-        `edge_anchor_policy_violation` with a "does not reference a
-        known document" detail.
-      tags: [Graph]
-      parameters:
-        - $ref: "#/components/parameters/VaultId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/LinkRequest"
-      responses:
-        "201":
-          description: Edge created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Edge"
-        "400":
-          description: >-
-            One of the following error codes:
-
-
-            `edge_anchor_policy_violation`: anchor field missing where
-            required, present where forbidden, or pointing at a
-            document not in the endpoint's supersedes lineage.
-
-
-            `retract_target_not_edge`: `retracted_edge_id` does not
-            identify an existing edge in this vault.
-
-
-            `merged_from_validation`: a `merged_from` edge violates the
-            merge-tombstone invariants (chain-head / chain-terminal
-            validation failed).
-
-
-            `tbd_policy_edge`: the requested `edge_type` has no shipped
-            resolution policy and cannot be created.
-
-
-            `self_referential_edge`: `source_id` and `target_id`
-            resolve to the same document.
-
-
-            `synced_from_inapplicable_edge_type` (T-0111):
-            `synced_from_version` or `synced_from_content_hash` was set
-            on an edge type other than `sync_target` or `derived_from`.
-            Provenance fields are only meaningful on those two types.
-
-
-            `synced_from_version_not_in_source_chain` (T-0111):
-            `synced_from_version` references a document that is not a
-            member of `target_id`'s supersedes chain (covers both
-            wrong-document and missing-document cases — surfaced as
-            this dedicated code so operators can distinguish them
-            from `document_not_found`).
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "403":
-          description: Caller is not a registered editor for the source document.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: Vault, source document, or target document not found.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sage_vaults/{vault_id}/edges/bulk:
-    post:
-      operationId: bulk_create_edge
-      summary: Create many graph edges in one call.
-      description: >-
-        Third `sage_bulk_*` operation per CAS-ADR-029 (T-0165). Each
-        item carries the same fields as a single `link` call and is
-        dispatched through the idempotent variant: a duplicate
-        natural-key triple (`source_id`, `target_id`, `edge_type`)
-        returns the existing edge with `created=false` rather than
-        raising (T-0079). Items are processed in order under the
-        process-wide link lock and per-item SQLite transactions.
+        Creates N>=1 edges in a single call per CAS-ADR-029 v4
+        plural-noun convention. Each item carries the same fields as a
+        single edge specification (`source_id`, `target_id`,
+        `edge_type`, anchor fields, `retracted_edge_id`, `rationale`,
+        `rationale_kind`, `notes`, `synced_from_*`) and is dispatched
+        through the idempotent variant: a duplicate natural-key triple
+        (`source_id`, `target_id`, `edge_type`) returns the existing
+        edge with `created=false` rather than raising. Items are
+        processed in order under the process-wide link lock and
+        per-item SQLite transactions. Length-1 is fully supported.
 
 
         **The batch is NOT atomic.** A per-item `SAGEError` surfaces in
         the response's per-item error envelope but does not roll back
         earlier-or-later successful items. The endpoint returns HTTP 200
         even when some items fail; callers must inspect each
-        `BulkLinkItemResult.status` and the aggregate `success_count` /
-        `error_count` fields. HTTP 404 is reserved for the unknown-vault
-        case; HTTP 422 covers request-body shape validation.
+        `BulkLinkItemResult.status` and the aggregate
+        `success_count` / `error_count` fields. HTTP 404 is reserved
+        for the unknown-vault case; HTTP 422 covers request-body shape
+        validation.
 
 
-        Per-item error codes are identical to single-item `link` (e.g.
+        Per-item error codes (surfaced inside the response envelope):
         `self_referential_edge`, `edge_anchor_policy_violation`,
         `retract_target_not_edge`, `document_not_found`,
         `tbd_policy_edge`, `merged_from_validation`,
         `synced_from_inapplicable_edge_type`,
-        `synced_from_version_not_in_source_chain`). Each surfaces as a
-        per-item error envelope inside the response rather than as a
-        batch-level 400.
+        `synced_from_version_not_in_source_chain`. Each appears as a
+        per-item error envelope rather than as a batch-level 400.
 
 
         Empty `items` is valid: the response carries an empty `results`
         array and all counts are zero.
-
-
-        The performance win versus N sequential `link` calls comes from
-        eliminating per-call HTTP/MCP framing overhead and inter-call
-        asyncio scheduling; the process-wide `_link_lock` and per-item
-        transaction semantics are unchanged.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1297,7 +1003,7 @@ paths:
 
   /sage_vaults/{vault_id}/refresh-views:
     post:
-      operationId: recompute_views
+      operationId: admin_recompute_views
       summary: Regenerate symlink-based browsable folder views.
       description: >-
         Drops and recreates the symlink trees under the vault's
@@ -1333,7 +1039,7 @@ paths:
 
   /sage_vaults:
     get:
-      operationId: list_vaults
+      operationId: admin_list_vaults
       summary: List all vaults registered with the running SAGE instance.
       description: >-
         Returns a VaultSummary for every vault in the in-memory registry.
@@ -1358,7 +1064,7 @@ paths:
                   $ref: "#/components/schemas/VaultSummary"
 
     post:
-      operationId: create_vault
+      operationId: admin_create_vault
       summary: Create a new vault from a full configuration object.
       description: >-
         Validates the supplied configuration against the vault config
@@ -1401,7 +1107,7 @@ paths:
 
   /sage_vaults/{vault_id}/stats:
     get:
-      operationId: get_vault_stats
+      operationId: admin_get_vault_stats
       summary: Return Dashboard statistics and health indicators for a vault.
       description: >-
         Aggregates document, edge, storage, and pipeline-status counts
@@ -1440,7 +1146,7 @@ paths:
 
   /sage_vaults/{vault_id}/config:
     get:
-      operationId: get_vault_config
+      operationId: admin_get_vault_config
       summary: Return the full vault configuration.
       description: >-
         Returns the configuration as a JSON object conforming to
@@ -1501,7 +1207,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
 
     put:
-      operationId: update_vault_config
+      operationId: admin_update_vault_config
       summary: Update vault configuration at the section level.
       description: >-
         Each top-level section provided in the request body replaces
@@ -1576,7 +1282,7 @@ paths:
 
   /sage_vaults/{vault_id}/hash-check:
     post:
-      operationId: verify_hash
+      operationId: verify_hashes
       summary: Bulk hash existence check against the graph store.
       description: >-
         For each supplied SHA-256 hash, returns whether it matches an
@@ -2106,7 +1812,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/detect-drift:
     post:
-      operationId: verify_vault_drift
+      operationId: admin_verify_vault_drift
       summary: Audit active sync_target / derived_from edges for drift (T-0111).
       description: >-
         Walks every active provenance-bearing edge in the vault and
@@ -2148,7 +1854,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/migrate:
     post:
-      operationId: migrate_vault
+      operationId: admin_migrate_vault
       summary: Apply pending schema migrations to a single vault in the running session.
       description: >-
         Per-vault schema-migration operation for the SAGE Core API
@@ -2188,7 +1894,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/reabstract-deferred:
     post:
-      operationId: recompute_deferred_vault_abstracts
+      operationId: admin_recompute_deferred_vault_abstracts
       summary: Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
       description: >-
         Graduation of the standalone scripts/reabstract_deferred.py script
@@ -2257,7 +1963,7 @@ paths:
 
   /sage_vaults/{vault_id}/admin/optimize-content-store:
     post:
-      operationId: optimize_vault_content_store
+      operationId: admin_optimize_vault_content_store
       summary: Compact LanceDB content-store fragments and prune retained versions for a single vault.
       description: >-
         Per-vault content-store reclamation operation for the SAGE Core
@@ -4002,7 +3708,7 @@ components:
       type: object
       required: [items]
       description: >-
-        Request body for `POST /sage_vaults/{vault_id}/lifecycle/bulk`.
+        Request body for `POST /sage_vaults/{vault_id}/lifecycles`.
         Carries an ordered list of per-item lifecycle requests. The
         list may be empty; the response then has an empty `results`
         array.
@@ -4202,7 +3908,7 @@ components:
       type: object
       required: [items]
       description: >-
-        Request body for `POST /sage_vaults/{vault_id}/edges/bulk`.
+        Request body for `POST /sage_vaults/{vault_id}/edges`.
         Carries an ordered list of per-item link requests. The list
         may be empty; the response then has an empty `results` array.
       properties:
@@ -4400,7 +4106,7 @@ components:
       type: object
       required: [items]
       description: >-
-        Request body for `POST /sage_vaults/{vault_id}/metadata/bulk`.
+        Request body for `POST /sage_vaults/{vault_id}/metadata`.
         Carries an ordered list of per-item metadata-patch requests. The
         list may be empty; the response then has an empty `results`
         array.

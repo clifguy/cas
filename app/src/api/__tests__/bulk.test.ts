@@ -21,7 +21,7 @@ describe('bulkSetLifecycle', () => {
     vi.restoreAllMocks();
   });
 
-  it('posts to /sage_vaults/{vaultId}/lifecycle/bulk with the items payload', async () => {
+  it('posts to /sage_vaults/{vaultId}/lifecycles with the items payload', async () => {
     const okBody = { results: [], success_count: 0, error_count: 0, total: 0 };
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(mockJsonResponse(okBody));
 
@@ -33,7 +33,7 @@ describe('bulkSetLifecycle', () => {
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/sage_vaults/test_vault/lifecycle/bulk');
+    expect(url).toBe('/sage_vaults/test_vault/lifecycles');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ items });
   });
@@ -62,7 +62,7 @@ describe('bulkUpdateMetadata', () => {
     vi.restoreAllMocks();
   });
 
-  it('posts to /sage_vaults/{vaultId}/metadata/bulk with the items payload', async () => {
+  it('posts to /sage_vaults/{vaultId}/metadata with the items payload', async () => {
     const okBody = { results: [], success_count: 0, error_count: 0, total: 0 };
     (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(mockJsonResponse(okBody));
 
@@ -71,7 +71,7 @@ describe('bulkUpdateMetadata', () => {
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/sage_vaults/test_vault/metadata/bulk');
+    expect(url).toBe('/sage_vaults/test_vault/metadata');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ items });
   });
@@ -95,7 +95,7 @@ describe('bulkUpdateMetadata', () => {
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/sage_vaults/test_vault/metadata/bulk');
+    expect(url).toBe('/sage_vaults/test_vault/metadata');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ items: [fullItem] });
   });

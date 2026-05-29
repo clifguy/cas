@@ -291,6 +291,11 @@ class LifecycleService:
                         # mode, so the response_mode gate above does
                         # not apply.
                         changes=response.changes,
+                        # Propagate the would-be / committed supersedes
+                        # edge so callers can confirm the atomic edge
+                        # creation on successful supersede items.
+                        # Small payload; survives light mode.
+                        created_edge=response.created_edge,
                     )
                 )
             except SAGEError as exc:

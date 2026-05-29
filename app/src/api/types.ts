@@ -499,6 +499,36 @@ export interface BulkMetadataResponse {
   total: number;
 }
 
+export interface BulkLinkItem extends LinkRequest {
+  rationale_kind?: string | null;
+  synced_from_version?: string | null;
+  synced_from_content_hash?: string | null;
+}
+
+export interface BulkLinkItemResult {
+  source_id: string;
+  target_id?: string | null;
+  edge_type: string;
+  status: 'success' | 'error';
+  edge?: Edge | null;
+  created?: boolean;
+  existing_rationale?: string | null;
+  error?: BulkItemErrorEnvelope | null;
+}
+
+export interface BulkLinkRequest {
+  items: BulkLinkItem[];
+  response_mode?: 'light' | 'full' | null;
+  dry_run?: boolean;
+}
+
+export interface BulkLinkResponse {
+  results: BulkLinkItemResult[];
+  success_count: number;
+  error_count: number;
+  total: number;
+}
+
 // --- Maintenance / Reabstract (T-0117 / T-0134) ---
 
 // Per-document outcome classification in a ReabstractReport.

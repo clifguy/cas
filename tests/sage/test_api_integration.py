@@ -138,6 +138,7 @@ async def test_get_document_404(client):
 
 
 async def test_lifecycle_transition_200(client):
+    """POST /lifecycles with one item (CAS-ADR-029 v4 plural-noun)."""
     # Ingest
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
@@ -145,16 +146,23 @@ async def test_lifecycle_transition_200(client):
     )
     doc_id = resp.json()["document"]["id"]
 
-    # Archive
+    # Archive via the consolidated plural-noun endpoint.
     resp2 = await client.post(
-        f"/sage_vaults/test_vault/documents/{doc_id}/lifecycle",
-        json={"action": "archive"},
+        "/sage_vaults/test_vault/lifecycles",
+        json={"items": [{"document_id": doc_id, "action": "archive"}]},
     )
     assert resp2.status_code == 200
-    assert resp2.json()["document"]["lifecycle_status"] == "archived"
+    body = resp2.json()
+    assert body["success_count"] == 1 and body["error_count"] == 0
+    per = body["results"][0]
+    assert per["status"] == "success"
+    assert per["document"]["lifecycle_status"] == "archived"
 
 
 async def test_lifecycle_409_invalid_transition(client):
+    """A per-item invalid transition surfaces in the response envelope,
+    not as a batch-level HTTP 409 (CAS-ADR-029 v4 not-atomic batch).
+    """
     # Ingest
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
@@ -162,15 +170,20 @@ async def test_lifecycle_409_invalid_transition(client):
     )
     doc_id = resp.json()["document"]["id"]
 
-    # Try reactivate on active doc (invalid)
+    # Try reactivate on active doc (invalid). Endpoint returns 200 with
+    # a per-item error envelope (the batch is not atomic).
     resp2 = await client.post(
-        f"/sage_vaults/test_vault/documents/{doc_id}/lifecycle",
-        json={"action": "reactivate"},
+        "/sage_vaults/test_vault/lifecycles",
+        json={"items": [{"document_id": doc_id, "action": "reactivate"}]},
     )
-    assert resp2.status_code == 409
+    assert resp2.status_code == 200
     body = resp2.json()
-    assert body["code"] == "invalid_lifecycle_transition"
-    assert "valid_actions" in body["detail"]
+    assert body["success_count"] == 0 and body["error_count"] == 1
+    per = body["results"][0]
+    assert per["status"] == "error"
+    err = per["error"]
+    assert err["error"] == "invalid_lifecycle_transition"
+    assert "valid_actions" in err["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +203,9 @@ async def test_wrong_vault_404(client):
 
 
 async def test_link_201(app, client):
-    """POST /edges creates an edge and returns 201."""
+    """POST /edges with one item returns 200 + per-item success envelope
+    (CAS-ADR-029 v4 plural-noun convention).
+    """
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
         json={"source": "test/sample.md", "source_type": "markdown"},
@@ -213,21 +228,25 @@ async def test_link_201(app, client):
     resp3 = await client.post(
         "/sage_vaults/test_vault/edges",
         json={
-            "source_id": doc_id_a,
-            "target_id": doc_id_b,
-            "edge_type": "references",
-            "source_valid_from_version": doc_id_a,
-            "target_valid_from_version": doc_id_b,
-            "rationale": "test link",
+            "items": [
+                {
+                    "source_id": doc_id_a,
+                    "target_id": doc_id_b,
+                    "edge_type": "references",
+                    "source_valid_from_version": doc_id_a,
+                    "target_valid_from_version": doc_id_b,
+                    "rationale": "test link",
+                },
+            ],
         },
     )
-    assert resp3.status_code == 201
+    assert resp3.status_code == 200
     body = resp3.json()
-    # Link router now returns LinkResponse wrapper; edge
-    # fields live under "edge".
-    assert body["dry_run"] is False
-    assert body["created"] is True
-    edge = body["edge"]
+    assert body["success_count"] == 1 and body["error_count"] == 0
+    per = body["results"][0]
+    assert per["status"] == "success"
+    assert per["created"] is True
+    edge = per["edge"]
     assert edge["source_id"] == doc_id_a
     assert edge["target_id"] == doc_id_b
     assert edge["edge_type"] == "references"
@@ -235,7 +254,9 @@ async def test_link_201(app, client):
 
 
 async def test_link_self_referential_400(client):
-    """POST /edges with same source and target returns 400."""
+    """A per-item self-referential edge surfaces in the response
+    envelope, not as a batch-level 400.
+    """
     resp1 = await client.post(
         "/sage_vaults/test_vault/documents",
         json={"source": "test/sample.md", "source_type": "markdown"},
@@ -245,13 +266,21 @@ async def test_link_self_referential_400(client):
     resp2 = await client.post(
         "/sage_vaults/test_vault/edges",
         json={
-            "source_id": doc_id,
-            "target_id": doc_id,
-            "edge_type": "references",
+            "items": [
+                {
+                    "source_id": doc_id,
+                    "target_id": doc_id,
+                    "edge_type": "references",
+                },
+            ],
         },
     )
-    assert resp2.status_code == 400
-    assert resp2.json()["code"] == "self_referential_edge"
+    assert resp2.status_code == 200
+    body = resp2.json()
+    assert body["success_count"] == 0 and body["error_count"] == 1
+    per = body["results"][0]
+    assert per["status"] == "error"
+    assert per["error"]["error"] == "self_referential_edge"
 
 
 async def test_check_preconditions_200(client):

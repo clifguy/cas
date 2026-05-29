@@ -141,7 +141,7 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     ),
     (
         "sage_core",
-        "reload_vault",
+        "admin_reload_vault",
     ): (
         "MCP-only operational tool: closes a vault's services and "
         "re-initializes them after on-disk vault_config.yaml edits or "
@@ -150,7 +150,7 @@ DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
     ),
     (
         "sage_core",
-        "get_stack_config",
+        "admin_get_stack_config",
     ): (
         "MCP-only introspection of the SAGE-stack-wide config singleton "
         "(CAS-ADR-030). No HTTP counterpart by design; the stack config is "

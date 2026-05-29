@@ -22,7 +22,7 @@ What gets removed
 What gets preserved
 -------------------
 - Outgoing/incoming edges from this doc are dumped to a JSON sidecar before
-  deletion, so the caller can re-create them via ``create_edge`` after the
+  deletion, so the caller can re-create them via ``create_edges`` after the
   cleaned-up document is re-ingested. The sidecar path is printed at the
   end of the dry run and again before deletion proceeds.
 
