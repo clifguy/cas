@@ -22,10 +22,38 @@ from sage.mcp_server import (
     get_vault_config,
     ingest_document,
     list_vaults,
-    update_metadata,
     update_vault_config,
 )
+from sage.mcp_server import (
+    update_metadata as _update_metadata_bulk,
+)
 from sage.services.vault_registry import VaultRegistryService
+
+
+async def update_metadata(vault_id, document_id, **kwargs):
+    """Singleton-shaped shim around the post-CAS-ADR-029 consolidated tool.
+
+    Wraps the call as a length-1 ``items`` collection and unwraps the
+    per-item result envelope back to a singleton-shape response so
+    existing test assertions continue to apply.
+    """
+    dry_run = kwargs.pop("dry_run", False)
+    item = {"document_id": document_id, **kwargs}
+    result = await _update_metadata_bulk(vault_id=vault_id, items=[item], dry_run=dry_run)
+    if isinstance(result, dict) and "error" in result and "results" not in result:
+        return result
+    if isinstance(result, dict) and result.get("results"):
+        per = result["results"][0]
+        if per.get("status") == "error":
+            err = per.get("error") or {}
+            return {
+                "error": err.get("error"),
+                "message": err.get("message"),
+                "detail": err.get("detail"),
+            }
+        return {"document": per.get("document"), "dry_run": dry_run}
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Fixtures

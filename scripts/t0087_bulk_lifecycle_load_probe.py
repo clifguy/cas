@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""acceptance benchmark: bulk_update_lifecycle vs sequential calls.
+"""Acceptance benchmark: batched vs sequential lifecycle-transition calls.
 
 Compares wall-clock for two paths that flip N documents through a
-lifecycle transition:
+lifecycle transition via the consolidated ``update_lifecycles`` MCP
+tool (CAS-ADR-029 v4 plural-noun convention):
 
-1. N sequential ``update_lifecycle`` MCP calls (baseline).
-2. One ``bulk_update_lifecycle`` MCP call with N items.
+1. N sequential ``update_lifecycles`` MCP calls, each with a length-1
+   ``items`` collection (baseline).
+2. One ``update_lifecycles`` MCP call with N items (batched).
 
 Two run modes:
 
@@ -178,29 +180,38 @@ async def _build_vault_on_disk(vault_root: Path, vault_id: str, n: int) -> tuple
 
 
 async def _run_sequential_fastmcp(vault_id: str, doc_ids: list[str]) -> float:
-    """In-process FastMCP.call_tool dispatch per item."""
+    """In-process FastMCP.call_tool dispatch per item — each call is a
+    length-1 ``update_lifecycles`` invocation.
+    """
     mcp = mcp_server.mcp
     start = time.perf_counter()
     for doc_id in doc_ids:
         raw = await mcp.call_tool(
-            "update_lifecycle",
-            {"vault_id": vault_id, "document_id": doc_id, "action": "archive"},
+            "update_lifecycles",
+            {
+                "vault_id": vault_id,
+                "items": [{"document_id": doc_id, "action": "archive"}],
+            },
         )
         payload = _decode_call_tool_result(raw)
-        if "error" in payload:
+        if "error" in payload and "results" not in payload:
             raise RuntimeError(f"sequential call failed on {doc_id}: {payload!r}")
+        if payload.get("error_count", 0) != 0:
+            raise RuntimeError(f"sequential call per-item error on {doc_id}: {payload!r}")
     return time.perf_counter() - start
 
 
 async def _run_bulk_fastmcp(vault_id: str, doc_ids: list[str]) -> float:
-    """Single in-process FastMCP.call_tool dispatch for bulk_update_lifecycle."""
+    """Single in-process FastMCP.call_tool dispatch for batched
+    ``update_lifecycles``.
+    """
     mcp = mcp_server.mcp
     items = [{"document_id": d, "action": "archive"} for d in doc_ids]
     start = time.perf_counter()
-    raw = await mcp.call_tool("bulk_update_lifecycle", {"vault_id": vault_id, "items": items})
+    raw = await mcp.call_tool("update_lifecycles", {"vault_id": vault_id, "items": items})
     elapsed = time.perf_counter() - start
     payload = _decode_call_tool_result(raw)
-    if "error" in payload:
+    if "error" in payload and "results" not in payload:
         raise RuntimeError(f"bulk call failed: {payload!r}")
     if payload["error_count"] != 0:
         raise RuntimeError(f"bulk call reported per-item errors: {payload['error_count']}")
@@ -225,22 +236,27 @@ async def _run_sequential_stdio(session: ClientSession, vault_id: str, doc_ids: 
     start = time.perf_counter()
     for doc_id in doc_ids:
         resp = await session.call_tool(
-            "update_lifecycle",
-            {"vault_id": vault_id, "document_id": doc_id, "action": "archive"},
+            "update_lifecycles",
+            {
+                "vault_id": vault_id,
+                "items": [{"document_id": doc_id, "action": "archive"}],
+            },
         )
         payload = _parse_call_tool_response(resp)
-        if "error" in payload:
+        if "error" in payload and "results" not in payload:
             raise RuntimeError(f"sequential call failed on {doc_id}: {payload!r}")
+        if payload.get("error_count", 0) != 0:
+            raise RuntimeError(f"sequential call per-item error on {doc_id}: {payload!r}")
     return time.perf_counter() - start
 
 
 async def _run_bulk_stdio(session: ClientSession, vault_id: str, doc_ids: list[str]) -> float:
     items = [{"document_id": d, "action": "archive"} for d in doc_ids]
     start = time.perf_counter()
-    resp = await session.call_tool("bulk_update_lifecycle", {"vault_id": vault_id, "items": items})
+    resp = await session.call_tool("update_lifecycles", {"vault_id": vault_id, "items": items})
     elapsed = time.perf_counter() - start
     payload = _parse_call_tool_response(resp)
-    if "error" in payload:
+    if "error" in payload and "results" not in payload:
         raise RuntimeError(f"bulk call failed: {payload!r}")
     if payload["error_count"] != 0:
         raise RuntimeError(f"bulk call reported per-item errors: {payload['error_count']}")

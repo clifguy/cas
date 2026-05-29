@@ -1,6 +1,6 @@
 """HTTP integration tests for the bulk-link endpoint.
 
-POST /sage_vaults/{vault_id}/edges/bulk.
+POST /sage_vaults/{vault_id}/edges.
 
 The HTTP layer is exercised directly via an ASGI transport so the
 FastAPI parameter binding, request-body parsing, response-model
@@ -76,7 +76,7 @@ async def test_bulk_endpoint_happy_path_returns_200_and_response_envelope(seeded
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 200, resp.text
     response = BulkLinkResponse.model_validate(resp.json())
@@ -93,7 +93,7 @@ async def test_bulk_endpoint_unknown_vault_returns_404(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/sage_vaults/ghost/edges/bulk", json=body)
+        resp = await client.post("/sage_vaults/ghost/edges", json=body)
 
     assert resp.status_code == 404, resp.text
     assert resp.json()["code"] == "vault_not_found"
@@ -113,7 +113,7 @@ async def test_bulk_endpoint_partial_failure_still_returns_200(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 200, resp.text
     response = BulkLinkResponse.model_validate(resp.json())
@@ -130,7 +130,7 @@ async def test_bulk_endpoint_empty_items_returns_200(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 200, resp.text
     response = BulkLinkResponse.model_validate(resp.json())
@@ -160,7 +160,7 @@ async def test_bulk_endpoint_malformed_body_returns_422(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 422, resp.text
 
@@ -178,7 +178,7 @@ async def test_bulk_endpoint_response_mode_light_strips_edge_body(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
@@ -202,7 +202,7 @@ async def test_bulk_endpoint_response_mode_full_preserves_edge_body(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()
@@ -224,7 +224,7 @@ async def test_bulk_endpoint_dry_run_carries_envelope_echo(seeded_app):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(f"/sage_vaults/{vault_id}/edges/bulk", json=body)
+        resp = await client.post(f"/sage_vaults/{vault_id}/edges", json=body)
 
     assert resp.status_code == 200, resp.text
     payload = resp.json()

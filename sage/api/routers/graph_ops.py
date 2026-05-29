@@ -1,4 +1,10 @@
-"""Graph operations: link, check_preconditions, traverse, chain."""
+"""Graph operations (CAS-ADR-029 v4 plural-noun convention):
+- POST /sage_vaults/{vault_id}/edges -- create_edges (N>=1 items).
+- DELETE /sage_vaults/{vault_id}/edges/{edge_id} -- delete one edge.
+- GET /sage_vaults/{vault_id}/preconditions/{function_id} -- check_preconditions.
+- POST /sage_vaults/{vault_id}/traverse -- traverse.
+- POST /sage_vaults/{vault_id}/chain -- chain.
+"""
 
 from fastapi import APIRouter, Depends
 
@@ -11,8 +17,6 @@ from sage.models.schemas import (
     EdgeIdStr,
     ErrorResponse,
     FunctionIdStr,
-    LinkRequest,
-    LinkResponse,
     PreconditionResult,
     TraverseRequest,
     TraverseResponse,
@@ -26,79 +30,29 @@ router = APIRouter(tags=["Graph Operations"])
 
 @router.post(
     "/edges",
-    response_model=LinkResponse,
-    status_code=201,
-    responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "One of the following error codes:\n\n"
-                "`edge_anchor_policy_violation`: anchor field missing where "
-                "required, present where forbidden, or pointing at a "
-                "document not in the endpoint's supersedes lineage.\n\n"
-                "`retract_target_not_edge`: `retracted_edge_id` does not "
-                "identify an existing edge in this vault.\n\n"
-                "`merged_from_validation`: a `merged_from` edge violates the "
-                "merge-tombstone invariants (chain-head / chain-terminal "
-                "validation failed).\n\n"
-                "`tbd_policy_edge`: the requested `edge_type` has no shipped "
-                "resolution policy and cannot be created.\n\n"
-                "`self_referential_edge`: `source_id` and `target_id` "
-                "resolve to the same document.\n\n"
-                "`synced_from_inapplicable_edge_type` (T-0111): "
-                "`synced_from_version` or `synced_from_content_hash` was set "
-                "on an edge type other than `sync_target` or `derived_from`. "
-                "Provenance fields are only meaningful on those two types.\n\n"
-                "`synced_from_version_not_in_source_chain` (T-0111): "
-                "`synced_from_version` references a document that is not a "
-                "member of `target_id`'s supersedes chain (covers both "
-                "wrong-document and missing-document cases — surfaced as "
-                "this dedicated code so operators can distinguish them "
-                "from `document_not_found`)."
-            ),
-        },
-        403: {
-            "model": ErrorResponse,
-            "description": "Caller is not a registered editor for the source document.",
-        },
-        404: {
-            "model": ErrorResponse,
-            "description": "Vault, source document, or target document not found.",
-        },
-    },
-)
-async def link(
-    request: LinkRequest,
-    vault_id: VaultIdStr = Depends(get_vault_id),
-    service: GraphOpsService = Depends(get_graph_ops_service),
-) -> LinkResponse:
-    return await service.link(request)
-
-
-@router.post(
-    "/edges/bulk",
     response_model=BulkLinkResponse,
+    status_code=200,
     description=(
-        "Create many edges in one call (T-0165, CAS-ADR-029). Each item "
-        "is dispatched through the idempotent variant of `link`: a "
-        "duplicate natural-key triple (source_id, target_id, edge_type) "
-        "returns the existing edge with `created=false` rather than "
-        "raising (T-0079). Items are processed in order under the "
-        "process-wide link lock and per-item SQLite transactions. The "
-        "batch is NOT atomic (CAS-ADR-029): a per-item SAGEError "
-        "surfaces in the response's per-item error envelope while "
-        "earlier-or-later successful items remain committed. The "
-        "endpoint returns 200 even when some items fail; check "
-        "`success_count` / `error_count` on the response. Request body "
-        "accepts an optional `response_mode` (`light` | `full`) per "
-        "T-0153 / T-0158: `light` drops the per-item `edge` body from "
-        "success entries to stay within the inline-output budget; "
-        "failure entries always carry the full structured error "
-        "envelope. The `created` and `existing_rationale` fields are "
-        "preserved under `light` because they are the only signals "
-        "callers have for the natural-key idempotency outcome. When "
-        "unset, batches with more than 5 items default to `light`, "
-        "smaller batches default to `full`."
+        "Create one or more typed edges in a single call (CAS-ADR-029 v4 "
+        "plural-noun convention). Accepts an `items` array of N>=1 per-item "
+        "edge specifications; length-1 is fully supported. Each item is "
+        "dispatched through the idempotent variant: a duplicate natural-key "
+        "triple (source_id, target_id, edge_type) returns the existing edge "
+        "with `created=false` rather than raising. Items are processed in "
+        "order under the process-wide link lock and per-item SQLite "
+        "transactions. The batch is NOT atomic: a per-item SAGEError "
+        "surfaces in the per-item error envelope while earlier-or-later "
+        "successful items remain committed. The endpoint returns 200 even "
+        "when some items fail; check `success_count` / `error_count` on "
+        "the response. Request body accepts an optional `response_mode` "
+        "(`light` | `full`): `light` drops the per-item `edge` body from "
+        "success entries to stay within the inline-output budget; failure "
+        "entries always carry the full structured error envelope. The "
+        "`created` and `existing_rationale` fields are preserved under "
+        "`light` because they are the only signals callers have for the "
+        "natural-key idempotency outcome. When unset, batches with more "
+        "than 5 items default to `light`, smaller batches default to "
+        "`full`."
     ),
     responses={
         404: {
@@ -107,7 +61,7 @@ async def link(
         },
     },
 )
-async def bulk_link(
+async def create_edges(
     request: BulkLinkRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),

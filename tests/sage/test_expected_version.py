@@ -24,12 +24,52 @@ from sage.api.errors import StaleReadError
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.mcp_server import (
-    bulk_update_metadata,
     get_document,
     ingest_document,
-    update_metadata,
+)
+from sage.mcp_server import (
+    update_metadata as _update_metadata_bulk,
 )
 from tests.sage.conftest import initialize_services_for_test
+
+
+async def update_metadata(vault_id, document_id, **kwargs):
+    """Singleton-shaped shim around the consolidated update_metadata tool.
+
+    Post-CAS-ADR-029 the MCP tool takes ``items: list[dict]``; this shim
+    accepts the legacy ``(vault_id, document_id, **patch)`` signature
+    by wrapping the call as a length-1 ``items`` collection and
+    unwrapping the per-item result envelope back to a singleton-shape
+    response so the existing test assertions continue to apply.
+    """
+    # dry_run is an envelope-level parameter on the bulk request, not a
+    # per-item field; pop it out so it doesn't slip into the items[] entry.
+    dry_run = kwargs.pop("dry_run", False)
+    item = {"document_id": document_id, **kwargs}
+    result = await _update_metadata_bulk(vault_id=vault_id, items=[item], dry_run=dry_run)
+    if isinstance(result, dict) and "error" in result and "results" not in result:
+        return result
+    if isinstance(result, dict) and result.get("results"):
+        per = result["results"][0]
+        if per.get("status") == "error":
+            err = per.get("error") or {}
+            return {
+                "error": err.get("error"),
+                "message": err.get("message"),
+                "detail": err.get("detail"),
+            }
+        out = {"document": per.get("document"), "dry_run": dry_run}
+        if "warnings" in per and per["warnings"]:
+            out["warnings"] = per["warnings"]
+        if "changes" in per:
+            out["changes"] = per["changes"]
+        return out
+    return result
+
+
+async def bulk_update_metadata(vault_id, items, **kwargs):
+    """Direct passthrough for callers that already use the bulk shape."""
+    return await _update_metadata_bulk(vault_id=vault_id, items=items, **kwargs)
 
 
 @pytest.fixture
@@ -374,23 +414,33 @@ async def test_t9_fastmcp_wire_path_surfaces_stale_read_envelope(vault_services)
     )
     v_current = advanced["document"]["updated_at"]
 
+    # Post-CAS-ADR-029: update_metadata MCP tool takes items: list[dict].
+    # The stale_read surfaces as a per-item error envelope inside results[].
     response = await _mcp.mcp.call_tool(
         "update_metadata",
         {
             "vault_id": "test_vault",
-            "document_id": doc_id,
-            "title": "x",
-            "expected_version": v0,
+            "items": [
+                {
+                    "document_id": doc_id,
+                    "title": "x",
+                    "expected_version": v0,
+                },
+            ],
         },
     )
     assert isinstance(response, list)
     assert len(response) == 1
     assert isinstance(response[0], TextContent)
     envelope = json.loads(response[0].text)
-    assert envelope["error"] == "stale_read"
-    assert envelope["detail"]["document_id"] == doc_id
-    assert envelope["detail"]["expected_version"] == v0
-    assert envelope["detail"]["current_version"] == v_current
+    assert envelope["success_count"] == 0 and envelope["error_count"] == 1
+    per_item = envelope["results"][0]
+    assert per_item["status"] == "error"
+    err = per_item["error"]
+    assert err["error"] == "stale_read"
+    assert err["detail"]["document_id"] == doc_id
+    assert err["detail"]["expected_version"] == v0
+    assert err["detail"]["current_version"] == v_current
 
 
 # ---------------------------------------------------------------------------
@@ -432,35 +482,61 @@ async def seeded_http_app(minimal_vault_config_dict, monkeypatch):
     _mcp._vaults.clear()
 
 
-async def test_t10_http_patch_stale_expected_version_returns_409_envelope(
+async def test_t10_http_post_stale_expected_version_returns_per_item_stale_read(
     seeded_http_app,
 ):
-    """PATCH /sage_vaults/{vault_id}/documents/{document_id}/metadata
-    with stale `expected_version` returns 409 with the structured
-    `ErrorResponse(code="stale_read", message=..., detail={...})`
-    body. Confirms the FastAPI `sage_error_handler` routes the new
-    exception correctly.
+    """POST /sage_vaults/{vault_id}/metadata with a stale per-item
+    `expected_version` returns HTTP 200 carrying a per-item `stale_read`
+    error envelope inside `results[]` (post-CAS-ADR-029 plural-noun shape).
+    Per CAS-ADR-029 v4 the batch is not atomic; a per-item write
+    rejection surfaces as a per-item envelope, not a batch-level HTTP
+    409.
     """
     app, vault_id, doc_id, v0 = seeded_http_app
 
-    # Advance the document via a first PATCH so v0 is stale.
+    # Advance the document via a first POST so v0 is stale.
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        first = await client.patch(
-            f"/sage_vaults/{vault_id}/documents/{doc_id}/metadata",
-            json={"title": "advance", "expected_version": v0},
+        first = await client.post(
+            f"/sage_vaults/{vault_id}/metadata",
+            json={
+                "items": [
+                    {"document_id": doc_id, "title": "advance", "expected_version": v0},
+                ],
+            },
         )
         assert first.status_code == 200, first.text
-        v_current = first.json()["document"]["updated_at"]
+        first_body = first.json()
+        assert first_body["success_count"] == 1
+        v_current = first_body["results"][0]["document"]["updated_at"]
         assert v_current != v0
 
-        response = await client.patch(
-            f"/sage_vaults/{vault_id}/documents/{doc_id}/metadata",
-            json={"title": "should_not_land", "expected_version": v0},
+        response = await client.post(
+            f"/sage_vaults/{vault_id}/metadata",
+            json={
+                "items": [
+                    {
+                        "document_id": doc_id,
+                        "title": "should_not_land",
+                        "expected_version": v0,
+                    },
+                ],
+            },
         )
-    assert response.status_code == 409, response.text
+    assert response.status_code == 200, response.text
     body = response.json()
-    assert body["code"] == "stale_read"
-    assert body["detail"]["document_id"] == doc_id
-    assert body["detail"]["expected_version"] == v0
-    assert body["detail"]["current_version"] == v_current
+    assert body["success_count"] == 0 and body["error_count"] == 1
+    per = body["results"][0]
+    assert per["status"] == "error"
+    err = per["error"]
+    assert err["error"] == "stale_read"
+    assert err["detail"]["document_id"] == doc_id
+    assert err["detail"]["expected_version"] == v0
+    assert err["detail"]["current_version"] == v_current
+
+
+# Alias the renamed test to preserve the legacy name for any external
+# selection by node-id; the function body is identical.
+test_t10_http_patch_stale_expected_version_returns_409_envelope = (
+    test_t10_http_post_stale_expected_version_returns_per_item_stale_read
+)

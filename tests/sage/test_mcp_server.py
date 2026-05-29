@@ -11,6 +11,7 @@ tests services directly rather than through HTTP.
 
 import asyncio
 import json
+from typing import get_args
 
 import pytest
 
@@ -24,7 +25,12 @@ from sage.api.errors import SAGEError
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
-    create_edge,
+    create_edges as _create_edges_bulk,
+)
+from sage.mcp_server import (
+    delete_edge as _sage_unlink_tool,
+)
+from sage.mcp_server import (
     get_document,
     get_filename_metadata,
     get_vault_stats,
@@ -37,18 +43,138 @@ from sage.mcp_server import (
     reload_vault,
     search,
     traverse,
-    update_lifecycle,
-    update_metadata,
     update_vault_config,
     verify_preconditions,
 )
 from sage.mcp_server import (
-    delete_edge as _sage_unlink_tool,
+    update_lifecycles as _update_lifecycles_bulk,
+)
+from sage.mcp_server import (
+    update_metadata as _update_metadata_bulk,
 )
 from sage.models.enums import EdgeType as _EdgeType
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
+
+# ---------------------------------------------------------------------------
+# CAS-ADR-029 singleton-shape shims around the consolidated bulk tools.
+# Post-CAS-ADR-029 v4 the MCP tools take ``items: list[dict]`` only;
+# these shims preserve the existing flat singleton call sites in this
+# test module by wrapping each call as a length-1 ``items`` collection
+# and unwrapping the per-item result envelope back to the singleton
+# shape the assertions below expect.
+# ---------------------------------------------------------------------------
+
+
+def _unwrap_bulk_metadata(result, dry_run=False):
+    if isinstance(result, dict) and "error" in result and "results" not in result:
+        return result
+    if isinstance(result, dict) and result.get("results"):
+        per = result["results"][0]
+        if per.get("status") == "error":
+            err = per.get("error") or {}
+            out = {
+                "error": err.get("error"),
+                "message": err.get("message"),
+            }
+            if "detail" in err:
+                out["detail"] = err["detail"]
+            return out
+        out = {"document": per.get("document"), "dry_run": dry_run}
+        if per.get("warnings"):
+            out["warnings"] = per["warnings"]
+        if "changes" in per:
+            out["changes"] = per["changes"]
+        return out
+    return result
+
+
+def _unwrap_bulk_lifecycle(result, dry_run=False):
+    if isinstance(result, dict) and "error" in result and "results" not in result:
+        return result
+    if isinstance(result, dict) and result.get("results"):
+        per = result["results"][0]
+        if per.get("status") == "error":
+            err = per.get("error") or {}
+            out = {
+                "error": err.get("error"),
+                "message": err.get("message"),
+            }
+            if "detail" in err:
+                out["detail"] = err["detail"]
+            return out
+        out = {"document": per.get("document"), "dry_run": dry_run}
+        if per.get("created_edge"):
+            out["created_edge"] = per["created_edge"]
+        if per.get("warnings"):
+            out["warnings"] = per["warnings"]
+        if "changes" in per:
+            out["changes"] = per["changes"]
+        return out
+    return result
+
+
+def _unwrap_bulk_edges(result, dry_run=False):
+    if isinstance(result, dict) and "error" in result and "results" not in result:
+        return result
+    if isinstance(result, dict) and result.get("results"):
+        per = result["results"][0]
+        if per.get("status") == "error":
+            err = per.get("error") or {}
+            out = {
+                "error": err.get("error"),
+                "message": err.get("message"),
+            }
+            if "detail" in err:
+                out["detail"] = err["detail"]
+            return out
+        out = {
+            "edge": per.get("edge"),
+            "created": per.get("created", True),
+            "dry_run": dry_run,
+        }
+        if "existing_rationale" in per:
+            out["existing_rationale"] = per["existing_rationale"]
+        return out
+    return result
+
+
+async def update_metadata(vault_id, document_id, **kwargs):
+    # dry_run is an envelope-level parameter on the bulk request, not a
+    # per-item field; pop it out so it doesn't slip into the items[] entry.
+    dry_run = kwargs.pop("dry_run", False)
+    item = {"document_id": document_id, **kwargs}
+    return _unwrap_bulk_metadata(
+        await _update_metadata_bulk(vault_id=vault_id, items=[item], dry_run=dry_run),
+        dry_run=dry_run,
+    )
+
+
+async def update_lifecycle(vault_id, document_id, action, successor_id=None, dry_run=False):
+    item = {"document_id": document_id, "action": action}
+    if successor_id is not None:
+        item["successor_id"] = successor_id
+    return _unwrap_bulk_lifecycle(
+        await _update_lifecycles_bulk(vault_id=vault_id, items=[item], dry_run=dry_run),
+        dry_run=dry_run,
+    )
+
+
+async def create_edge(vault_id, source_id, target_id, edge_type, **kwargs):
+    # dry_run is an envelope-level parameter on the bulk request, not a
+    # per-item field; pop it out so it doesn't slip into the items[] entry.
+    dry_run = kwargs.pop("dry_run", False)
+    item = {
+        "source_id": source_id,
+        "target_id": target_id,
+        "edge_type": edge_type,
+        **kwargs,
+    }
+    return _unwrap_bulk_edges(
+        await _create_edges_bulk(vault_id=vault_id, items=[item], dry_run=dry_run),
+        dry_run=dry_run,
+    )
 
 
 @pytest.fixture
@@ -146,29 +272,29 @@ async def test_call_tool_rejects_misspelled_kwarg_on_registered_sage_tool():
     coincidental pass: a tool that rejected every call would fail action
     1; a tool that accepted every call would fail action 2.
 
-    list_vaults is chosen because it has no required state setup
+    admin_list_vaults is chosen because it has no required state setup
     and exercises the JSON-RPC dispatch the same as every other tool.
     """
     from mcp.types import TextContent
 
     # Action 1 (control): correct invocation returns success.
-    control = await _mcp.mcp.call_tool("list_vaults", {})
+    control = await _mcp.mcp.call_tool("admin_list_vaults", {})
     assert isinstance(control, list)
     assert len(control) >= 1
     assert isinstance(control[0], TextContent)
     control_payload = json.loads(control[0].text)
-    # Success payload is whatever list_vaults returns -- here we
+    # Success payload is whatever admin_list_vaults returns -- here we
     # just assert it's NOT the unknown_parameter envelope.
     assert control_payload.get("error") != "unknown_parameter"
 
     # Action 2 (subject): misspelled kwarg returns the envelope.
-    subject = await _mcp.mcp.call_tool("list_vaults", {"misspelled": "x"})
+    subject = await _mcp.mcp.call_tool("admin_list_vaults", {"misspelled": "x"})
     assert isinstance(subject, list)
     assert len(subject) == 1
     assert isinstance(subject[0], TextContent)
     envelope = json.loads(subject[0].text)
     assert envelope["error"] == "unknown_parameter"
-    assert envelope["detail"]["tool"] == "list_vaults"
+    assert envelope["detail"]["tool"] == "admin_list_vaults"
     assert envelope["detail"]["rejected_params"] == ["misspelled"]
     # valid_params reflects the tool's declared signature; we don't
     # pin the exact list to keep the test resilient to future signature
@@ -2310,47 +2436,58 @@ def test_t0155_traverse_docstring_documents_alias():
     )
 
 
-def test_t0155_link_docstring_clarifies_endpoint_shape():
-    """T8. create_edge docstring's Args section describes `source_id`
-    and `target_id` as `documents.id` / `document_id` values. Guard
-    against the docstring update being skipped or being only in the
-    prose body, missing the per-parameter Args entries.
+def test_link_per_item_id_fields_use_document_id_alias():
+    """Per CAS-ADR-029 v4 the ``create_edges`` tool takes
+    ``items: list[dict]``; the per-item ``source_id``, ``target_id``,
+    and anchor fields enforce the document-id shape via the
+    ``DocumentIdStr`` typed alias on ``BulkLinkItem`` rather than via
+    a docstring clarification on the (retired) singleton tool
+    signature. The shape clarification moves with the field.
+
+    Anti-coincidental-pass: identity equality against the
+    ``Annotated[str, AfterValidator(...)]`` form exposed in the
+    class's ``__annotations__`` dict (Pydantic's ``model_fields``
+    strips the ``Annotated`` wrapper to the bare type, which would
+    not distinguish ``DocumentIdStr`` from bare ``str``). Replacing
+    the alias with ``str`` fails the test even if the description
+    still mentions "documents.id".
     """
-    import re
-    import textwrap
+    from sage.models.schemas import BulkLinkItem, DocumentIdStr
 
-    doc = create_edge.__doc__
-    assert doc is not None
-    dedented = textwrap.dedent(doc)
-    # Each Args entry for source_id and target_id must carry the
-    # shape clarification on its own line.
-    assert re.search(r"source_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "create_edge Args entry for source_id must clarify it is a documents.id / document_id value"
+    annotations = BulkLinkItem.__annotations__
+    # ``source_id`` is non-nullable; the alias must appear directly.
+    assert annotations["source_id"] is DocumentIdStr, (
+        f"BulkLinkItem.source_id annotation is {annotations['source_id']!r}; "
+        "expected DocumentIdStr. Without the alias at the per-item schema, "
+        "callers can pass any string and the SQL-lookup hazard "
+        "(CAS-ADR-019) re-opens."
     )
-    assert re.search(r"target_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "create_edge Args entry for target_id must clarify it is a documents.id / document_id value"
-    )
+    # ``target_id`` and the anchor fields are nullable per the
+    # edge_type policy bucket (CAS-ADR-017); the alias appears as
+    # ``DocumentIdStr | None``.
+    for field_name in (
+        "target_id",
+        "source_valid_from_version",
+        "target_valid_from_version",
+    ):
+        ann = annotations[field_name]
+        assert DocumentIdStr in get_args(ann), (
+            f"BulkLinkItem.{field_name} annotation is {ann!r}; expected DocumentIdStr | None."
+        )
 
 
-def test_t0155_set_lifecycle_docstring_clarifies_successor_id_shape():
-    """T9. update_lifecycle docstring's Args section describes
-    `successor_id` as a `documents.id` / `document_id` value.
-    Parallel-pattern guard: `successor_id` is a semantic-role
-    document-id parameter analogous to source_id/target_id on
-    create_edge; the same docstring clarification applies (
-    principle, surfaced via F4 review).
+def test_set_lifecycle_per_item_successor_id_uses_document_id_alias():
+    """Per CAS-ADR-029 v4 the ``update_lifecycles`` tool takes
+    ``items: list[dict]``; the per-item ``successor_id`` enforces the
+    document-id shape via ``DocumentIdStr`` on ``BulkLifecycleItem``.
+    Parallel-pattern guard with
+    test_link_per_item_id_fields_use_document_id_alias.
     """
-    import re
-    import textwrap
+    from sage.models.schemas import BulkLifecycleItem, DocumentIdStr
 
-    from sage.mcp_server import update_lifecycle
-
-    doc = update_lifecycle.__doc__
-    assert doc is not None
-    dedented = textwrap.dedent(doc)
-    assert re.search(r"successor_id:[^\n]*(document_id|documents\.id)", dedented), (
-        "update_lifecycle Args entry for successor_id must clarify "
-        "it is a documents.id / document_id value"
+    ann = BulkLifecycleItem.__annotations__["successor_id"]
+    assert DocumentIdStr in get_args(ann), (
+        f"BulkLifecycleItem.successor_id annotation is {ann!r}; expected DocumentIdStr | None."
     )
 
 
@@ -2360,43 +2497,42 @@ def test_t0155_set_lifecycle_docstring_clarifies_successor_id_shape():
 
 
 def test_reload_vault_and_get_stack_config_in_sage_tools_registry():
-    """``reload_vault`` and ``get_stack_config`` are registered through
-    ``register_sage_tools`` and the module-level re-exports point at the
-    same callables.
+    """``admin_reload_vault`` and ``admin_get_stack_config`` are registered
+    through ``register_sage_tools`` and the module-level re-exports point
+    at the same callables.
 
-    The two tools have no HTTP counterpart by design and are
+    Post-CAS-ADR-029 (CAS-ADR-029 v4), both names carry the ``admin_`` prefix
+    in the registration dict to mark them as substrate-maintenance
+    operations. The two tools have no HTTP counterpart by design and are
     operationally MCP-only; they nonetheless ride the canonical
     registration path so the conformance gates and the ``_sage_tools``
     registry view cover them on the same terms as every other tool.
 
     Anti-coincidental: identity (``is``) check against the module-level
-    re-export rules out bare-key stubs (``_sage_tools["reload_vault"] =
-    None``) and cross-wired keys (e.g. both keys pointing at the same
-    function); equality (``==``) would tolerate distinct wrappers.
+    re-export rules out bare-key stubs and cross-wired keys; equality
+    would tolerate distinct wrappers.
     """
     import sage.mcp_server as _mcp_server
 
-    assert "reload_vault" in _mcp_server._sage_tools, (
-        "reload_vault must be registered through register_sage_tools; "
+    assert "admin_reload_vault" in _mcp_server._sage_tools, (
+        "admin_reload_vault must be registered through register_sage_tools; "
         "an @mcp.tool() definition at module scope in sage/mcp_server.py "
         "would bypass the conformance registry view and is not the "
         "supported registration site."
     )
-    assert "get_stack_config" in _mcp_server._sage_tools, (
-        "get_stack_config must be registered through register_sage_tools; "
+    assert "admin_get_stack_config" in _mcp_server._sage_tools, (
+        "admin_get_stack_config must be registered through register_sage_tools; "
         "an @mcp.tool() definition at module scope in sage/mcp_server.py "
         "would bypass the conformance registry view and is not the "
         "supported registration site."
     )
-    assert _mcp_server._sage_tools["reload_vault"] is _mcp_server.reload_vault, (
-        "_sage_tools['reload_vault'] must be the same callable as the "
-        "sage.mcp_server.reload_vault re-export; an identity mismatch means "
-        "the re-export points at a stale or different function."
+    assert _mcp_server._sage_tools["admin_reload_vault"] is _mcp_server.reload_vault, (
+        "_sage_tools['admin_reload_vault'] must be the same callable as the "
+        "sage.mcp_server.reload_vault re-export."
     )
-    assert _mcp_server._sage_tools["get_stack_config"] is _mcp_server.get_stack_config, (
-        "_sage_tools['get_stack_config'] must be the same callable as the "
-        "sage.mcp_server.get_stack_config re-export; an identity mismatch "
-        "means the re-export points at a stale or different function."
+    assert _mcp_server._sage_tools["admin_get_stack_config"] is _mcp_server.get_stack_config, (
+        "_sage_tools['admin_get_stack_config'] must be the same callable as the "
+        "sage.mcp_server.get_stack_config re-export."
     )
 
 

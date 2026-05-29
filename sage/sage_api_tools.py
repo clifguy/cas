@@ -27,7 +27,7 @@ from sage.api.errors import (
 )
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, reload_vault_in_registry
-from sage.models.enums import EdgeType, RationaleKind, RetrievalMode, SourceType
+from sage.models.enums import RetrievalMode, SourceType
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
     BulkLifecycleItem,
@@ -45,12 +45,8 @@ from sage.models.schemas import (
     FunctionIdStr,
     HashCheckRequest,
     IngestRequest,
-    LinkRequest,
-    LinkResponse,
-    SetLifecycleRequest,
     Sha256Str,
     TraverseRequest,
-    UpdateMetadataRequest,
     UpdateVaultConfigRequest,
     VaultIdStr,
 )
@@ -154,7 +150,7 @@ def register_sage_tools(
         filename inference runs, parsed values populate fields the
         caller did not supply (the specific fields are vault-config-
         defined; see ``metadata_extraction.filename_extraction`` in
-        ``get_vault_config``), and the document is held with
+        ``admin_get_vault_config``), and the document is held with
         metadata_confirmed=false until a reviewer confirms via
         update_metadata.
 
@@ -172,7 +168,7 @@ def register_sage_tools(
         Tier3 uniqueness (CAS-ADR-031): doc_types declaring a
         ``unique`` constraint in their ``metadata_schema`` (see
         ``document_types.doc_types[].metadata_schema`` in
-        ``get_vault_config``) enforce per-vault uniqueness on the
+        ``admin_get_vault_config``) enforce per-vault uniqueness on the
         named tier3 field at ingest time. In the ``cas`` vault,
         ``ticket.ticket_id`` is the live example: re-ingesting a
         document with a ticket_id already in use raises
@@ -191,13 +187,13 @@ def register_sage_tools(
         3 was bypassed. ``failed`` is the catch-all for any
         Stage-1/2/3 exception; the document persists with
         ``pipeline_error`` populated. Inspect
-        ``abstraction.enabled`` in ``get_vault_config`` to know
+        ``abstraction.enabled`` in ``admin_get_vault_config`` to know
         which terminal state to expect on a given vault.
 
         Error modes:
         - ``adapter_not_found`` (400): ``source_type`` is not an enabled
           adapter on this vault. See
-          ``source_adapters.adapters`` in ``get_vault_config``.
+          ``source_adapters.adapters`` in ``admin_get_vault_config``.
         - ``source_file_not_found`` (404): ``source`` does not resolve
           to a readable file on disk.
         - ``duplicate_content`` (409): a document with the same
@@ -207,8 +203,8 @@ def register_sage_tools(
           ``predecessor_id`` was set but the predecessor is
           not in ``active``. For completed, filed, or otherwise
           non-active predecessors, run the archive -> reactivate dance
-          via ``update_lifecycle`` before retrying. See the
-          ``update_lifecycle`` docstring for the full pattern.
+          via ``update_lifecycles`` before retrying. See the
+          ``update_lifecycles`` docstring for the full pattern.
         - ``identical_content_supersede`` (409): the new file's content
           hash matches the predecessor's; supersede chains require
           distinct content per step.
@@ -235,7 +231,7 @@ def register_sage_tools(
         - ``tier3_unique_constraint_violation`` (409): the resolved
           doc_type declares a ``unique`` constraint on a tier3 field
           (see ``document_types.doc_types[].metadata_schema`` in
-          ``get_vault_config``) and ``tier3_metadata`` supplied a
+          ``admin_get_vault_config``) and ``tier3_metadata`` supplied a
           value already in use by another document. Detail carries
           ``doc_type``, ``field``, ``colliding_value``, and
           ``existing_document_id``. ``force=true`` does NOT override
@@ -257,7 +253,7 @@ def register_sage_tools(
                 adapter declares its own required-config schema; this
                 payload is **not** a SAGE-wide shape. Inspect
                 ``source_adapters.adapters[].config`` in
-                ``get_vault_config`` for the per-adapter
+                ``admin_get_vault_config`` for the per-adapter
                 required-config shape on the target vault. Caller-
                 supplied keys are deep-merged over the vault's
                 adapter-config defaults at ingest time; unknown keys
@@ -308,7 +304,7 @@ def register_sage_tools(
             tier3_metadata: Per-doc_type typed metadata payload.
                 Validated against the JSON Schema fragment declared
                 under ``document_types.doc_types[].metadata_schema`` for
-                the resolved doc_type (see ``get_vault_config``).
+                the resolved doc_type (see ``admin_get_vault_config``).
                 When the doc_type has no metadata_schema declared and
                 this argument is non-null, ingest fails with 400
                 ``tier3_schema_violation``. Stored verbatim once
@@ -361,7 +357,7 @@ def register_sage_tools(
 
         Which fields the parser extracts is vault-config-defined; see
         ``metadata_extraction.filename_extraction.segment_fields`` in
-        ``get_vault_config`` for the active mapping. In the
+        ``admin_get_vault_config`` for the active mapping. In the
         ``cas`` vault, the configured pattern is
         ``{date}_{project}_{code}_{title}_{version}``, so the parser
         returns ``doc_date``, ``project``, ``doc_code``, ``title``,
@@ -447,386 +443,55 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def update_metadata(
+    async def update_lifecycles(
         vault_id: str,
-        document_id: str,
-        title: str | None = None,
-        version_label: str | None = None,
-        project: str | None = None,
-        # ``dict | list | None`` (not ``dict | None``) so a bare-list shape
-        # reaches the body-level ``_check_legacy_patch_form`` guard rather
-        # than being rejected by FastMCP's per-tool argument model at the
-        # framework boundary. The bare list is a deprecation grace shape:
-        # accepted only to surface the structured ``legacy_form`` envelope
-        # on real MCP transport. Callers MUST send the ``ListFieldPatch``
-        # ops object ({"add": [...], "remove": [...]}). See CAS-ADR-028
-        # for the ops-object patch grammar.
-        tags: dict | list | None = None,
-        doc_type: str | None = None,
-        authority_scope: str | None = None,
-        document_date: str | None = None,
-        tier3_metadata: dict | None = None,
-        expected_version: str | None = None,
+        items: list[dict],
+        response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
-        """Patch mutable metadata fields on a document.
+        """Apply one or more lifecycle state transitions to documents.
 
-        Scalars (``title``, ``version_label``, ``project``, ``doc_type``,
-        ``authority_scope``, ``document_date``) use set-or-omit
-        semantics: pass to set, omit to leave unchanged. List-valued
-        metadata fields (today: ``tags``) take a ``ListFieldPatch``
-        ops-object (``{add, remove}``); ``tier3_metadata`` takes a
-        ``Tier3Patch`` ops-object (``{set, unset}``). The bare-list /
-        bare-dict forms are no longer accepted (see ``legacy_form``
-        below). The ops-object shape is the substrate's
-        concurrency-safety contract (CAS-ADR-038): parallel adds of
-        distinct values to the same list-valued field commute.
+        Accepts ``items`` as a list of N≥1 per-item transition requests.
+        Length-1 is fully supported — a caller with a single transition
+        to apply passes ``items=[{...}]`` rather than the (retired)
+        singleton form. Per CAS-ADR-029 v4 plural-noun convention, this
+        is the sole MCP entry point for lifecycle transitions.
 
-        Per CAS-ADR-021, any successful call sets ``metadata_confirmed=true``
-        on the document (it leaves the metadata-review queue if it was
-        there). The ``doc_type`` value must be one of the values defined
-        under ``document_types.doc_types`` in the vault config; query
-        ``get_vault_config`` for the authoritative list.
+        Each item carries ``document_id``, ``action``, and optional
+        ``successor_id``. Items are processed in order, each holding
+        the per-document lock and a per-item SQLite transaction.
 
-        Empty-call confirmation-flip semantics (CAS-ADR-021):
-        A call carrying only ``vault_id``, ``document_id``, and (implicit)
-        ``modified_by`` -- with every field-patch parameter (``title``,
-        ``version_label``, ``project``, ``tags``, ``doc_type``,
-        ``authority_scope``, ``document_date``, ``tier3_metadata``) omitted
-        or None -- is a **pure-confirmation flip**, not a no-op. It
-        succeeds and: flips ``metadata_confirmed`` to True (the document
-        leaves the metadata-review queue), advances ``updated_at``, and
-        stamps ``last_modified_by``. This is intentional under
-        CAS-ADR-021's caller-authoritative semantics: the caller's
-        decision to invoke this tool IS the confirmation signal,
-        independent of whether any field-patch parameter accompanies it.
-
-        See CAS-ADR-028 for the ingest-vs-update shape asymmetry
-        rationale: ``ingest_document`` still takes ``tags`` as a list and
-        ``tier3_metadata`` as a dict (creation supplies full state);
-        ``update_metadata`` patches existing state.
-
-        List-valued field patch shape (e.g. ``tags``)::
-
-            {"add": ["x",...], "remove": ["y",...]}
-
-        At least one key required and non-empty. ``add`` values must
-        NOT be present on the field; ``remove`` values MUST be present
-        (strict conflict). ``add`` and ``remove`` must be disjoint and
-        individually deduplicated. Worked examples:
-
-        - Add a single tag: ``tags={"add": ["urgent"]}``
-        - Remove one, add another: ``tags={"add": ["new"], "remove": ["old"]}``
-
-        Tier3 patch shape (``tier3_metadata``)::
-
-            {"set": {"key": "value",...}, "unset": ["other_key",...]}
-
-        At least one key required and non-empty. ``set`` overwrites
-        existing keys without error (the verb is literal: assert this
-        value). ``unset`` keys must currently be present (strict
-        conflict). ``set`` and ``unset`` must be disjoint. The merged
-        result is validated against the resolved doc_type's
-        ``metadata_schema``. Worked examples:
-
-        - Change ticket priority: ``tier3_metadata={"set": {"ticket_priority": "high"}}``
-        - Drop a key: ``tier3_metadata={"unset": ["stale_field"]}``
-
-        Error modes:
-        - ``document_not_found`` (404): no document with that id.
-        - ``invalid_doc_type`` (400): ``doc_type`` not in vault config.
-        - ``{field}_add_conflict`` (400): one or more ``add`` entries on
-          the named list-valued field are already present. For ``tags``,
-          the code is ``tags_add_conflict``; detail carries
-          ``document_id``, the field name keying the conflicting subset,
-          and ``current_{field}`` (e.g., ``current_tags``).
-        - ``{field}_remove_conflict`` (400): one or more ``remove``
-          entries are absent. Detail mirrors the add-conflict shape.
-        - ``tag_patch_overlap`` (400): ``add`` and ``remove`` share
-          entries, or one list contains duplicates.
-        - ``tier3_unset_conflict`` (400): one or more ``unset`` keys
-          are absent. Detail carries ``document_id``, ``doc_type``,
-          ``keys``, and ``current_tier3_keys``.
-        - ``tier3_patch_overlap`` (400): ``set`` and ``unset`` share keys.
-        - ``patch_empty`` (400): a patch object was supplied but carries
-          no actionable operation (e.g., ``tags={}``).
-        - ``tier3_schema_violation`` (400): the merged tier3 dict failed
-          validation against the doc_type's metadata_schema, or the
-          doc_type has no metadata_schema declared.
-        - ``tier3_doc_type_change_stale_keys`` (400): the call changes
-          ``doc_type`` AND supplies a ``tier3_metadata`` patch, and the
-          merged tier3 dict carries keys that are not in the new
-          doc_type's metadata_schema properties. Detail carries
-          ``previous_doc_type``, ``new_doc_type``, and ``stale_keys`` —
-          the exact list the caller must add to ``unset``. A new
-          doc_type with no ``metadata_schema`` allows no keys, so every
-          merged key is stale.
-        - ``legacy_form`` (400): caller passed the deprecated bare-list
-          form for ``tags`` or bare-dict form for ``tier3_metadata``.
-          Detail names the new ops-object shape.
-        - ``stale_read`` (409): the caller supplied ``expected_version``
-          and it does not match the document's current version at write
-          time (CAS-ADR-038 Primitive B). Detail carries
-          ``document_id``, ``expected_version``, and ``current_version``.
-          The caller refetches and retries with the current version
-          (retry is appropriate here, unlike the strict-conflict 400s).
-
-        Strict-conflict errors are planning bugs, not retry conditions;
-        the caller should adjust its model of the document state rather
-        than blindly re-issue.
-
-        Dry-run mode:
-        Set ``dry_run=true`` to validate the patch and compute the
-        would-be projection of the post-patch state without persisting.
-        The response is wrapped: ``{"document": <would-be post-patch
-        document>, "dry_run": true, "changes": [...]}``. No
-        ``updated_at`` advance, no ``metadata_confirmed`` flip, no
-        chunk-store sync. Same validators run in the same order, so a
-        dry-run that returns success means the real call will succeed
-        modulo race conditions on shared state. The per-document lock
-        is still acquired so the preview is consistent with concurrent
-        mutations.
-
-        ``changes`` enumerates the field-level deltas the
-        patch would persist on a real run as a list of
-        ``{path, before, after}`` entries (``FieldChange`` shape).
-        Scalar field changes use the bare field name as ``path``;
-        tier3 changes enumerate per-key with dotted paths (e.g.,
-        ``tier3_metadata.severity``); tags carry the full ordered
-        before/after lists in ``before``/``after``. Entries are
-        sorted by ``path`` for determinism. Populated only on dry-run;
-        ``changes=null`` on real-run responses and on dry-runs that
-        touch no caller-supplied fields.
-
-        Worked example: ``update_metadata(vault_id="v",
-        document_id="d", tier3_metadata={"set": {"severity": "high"}},
-        dry_run=True)`` returns the would-be document with the patched
-        tier3 dict plus ``changes=[{path: "tier3_metadata.severity",
-        before: <old>, after: "high"}]``; storage is byte-identical
-        to pre-call.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier.
-            title: New display title.
-            version_label: Version indicator (v1, v2, draft, final, etc.).
-            project: Project or workstream identifier.
-            tags: Tags patch object ``{add?, remove?}``. See above.
-            doc_type: Document type. Must be defined in
-                ``document_types.doc_types`` in the vault config.
-            authority_scope: Authority scope identifier.
-            document_date: Document calendar date (YYYY-MM-DD).
-            tier3_metadata: Tier-3 patch object ``{set?, unset?}``.
-                See above.
-            expected_version: Optimistic-concurrency token
-                (CAS-ADR-038 Primitive B). When supplied, the substrate
-                verifies it against the document's current version at
-                write time; on mismatch the write is rejected with a
-                structured ``stale_read`` 409. When omitted (default),
-                behavior is last-writer-wins. The version source is the
-                document's ``updated_at`` value as observed on a prior
-                read.
-            dry_run: /. When True, run all validators
-                and compute the would-be projection of the post-patch
-                state, but do NOT persist. The response carries a
-                ``changes`` block enumerating field-level deltas (see
-                "Dry-run mode" above). Default False.
-        """
-        try:
-            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
-            if document_date is not None:
-                document_date = _DOCUMENT_DATE_ADAPTER.validate_python(document_date)
-            _check_legacy_patch_form("tags", tags)
-            _check_legacy_patch_form("tier3_metadata", tier3_metadata)
-            v = get_vault(vault_id)
-            request = UpdateMetadataRequest(
-                title=title,
-                version_label=version_label,
-                project=project,
-                tags=tags,
-                doc_type=doc_type,
-                authority_scope=authority_scope,
-                document_date=document_date,
-                tier3_metadata=tier3_metadata,
-                expected_version=expected_version,
-                dry_run=dry_run,
-            )
-            response = await v.metadata_service.update_metadata(
-                document_id, request, v.config.vault.owner
-            )
-            return serialize(response)
-        except (SAGEError, ValueError) as e:
-            return error_response(e)
-
-    @mcp.tool()
-    async def update_lifecycle(
-        vault_id: str,
-        document_id: str,
-        action: str,
-        successor_id: str | None = None,
-        dry_run: bool = False,
-    ) -> dict:
-        """Execute a lifecycle state transition on a document.
-
-        The action vocabulary is **vault-config-defined**, not a fixed
-        SAGE-wide set. Call ``get_vault_config`` and read the
+        The action vocabulary lives in the vault config — it is
+        vault-config-defined, not a fixed SAGE-wide set. Call
+        ``admin_get_vault_config`` and read the
         ``lifecycle.transitions`` array for the authoritative list of
         (from_state, action, to_state, creates_edge) tuples in the
         target vault. Two examples seen in practice:
 
         - ``cas`` vault: ``ingest``, ``supersede``, ``complete``,
           ``archive``, ``reactivate``.
-        - ``example_vault`` vault: ``ingest``, ``supersede``, ``complete``,
-          ``archive``, ``reactivate``, ``file``.
-
-        Neither vault defines ``activate``; the action for
-        ``archived -> active`` is ``reactivate``.
+        - ``example_vault`` vault: ``ingest``, ``supersede``,
+          ``complete``, ``archive``, ``reactivate``, ``file``.
 
         **The ``supersede`` action is the canonical atomic form for
         replacing one document with another.** It both transitions the
         predecessor (``active -> archived``) and creates the
         ``supersedes`` edge (new -> old) in a single operation. The
-        alternative two-step pattern -- ``create_edge(edge_type="supersedes")``
-        followed by ``update_lifecycle(action="archive")`` -- ends
-        in the same state but is required only when patching up an
-        already-archived predecessor whose supersedes edge is missing.
-        ``create_edge`` with ``edge_type="supersedes"`` does **not**
-        auto-transition the predecessor's lifecycle.
+        alternative two-step pattern — ``create_edges`` with
+        ``edge_type="supersedes"`` followed by ``update_lifecycles``
+        with ``action="archive"`` — ends in the same state but is
+        required only when patching up an already-archived predecessor
+        whose supersedes edge is missing. ``create_edges`` with
+        ``edge_type="supersedes"`` does **not** auto-transition the
+        predecessor's lifecycle.
 
-        ``supersede`` is defined only as a transition out of ``active``.
-        To supersede a predecessor in ``completed``, ``filed``, or any
-        other non-active state, run the archive -> reactivate dance
-        first, then either call ``update_lifecycle(action="supersede",
-        successor_id=...)`` against the predecessor or
-        ``ingest_document(..., predecessor_id=<predecessor_id>)``
-        which applies the same atomic transition synchronously with
-        record insertion. A direct call against a non-active
-        predecessor returns ``supersede_target_not_active``.
-
-        ``creates_edge`` in the vault config reveals which actions
-        wire edges atomically. In all currently-shipped vault configs,
-        only ``supersede`` does; other actions are state-only.
-
-        Error modes:
-        - ``invalid_action`` (400): the ``action`` string is not in any
-          transition table for this vault.
-        - ``invalid_lifecycle_transition`` (409): action is known but
-          not valid from the document's current lifecycle state. The
-          error detail enumerates the valid actions from the current
-          state.
-        - ``supersede_target_not_active`` (409): ``action="supersede"``
-          was requested against a document not in ``active``.
-        - ``pipeline_incomplete`` (409): emitted by some transitions
-          (e.g. ``complete``) when the document's
-          ``pipeline_status`` is not yet terminal.
-        - ``identical_content_supersede`` (409): ``action="supersede"``
-          with ``successor_id`` whose content hash matches the
-          predecessor.
-
-        Dry-run mode:
-        Set ``dry_run=true`` to validate the request and compute the
-        would-be projection of the post-transition state without
-        persisting. The response is the same ``SetLifecycleResponse``
-        envelope as a real run, augmented with ``dry_run: true`` at
-        the top level and a ``changes`` block enumerating field-level
-        deltas. No ``updated_at`` advance, no ``lifecycle_status``
-        flip on the persisted document, no chunk-store sync. Same
-        validators run in the same order, so a dry-run that returns
-        success means the real call will succeed modulo race
-        conditions on shared state. For ``action="supersede"``, the
-        would-be edge surfaces in ``created_edge`` populated with the
-        nil-UUID sentinel id ``00000000-0000-0000-0000-000000000000``
-        so a caller that mistakes it for a real edge id fails loudly
-        on lookup; no ``supersedes`` edge is persisted. The
-        per-document lock is still acquired so the preview is
-        consistent with concurrent mutations.
-
-        ``changes`` carries a single ``FieldChange`` entry
-        for ``lifecycle_status`` when the action changes state
-        (skipped on no-op transitions). The would-be ``supersedes``
-        edge stays in ``created_edge`` and is NOT duplicated in
-        ``changes`` — edge mutations are a separate concept from
-        document field-level deltas. Populated only on dry-run;
-        ``changes=null`` on real-run responses.
-
-        Worked example: ``update_lifecycle(vault_id="v",
-        document_id="d", action="archive", dry_run=True)`` returns
-        the would-be document with ``lifecycle_status="archived"``
-        plus ``changes=[{path: "lifecycle_status", before: "active",
-        after: "archived"}]``; storage is byte-identical to pre-call.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier (the
-                document the transition acts upon -- for supersede,
-                this is the predecessor being archived).
-            action: Lifecycle action name. Must appear in this
-                vault's ``lifecycle.transitions`` table as a valid
-                action from the document's current state. See
-                ``get_vault_config`` for the authoritative list.
-            successor_id: The successor document's id (a ``documents.id``
-                value — the same shape as ``document_id`` on other tools;
-                ). The ``document_id``/``successor_id`` pair is a
-                semantic distinction, not a naming inconsistency; both
-                endpoints carry document ids. Required when
-                ``action="supersede"`` (a ``supersedes`` edge is created
-                from ``successor_id`` -> ``document_id``); forbidden
-                for all other actions. The successor must already exist
-                as a separate active document; this tool does not
-                create it. For the common case where the successor has
-                not yet been ingested, prefer
-                ``ingest_document(..., predecessor_id=<predecessor_id>)``,
-                which ingests and supersedes atomically.
-            dry_run: /. When True, run all validators
-                and compute the would-be projection of the
-                post-transition state, but do NOT persist. The
-                response carries a ``changes`` block with a single
-                ``lifecycle_status`` entry when the action changes
-                state (see "Dry-run mode" above). For ``supersede``,
-                the would-be edge surfaces in ``created_edge`` with
-                the nil-UUID sentinel id
-                ``00000000-0000-0000-0000-000000000000`` (not
-                duplicated in ``changes``). Default False.
-        """
-        try:
-            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
-            if successor_id is not None:
-                successor_id = _DOCUMENT_ID_ADAPTER.validate_python(successor_id)
-            v = get_vault(vault_id)
-            request = SetLifecycleRequest(
-                action=action,
-                successor_id=successor_id,
-                dry_run=dry_run,
-            )
-            response = await v.lifecycle_service.set_lifecycle(document_id, request)
-            return serialize(response)
-        except (SAGEError, ValueError) as e:
-            return error_response(e)
-
-    @mcp.tool()
-    async def bulk_update_lifecycle(
-        vault_id: str,
-        items: list[dict],
-        response_mode: str | None = None,
-        dry_run: bool = False,
-    ) -> dict:
-        """Apply lifecycle transitions to many documents in one call.
-
-        First ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
-        ``document_id``, ``action``, and optional ``successor_id`` with
-        the same semantics as ``update_lifecycle``; items are processed
-        in order, each holding the per-document lock and a per-item
-        SQLite transaction.
-
-        Each per-item entry in ``items`` is validated using the full
-        ``update_lifecycle`` precondition surface — see that tool's
-        docstring for the inherited rules (vault-config-defined action
+        Each per-item entry in ``items`` is validated for the full
+        lifecycle precondition surface (vault-config-defined action
         vocabulary, ``invalid_lifecycle_transition`` from the current
-        state, the ``supersede`` chain-head and identical-content guards,
-        ``pipeline_incomplete`` on ``complete``, etc.). Item-level errors
-        do NOT roll back earlier or later items (CAS-ADR-029).
+        state, the ``supersede`` chain-head and identical-content
+        guards, ``pipeline_incomplete`` on ``complete``, etc.).
+        Item-level errors do NOT roll back earlier or later items
+        (CAS-ADR-029).
 
         **The batch is NOT atomic.** A per-item SAGEError surfaces in the
         response's per-item error envelope but does not roll back earlier-
@@ -845,7 +510,7 @@ def register_sage_tools(
         special-casing the call site.
 
         Performance: a bulk call is observably faster than N sequential
-        ``update_lifecycle`` calls because MCP framing overhead and
+        ``update_lifecycles`` calls because MCP framing overhead and
         inter-call asyncio scheduling are eliminated; the per-document
         lock and per-item SQLite transaction are unchanged.
 
@@ -908,31 +573,99 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def bulk_create_edge(
+    async def create_edges(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
-        """Create many edges in one call (CAS-ADR-029).
+        """Create one or more typed edges between documents in the graph.
 
-        Third ``sage_bulk_*`` operation. Each item carries the same
-        fields as a single ``create_edge`` call (``source_id``,
-        ``target_id``, ``edge_type``, anchor fields, ``retracted_edge_id``,
-        ``rationale``, ``rationale_kind``, ``notes``, ``synced_from_*``)
+        Accepts ``items`` as a list of N≥1 per-item edge specifications.
+        Length-1 is fully supported — a caller with a single edge to
+        create passes ``items=[{...}]`` rather than the (retired)
+        singleton form. Per CAS-ADR-029 v4 plural-noun convention, this
+        is the sole MCP entry point for edge creation.
+
+        Each item carries ``source_id``, ``target_id``, ``edge_type``,
+        anchor fields, ``retracted_edge_id``, ``rationale``,
+        ``rationale_kind``, ``notes``, and ``synced_from_*`` fields,
         and is dispatched through the idempotent variant: a duplicate
         natural-key triple (``source_id``, ``target_id``, ``edge_type``)
         returns the existing edge with ``created=false`` rather than
         raising. Items are processed in order, each under the
         process-wide ``_link_lock`` and a per-item SQLite transaction.
 
-        Each per-item entry in ``items`` is validated using the full
-        ``create_edge`` precondition surface — see that tool's docstring
-        for the inherited rules (document existence, edge-type
-        registry-declared anchor policy per CAS-ADR-017, ``merged_from``
-        chain-head invariant, ``retracted_edge_id`` shape, natural-key
-        idempotency etc.). Item-level errors do NOT roll
-        back earlier or later items (CAS-ADR-029).
+        **For ``supersedes`` edges, prefer
+        ``update_lifecycles`` with ``action="supersede"`` per item**
+        (or ``ingest_document(..., predecessor_id=...)`` when the
+        successor has not yet been ingested). Those tools wire the
+        edge AND archive the predecessor atomically. ``create_edges``
+        with an ``edge_type="supersedes"`` item creates the edge alone
+        and does **not** transition the predecessor's lifecycle; reach
+        for it only when stitching a missing edge into a chain whose
+        lifecycle states are already correct.
+
+        Each per-item entry in ``items`` is validated for the full
+        edge-creation precondition surface (document existence,
+        edge-type registry-declared anchor policy per CAS-ADR-017,
+        ``merged_from`` chain-head invariant, ``retracted_edge_id``
+        shape, natural-key idempotency, etc.). Item-level errors do
+        NOT roll back earlier or later items (CAS-ADR-029).
+
+        **Per-item anchor field semantics by edge_type policy bucket
+        (CAS-ADR-017).** Each edge type has a registry-declared
+        ``resolution_policy`` (``none``, ``transitive_source``,
+        ``transitive_both``, or ``TBD``) that dictates which anchor
+        fields the per-item entry must carry:
+
+        - ``none`` (supersedes, retracts, merged_from): meta-edges; no
+          anchor fields. ``retracts`` additionally takes a one-sided
+          ``source_valid_from_version`` and ``retracted_edge_id``
+          (instead of a ``target_id``).
+        - ``transitive_source`` (derived_from): requires
+          ``source_valid_from_version`` (anchors the edge in the
+          source chain); no target anchor. For whole-document
+          derivations the convention is to set
+          ``source_valid_from_version`` equal to ``source_id`` itself
+          — the edge is "valid from the source as it exists right now."
+        - ``transitive_both`` (covers, references, bundles_with,
+          depends_on, instantiated_from): requires both
+          ``source_valid_from_version`` and
+          ``target_valid_from_version``.
+
+        Canonical per-item example — agent-asserted ``derived_from``
+        (e.g., a deliverable that traces to its template). The same
+        per-item field set is shown as kwargs first, then as the
+        items-list dict that ``create_edges`` actually accepts::
+
+            # Per-item field set (kwarg form):
+            #   source_id="<deliverable_id>",
+            #   target_id="<template_id>",
+            #   edge_type="derived_from",
+            #   source_valid_from_version="<deliverable_id>",
+            #   rationale="Template authored by..."
+
+            create_edges(
+                vault_id="cas",
+                items=[
+                    {"source_id": "<deliverable_id>",
+                     "target_id": "<template_id>",
+                     "edge_type": "derived_from",
+                     "source_valid_from_version": "<deliverable_id>",
+                     "rationale": "Template authored by..."},
+                ])
+
+        **``merged_from`` chain-head precondition.** Both endpoints
+        must be chain heads — i.e., neither ``source_id`` nor
+        ``target_id`` may have an outbound ``supersedes`` edge.
+        Attempting ``merged_from`` from a mid-chain source OR into a
+        mid-chain target returns the per-item
+        ``merged_from_validation`` envelope. When the source is
+        mid-chain and a content-reuse edge is what's actually wanted,
+        use ``derived_from`` instead — its anchor field
+        ``source_valid_from_version`` captures the chain-visibility
+        semantics that ``merged_from`` lacks.
 
         **The batch is NOT atomic.** A per-item SAGEError surfaces in the
         response's per-item error envelope but does not roll back earlier-
@@ -946,28 +679,22 @@ def register_sage_tools(
         ``response_mode`` value).
 
         Empty ``items`` is valid: the response carries an empty
-        ``results`` array and all counts are zero. Callers building bulk
+        ``results`` array and all counts are zero. Callers building edge
         operations programmatically may pass ``items=[]`` without
         special-casing the call site.
 
-        Performance: a bulk call is observably faster than N sequential
-        ``create_edge`` calls because MCP framing overhead and inter-call
-        asyncio scheduling are eliminated; the process-wide ``_link_lock``
-        and per-item SQLite transaction are unchanged.
-
-        Per-item error modes (surfaced inside the response envelope, same
-        codes as ``create_edge``): ``self_referential_edge`` (400),
-        ``document_not_found`` (404), ``tbd_policy_edge`` (400),
-        ``edge_anchor_policy_violation`` (400),
-        ``retract_target_not_edge`` (400), ``merged_from_validation``
-        (400), ``synced_from_inapplicable_edge_type`` (400),
-        ``synced_from_version_not_in_source_chain`` (404). See
-        ``create_edge`` for detail-envelope shape.
+        Per-item error modes (surfaced inside the response envelope):
+        ``self_referential_edge`` (400), ``document_not_found`` (404),
+        ``tbd_policy_edge`` (400), ``edge_anchor_policy_violation``
+        (400), ``retract_target_not_edge`` (400),
+        ``merged_from_validation`` (400),
+        ``synced_from_inapplicable_edge_type`` (400),
+        ``synced_from_version_not_in_source_chain`` (404).
 
         Worked example. To create three references edges and a fourth
         depends_on edge in one call::
 
-            bulk_create_edge(
+            create_edges(
                 vault_id="cas",
                 items=[
                     {"source_id": "a1b2c3d4_doc_a",
@@ -1050,25 +777,55 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool()
-    async def bulk_update_metadata(
+    async def update_metadata(
         vault_id: str,
         items: list[dict],
         response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
-        """Apply metadata patches to many documents in one call.
+        """Patch mutable metadata fields on one or more documents.
 
-        Second ``sage_bulk_*`` operation per CAS-ADR-029. Each item carries
-        ``document_id`` plus any subset of the single-item
-        ``update_metadata`` fields (``title``, ``version_label``,
-        ``project``, ``tags``, ``doc_type``, ``authority_scope``,
-        ``document_date``, ``tier3_metadata``) with the same semantics as
-        ``update_metadata``; items are processed in order, each
-        holding the per-document lock and a per-item SQLite transaction.
+        Accepts ``items`` as a list of N≥1 per-item patch requests.
+        Length-1 is fully supported — a caller patching a single
+        document passes ``items=[{...}]`` rather than the (retired)
+        singleton form. Per CAS-ADR-029 v4 plural-noun convention,
+        this is the sole MCP entry point for metadata patching.
 
-        Each per-item entry in ``items`` is validated using the full
-        ``update_metadata`` precondition surface — see that tool's
-        docstring for the inherited rules (document existence, tag and
+        Each item carries ``document_id`` plus any subset of the
+        patchable fields (``title``, ``version_label``, ``project``,
+        ``tags``, ``doc_type``, ``authority_scope``, ``document_date``,
+        ``tier3_metadata``, ``expected_version``). Items are processed
+        in order, each holding the per-document lock and a per-item
+        SQLite transaction.
+
+        Scalars (``title``, ``version_label``, ``project``, ``doc_type``,
+        ``authority_scope``, ``document_date``) use set-or-omit
+        semantics per item: pass to set, omit to leave unchanged.
+        List-valued metadata fields (today: ``tags``) take a
+        ``ListFieldPatch`` ops-object (``{add, remove}``);
+        ``tier3_metadata`` takes a ``Tier3Patch`` ops-object
+        (``{set, unset}``). The bare-list / bare-dict forms are no
+        longer accepted (see ``legacy_form`` below). The ops-object
+        shape is the substrate's concurrency-safety contract
+        (CAS-ADR-038): parallel adds of distinct values to the same
+        list-valued field commute.
+
+        Per CAS-ADR-021, each successful per-item patch sets
+        ``metadata_confirmed=true`` on the target document (it leaves
+        the metadata-review queue if it was there). The ``doc_type``
+        value must be one of the values defined under
+        ``document_types.doc_types`` in the vault config; query
+        ``admin_get_vault_config`` for the authoritative list.
+
+        Empty-patch confirmation-flip semantics (CAS-ADR-021): an item
+        carrying only ``document_id`` (no field-patch keys) is a
+        **pure-confirmation flip**, not a no-op. It succeeds and:
+        flips ``metadata_confirmed`` to True, advances ``updated_at``,
+        and stamps ``last_modified_by``. The caller's decision to
+        include the item IS the confirmation signal.
+
+        Each per-item entry in ``items`` is validated for the full
+        metadata precondition surface (document existence, tag and
         tier3 patch grammar per CAS-ADR-028, doc_type validation,
         tier3 schema enforcement against the resolved doc_type,
         ``metadata_confirmed=true`` side-effect per CAS-ADR-021, etc.).
@@ -1202,311 +959,6 @@ def register_sage_tools(
                 dry_run=dry_run,
             )
             response = await v.metadata_service.bulk_update_metadata(request, v.config.vault.owner)
-            return serialize(response)
-        except (SAGEError, ValueError) as e:
-            return error_response(e)
-
-    @mcp.tool()
-    async def create_edge(
-        vault_id: str,
-        source_id: str,
-        target_id: str | None,
-        edge_type: EdgeType,
-        source_valid_from_version: str | None = None,
-        target_valid_from_version: str | None = None,
-        retracted_edge_id: str | None = None,
-        notes: str | None = None,
-        rationale: str | None = None,
-        rationale_kind: RationaleKind | None = None,
-        synced_from_version: str | None = None,
-        synced_from_content_hash: str | None = None,
-        dry_run: bool = False,
-    ) -> dict:
-        """Create a typed edge between two documents in the graph.
-
-        **For ``supersedes`` edges, prefer
-        ``update_lifecycle(action="supersede", successor_id=...)``**
-        (or ``ingest_document(..., predecessor_id=...)`` when the
-        successor has not yet been ingested). Those tools wire the
-        edge AND archive the predecessor atomically. ``create_edge`` with
-        ``edge_type="supersedes"`` creates the edge alone and does
-        **not** transition the predecessor's lifecycle; reach for it
-        only when stitching a missing edge into a chain whose
-        lifecycle states are already correct.
-
-        Per CAS-ADR-017, each edge type has a registry-declared
-        ``resolution_policy`` (one of: ``none``, ``transitive_source``,
-        ``transitive_both``, ``TBD``) that dictates which anchor fields
-        are required or forbidden. The policy is **not** a caller-supplied
-        parameter — it is fixed per edge_type in the edge registry —
-        but understanding it is necessary to know which anchor fields
-        the call must carry:
-
-        - `none` (supersedes, retracts, merged_from): meta-edges; no
-          anchor fields. `retracts` additionally takes a one-sided
-          `source_valid_from_version` (anchor in the retracting chain)
-          and `retracted_edge_id` (the edge being retracted) instead of
-          a `target_id`.
-        - `transitive_source` (derived_from): requires
-          `source_valid_from_version`; no target anchor. The anchor
-          marks which version of the source chain this derivation is
-          valid from, for chain-scoped traversal visibility per
-          CAS-ADR-017. For whole-document derivations the convention is
-          to set ``source_valid_from_version`` equal to ``source_id``
-          itself — the edge is "valid from the source as it exists
-          right now."
-        - `transitive_both` (covers, references, bundles_with,
-          depends_on, instantiated_from): requires both
-          `source_valid_from_version` and `target_valid_from_version`.
-
-        Canonical example — agent-asserted ``derived_from`` (e.g., a
-        deliverable that traces to its template)::
-
-            create_edge(
-                vault_id="cas",
-                source_id="<deliverable_id>",
-                target_id="<template_id>",
-                edge_type="derived_from",
-                source_valid_from_version="<deliverable_id>",
-                rationale="Template authored by...")
-
-        ``merged_from`` chain-head precondition: **both** endpoints
-        must be chain heads — i.e., neither ``source_id`` nor
-        ``target_id`` may have an outbound ``supersedes`` edge.
-        Absorption into a stale predecessor (source-side rule) and
-        merging into an already-superseded node (target-side rule,
-        symmetric) are both incoherent; the merge endpoints should be
-        the currently authoritative heads, not nodes that have already
-        been superseded. Attempting ``merged_from`` from a mid-chain
-        source OR into a mid-chain target returns
-        ``merged_from_validation``. When the source is mid-chain and a
-        content-reuse edge is what's actually wanted, use
-        ``derived_from`` instead (its anchor field
-        ``source_valid_from_version`` captures the chain-visibility
-        semantics that ``merged_from`` lacks).
-
-        Document existence: both ``source_id`` and (when set)
-        ``target_id`` must reference documents that currently exist in
-        the vault. A missing endpoint raises ``document_not_found``.
-        Self-referential edges (``source_id == target_id``) are
-        rejected with ``self_referential_edge``; no edge_type allows a
-        node to point at itself.
-
-        ``retracts`` field-presence rules (closed-form): a ``retracts``
-        edge requires ``source_valid_from_version`` (the anchor in the
-        retracting chain), forbids ``target_valid_from_version`` (which
-        must be null), and requires ``retracted_edge_id`` to reference
-        an existing edge in the same vault. Violations surface as
-        ``edge_anchor_policy_violation`` (anchor required/forbidden) or
-        ``retract_target_not_edge`` (``retracted_edge_id`` does not
-        name a known edge).
-
-        ``synced_from_*`` field applicability (closed list): the
-        ``synced_from_version`` and ``synced_from_content_hash``
-        parameters are accepted **only** on ``edge_type="derived_from"``
-        and ``edge_type="sync_target"``. Any other ``edge_type`` with
-        either field set raises
-        ``synced_from_inapplicable_edge_type``. The fields are not
-        merely ignored on inapplicable types — they are a structural
-        error.
-
-        ``synced_from_version`` chain-membership: when set,
-        the value must be a member of the **target document's**
-        ``supersedes`` chain (i.e., the target itself or any
-        predecessor of the target reachable by walking outbound
-        ``supersedes`` edges from the target). Out-of-chain values
-        raise ``synced_from_version_not_in_source_chain``. The check
-        runs only when ``synced_from_version`` is non-null and the
-        edge_type permits the field per the closed-list rule above.
-
-        TBD-policy edge types (CAS-ADR-017): two values appear in the
-        ``EdgeType`` enum but are reserved-and-not-implemented:
-        ``authoritative_for`` and ``sync_target``. Both have
-        ``resolution_policy=TBD`` in the edge registry; every
-        ``create_edge`` call carrying either type raises
-        ``tbd_policy_edge`` unconditionally. Callers should not select
-        these values until a future ADR retires the TBD policy. (The
-        ``synced_from_*`` field-applicability rule above lists
-        ``sync_target`` as a legitimate carrier of those fields for
-        forward compatibility; this does not unblock ``sync_target``
-        link creation today.)
-
-        Anchors must lie in the supersedes lineage of their respective
-        endpoint. Violations surface as 400 errors:
-
-        - ``edge_anchor_policy_violation``: anchor field missing where
-          required, present where forbidden, or pointing at a document
-          not in the endpoint's supersedes lineage. Anchor values are
-          ``documents.id`` strings, not version labels -- passing a
-          version label (e.g. ``"v9.0"``) returns this code with a
-          ``does not reference a known document`` detail. Also raised
-          for ``retracts`` edges when ``source_valid_from_version`` is
-          missing or ``target_valid_from_version`` is set.
-        - ``document_not_found``: ``source_id`` or (when set)
-          ``target_id`` does not reference an existing document in
-          this vault.
-        - ``self_referential_edge``: ``source_id`` and ``target_id``
-          resolve to the same document. No edge_type permits a node
-          to point at itself.
-        - ``retract_target_not_edge``: the value supplied to
-          ``retracted_edge_id`` is not a known edge id in this vault.
-        - ``merged_from_validation``: a ``merged_from`` edge violates
-          the merge-tombstone invariants -- either ``source_id`` or
-          ``target_id`` is mid-chain (has an outbound ``supersedes``
-          edge).
-        - ``synced_from_inapplicable_edge_type``:
-          ``synced_from_version`` or ``synced_from_content_hash`` was
-          set on an ``edge_type`` other than ``derived_from`` or
-          ``sync_target``.
-        - ``synced_from_version_not_in_source_chain``:
-          ``synced_from_version`` was set but the named document is
-          not a member of the target's ``supersedes`` chain.
-        - ``tbd_policy_edge``: the requested edge_type has
-          ``resolution_policy=TBD`` and cannot be created. Currently
-          ``authoritative_for`` and ``sync_target`` (CAS-ADR-017).
-
-        Idempotency: the edges table carries a UNIQUE
-        constraint on ``(source_id, target_id, edge_type)``. Re-calling
-        ``create_edge`` with the same triple does NOT error; it returns
-        the pre-existing edge with ``created=false`` and a populated
-        ``existing_rationale``. The caller's ``rationale``/``notes`` on
-        the duplicate call are discarded -- the first-write rationale
-        is preserved as canonical provenance. To intentionally replace
-        an edge, ``delete_edge`` it first.
-
-        Dry-run mode:
-        Set ``dry_run=true`` to validate the request and compute the
-        would-be projection of the edge without persisting. The
-        response shape is identical to a real-run response
-        (``{edge, created, existing_rationale, dry_run}``);
-        ``dry_run=true`` is echoed and the would-be ``edge.id`` is
-        the nil-UUID sentinel ``00000000-0000-0000-0000-000000000000``.
-        The natural-key pre-check runs in dry-run too, so a
-        preview on a (source, target, edge_type) that already has an
-        edge returns ``created=false`` with the existing edge id and
-        rationale — same shape as the real-run no-op path.
-
-        Note: link is an edge mutation, not a document field
-        mutation, so the change surface is the existing ``edge``
-        field (with the nil-UUID sentinel) rather than a separate
-        ``changes`` block. ``LinkResponse`` does not carry
-        a ``changes`` field.
-
-        Worked example: ``create_edge(vault_id="v", source_id="a",
-        target_id="b", edge_type="references",
-        source_valid_from_version="a", target_valid_from_version="b",
-        dry_run=True)`` returns the would-be edge; no edge row is
-        inserted.
-
-        Args:
-            vault_id: Target vault identifier.
-            source_id: Source document identifier (a ``documents.id``
-                value — the same shape as ``document_id`` on other
-                tools;). The ``source_id``/``target_id`` pair is a
-                semantic distinction, not a naming inconsistency; both
-                endpoints carry document ids.
-            target_id: Target document identifier (a ``documents.id``
-                value — the same shape as ``document_id`` on other
-                tools;). Required for all edge types except
-                ``retracts`` (which uses ``retracted_edge_id``); pass
-                null for ``retracts`` edges.
-            edge_type: Edge type (supersedes, derived_from, covers, references,
-                bundles_with, depends_on, instantiated_from, retracts,
-                merged_from).
-            source_valid_from_version: Document ID of the source-chain
-                version that anchors this edge in the supersedes
-                lineage (a `documents.id`, not a version label string).
-                Required for `transitive_source`, `transitive_both`,
-                and `retracts` edges; forbidden on policy-`none`
-                meta-edges.
-            target_valid_from_version: Document ID of the target-chain
-                version that anchors this edge in the supersedes
-                lineage (a `documents.id`, not a version label string).
-                Required only for `transitive_both` edges.
-            retracted_edge_id: Edge-id of the edge instance being
-                retracted. Required (and valid only) on `retracts`
-                edges; must reference an existing edge in this vault
-                (``retract_target_not_edge`` otherwise).
-            notes: Free-text notes about the edge.
-            rationale: Rationale for creating this edge.
-            rationale_kind: Optional explicit provenance discriminator
-                (CAS-ADR-019 /). Accepts one of
-                ``version_chain``, ``references_mention``,
-                ``filename_code_match``, ``manual``. When omitted, the
-                value is derived from the rationale text prefix and
-                falls back to ``manual``.
-            synced_from_version: Source-chain version (document id) the
-                content was copied or derived from at the moment this
-                edge is asserted. Accepted **only** on
-                ``edge_type="derived_from"`` and
-                ``edge_type="sync_target"``; any other edge_type with
-                this field set raises
-                ``synced_from_inapplicable_edge_type``. When set, the
-                value must be a member of the target's ``supersedes``
-                chain — out-of-chain values raise
-                ``synced_from_version_not_in_source_chain``.
-                Semantically meaningful on ``sync_target`` (Tier 1,
-                auto-populated at re-ingestion when the Tier-1
-                inference subsystem ships) and ``derived_from`` (Tier
-                3, agent-supplied). Distinct from
-                ``source_valid_from_version`` (CAS-ADR-017 chain
-                visibility). Unset = explicit null; never inferred
-                from chain anchors.
-            synced_from_content_hash: Source document's
-                ``source_content_hash`` captured at edge assertion
-                . Accepted **only** on
-                ``edge_type="derived_from"`` and
-                ``edge_type="sync_target"`` (same closed list as
-                ``synced_from_version``;
-                ``synced_from_inapplicable_edge_type`` otherwise).
-                Optional companion to ``synced_from_version``;
-                recommended on derivations because version labels are
-                reused and can drift from content (in-place edits).
-                Unset = explicit null.
-            dry_run:. When True, validate the request and
-                compute the would-be projection of the edge without
-                persisting. No separate ``changes`` block;
-                the would-be edge is the change surface. Default False.
-        """
-        try:
-            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            source_id = _DOCUMENT_ID_ADAPTER.validate_python(source_id)
-            if target_id is not None:
-                target_id = _DOCUMENT_ID_ADAPTER.validate_python(target_id)
-            if retracted_edge_id is not None:
-                retracted_edge_id = _EDGE_ID_ADAPTER.validate_python(retracted_edge_id)
-            if synced_from_version is not None:
-                synced_from_version = _DOCUMENT_ID_ADAPTER.validate_python(synced_from_version)
-            if synced_from_content_hash is not None:
-                synced_from_content_hash = _SHA256_ADAPTER.validate_python(synced_from_content_hash)
-            v = get_vault(vault_id)
-            request = LinkRequest(
-                source_id=source_id,
-                target_id=target_id,
-                edge_type=edge_type,
-                source_valid_from_version=source_valid_from_version,
-                target_valid_from_version=target_valid_from_version,
-                retracted_edge_id=retracted_edge_id,
-                notes=notes,
-                rationale=rationale,
-                rationale_kind=rationale_kind,
-                synced_from_version=synced_from_version,
-                synced_from_content_hash=synced_from_content_hash,
-                dry_run=dry_run,
-            )
-            # Link_idempotent returns (edge, created). On a
-            # duplicate natural-key triple the existing edge is
-            # returned with created=False and the caller's rationale
-            # is discarded. Wrap in LinkResponse so the
-            # dry_run echo and the existing_rationale field have a
-            # typed home.
-            edge, created = await v.graph_ops_service.link_idempotent(request)
-            response = LinkResponse(
-                edge=edge,
-                created=created,
-                existing_rationale=edge.rationale if not created else None,
-                dry_run=dry_run,
-            )
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -2055,7 +1507,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_recompute_views")
     async def recompute_views(vault_id: str) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
@@ -2076,7 +1528,7 @@ def register_sage_tools(
         A document that exists in the graph but never lands under
         ``by_doc_type/`` is the diagnostic signal that its ``doc_type``
         is unset -- patch via ``update_metadata(doc_type=...)`` and
-        re-call ``recompute_views`` to populate the missing bucket.
+        re-call ``admin_recompute_views`` to populate the missing bucket.
 
         Wipe-then-rebuild is NOT atomic:
         The implementation first removes ``{storage_root}/views/`` in
@@ -2085,7 +1537,7 @@ def register_sage_tools(
         failure mid-rebuild (e.g., filesystem permission denial,
         symlink target missing) leaves ``views/`` partially regenerated
         with no rollback to the prior state. Recovery is a re-call of
-        ``recompute_views`` once the underlying cause is addressed;
+        ``admin_recompute_views`` once the underlying cause is addressed;
         the next successful call wipes the partial tree and rebuilds
         cleanly. Callers must not treat the on-disk state as a
         transactional snapshot of the graph between calls.
@@ -2098,7 +1550,7 @@ def register_sage_tools(
         is the same response shape as a successful regeneration over
         an empty graph; callers cannot distinguish "vault is empty"
         from "every document was filtered out" from the response
-        alone. Check vault population via ``get_vault_stats`` if
+        alone. Check vault population via ``admin_get_vault_stats`` if
         the distinction matters.
 
         Common preconditions:
@@ -2137,7 +1589,7 @@ def register_sage_tools(
     # SAGE API tools for CAS Application (MCP-001 through MCP-014)
     # -------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(name="admin_list_vaults")
     async def list_vaults() -> dict:
         """Enumerate all configured vaults. No vault_id parameter -- operates
         across all registered vaults.
@@ -2159,7 +1611,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_create_vault")
     async def create_vault(config: dict) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
@@ -2170,7 +1622,7 @@ def register_sage_tools(
         vault is registered with the running MCP server immediately
         (no restart needed). The full written config is echoed back in
         the response so the caller can follow up with
-        update_vault_config to adjust individual sections without
+        admin_update_vault_config to adjust individual sections without
         a separate read.
 
         A minimal default config (suitable for most one-off vaults) can be
@@ -2203,8 +1655,8 @@ def register_sage_tools(
         per-vault parameters, not provider identity. Callers that
         want a different provider for a new vault must edit the
         stack config and restart the SAGE process before calling
-        ``create_vault``; verify the in-memory stack config via
-        ``get_stack_config`` if you suspect drift.
+        ``admin_create_vault``; verify the in-memory stack config via
+        ``admin_get_stack_config`` if you suspect drift.
 
         Partial-failure non-atomicity:
         Vault creation runs five sequential steps -- (1) config
@@ -2218,7 +1670,7 @@ def register_sage_tools(
         registry in an intermediate state: ``~/sage_vaults/{vault_id}/``
         may exist with a partial ``vault_config.yaml`` while the
         registry has no entry for the vault. Recovery: manually remove
-        ``~/sage_vaults/{vault_id}/`` and call ``create_vault``
+        ``~/sage_vaults/{vault_id}/`` and call ``admin_create_vault``
         again.
 
         ``bootstrap_owner`` side effect:
@@ -2277,14 +1729,14 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_get_vault_config")
     async def get_vault_config(vault_id: str) -> dict:
         """Return the full vault configuration as a dict.
 
         This is the authoritative source for vault-config-defined
         vocabulary that other tools depend on. Read this when you need:
 
-        - The valid ``action`` vocabulary for ``update_lifecycle``
+        - The valid ``action`` vocabulary for ``update_lifecycles``
           (under ``lifecycle.transitions``; each entry includes
           ``from_state``, ``action``, ``to_state``, ``creates_edge``).
         - The valid ``doc_type`` values for ``update_metadata``
@@ -2301,7 +1753,7 @@ def register_sage_tools(
 
         The returned dict is the live in-memory config; on-disk edits
         to ``vault_config.yaml`` are not picked up until
-        ``reload_vault`` is called.
+        ``admin_reload_vault`` is called.
 
         Args:
             vault_id: Target vault identifier.
@@ -2313,7 +1765,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_update_vault_config")
     async def update_vault_config(
         vault_id: str,
         vault: dict | None = None,
@@ -2344,11 +1796,11 @@ def register_sage_tools(
         anyway; the warnings then appear in the success response.
 
         Changing `vault.id` is never permitted regardless of force -- use
-        create_vault to make a new vault instead.
+        admin_create_vault to make a new vault instead.
 
         The update writes to disk and updates the running config in
         place; subsequent tool calls see the new vocabulary
-        immediately. Re-load via ``reload_vault`` is only needed
+        immediately. Re-load via ``admin_reload_vault`` is only needed
         if external processes edited ``vault_config.yaml`` outside
         this MCP server.
 
@@ -2361,7 +1813,7 @@ def register_sage_tools(
         required, duplicate edges, abstraction-provider build failure,
         etc.) the yaml is rolled back to its pre-call bytes and the
         registry continues to serve the previous config. Callers see
-        the original exception; no manual ``reload_vault`` is
+        the original exception; no manual ``admin_reload_vault`` is
         required to reconcile disk and memory after a failed update.
 
         Error modes:
@@ -2403,7 +1855,7 @@ def register_sage_tools(
         ``UpdateVaultConfigResponse`` does not carry a ``changes``
         field.
 
-        Worked example: ``update_vault_config(vault_id="v",
+        Worked example: ``admin_update_vault_config(vault_id="v",
         document_types={"doc_types": [...]}, dry_run=True)`` returns
         the destructive-change warnings (if any) so the caller can
         decide whether to follow up with ``force=True`` on a real run.
@@ -2451,7 +1903,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_get_vault_stats")
     async def get_vault_stats(vault_id: str) -> dict:
         """Vault statistics and health indicators.
 
@@ -2473,7 +1925,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="verify_hashes")
     async def verify_hash(vault_id: str, hashes: list[str]) -> dict:
         """Bulk hash existence check against the graph store.
 
@@ -2622,7 +2074,7 @@ def register_sage_tools(
         On ``action="confirm"``, if the staging edge's natural-key triple
         ``(source_id, target_id, edge_type)`` already exists in the
         production edges table -- for example, because a parallel
-        ``create_edge`` call or an earlier auto-inference path already
+        ``create_edges`` call or an earlier auto-inference path already
         created the production edge -- confirm silently returns the
         existing production edge's id rather than raising
         ``IntegrityError``. The staging row is consumed in either case
@@ -2944,7 +2396,7 @@ def register_sage_tools(
     # repeating these two rules inline.
     # -------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(name="admin_migrate_vault")
     async def migrate_vault(vault_id: str) -> dict:
         """Apply pending schema migrations to a single vault in the running session.
 
@@ -3001,7 +2453,7 @@ def register_sage_tools(
         fields** -- a MigrationReport with empty ``columns_added`` and
         ``backfills_applied`` may still carry tier3 activations or
         collisions from this scan. The ``unique_keys`` vocabulary
-        lives in vault config; query ``get_vault_config`` for the
+        lives in vault config; query ``admin_get_vault_config`` for the
         authoritative declarations.
 
         Error modes:
@@ -3043,7 +2495,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_verify_vault_drift")
     async def verify_vault_drift(vault_id: str) -> dict:
         """Audit active sync_target / derived_from edges for drift.
 
@@ -3118,7 +2570,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_recompute_deferred_vault_abstracts")
     async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
@@ -3208,7 +2660,7 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
-    @mcp.tool()
+    @mcp.tool(name="admin_optimize_vault_content_store")
     async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
         """Compact LanceDB content-store fragments and prune retained versions.
 
@@ -3276,7 +2728,7 @@ def register_sage_tools(
     # Server-level operational tools (no HTTP counterpart by design)
     # -------------------------------------------------------------------
 
-    @mcp.tool()
+    @mcp.tool(name="admin_reload_vault")
     async def reload_vault(vault_id: str) -> dict:
         """Reload a vault by closing its current services and reinitializing.
 
@@ -3295,7 +2747,7 @@ def register_sage_tools(
         abstraction-provider singleton per CAS-ADR-030) is captured at
         process startup and is NOT re-read on per-vault reload. Edits to
         stack config require a process restart to take effect; callers
-        can verify the in-memory stack config via ``get_stack_config``.
+        can verify the in-memory stack config via ``admin_get_stack_config``.
 
         Reload is atomic with respect to the registry slot:
         Internally this delegates to ``reload_vault_in_registry``, which
@@ -3354,7 +2806,7 @@ def register_sage_tools(
         - ``schema_migration_required`` (409): the vault's ``graph.db``
           has pending ALTER TABLE migrations or backfills, so the new
           graph store cannot ``initialize(migrate=False)``. Run
-          ``migrate_vault`` to apply pending migrations
+          ``admin_migrate_vault`` to apply pending migrations
           before retrying the reload.
         - ``duplicate_edges_present`` (409): the vault's ``edges`` or
           ``staging_edges`` table has duplicate rows on the natural-key
@@ -3367,7 +2819,7 @@ def register_sage_tools(
           (see scope note above). A stack config with
           ``provider="qwen3-mlx"`` and ``model=None`` raises ``ValueError``
           during the build. Verify the in-memory stack config via
-          ``get_stack_config`` before reloading if you suspect drift.
+          ``admin_get_stack_config`` before reloading if you suspect drift.
 
         Args:
             vault_id: Target vault identifier. Validated against
@@ -3416,13 +2868,13 @@ def register_sage_tools(
             "document_count": total_docs,
         }
 
-    @mcp.tool()
+    @mcp.tool(name="admin_get_stack_config")
     async def get_stack_config() -> dict:
         """Return the SAGE-stack-wide configuration (CAS-ADR-030).
 
         Stack-wide config governs resources whose enforcement spans the whole
         SAGE process (e.g., the abstraction provider singleton). Per-vault
-        knobs live in `get_vault_config`.
+        knobs live in `admin_get_vault_config`.
 
         Today the response carries one section, `abstraction`, with:
           - `provider`: dispatch key (`"qwen3-mlx"` or `"stub"`).
@@ -3446,11 +2898,8 @@ def register_sage_tools(
         "recompute_pipeline": recompute_pipeline,
         "get_document": get_document,
         "update_metadata": update_metadata,
-        "update_lifecycle": update_lifecycle,
-        "bulk_update_lifecycle": bulk_update_lifecycle,
-        "bulk_create_edge": bulk_create_edge,
-        "bulk_update_metadata": bulk_update_metadata,
-        "create_edge": create_edge,
+        "update_lifecycles": update_lifecycles,
+        "create_edges": create_edges,
         "delete_edge": delete_edge,
         "verify_preconditions": verify_preconditions,
         "traverse": traverse,
@@ -3459,20 +2908,20 @@ def register_sage_tools(
         "read_projection": read_projection,
         "read_section": read_section,
         "list_headings": list_headings,
-        "recompute_views": recompute_views,
-        "list_vaults": list_vaults,
-        "create_vault": create_vault,
-        "get_vault_config": get_vault_config,
-        "update_vault_config": update_vault_config,
-        "get_vault_stats": get_vault_stats,
-        "verify_hash": verify_hash,
+        "admin_recompute_views": recompute_views,
+        "admin_list_vaults": list_vaults,
+        "admin_create_vault": create_vault,
+        "admin_get_vault_config": get_vault_config,
+        "admin_update_vault_config": update_vault_config,
+        "admin_get_vault_stats": get_vault_stats,
+        "verify_hashes": verify_hash,
         "list_staging_edges": list_staging_edges,
         "update_staging_edge": update_staging_edge,
         "list_pending_metadata": list_pending_metadata,
-        "migrate_vault": migrate_vault,
-        "verify_vault_drift": verify_vault_drift,
-        "recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
-        "optimize_vault_content_store": optimize_vault_content_store,
-        "reload_vault": reload_vault,
-        "get_stack_config": get_stack_config,
+        "admin_migrate_vault": migrate_vault,
+        "admin_verify_vault_drift": verify_vault_drift,
+        "admin_recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
+        "admin_optimize_vault_content_store": optimize_vault_content_store,
+        "admin_reload_vault": reload_vault,
+        "admin_get_stack_config": get_stack_config,
     }

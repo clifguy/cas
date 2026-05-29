@@ -829,9 +829,13 @@ class TestMCPConventions:
         suite.
         """
         sage_tools = [
-            "list_vaults",
-            "get_vault_stats",
-            "verify_hash",
+            # Post-CAS-ADR-029 v4: vault-scope tools carry the ``admin_``
+            # prefix (admin_list_vaults, admin_get_vault_stats); the
+            # record-collection hash query is the plural-noun
+            # ``verify_hashes``.
+            "admin_list_vaults",
+            "admin_get_vault_stats",
+            "verify_hashes",
             "list_staging_edges",
             "update_staging_edge",
             "list_pending_metadata",

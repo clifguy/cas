@@ -34,9 +34,41 @@ from sage.mcp_server import (
     get_document,
     ingest_document,
     traverse,
-    update_metadata,
+)
+from sage.mcp_server import (
+    update_metadata as _update_metadata_bulk,
 )
 from tests.sage.conftest import initialize_services_for_test
+
+
+async def update_metadata(vault_id, document_id, **kwargs):
+    """Singleton-shaped shim around the post-CAS-ADR-029 consolidated tool.
+
+    Wraps the call as a length-1 ``items`` collection and unwraps the
+    per-item result envelope back to a singleton-shape response so
+    existing test assertions continue to apply.
+    """
+    dry_run = kwargs.pop("dry_run", False)
+    item = {"document_id": document_id, **kwargs}
+    result = await _update_metadata_bulk(vault_id=vault_id, items=[item], dry_run=dry_run)
+    if isinstance(result, dict) and "error" in result and "results" not in result:
+        return result
+    if isinstance(result, dict) and result.get("results"):
+        per = result["results"][0]
+        if per.get("status") == "error":
+            err = per.get("error") or {}
+            return {
+                "error": err.get("error"),
+                "message": err.get("message"),
+                "detail": err.get("detail"),
+            }
+        out = {"document": per.get("document"), "dry_run": dry_run}
+        if "warnings" in per and per["warnings"]:
+            out["warnings"] = per["warnings"]
+        if "changes" in per:
+            out["changes"] = per["changes"]
+        return out
+    return result
 
 
 @pytest.fixture
@@ -622,13 +654,16 @@ async def test_t10_http_post_stale_expected_head_version_returns_409_envelope(ht
             await asyncio.sleep(0.02)
         v0 = current.json()["updated_at"]
 
-        # Out-of-band bump so v0 is stale.
-        bump = await client.patch(
-            f"/sage_vaults/{vault_id}/documents/{d1_id}/metadata",
-            json={"title": "advance"},
+        # Out-of-band bump so v0 is stale. Post-CAS-ADR-029, the metadata
+        # endpoint is POST /metadata with an items[] body.
+        bump = await client.post(
+            f"/sage_vaults/{vault_id}/metadata",
+            json={"items": [{"document_id": d1_id, "title": "advance"}]},
         )
         assert bump.status_code == 200, bump.text
-        v_current = bump.json()["document"]["updated_at"]
+        bump_body = bump.json()
+        assert bump_body["success_count"] == 1, bump_body
+        v_current = bump_body["results"][0]["document"]["updated_at"]
         assert v_current != v0
 
         response = await client.post(

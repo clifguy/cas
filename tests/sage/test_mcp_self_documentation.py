@@ -20,14 +20,26 @@ import re
 from typing import Any, get_args, get_origin
 
 from sage.mcp_server import (
-    bulk_update_lifecycle,
-    bulk_update_metadata,
-    create_edge,
+    create_edges,
     search,
-    update_lifecycle,
+    update_lifecycles,
     update_metadata,
 )
 from sage.models.enums import EdgeType, RationaleKind, RetrievalMode
+
+# CAS-ADR-029 v4 plural-noun collapse: the pre-CAS-ADR-029 singleton tools
+# (create_edge, update_lifecycle, bulk_update_lifecycle, bulk_update_metadata)
+# folded into create_edges / update_lifecycles / update_metadata, which take
+# items: list[dict] instead of flat per-call arguments. The tests below
+# that introspected the flat singleton signature (edge_type / rationale_kind
+# at the top level) no longer have a meaningful target — those fields now
+# live inside each items[] entry's per-item schema. Tests that examined
+# docstring content still apply against the consolidated tools where the
+# semantic content was preserved.
+bulk_update_lifecycle = update_lifecycles
+bulk_update_metadata = update_metadata
+update_lifecycle = update_lifecycles
+create_edge = create_edges
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,36 +73,42 @@ def _docstring(fn: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_link_edge_type_signature_is_enum():
-    """T1.1 — create_edge.edge_type must be typed as the EdgeType StrEnum.
+def test_link_edge_type_per_item_field_is_enum():
+    """T1.1 — ``BulkLinkItem.edge_type`` must carry the ``EdgeType`` StrEnum.
 
-    The Pydantic LinkRequest already uses EdgeType, but FastMCP introspects
-    the tool function signature itself when generating the JSON schema
-    callers see. Without the annotation here, callers receive a free-form
-    string at the schema level.
+    Per CAS-ADR-029 v4 the ``create_edges`` MCP tool takes
+    ``items: list[dict]``, with the per-item ``edge_type`` shape
+    enforced by ``BulkLinkItem`` rather than by a flat parameter on
+    the tool signature. The enum-typing guard moves with the field:
+    a per-item ``edge_type: str`` regression would let callers pass
+    arbitrary strings through to the service layer.
 
-    Anti-coincidental-pass: this test uses identity equality with EdgeType,
-    not isinstance/issubclass; replacing EdgeType with a sibling enum
-    fails the test, and reverting to ``str`` fails it.
+    Anti-coincidental-pass: identity equality with ``EdgeType``, not
+    isinstance/issubclass; replacing with a sibling enum fails the
+    test, and reverting to ``str`` fails it.
     """
-    ann = _annotation_of(create_edge, "edge_type")
+    from sage.models.schemas import BulkLinkItem
+
+    ann = BulkLinkItem.model_fields["edge_type"].annotation
     assert ann is EdgeType, (
-        f"create_edge.edge_type annotation is {ann!r}; expected EdgeType. "
-        "Without the enum at the tool signature, FastMCP exposes edge_type "
-        "as a free-form string and callers learn valid values only by "
-        "erroring."
+        f"BulkLinkItem.edge_type annotation is {ann!r}; expected EdgeType. "
+        "Without the enum at the per-item schema, callers receive a "
+        "free-form string at the MCP boundary."
     )
 
 
-def test_link_rationale_kind_signature_is_enum():
-    """T1.2 — create_edge.rationale_kind must be typed as RationaleKind | None.
+def test_link_rationale_kind_per_item_field_is_enum():
+    """T1.2 — ``BulkLinkItem.rationale_kind`` must carry
+    ``RationaleKind | None``.
 
-    Same rationale as T1.1 — LinkRequest carries the enum but the tool
-    function signature lags. Optional because the field is nullable.
+    Same rationale as test_link_edge_type_per_item_field_is_enum.
+    Optional because the field is nullable.
     """
-    ann = _annotation_of(create_edge, "rationale_kind")
+    from sage.models.schemas import BulkLinkItem
+
+    ann = BulkLinkItem.model_fields["rationale_kind"].annotation
     assert _annotation_includes(ann, RationaleKind), (
-        f"create_edge.rationale_kind annotation is {ann!r}; expected "
+        f"BulkLinkItem.rationale_kind annotation is {ann!r}; expected "
         "RationaleKind | None. Callers currently see this as a free-form "
         "optional string at the MCP boundary."
     )
@@ -112,25 +130,26 @@ def test_discover_mode_signature_is_enum():
 
 
 def test_set_lifecycle_action_docstring_points_at_vault_config():
-    """T1.3 — update_lifecycle.action description must point at vault_config.
+    """T1.3 — ``update_lifecycles`` docstring must reference the
+    vault-config-defined action vocabulary and direct callers at
+    ``admin_get_vault_config`` for the authoritative list.
 
-    Per the scope resolution: action stays a free-form ``str``
-    (values are vault-config-defined), but the documentation must direct
-    callers at the authoritative source — ``get_vault_config`` —
-    rather than leaving them to discover the action set by erroring.
+    Post-CAS-ADR-029: the tool is ``update_lifecycles`` (collapsed plural-
+    noun); the underlying authority pointer is ``admin_get_vault_config``
+    (admin-prefixed per CAS-ADR-029 v4 amendment).
 
     Anti-coincidental-pass: the docstring must mention BOTH ``vault
-    config`` (closure source) and ``get_vault_config`` (the
+    config`` (closure source) and ``admin_get_vault_config`` (the
     discovery tool). Mentioning one without the other fails.
     """
-    doc = _docstring(update_lifecycle)
+    doc = _docstring(update_lifecycles)
     assert "vault config" in doc.lower(), (
-        "update_lifecycle docstring must reference 'vault config' as the "
-        "authoritative source of the action vocabulary."
+        "update_lifecycles docstring must reference 'vault config' as "
+        "the authoritative source of the action vocabulary."
     )
-    assert "get_vault_config" in doc, (
-        "update_lifecycle docstring must point callers at "
-        "``get_vault_config`` for the authoritative action list."
+    assert "admin_get_vault_config" in doc, (
+        "update_lifecycles docstring must point callers at "
+        "``admin_get_vault_config`` for the authoritative action list."
     )
 
 

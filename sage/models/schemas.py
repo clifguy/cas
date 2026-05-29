@@ -1163,6 +1163,18 @@ class BulkLifecycleItemResult(BaseModel):
             "most useful summary for dry-run callers)."
         ),
     )
+    created_edge: Edge | None = Field(
+        default=None,
+        description=(
+            "The atomic supersedes edge produced by the per-item "
+            "transition, populated only for `action=supersede` items. "
+            "Carries the real edge id on a successful real run and the "
+            "nil-UUID sentinel id on a successful dry-run. Null on error "
+            "entries and on every non-supersede action. Preserved under "
+            "`response_mode=light` (small; the only signal supersede "
+            "callers have for the edge's wire shape)."
+        ),
+    )
 
 
 class BulkLifecycleResponse(BaseModel):

@@ -141,7 +141,7 @@ def register_app_tools(
         keys from ``parsed_metadata`` — the exact fields the parser
         extracts are vault-config-defined under
         ``metadata_extraction.filename_extraction.segment_fields``
-        (see ``get_vault_config``). The historical claim in the
+        (see ``admin_get_vault_config``). The historical claim in the
         ``files`` parameter description that omitting ``parsed_metadata``
         leaves "no other fields pre-populated" is structurally false
         for any vault that declares a filename pattern. Call
@@ -157,15 +157,15 @@ def register_app_tools(
         continues with the remaining files and post-ingest edge
         inference still runs across whatever did insert. Earlier or
         later items are not rolled back. Mirrors the
-        ``bulk_create_edge`` / ``bulk_update_lifecycle`` /
-        ``bulk_update_metadata`` atomicity contract.
+        ``create_edges`` / ``update_lifecycles`` /
+        ``update_metadata`` atomicity contract.
 
         Predecessor auto-archive on Tier-1 supersedes inference:
         When ``infer_edges=True`` and post-ingest edge inference
         creates a Tier-1 ``supersedes`` edge via version-chain
         inference, the target document silently transitions from
         ``active`` to ``archived`` as part of edge execution — no
-        explicit ``update_lifecycle(action="archive")`` call is
+        explicit ``update_lifecycles(action="archive")`` call is
         required and none surfaces in the response. Lifecycle
         transition failures during this phase are collected as
         warnings in ``summary.edge_warnings`` only; they do not raise
@@ -196,12 +196,12 @@ def register_app_tools(
         ``tier3_schema_violation``. See ``ingest_document`` for the
         authoritative per-file precondition surface. Mirrors the
         bulk-tool cross-reference pattern established by
-        ``bulk_create_edge`` / ``bulk_update_lifecycle`` /
-        ``bulk_update_metadata``.
+        ``create_edges`` / ``update_lifecycles`` /
+        ``update_metadata``.
 
         Error modes:
         - ``unknown_vault`` (400): ``vault_id`` is not a registered
-          vault on this SAGE instance. Call ``list_vaults`` for
+          vault on this SAGE instance. Call ``admin_list_vaults`` for
           the registered set. This is a batch-boundary check (raised
           before any per-file work begins); per-file failures do not
           surface here, they accumulate in ``summary.errors[]``.
@@ -215,7 +215,7 @@ def register_app_tools(
                 vocabulary: ``markdown``, ``docx``, ``xlsx``, ``pdf``;
                 the vault's actually-enabled subset is whatever
                 appears under ``source_adapters.adapters`` in
-                ``get_vault_config``), and optional
+                ``admin_get_vault_config``), and optional
                 ``parsed_metadata`` (dict with ``title``, ``date``,
                 ``project``, ``codes``, ``version``, ``doc_type``).
                 When ``parsed_metadata`` is omitted, the stem of

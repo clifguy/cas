@@ -142,22 +142,51 @@ def _parse_result(result) -> dict | list:
 
 
 # Invocation probes -- one tool per representative class. The probe
-# argument shapes are minimal-valid for each tool.
+# argument shapes are minimal-valid for each tool. Per CAS-ADR-029 v4
+# plural-noun convention, the write-spine probes exercise the
+# collection shape (length-1 ``items`` lists) on the consolidated
+# tools (create_edges, update_lifecycles, update_metadata).
 _INVOCATION_PROBES: tuple[tuple[str, dict], ...] = (
     # Read spine
-    ("list_vaults", {}),
+    ("admin_list_vaults", {}),
     ("get_document", {"vault_id": "test_vault", "document_id": "does-not-exist"}),
     (
         "search",
         {"vault_id": "test_vault", "mode": "catalog", "filters": {}, "limit": 1},
     ),
-    # Write spine
+    # Write spine -- length-1 items collection exercises the pair-collapse
+    # tools' minimum-valid input shape.
     (
         "update_metadata",
-        {"vault_id": "test_vault", "document_id": "does-not-exist", "metadata": {}},
+        {
+            "vault_id": "test_vault",
+            "items": [{"document_id": "does-not-exist"}],
+        },
+    ),
+    (
+        "update_lifecycles",
+        {
+            "vault_id": "test_vault",
+            "items": [{"document_id": "does-not-exist", "action": "archive"}],
+        },
+    ),
+    (
+        "create_edges",
+        {
+            "vault_id": "test_vault",
+            "items": [
+                {
+                    "source_id": "does-not-exist-a",
+                    "target_id": "does-not-exist-b",
+                    "edge_type": "references",
+                    "source_valid_from_version": "does-not-exist-a",
+                    "target_valid_from_version": "does-not-exist-b",
+                }
+            ],
+        },
     ),
     # Maintenance
-    ("verify_hash", {"vault_id": "test_vault", "hashes": []}),
+    ("verify_hashes", {"vault_id": "test_vault", "hashes": []}),
 )
 
 
@@ -341,11 +370,14 @@ async def test_alias_layer_passes_new_names_through_unchanged(monkeypatch) -> No
     monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
     mcp = _LoggingFastMCP("test")
 
-    # Pick a few representative new names from each class.
-    for new_name in ("search", "get_document", "verify_hash", "migrate_vault"):
+    # Pick a few representative new names from each class. Per CAS-ADR-029
+    # (CAS-ADR-029 v4), the read/write/maintenance probes use the post-v7
+    # canonical names (verify_hashes plural-noun, admin_migrate_vault
+    # admin-prefixed) rather than their legacy pre-v7 forms.
+    for new_name in ("search", "get_document", "verify_hashes", "admin_migrate_vault"):
         await mcp.call_tool(new_name, {})
 
-    assert captured == ["search", "get_document", "verify_hash", "migrate_vault"]
+    assert captured == ["search", "get_document", "verify_hashes", "admin_migrate_vault"]
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +411,7 @@ async def test_alias_emits_deprecation_warning_with_both_names(caplog, monkeypat
     for old_name, new_name in [
         ("sage_discover", "search"),
         ("sage_get_document", "get_document"),
-        ("sage_admin_migrate_vault", "migrate_vault"),
+        ("sage_admin_migrate_vault", "admin_migrate_vault"),
         ("app_batch_ingest", "bulk_ingest_document"),
     ]:
         with caplog.at_level(logging.WARNING, logger="sage.mcp_server"):
@@ -546,3 +578,59 @@ async def test_removed_tool_returns_envelope_error(removed_name: str, caplog, mo
     envelope = json.loads(result[0].text)
     assert envelope.get("error") == "tool_removed"
     assert removed_name in envelope.get("message", "")
+
+
+# ---------------------------------------------------------------------------
+# Post-CAS-ADR-029 catalog conformance (CAS-ADR-029 v4)
+# ---------------------------------------------------------------------------
+
+
+# Derived from SERVER_ASSIGNMENT in sage/_tool_rename_mapping.py — the
+# 34-tool target catalog after CAS-ADR-029. Sourcing from SERVER_ASSIGNMENT
+# (rather than a hand-typed literal) closes the misclassification
+# re-entry trap: a v6 → v7 amendment that updates SERVER_ASSIGNMENT
+# automatically propagates here, and any drift between the table and
+# the live catalog surfaces on either side as the same diff.
+
+_EXPECTED_T0240_CATALOG: frozenset[str] = frozenset(SERVER_ASSIGNMENT.keys())
+
+
+async def test_post_t0240_catalog_matches_expected_set() -> None:
+    """The live MCP catalog equals the 34-tool target set defined in
+    SERVER_ASSIGNMENT after CAS-ADR-029's plural-noun + admin-prefix pass.
+
+    Anti-coincidental check: the expected set is sourced from the
+    SERVER_ASSIGNMENT table in ``sage/_tool_rename_mapping.py`` rather
+    than from a hand-typed literal. A v6 → v7 misclassification re-entry
+    (e.g., re-adding `list_vaults` as unprefixed) would surface as the
+    SAME diff on both sides — the live catalog and the table — which is
+    the desired auditable failure mode.
+    """
+    live = await _live_tool_names()
+    expected = set(_EXPECTED_T0240_CATALOG)
+    missing = expected - live
+    extra = live - expected
+    assert not missing and not extra, (
+        f"Live MCP catalog differs from the T-0240 target set. "
+        f"Missing from live: {sorted(missing)}; "
+        f"Extra in live (not in SERVER_ASSIGNMENT): {sorted(extra)}."
+    )
+
+
+async def test_old_names_absent_from_canonical_catalog() -> None:
+    """Every key in RENAME_MAPPING is absent from the live MCP catalog.
+
+    Anti-coincidental check: pairs with
+    ``test_rename_mapping_targets_registered`` (which asserts targets
+    are present). A registration that accidentally exposes BOTH the
+    old and the new name would pass that test but break the
+    surface-reduction goal of CAS-ADR-029 v4. This test catches that
+    case by asserting old names resolve only via the alias middleware,
+    not as first-class catalog entries.
+    """
+    live = await _live_tool_names()
+    leaked = sorted(old for old in RENAME_MAPPING if old in live)
+    assert not leaked, (
+        f"Old names appear in the live canonical catalog (should resolve "
+        f"only via the alias middleware): {leaked}."
+    )
