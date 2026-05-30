@@ -1,7 +1,7 @@
-"""Service-layer tests for GraphOpsService.bulk_link.
+"""Service-layer tests for GraphOpsService.create_edges.
 
 The bulk method holds the process-wide ``_link_lock`` per item and runs
-each item under its own SQLite transaction via ``link_idempotent``; the
+each item under its own SQLite transaction via ``_create_edge``; the
 batch as a whole is NOT atomic. A bad item does not roll back earlier-
 or-later successful items (CAS-ADR-029). The natural-key
 idempotency contract is preserved per item: a duplicate triple returns
@@ -53,7 +53,7 @@ async def test_bulk_link_happy_path_creates_multiple_edges(graph_store, graph_op
     for doc_id in ids:
         await graph_store.insert_document(_make_doc(doc_id))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[
                 _ref_item(ids[0], ids[1]),
@@ -81,7 +81,7 @@ async def test_bulk_link_happy_path_creates_multiple_edges(graph_store, graph_op
 
 async def test_bulk_link_empty_items_returns_empty_response(graph_ops_service):
     """Empty list is a valid no-op input."""
-    response = await graph_ops_service.bulk_link(BulkLinkRequest(items=[]))
+    response = await graph_ops_service.create_edges(BulkLinkRequest(items=[]))
 
     assert response.total == 0
     assert response.success_count == 0
@@ -95,7 +95,7 @@ async def test_bulk_link_partial_success_on_self_referential_edge(graph_store, g
     for doc_id in ids:
         await graph_store.insert_document(_make_doc(doc_id))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[
                 _ref_item(ids[0], ids[1]),
@@ -131,7 +131,7 @@ async def test_bulk_link_partial_success_on_unknown_document(graph_store, graph_
     await graph_store.insert_document(_make_doc(real_src))
     await graph_store.insert_document(_make_doc(real_tgt))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[
                 _ref_item(real_src, real_tgt),
@@ -165,7 +165,7 @@ async def test_bulk_link_t0079_idempotency_returns_existing_edge_with_created_fa
     await graph_store.insert_document(_make_doc(tgt))
 
     # Pre-seed via the single-item path.
-    first = await graph_ops_service.link(
+    first = await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=src,
             target_id=tgt,
@@ -178,7 +178,7 @@ async def test_bulk_link_t0079_idempotency_returns_existing_edge_with_created_fa
     original_edge_id = first.edge.id
 
     # Now bulk-link the same natural key with a different rationale.
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[_ref_item(src, tgt, rationale="bulk-attempt-rationale")],
             response_mode=ResponseMode.FULL,
@@ -202,13 +202,13 @@ async def test_bulk_link_t0079_idempotency_returns_existing_edge_with_created_fa
 async def test_bulk_link_distinct_items_run_per_item_transactions(graph_store, graph_ops_service):
     """Item 1's commit must persist even when item 2 raises a SAGEError;
     proves each item is dispatched independently through
-    link_idempotent and a failed item does not roll back earlier
+    _create_edge and a failed item does not roll back earlier
     commits."""
     real = _id("doc_iso_real")
     ghost = _id("doc_iso_ghost")
     await graph_store.insert_document(_make_doc(real))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[
                 _ref_item(real, real),  # self-ref → raises
@@ -234,7 +234,7 @@ async def test_bulk_link_response_mode_light_drops_edge_body(graph_store, graph_
     for doc_id in ids:
         await graph_store.insert_document(_make_doc(doc_id))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[_ref_item(ids[0], ids[1]), _ref_item(ids[0], ids[2])],
             response_mode=ResponseMode.LIGHT,
@@ -256,7 +256,7 @@ async def test_bulk_link_dry_run_persists_no_edges(graph_store, graph_ops_servic
     for doc_id in ids:
         await graph_store.insert_document(_make_doc(doc_id))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(
             items=[_ref_item(ids[0], ids[1]), _ref_item(ids[0], ids[2])],
             dry_run=True,
@@ -283,7 +283,7 @@ async def test_bulk_link_default_response_mode_above_threshold_returns_light(
     for doc_id in ids:
         await graph_store.insert_document(_make_doc(doc_id))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(items=[_ref_item(ids[0], ids[n]) for n in range(1, 7)])
     )
 
@@ -302,7 +302,7 @@ async def test_bulk_link_default_response_mode_at_or_below_threshold_returns_ful
     for doc_id in ids:
         await graph_store.insert_document(_make_doc(doc_id))
 
-    response = await graph_ops_service.bulk_link(
+    response = await graph_ops_service.create_edges(
         BulkLinkRequest(items=[_ref_item(ids[0], ids[n]) for n in range(1, 4)])
     )
 

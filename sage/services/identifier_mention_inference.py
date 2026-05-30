@@ -13,9 +13,9 @@ Two public entry points:
   by the backfill script's dry-run mode and by tests that want to inspect
   the planner output.
 * ``infer_identifier_mentions_for_document`` -- runs the planner and
-  writes each resulting edge via ``GraphOpsService.link_idempotent`` so
+  writes each resulting edge via ``GraphOpsService._create_edge`` so
   re-ingest does not duplicate edges. Manual edges with the same natural
-  key are preserved by ``link_idempotent``'s noop-on-conflict semantics.
+  key are preserved by ``_create_edge``'s noop-on-conflict semantics.
   This is what ``IngestionService._infer_identifier_mention_edges``
   invokes after Stage 2.
 """
@@ -232,7 +232,7 @@ async def infer_identifier_mentions_for_document(
     ``TRANSITIVE_BOTH`` policy on ``references`` is satisfied at write
     time.
 
-    Edges are written via ``GraphOpsService.link_idempotent``: a duplicate
+    Edges are written via ``GraphOpsService._create_edge``: a duplicate
     natural-key triple (source, target, references) returns the existing
     edge with ``created=False``, so re-ingest does not produce duplicates
     and pre-existing manual edges are preserved.
@@ -255,7 +255,7 @@ async def infer_identifier_mentions_for_document(
     # directly and inspect logs.
     for plan in plans:
         try:
-            _edge, created = await graph_ops_service.link_idempotent(
+            _edge, created = await graph_ops_service._create_edge(
                 LinkRequest(
                     source_id=plan.source_doc_id,
                     target_id=plan.target_doc_id,
@@ -272,7 +272,7 @@ async def infer_identifier_mentions_for_document(
                 result.edges_existing += 1
         except Exception:
             logger.exception(
-                "identifier_mention: link_idempotent failed for %s -> %s",
+                "identifier_mention: _create_edge failed for %s -> %s",
                 plan.source_doc_id,
                 plan.target_doc_id,
             )

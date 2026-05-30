@@ -116,7 +116,7 @@ async def test_t1_round_trip_both_attributes_via_link_and_traverse(
     await graph_store.insert_document(_make_doc(src))
     await graph_store.insert_document(_make_doc(tgt))
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=src,
             target_id=tgt,
@@ -164,7 +164,7 @@ async def test_t2_omitted_attributes_default_to_none_and_persist_as_null(
     await graph_store.insert_document(_make_doc(tgt))
 
     created = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=src,
                 target_id=tgt,
@@ -223,7 +223,7 @@ async def test_t3_one_attribute_set_other_null_no_coupled_enforcement(
     await graph_store.insert_document(_make_doc(tgt))
 
     created = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=src,
                 target_id=tgt,

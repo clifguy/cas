@@ -478,7 +478,7 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link_idempotent(self, request):
+            async def _create_edge(self, request):
                 self.linked.append(request)
                 # Stub returns a placeholder edge and created=True so
                 # resolve_and_execute counts it under edges_created.
@@ -531,7 +531,7 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link_idempotent(self, request):
+            async def _create_edge(self, request):
                 self.linked.append(request)
                 from unittest.mock import MagicMock
 
@@ -584,7 +584,7 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link_idempotent(self, request):
+            async def _create_edge(self, request):
                 self.linked.append(request)
                 from unittest.mock import MagicMock
 
@@ -620,7 +620,7 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link_idempotent(self, request):
+            async def _create_edge(self, request):
                 self.linked.append(request)
                 from unittest.mock import MagicMock
 
@@ -679,7 +679,7 @@ class TestTwoPhaseOrchestration:
             def __init__(self):
                 self.linked = []
 
-            async def link_idempotent(self, request):
+            async def _create_edge(self, request):
                 self.linked.append(request)
                 from unittest.mock import MagicMock
 

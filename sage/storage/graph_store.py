@@ -982,7 +982,7 @@ class GraphStore:
     ) -> Document | None:
         """Update the predecessor document and insert a supersedes edge in
         a single SQLite transaction. Either both writes commit or neither
-        does. Used by LifecycleService.set_lifecycle for the supersede
+        does. Used by LifecycleService._set_lifecycle for the supersede
         action so a mid-operation failure cannot leave the predecessor
         archived without the corresponding edge (BH-135).
 

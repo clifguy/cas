@@ -663,7 +663,7 @@ async def test_t0078_metadata_service_e2e(metadata_service, graph_store):
     await graph_store.insert_document(doc)
     assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "initial")]
 
-    await metadata_service.update_metadata(
+    await metadata_service._update_metadata(
         doc.id,
         UpdateMetadataRequest(tags=ListFieldPatch(add=["new1", "new2"], remove=["initial"])),
         modified_by="testuser",

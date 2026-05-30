@@ -113,7 +113,7 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -138,7 +138,7 @@ async def test_cr_029_merged_from_accepts_chain_first_and_chain_head(
     await _seed_docs(graph_store, _id("c1"))
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("c1"),
                 target_id=_id("a8"),
@@ -169,7 +169,7 @@ async def test_cr_030_merged_from_rejects_non_terminal_predecessor(graph_store, 
     await _seed_docs(graph_store, _id("c1"))
 
     with pytest.raises(MergedFromValidationError) as excinfo:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("c1"),
                 target_id=_id("a5"),
@@ -196,7 +196,7 @@ async def test_cr_031_merged_from_rejects_non_first_successor(graph_store, graph
     await _seed_supersedes_chain(graph_store, [_id("c1"), _id("c2")])
 
     with pytest.raises(MergedFromValidationError) as excinfo:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("c2"),
                 target_id=_id("a8"),
@@ -230,7 +230,7 @@ async def test_cr_032_merged_from_tombstones_atomically(graph_store, graph_ops_s
     assert sup_edge_before.valid_until_version is None
 
     merged = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("c1"),
                 target_id=_id("a8"),
@@ -261,7 +261,7 @@ async def test_cr_032_merged_from_tombstones_atomically(graph_store, graph_ops_s
 async def test_cr_033_query_from_successor_does_not_inherit(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"), _id("c2"))
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("c1"),
             target_id=_id("a8"),
@@ -290,7 +290,7 @@ async def test_cr_033_query_from_successor_does_not_inherit(graph_store, graph_o
 async def test_cr_034_query_at_merge_boundary_surfaces(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("c1"),
             target_id=_id("a8"),
@@ -318,7 +318,7 @@ async def test_cr_034_query_at_merge_boundary_surfaces(graph_store, graph_ops_se
 async def test_cr_035_time_travel_query_pre_merge_surfaces(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("c1"),
             target_id=_id("a8"),
@@ -348,7 +348,7 @@ async def test_cr_036_merged_from_rejects_anchor_fields(graph_store, graph_ops_s
     await _seed_docs(graph_store, _id("c1"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as excinfo:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("c1"),
                 target_id=_id("a8"),
@@ -379,7 +379,7 @@ async def test_cr_036_merged_from_rejects_anchor_fields(graph_store, graph_ops_s
 async def test_tombstone_suppresses_strict_downstream_version(graph_store, graph_ops_service):
     await _seed_ab_worked_example(graph_store, graph_ops_service)
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("c1"),
             target_id=_id("a8"),

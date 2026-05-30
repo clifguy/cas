@@ -9,7 +9,7 @@ chunk), and optionally the mtime + size of a vault-config yaml file.
 Pattern (in a test):
 
     before = await state_snapshot(graph_store, stub_content_store)
-    await service.update_metadata(doc_id, request, "tester")
+    await service._update_metadata(doc_id, request, "tester")
     after = await state_snapshot(graph_store, stub_content_store)
     assert_state_unchanged(before, after)
 

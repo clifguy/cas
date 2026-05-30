@@ -578,7 +578,7 @@ async def test_bh_122_supersedes_non_active_predecessor(
         IngestRequest(source="bh122_v1.md", source_type=SourceType.MARKDOWN)
     )
     # Archive the predecessor directly (simulating a non-active target).
-    await lifecycle_service.set_lifecycle(v1.document.id, SetLifecycleRequest(action="archive"))
+    await lifecycle_service._set_lifecycle(v1.document.id, SetLifecycleRequest(action="archive"))
 
     with pytest.raises(SupersedeTargetNotActiveError) as exc_info:
         await ingestion_service.ingest(
@@ -668,7 +668,7 @@ async def test_bh_124_validation_before_projection(
     pred = await ingestion_service.ingest(
         IngestRequest(source="bh124_pred.md", source_type=SourceType.MARKDOWN)
     )
-    await lifecycle_service.set_lifecycle(pred.document.id, SetLifecycleRequest(action="archive"))
+    await lifecycle_service._set_lifecycle(pred.document.id, SetLifecycleRequest(action="archive"))
 
     with pytest.raises(SupersedeTargetNotActiveError):
         await ingestion_service.ingest(

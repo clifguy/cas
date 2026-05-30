@@ -110,7 +110,7 @@ async def _seed_retract_setup(graph_store, graph_ops_service, retract_anchor: st
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -121,7 +121,7 @@ async def _seed_retract_setup(graph_store, graph_ops_service, retract_anchor: st
         )
     ).edge
     retracts_edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=retract_anchor,
                 target_id=None,
@@ -199,7 +199,7 @@ async def test_cr_025_retracts_is_one_sided(graph_store, graph_ops_service):
 async def test_cr_026_multiple_retracts_any_in_lineage_suppresses(graph_store, graph_ops_service):
     covers, _ = await _seed_retract_setup(graph_store, graph_ops_service)
     # Add a second retracts anchored at a5.
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("a5"),
             target_id=None,
@@ -282,7 +282,7 @@ async def test_cr_028_retracts_of_supersedes_edge_does_not_affect_chain(
     supersedes_edge = next(e for e in a3_supersedes if e.target_id == _id("a2"))
     assert supersedes_edge is not None
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("a4"),
             target_id=None,
@@ -344,7 +344,7 @@ async def test_cr_053_retracts_suppresses_transitive_target_edge(graph_store, mi
     await _seed_supersedes_chain(graph_store, [_id("b1"), _id("b2")])
 
     auth = (
-        await service.link(
+        await service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -367,7 +367,7 @@ async def test_cr_053_retracts_suppresses_transitive_target_edge(graph_store, mi
 
     # Retract anchored at a3: retract.source_valid_from_version=a3 sits
     # in the lineage of query start a3.
-    await service.link(
+    await service._create_edge_strict(
         LinkRequest(
             source_id=_id("a3"),
             target_id=None,

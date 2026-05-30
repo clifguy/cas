@@ -39,7 +39,7 @@ class StagingEdgesService:
         If the staging edge's natural-key triple
         ``(source_id, target_id, edge_type)`` already exists in the
         production edges table -- for example, because a parallel
-        ``GraphOpsService.link`` call or an earlier auto-inference path
+        ``GraphOpsService._create_edge_strict`` call or an earlier auto-inference path
         already created the production edge -- the underlying
         ``insert_edge`` invocation passes ``on_conflict="noop"``, which
         returns the existing production edge's id rather than raising

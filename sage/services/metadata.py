@@ -153,7 +153,7 @@ class MetadataService:
         self._config = config
         self._content = content_store
 
-    async def update_metadata(
+    async def _update_metadata(
         self,
         document_id: str,
         request: UpdateMetadataRequest,
@@ -367,12 +367,12 @@ class MetadataService:
         batch.
 
         Per-item validation surface:
-        Each item inherits the full ``MetadataService.update_metadata``
+        Each item inherits the full ``MetadataService._update_metadata``
         precondition surface — document existence, the tag and tier3
         patch grammar per CAS-ADR-028, doc_type validation, tier3
         schema enforcement against the resolved doc_type, and the
         empty-call confirmation-flip side-effect per CAS-ADR-021. See
-        ``MetadataService.update_metadata`` for the full enumeration.
+        ``MetadataService._update_metadata`` for the full enumeration.
 
         Per-item patch semantics (tags, tier3_metadata, scalar fields)
         are identical to single-item ``update_metadata`` (CAS-ADR-028).
@@ -427,7 +427,7 @@ class MetadataService:
                 dry_run=request.dry_run,
             )
             try:
-                response = await self.update_metadata(item.document_id, single, modified_by)
+                response = await self._update_metadata(item.document_id, single, modified_by)
                 results.append(
                     BulkMetadataItemResult(
                         document_id=item.document_id,

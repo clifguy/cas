@@ -70,7 +70,7 @@ async def test_dry_run_returns_post_patch_document_without_writing(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(
             tier3_metadata=Tier3Patch(set={"severity": "high"}),
@@ -105,7 +105,7 @@ async def test_dry_run_with_tags_patch_does_not_persist(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(tags=ListFieldPatch(add=["new"]), dry_run=True),
         modified_by="tester",
@@ -141,7 +141,7 @@ async def test_tier3_schema_violation_envelope_identical_under_dry_run(
 
     real_exc: Tier3SchemaViolationError | None = None
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"ticket_id": "BAD"})),
             modified_by="tester",
@@ -150,7 +150,7 @@ async def test_tier3_schema_violation_envelope_identical_under_dry_run(
 
     dry_exc: Tier3SchemaViolationError | None = None
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 tier3_metadata=Tier3Patch(set={"ticket_id": "BAD"}),
@@ -180,7 +180,7 @@ async def test_tier3_doc_type_change_stale_keys_envelope_identical_under_dry_run
     )
 
     with pytest.raises(Tier3DocTypeChangeStaleKeysError) as real_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 doc_type="failure_record",
@@ -190,7 +190,7 @@ async def test_tier3_doc_type_change_stale_keys_envelope_identical_under_dry_run
         )
 
     with pytest.raises(Tier3DocTypeChangeStaleKeysError) as dry_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 doc_type="failure_record",
@@ -219,14 +219,14 @@ async def test_invalid_doc_type_envelope_identical_under_dry_run(
     )
 
     with pytest.raises(InvalidDocTypeError) as real_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(doc_type="not_in_config"),
             modified_by="tester",
         )
 
     with pytest.raises(InvalidDocTypeError) as dry_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(doc_type="not_in_config", dry_run=True),
             modified_by="tester",
@@ -251,14 +251,14 @@ async def test_tags_add_conflict_envelope_identical_under_dry_run(
     )
 
     with pytest.raises(ListFieldAddConflictError) as real_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(tags=ListFieldPatch(add=["already_here"])),
             modified_by="tester",
         )
 
     with pytest.raises(ListFieldAddConflictError) as dry_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(tags=ListFieldPatch(add=["already_here"]), dry_run=True),
             modified_by="tester",
@@ -277,14 +277,14 @@ async def test_document_not_found_envelope_identical_under_dry_run(tier3_metadat
     missing = "{}_missing".format(hashlib.sha256(b"missing").hexdigest()[:8])
 
     with pytest.raises(DocumentNotFoundError) as real_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             missing,
             UpdateMetadataRequest(tags=ListFieldPatch(add=["x"])),
             modified_by="tester",
         )
 
     with pytest.raises(DocumentNotFoundError) as dry_info:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             missing,
             UpdateMetadataRequest(tags=ListFieldPatch(add=["x"]), dry_run=True),
             modified_by="tester",
@@ -317,7 +317,7 @@ async def test_dry_run_does_not_advance_updated_at_or_metadata_confirmed(
     pre_updated_at = pre_doc.updated_at
     pre_metadata_confirmed = pre_doc.metadata_confirmed
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(tags=ListFieldPatch(add=["fresh"]), dry_run=True),
         modified_by="tester",
@@ -346,7 +346,7 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
     )
 
     before = await state_snapshot(graph_store, stub_content_store)
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(project="new_project", dry_run=True),
         modified_by="tester",
@@ -357,7 +357,7 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
     # Positive control: same call without dry_run DOES change chunk
     # metadata + document row. Asserts the dry-run gate is the only
     # thing suppressing the writes; the underlying machinery works.
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(project="new_project"),
         modified_by="tester",
@@ -390,7 +390,7 @@ async def test_dry_run_changes_lists_scalar_deltas(
     )
 
     before = await state_snapshot(graph_store, stub_content_store)
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(title="New", project="beta", dry_run=True),
         modified_by="tester",
@@ -428,7 +428,7 @@ async def test_dry_run_changes_enumerates_tier3_per_key(
     )
 
     before = await state_snapshot(graph_store, stub_content_store)
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(
             tier3_metadata=Tier3Patch(set={"severity": "high"}, unset=["fix_commit"]),
@@ -474,7 +474,7 @@ async def test_dry_run_changes_tags_uses_full_before_after_lists(
     )
 
     before = await state_snapshot(graph_store, stub_content_store)
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(tags=ListFieldPatch(add=["c"], remove=["a"]), dry_run=True),
         modified_by="tester",
@@ -507,7 +507,7 @@ async def test_real_run_changes_block_absent(
         )
     )
 
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(title="New"),  # dry_run defaults to False
         modified_by="tester",
@@ -535,7 +535,7 @@ async def test_dry_run_empty_actionable_patch_changes_block_is_none(
     )
 
     before = await state_snapshot(graph_store, stub_content_store)
-    response = await tier3_metadata_service.update_metadata(
+    response = await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(dry_run=True),
         modified_by="tester",

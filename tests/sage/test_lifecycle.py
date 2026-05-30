@@ -88,7 +88,7 @@ async def test_bh_012_invalid_transition_returns_409(graph_store, lifecycle_serv
     await graph_store.update_document(_id("doc_archived"), {"lifecycle_status": "archived"})
 
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_archived"),
             SetLifecycleRequest(action="complete"),
         )
@@ -113,7 +113,7 @@ async def test_bh_013_domain_specific_valid_actions(graph_store, extended_lifecy
 
     # Try an action that is invalid from active
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
-        await extended_lifecycle_service.set_lifecycle(
+        await extended_lifecycle_service._set_lifecycle(
             _id("doc_active"),
             SetLifecycleRequest(action="reactivate"),
         )
@@ -136,7 +136,7 @@ async def test_bh_014_transition_with_pipeline_warning(graph_store, lifecycle_se
     doc = _make_doc(_id("doc_indexing"), pipeline_status=PipelineStatus.INDEXING_IN_PROGRESS)
     await graph_store.insert_document(doc)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_indexing"),
         SetLifecycleRequest(action="archive"),
     )
@@ -161,7 +161,7 @@ async def test_bh_015_no_warning_when_pipeline_terminal(graph_store, lifecycle_s
     )
     await graph_store.insert_document(doc)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_complete_pipeline"),
         SetLifecycleRequest(action="archive"),
     )
@@ -180,7 +180,7 @@ async def test_bh_016_supersede_requires_existing_version(graph_store, lifecycle
     await graph_store.insert_document(doc_old)
 
     with pytest.raises(DocumentNotFoundError) as exc_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_old"),
             SetLifecycleRequest(action="supersede", successor_id=_id("nonexistent_id")),
         )
@@ -195,7 +195,7 @@ async def test_bh_016_supersede_requires_successor_id_field(graph_store, lifecyc
     await graph_store.insert_document(doc)
 
     with pytest.raises(MissingFieldError):
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_no_version"),
             SetLifecycleRequest(action="supersede"),
         )
@@ -212,7 +212,7 @@ async def test_bh_017_supersede_creates_edge(graph_store, lifecycle_service):
     await graph_store.insert_document(doc_old)
     await graph_store.insert_document(doc_new)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_to_supersede"),
         SetLifecycleRequest(action="supersede", successor_id=_id("doc_replacement")),
     )
@@ -238,7 +238,7 @@ async def test_unknown_action_returns_400(graph_store, lifecycle_service):
     await graph_store.insert_document(doc)
 
     with pytest.raises(InvalidActionError) as exc_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_unknown_action"),
             SetLifecycleRequest(action="nonexistent_action"),
         )
@@ -262,7 +262,7 @@ async def test_invalid_transition_includes_pipeline_status(graph_store, lifecycl
     await graph_store.update_document(_id("doc_pipe_check"), {"lifecycle_status": "archived"})
 
     with pytest.raises(InvalidLifecycleTransitionError) as exc_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_pipe_check"),
             SetLifecycleRequest(action="complete"),
         )

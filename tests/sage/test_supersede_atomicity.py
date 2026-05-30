@@ -108,7 +108,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
     monkeypatch.setattr(graph_store, "_exec_insert_edge", failing_exec_insert_edge)
 
     with pytest.raises(RuntimeError, match="simulated lock contention"):
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             pred.id,
             SetLifecycleRequest(action="supersede", successor_id=succ.id),
         )
@@ -124,7 +124,7 @@ async def test_bh_135_lifecycle_supersede_rolls_back_on_edge_failure(
 
     # Restore and retry: the same call should now succeed cleanly.
     monkeypatch.setattr(graph_store, "_exec_insert_edge", original_exec_insert_edge)
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         pred.id,
         SetLifecycleRequest(action="supersede", successor_id=succ.id),
     )

@@ -401,7 +401,7 @@ async def initialize_services(
         documents_service = DocumentsService(graph_store, config)
         # GraphOpsService is constructed before IngestionService so the
         # ingestion pipeline can run identifier_mention inference (which writes
-        # edges via link_idempotent) inside its Stage-2 → Stage-3 transition.
+        # edges via _create_edge) inside its Stage-2 → Stage-3 transition.
         graph_ops_service = GraphOpsService(graph_store, config)
         ingestion_service = IngestionService(
             graph_store=graph_store,

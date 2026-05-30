@@ -157,7 +157,7 @@ class GraphOpsService:
     # Link (BH-031, BH-032, CAS-ADR-017)
     # ------------------------------------------------------------------
 
-    async def link(self, request: LinkRequest) -> LinkResponse:
+    async def _create_edge_strict(self, request: LinkRequest) -> LinkResponse:
         """Create a typed edge between two documents.
 
         Applies the CAS-ADR-017 write-time invariant: the effective
@@ -215,7 +215,7 @@ class GraphOpsService:
         Two values appear in the ``EdgeType`` enum but are
         reserved-and-not-implemented: ``authoritative_for`` and
         ``sync_target``. Both have ``resolution_policy=TBD`` in the
-        edge registry; every ``link`` call carrying either type raises
+        edge registry; every ``_create_edge_strict`` call carrying either type raises
         ``TBDPolicyEdgeError`` unconditionally. The ``synced_from_*``
         closed list above lists ``sync_target`` as a legitimate carrier
         of those fields for forward compatibility; this does not
@@ -225,29 +225,29 @@ class GraphOpsService:
         natural-key triple (source_id, target_id, edge_type) already
         exists (unique constraint). For idempotent semantics
         (no-op on duplicate, return existing edge), use
-        ``link_idempotent``.
+        ``_create_edge``.
 
         ``request.dry_run`` makes the call a preview — same
         validators run, but no edge is inserted. The response carries
         the would-be edge with the nil-UUID sentinel id and
         ``dry_run=True``.
         """
-        return await self._link_impl(request, on_conflict="raise")
+        return await self._create_edge_impl(request, on_conflict="raise")
 
-    async def link_idempotent(self, request: LinkRequest) -> tuple[Edge, bool]:
-        """Idempotent variant of ``link``. Returns ``(edge, created)``.
+    async def _create_edge(self, request: LinkRequest) -> tuple[Edge, bool]:
+        """Idempotent variant of ``_create_edge_strict``. Returns ``(edge, created)``.
 
         Under, the edges table carries a UNIQUE constraint on
-        ``(source_id, target_id, edge_type)``. ``link_idempotent`` swallows
+        ``(source_id, target_id, edge_type)``. ``_create_edge`` swallows
         the duplicate-key error and returns the pre-existing edge with
         ``created=False``. The caller's rationale and notes are discarded
         on a no-op; existing provenance is preserved (per the SAGE
         single-source-of-truth principle: the first rationale is canonical).
 
         Per-item validation surface:
-        See ``link`` for the full precondition enumeration —
-        ``link_idempotent`` inherits all validators via the shared
-        ``_link_impl`` body and is identical to ``link`` on every
+        See ``_create_edge_strict`` for the full precondition enumeration —
+        ``_create_edge`` inherits all validators via the shared
+        ``_create_edge_impl`` body and is identical to ``_create_edge_strict`` on every
         precondition except the natural-key duplicate (which becomes
         a no-op rather than an integrity error).
 
@@ -263,13 +263,13 @@ class GraphOpsService:
         The would-be edge on the create path carries the nil-UUID
         sentinel id.
         """
-        response = await self._link_impl(request, on_conflict="noop")
+        response = await self._create_edge_impl(request, on_conflict="noop")
         return response.edge, response.created
 
-    async def bulk_link(self, request: BulkLinkRequest) -> BulkLinkResponse:
+    async def create_edges(self, request: BulkLinkRequest) -> BulkLinkResponse:
         """Apply one edge-creation request per item.
 
-        Each item is dispatched through ``link_idempotent`` so the
+        Each item is dispatched through ``_create_edge`` so the
         per-item natural-key idempotency contract is preserved:
         a duplicate request returns the existing edge with
         ``created=False`` and ``existing_rationale`` populated, rather
@@ -280,12 +280,12 @@ class GraphOpsService:
         programmer or infrastructure bug and propagates out of the batch.
 
         Per-item validation surface:
-        Each item inherits the full ``link`` precondition surface —
+        Each item inherits the full ``_create_edge_strict`` precondition surface —
         document existence, ``merged_from`` chain-head requirement,
         ``retracts`` field-presence rules, ``synced_from_*``
         applicability and chain-membership, TBD-policy unconditional
         rejection, and the CAS-ADR-017 anchor policy per edge_type.
-        See ``GraphOpsService.link`` for the full enumeration.
+        See ``GraphOpsService._create_edge_strict`` for the full enumeration.
 
         Empty ``items`` is valid: the response carries an empty
         ``results`` array and all counts are zero. Callers building
@@ -339,7 +339,7 @@ class GraphOpsService:
                 dry_run=request.dry_run,
             )
             try:
-                edge, created = await self.link_idempotent(per_item_request)
+                edge, created = await self._create_edge(per_item_request)
                 results.append(
                     BulkLinkItemResult(
                         source_id=item.source_id,
@@ -378,8 +378,8 @@ class GraphOpsService:
             dry_run=request.dry_run,
         )
 
-    async def _link_impl(self, request: LinkRequest, *, on_conflict: str) -> LinkResponse:
-        """Shared implementation used by ``link`` and ``link_idempotent``.
+    async def _create_edge_impl(self, request: LinkRequest, *, on_conflict: str) -> LinkResponse:
+        """Shared implementation used by ``_create_edge_strict`` and ``_create_edge``.
 
         ``on_conflict="raise"`` lets the storage-layer IntegrityError
         propagate. ``on_conflict="noop"`` translates it into a return of

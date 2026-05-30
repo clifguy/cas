@@ -161,7 +161,7 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, gra
 # natural-key triple produced a second edge with a fresh id. That is
 # now an invariant violation; the UNIQUE constraint on
 # (source_id, target_id, edge_type) prevents duplicate rows. The
-# idempotent contract is exposed via `link_idempotent` (returns the
+# idempotent contract is exposed via `_create_edge` (returns the
 # pre-existing edge with `created=False`); non-idempotent `link`
 # propagates `sqlite3.IntegrityError`.
 
@@ -175,7 +175,7 @@ async def test_bh_031_duplicate_edges_now_blocked(graph_store, graph_ops_service
     await graph_store.insert_document(doc_b)
 
     edge1 = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -187,7 +187,7 @@ async def test_bh_031_duplicate_edges_now_blocked(graph_store, graph_ops_service
         )
     ).edge
     with pytest.raises(_sqlite3.IntegrityError):
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -216,7 +216,7 @@ async def test_bh_032_edge_auto_generated_id(graph_store, graph_ops_service):
     await graph_store.insert_document(doc_b)
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -474,11 +474,11 @@ async def test_t0079_insert_edge_noop_returns_existing(graph_store):
 
 
 async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_service):
-    """graph_ops.link_idempotent: second call returns the existing edge."""
+    """graph_ops._create_edge: second call returns the existing edge."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
-    edge_1, created_1 = await graph_ops_service.link_idempotent(
+    edge_1, created_1 = await graph_ops_service._create_edge(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -491,7 +491,7 @@ async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_ser
     assert created_1 is True
     assert edge_1.rationale == "initial rationale"
 
-    edge_2, created_2 = await graph_ops_service.link_idempotent(
+    edge_2, created_2 = await graph_ops_service._create_edge(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -508,13 +508,13 @@ async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_ser
 
 
 async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_service):
-    """graph_ops.link (non-idempotent) propagates the IntegrityError."""
+    """graph_ops._create_edge_strict (non-idempotent) propagates the IntegrityError."""
     import sqlite3 as _sqlite3
 
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -525,7 +525,7 @@ async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_servi
         )
     )
     with pytest.raises(_sqlite3.IntegrityError):
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -548,7 +548,7 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
 
     # Two distinct covers edges that can each be retracted.
     covers_b = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -559,7 +559,7 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
         )
     ).edge
     covers_c = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_c"),
@@ -574,7 +574,7 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
     # target_id=NULL, edge_type='retracts'. Under SQLite NULL-distinct
     # semantics this is legal.
     retract_b = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=None,
@@ -585,7 +585,7 @@ async def test_t0079_multiple_retracts_with_null_target_allowed(graph_store, gra
         )
     ).edge
     retract_c = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=None,
@@ -648,7 +648,7 @@ async def test_link_self_referential_raises_400(graph_store, graph_ops_service):
     await graph_store.insert_document(doc_a)
 
     with pytest.raises(SelfReferentialEdgeError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_a"),
@@ -663,7 +663,7 @@ async def test_link_nonexistent_source_raises_404(graph_store, graph_ops_service
     await graph_store.insert_document(doc_b)
 
     with pytest.raises(DocumentNotFoundError):
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("nonexistent"),
                 target_id=_id("doc_b"),
@@ -677,7 +677,7 @@ async def test_link_nonexistent_target_raises_404(graph_store, graph_ops_service
     await graph_store.insert_document(doc_a)
 
     with pytest.raises(DocumentNotFoundError):
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("nonexistent"),
@@ -707,7 +707,7 @@ async def test_t0111_synced_from_version_inapplicable_on_supersedes(graph_store,
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
     with pytest.raises(SyncedFromInapplicableEdgeType) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -728,7 +728,7 @@ async def test_t0111_synced_from_content_hash_inapplicable_on_supersedes(
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
     with pytest.raises(SyncedFromInapplicableEdgeType) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -752,7 +752,7 @@ async def test_t0111_supersedes_without_synced_from_still_succeeds(graph_store, 
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),
@@ -780,7 +780,7 @@ async def test_t0111_chain_membership_accepts_predecessor_version(graph_store, g
     await graph_store.insert_document(_make_doc(_id("consumer")))
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("consumer"),
                 target_id=chain_ids[2],  # head
@@ -800,7 +800,7 @@ async def test_t0111_chain_membership_accepts_tail_version(graph_store, graph_op
     await graph_store.insert_document(_make_doc(_id("consumer")))
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("consumer"),
                 target_id=chain_ids[2],
@@ -826,7 +826,7 @@ async def test_t0111_chain_membership_rejects_unrelated_doc(graph_store, graph_o
     await graph_store.insert_document(_make_doc(_id("unrelated")))
 
     with pytest.raises(SyncedFromVersionNotInSourceChain) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("consumer"),
                 target_id=chain_ids[2],
@@ -850,7 +850,7 @@ async def test_t0111_chain_membership_rejects_nonexistent_id(graph_store, graph_
     await graph_store.insert_document(_make_doc(_id("consumer")))
 
     with pytest.raises(SyncedFromVersionNotInSourceChain) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("consumer"),
                 target_id=chain_ids[2],
@@ -1338,7 +1338,7 @@ async def test_unlink_deletes_existing_edge(graph_store, graph_ops_service):
     await graph_store.insert_document(doc_b)
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_b"),

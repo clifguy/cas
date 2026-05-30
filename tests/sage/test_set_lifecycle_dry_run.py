@@ -44,7 +44,7 @@ async def test_dry_run_returns_post_transition_document_without_writing(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_a"),
         SetLifecycleRequest(action="archive", dry_run=True),
     )
@@ -70,7 +70,7 @@ async def test_supersede_dry_run_returns_would_be_edge_with_sentinel_id(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_supersede_old"),
         SetLifecycleRequest(
             action="supersede",
@@ -102,7 +102,7 @@ async def test_real_run_set_lifecycle_response_carries_dry_run_false(
     doc = _make_doc(_id("doc_real_run"))
     await graph_store.insert_document(doc)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_real_run"),
         SetLifecycleRequest(action="archive"),
     )
@@ -119,7 +119,7 @@ async def test_real_run_supersede_response_carries_created_edge(graph_store, lif
     await graph_store.insert_document(doc_old)
     await graph_store.insert_document(doc_new)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_real_old"),
         SetLifecycleRequest(action="supersede", successor_id=_id("doc_real_new")),
     )
@@ -145,11 +145,11 @@ async def test_invalid_action_envelope_identical_under_dry_run(graph_store, life
     await graph_store.insert_document(doc)
 
     with pytest.raises(InvalidActionError) as real_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_invalid_action"), SetLifecycleRequest(action="nonexistent")
         )
     with pytest.raises(InvalidActionError) as dry_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_invalid_action"),
             SetLifecycleRequest(action="nonexistent", dry_run=True),
         )
@@ -166,11 +166,11 @@ async def test_invalid_transition_envelope_identical_under_dry_run(graph_store, 
     await graph_store.update_document(_id("doc_invalid_trans"), {"lifecycle_status": "archived"})
 
     with pytest.raises(InvalidLifecycleTransitionError) as real_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_invalid_trans"), SetLifecycleRequest(action="complete")
         )
     with pytest.raises(InvalidLifecycleTransitionError) as dry_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_invalid_trans"),
             SetLifecycleRequest(action="complete", dry_run=True),
         )
@@ -184,9 +184,9 @@ async def test_document_not_found_envelope_identical_under_dry_run(lifecycle_ser
     missing = _id("doc_nope")
 
     with pytest.raises(DocumentNotFoundError) as real_info:
-        await lifecycle_service.set_lifecycle(missing, SetLifecycleRequest(action="archive"))
+        await lifecycle_service._set_lifecycle(missing, SetLifecycleRequest(action="archive"))
     with pytest.raises(DocumentNotFoundError) as dry_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             missing, SetLifecycleRequest(action="archive", dry_run=True)
         )
 
@@ -202,11 +202,11 @@ async def test_supersede_missing_new_version_envelope_identical_under_dry_run(
     await graph_store.insert_document(doc)
 
     with pytest.raises(MissingFieldError) as real_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_no_new_v"), SetLifecycleRequest(action="supersede")
         )
     with pytest.raises(MissingFieldError) as dry_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_no_new_v"),
             SetLifecycleRequest(action="supersede", dry_run=True),
         )
@@ -224,12 +224,12 @@ async def test_supersede_missing_new_version_doc_envelope_identical_under_dry_ru
     missing_new = _id("doc_missing_new")
 
     with pytest.raises(DocumentNotFoundError) as real_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_super_b"),
             SetLifecycleRequest(action="supersede", successor_id=missing_new),
         )
     with pytest.raises(DocumentNotFoundError) as dry_info:
-        await lifecycle_service.set_lifecycle(
+        await lifecycle_service._set_lifecycle(
             _id("doc_super_b"),
             SetLifecycleRequest(action="supersede", successor_id=missing_new, dry_run=True),
         )
@@ -253,7 +253,7 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
     await graph_store.insert_document(doc)
 
     before = await state_snapshot(graph_store, stub_content_store)
-    await lifecycle_service.set_lifecycle(
+    await lifecycle_service._set_lifecycle(
         _id("doc_chunk_probe"),
         SetLifecycleRequest(action="archive", dry_run=True),
     )
@@ -263,7 +263,7 @@ async def test_dry_run_does_not_call_update_chunk_metadata(
     # Positive control: real-run flips lifecycle_status (in the doc row;
     # the stub content store records the chunk update too if there were
     # chunks).
-    await lifecycle_service.set_lifecycle(
+    await lifecycle_service._set_lifecycle(
         _id("doc_chunk_probe"),
         SetLifecycleRequest(action="archive"),
     )
@@ -285,7 +285,7 @@ async def test_supersede_dry_run_persists_no_edge(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    await lifecycle_service.set_lifecycle(
+    await lifecycle_service._set_lifecycle(
         _id("doc_no_edge_old"),
         SetLifecycleRequest(
             action="supersede",
@@ -312,7 +312,7 @@ async def test_dry_run_changes_lifecycle_status(graph_store, lifecycle_service, 
     await graph_store.insert_document(doc)
 
     before = await state_snapshot(graph_store, stub_content_store)
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_changes_archive"),
         SetLifecycleRequest(action="archive", dry_run=True),
     )
@@ -341,7 +341,7 @@ async def test_supersede_dry_run_changes_lifecycle_status_only_no_edge_in_change
     await graph_store.insert_document(doc_old)
     await graph_store.insert_document(doc_new)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_changes_old"),
         SetLifecycleRequest(
             action="supersede",
@@ -369,7 +369,7 @@ async def test_real_run_changes_block_absent(graph_store, lifecycle_service, stu
     doc = _make_doc(_id("doc_realrun_archive"))
     await graph_store.insert_document(doc)
 
-    response = await lifecycle_service.set_lifecycle(
+    response = await lifecycle_service._set_lifecycle(
         _id("doc_realrun_archive"),
         SetLifecycleRequest(action="archive"),  # dry_run defaults to False
     )

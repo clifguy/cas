@@ -159,7 +159,7 @@ def test_set_lifecycle_signature_exposes_dry_run():
     The dry-run rollout shipped on every other mutation tool
     but skipped the single-form ``update_lifecycle`` wrapper. The
     underlying ``SetLifecycleRequest`` already carries ``dry_run`` and
-    ``LifecycleService.set_lifecycle`` honors it; the gap was at the
+    ``LifecycleService._set_lifecycle`` honors it; the gap was at the
     MCP boundary.
 
     Structural assertion: parameter present, annotation identity-equal

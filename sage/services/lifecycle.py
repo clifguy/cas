@@ -72,7 +72,7 @@ class LifecycleService:
     def transition_table(self) -> TransitionTable:
         return self._table
 
-    async def set_lifecycle(
+    async def _set_lifecycle(
         self, document_id: str, request: SetLifecycleRequest
     ) -> SetLifecycleResponse:
         """Execute a lifecycle state transition (or preview it on dry-run).
@@ -223,12 +223,12 @@ class LifecycleService:
         batch.
 
         Per-item validation surface:
-        Each item inherits the full ``LifecycleService.set_lifecycle``
+        Each item inherits the full ``LifecycleService._set_lifecycle``
         precondition surface — vault-config-defined action vocabulary,
         ``InvalidLifecycleTransitionError`` from the current state, the
         ``supersede`` chain-head and identical-content guards,
         ``PipelineIncompleteError`` on ``complete``, etc. See
-        ``LifecycleService.set_lifecycle`` for the full enumeration.
+        ``LifecycleService._set_lifecycle`` for the full enumeration.
 
         Empty ``items`` is valid: the response carries an empty
         ``results`` array and all counts are zero. Callers building
@@ -272,7 +272,7 @@ class LifecycleService:
                 dry_run=request.dry_run,
             )
             try:
-                response = await self.set_lifecycle(item.document_id, single)
+                response = await self._set_lifecycle(item.document_id, single)
                 results.append(
                     BulkLifecycleItemResult(
                         document_id=item.document_id,

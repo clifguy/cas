@@ -373,7 +373,7 @@ async def test_update_metadata_patches_tier3_set_unset(
         )
     )
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"severity": "high"})),
         modified_by="tester",
@@ -399,7 +399,7 @@ async def test_update_metadata_with_tier3_validates_against_doc_type(
     )
 
     with pytest.raises(Tier3SchemaViolationError):
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"ticket_id": "BAD-FORMAT"})),
             modified_by="tester",
@@ -424,7 +424,7 @@ async def test_update_metadata_with_changing_doc_type_uses_new_schema(
     # Reclassify as failure_record AND patch tier3 to fit failure_record's
     # schema. The merged dict carries the legacy ticket_id (which would
     # fail failure_record validation) -- so unset it in the same call.
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(
             doc_type="failure_record",
@@ -461,7 +461,7 @@ async def test_update_metadata_doc_type_change_with_stale_keys_rejects_before_wr
     )
 
     with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 doc_type="failure_record",
@@ -497,7 +497,7 @@ async def test_update_metadata_tier3_only_patch_does_not_trigger_stale_keys_chec
     )
 
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 tier3_metadata=Tier3Patch(set={"ticket_priority": "purple"}),
@@ -524,7 +524,7 @@ async def test_update_metadata_doc_type_set_to_current_value_does_not_trigger_st
         )
     )
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(
             doc_type="ticket",
@@ -556,7 +556,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_doc_type_rejects_sta
     )
 
     with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 doc_type="misc",
@@ -596,7 +596,7 @@ async def test_update_metadata_doc_type_change_falls_through_to_schema_validator
     )
 
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 doc_type="failure_record",
@@ -651,7 +651,7 @@ async def test_update_metadata_doc_type_change_no_tier3_patch_with_stale_stored_
     )
 
     with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(doc_type="failure_record"),
             modified_by="tester",
@@ -687,7 +687,7 @@ async def test_update_metadata_doc_type_change_no_tier3_patch_with_empty_stored_
     stored_before = await graph_store.get_document(initial.document.id)
     assert stored_before.doc_type == "bare_record"
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(doc_type="misc"),
         modified_by="tester",
@@ -719,7 +719,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_with_unset_all_succe
         )
     )
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(
             doc_type="misc",
@@ -753,7 +753,7 @@ async def test_update_metadata_doc_type_change_to_no_schema_with_nonempty_merged
     )
 
     with pytest.raises(Tier3DocTypeChangeStaleKeysError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 doc_type="misc",
@@ -789,7 +789,7 @@ async def test_update_metadata_no_doc_type_change_set_against_no_schema_still_re
     )
 
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(
                 tier3_metadata=Tier3Patch(set={"foo": "bar"}),
@@ -819,7 +819,7 @@ async def test_update_metadata_with_no_tier3_leaves_stored_value_untouched(
     )
 
     # Update something else; tier3 must survive.
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(title="New Title"),
         modified_by="tester",
@@ -842,7 +842,7 @@ async def test_update_metadata_tier3_unset_only_removes_named_keys(
         )
     )
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(tier3_metadata=Tier3Patch(unset=["ticket_priority"])),
         modified_by="tester",
@@ -868,7 +868,7 @@ async def test_update_metadata_tier3_unset_absent_key_conflict(
     )
 
     with pytest.raises(Tier3UnsetConflictError) as excinfo:
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(tier3_metadata=Tier3Patch(unset=["never_was_here"])),
             modified_by="tester",
@@ -892,7 +892,7 @@ async def test_update_metadata_tier3_set_overwrites_existing_key(
         )
     )
 
-    await tier3_metadata_service.update_metadata(
+    await tier3_metadata_service._update_metadata(
         initial.document.id,
         UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"ticket_priority": "high"})),
         modified_by="tester",
@@ -920,7 +920,7 @@ async def test_update_metadata_tier3_post_merge_validation_catches_set_of_unknow
     )
 
     with pytest.raises(Tier3SchemaViolationError):
-        await tier3_metadata_service.update_metadata(
+        await tier3_metadata_service._update_metadata(
             initial.document.id,
             UpdateMetadataRequest(tier3_metadata=Tier3Patch(set={"unknown_field": "x"})),
             modified_by="tester",

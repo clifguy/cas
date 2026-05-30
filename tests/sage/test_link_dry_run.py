@@ -43,7 +43,7 @@ async def test_dry_run_returns_would_be_edge_with_sentinel_id(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    response = await graph_ops_service.link(
+    response = await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -73,7 +73,7 @@ async def test_dry_run_on_natural_key_collision_returns_existing_edge(
     graph_store, graph_ops_service, stub_content_store
 ):
     """pre-check (lifted from storage to application layer for
-    ): dry-run via `link_idempotent` on a (source, target,
+    ): dry-run via `_create_edge` on a (source, target,
     edge_type) that already has an edge returns the existing edge with
     `created=False` — same shape as the real-run no-op path.
 
@@ -84,7 +84,7 @@ async def test_dry_run_on_natural_key_collision_returns_existing_edge(
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
-    first = await graph_ops_service.link(
+    first = await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -97,7 +97,7 @@ async def test_dry_run_on_natural_key_collision_returns_existing_edge(
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    dry_edge, dry_created = await graph_ops_service.link_idempotent(
+    dry_edge, dry_created = await graph_ops_service._create_edge(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -126,7 +126,7 @@ async def test_real_run_link_returns_link_response_with_dry_run_false(
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
-    response = await graph_ops_service.link(
+    response = await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -155,7 +155,7 @@ async def test_source_not_found_envelope_identical_under_dry_run(graph_store, gr
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
     with pytest.raises(DocumentNotFoundError) as real_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_missing_src"),
                 target_id=_id("doc_b"),
@@ -165,7 +165,7 @@ async def test_source_not_found_envelope_identical_under_dry_run(graph_store, gr
             )
         )
     with pytest.raises(DocumentNotFoundError) as dry_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_missing_src"),
                 target_id=_id("doc_b"),
@@ -185,7 +185,7 @@ async def test_target_not_found_envelope_identical_under_dry_run(graph_store, gr
     await graph_store.insert_document(_make_doc(_id("doc_a")))
 
     with pytest.raises(DocumentNotFoundError) as real_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_missing_tgt"),
@@ -195,7 +195,7 @@ async def test_target_not_found_envelope_identical_under_dry_run(graph_store, gr
             )
         )
     with pytest.raises(DocumentNotFoundError) as dry_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_missing_tgt"),
@@ -215,7 +215,7 @@ async def test_self_referential_envelope_identical_under_dry_run(graph_store, gr
     await graph_store.insert_document(_make_doc(_id("doc_a")))
 
     with pytest.raises(SelfReferentialEdgeError) as real_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_a"),
@@ -225,7 +225,7 @@ async def test_self_referential_envelope_identical_under_dry_run(graph_store, gr
             )
         )
     with pytest.raises(SelfReferentialEdgeError) as dry_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
                 target_id=_id("doc_a"),
@@ -253,7 +253,7 @@ async def test_dry_run_persists_no_edge(graph_store, graph_ops_service, stub_con
 
     before = await state_snapshot(graph_store, stub_content_store)
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -269,7 +269,7 @@ async def test_dry_run_persists_no_edge(graph_store, graph_ops_service, stub_con
     assert edges == []
 
     # Positive control: real-run DOES insert.
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),

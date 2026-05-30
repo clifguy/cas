@@ -782,7 +782,7 @@ class _RecordingChunkMetaStore:
 async def test_t0077_update_metadata_project_syncs_to_chunks(
     graph_store, lock_manager, minimal_config, stub_content_store
 ):
-    """When MetadataService.update_metadata changes a document's project,
+    """When MetadataService._update_metadata changes a document's project,
     the new value must be pushed to all of the document's chunk rows so
     LanceDB pre-filter by project keeps matching after the edit.
     """
@@ -795,13 +795,13 @@ async def test_t0077_update_metadata_project_syncs_to_chunks(
     doc = _make_doc("doc_proj_sync", project="alpha")
     await graph_store.insert_document(doc)
 
-    await service.update_metadata(
+    await service._update_metadata(
         doc.id, UpdateMetadataRequest(project="beta"), modified_by="testuser"
     )
 
     project_calls = [(did, md) for did, md in recorder.calls if "project" in md and did == doc.id]
     assert project_calls, (
-        "MetadataService.update_metadata must push project changes to "
+        "MetadataService._update_metadata must push project changes to "
         "the chunk store so LanceDB pre-filter pushdown remains correct."
     )
     assert project_calls[-1][1]["project"] == "beta"
@@ -822,7 +822,7 @@ async def test_t0077_update_metadata_doc_type_still_syncs(
     doc = _make_doc("doc_dt_sync", doc_type="note")
     await graph_store.insert_document(doc)
 
-    await service.update_metadata(
+    await service._update_metadata(
         doc.id, UpdateMetadataRequest(doc_type="memo"), modified_by="testuser"
     )
 
@@ -834,7 +834,7 @@ async def test_t0077_update_metadata_doc_type_still_syncs(
 async def test_t0077_set_lifecycle_syncs_to_chunks(
     graph_store, lock_manager, minimal_config, stub_content_store
 ):
-    """When LifecycleService.set_lifecycle transitions a document, the
+    """When LifecycleService._set_lifecycle transitions a document, the
     new lifecycle_status must be pushed to the document's chunk rows so
     LanceDB pre-filter by lifecycle_status remains correct.
     """
@@ -847,13 +847,13 @@ async def test_t0077_set_lifecycle_syncs_to_chunks(
     doc = _make_doc("doc_lc_sync", lifecycle_status="active")
     await graph_store.insert_document(doc)
 
-    await service.set_lifecycle(doc.id, SetLifecycleRequest(action="complete"))
+    await service._set_lifecycle(doc.id, SetLifecycleRequest(action="complete"))
 
     ls_calls = [
         (did, md) for did, md in recorder.calls if "lifecycle_status" in md and did == doc.id
     ]
     assert ls_calls, (
-        "LifecycleService.set_lifecycle must push the new lifecycle_status "
+        "LifecycleService._set_lifecycle must push the new lifecycle_status "
         "to the chunk store; otherwise stale chunk metadata makes the "
         "T-0077 pre-filter return wrong results after a transition."
     )
@@ -878,7 +878,7 @@ async def test_t0077_supersede_syncs_predecessor_lifecycle_to_chunks(
     await graph_store.insert_document(predecessor)
     await graph_store.insert_document(new_version)
 
-    await service.set_lifecycle(
+    await service._set_lifecycle(
         predecessor.id,
         SetLifecycleRequest(action="supersede", successor_id=new_version.id),
     )
@@ -913,7 +913,7 @@ async def test_t0077_lifecycle_service_without_content_store_no_op(
     await graph_store.insert_document(doc)
 
     # Should not raise: missing content_store is tolerated.
-    response = await service.set_lifecycle(doc.id, SetLifecycleRequest(action="complete"))
+    response = await service._set_lifecycle(doc.id, SetLifecycleRequest(action="complete"))
     assert response.document.lifecycle_status == "completed"
 
 
@@ -923,7 +923,7 @@ async def test_t0077_ingest_supersede_syncs_predecessor_chunks(
     """cas-code-review F4 finding: the ingest-side supersede path
     (`insert_with_supersede_atomic`) commits the predecessor's
     `lifecycle_status` flip directly in SQL, bypassing
-    LifecycleService.set_lifecycle. Without an explicit chunk-sync
+    LifecycleService._set_lifecycle. Without an explicit chunk-sync
     after that atomic commit, the predecessor's chunks keep their
     stale `lifecycle_status="active"` even though the document is
     now archived, breaking the pre-filter for archived
