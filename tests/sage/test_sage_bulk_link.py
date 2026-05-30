@@ -294,7 +294,7 @@ async def test_b3_edge_anchor_policy_violation_forbidden_field_on_retracts_per_i
     edge_anchor_policy_violation per item."""
     vault_id, ids, services = seeded_mcp_vault
     # Seed a real edge for the retracts item to target.
-    real_edge_response = await services.graph_ops_service.link(
+    real_edge_response = await services.graph_ops_service._create_edge_strict(
         await _build_link_request(ids[0], ids[1])
     )
     real_edge_id = real_edge_response.edge.id
@@ -390,7 +390,7 @@ async def test_c1_per_item_idempotency_returns_created_false_on_natural_key_hit(
     edge persisted for the collided natural key."""
     vault_id, ids, services = seeded_mcp_vault
     # Pre-seed: (ids[0], ids[1], references) already exists.
-    pre_existing = await services.graph_ops_service.link(
+    pre_existing = await services.graph_ops_service._create_edge_strict(
         await _build_link_request(ids[0], ids[1], rationale="original-c1")
     )
     pre_id = pre_existing.edge.id
@@ -418,7 +418,9 @@ async def test_c2_per_item_idempotency_returns_existing_rationale(seeded_mcp_vau
     existing edge's rationale, not the request's rationale; the on-disk
     rationale is unchanged."""
     vault_id, ids, services = seeded_mcp_vault
-    await services.graph_ops_service.link(await _build_link_request(ids[0], ids[1], rationale="r1"))
+    await services.graph_ops_service._create_edge_strict(
+        await _build_link_request(ids[0], ids[1], rationale="r1")
+    )
 
     items = [_ref_item(ids[0], ids[1], rationale="r2")]
 
@@ -537,7 +539,9 @@ async def test_d4_dry_run_natural_key_collision_returns_existing_edge_with_creat
     sentinel and report created=True even though a real run would
     no-op."""
     vault_id, ids, services = seeded_mcp_vault
-    real = await services.graph_ops_service.link(await _build_link_request(ids[0], ids[1]))
+    real = await services.graph_ops_service._create_edge_strict(
+        await _build_link_request(ids[0], ids[1])
+    )
     real_id = real.edge.id
 
     result = await mcp_server.create_edges(

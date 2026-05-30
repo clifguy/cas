@@ -23,7 +23,7 @@ Public entry points:
   ``EdgePlan``. This is what ``BatchIngestService._build_edge_plan``
   invokes during Phase 1.
 * ``resolve_and_execute`` -- Phase 2 executor. Resolves file paths to
-  document IDs and writes Tier 1 edges via ``GraphOpsService.link_idempotent``
+  document IDs and writes Tier 1 edges via ``GraphOpsService._create_edge``
   and Tier 2 edges via ``GraphStore.insert_staging_edge``.
 
 The provenance gate inside ``_chain_repair_plan`` (CAS-ADR-019) is the
@@ -559,7 +559,7 @@ async def resolve_and_execute(
                 # we still count it as edges_created when newly minted,
                 # otherwise as edges_kept so the IngestSummary surfaces
                 # the no-op path.
-                _edge, created = await graph_ops_service.link_idempotent(
+                _edge, created = await graph_ops_service._create_edge(
                     LinkRequest(
                         source_id=source_id,
                         target_id=target_id,

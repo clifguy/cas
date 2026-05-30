@@ -487,7 +487,7 @@ class TestStagingEdgeActions:
         # Pre-create the production edge that the staging edge will
         # collide with on confirm. The setup helper stages a COVERS
         # edge, so the pre-existing edge must match.
-        await services.graph_ops_service.link(
+        await services.graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=doc_a_id,
                 target_id=doc_b_id,

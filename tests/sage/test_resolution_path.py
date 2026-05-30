@@ -100,7 +100,7 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service) -> str:
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -251,7 +251,7 @@ async def test_cr_040_debug_records_retracts_applied(graph_store, graph_ops_serv
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -262,7 +262,7 @@ async def test_cr_040_debug_records_retracts_applied(graph_store, graph_ops_serv
         )
     ).edge
     retracts_edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a7"),
                 target_id=None,
@@ -316,7 +316,7 @@ async def test_cr_041_debug_records_tombstone_applied(graph_store, graph_ops_ser
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
     covers = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -329,7 +329,7 @@ async def test_cr_041_debug_records_tombstone_applied(graph_store, graph_ops_ser
 
     # c1 merged_from a8: tombstones the covers edge with valid_until=a8.
     await _seed_docs(graph_store, _id("c1"))
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("c1"),
             target_id=_id("a8"),
@@ -388,7 +388,7 @@ async def test_cr_042_resolution_path_preserves_event_order(graph_store, graph_o
     await _seed_docs(graph_store, *chain_c)
     await _seed_supersedes_chain(graph_store, chain_c)
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("a3"),
             target_id=_id("b2"),
@@ -398,7 +398,7 @@ async def test_cr_042_resolution_path_preserves_event_order(graph_store, graph_o
         )
     )
     covers_ac = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("c1"),
@@ -410,7 +410,7 @@ async def test_cr_042_resolution_path_preserves_event_order(graph_store, graph_o
     ).edge
 
     # Retract covers_ac anchored at a3 (in lineage of any a-chain query).
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("a3"),
             target_id=None,

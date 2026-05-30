@@ -10,8 +10,8 @@ This script sweeps every active document in the named vault, reads its
 projected body text from LanceDB, scans for configured identifier
 patterns, and writes `references` edges via the same code path as the
 live rule (``plan_identifier_mention_edges`` +
-``GraphOpsService.link_idempotent``). Idempotent: re-running produces no
-duplicates because ``link_idempotent`` enforces the natural-key UNIQUE
+``GraphOpsService._create_edge``). Idempotent: re-running produces no
+duplicates because ``_create_edge`` enforces the natural-key UNIQUE
 constraint.
 
 Usage::
@@ -119,7 +119,7 @@ async def _process_document(
     )
     if execute and planned:
         for p in planned:
-            await services.graph_ops_service.link_idempotent(
+            await services.graph_ops_service._create_edge(
                 LinkRequest(
                     source_id=p.source_doc_id,
                     target_id=p.target_doc_id,

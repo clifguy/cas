@@ -30,7 +30,7 @@ async def _make_edge(graph_store, graph_ops_service) -> str:
     """Insert two docs and create a references edge; return edge_id."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
-    response = await graph_ops_service.link(
+    response = await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),

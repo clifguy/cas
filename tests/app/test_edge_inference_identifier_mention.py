@@ -528,7 +528,7 @@ async def test_t4_re_ingest_does_not_duplicate_edge(tmp_path, services):
     assert inbound_sources == {src_a_id, src_b_id}
 
     # Re-run inference directly against doc_a's already-ingested body
-    # text -- idempotency check at the link_idempotent level. Re-running
+    # text -- idempotency check at the _create_edge level. Re-running
     # the rule for the same document must produce edges_existing > 0 and
     # not duplicate the existing edge.
     chunks = await services.content_store.get_all_chunks(src_a_id)
@@ -619,7 +619,7 @@ async def test_t6_manual_references_edge_is_preserved(tmp_path, services):
         tags=["note"],
     )
     # Create a manual `references` edge by hand.
-    manual_edge, _created = await services.graph_ops_service.link_idempotent(
+    manual_edge, _created = await services.graph_ops_service._create_edge(
         LinkRequest(
             source_id=src_id,
             target_id=adr_id,
@@ -972,7 +972,7 @@ async def test_t6_sage_ingest_manual_references_edge_is_preserved(tmp_path, serv
 
     Strengthened over the batch T6: this version's ingested doc DOES
     mention the ADR, so identifier_mention inference fires and calls
-    link_idempotent against the same (source, target, references) triple
+    _create_edge against the same (source, target, references) triple
     that already has a manual edge. The natural-key uniqueness check
     must return the existing manual edge with created=False; the manual
     edge's rationale_kind must remain MANUAL.
@@ -998,7 +998,7 @@ async def test_t6_sage_ingest_manual_references_edge_is_preserved(tmp_path, serv
     assert edges_first[0].rationale_kind == RationaleKind.REFERENCES_MENTION
 
     # Force-ingest the same content. The existing inferred edge stays;
-    # link_idempotent returns the existing row without rewriting rationale.
+    # _create_edge returns the existing row without rewriting rationale.
     src_doc_id_2, edges_second = await _ingest_via_sage_ingest_and_get_edges(
         services, src_path, force=True
     )
@@ -1016,7 +1016,7 @@ async def test_t9_batch_ingest_service_does_not_import_identifier_mention():
 
     This is a structural anti-coincidental-pass check: if a future commit
     silently restores the per-batch inference call in BatchIngestService
-    (causing double-write that link_idempotent would dedupe), the
+    (causing double-write that _create_edge would dedupe), the
     edge-count assertions in the other tests would still pass. This test
     catches the regression at the source-text level.
     """

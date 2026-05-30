@@ -157,12 +157,12 @@ def _make_services(
 
     services.ingestion_service.ingest = AsyncMock(side_effect=_ingest)
 
-    # Graph ops (Batch_inference now calls link_idempotent and
+    # Graph ops (Batch_inference now calls _create_edge and
     # passes on_conflict to insert_staging_edge; both return tuples).
     from unittest.mock import MagicMock as _MM
 
-    services.graph_ops_service.link = AsyncMock()
-    services.graph_ops_service.link_idempotent = AsyncMock(return_value=(_MM(), True))
+    services.graph_ops_service._create_edge_strict = AsyncMock()
+    services.graph_ops_service._create_edge = AsyncMock(return_value=(_MM(), True))
     services.graph_store.insert_staging_edge = AsyncMock(return_value=(_MM(), True))
     services.graph_store.get_document = AsyncMock(return_value=None)
     services.graph_store.update_document = AsyncMock()
@@ -1052,7 +1052,7 @@ class _MockGraphState:
         self.staged_edges.append(staging)
         return staging, True
 
-    async def link(self, request: LinkRequest) -> dict:
+    async def _create_edge_strict(self, request: LinkRequest) -> dict:
         self.added_link_requests.append(request)
         edge_id = _eid(f"edge-new-{self._next_edge_seq}")
         self._next_edge_seq += 1
@@ -1066,11 +1066,11 @@ class _MockGraphState:
         )
         return {"edge_id": edge_id}
 
-    async def link_idempotent(self, request: LinkRequest) -> tuple:
+    async def _create_edge(self, request: LinkRequest) -> tuple:
         # Returns (edge, created). The mock semantics here are
         # always-created because the test scenarios never replay the
         # same natural-key triple.
-        edge_dict = await self.link(request)
+        edge_dict = await self._create_edge_strict(request)
         edge_id = edge_dict["edge_id"]
         return self.edges[edge_id], True
 
@@ -1099,8 +1099,10 @@ def _make_chain_services(
     services.graph_store.get_document = AsyncMock(side_effect=state.get_document)
     services.graph_store.update_document = AsyncMock(side_effect=state.update_document)
     services.graph_store.insert_staging_edge = AsyncMock(side_effect=state.insert_staging_edge)
-    services.graph_ops_service.link = AsyncMock(side_effect=state.link)
-    services.graph_ops_service.link_idempotent = AsyncMock(side_effect=state.link_idempotent)
+    services.graph_ops_service._create_edge_strict = AsyncMock(
+        side_effect=state._create_edge_strict
+    )
+    services.graph_ops_service._create_edge = AsyncMock(side_effect=state._create_edge)
     services.graph_ops_service.unlink = AsyncMock(side_effect=state.unlink)
 
     # Standard ingestion mock: each new file becomes a fresh document.
@@ -1368,7 +1370,7 @@ class TestChainRepair:
     @pytest.mark.asyncio
     async def test_t0080_chain_repair_link_request_stamps_version_chain(self):
         """T5. Version-chain inference passes rationale_kind=VERSION_CHAIN
-        on the LinkRequest it submits to link_idempotent. Without this,
+        on the LinkRequest it submits to _create_edge. Without this,
         the auto-inferred edge lands with the default 'manual' kind, the
         rationale-text prefix becomes load-bearing again, and the index
         added by cannot be used to identify version-chain edges.

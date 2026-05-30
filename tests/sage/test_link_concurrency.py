@@ -1,4 +1,4 @@
-"""Concurrency and fan-out tests for GraphOpsService.link.
+"""Concurrency and fan-out tests for GraphOpsService._create_edge_strict.
 
 Covers the post-ADR-017 regression where a single link call submitted
 7+ SQLite tasks to a small ThreadPoolExecutor. Under parallel load,
@@ -6,7 +6,7 @@ cancelled MCP calls left the executor saturated with orphaned work.
 
 The fix (a) batches all pre-insert reads into a single executor
 submission via GraphStore.read_link_context and (b) serializes
-GraphOpsService.link with an asyncio.Lock so parallel callers queue
+GraphOpsService._create_edge_strict with an asyncio.Lock so parallel callers queue
 cheaply instead of compounding fan-out.
 """
 
@@ -92,7 +92,7 @@ async def test_link_transitive_both_bounded_executor_submissions(
 
     monkeypatch.setattr(graph_store, "_run", counting_run)
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("doc_a"),
             target_id=_id("doc_b"),
@@ -129,7 +129,7 @@ async def test_link_merged_from_bounded_executor_submissions(
 
     monkeypatch.setattr(graph_store, "_run", counting_run)
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("c1"),
             target_id=_id("p1"),
@@ -175,7 +175,7 @@ async def test_link_serializes_concurrent_calls(graph_store, graph_ops_service, 
 
     # Four concurrent link calls on disjoint document pairs.
     async def do_link(src, tgt):
-        return await graph_ops_service.link(
+        return await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=src,
                 target_id=tgt,
@@ -227,7 +227,7 @@ async def test_cancelled_parallel_link_calls_drain_quickly(graph_store, graph_op
     # the scheduler tick once so they can enter the lock queue.
     tasks = [
         asyncio.create_task(
-            graph_ops_service.link(
+            graph_ops_service._create_edge_strict(
                 LinkRequest(
                     source_id=_id(f"d{i}"),
                     target_id=_id(f"d{(i + 1) % 20}"),

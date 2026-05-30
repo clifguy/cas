@@ -720,13 +720,13 @@ class IngestionService:
 
             # Force-reingest with a supersede target: apply the supersede
             # transition on the predecessor. The doc record was reused
-            # (no new insert) so atomicity collapses to lifecycle.set_lifecycle's
+            # (no new insert) so atomicity collapses to lifecycle._set_lifecycle's
             # own atomic primitive (BH-135).
             #
             # CAS-ADR-038 Primitive C coverage gap: when force=True drives
             # this branch, `request.expected_head_version` is currently
             # ignored. The transition runs through
-            # `LifecycleService.set_lifecycle`, which acquires its own
+            # `LifecycleService._set_lifecycle`, which acquires its own
             # per-predecessor lock; layering the version check here without
             # deadlocking would require threading the token through
             # `SetLifecycleRequest` so the check runs inside that lock.
@@ -736,7 +736,7 @@ class IngestionService:
             # incremental safety cost is acceptable until a caller needs
             # the contract here.
             if predecessor is not None and self._lifecycle_service is not None:
-                await self._lifecycle_service.set_lifecycle(
+                await self._lifecycle_service._set_lifecycle(
                     predecessor.id,
                     SetLifecycleRequest(action="supersede", successor_id=doc.id),
                 )
@@ -821,7 +821,7 @@ class IngestionService:
                     # Sync the predecessor's new lifecycle_status to its
                     # chunks. insert_with_supersede_atomic commits the flip
                     # directly in SQL (BH-136 atomicity), bypassing
-                    # LifecycleService.set_lifecycle's chunk-sync hook.
+                    # LifecycleService._set_lifecycle's chunk-sync hook.
                     # pre-filter pushdown requires the chunk-level
                     # lifecycle_status column to stay aligned with the
                     # document's current state.

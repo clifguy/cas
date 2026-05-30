@@ -596,7 +596,7 @@ def register_sage_tools(
                 response_mode=response_mode,
                 dry_run=dry_run,
             )
-            response = await v.graph_ops_service.bulk_link(request)
+            response = await v.graph_ops_service.create_edges(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)

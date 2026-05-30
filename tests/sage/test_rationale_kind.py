@@ -181,7 +181,7 @@ async def test_t10_traverse_returns_stored_rationale_kind(graph_store, graph_ops
     await graph_store.insert_document(_make_doc(src))
     await graph_store.insert_document(_make_doc(tgt))
 
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=src,
             target_id=tgt,

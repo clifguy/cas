@@ -748,7 +748,7 @@ async def test_set_lifecycle_unknown_action(vault_services):
 
 
 # Dry_run rollout closes the asymmetry with the bulk variant.
-# The service layer (LifecycleService.set_lifecycle) and the
+# The service layer (LifecycleService._set_lifecycle) and the
 # SetLifecycleRequest/Response schemas already carry dry_run; these
 # tests pin the MCP wrapper plumbing.
 

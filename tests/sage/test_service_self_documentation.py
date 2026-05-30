@@ -162,12 +162,12 @@ def test_ingestion_ingest_docstring_documents_tier3_schema_violation():
 
 
 # ---------------------------------------------------------------------------
-# GraphOpsService.link
+# GraphOpsService._create_edge_strict
 # ---------------------------------------------------------------------------
 
 
 def test_graph_ops_link_docstring_documents_merged_from_chain_head():
-    """``GraphOpsService.link`` must document the merged_from chain-head requirement.
+    """``GraphOpsService._create_edge_strict`` must document the merged_from chain-head requirement.
 
     Requires ``merged_from`` and ``derived_from`` in the same paragraph
     so the mid-chain alternative is discoverable alongside the rule
@@ -177,17 +177,17 @@ def test_graph_ops_link_docstring_documents_merged_from_chain_head():
     Anti-coincidental-pass: removing the ``derived_from`` alternative
     pointer (or splitting the paragraph between them) fails the check.
     """
-    doc = _docstring(GraphOpsService.link)
+    doc = _docstring(GraphOpsService._create_edge_strict)
     proximity_satisfied = any("merged_from" in p and "derived_from" in p for p in _paragraphs(doc))
     assert proximity_satisfied, (
-        "GraphOpsService.link docstring must mention ``derived_from`` as "
+        "GraphOpsService._create_edge_strict docstring must mention ``derived_from`` as "
         "the mid-chain alternative in the same paragraph as the "
         "``merged_from`` chain-head precondition."
     )
 
 
 def test_graph_ops_link_docstring_documents_synced_from_version_chain_membership():
-    """``GraphOpsService.link`` must document the synced_from_version chain rule.
+    """``GraphOpsService._create_edge_strict`` must document the synced_from_version chain rule.
 
     Requires both ``synced_from_version`` and the word ``chain`` in the
     same paragraph so the membership requirement is bound to the field.
@@ -195,12 +195,12 @@ def test_graph_ops_link_docstring_documents_synced_from_version_chain_membership
     Anti-coincidental-pass: removing the chain-membership paragraph (or
     losing the word ``chain`` from it) fails the check.
     """
-    doc = _docstring(GraphOpsService.link)
+    doc = _docstring(GraphOpsService._create_edge_strict)
     proximity_satisfied = any(
         "synced_from_version" in p and "chain" in p.lower() for p in _paragraphs(doc)
     )
     assert proximity_satisfied, (
-        "GraphOpsService.link docstring must document the "
+        "GraphOpsService._create_edge_strict docstring must document the "
         "``synced_from_version`` chain-membership rule — "
         "the field and the word ``chain`` must appear in the same "
         "paragraph."
@@ -208,42 +208,42 @@ def test_graph_ops_link_docstring_documents_synced_from_version_chain_membership
 
 
 def test_graph_ops_link_docstring_documents_tbd_policy_rejection():
-    """``GraphOpsService.link`` must name ``TBDPolicyEdgeError``.
+    """``GraphOpsService._create_edge_strict`` must name ``TBDPolicyEdgeError``.
 
     Anti-coincidental-pass: deleting the line naming the error class
     drops the substring entirely.
     """
-    doc = _docstring(GraphOpsService.link)
+    doc = _docstring(GraphOpsService._create_edge_strict)
     assert "TBDPolicyEdgeError" in doc, (
-        "GraphOpsService.link docstring must name ``TBDPolicyEdgeError`` "
+        "GraphOpsService._create_edge_strict docstring must name ``TBDPolicyEdgeError`` "
         "as the rejection path for ``authoritative_for`` / "
         "``sync_target`` edge types."
     )
 
 
 def test_graph_ops_link_docstring_documents_retracts_field_presence_errors():
-    """``GraphOpsService.link`` must name ``RetractTargetNotEdgeError``.
+    """``GraphOpsService._create_edge_strict`` must name ``RetractTargetNotEdgeError``.
 
     Anti-coincidental-pass: deleting the retract-specific error name
     drops the substring entirely.
     """
-    doc = _docstring(GraphOpsService.link)
+    doc = _docstring(GraphOpsService._create_edge_strict)
     assert "RetractTargetNotEdgeError" in doc, (
-        "GraphOpsService.link docstring must name "
+        "GraphOpsService._create_edge_strict docstring must name "
         "``RetractTargetNotEdgeError`` as the error raised when "
         "``retracted_edge_id`` does not name a known edge."
     )
 
 
 def test_graph_ops_link_docstring_documents_self_referential_rejection():
-    """``GraphOpsService.link`` must name ``SelfReferentialEdgeError``.
+    """``GraphOpsService._create_edge_strict`` must name ``SelfReferentialEdgeError``.
 
     Anti-coincidental-pass: deleting the self-referential rejection
     paragraph drops the substring entirely.
     """
-    doc = _docstring(GraphOpsService.link)
+    doc = _docstring(GraphOpsService._create_edge_strict)
     assert "SelfReferentialEdgeError" in doc, (
-        "GraphOpsService.link docstring must name "
+        "GraphOpsService._create_edge_strict docstring must name "
         "``SelfReferentialEdgeError`` as the rejection path for "
         "``source_id == target_id``."
     )
@@ -255,10 +255,10 @@ def test_graph_ops_link_docstring_documents_self_referential_rejection():
 
 
 def test_graph_ops_bulk_link_docstring_documents_light_default_threshold():
-    """``GraphOpsService.bulk_link`` must name the literal ``LIGHT_DEFAULT_THRESHOLD = 5``."""
-    doc = _docstring(GraphOpsService.bulk_link)
+    """``GraphOpsService.create_edges`` must name the literal ``LIGHT_DEFAULT_THRESHOLD = 5``."""
+    doc = _docstring(GraphOpsService.create_edges)
     assert "LIGHT_DEFAULT_THRESHOLD = 5" in doc, (
-        "GraphOpsService.bulk_link docstring must literally show "
+        "GraphOpsService.create_edges docstring must literally show "
         "``LIGHT_DEFAULT_THRESHOLD = 5`` (with the embedded 5) so the "
         "default-resolution threshold is visible to callers."
     )
@@ -292,18 +292,18 @@ def test_metadata_bulk_update_metadata_docstring_documents_light_default_thresho
 
 
 def test_graph_ops_bulk_link_docstring_documents_empty_items_is_valid():
-    """``GraphOpsService.bulk_link`` must document that empty ``items`` is valid.
+    """``GraphOpsService.create_edges`` must document that empty ``items`` is valid.
 
     Calibrated to the actual phrasing ``Empty ``items`` is valid``: tests
     on ``empty`` + ``items`` co-location in the same paragraph rather
     than the exact bigram so backtick formatting is not load-bearing.
     """
-    doc = _docstring(GraphOpsService.bulk_link)
+    doc = _docstring(GraphOpsService.create_edges)
     proximity_satisfied = any(
         "empty" in p.lower() and "items" in p.lower() for p in _paragraphs(doc)
     )
     assert proximity_satisfied, (
-        "GraphOpsService.bulk_link docstring must document that empty "
+        "GraphOpsService.create_edges docstring must document that empty "
         "``items`` is valid — the words ``empty`` and ``items`` must "
         "co-locate in the same paragraph."
     )
@@ -341,56 +341,57 @@ def test_metadata_bulk_update_metadata_docstring_documents_empty_items_is_valid(
 
 
 def test_graph_ops_bulk_link_docstring_cross_references_link_for_validation_surface():
-    """``GraphOpsService.bulk_link`` must cross-reference ``GraphOpsService.link``.
+    """``GraphOpsService.create_edges`` must cross-reference
+    ``GraphOpsService._create_edge_strict``.
 
     Anti-coincidental-pass: renaming the target (e.g., to
     ``GraphOpsService.link_v2``) drops the literal substring.
     """
-    doc = _docstring(GraphOpsService.bulk_link)
-    assert "GraphOpsService.link" in doc, (
-        "GraphOpsService.bulk_link docstring must cross-reference "
-        "``GraphOpsService.link`` by name as the source of the full "
+    doc = _docstring(GraphOpsService.create_edges)
+    assert "GraphOpsService._create_edge_strict" in doc, (
+        "GraphOpsService.create_edges docstring must cross-reference "
+        "``GraphOpsService._create_edge_strict`` by name as the source of the full "
         "per-item validation surface."
     )
 
 
 def test_lifecycle_bulk_set_lifecycle_docstring_cross_references_set_lifecycle():
     """``LifecycleService.bulk_set_lifecycle`` must cross-reference
-    ``LifecycleService.set_lifecycle``.
+    ``LifecycleService._set_lifecycle``.
 
     Anti-coincidental-pass: renaming the target drops the literal
     substring.
     """
     doc = _docstring(LifecycleService.bulk_set_lifecycle)
-    assert "LifecycleService.set_lifecycle" in doc, (
+    assert "LifecycleService._set_lifecycle" in doc, (
         "LifecycleService.bulk_set_lifecycle docstring must "
-        "cross-reference ``LifecycleService.set_lifecycle`` by name as "
+        "cross-reference ``LifecycleService._set_lifecycle`` by name as "
         "the source of the full per-item validation surface."
     )
 
 
 def test_metadata_bulk_update_metadata_docstring_cross_references_update_metadata():
     """``MetadataService.bulk_update_metadata`` must cross-reference
-    ``MetadataService.update_metadata``.
+    ``MetadataService._update_metadata``.
 
     Anti-coincidental-pass: renaming the target drops the literal
     substring.
     """
     doc = _docstring(MetadataService.bulk_update_metadata)
-    assert "MetadataService.update_metadata" in doc, (
+    assert "MetadataService._update_metadata" in doc, (
         "MetadataService.bulk_update_metadata docstring must "
-        "cross-reference ``MetadataService.update_metadata`` by name as "
+        "cross-reference ``MetadataService._update_metadata`` by name as "
         "the source of the full per-item validation surface."
     )
 
 
 # ---------------------------------------------------------------------------
-# MetadataService.update_metadata
+# MetadataService._update_metadata
 # ---------------------------------------------------------------------------
 
 
 def test_metadata_update_metadata_docstring_documents_empty_call_confirmation_flip():
-    """``MetadataService.update_metadata`` must document the empty-call confirmation-flip.
+    """``MetadataService._update_metadata`` must document the empty-call confirmation-flip.
 
     Requires ``confirmation-flip`` (case-insensitive) and
     ``metadata_confirmed`` in the same paragraph so the trigger phrase
@@ -399,12 +400,12 @@ def test_metadata_update_metadata_docstring_documents_empty_call_confirmation_fl
     Anti-coincidental-pass: removing either substring or splitting the
     paragraph between them fails the proximity check.
     """
-    doc = _docstring(MetadataService.update_metadata)
+    doc = _docstring(MetadataService._update_metadata)
     proximity_satisfied = any(
         "confirmation-flip" in p.lower() and "metadata_confirmed" in p for p in _paragraphs(doc)
     )
     assert proximity_satisfied, (
-        "MetadataService.update_metadata docstring must document the "
+        "MetadataService._update_metadata docstring must document the "
         "empty-call confirmation-flip semantics — "
         "``confirmation-flip`` and ``metadata_confirmed`` must "
         "co-locate in the same paragraph."
@@ -492,33 +493,35 @@ def test_batch_ingest_run_docstring_documents_tier1_provenance_gate_downgrade():
 
 
 # ---------------------------------------------------------------------------
-# GraphOpsService.link_idempotent — cross-reference to link
+# GraphOpsService._create_edge — cross-reference to link
 # ---------------------------------------------------------------------------
 
 
 def test_graph_ops_link_idempotent_docstring_cross_references_link_for_precondition_surface():
-    """``GraphOpsService.link_idempotent`` must cross-reference ``link`` for preconditions.
+    """``GraphOpsService._create_edge`` must cross-reference
+    ``_create_edge_strict`` for preconditions.
 
     The bulk-method cross-references bind each bulk operation to its
-    single-item validation surface. ``link_idempotent`` is the
-    symmetric case: it inherits ``link``'s entire precondition surface
-    via the shared ``_link_impl`` body, and the docstring must say so.
+    single-item validation surface. ``_create_edge`` is the
+    symmetric case: it inherits ``_create_edge_strict``'s entire precondition surface
+    via the shared ``_create_edge_impl`` body, and the docstring must say so.
 
     Requires both ``per-item validation surface`` (case-insensitive)
-    and ``_link_impl`` in the same paragraph.
+    and ``_create_edge_impl`` in the same paragraph.
 
     Anti-coincidental-pass: removing the cross-reference paragraph
-    drops both substrings; renaming ``_link_impl`` (e.g., during a
+    drops both substrings; renaming ``_create_edge_impl`` (e.g., during a
     refactor) drops the second; rewriting the paragraph header drops
     the first.
     """
-    doc = _docstring(GraphOpsService.link_idempotent)
+    doc = _docstring(GraphOpsService._create_edge)
     proximity_satisfied = any(
-        "per-item validation surface" in p.lower() and "_link_impl" in p for p in _paragraphs(doc)
+        "per-item validation surface" in p.lower() and "_create_edge_impl" in p
+        for p in _paragraphs(doc)
     )
     assert proximity_satisfied, (
-        "GraphOpsService.link_idempotent docstring must carry a "
+        "GraphOpsService._create_edge docstring must carry a "
         "``Per-item validation surface`` paragraph that names "
-        "``_link_impl`` as the shared body through which ``link``'s "
+        "``_create_edge_impl`` as the shared body through which ``_create_edge_strict``'s "
         "preconditions are inherited."
     )

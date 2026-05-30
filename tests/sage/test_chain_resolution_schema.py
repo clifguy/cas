@@ -2,7 +2,7 @@
 
 Covers TEST-SAGE-CR-001..012 where the assertion is reachable from the
 Chunk-2 surface area (Pydantic, edge-type registry, policy-keyed
-invariant in `GraphOpsService.link`). Anchor-in-lineage checks (CR-004)
+invariant in `GraphOpsService._create_edge_strict`). Anchor-in-lineage checks (CR-004)
 and retracted_edge_id existence checks (CR-009) require accessors that
 land in Chunks 4 and 5 respectively and are marked skipped here with a
 pointer to the owning chunk.
@@ -84,7 +84,7 @@ async def test_cr_001_transitive_both_valid(graph_store, graph_ops_service):
     await _seed(graph_store, _id("a3"), _id("b2"))
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -111,7 +111,7 @@ async def test_cr_002_transitive_both_missing_source_anchor(graph_store, graph_o
     await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -133,7 +133,7 @@ async def test_cr_003_transitive_both_missing_target_anchor(graph_store, graph_o
     await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -178,7 +178,7 @@ async def test_cr_004_source_anchor_outside_lineage(graph_store, graph_ops_servi
     )
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -201,7 +201,7 @@ async def test_cr_005_transitive_source_stores_null_target_anchor(graph_store, g
     await _seed(graph_store, _id("report_v3"), _id("uspto_template_v2"))
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("report_v3"),
                 target_id=_id("uspto_template_v2"),
@@ -233,7 +233,7 @@ async def test_cr_006_transitive_source_explicit_target_anchor_rejected(
     await _seed(graph_store, _id("report_v3"), _id("uspto_template_v2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("report_v3"),
                 target_id=_id("uspto_template_v2"),
@@ -255,7 +255,7 @@ async def test_cr_007_supersedes_with_anchors_rejected(graph_store, graph_ops_se
     await _seed(graph_store, _id("a5"), _id("a4"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a5"),
                 target_id=_id("a4"),
@@ -276,7 +276,7 @@ async def test_cr_007_supersedes_with_anchors_rejected(graph_store, graph_ops_se
 async def test_cr_008_retracts_shape_accepted(graph_store, graph_ops_service):
     await _seed(graph_store, _id("a3"), _id("b2"), _id("a7"))
     covers = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -288,7 +288,7 @@ async def test_cr_008_retracts_shape_accepted(graph_store, graph_ops_service):
     ).edge
 
     edge = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a7"),
                 target_id=None,
@@ -319,7 +319,7 @@ async def test_cr_009_retracts_unknown_target_edge(graph_store, graph_ops_servic
     # malformed-shape value would short-circuit at LinkRequest validation.
     bogus_edge_id = str(uuid.uuid4())
     with pytest.raises(RetractTargetNotEdgeError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a7"),
                 target_id=None,
@@ -342,7 +342,7 @@ async def test_cr_010_tbd_policy_edge_rejected(graph_store, graph_ops_service):
     await _seed(graph_store, _id("d1"), _id("d2"))
 
     with pytest.raises(TBDPolicyEdgeError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("d1"),
                 target_id=_id("d2"),
@@ -364,7 +364,7 @@ async def test_cr_011_non_retracts_missing_target_rejected(graph_store, graph_op
     await _seed(graph_store, _id("a3"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=None,
@@ -385,7 +385,7 @@ async def test_cr_012_resolution_policy_frozen_on_row(graph_store, graph_ops_ser
     await _seed(graph_store, _id("a3"), _id("b2"))
 
     created = (
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -415,7 +415,7 @@ async def test_retracts_missing_retracted_edge_id_rejected(graph_store, graph_op
     await _seed(graph_store, _id("a7"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a7"),
                 target_id=None,
@@ -485,7 +485,7 @@ async def test_cr_046_transitive_target_valid(graph_store, minimal_config):
     )
 
     edge = (
-        await service.link(
+        await service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -517,7 +517,7 @@ async def test_cr_047_transitive_target_missing_target_anchor(graph_store, minim
     await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await service.link(
+        await service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -539,7 +539,7 @@ async def test_cr_048_transitive_target_with_source_anchor_rejected(graph_store,
     await _seed(graph_store, _id("a3"), _id("b2"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await service.link(
+        await service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -576,7 +576,7 @@ async def test_cr_049_transitive_target_anchor_outside_target_chain(graph_store,
     )
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await service.link(
+        await service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a3"),
                 target_id=_id("b2"),
@@ -597,7 +597,7 @@ async def test_retracts_missing_source_anchor_rejected(graph_store, graph_ops_se
     await _seed(graph_store, _id("a7"))
 
     with pytest.raises(EdgeAnchorPolicyViolationError) as exc_info:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("a7"),
                 target_id=None,

@@ -1730,7 +1730,7 @@ async def test_metadata_doc_type_change_syncs_to_content_store(
     assert _id("doc_retyped") in [h.document.id for h in response.results]
 
     # Change doc_type to memo via MetadataService
-    await metadata_service.update_metadata(
+    await metadata_service._update_metadata(
         _id("doc_retyped"),
         UpdateMetadataRequest(doc_type="memo"),
         modified_by="test_user",

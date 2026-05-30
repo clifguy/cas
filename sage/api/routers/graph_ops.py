@@ -66,7 +66,7 @@ async def create_edges(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: GraphOpsService = Depends(get_graph_ops_service),
 ) -> BulkLinkResponse:
-    return await service.bulk_link(request)
+    return await service.create_edges(request)
 
 
 @router.delete(

@@ -110,7 +110,7 @@ async def _seed_ab_worked_example(graph_store, graph_ops_service):
     await _seed_docs(graph_store, *chain_a, *chain_b)
     await _seed_supersedes_chain(graph_store, chain_a)
     await _seed_supersedes_chain(graph_store, chain_b)
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("a3"),
             target_id=_id("b2"),
@@ -253,7 +253,7 @@ async def test_cr_018_transitive_source_source_anchor_in_lineage(graph_store, gr
         graph_store,
         [_id("uspto_template_v1"), _id("uspto_template_v2")],
     )
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("report_v3"),
             target_id=_id("uspto_template_v2"),
@@ -300,7 +300,7 @@ async def test_cr_019_transitive_source_target_frozen_after_target_chain_advance
         graph_store,
         [_id("uspto_template_v1"), _id("uspto_template_v2"), _id("uspto_template_v3")],
     )
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("report_v3"),
             target_id=_id("uspto_template_v2"),
@@ -408,7 +408,7 @@ async def test_cr_022_per_request_lineage_cache_coalesces_lookups(graph_store, g
         (_id("a4"), _id("b2")),
         (_id("a4"), _id("b3")),
     ]:
-        await graph_ops_service.link(
+        await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=src,
                 target_id=tgt,
@@ -498,7 +498,7 @@ async def _seed_transitive_target_example(graph_store, service) -> None:
         graph_store, [_id("a1"), _id("a2"), _id("a3"), _id("a4"), _id("a5")]
     )
     await _seed_supersedes_chain(graph_store, [_id("b1"), _id("b2"), _id("b3")])
-    await service.link(
+    await service._create_edge_strict(
         LinkRequest(
             source_id=_id("a3"),
             target_id=_id("b2"),
@@ -693,7 +693,7 @@ async def test_legacy_and_anchored_edges_coexist_in_traverse(graph_store, graph_
         )
     )
     # Modern: anchored, written via link()
-    await graph_ops_service.link(
+    await graph_ops_service._create_edge_strict(
         LinkRequest(
             source_id=_id("s"),
             target_id=_id("t2"),
