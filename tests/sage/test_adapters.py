@@ -2638,6 +2638,41 @@ requires_ocr = pytest.mark.skipif(
 )
 
 
+@pytest.fixture
+def ocr_tempdir_off_tmp():
+    """Run an OCR test with the process temp dir pointed off ``/tmp``.
+
+    On macOS, leptonica (invoked by tesseract under ocrmypdf) rewrites a
+    leading ``/tmp`` in image paths to the Darwin per-user temp directory, so
+    it cannot read the intermediate page raster ocrmypdf writes when
+    ``tempfile.gettempdir()`` resolves under ``/tmp`` (e.g. when ``TMPDIR``
+    points at a ``/tmp``-rooted path). Point ``tempfile.tempdir`` at a
+    non-``/tmp`` directory for the duration of the test so the OCR pre-pass can
+    run; pytest's ``tmp_path`` -- used only for the *input* PDF, which
+    ghostscript reads, not leptonica -- is deliberately left untouched. A near
+    no-op where the temp dir already resolves off ``/tmp``.
+    """
+    import os
+    import shutil
+    import tempfile
+
+    env_tmp = os.environ.get("TMPDIR") or ""
+    if env_tmp and not env_tmp.startswith(("/tmp", "/private/tmp")):
+        base = env_tmp
+    else:
+        base = os.path.expanduser("~/.cache")
+    os.makedirs(base, exist_ok=True)
+
+    work = tempfile.mkdtemp(prefix="cas-ocr-", dir=base)
+    saved = tempfile.tempdir
+    tempfile.tempdir = work
+    try:
+        yield work
+    finally:
+        tempfile.tempdir = saved
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def _draw_paragraph_lines(c, lines: list[str], start_y: int = 750) -> None:
     """Draw lines of text on the current page, top-down."""
     y = start_y
@@ -3085,6 +3120,7 @@ class TestPdfAdapter:
 
     @requires_pdf_with_image
     @requires_ocr
+    @pytest.mark.usefixtures("ocr_tempdir_off_tmp")
     async def test_ad_088_scanned_pdf_produces_text_with_ocr_applied_tag(self, tmp_path):
         """AD-088: Scanned PDF gets inline OCR; projection has text and pdf:ocr_applied."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -3101,6 +3137,7 @@ class TestPdfAdapter:
 
     @requires_pdf_with_image
     @requires_ocr
+    @pytest.mark.usefixtures("ocr_tempdir_off_tmp")
     async def test_ad_089_adapter_tag_prefixes_declared(self, tmp_path):
         """AD-089: adapter_tag_prefixes declares ['pdf:'] for the OCR'd path too."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
