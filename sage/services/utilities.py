@@ -274,8 +274,16 @@ class UtilitiesService:
         response.written_to = write_to_path
         response.content_size = len(data)
         # Body was delivered to disk, not inline: no inline body present and
-        # body_length is null for write-to-path delivery (CAS-ADR-039).
-        response.read_meta = ReadMeta(success=True, body_present=False)
+        # body_length is null for write-to-path delivery (CAS-ADR-039). The
+        # projection-freshness signal is independent of delivery mode -- a
+        # projection written to disk can still be stale -- so it is carried
+        # forward from the factory rather than dropped.
+        response.read_meta = ReadMeta(
+            success=True,
+            body_present=False,
+            projection_status=response.read_meta.projection_status,
+            projection_recovery=response.read_meta.projection_recovery,
+        )
         return response
 
     # ------------------------------------------------------------------

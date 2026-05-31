@@ -925,6 +925,50 @@ class ReadMeta(BaseModel):
             "Body length when present; null for write-to-path delivery or no-body responses."
         ),
     )
+    projection_status: Literal["current", "stale"] | None = Field(
+        default=None,
+        description=(
+            "Freshness of the projection on a projection read: 'current' when "
+            "the stored projection is up to date with the source, 'stale' when "
+            "the source was modified after the projection last ran (an "
+            "administrative deficit, not a thin document). Null where the "
+            "response is not a projection read."
+        ),
+    )
+    projection_recovery: str | None = Field(
+        default=None,
+        description=(
+            "Name of the tool that recomputes a stale projection "
+            "(recompute_abstract). Populated only when projection_status is "
+            "'stale'; null otherwise. Gives a caller an actionable recovery "
+            "pointer without a second probing round-trip."
+        ),
+    )
+
+    @classmethod
+    def projection_freshness(
+        cls, doc: "Document"
+    ) -> tuple[Literal["current", "stale"], str | None]:
+        """Derive the projection-freshness status and recovery pointer for a document.
+
+        A projection is ``stale`` only on positive evidence: both the source
+        modification time and the projection time are known and the source was
+        modified strictly after the projection last ran. Otherwise the read
+        reports ``current`` -- incomplete timestamps (non-file sources, or a
+        projection time that is not recorded) must not raise a false stale
+        signal that would nag a caller to recompute unnecessarily.
+
+        Returns the status and, for a stale projection, the name of the tool
+        (``recompute_abstract``) that recomputes it; the recovery pointer is
+        ``None`` for a current projection.
+        """
+        if (
+            doc.source_modified_at is not None
+            and doc.projected_at is not None
+            and doc.source_modified_at > doc.projected_at
+        ):
+            return "stale", "recompute_abstract"
+        return "current", None
 
 
 class DocumentWithContent(Document):
@@ -3099,6 +3143,7 @@ class ReadProjectionResponse(BaseModel):
         fields, which are populated by the service layer's write_to_path
         branch (UtilitiesService.read_projection), not the factory.
         """
+        projection_status, projection_recovery = ReadMeta.projection_freshness(doc)
         return cls(
             document_id=doc.id,
             title=doc.title,
@@ -3111,6 +3156,8 @@ class ReadProjectionResponse(BaseModel):
                 success=True,
                 body_present=bool(projection_text),
                 body_length=len(projection_text),
+                projection_status=projection_status,
+                projection_recovery=projection_recovery,
             ),
         )
 
@@ -3143,6 +3190,7 @@ class ReadSectionResponse(BaseModel):
         ``tests/sage/test_utilities.py`` fails closed if a field is added to
         ReadSectionResponse but not wired through this factory.
         """
+        projection_status, projection_recovery = ReadMeta.projection_freshness(doc)
         return cls(
             document_id=doc.id,
             title=doc.title,
@@ -3153,6 +3201,8 @@ class ReadSectionResponse(BaseModel):
                 success=True,
                 body_present=bool(section_text),
                 body_length=len(section_text),
+                projection_status=projection_status,
+                projection_recovery=projection_recovery,
             ),
         )
 

@@ -4368,6 +4368,24 @@ components:
           description: >-
             Body length when present; null for write-to-path delivery or
             no-body responses.
+        projection_status:
+          type: string
+          enum: [current, stale]
+          nullable: true
+          description: >-
+            Freshness of the projection on a projection read: 'current' when
+            the stored projection is up to date with the source, 'stale' when
+            the source was modified after the projection last ran (an
+            administrative deficit, not a thin document). Null where the
+            response is not a projection read.
+        projection_recovery:
+          type: string
+          nullable: true
+          description: >-
+            Name of the tool that recomputes a stale projection
+            (recompute_abstract). Populated only when projection_status is
+            'stale'; null otherwise. Gives a caller an actionable recovery
+            pointer without a second probing round-trip.
 
     DocumentWithContent:
       description: >-
