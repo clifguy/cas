@@ -979,6 +979,20 @@ class DocumentWithContent(Document):
             "the default to reflect the delivered content state."
         ),
     )
+    body_form: Literal["text", "binary"] | None = Field(
+        default=None,
+        description=(
+            "Form of the document's source body (CAS-ADR-039): `text` for a "
+            "source whose bytes are scannable text, `binary` for a "
+            "binary-container source (`.docx`, `.pdf`, `.xlsx`) whose bytes "
+            "are a zipped or streamed package. Stamped on every `get_document` "
+            "response so a caller never has to infer the form from the bytes; "
+            "`include_content=true` against a binary-container source is "
+            "refused with `binary_content_refused` (400), directing the caller "
+            "to `read_projection`. Null only on responses that carry no source "
+            "form (e.g. an error envelope)."
+        ),
+    )
 
 
 class SetLifecycleRequest(BaseModel):

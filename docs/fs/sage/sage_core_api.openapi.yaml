@@ -486,9 +486,14 @@ paths:
         "400":
           description: >-
             Request shape invalid: both `include_content` and
-            `write_to_path` supplied, `write_to_path` is not absolute,
-            or the parent directory of `write_to_path` is missing or
-            not writable.
+            `write_to_path` supplied (`content_delivery_conflict`),
+            `write_to_path` is not absolute, or the parent directory of
+            `write_to_path` is missing or not writable. Also returned with
+            `binary_content_refused` when `include_content=true` targets a
+            binary-container source (`.docx`, `.pdf`, `.xlsx`): the read
+            path declines to inline raw container bytes and directs the
+            caller to `read_projection` for the extracted text
+            (CAS-ADR-039).
           content:
             application/json:
               schema:
@@ -4411,6 +4416,21 @@ components:
                 `write_to_path`. Equals the caller-supplied value.
             read_meta:
               $ref: "#/components/schemas/ReadMeta"
+            body_form:
+              type: string
+              nullable: true
+              enum: [text, binary]
+              description: >-
+                Form of the document's source body (CAS-ADR-039): `text` for
+                a source whose bytes are scannable text, `binary` for a
+                binary-container source (`.docx`, `.pdf`, `.xlsx`) whose bytes
+                are a zipped or streamed package. Stamped on every
+                `get_document` response so a caller never has to infer the form
+                from the bytes; `include_content=true` against a
+                binary-container source is refused with
+                `binary_content_refused` (400), directing the caller to
+                `read_projection`. Null only on responses that carry no source
+                form (e.g. an error envelope).
 
     TraverseResponse:
       type: object

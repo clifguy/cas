@@ -9,6 +9,7 @@ import asyncio
 import base64
 import hashlib
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.api.errors import (
+    BinaryContentRefusedError,
     DocumentNotFoundError,
     IdenticalContentSupersedeError,
     SupersedeTargetNotActiveError,
@@ -29,7 +31,8 @@ from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.enums import SourceType as _SourceType  # alias for fixture
-from sage.models.schemas import IngestRequest, SetLifecycleRequest
+from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
+from sage.services.documents import DocumentsService
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
@@ -695,3 +698,120 @@ async def test_bh_124_validation_before_projection(
         )
     all_docs = await graph_store.list_all_documents()
     assert [d.id for d in all_docs] == [pred.document.id]
+
+
+# ---------------------------------------------------------------------------
+# get_document body-form marker + binary-container refusal (CAS-ADR-039)
+# ---------------------------------------------------------------------------
+
+
+async def _persist_document(
+    graph_store,
+    *,
+    doc_id: str,
+    source_type: SourceType,
+    source_path: str,
+) -> Document:
+    """Persist a minimal Document record directly into the graph store."""
+    now = datetime.now(timezone.utc)
+    doc = Document(
+        id=doc_id,
+        title=doc_id,
+        source_type=source_type,
+        source_path=source_path,
+        source_content_hash=f"sha256:{hashlib.sha256(doc_id.encode()).hexdigest()}",
+        adapter_version="1.0",
+        created_by="test",
+        created_at=now,
+        last_modified_by="test",
+        updated_at=now,
+    )
+    await graph_store.insert_document(doc)
+    return doc
+
+
+async def test_t0253_text_document_stamps_body_form_text_and_delivers(
+    tmp_vault_dir, graph_store, minimal_config
+):
+    """A text-source read delivers content AND declares body_form='text'.
+
+    Regression guard: extracted-text callers keep their bytes and now
+    receive a positive form signal rather than inferring it.
+    """
+    service = DocumentsService(graph_store, minimal_config)
+    original = "# T-0253\n\nScannable text body.\n"
+    _seed_file(tmp_vault_dir, "t0253_text.md", original)
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("t0253_text"),
+        source_type=SourceType.MARKDOWN,
+        source_path="t0253_text.md",
+    )
+
+    response = await service.get_document_with_content(
+        doc.id, include_content=True, write_to_path=None
+    )
+
+    assert response.body_form == "text"
+    assert response.content is not None
+    assert base64.b64decode(response.content).decode() == original
+    assert response.read_meta.body_present is True
+    assert response.read_meta.body_length == len(original.encode())
+
+
+async def test_t0253_binary_container_include_content_is_refused(
+    tmp_vault_dir, graph_store, minimal_config
+):
+    """include_content against a binary-container source is refused.
+
+    The core hazard: raw .docx/.pdf bytes handed back and scanned as text
+    return a confident false negative. The refusal fires before any file
+    I/O (no source file is seeded) and points the caller to read_projection.
+    """
+    service = DocumentsService(graph_store, minimal_config)
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("t0253_docx"),
+        source_type=SourceType.DOCX,
+        source_path="t0253.docx",
+    )
+
+    with pytest.raises(BinaryContentRefusedError) as exc_info:
+        await service.get_document_with_content(doc.id, include_content=True, write_to_path=None)
+
+    err = exc_info.value
+    assert err.code == "binary_content_refused"
+    assert err.status_code == 400
+    assert err.detail["document_id"] == doc.id
+    assert err.detail["source_type"] == "docx"
+    # The caller is positively directed to the extracted-text read.
+    assert err.detail["use_instead"] == "read_projection"
+    assert "read_projection" in err.message
+
+
+async def test_t0253_binary_container_without_content_stamps_body_form_binary(
+    tmp_vault_dir, graph_store, minimal_config
+):
+    """A metadata-only read of a binary-container source succeeds and
+    declares body_form='binary'.
+
+    Boundary: the refusal is scoped to include_content. A default read of a
+    binary source must NOT raise and must self-describe its form so a caller
+    can branch to read_projection without a probing round-trip.
+    """
+    service = DocumentsService(graph_store, minimal_config)
+    doc = await _persist_document(
+        graph_store,
+        doc_id=_id("t0253_pdf"),
+        source_type=SourceType.PDF,
+        source_path="t0253.pdf",
+    )
+
+    response = await service.get_document_with_content(
+        doc.id, include_content=False, write_to_path=None
+    )
+
+    assert response.body_form == "binary"
+    assert response.content is None
+    assert response.read_meta.success is True
+    assert response.read_meta.body_present is False
