@@ -21,6 +21,7 @@ from typing import Any, get_args, get_origin
 
 from sage.mcp_server import (
     create_edges,
+    list_directory,
     search,
     update_lifecycles,
     update_metadata,
@@ -414,4 +415,64 @@ def test_bulk_update_metadata_docstring_carries_response_mode_note():
     assert "24 KiB" in doc or "SAGE_MCP_INLINE_BUDGET_BYTES" in doc, (
         "bulk_update_metadata docstring must cite the 24 KiB inline "
         "budget so callers see the same anchor as search."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 6 — filesystem-scan vs vault-document-enumeration disambiguation
+# ---------------------------------------------------------------------------
+
+
+def test_list_directory_docstring_redirects_to_catalog_search():
+    """T6.1 — list_directory must redirect vault-document enumeration to
+    catalog-mode search.
+
+    list_directory scans a *filesystem* path for pre-ingest discovery and
+    requires a ``directory`` argument; callers reaching for it to "list the
+    documents in a vault" hit ``directory Required`` because the tool name
+    reads like a vault-content lister. The docstring must name the catalog-
+    mode enumerator so the correction rides in the published schema, not
+    just human-read prose.
+
+    Anti-coincidental-pass: the anchor is the literal redirect target
+    ``search(mode="catalog"`` (plus the ``response_mode="light"`` form),
+    which does NOT appear in the pre-change docstring — that docstring only
+    points at ``bulk_ingest_document`` and uses the word "discovery". A
+    docstring that merely repeats "directory" or "discovery" cannot pass.
+    """
+    doc = _docstring(list_directory)
+    assert 'search(mode="catalog"' in doc, (
+        "list_directory docstring must redirect vault-document enumeration "
+        'to ``search(mode="catalog", response_mode="light")``.'
+    )
+    assert 'response_mode="light"' in doc, (
+        "the redirect must name the ``light`` response_mode form so callers "
+        "get the stripped enumeration payload."
+    )
+
+
+def test_discover_catalog_mode_named_canonical_document_enumerator():
+    """T6.2 — search's catalog-mode description must name it the canonical
+    vault-document enumerator.
+
+    The surface gives no naming hint that catalog mode is how you list the
+    documents already in a vault. The Modes section must say so explicitly
+    so schema-reading clients pick catalog over the filesystem scanner.
+
+    Anti-coincidental-pass: the catalog-mode block is isolated before the
+    check. The word ``canonical`` already appears elsewhere in the docstring
+    (the ``response_mode`` arg: "Canonical payload-depth selector"), so a
+    whole-docstring substring check would pass without the change. Block
+    isolation is what makes this test fail pre-edit.
+    """
+    doc = _docstring(search)
+    match = re.search(r"\bcatalog:.*?(?=\n\s*deterministic:)", doc, re.DOTALL)
+    assert match is not None, (
+        "search docstring must retain a ``catalog:`` mode description block in the Modes section."
+    )
+    catalog_block = match.group(0)
+    assert "canonical" in catalog_block.lower(), (
+        "the catalog-mode description must name catalog mode the canonical "
+        "vault-document enumerator (the word 'canonical' must appear in the "
+        "``catalog:`` block, not merely elsewhere in the docstring)."
     )

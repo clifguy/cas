@@ -979,9 +979,11 @@ def register_sage_tools(
         Modes:
             semantic: Vector + optional BM25 fusion. Requires query.
             keyword: BM25-only search. Requires query. Use query="*" for filter-only listing.
-            catalog: Filter-only SQL enumeration. No query needed. Returns document
-                metadata only (no chunks or scores). Supports pagination via limit + offset.
-                Best for deterministic enumeration by tags, doc_type, or other metadata.
+            catalog: Filter-only SQL enumeration -- the canonical way to
+                enumerate documents already in a vault. No query needed. Returns
+                document metadata only (no chunks or scores). Supports pagination
+                via limit + offset. Best for deterministic enumeration by tags,
+                doc_type, or other metadata.
             deterministic: Exact heading path extraction. Requires document_id + heading_path.
 
         Edge enumeration:
