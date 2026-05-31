@@ -53,6 +53,7 @@ from sage.models.schemas import (
     ReadSectionResponse,
     RefreshViewsResponse,
 )
+from sage.services.read_diagnostics import build_not_found_detail
 from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
@@ -163,7 +164,9 @@ class UtilitiesService:
         """
         doc = await self._graph.get_document(document_id)
         if doc is None:
-            raise DocumentNotFoundError(document_id)
+            raise DocumentNotFoundError(
+                document_id, await build_not_found_detail(self._graph, document_id)
+            )
 
         chunks = await self._content.get_all_chunks(document_id)
         if not chunks:

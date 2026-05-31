@@ -8,6 +8,40 @@ import hashlib
 import re
 import unicodedata
 
+# Canonical document-id shape: 8 hex chars, an underscore, then a slug.
+# Mirrors the validator pattern enforced on DocumentIdStr in
+# sage/models/schemas.py; kept here as the single source for the
+# generator and the shape predicate so the two never drift.
+_DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+
+def is_well_formed_document_id(value: str) -> bool:
+    """Return whether ``value`` matches the canonical document-id shape.
+
+    A well-formed id is 8 hex chars, an underscore, then a slug of
+    lowercase alphanumerics and underscores. The check is purely lexical:
+    it says nothing about whether a document with that id exists, only
+    whether the string could ever have been minted by this vault's id
+    generator. Used by the not-found diagnostics to tell a malformed or
+    cross-vault identifier apart from a plausibly-real one (CAS-ADR-039).
+    """
+    return _DOCUMENT_ID_RE.fullmatch(value) is not None
+
+
+def document_id_slug(value: str) -> str | None:
+    """Return the slug suffix of a well-formed document id, else ``None``.
+
+    The slug is the portion after the leading ``<8 hex>_`` hash prefix.
+    Two ids minted from the same title share a slug even when their hash
+    prefixes differ, so comparing slugs surfaces the "same document,
+    different version/hash" case the not-found diagnostics report as
+    ``slug_matches_catalog`` (CAS-ADR-039). Returns ``None`` for ids that
+    are not well-formed, since their slug is undefined.
+    """
+    if not is_well_formed_document_id(value):
+        return None
+    return value.split("_", 1)[1]
+
 
 def generate_document_id(source_path: str, created_at: str, title: str) -> str:
     """Generate a human-readable document ID.

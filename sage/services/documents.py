@@ -24,6 +24,7 @@ from sage.api.errors import (
 )
 from sage.config import VaultConfig
 from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse, ReadMeta
+from sage.services.read_diagnostics import build_not_found_detail
 from sage.storage.graph_store import GraphStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
@@ -112,7 +113,9 @@ class DocumentsService:
         """
         doc = await self._store.get_document(document_id)
         if doc is None:
-            raise DocumentNotFoundError(document_id)
+            raise DocumentNotFoundError(
+                document_id, await build_not_found_detail(self._store, document_id)
+            )
 
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         file_path = storage_root / doc.source_path
@@ -143,7 +146,9 @@ class DocumentsService:
 
         doc = await self._store.get_document(document_id)
         if doc is None:
-            raise DocumentNotFoundError(document_id)
+            raise DocumentNotFoundError(
+                document_id, await build_not_found_detail(self._store, document_id)
+            )
 
         response = DocumentWithContent(**doc.model_dump())
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
