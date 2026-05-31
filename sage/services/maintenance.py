@@ -8,6 +8,7 @@ three-layer service + router + MCP-tool shape.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -22,6 +23,7 @@ from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, ReabstractOutcome, StalenessBasis
 from sage.models.schemas import (
+    Document,
     DriftEntry,
     DriftReport,
     MigrationReport,
@@ -31,6 +33,8 @@ from sage.models.schemas import (
     ReabstractReport,
     ReabstractReportEntry,
     ReabstractSummaryEvent,
+    SourceFileIntegrityEntry,
+    SourceFileIntegrityReport,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
 )
@@ -249,6 +253,103 @@ class MaintenanceService:
             total_edges_walked=len(edges),
             summary=summary,
             entries=entries,
+        )
+
+    async def verify_vault_source_files(
+        self, check_hashes: bool = False
+    ) -> SourceFileIntegrityReport:
+        """Audit that every document's backing source file is present.
+
+        Walks every document in the vault (all lifecycle states) and
+        checks that its ``source_path`` resolves to an existing file
+        under the vault storage root. When ``check_hashes`` is true, each
+        present file's SHA-256 is recomputed and compared against the
+        recorded ``source_content_hash``. Read-only; mutates nothing.
+
+        Audits the vault-local source files (the ``imports/`` copies that
+        ``get_document`` delivers), distinct from the LanceDB content
+        store reclaimed by ``optimize_content_store``.
+
+        Returns a SourceFileIntegrityReport with per-document entries for
+        missing or hash-mismatched files and aggregate counts; documents
+        with an intact source file are absent from ``entries``.
+        """
+        all_docs = await self._graph_store.list_all_documents()
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+
+        entries: list[SourceFileIntegrityEntry] = []
+        for doc in all_docs:
+            entry = self._check_document_source_file(doc, storage_root, check_hashes)
+            if entry is not None:
+                entries.append(entry)
+
+        summary = {
+            "healthy": len(all_docs) - len(entries),
+            "missing": sum(1 for e in entries if e.integrity_status == "missing"),
+            "hash_mismatch": sum(1 for e in entries if e.integrity_status == "hash_mismatch"),
+        }
+
+        return SourceFileIntegrityReport(
+            vault_id=self._vault_id,
+            total_documents_checked=len(all_docs),
+            check_hashes=check_hashes,
+            summary=summary,
+            entries=entries,
+        )
+
+    def _check_document_source_file(
+        self,
+        doc: Document,
+        storage_root: Path,
+        check_hashes: bool,
+    ) -> SourceFileIntegrityEntry | None:
+        """Return an integrity entry for ``doc`` if its source file is
+        missing or hash-mismatched, else None.
+
+        Existence is the ``content_file_missing`` predicate used by
+        ``get_document`` (a bare ``Path.exists()``); when ``check_hashes``
+        is set, a present file is additionally hashed and compared against
+        the recorded ``source_content_hash``. A missing file is always
+        classified ``missing`` regardless of ``check_hashes`` (it is never
+        a hash error).
+        """
+        file_path = storage_root / doc.source_path
+        if not file_path.exists():
+            return self._integrity_entry(doc, "missing", observed=None)
+
+        if check_hashes:
+            observed = self._hash_file(file_path)
+            if observed != doc.source_content_hash:
+                return self._integrity_entry(doc, "hash_mismatch", observed=observed)
+
+        return None
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        """SHA-256 of a file in the canonical ``sha256:<hex>`` form,
+        read in chunks so a large source file does not load whole."""
+        digest = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                digest.update(chunk)
+        return f"sha256:{digest.hexdigest()}"
+
+    @staticmethod
+    def _integrity_entry(
+        doc: Document,
+        integrity_status: str,
+        *,
+        observed: str | None,
+    ) -> SourceFileIntegrityEntry:
+        return SourceFileIntegrityEntry(
+            document_id=doc.id,
+            title=doc.title,
+            source_path=doc.source_path,
+            lifecycle_status=doc.lifecycle_status,
+            version_label=doc.version_label,
+            integrity_status=integrity_status,
+            expected_content_hash=doc.source_content_hash,
+            observed_content_hash=observed,
         )
 
     async def optimize_content_store(

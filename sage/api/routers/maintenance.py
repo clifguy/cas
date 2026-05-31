@@ -20,6 +20,8 @@ from sage.models.schemas import (
     OptimizeContentStoreReport,
     OptimizeContentStoreRequest,
     ReabstractRequest,
+    SourceFileIntegrityReport,
+    SourceFileIntegrityRequest,
     VaultIdStr,
 )
 from sage.services.maintenance import MaintenanceService, ReabstractEvent
@@ -147,3 +149,21 @@ async def admin_optimize_content_store(
     return await service.optimize_content_store(
         cleanup_older_than_days=body.cleanup_older_than_days,
     )
+
+
+@router.post(
+    "/admin/verify-source-files",
+    response_model=SourceFileIntegrityReport,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def admin_verify_vault_source_files(
+    body: SourceFileIntegrityRequest = Body(default_factory=SourceFileIntegrityRequest),
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: MaintenanceService = Depends(get_maintenance_service),
+) -> SourceFileIntegrityReport:
+    return await service.verify_vault_source_files(check_hashes=body.check_hashes)

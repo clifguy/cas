@@ -864,6 +864,227 @@ async def test_t0111_detect_drift_version_only(post_migration_vault):
     assert "22222222-2222-4222-8222-222222222222" not in bases
 
 
+# ---------------------------------------------------------------------------
+# MaintenanceService.verify_vault_source_files
+# ---------------------------------------------------------------------------
+
+
+def _src_doc(
+    doc_id: str,
+    content_hash: str,
+    *,
+    source_path: str,
+    lifecycle_status: str = "active",
+    version_label: str | None = None,
+) -> Document:
+    """A Document for source-file-audit tests, parameterized on the fields
+    the audit reads: source_path, lifecycle_status, source_content_hash."""
+    now = datetime.now(timezone.utc)
+    return Document(
+        id=doc_id,
+        title=f"Source test {doc_id}",
+        source_type=SourceType.MARKDOWN,
+        source_path=source_path,
+        lifecycle_status=lifecycle_status,
+        source_content_hash=content_hash,
+        adapter_version="0.1.0",
+        created_by="testuser",
+        created_at=now,
+        last_modified_by="testuser",
+        updated_at=now,
+        projected_at=now,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        version_label=version_label,
+    )
+
+
+def _sha256_of(content: bytes) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _maintenance_for(services, registry_service) -> MaintenanceService:
+    return MaintenanceService(
+        vault_id=services.config.vault.id,
+        db_path=Path(services.config.vault.brain_root) / "graph.db",
+        graph_store=services.graph_store,
+        config=services.config,
+        registry_service=registry_service,
+        content_store=services.content_store,
+    )
+
+
+def _write_source(services, source_path: str, content: bytes) -> Path:
+    """Write a real file at storage_root/source_path (mkdir parents)."""
+    p = Path(services.config.vault.storage_root) / source_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(content)
+    return p
+
+
+async def test_verify_source_files_clean_vault_returns_empty(post_migration_vault):
+    """Happy path: every document's source file present → empty report,
+    all healthy."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    for i in range(3):
+        sp = f"imports/deadbeef_d{i}.md"
+        body = f"body {i}".encode()
+        _write_source(services, sp, body)
+        await gs.insert_document(_src_doc(f"deadbeef_d{i}", _sha256_of(body), source_path=sp))
+
+    report = await maint.verify_vault_source_files(check_hashes=False)
+
+    assert report.vault_id == services.config.vault.id
+    assert report.total_documents_checked == 3
+    assert report.check_hashes is False
+    assert report.entries == []
+    assert report.summary == {"healthy": 3, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_verify_source_files_flags_missing_file(post_migration_vault):
+    """The precipitating incident: one document's backing file is absent.
+    It is the only entry, classified `missing`, and the present docs stay
+    healthy."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    for did, present in (("aaaaaaaa_a", True), ("bbbbbbbb_b", False), ("cccccccc_c", True)):
+        sp = f"imports/{did}.md"
+        body = f"{did} body".encode()
+        if present:
+            _write_source(services, sp, body)
+        await gs.insert_document(_src_doc(did, _sha256_of(body), source_path=sp))
+
+    # Positive control: the present files exist; the flagged one does not.
+    root = Path(services.config.vault.storage_root)
+    assert (root / "imports/aaaaaaaa_a.md").exists()
+    assert (root / "imports/cccccccc_c.md").exists()
+    assert not (root / "imports/bbbbbbbb_b.md").exists()
+
+    report = await maint.verify_vault_source_files(check_hashes=False)
+
+    assert report.total_documents_checked == 3
+    assert report.summary == {"healthy": 2, "missing": 1, "hash_mismatch": 0}
+    assert [e.document_id for e in report.entries] == ["bbbbbbbb_b"]
+    entry = report.entries[0]
+    assert entry.integrity_status == "missing"
+    assert entry.source_path == "imports/bbbbbbbb_b.md"
+    assert entry.lifecycle_status == "active"
+    assert entry.observed_content_hash is None
+
+
+async def test_verify_source_files_surfaces_archived_missing(post_migration_vault):
+    """Scope is all lifecycle states: an archived record with a missing
+    file is surfaced (the incident's residual was an archived version)."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    await gs.insert_document(
+        _src_doc(
+            "aaaaaaaa_old",
+            _sha256_of(b"x"),
+            source_path="imports/archived.md",
+            lifecycle_status="archived",
+            version_label="v1",
+        )
+    )
+
+    report = await maint.verify_vault_source_files(check_hashes=False)
+
+    assert report.total_documents_checked == 1
+    assert report.summary["missing"] == 1
+    entry = report.entries[0]
+    assert entry.document_id == "aaaaaaaa_old"
+    assert entry.lifecycle_status == "archived"
+    assert entry.version_label == "v1"
+
+
+async def test_verify_source_files_existence_mode_ignores_hash_drift(post_migration_vault):
+    """check_hashes=False never reads content: a present file whose bytes
+    do not match the recorded hash is NOT flagged."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    sp = "imports/deadbeef_h.md"
+    _write_source(services, sp, b"actual content")
+    await gs.insert_document(
+        _src_doc("deadbeef_h", _sha256_of(b"different content"), source_path=sp)
+    )
+
+    report = await maint.verify_vault_source_files(check_hashes=False)
+
+    assert report.entries == []
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_verify_source_files_hash_mode_flags_mismatch(post_migration_vault):
+    """check_hashes=True: a present file whose bytes diverge from the
+    recorded hash surfaces as `hash_mismatch` with the observed hash."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    sp = "imports/deadbeef_h.md"
+    _write_source(services, sp, b"actual content")
+    expected = _sha256_of(b"different content")
+    await gs.insert_document(_src_doc("deadbeef_h", expected, source_path=sp))
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.check_hashes is True
+    assert report.summary == {"healthy": 0, "missing": 0, "hash_mismatch": 1}
+    entry = report.entries[0]
+    assert entry.integrity_status == "hash_mismatch"
+    assert entry.expected_content_hash == expected
+    assert entry.observed_content_hash == _sha256_of(b"actual content")
+    assert entry.observed_content_hash != entry.expected_content_hash
+
+
+async def test_verify_source_files_hash_mode_clean_when_matching(post_migration_vault):
+    """check_hashes=True with a matching on-disk file → no entry. Guards
+    against the mismatch path firing on every file."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    sp = "imports/deadbeef_h.md"
+    body = b"matching content"
+    _write_source(services, sp, body)
+    await gs.insert_document(_src_doc("deadbeef_h", _sha256_of(body), source_path=sp))
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.entries == []
+    assert report.summary == {"healthy": 1, "missing": 0, "hash_mismatch": 0}
+
+
+async def test_verify_source_files_hash_mode_missing_stays_missing(post_migration_vault):
+    """A missing file under check_hashes=True classifies as `missing` (not
+    a hash error) with a null observed hash."""
+    _registry, services, registry_service = post_migration_vault
+    gs = services.graph_store
+    maint = _maintenance_for(services, registry_service)
+
+    # No file written for this doc.
+    await gs.insert_document(
+        _src_doc("deadbeef_g", _sha256_of(b"x"), source_path="imports/gone.md")
+    )
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.summary == {"healthy": 0, "missing": 1, "hash_mismatch": 0}
+    entry = report.entries[0]
+    assert entry.integrity_status == "missing"
+    assert entry.observed_content_hash is None
+
+
 # ============================================================================
 # optimize_vault_content_store tests
 # ============================================================================

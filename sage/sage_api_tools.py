@@ -2145,6 +2145,50 @@ def register_sage_tools(
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
+    @mcp.tool(name="admin_verify_vault_source_files")
+    async def verify_vault_source_files(vault_id: str, check_hashes: bool = False) -> dict:
+        """Audit that every document's backing source file is present.
+
+        Walks every document in the vault and checks that its
+        ``source_path`` resolves to an existing file under the vault
+        storage root. Returns a SourceFileIntegrityReport whose
+        ``entries`` enumerate documents whose source file is missing;
+        documents with an intact source file are absent. Read-only —
+        mutates nothing.
+
+        When ``check_hashes`` is true, each present file's SHA-256 is
+        recomputed and compared against the recorded
+        ``source_content_hash``; a divergent file surfaces as a
+        ``hash_mismatch`` entry (a full file read per document). Default
+        false performs an existence check only.
+
+        Note: this audits the vault-local source files (the ``imports/``
+        copies that ``get_document`` delivers), distinct from the LanceDB
+        content store that ``admin_optimize_vault_content_store`` reclaims.
+
+        Error modes:
+        - ``vault_not_found`` (404): no vault registered with that id.
+
+        Args:
+            vault_id: Target vault identifier.
+            check_hashes: Recompute and compare on-disk hashes when true;
+                existence check only when false (default).
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            if v.maintenance_service is None:
+                raise RuntimeError(
+                    f"Vault {vault_id!r} was initialized without a "
+                    "registry_service; maintenance_service is unavailable."
+                )
+            report = await v.maintenance_service.verify_vault_source_files(
+                check_hashes=check_hashes
+            )
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     @mcp.tool(name="admin_recompute_deferred_vault_abstracts")
     async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
@@ -2397,6 +2441,7 @@ def register_sage_tools(
         "list_pending_metadata": list_pending_metadata,
         "admin_migrate_vault": migrate_vault,
         "admin_verify_vault_drift": verify_vault_drift,
+        "admin_verify_vault_source_files": verify_vault_source_files,
         "admin_recompute_deferred_vault_abstracts": recompute_deferred_vault_abstracts,
         "admin_optimize_vault_content_store": optimize_vault_content_store,
         "admin_reload_vault": reload_vault,
