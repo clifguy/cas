@@ -701,7 +701,7 @@ async def test_bh_124_validation_before_projection(
 
 
 # ---------------------------------------------------------------------------
-# T-0253: get_document body-form marker + binary-container refusal (CAS-ADR-039)
+# get_document body-form marker + binary-container refusal (CAS-ADR-039)
 # ---------------------------------------------------------------------------
 
 
