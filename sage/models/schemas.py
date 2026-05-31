@@ -3587,6 +3587,100 @@ class DriftReport(BaseModel):
     )
 
 
+class SourceFileIntegrityEntry(BaseModel):
+    """Per-document entry in a SourceFileIntegrityReport.
+
+    Surfaced when a document's backing source file is absent under the
+    vault storage root (`missing`) or, when hash verification is enabled,
+    present but no longer hashing to the recorded `source_content_hash`
+    (`hash_mismatch`). Documents whose source file is intact are absent
+    from the report.
+    """
+
+    document_id: DocumentIdStr = Field(
+        description="Identifier of the document with the integrity issue."
+    )
+    title: str = Field(description="Human-readable title of the document.")
+    source_path: str = Field(description="The document's vault-relative source_path.")
+    lifecycle_status: str = Field(
+        description="Lifecycle state of the document (active, archived, ...)."
+    )
+    version_label: str | None = Field(
+        default=None,
+        description="Version indicator of the document, when set.",
+    )
+    integrity_status: Literal["missing", "hash_mismatch"] = Field(
+        description=(
+            "`missing` — the source file does not exist under the storage "
+            "root. `hash_mismatch` — the file exists but its content hash "
+            "differs from the recorded source_content_hash (only emitted "
+            "when check_hashes=True)."
+        )
+    )
+    expected_content_hash: Sha256Str = Field(
+        description="The source_content_hash recorded on the document."
+    )
+    observed_content_hash: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 computed from the on-disk file when check_hashes=True "
+            "and the file was readable; null for `missing` rows and whenever "
+            "check_hashes=False."
+        ),
+    )
+
+
+class SourceFileIntegrityRequest(BaseModel):
+    check_hashes: bool = Field(
+        default=False,
+        description=(
+            "When true, recompute each present file's SHA-256 and compare "
+            "against the recorded source_content_hash, surfacing "
+            "`hash_mismatch` rows. Adds a full file read per document; "
+            "default false performs an existence check only."
+        ),
+    )
+
+
+class SourceFileIntegrityReport(BaseModel):
+    """Result of a `verify_vault_source_files` call.
+
+    Per-vault audit that every document's backing source file is present
+    under the vault storage root, and — when check_hashes is set — that
+    each present file still hashes to its recorded source_content_hash.
+    `entries` carries one row per document whose source file is missing or
+    mismatched; documents with an intact source file are absent.
+    """
+
+    vault_id: VaultIdStr = Field(
+        description="Identifier of the vault whose source files were audited."
+    )
+    total_documents_checked: int = Field(
+        description=(
+            "Total documents inspected across all lifecycle states. Equals "
+            "the universe; `len(entries)` is the subset with a missing or "
+            "mismatched file."
+        )
+    )
+    check_hashes: bool = Field(
+        description=(
+            "Whether on-disk hashes were recomputed and compared (true) or "
+            "only existence was checked (false)."
+        )
+    )
+    summary: dict[str, int] = Field(
+        description=(
+            "Counts keyed by `healthy`, `missing`, and `hash_mismatch`. The "
+            "three values sum to total_documents_checked."
+        )
+    )
+    entries: list[SourceFileIntegrityEntry] = Field(
+        description=(
+            "Per-document rows; one per document whose source file is missing or hash-mismatched."
+        )
+    )
+
+
 class ReabstractProgressEvent(BaseModel):
     """SSE `progress` event payload for reabstract-deferred.
 

@@ -115,6 +115,7 @@ RENAME_MAPPING: Final[dict[str, str]] = {
     "get_stack_config": "admin_get_stack_config",
     # v6 pending-classification resolved
     "optimize_vault_content_store": "admin_optimize_vault_content_store",
+    "verify_vault_source_files": "admin_verify_vault_source_files",
     # v7 amendments: scope rule re-applied; admin_ tracks vault/stack scope
     "list_vaults": "admin_list_vaults",
     "get_vault_config": "admin_get_vault_config",
@@ -281,6 +282,7 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "admin_reload_vault": "sage_admin",
     "admin_update_vault_config": "sage_admin",
     "admin_verify_vault_drift": "sage_admin",
+    "admin_verify_vault_source_files": "sage_admin",
     "admin_migrate_vault": "sage_admin",
     "admin_recompute_views": "sage_admin",
     "admin_recompute_deferred_vault_abstracts": "sage_admin",
