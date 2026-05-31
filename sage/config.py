@@ -4,6 +4,7 @@ Loads vault config from YAML, validates structure, and builds the lifecycle
 transition table used by LifecycleService for state machine validation.
 """
 
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,73 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from sage.instrumentation.timing import TimingConfig
 from sage.models.schemas import VaultIdStr
+
+logger = logging.getLogger(__name__)
+
+
+def pattern_is_discriminating(pattern: dict) -> bool:
+    """True when an identifier_mention pattern can resolve a *specific*
+    identifier.
+
+    A pattern discriminates when it carries a ``target_tier3`` filter or a
+    ``target_tags`` entry with a ``{...}`` placeholder substituted per
+    identifier. A pattern with only ``target_doc_type`` and/or static tags
+    matches every document of the type and cannot pick one. The resolver
+    (``identifier_mention_inference._resolve_identifier``) and the config
+    warning pass both key off this single predicate so they cannot drift.
+    """
+    return bool(pattern.get("target_tier3")) or any(
+        "{" in t for t in (pattern.get("target_tags") or [])
+    )
+
+
+def identifier_mention_pattern_warnings(edge_inference: dict) -> list[str]:
+    """Return non-fatal warnings for misconfigured identifier_mention patterns.
+
+    The structural ``edge_inference`` JSON Schema deliberately still accepts
+    legacy tag-based patterns for backward compatibility, so these defects
+    cannot be caught by schema validation alone. This routine flags the two
+    that silently break ADR/F-record resolution:
+
+    * ``target_title_prefix`` -- an orphaned key. The resolver dropped
+      title-prefix matching during the tier3 migration, so a pattern that
+      relies on it resolves on its remaining (non-discriminating) filters.
+    * a *non-discriminating* pattern -- no ``target_tier3`` and no
+      placeholder-bearing ``target_tags`` entry. Such a pattern matches
+      every document of ``target_doc_type`` and the resolver refuses to link
+      it (see ``identifier_mention_inference._resolve_identifier``), so its
+      mentions silently produce no edges.
+
+    Warnings only; callers log them. Returning a value (rather than raising)
+    keeps a vault whose config predates the tier3 migration loadable.
+    """
+    warnings: list[str] = []
+    if not isinstance(edge_inference, dict):
+        return warnings
+    for assignment in edge_inference.get("tier_assignments", []) or []:
+        if assignment.get("edge_type") != "references":
+            continue
+        for rule in assignment.get("inference_rules", []) or []:
+            if rule.get("method") != "identifier_mention":
+                continue
+            for pattern in rule.get("patterns", []) or []:
+                regex = pattern.get("regex", "<no-regex>")
+                if "target_title_prefix" in pattern:
+                    warnings.append(
+                        f"identifier_mention pattern {regex!r} carries the "
+                        "unsupported key 'target_title_prefix'; the resolver "
+                        "ignores it (title-prefix matching was removed in the "
+                        "tier3 migration)."
+                    )
+                if not pattern_is_discriminating(pattern):
+                    warnings.append(
+                        f"identifier_mention pattern {regex!r} is "
+                        "non-discriminating (no target_tier3 and no "
+                        "placeholder-bearing target_tags); it cannot resolve a "
+                        "specific identifier and the resolver will refuse to "
+                        "link its mentions."
+                    )
+    return warnings
 
 
 class VaultIdentity(BaseModel):
@@ -389,6 +457,8 @@ class VaultConfig(BaseModel):
         directly (test fixtures, vault-management code).
         """
         self.build_tier3_validators()
+        for warning in identifier_mention_pattern_warnings(self.edge_inference):
+            logger.warning("vault '%s': %s", self.vault.id, warning)
 
     def valid_doc_type_values(self) -> set[str]:
         return {dt.value for dt in self.document_types.doc_types}
