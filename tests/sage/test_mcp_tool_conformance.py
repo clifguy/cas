@@ -179,10 +179,14 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # REST surface keeps ``export_projection`` as its own discrete
     # endpoint (storage_root-relative semantics); the MCP-side
     # ``write_to_path`` is an absolute-path mode mirroring
-    # ``get_document``. ``doc_id`` is the MCP-only inbound alias for
-    # ``document_id`` (see the read-tool cluster below). Both are
+    # ``get_document``. ``delivery`` (inline | spill | auto) pins the
+    # inline-vs-spill shape and is meaningful only alongside the
+    # MCP-only ``write_to_path``; the REST projection endpoint has no
+    # write-to-disk target to spill to, so the selector is MCP-only by
+    # construction. ``doc_id`` is the MCP-only inbound alias for
+    # ``document_id`` (see the read-tool cluster below). All three are
     # permanent divergences by design.
-    ("sage_core", "read_projection"): frozenset({"write_to_path", "doc_id"}),
+    ("sage_core", "read_projection"): frozenset({"write_to_path", "doc_id", "delivery"}),
     # ``doc_id`` is an MCP-only inbound alias for ``document_id`` on the
     # document-id read tools, mirroring the ``traverse`` alias above.
     # External agents (notably Cowork over /mcp) supply the ``doc_id``

@@ -967,6 +967,26 @@ class BinaryContentRefusedError(SAGEError):
         )
 
 
+class DeliveryParameterConflictError(SAGEError):
+    """400: an explicit ``delivery`` mode contradicts the write_to_path argument.
+
+    Raised by content read tools that accept a ``delivery`` selector
+    (``inline | spill | auto``) when the requested mode cannot be honored:
+    ``delivery="inline"`` was combined with a ``write_to_path`` target, or
+    ``delivery="spill"`` was requested without one. The contradiction is
+    refused rather than silently resolved so the caller learns which of the
+    two arguments to drop.
+    """
+
+    def __init__(self, delivery: str, reason: str) -> None:
+        super().__init__(
+            "delivery_conflict",
+            f"delivery={delivery!r} conflicts with write_to_path: {reason}",
+            400,
+            {"delivery": delivery, "reason": reason},
+        )
+
+
 class EdgeAnchorPolicyViolationError(SAGEError):
     """400: edge violates the resolution-policy write-time invariant (CAS-ADR-017).
 

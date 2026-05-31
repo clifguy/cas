@@ -256,6 +256,132 @@ async def test_read_projection_no_projection(utilities_service, graph_store):
 
 
 # ---------------------------------------------------------------------------
+# read_projection: explicit inline-vs-spill delivery control
+# ---------------------------------------------------------------------------
+#
+# ``delivery`` lets a caller pin the inline-vs-spill shape instead of
+# inferring it from whether ``write_to_path`` was supplied:
+#   - ``inline`` forces the body into the response;
+#   - ``spill`` forces write-to-path delivery;
+#   - ``auto`` (default) preserves the pre-existing heuristic exactly
+#     (inline when no path, spill when a path is given).
+# ``body_length`` is already reported by the read_meta foundation; these
+# tests assert it is honored alongside the forced delivery shape.
+
+
+async def test_read_projection_delivery_inline_forces_body(utilities_service, ingested_doc):
+    """delivery=inline returns the projection inline and reports body_length."""
+    result = await utilities_service.read_projection(ingested_doc.id, delivery="inline")
+
+    assert result.projection_text is not None
+    assert len(result.projection_text) > 0
+    assert result.written_to is None
+    assert result.content_size is None
+    # body_length (a read_meta self-describing marker, CAS-ADR-039) reports
+    # the inline body size.
+    assert result.read_meta.success is True
+    assert result.read_meta.body_present is True
+    assert result.read_meta.body_length == len(result.projection_text)
+
+
+async def test_read_projection_delivery_spill_forces_write(
+    utilities_service, ingested_doc, tmp_path
+):
+    """delivery=spill writes the projection to disk and returns metadata only.
+
+    Anti-coincidental-pass: the file must actually exist with non-empty
+    contents matching content_size, and the inline text must be cleared.
+    """
+    target = tmp_path / "delivery_spill.md"
+
+    result = await utilities_service.read_projection(
+        ingested_doc.id, write_to_path=str(target), delivery="spill"
+    )
+
+    assert result.projection_text is None
+    assert result.written_to == str(target)
+    assert result.content_size > 0
+    assert target.exists()
+    assert len(target.read_bytes()) == result.content_size
+    # write-to-path delivery: no inline body, body_length null (foundation).
+    assert result.read_meta.success is True
+    assert result.read_meta.body_present is False
+    assert result.read_meta.body_length is None
+
+
+async def test_read_projection_delivery_auto_inline_matches_default(
+    utilities_service, ingested_doc
+):
+    """delivery=auto without a path reproduces the default inline read exactly.
+
+    Byte-for-byte equivalence guards against ``auto`` drifting from the
+    pre-existing heuristic that the no-argument call still exercises.
+    """
+    default = await utilities_service.read_projection(ingested_doc.id)
+    explicit_auto = await utilities_service.read_projection(ingested_doc.id, delivery="auto")
+
+    assert explicit_auto.model_dump() == default.model_dump()
+
+
+async def test_read_projection_delivery_auto_spill_matches_default(
+    utilities_service, ingested_doc, tmp_path
+):
+    """delivery=auto with a path reproduces the default write-to-path read.
+
+    Compares the response shape (excluding the necessarily-distinct target
+    path) between an implicit write_to_path call and an explicit auto one.
+    """
+    default_target = tmp_path / "auto_default.md"
+    auto_target = tmp_path / "auto_explicit.md"
+
+    default = await utilities_service.read_projection(
+        ingested_doc.id, write_to_path=str(default_target)
+    )
+    explicit_auto = await utilities_service.read_projection(
+        ingested_doc.id, write_to_path=str(auto_target), delivery="auto"
+    )
+
+    default_dump = default.model_dump()
+    auto_dump = explicit_auto.model_dump()
+    # written_to differs by construction; everything else must match.
+    assert default_dump.pop("written_to") == str(default_target)
+    assert auto_dump.pop("written_to") == str(auto_target)
+    assert auto_dump == default_dump
+    assert default.content_size == explicit_auto.content_size
+
+
+async def test_read_projection_delivery_inline_with_write_to_path_conflicts(
+    utilities_service, ingested_doc, tmp_path
+):
+    """delivery=inline plus write_to_path is a contradiction, refused (not guessed)."""
+    from sage.api.errors import DeliveryParameterConflictError
+
+    target = tmp_path / "should_not_be_written.md"
+    with pytest.raises(DeliveryParameterConflictError) as exc_info:
+        await utilities_service.read_projection(
+            ingested_doc.id, write_to_path=str(target), delivery="inline"
+        )
+
+    assert exc_info.value.code == "delivery_conflict"
+    assert exc_info.value.status_code == 400
+    # The refusal must precede any file I/O.
+    assert not target.exists()
+
+
+async def test_read_projection_delivery_spill_without_write_to_path_conflicts(
+    utilities_service, ingested_doc
+):
+    """delivery=spill without a write_to_path target is refused, not silently inlined."""
+    from sage.api.errors import DeliveryParameterConflictError
+
+    with pytest.raises(DeliveryParameterConflictError) as exc_info:
+        await utilities_service.read_projection(ingested_doc.id, delivery="spill")
+
+    assert exc_info.value.code == "delivery_conflict"
+    assert exc_info.value.status_code == 400
+
+
+# ---------------------------------------------------------------------------
 # BH-041: Retrieval assertions loaded from separate YAML file
 # ---------------------------------------------------------------------------
 
