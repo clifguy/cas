@@ -316,9 +316,10 @@ def register_sage_tools(
     @mcp.tool()
     async def get_document(
         vault_id: str,
-        document_id: str,
+        document_id: str | None = None,
         include_content: bool = False,
         write_to_path: str | None = None,
+        doc_id: str | None = None,
     ) -> dict:
         """Retrieve a document record with all metadata, lifecycle state, and
         pipeline status. Optional delivery of the vault-local source file
@@ -350,7 +351,9 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            document_id: The document's unique identifier.
+            document_id: The document's unique identifier. Alias: ``doc_id``.
+                Supply exactly one of ``document_id`` or ``doc_id``.
+            doc_id: Alias for ``document_id``; supply exactly one.
             include_content: When true, add `content` (base64) and
                 `content_size` to the response. Default: false.
             write_to_path: Absolute filesystem path. When set, SAGE
@@ -360,11 +363,28 @@ def register_sage_tools(
                 be writable. Mutually exclusive with `include_content`.
         """
         try:
+            # Validate each id-bearing parameter by its literal name (so the
+            # typed-alias gate in tests/sage/test_typed_alias_coverage.py sees
+            # a _DOCUMENT_ID_ADAPTER.validate_python(<param>) call for each),
+            # then resolve the alias to one value, then raise the
+            # ambiguous/missing errors before any service call.
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if doc_id is not None:
+                doc_id = _DOCUMENT_ID_ADAPTER.validate_python(doc_id)
+            if document_id is not None and doc_id is not None:
+                raise AmbiguousDocumentIdentifierError(
+                    tool="get_document", canonical="document_id", alias="doc_id"
+                )
+            if document_id is None and doc_id is None:
+                raise MissingDocumentIdentifierError(
+                    tool="get_document", accepted=["document_id", "doc_id"]
+                )
+            resolved_document_id = document_id if document_id is not None else doc_id
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             response = await v.documents_service.get_document_with_content(
-                document_id, include_content, write_to_path
+                resolved_document_id, include_content, write_to_path
             )
             return serialize(response)
         except (SAGEError, ValueError) as e:
@@ -906,8 +926,9 @@ def register_sage_tools(
     @mcp.tool()
     async def chain(
         vault_id: str,
-        document_id: str,
         edge_type: str,
+        document_id: str | None = None,
+        doc_id: str | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> dict:
@@ -930,21 +951,37 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            document_id: Document ID to start the chain walk from.
-                The result is symmetric: any chain member returns the
-                full ordered chain with that member's position
-                indicated.
             edge_type: Edge type to follow (e.g. "supersedes", "references").
+            document_id: Document ID to start the chain walk from. Alias: ``doc_id``.
+                Supply exactly one of ``document_id`` or ``doc_id``. The result
+                is symmetric: any chain member returns the full ordered chain
+                with that member's position indicated.
+            doc_id: Alias for ``document_id``; supply exactly one.
             limit: Maximum chain entries to return. Default: all.
                 Use with offset to page through long version chains.
             offset: Skip this many entries from the start (oldest). Default: 0.
         """
         try:
+            # See get_document: validate each id param by literal name for the
+            # typed-alias gate, then resolve the alias and surface the
+            # ambiguous/missing errors before any service call.
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if doc_id is not None:
+                doc_id = _DOCUMENT_ID_ADAPTER.validate_python(doc_id)
+            if document_id is not None and doc_id is not None:
+                raise AmbiguousDocumentIdentifierError(
+                    tool="chain", canonical="document_id", alias="doc_id"
+                )
+            if document_id is None and doc_id is None:
+                raise MissingDocumentIdentifierError(
+                    tool="chain", accepted=["document_id", "doc_id"]
+                )
+            resolved_document_id = document_id if document_id is not None else doc_id
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             request = ChainRequest(
-                document_id=document_id,
+                document_id=resolved_document_id,
                 edge_type=edge_type,
                 limit=limit,
                 offset=offset,
@@ -1157,8 +1194,9 @@ def register_sage_tools(
     @mcp.tool()
     async def read_projection(
         vault_id: str,
-        document_id: str,
+        document_id: str | None = None,
         write_to_path: str | None = None,
+        doc_id: str | None = None,
     ) -> dict:
         """Read a document's full text into context with metadata header.
 
@@ -1187,25 +1225,47 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            document_id: The document's unique identifier.
+            document_id: The document's unique identifier. Alias: ``doc_id``.
+                Supply exactly one of ``document_id`` or ``doc_id``.
+            doc_id: Alias for ``document_id``; supply exactly one.
             write_to_path: Absolute filesystem path. When set, SAGE
                 writes the projection text to this path and returns
                 metadata only. The target must not exist; its parent
                 must exist and be writable.
         """
         try:
+            # See get_document: validate each id param by literal name for the
+            # typed-alias gate, then resolve the alias and surface the
+            # ambiguous/missing errors before any service call.
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if doc_id is not None:
+                doc_id = _DOCUMENT_ID_ADAPTER.validate_python(doc_id)
+            if document_id is not None and doc_id is not None:
+                raise AmbiguousDocumentIdentifierError(
+                    tool="read_projection", canonical="document_id", alias="doc_id"
+                )
+            if document_id is None and doc_id is None:
+                raise MissingDocumentIdentifierError(
+                    tool="read_projection", accepted=["document_id", "doc_id"]
+                )
+            resolved_document_id = document_id if document_id is not None else doc_id
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             response = await v.utilities_service.read_projection(
-                document_id, write_to_path=write_to_path
+                resolved_document_id, write_to_path=write_to_path
             )
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
     @mcp.tool()
-    async def read_section(vault_id: str, document_id: str, heading_path: str) -> dict:
+    async def read_section(
+        vault_id: str,
+        heading_path: str,
+        document_id: str | None = None,
+        doc_id: str | None = None,
+    ) -> dict:
         """Read a section of a document by heading path.
 
         Returns clean readable text for a heading subtree without loading
@@ -1225,21 +1285,42 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            document_id: The document's unique identifier.
+            document_id: The document's unique identifier. Alias: ``doc_id``.
+                Supply exactly one of ``document_id`` or ``doc_id``.
+            doc_id: Alias for ``document_id``; supply exactly one.
             heading_path: Heading path prefix
                 (e.g. "Technical Description > Composite Claim Binding").
         """
         try:
+            # See get_document: validate each id param by literal name for the
+            # typed-alias gate, then resolve the alias and surface the
+            # ambiguous/missing errors before any service call.
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if doc_id is not None:
+                doc_id = _DOCUMENT_ID_ADAPTER.validate_python(doc_id)
+            if document_id is not None and doc_id is not None:
+                raise AmbiguousDocumentIdentifierError(
+                    tool="read_section", canonical="document_id", alias="doc_id"
+                )
+            if document_id is None and doc_id is None:
+                raise MissingDocumentIdentifierError(
+                    tool="read_section", accepted=["document_id", "doc_id"]
+                )
+            resolved_document_id = document_id if document_id is not None else doc_id
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
-            response = await v.utilities_service.read_section(document_id, heading_path)
+            response = await v.utilities_service.read_section(resolved_document_id, heading_path)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
     @mcp.tool()
-    async def list_headings(vault_id: str, document_id: str) -> dict:
+    async def list_headings(
+        vault_id: str,
+        document_id: str | None = None,
+        doc_id: str | None = None,
+    ) -> dict:
         """List all heading paths for a document in document order.
 
         Returns the structural table of contents (heading paths only) without
@@ -1254,13 +1335,30 @@ def register_sage_tools(
 
         Args:
             vault_id: Target vault identifier.
-            document_id: The document's unique identifier.
+            document_id: The document's unique identifier. Alias: ``doc_id``.
+                Supply exactly one of ``document_id`` or ``doc_id``.
+            doc_id: Alias for ``document_id``; supply exactly one.
         """
         try:
+            # See get_document: validate each id param by literal name for the
+            # typed-alias gate, then resolve the alias and surface the
+            # ambiguous/missing errors before any service call.
+            if document_id is not None:
+                document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if doc_id is not None:
+                doc_id = _DOCUMENT_ID_ADAPTER.validate_python(doc_id)
+            if document_id is not None and doc_id is not None:
+                raise AmbiguousDocumentIdentifierError(
+                    tool="list_headings", canonical="document_id", alias="doc_id"
+                )
+            if document_id is None and doc_id is None:
+                raise MissingDocumentIdentifierError(
+                    tool="list_headings", accepted=["document_id", "doc_id"]
+                )
+            resolved_document_id = document_id if document_id is not None else doc_id
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
-            response = await v.utilities_service.list_headings(document_id)
+            response = await v.utilities_service.list_headings(resolved_document_id)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)

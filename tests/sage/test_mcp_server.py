@@ -25,18 +25,15 @@ from sage.api.errors import SAGEError
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.mcp_server import (
-    create_edges as _create_edges_bulk,
-)
-from sage.mcp_server import (
-    delete_edge as _sage_unlink_tool,
-)
-from sage.mcp_server import (
+    chain,
     get_document,
     get_filename_metadata,
     get_vault_stats,
     ingest_document,
+    list_headings,
     migrate_vault,
     read_projection,
+    read_section,
     recompute_abstract,
     recompute_pipeline,
     recompute_views,
@@ -45,6 +42,12 @@ from sage.mcp_server import (
     traverse,
     update_vault_config,
     verify_preconditions,
+)
+from sage.mcp_server import (
+    create_edges as _create_edges_bulk,
+)
+from sage.mcp_server import (
+    delete_edge as _sage_unlink_tool,
 )
 from sage.mcp_server import (
     update_lifecycles as _update_lifecycles_bulk,
@@ -2433,6 +2436,238 @@ def test_t0155_traverse_docstring_documents_alias():
     assert re.search(r"start_id:[^\n]*document_id", dedented), (
         "traverse docstring must document `document_id` as an alias "
         "inline on the start_id Args entry"
+    )
+
+
+# ---------------------------------------------------------------------------
+# doc_id alias on the document_id read tools
+# ---------------------------------------------------------------------------
+#
+# get_document / read_projection / read_section / list_headings accept
+# ``doc_id`` as a tolerance alias for ``document_id``. Both forms are
+# published as optional, default-null properties (so a doc_id-only call
+# survives the additionalProperties:false client coercion and reaches the
+# server); the server resolves exactly one. Mirrors the start_id/document_id
+# alias on traverse (test_t0155_* above).
+
+# (tool_fn, extra-required-kwargs) for the document-id read tools.
+# ``read_section`` also needs ``heading_path`` and ``chain`` needs
+# ``edge_type``; the others take only the id.
+_T0246_READ_TOOLS = [
+    pytest.param(get_document, {}, id="get_document"),
+    pytest.param(read_projection, {}, id="read_projection"),
+    pytest.param(read_section, {"heading_path": "Sample Document"}, id="read_section"),
+    pytest.param(list_headings, {}, id="list_headings"),
+    pytest.param(chain, {"edge_type": "supersedes"}, id="chain"),
+]
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["get_document", "read_projection", "read_section", "list_headings", "chain"],
+)
+def test_t0246_publishes_doc_id_as_optional_property(tool_name):
+    """A1. Both ``document_id`` and ``doc_id`` are published as optional
+    (default-null) properties, with ``additionalProperties: false``. This
+    is the precise published-schema shape under which a doc_id-only call
+    survives the Cowork client's client-side coercion (doc_id not stripped,
+    document_id not missing-required) and reaches the server. A server-only
+    alias would leave doc_id out of the published schema and fail this.
+    """
+    tool = _mcp.mcp._tool_manager.get_tool(tool_name)
+    schema = tool.parameters
+    props = schema.get("properties", {})
+    assert "document_id" in props, f"{tool_name} must publish document_id"
+    assert "doc_id" in props, f"{tool_name} must publish doc_id"
+    required = schema.get("required", [])
+    # Both optional: neither is required, so a call supplying only the
+    # other form passes client-side validation.
+    assert "document_id" not in required, f"{tool_name} document_id must be optional"
+    assert "doc_id" not in required, f"{tool_name} doc_id must be optional"
+    # The additionalProperties:false strict-args substrate invariant the
+    # alias relies on to survive client-side coercion.
+    assert schema.get("additionalProperties") is False
+
+
+async def test_t0246_get_document_accepts_doc_id_alias(vault_services):
+    """B1. get_document resolves ``doc_id`` to the same record as
+    ``document_id``. The correct-id assertion (not merely "no error")
+    defeats a coincidental pass where the alias was accepted by the
+    signature but never resolved.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    result = _parse(await get_document(vault_id="test_vault", doc_id=doc["id"]))
+    assert result["id"] == doc["id"]
+    assert result["title"] == "Sample Document"
+
+
+async def test_t0246_read_projection_accepts_doc_id_alias(vault_services):
+    """B1. read_projection resolves ``doc_id`` to the correct document's
+    projection.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    result = _parse(await read_projection(vault_id="test_vault", doc_id=doc["id"]))
+    assert result["document_id"] == doc["id"]
+    assert len(result["projection_text"]) > 0
+
+
+async def test_t0246_read_section_accepts_doc_id_alias(vault_services):
+    """B1. read_section resolves ``doc_id`` to the correct document's
+    section (heading_path supplied alongside the alias).
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    result = _parse(
+        await read_section(vault_id="test_vault", doc_id=doc["id"], heading_path="Sample Document")
+    )
+    assert result["document_id"] == doc["id"]
+    assert result["heading_path"] == "Sample Document"
+
+
+async def test_t0246_list_headings_accepts_doc_id_alias(vault_services):
+    """B1. list_headings resolves ``doc_id`` to the correct document's
+    heading list.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    result = _parse(await list_headings(vault_id="test_vault", doc_id=doc["id"]))
+    assert result["document_id"] == doc["id"]
+    assert "Sample Document" in result["headings"]
+
+
+async def test_t0246_chain_accepts_doc_id_alias(vault_services):
+    """B1. chain resolves ``doc_id`` to the correct document. A freshly
+    ingested doc with no supersedes edges is its own single-entry chain, so
+    head_id echoes the resolved id — a coincidental pass that dropped the
+    alias would surface missing_document_identifier instead.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    result = _parse(await chain(vault_id="test_vault", doc_id=doc["id"], edge_type="supersedes"))
+    assert result["head_id"] == doc["id"]
+
+
+async def test_t0246_chain_accepts_document_id_keyword(vault_services):
+    """B2. chain still accepts the canonical ``document_id`` keyword after
+    the alias and the signature reorder (edge_type moved ahead of the
+    optional id params). Back-compat guard.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    result = _parse(
+        await chain(vault_id="test_vault", document_id=doc["id"], edge_type="supersedes")
+    )
+    assert result["head_id"] == doc["id"]
+
+
+@pytest.mark.parametrize(
+    "tool_fn,extra,echo_key",
+    [
+        pytest.param(get_document, {}, "id", id="get_document"),
+        pytest.param(read_projection, {}, "document_id", id="read_projection"),
+        pytest.param(
+            read_section,
+            {"heading_path": "Sample Document"},
+            "document_id",
+            id="read_section",
+        ),
+        pytest.param(list_headings, {}, "document_id", id="list_headings"),
+    ],
+)
+async def test_t0246_accepts_document_id_keyword(vault_services, tool_fn, extra, echo_key):
+    """B2. The canonical ``document_id`` keyword form still resolves to the
+    correct record after the alias is added. Back-compat guard.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    result = _parse(await tool_fn(vault_id="test_vault", document_id=doc["id"], **extra))
+    assert result[echo_key] == doc["id"]
+
+
+@pytest.mark.parametrize(
+    "tool_fn,echo_key",
+    [
+        pytest.param(get_document, "id", id="get_document"),
+        pytest.param(read_projection, "document_id", id="read_projection"),
+        pytest.param(list_headings, "document_id", id="list_headings"),
+    ],
+)
+async def test_t0246_positional_document_id_still_binds(vault_services, tool_fn, echo_key):
+    """B2-positional. The ``(vault_id, document_id)`` positional form used by
+    existing callers still binds after ``document_id`` became optional.
+    Guards against an accidental read_section-style reorder on these three
+    tools. (read_section is intentionally excluded: it reorders heading_path
+    ahead of the optional id params, so its positional contract changes.)
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    result = _parse(await tool_fn("test_vault", doc["id"]))
+    assert result[echo_key] == doc["id"]
+
+
+@pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
+async def test_t0246_rejects_both_equal(vault_services, tool_fn, extra):
+    """B3. Supplying both ``document_id`` and ``doc_id`` — even with equal
+    values — is rejected. Strict ambiguity rule: exactly one must be
+    supplied.
+    """
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    result = _parse(
+        await tool_fn(vault_id="test_vault", document_id=doc["id"], doc_id=doc["id"], **extra)
+    )
+    assert result["error"] == "ambiguous_document_identifier"
+    assert "document_id" in result["detail"]["supplied"]
+    assert "doc_id" in result["detail"]["supplied"]
+
+
+@pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
+async def test_t0246_rejects_both_unequal(vault_services, tool_fn, extra):
+    """B4. Supplying two *different* ids via the canonical name and the
+    alias is rejected. Exercises the conflict branch distinctly from the
+    both-equal case.
+    """
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    result = _parse(
+        await tool_fn(vault_id="test_vault", document_id=doc_a["id"], doc_id=doc_b["id"], **extra)
+    )
+    assert result["error"] == "ambiguous_document_identifier"
+    assert "document_id" in result["detail"]["supplied"]
+    assert "doc_id" in result["detail"]["supplied"]
+
+
+@pytest.mark.parametrize("tool_fn,extra", _T0246_READ_TOOLS)
+async def test_t0246_rejects_neither(vault_services, tool_fn, extra):
+    """B5. Supplying neither ``document_id`` nor ``doc_id`` yields the
+    structured ``missing_document_identifier`` code (not a downstream
+    ``document_not_found`` or a Python TypeError), confirming the
+    resolution branch fired before any service call.
+    """
+    result = _parse(await tool_fn(vault_id="test_vault", **extra))
+    assert result["error"] == "missing_document_identifier"
+    assert "document_id" in result["detail"]["accepted"]
+    assert "doc_id" in result["detail"]["accepted"]
+
+
+@pytest.mark.parametrize(
+    "tool_fn",
+    [get_document, read_projection, read_section, list_headings, chain],
+    ids=["get_document", "read_projection", "read_section", "list_headings", "chain"],
+)
+def test_t0246_docstring_documents_doc_id_alias(tool_fn):
+    """C1. Each tool's docstring documents the ``doc_id`` alias inline on the
+    ``document_id`` Args entry (where an MCP caller browsing the schema sees
+    it), not in unrelated prose. Anchoring to the ``document_id:`` line
+    defeats a loose ``"doc_id" in doc`` coincidental pass.
+    """
+    import re
+    import textwrap
+
+    doc = tool_fn.__doc__
+    assert doc is not None
+    dedented = textwrap.dedent(doc)
+    assert re.search(r"document_id:[^\n]*doc_id", dedented), (
+        f"{tool_fn.__name__} docstring must document `doc_id` as an alias "
+        "inline on the document_id Args entry"
     )
 
 
