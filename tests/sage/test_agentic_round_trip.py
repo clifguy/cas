@@ -163,6 +163,11 @@ async def test_bh_116_get_document_without_include_content_omits_content(client,
     assert body["id"] == doc["id"]
     assert body.get("content") is None
     assert body.get("content_size") is None
+    # Self-describing markers (CAS-ADR-039): a metadata-only read succeeded
+    # but carries no content body.
+    assert body["read_meta"]["success"] is True
+    assert body["read_meta"]["body_present"] is False
+    assert body["read_meta"]["body_length"] is None
 
     # And explicit false matches the default.
     resp2 = await client.get(
@@ -196,6 +201,11 @@ async def test_bh_117_get_document_with_include_content(client, tmp_vault_dir):
     decoded = base64.b64decode(body["content"])
     assert decoded == original.encode("utf-8")
     assert body["content_size"] == len(original.encode("utf-8"))
+    # Self-describing markers (CAS-ADR-039): inline content is present and its
+    # length is reported, distinguishing a populated read from a thin one.
+    assert body["read_meta"]["success"] is True
+    assert body["read_meta"]["body_present"] is True
+    assert body["read_meta"]["body_length"] == len(original.encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +294,11 @@ async def test_bh_125_write_to_path_happy_path(client, tmp_vault_dir, tmp_path):
     assert payload["content_hash"] == "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
     # No inline content in write_to_path mode.
     assert payload.get("content") is None
+    # Self-describing markers (CAS-ADR-039): bytes were delivered to disk, not
+    # inline, so no body is present and body_length is null for write-to-path.
+    assert payload["read_meta"]["success"] is True
+    assert payload["read_meta"]["body_present"] is False
+    assert payload["read_meta"]["body_length"] is None
 
     # File landed correctly.
     assert target.exists()

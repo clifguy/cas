@@ -23,7 +23,7 @@ from sage.api.errors import (
     WritePathInvalidError,
 )
 from sage.config import VaultConfig
-from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse
+from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse, ReadMeta
 from sage.storage.graph_store import GraphStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
@@ -152,5 +152,14 @@ class DocumentsService:
             _attach_inline_content(response, doc, storage_root)
         elif write_to_path:
             _deliver_to_path(response, doc, storage_root, write_to_path)
+
+        # Self-describing read markers (CAS-ADR-039). The content body is the
+        # inlined bytes; write-to-path delivery and the default request both
+        # leave `content` null, so body_length is reported only for inline.
+        response.read_meta = ReadMeta(
+            success=True,
+            body_present=response.content is not None,
+            body_length=response.content_size if response.content is not None else None,
+        )
 
         return response
