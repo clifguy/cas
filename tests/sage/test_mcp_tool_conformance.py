@@ -179,8 +179,22 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # REST surface keeps ``export_projection`` as its own discrete
     # endpoint (storage_root-relative semantics); the MCP-side
     # ``write_to_path`` is an absolute-path mode mirroring
-    # ``get_document``. Permanent divergence by design.
-    ("sage_core", "read_projection"): frozenset({"write_to_path"}),
+    # ``get_document``. ``doc_id`` is the MCP-only inbound alias for
+    # ``document_id`` (see the read-tool cluster below). Both are
+    # permanent divergences by design.
+    ("sage_core", "read_projection"): frozenset({"write_to_path", "doc_id"}),
+    # ``doc_id`` is an MCP-only inbound alias for ``document_id`` on the
+    # document-id read tools, mirroring the ``traverse`` alias above.
+    # External agents (notably Cowork over /mcp) supply the ``doc_id``
+    # shorthand; the published schema must accept it so the client's
+    # additionalProperties:false coercion does not strip it before
+    # dispatch. The HTTP API surface is out of scope (HTTP callers read
+    # the OpenAPI schema and don't guess field names). Permanent
+    # divergence by design, not pending remediation.
+    ("sage_core", "get_document"): frozenset({"doc_id"}),
+    ("sage_core", "read_section"): frozenset({"doc_id"}),
+    ("sage_core", "list_headings"): frozenset({"doc_id"}),
+    ("sage_core", "chain"): frozenset({"doc_id"}),
 }
 
 

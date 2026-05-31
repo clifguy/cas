@@ -276,14 +276,15 @@ def test_mcp_tool_top_level_alias():
     assert mcp_server.list_headings is mcp_server._sage_tools["list_headings"]
 
 
-def test_mcp_tool_signature_has_only_vault_id_and_document_id():
-    """The tool exposes exactly vault_id and document_id — no drift."""
+def test_mcp_tool_signature_has_vault_id_document_id_and_doc_id_alias():
+    """The tool exposes exactly vault_id, document_id, and the ``doc_id``
+    inbound alias for document_id — no other drift."""
     from sage import mcp_server
 
     tool = mcp_server._sage_tools["list_headings"]
     params = list(inspect.signature(tool).parameters)
 
-    assert params == ["vault_id", "document_id"]
+    assert params == ["vault_id", "document_id", "doc_id"]
 
 
 def test_mcp_tool_docstring_retires_wrong_path_trick():
