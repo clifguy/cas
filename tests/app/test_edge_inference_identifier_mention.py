@@ -60,9 +60,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
@@ -73,13 +75,14 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
-from sage.config import VaultConfig
+from sage.config import VaultConfig, identifier_mention_pattern_warnings
 from sage.mcp_init import SAGEServices
 from sage.models.enums import EdgeType, RationaleKind, SourceType
 from sage.models.schemas import Document, IngestRequest, LinkRequest
 from sage.services.identifier_mention_inference import (
     IDENTIFIER_MENTION_RATIONALE_PREFIX,
     infer_identifier_mentions_for_document,
+    plan_reference_reconcile,
 )
 from tests.sage.conftest import initialize_services_for_test
 
@@ -209,6 +212,7 @@ def _make_document(
     tier3_metadata: dict | None = None,
     source_path: str = "synthetic.md",
     pipeline_status: str = "abstraction_complete",
+    lifecycle_status: str = "active",
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -225,7 +229,7 @@ def _make_document(
         doc_type=doc_type,
         tags=tags,
         tier3_metadata=tier3_metadata,
-        lifecycle_status="active",
+        lifecycle_status=lifecycle_status,
         pipeline_status=pipeline_status,
     )
 
@@ -239,6 +243,7 @@ async def _seed_document(
     tags: list[str],
     tier3_metadata: dict | None = None,
     pipeline_status: str = "abstraction_complete",
+    lifecycle_status: str = "active",
 ) -> str:
     """Insert a target document directly into the graph store (no ingestion).
 
@@ -254,6 +259,7 @@ async def _seed_document(
         tags=tags,
         tier3_metadata=tier3_metadata,
         pipeline_status=pipeline_status,
+        lifecycle_status=lifecycle_status,
     )
     await svc.graph_store.insert_document(doc)
     return doc_id
@@ -1485,3 +1491,208 @@ async def test_f_record_resolution_dashless_and_baseline(tmp_path, services):
     for edge in edges:
         assert edge.source_id == src_doc_id
         assert edge.rationale_kind == RationaleKind.REFERENCES_MENTION
+
+
+# ---------------------------------------------------------------------------
+# Non-discriminating-filter guard and its repair surface.
+#
+# The cas vault's ADR pattern relied on ``target_title_prefix`` (dropped in
+# the tier3 migration), collapsing the resolver filter to
+# ``{tags:[adr], doc_type:adr}`` -- every ADR. The old resolver returned the
+# most-recently-updated ADR for any ``CAS-ADR-NNN`` mention, silently
+# mis-targeting the edge. The resolver now refuses to resolve a
+# non-discriminating pattern; a config-load warning flags it; and the
+# backfill script's ``--reconcile`` mode repairs the accreted wrong edges.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ts2_non_discriminating_pattern_creates_no_edge(tmp_path, monkeypatch, caplog):
+    """A non-discriminating ADR pattern resolves to nothing, not the newest ADR.
+
+    Reproduces the live defect with the exact orphaned shape
+    (``target_tags:["adr"]`` + ``target_title_prefix``, no ``target_tier3``).
+    The guard must refuse: zero edges, plus a WARNING from the resolver.
+
+    Anti-coincidence: the decoy ADR (``adr_id=034``) is seeded AFTER the
+    nominal target (``adr_id=037``) so it carries a newer ``updated_at``.
+    With the guard removed, the degenerate filter's ``updated_at DESC``
+    tiebreak would emit a wrong edge to the decoy; ``edges == []`` catches it.
+    """
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    degenerate_adr = {
+        "regex": r"\bCAS-ADR-\d{3}\b",
+        "target_tags": ["adr"],
+        "target_title_prefix": "ADR-{adr_num}:",
+        "target_doc_type": "adr",
+    }
+    config = VaultConfig.model_validate(_vault_config_dict(tmp_path, patterns=[degenerate_adr]))
+    async with initialize_services_for_test(
+        config,
+        content_store=StubContentStore(),
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    ) as svc:
+        await _seed_document(
+            svc,
+            doc_id=_doc_id("adr_037_target"),
+            title="ADR-037: Nominal target",
+            doc_type="adr",
+            tags=["adr"],
+            tier3_metadata={"adr_id": "037"},
+        )
+        await _seed_document(
+            svc,
+            doc_id=_doc_id("adr_034_newer_decoy"),
+            title="ADR-034: Newer decoy (most recently updated)",
+            doc_type="adr",
+            tags=["adr"],
+            tier3_metadata={"adr_id": "034"},
+        )
+        src_path = _write_md(
+            tmp_path,
+            "note_cites_adr_037.md",
+            "# Note\n\nThis cites CAS-ADR-037 and nothing else.\n",
+        )
+        with caplog.at_level(logging.WARNING, logger="sage.services.identifier_mention_inference"):
+            _src_doc_id, edges = await _ingest_and_get_edges(svc, src_path)
+
+        assert edges == [], (
+            "a non-discriminating pattern must create no edge; got "
+            f"{[(e.source_id, e.target_id) for e in edges]} -- the resolver "
+            "fell back to an arbitrary (newest) ADR match"
+        )
+        assert any(
+            "refusing to resolve" in r.getMessage() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), "expected a resolver WARNING refusing the non-discriminating pattern"
+
+
+@pytest.mark.asyncio
+async def test_ts3_discriminating_multiversion_resolves_to_active_head(tmp_path, services):
+    """A discriminating pattern matching an ADR's archived predecessor AND its
+    active head resolves to the active head -- the guard must not over-fire.
+
+    Both versions carry ``adr_id=042``, so the tier3 filter matches two rows;
+    the active/most-recent tiebreak must pick the active head. A guard that
+    refused whenever more than one row matched would break this legitimate
+    supersession case (zero edges). The archived predecessor is seeded first
+    (older ``updated_at``).
+    """
+    archived_id = _doc_id("adr_042_v1_archived")
+    active_id = _doc_id("adr_042_v2_active")
+    await _seed_document(
+        services,
+        doc_id=archived_id,
+        title="ADR-042: Superseded predecessor",
+        doc_type="adr",
+        tags=["adr"],
+        tier3_metadata={"adr_id": "042"},
+        lifecycle_status="archived",
+    )
+    await _seed_document(
+        services,
+        doc_id=active_id,
+        title="ADR-042: Active head",
+        doc_type="adr",
+        tags=["adr"],
+        tier3_metadata={"adr_id": "042"},
+        lifecycle_status="active",
+    )
+    src_path = _write_md(
+        tmp_path,
+        "note_cites_adr_042.md",
+        "# Note\n\nThis cites CAS-ADR-042.\n",
+    )
+
+    _src_doc_id, edges = await _ingest_and_get_edges(services, src_path)
+
+    assert len(edges) == 1, (
+        f"expected one edge to the active head, got {len(edges)}: "
+        f"{[(e.source_id, e.target_id) for e in edges]}"
+    )
+    assert edges[0].target_id == active_id
+
+
+def test_ts5_identifier_mention_pattern_warnings_flags_bad_patterns():
+    """The warning layer flags orphaned + non-discriminating patterns and is
+    silent on clean tier3 patterns.
+
+    Anti-coincidence: a no-op validator returning ``[]`` would pass the clean
+    case but fail the dirty case's ``>= 2`` (one warning for
+    ``target_title_prefix``, one for non-discriminating).
+    """
+    degenerate = {
+        "regex": r"\bCAS-ADR-\d{3}\b",
+        "target_tags": ["adr"],
+        "target_title_prefix": "ADR-{adr_num}:",
+        "target_doc_type": "adr",
+    }
+    dirty = {
+        "tier_assignments": [
+            {
+                "edge_type": "references",
+                "tier": 1,
+                "inference_rules": [{"method": "identifier_mention", "patterns": [degenerate]}],
+            }
+        ]
+    }
+    warnings = identifier_mention_pattern_warnings(dirty)
+    assert len(warnings) >= 2
+    assert any("target_title_prefix" in w for w in warnings)
+    assert any("non-discriminating" in w for w in warnings)
+    assert all("CAS-ADR" in w for w in warnings)  # each names the offending regex
+
+    clean = {
+        "tier_assignments": [
+            {
+                "edge_type": "references",
+                "tier": 1,
+                "inference_rules": [
+                    {
+                        "method": "identifier_mention",
+                        "patterns": [
+                            {
+                                "regex": r"\bCAS-ADR-\d{3}\b",
+                                "target_tier3": {"adr_id": "{adr_num}"},
+                                "target_doc_type": "adr",
+                            },
+                            {
+                                "regex": r"\bT-\d{4}\b",
+                                "target_tier3": {"ticket_id": "{id}"},
+                                "target_doc_type": "ticket",
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    assert identifier_mention_pattern_warnings(clean) == []
+
+
+def test_ts6_plan_reference_reconcile_delete_wrong_keep_manual_create_missing():
+    """Reconcile deletes inferred wrong-target edges, never touches manual
+    edges, and creates planned targets not already linked.
+
+    Anti-coincidence: the existing backfill path is create-only; a reconcile
+    that never deleted would leave ``wrong_adr`` and fail the ``to_delete``
+    assertion. ``manual_x`` (in the plan) must not be re-created;
+    ``manual_y_dropped`` (a manual edge the plan no longer covers) must not be
+    deleted -- the CAS-ADR-019 provenance gate.
+    """
+    mention = RationaleKind.REFERENCES_MENTION
+    manual = RationaleKind.MANUAL
+    existing = [
+        SimpleNamespace(target_id="wrong_adr", rationale_kind=mention),
+        SimpleNamespace(target_id="manual_x", rationale_kind=manual),
+        SimpleNamespace(target_id="manual_y_dropped", rationale_kind=manual),
+    ]
+    planned_targets = {"right_adr", "new_target", "manual_x"}
+
+    to_delete, to_create = plan_reference_reconcile(existing, planned_targets)
+
+    assert to_delete == {"wrong_adr"}
+    assert to_create == {"right_adr", "new_target"}  # manual_x not duplicated
+    assert "manual_x" not in to_delete
+    assert "manual_y_dropped" not in to_delete  # manual edges are never deleted

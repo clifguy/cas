@@ -20,8 +20,16 @@ Usage::
     .venv/bin/python scripts/backfill_references_mentions.py --execute
     .venv/bin/python scripts/backfill_references_mentions.py --vault cas --limit 5
     .venv/bin/python scripts/backfill_references_mentions.py --doc-type adr
+    .venv/bin/python scripts/backfill_references_mentions.py --reconcile --execute
 
 Dry-run is the default; pass ``--execute`` to write edges.
+
+Plain backfill is create-only: it adds missing edges but never removes a
+stale one. ``--reconcile`` additionally deletes inferred
+(``references_mention``) edges whose target the current config no longer
+resolves the body to -- the repair path for a graph that accreted
+wrong-target edges under a misconfigured resolver. Manual edges are never
+touched (CAS-ADR-019 provenance gate).
 """
 
 from __future__ import annotations
@@ -52,6 +60,7 @@ from sage.models.enums import EdgeType, RationaleKind  # noqa: E402
 from sage.models.schemas import LinkRequest  # noqa: E402
 from sage.services.identifier_mention_inference import (  # noqa: E402
     plan_identifier_mention_edges,
+    plan_reference_reconcile,
 )
 
 
@@ -63,6 +72,10 @@ class DocReport:
     edges_planned: int
     edge_targets: list[tuple[str, str]] = field(default_factory=list)
     # (identifier_literal, target_doc_id)
+    # Reconcile-mode only: inferred edges whose target the plan no longer
+    # includes (deleted) and planned targets not yet linked (created).
+    targets_deleted: list[str] = field(default_factory=list)
+    targets_created: list[str] = field(default_factory=list)
 
 
 def _load_vault_config(vault_id: str) -> VaultConfig:
@@ -93,6 +106,20 @@ async def _enumerate_active_documents(services, *, doc_type: str | None, limit: 
         offset += page_size
 
 
+async def _create_planned_edge(services, plan) -> None:
+    await services.graph_ops_service._create_edge(
+        LinkRequest(
+            source_id=plan.source_doc_id,
+            target_id=plan.target_doc_id,
+            edge_type=EdgeType.REFERENCES,
+            source_valid_from_version=plan.source_doc_id,
+            target_valid_from_version=plan.target_doc_id,
+            rationale=plan.evidence,
+            rationale_kind=RationaleKind.REFERENCES_MENTION,
+        )
+    )
+
+
 async def _process_document(
     services,
     doc,
@@ -100,6 +127,7 @@ async def _process_document(
     edge_inference_cfg: dict,
     cache: dict[str, str | None],
     execute: bool,
+    reconcile: bool = False,
 ) -> DocReport:
     chunks = await services.content_store.get_all_chunks(doc.id)
     body_text = "\n".join(c.content for c in chunks)
@@ -117,19 +145,32 @@ async def _process_document(
         edges_planned=len(planned),
         edge_targets=[(p.identifier, p.target_doc_id) for p in planned],
     )
+
+    if reconcile:
+        # Repair sweep: the create-only path leaves a stale wrong-target edge
+        # in place, so reconcile against the freshly planned target set --
+        # delete inferred edges the plan dropped, create the ones it added.
+        # Manual edges are never touched (CAS-ADR-019 provenance gate).
+        existing = await services.graph_store.get_edges_by_source(doc.id, "references")
+        plan_by_target = {p.target_doc_id: p for p in planned}
+        inferred_edge_by_target = {
+            e.target_id: e for e in existing if e.rationale_kind == RationaleKind.REFERENCES_MENTION
+        }
+        to_delete, to_create = plan_reference_reconcile(existing, plan_by_target.keys())
+        report.targets_deleted = sorted(to_delete)
+        report.targets_created = sorted(to_create)
+        if execute:
+            for tgt in to_delete:
+                edge = inferred_edge_by_target.get(tgt)
+                if edge is not None:
+                    await services.graph_store.delete_edge(edge.id)
+            for tgt in to_create:
+                await _create_planned_edge(services, plan_by_target[tgt])
+        return report
+
     if execute and planned:
         for p in planned:
-            await services.graph_ops_service._create_edge(
-                LinkRequest(
-                    source_id=p.source_doc_id,
-                    target_id=p.target_doc_id,
-                    edge_type=EdgeType.REFERENCES,
-                    source_valid_from_version=p.source_doc_id,
-                    target_valid_from_version=p.target_doc_id,
-                    rationale=p.evidence,
-                    rationale_kind=RationaleKind.REFERENCES_MENTION,
-                )
-            )
+            await _create_planned_edge(services, p)
     return report
 
 
@@ -157,18 +198,23 @@ async def run(args: argparse.Namespace) -> int:
                 edge_inference_cfg=config.edge_inference,
                 cache=cache,
                 execute=args.execute,
+                reconcile=args.reconcile,
             )
-            if report.edges_planned:
+            touched = report.edges_planned or report.targets_deleted or report.targets_created
+            if touched:
                 reports.append(report)
                 for ident, _ in report.edge_targets:
                     by_pattern[ident.split("-")[0] + "-*"] += 1
         summary = {
             "vault": args.vault,
             "execute": args.execute,
+            "reconcile": args.reconcile,
             "doc_type_filter": args.doc_type,
             "documents_scanned": len(docs),
             "documents_with_mentions": len(reports),
             "edges_planned_total": sum(r.edges_planned for r in reports),
+            "edges_deleted_total": sum(len(r.targets_deleted) for r in reports),
+            "edges_created_total": sum(len(r.targets_created) for r in reports),
             "by_pattern": dict(by_pattern),
         }
         print("[backfill] summary:")
@@ -206,6 +252,16 @@ def main() -> int:
         "--execute",
         action="store_true",
         help="Write edges. Default is dry-run.",
+    )
+    parser.add_argument(
+        "--reconcile",
+        action="store_true",
+        help=(
+            "Repair mode: in addition to creating missing edges, delete "
+            "inferred (references_mention) edges whose target the current "
+            "config no longer resolves the body to. Manual edges are never "
+            "touched. Combine with --execute to write; default stays dry-run."
+        ),
     )
     parser.add_argument(
         "--audit",

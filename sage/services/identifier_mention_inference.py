@@ -26,6 +26,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from sage.config import pattern_is_discriminating
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import LinkRequest
 from sage.services.graph_ops import GraphOpsService
@@ -58,6 +59,41 @@ class IdentifierMentionResult:
     edges_existing: int = 0
     unresolved: list[str] = field(default_factory=list)
     failures: int = 0
+
+
+def plan_reference_reconcile(
+    existing_edges: object,
+    planned_target_ids: object,
+) -> tuple[set[str], set[str]]:
+    """Reconcile a source's existing ``references`` edges against a freshly
+    planned target set.
+
+    Pure decision helper for the repair sweep: the live inference path is
+    create-only (re-running it leaves a stale wrong-target edge in place),
+    so repairing a mis-targeted graph needs an explicit delete step. Given
+    the source's current ``references`` edges and the set of targets the
+    fixed config now resolves the source's body to, return
+    ``(targets_to_delete, targets_to_create)`` where:
+
+    * ``targets_to_delete`` -- targets carried by an *inferred*
+      (``RationaleKind.REFERENCES_MENTION``) edge that the plan no longer
+      includes. Hand-curated (``MANUAL``) edges are never deleted, honoring
+      the CAS-ADR-019 provenance gate.
+    * ``targets_to_create`` -- planned targets not already linked by *any*
+      existing edge (manual or inferred), so a target already covered by a
+      manual edge is not duplicated.
+
+    ``existing_edges`` is any iterable of objects exposing ``target_id`` and
+    ``rationale_kind``; ``planned_target_ids`` is any iterable of target ids.
+    """
+    planned = set(planned_target_ids)
+    inferred_targets = {
+        e.target_id for e in existing_edges if e.rationale_kind == RationaleKind.REFERENCES_MENTION
+    }
+    all_targets = {e.target_id for e in existing_edges}
+    targets_to_delete = inferred_targets - planned
+    targets_to_create = planned - all_targets
+    return targets_to_delete, targets_to_create
 
 
 def _identifier_mention_rules(edge_inference_config: object) -> list[dict]:
@@ -122,8 +158,25 @@ async def _resolve_identifier(
     matched identifier via :func:`_format_tag`.
 
     Among multiple matches, an ``active`` lifecycle status wins; among
-    multiple active matches, the most recently updated wins.
+    multiple active matches, the most recently updated wins. That tiebreak
+    is safe only when the filter discriminates on the identifier (via
+    ``target_tier3`` or a placeholder-bearing ``target_tags`` entry) so the
+    matches are versions of one logical document. A *non-discriminating*
+    pattern -- only ``target_doc_type`` and/or static ``target_tags`` --
+    would match every document of the type and the tiebreak would return an
+    arbitrary one (e.g., the most-recently-updated ADR for any ``CAS-ADR-NNN``
+    mention). Such a pattern cannot resolve a specific identifier, so it is
+    refused here rather than allowed to emit a confident-but-wrong edge.
     """
+    if not pattern_is_discriminating(pattern):
+        logger.warning(
+            "identifier_mention: pattern %r is non-discriminating "
+            "(no target_tier3 and no placeholder-bearing target_tags); "
+            "refusing to resolve %r to avoid an arbitrary match",
+            pattern.get("regex"),
+            identifier,
+        )
+        return None
     target_tags = [_format_tag(t, identifier=identifier) for t in pattern.get("target_tags", [])]
     filters: dict[str, object] = {"tags": target_tags} if target_tags else {}
     if pattern.get("target_tier3"):
