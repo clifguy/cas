@@ -3730,7 +3730,7 @@ components:
 
     BulkLifecycleItem:
       type: object
-      required: [document_id, action]
+      required: [action]
       description: >-
         One lifecycle transition request inside a bulk batch. Mirrors
         `SetLifecycleRequest` plus the `document_id` carried in the
@@ -3739,7 +3739,15 @@ components:
       properties:
         document_id:
           type: string
-          description: Target document id for this item.
+          description: >-
+            Target document id for this item. Accepts `doc_id` as a
+            back-compatible alias; supply exactly one of `document_id` or
+            `doc_id` per item.
+        doc_id:
+          type: string
+          description: >-
+            Back-compatible alias for the per-item `document_id`; supply
+            exactly one of `document_id` or `doc_id` per item.
         action:
           type: string
           description: >-
@@ -3803,12 +3811,16 @@ components:
 
     BulkLifecycleItemResult:
       type: object
-      required: [document_id, status]
+      required: [status]
       description: Outcome record for a single item inside a bulk lifecycle response.
       properties:
         document_id:
           type: string
-          description: The target document id from the corresponding request item.
+          nullable: true
+          description: >-
+            The target document id from the corresponding request item.
+            Null only when the item supplied neither `document_id` nor
+            `doc_id` (a `missing_document_identifier` error).
         status:
           type: string
           enum: [success, error]
@@ -4104,7 +4116,7 @@ components:
     BulkMetadataItem:
       type: object
       additionalProperties: false
-      required: [document_id]
+      required: []
       description: >-
         One metadata patch request inside a bulk batch. Mirrors
         `UpdateMetadataRequest` plus the `document_id` carried in the
@@ -4113,7 +4125,15 @@ components:
       properties:
         document_id:
           type: string
-          description: Target document id for this item.
+          description: >-
+            Target document id for this item. Accepts `doc_id` as a
+            back-compatible alias; supply exactly one of `document_id` or
+            `doc_id` per item.
+        doc_id:
+          type: string
+          description: >-
+            Back-compatible alias for the per-item `document_id`; supply
+            exactly one of `document_id` or `doc_id` per item.
         title:
           type: string
           description: New human-readable title; omit to leave unchanged.
@@ -4200,12 +4220,16 @@ components:
 
     BulkMetadataItemResult:
       type: object
-      required: [document_id, status]
+      required: [status]
       description: Outcome record for a single item inside a bulk metadata response.
       properties:
         document_id:
           type: string
-          description: The target document id from the corresponding request item.
+          nullable: true
+          description: >-
+            The target document id from the corresponding request item.
+            Null only when the item supplied neither `document_id` nor
+            `doc_id` (a `missing_document_identifier` error).
         status:
           type: string
           enum: [success, error]

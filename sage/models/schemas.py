@@ -1139,7 +1139,21 @@ class BulkLifecycleItem(BaseModel):
     via the URL path).
     """
 
-    document_id: DocumentIdStr = Field(description="Target document id for this item.")
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Target document id for this item. Accepts `doc_id` as a "
+            "back-compatible alias; supply exactly one of `document_id` or "
+            "`doc_id` per item."
+        ),
+    )
+    doc_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Back-compatible alias for the per-item `document_id`; supply "
+            "exactly one of `document_id` or `doc_id` per item."
+        ),
+    )
     action: str = Field(
         description=(
             "Lifecycle transition action. Vault-config-defined; same "
@@ -1208,8 +1222,13 @@ class BulkLifecycleRequest(BaseModel):
 class BulkLifecycleItemResult(BaseModel):
     """Outcome record for a single item inside a bulk lifecycle response."""
 
-    document_id: DocumentIdStr = Field(
-        description="The target document id from the corresponding request item."
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "The target document id from the corresponding request item. "
+            "Null only when the item supplied neither `document_id` nor "
+            "`doc_id` (a `missing_document_identifier` error)."
+        ),
     )
     status: Literal["success", "error"] = Field(
         description=(
@@ -1538,7 +1557,21 @@ class BulkMetadataItem(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    document_id: DocumentIdStr = Field(description="Target document id for this item.")
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Target document id for this item. Accepts `doc_id` as a "
+            "back-compatible alias; supply exactly one of `document_id` or "
+            "`doc_id` per item."
+        ),
+    )
+    doc_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Back-compatible alias for the per-item `document_id`; supply "
+            "exactly one of `document_id` or `doc_id` per item."
+        ),
+    )
     title: str | None = Field(
         default=None, description="New human-readable title; omit to leave unchanged."
     )
@@ -1669,8 +1702,13 @@ class BulkMetadataRequest(BaseModel):
 class BulkMetadataItemResult(BaseModel):
     """Outcome record for a single item inside a bulk metadata response."""
 
-    document_id: DocumentIdStr = Field(
-        description="The target document id from the corresponding request item."
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "The target document id from the corresponding request item. "
+            "Null only when the item supplied neither `document_id` nor "
+            "`doc_id` (a `missing_document_identifier` error)."
+        ),
     )
     status: Literal["success", "error"] = Field(
         description=(

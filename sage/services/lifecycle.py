@@ -35,7 +35,7 @@ from sage.models.schemas import (
     SetLifecycleRequest,
     SetLifecycleResponse,
 )
-from sage.services._bulk_envelope import sage_error_to_envelope
+from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
@@ -264,6 +264,10 @@ class LifecycleService:
 
         results: list[BulkLifecycleItemResult] = []
         for item in request.items:
+            # Best-effort id for the error envelope's echo: the supplied
+            # value when exactly one is present, the canonical when both
+            # are (ambiguous), None when neither is (missing).
+            echo_id = item.document_id if item.document_id is not None else item.doc_id
             single = SetLifecycleRequest(
                 action=item.action,
                 successor_id=item.successor_id,
@@ -272,10 +276,16 @@ class LifecycleService:
                 dry_run=request.dry_run,
             )
             try:
-                response = await self._set_lifecycle(item.document_id, single)
+                # Resolve document_id/doc_id before the transition so an
+                # ambiguous/missing item performs no mutation; the raised
+                # SAGEError lands in the per-item error envelope below.
+                resolved_id = resolve_item_document_id(
+                    item.document_id, item.doc_id, tool="update_lifecycles"
+                )
+                response = await self._set_lifecycle(resolved_id, single)
                 results.append(
                     BulkLifecycleItemResult(
-                        document_id=item.document_id,
+                        document_id=resolved_id,
                         status="success",
                         # light mode: drop the document body. The
                         # caller already knows the document_id (they
@@ -301,7 +311,7 @@ class LifecycleService:
             except SAGEError as exc:
                 results.append(
                     BulkLifecycleItemResult(
-                        document_id=item.document_id,
+                        document_id=echo_id,
                         status="error",
                         error=sage_error_to_envelope(exc),
                     )
