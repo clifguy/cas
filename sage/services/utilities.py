@@ -23,6 +23,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Literal
 
 import yaml
 
@@ -35,6 +36,7 @@ from sage.api.errors import (
     AssertionsFileInvalidError,
     AssertionsFileNotFoundError,
     AssertionsNotConfiguredError,
+    DeliveryParameterConflictError,
     DocumentNotFoundError,
     NoProjectionError,
     PathTraversalDeniedError,
@@ -60,6 +62,12 @@ logger = logging.getLogger(__name__)
 
 
 _MAX_CANDIDATE_MATCHES = 10
+
+# Inline-vs-spill delivery selector for content read tools.
+#   - "inline": force the body into the response.
+#   - "spill":  force write-to-path delivery (requires write_to_path).
+#   - "auto":   preserve the implicit heuristic (spill iff write_to_path given).
+Delivery = Literal["inline", "spill", "auto"]
 
 
 def _validate_write_to_path(write_to_path: str) -> None:
@@ -225,19 +233,29 @@ class UtilitiesService:
     # ------------------------------------------------------------------
 
     async def read_projection(
-        self, document_id: str, write_to_path: str | None = None
+        self,
+        document_id: str,
+        write_to_path: str | None = None,
+        delivery: Delivery = "auto",
     ) -> ReadProjectionResponse:
         """Read a document's full projection text with metadata.
 
         Two delivery modes:
-        - write_to_path=None (default): return the complete projection
-          inline in ``projection_text``, equivalent to uploading the
-          source document.
-        - write_to_path=/abs/path: SAGE writes the projection text bytes
-          to the given absolute path. The response carries ``written_to``
-          and ``content_size``; ``projection_text`` is null.
+        - inline (default): return the complete projection inline in
+          ``projection_text``, equivalent to uploading the source document.
+        - write-to-disk: SAGE writes the projection text bytes to an
+          absolute path. The response carries ``written_to`` and
+          ``content_size``; ``projection_text`` is null.
 
-        The write_to_path mode mirrors ``DocumentsService.get_document_with_content``
+        ``delivery`` pins which of those two shapes the caller gets:
+        - ``auto`` (default): spill to disk iff ``write_to_path`` is given,
+          inline otherwise — the implicit heuristic, unchanged.
+        - ``inline``: force the inline body; combining it with
+          ``write_to_path`` is a contradiction and is refused.
+        - ``spill``: force write-to-disk delivery; it requires
+          ``write_to_path`` and is refused without one.
+
+        The write-to-disk mode mirrors ``DocumentsService.get_document_with_content``
         delivery and replaces the per--audit-removed
         ``export_projection`` MCP tool, whose pre-existing storage_root-
         relative semantics remain on the REST surface.
@@ -247,6 +265,8 @@ class UtilitiesService:
             write_to_path: Optional absolute filesystem path to write
                 the projection text to. Must not already exist; parent
                 directory must exist and be writable.
+            delivery: Inline-vs-spill selector (``inline | spill | auto``);
+                ``auto`` preserves the write_to_path-driven heuristic.
 
         Returns:
             ReadProjectionResponse with metadata and either inline
@@ -255,13 +275,27 @@ class UtilitiesService:
         Raises:
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
+            DeliveryParameterConflictError: delivery contradicts
+                write_to_path (inline+path, or spill without a path).
             WritePathInvalidError: write_to_path is not absolute or its
                 parent does not exist / is not writable.
             WritePathExistsError: write_to_path target already exists.
         """
+        # Resolve delivery + write_to_path into a single spill decision before
+        # any read, refusing contradictions rather than guessing past them.
+        if delivery == "inline" and write_to_path is not None:
+            raise DeliveryParameterConflictError(
+                delivery, "inline delivery returns the body in the response; drop write_to_path"
+            )
+        if delivery == "spill" and write_to_path is None:
+            raise DeliveryParameterConflictError(
+                delivery, "spill delivery writes to disk; supply write_to_path"
+            )
+        spill_to_disk = write_to_path is not None  # holds for both auto and spill
+
         doc, projection_text = await self._get_projection_text(document_id)
 
-        if write_to_path is None:
+        if not spill_to_disk:
             return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
 
         # write-to-disk delivery: validate path, write, return metadata-only response.

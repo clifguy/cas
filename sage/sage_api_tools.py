@@ -7,6 +7,7 @@ staging edges, pending metadata).
 """
 
 from collections.abc import Callable
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter, ValidationError
@@ -1197,12 +1198,13 @@ def register_sage_tools(
         document_id: str | None = None,
         write_to_path: str | None = None,
         doc_id: str | None = None,
+        delivery: Literal["inline", "spill", "auto"] = "auto",
     ) -> dict:
         """Read a document's full text into context with metadata header.
 
         Two delivery modes:
-        - default: returns the complete projection (reconstructed from
-          stored chunks) inline as ``projection_text``, equivalent to
+        - inline (default): returns the complete projection (reconstructed
+          from stored chunks) inline as ``projection_text``, equivalent to
           uploading the document. Use this instead of ``search``
           when you need the whole document.
         - ``write_to_path=/abs/path``: SAGE writes the projection text
@@ -1211,6 +1213,18 @@ def register_sage_tools(
           for large projections that would exceed the MCP tool-result
           inline budget. Mirrors ``get_document(write_to_path=...)``.
 
+        ``delivery`` pins which shape you get instead of leaving it implicit
+        in whether ``write_to_path`` was supplied:
+        - ``auto`` (default): spill to disk when ``write_to_path`` is given,
+          inline otherwise — the prior behavior.
+        - ``inline``: force the inline body. Supplying ``write_to_path``
+          alongside it is contradictory and returns ``delivery_conflict``.
+        - ``spill``: force write-to-disk delivery; it requires
+          ``write_to_path`` and returns ``delivery_conflict`` without one.
+        Decide up front with ``read_meta.body_length`` (the inline body
+        size on a prior or auto read) before forcing ``inline`` on a large
+        document.
+
         Error modes:
         - ``document_not_found`` (404): no document with that id.
         - ``no_projection`` (404): the document exists but has no
@@ -1218,6 +1232,9 @@ def register_sage_tools(
           the document is awaiting reabstraction). Inspect
           ``pipeline_status`` via ``get_document``; if recoverable,
           ``recompute_abstract`` may restore the projection.
+        - ``delivery_conflict`` (400): ``delivery`` contradicts
+          ``write_to_path`` (``inline`` with a path, or ``spill``
+          without one).
         - ``write_path_exists`` (409): ``write_to_path`` target already
           exists.
         - ``write_path_invalid`` (400): ``write_to_path`` is not
@@ -1232,6 +1249,8 @@ def register_sage_tools(
                 writes the projection text to this path and returns
                 metadata only. The target must not exist; its parent
                 must exist and be writable.
+            delivery: Inline-vs-spill selector (``inline | spill | auto``).
+                ``auto`` keeps the write_to_path-driven default.
         """
         try:
             # See get_document: validate each id param by literal name for the
@@ -1253,7 +1272,7 @@ def register_sage_tools(
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
             response = await v.utilities_service.read_projection(
-                resolved_document_id, write_to_path=write_to_path
+                resolved_document_id, write_to_path=write_to_path, delivery=delivery
             )
             return serialize(response)
         except (SAGEError, ValueError) as e:

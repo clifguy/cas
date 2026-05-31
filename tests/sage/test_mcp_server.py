@@ -1426,6 +1426,75 @@ async def test_read_projection_write_to_path_relative_errors(vault_services):
     assert result["error"] == "write_path_invalid"
 
 
+async def test_read_projection_delivery_inline(vault_services):
+    """delivery=inline forces the projection body inline and reports body_length."""
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+
+    result = _parse(await read_projection("test_vault", doc["id"], delivery="inline"))
+
+    assert result["document_id"] == doc["id"]
+    assert len(result["projection_text"]) > 0
+    assert result.get("written_to") is None
+    assert result["read_meta"]["body_present"] is True
+    assert result["read_meta"]["body_length"] == len(result["projection_text"])
+
+
+async def test_read_projection_delivery_spill(vault_services, tmp_path):
+    """delivery=spill writes the projection to disk and returns metadata only."""
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+    target = tmp_path / "delivery_out.md"
+
+    result = _parse(
+        await read_projection("test_vault", doc["id"], write_to_path=str(target), delivery="spill")
+    )
+
+    assert result["written_to"] == str(target)
+    assert result["content_size"] > 0
+    assert result.get("projection_text") is None
+    assert target.exists()
+    assert len(target.read_bytes()) == result["content_size"]
+
+
+async def test_read_projection_delivery_spill_without_path_errors(vault_services):
+    """delivery=spill without a write_to_path target is refused with a structured error."""
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    await asyncio.sleep(0.5)
+
+    result = _parse(await read_projection("test_vault", doc["id"], delivery="spill"))
+
+    assert result["error"] == "delivery_conflict"
+
+
+def test_read_projection_publishes_delivery_param():
+    """``delivery`` is a published, optional property with the inline/spill/auto
+    enum and an ``auto`` default — not a server-only kwarg.
+
+    A server-only kwarg would be absent from the published schema and stripped
+    by an additionalProperties:false client before dispatch, so this asserts the
+    enum, the default, and the strict-args invariant the published shape relies on.
+    """
+    tool = _mcp.mcp._tool_manager.get_tool("read_projection")
+    schema = tool.parameters
+    props = schema.get("properties", {})
+    assert "delivery" in props, "read_projection must publish delivery"
+    delivery_schema = props["delivery"]
+    assert delivery_schema.get("default") == "auto"
+    # The enum may be expressed inline or via $ref/anyOf; flatten to the
+    # literal values regardless of nesting.
+    enum_values = delivery_schema.get("enum")
+    if enum_values is None:
+        for branch in delivery_schema.get("anyOf", []):
+            if "enum" in branch:
+                enum_values = branch["enum"]
+                break
+    assert enum_values is not None, f"delivery must publish an enum: {delivery_schema!r}"
+    assert set(enum_values) == {"inline", "spill", "auto"}
+    assert "delivery" not in schema.get("required", [])
+    assert schema.get("additionalProperties") is False
+
+
 # ---------------------------------------------------------------------------
 # Utilities: refresh_views
 # ---------------------------------------------------------------------------
