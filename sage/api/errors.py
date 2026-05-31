@@ -33,12 +33,24 @@ class SAGEError(Exception):
 
 
 class DocumentNotFoundError(SAGEError):
-    def __init__(self, document_id: str) -> None:
+    """404: no document resolves to the supplied id.
+
+    The error ``code`` is always ``document_not_found``; the ``detail``
+    dict differentiates the root cause (CAS-ADR-039). Read-path callers
+    pass a pre-built ``detail`` carrying the discriminators
+    ``id_well_formed``, ``ever_existed``, and ``slug_matches_catalog`` so
+    a caller can tell a malformed id from a never-existed id from a
+    real-but-renamed one without a second probing round-trip. Write-path
+    and graph callers omit ``detail`` and get the bare
+    ``{"document_id": ...}`` form.
+    """
+
+    def __init__(self, document_id: str, detail: dict | None = None) -> None:
         super().__init__(
             "document_not_found",
             f"Document {document_id} not found",
             404,
-            {"document_id": document_id},
+            detail if detail is not None else {"document_id": document_id},
         )
 
 

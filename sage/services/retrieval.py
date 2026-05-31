@@ -62,6 +62,7 @@ from sage.models.schemas import (
     DocumentSummaryLight,
     EdgeHit,
 )
+from sage.services.read_diagnostics import build_not_found_detail
 from sage.storage.graph_store import EdgeQueryRow, GraphStore
 from sage.utils.date_parsing import parse_document_date
 
@@ -1198,7 +1199,10 @@ class RetrievalService:
         with phases.phase("get_document"):
             doc = await self._graph.get_document(request.document_id)
         if doc is None:
-            raise DocumentNotFoundError(request.document_id)
+            raise DocumentNotFoundError(
+                request.document_id,
+                await build_not_found_detail(self._graph, request.document_id),
+            )
 
         # Pipeline gate (BH-021)
         if doc.pipeline_status == PipelineStatus.FAILED:
