@@ -737,3 +737,114 @@ def test_error_response_carries_failure_marker():
     response = ErrorResponse(code="document_not_found", message="no such document")
     assert response.read_meta.success is False
     assert response.read_meta.body_present is False
+
+
+# ---------------------------------------------------------------------------
+# Projection freshness markers (CAS-ADR-039).
+#
+# A projection read positively declares whether its body is current with
+# respect to the stored source, or stale (a projection awaiting recomputation
+# distinguishable from a genuinely thin document). A stale read pairs the
+# status with a recovery pointer to the recompute_abstract tool so a caller
+# can act without a second probing round-trip. The signal is None where the
+# read is not a projection read.
+# ---------------------------------------------------------------------------
+
+
+def _doc_with_stale_projection() -> Document:
+    """Build a Document whose source was modified after its projection ran.
+
+    ``source_modified_at`` is strictly later than ``projected_at``, the
+    direct stale signal: the stored projection predates the source's last
+    known modification.
+    """
+    projected = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    source_modified = datetime(2026, 5, 22, 12, 0, tzinfo=timezone.utc)
+    return Document(
+        id=_id("doc_stale_projection"),
+        title="Stale Projection Title",
+        source_type=SourceType.MARKDOWN,
+        source_path="stale/path.md",
+        lifecycle_status="active",
+        source_content_hash=_sha("doc_stale_projection"),
+        adapter_version="0.5.0",
+        created_by="testuser",
+        created_at=projected,
+        last_modified_by="testuser",
+        updated_at=source_modified,
+        projected_at=projected,
+        source_modified_at=source_modified,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+    )
+
+
+def _doc_with_incomplete_freshness_timestamps() -> Document:
+    """Build a Document with no source_modified_at (non-file source).
+
+    Freshness cannot be computed positively, so the read must not assert
+    stale on incomplete data — it defaults to current.
+    """
+    projected = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    return Document(
+        id=_id("doc_no_source_mtime"),
+        title="No Source Mtime Title",
+        source_type=SourceType.MARKDOWN,
+        source_path="nomtime/path.md",
+        lifecycle_status="active",
+        source_content_hash=_sha("doc_no_source_mtime"),
+        adapter_version="0.5.0",
+        created_by="testuser",
+        created_at=projected,
+        last_modified_by="testuser",
+        updated_at=projected,
+        projected_at=projected,
+        source_modified_at=None,
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+    )
+
+
+def test_read_projection_marks_current_when_projection_fresh():
+    """A projection read whose projection is not older than its source
+    reports projection_status='current' and no recovery pointer."""
+    doc = _doc_with_every_document_field()  # projected_at == source_modified_at
+    response = ReadProjectionResponse.from_document(doc, projection_text="fresh projection")
+    assert response.read_meta.projection_status == "current"
+    assert response.read_meta.projection_recovery is None
+
+
+def test_read_projection_marks_stale_when_source_newer_than_projection():
+    """A projection read whose source was modified after the projection ran
+    reports projection_status='stale' paired with a recompute_abstract
+    recovery pointer — the keystone regression for the stale-but-present gap."""
+    doc = _doc_with_stale_projection()
+    response = ReadProjectionResponse.from_document(doc, projection_text="outdated projection")
+    assert response.read_meta.projection_status == "stale"
+    assert response.read_meta.projection_recovery == "recompute_abstract"
+
+
+def test_read_section_marks_stale_when_source_newer_than_projection():
+    """The section factory carries the same freshness signal: a stale source
+    surfaces projection_status='stale' and the recovery pointer on read."""
+    doc = _doc_with_stale_projection()
+    response = ReadSectionResponse.from_document(
+        doc, heading_path="A > B", chunk_count=1, section_text="outdated section"
+    )
+    assert response.read_meta.projection_status == "stale"
+    assert response.read_meta.projection_recovery == "recompute_abstract"
+
+
+def test_read_projection_status_current_with_incomplete_timestamps():
+    """When freshness cannot be computed (no source_modified_at), the read
+    defaults to current rather than asserting a false stale signal."""
+    doc = _doc_with_incomplete_freshness_timestamps()
+    response = ReadProjectionResponse.from_document(doc, projection_text="some projection")
+    assert response.read_meta.projection_status == "current"
+    assert response.read_meta.projection_recovery is None
+
+
+def test_discover_response_projection_status_none():
+    """A search/catalog response is not a projection read: projection_status
+    is None (not computed) and carries no recovery pointer."""
+    response = DiscoverResponse(mode=RetrievalMode.CATALOG, results=[], total_available=0)
+    assert response.read_meta.projection_status is None
+    assert response.read_meta.projection_recovery is None
