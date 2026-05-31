@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 from sage.api.errors import (
+    BinaryContentRefusedError,
     ContentDeliveryConflictError,
     ContentFileMissingError,
     ContentTooLargeError,
@@ -23,6 +24,7 @@ from sage.api.errors import (
     WritePathInvalidError,
 )
 from sage.config import VaultConfig
+from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES
 from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse, ReadMeta
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.storage.graph_store import GraphStore
@@ -150,6 +152,15 @@ class DocumentsService:
                 document_id, await build_not_found_detail(self._store, document_id)
             )
 
+        # Body-form discipline (CAS-ADR-039): a binary-container source holds
+        # raw package bytes, not scannable text. Refuse to inline those bytes
+        # before any file I/O so a caller cannot scan a container as text and
+        # read a false-clean result; the extracted text lives in the
+        # projection, so direct the caller to read_projection.
+        is_binary = doc.source_type in BINARY_CONTAINER_SOURCE_TYPES
+        if include_content and is_binary:
+            raise BinaryContentRefusedError(document_id, doc.source_type)
+
         response = DocumentWithContent(**doc.model_dump())
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
 
@@ -166,5 +177,10 @@ class DocumentsService:
             body_present=response.content is not None,
             body_length=response.content_size if response.content is not None else None,
         )
+        # Positive body-form signal on every delivered response. A
+        # binary-container source only reaches here when content was not
+        # requested (the refusal above gates include_content); a default or
+        # write-to-path read of a binary source still declares its form.
+        response.body_form = "binary" if is_binary else "text"
 
         return response

@@ -49,9 +49,14 @@ async def open_document(
             "model": ErrorResponse,
             "description": (
                 "Request shape invalid: both `include_content` and "
-                "`write_to_path` supplied, `write_to_path` is not absolute, "
-                "or the parent directory of `write_to_path` is missing or "
-                "not writable."
+                "`write_to_path` supplied (`content_delivery_conflict`), "
+                "`write_to_path` is not absolute, or the parent directory of "
+                "`write_to_path` is missing or not writable. Also returned with "
+                "`binary_content_refused` when `include_content=true` targets a "
+                "binary-container source (`.docx`, `.pdf`, `.xlsx`): the read "
+                "path declines to inline raw container bytes and directs the "
+                "caller to `read_projection` for the extracted text "
+                "(CAS-ADR-039)."
             ),
         },
         404: {

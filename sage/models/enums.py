@@ -25,6 +25,23 @@ class SourceType(StrEnum):
     XLSX = "xlsx"
 
 
+# Source types whose authoritative file is a binary container (a zipped OPC
+# package, a PDF stream) rather than scannable text. A caller that receives
+# the raw bytes of one of these and scans them for text tokens gets a
+# confident false negative, because the readable content lives in the
+# extracted-text projection, not the container bytes. The read path uses
+# this partition to declare a body's form and to refuse handing back raw
+# container bytes (CAS-ADR-039). Every ``SourceType`` not in this set is
+# treated as text-form for body-form purposes.
+BINARY_CONTAINER_SOURCE_TYPES: frozenset[SourceType] = frozenset(
+    {
+        SourceType.DOCX,
+        SourceType.PDF,
+        SourceType.XLSX,
+    }
+)
+
+
 class EdgeType(StrEnum):
     """Typed, directed relationship between documents.
 
