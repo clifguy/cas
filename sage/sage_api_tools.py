@@ -443,10 +443,13 @@ def register_sage_tools(
         Args:
             vault_id: Target vault identifier.
             items: List of per-item transition requests, each conforming to
-                the ``BulkLifecycleItem`` shape: ``{document_id: str,
-                action: str, successor_id: str | None}``. Shape validation
-                runs up front; one malformed item rejects the whole batch
-                before any per-item work.
+                the ``BulkLifecycleItem`` shape: ``{document_id?: str,
+                doc_id?: str, action: str, successor_id: str | None}``.
+                Supply exactly one of ``document_id`` or ``doc_id`` per
+                item; ``doc_id`` is a back-compatible alias (neither or
+                both is a per-item error). Shape validation runs up front;
+                one malformed item rejects the whole batch before any
+                per-item work.
             response_mode: Per-item payload depth. ``"full"`` returns each
                 success item's complete ``document`` body (including the
                 potentially large ``semantic_abstract``); ``"light"`` strips
@@ -708,12 +711,15 @@ def register_sage_tools(
         Args:
             vault_id: Target vault identifier.
             items: List of per-item patch requests, each conforming to the
-                ``BulkMetadataItem`` shape: ``{document_id: str, title?: str,
-                version_label?: str, project?: str, tags?: ListFieldPatch,
-                doc_type?: str, authority_scope?: str, document_date?: str,
-                tier3_metadata?: Tier3Patch, expected_version?: str}``. Shape
-                validation runs up front; one malformed item rejects the
-                whole batch before any per-item work.
+                ``BulkMetadataItem`` shape: ``{document_id?: str, doc_id?:
+                str, title?: str, version_label?: str, project?: str,
+                tags?: ListFieldPatch, doc_type?: str, authority_scope?:
+                str, document_date?: str, tier3_metadata?: Tier3Patch,
+                expected_version?: str}``. Supply exactly one of
+                ``document_id`` or ``doc_id`` per item; ``doc_id`` is a
+                back-compatible alias (neither or both is a per-item
+                error). Shape validation runs up front; one malformed item
+                rejects the whole batch before any per-item work.
             response_mode: Per-item payload depth. ``"full"`` returns each
                 success item's complete ``document`` body (including the
                 potentially large ``semantic_abstract``); ``"light"`` strips

@@ -33,7 +33,7 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
     UpdateMetadataResponse,
 )
-from sage.services._bulk_envelope import sage_error_to_envelope
+from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
@@ -411,6 +411,10 @@ class MetadataService:
 
         results: list[BulkMetadataItemResult] = []
         for item in request.items:
+            # Best-effort id for the error envelope's echo: the supplied
+            # value when exactly one is present, the canonical when both
+            # are (ambiguous), None when neither is (missing).
+            echo_id = item.document_id if item.document_id is not None else item.doc_id
             single = UpdateMetadataRequest(
                 title=item.title,
                 version_label=item.version_label,
@@ -427,10 +431,16 @@ class MetadataService:
                 dry_run=request.dry_run,
             )
             try:
-                response = await self._update_metadata(item.document_id, single, modified_by)
+                # Resolve document_id/doc_id before the write so an
+                # ambiguous/missing item performs no mutation; the raised
+                # SAGEError lands in the per-item error envelope below.
+                resolved_id = resolve_item_document_id(
+                    item.document_id, item.doc_id, tool="update_metadata"
+                )
+                response = await self._update_metadata(resolved_id, single, modified_by)
                 results.append(
                     BulkMetadataItemResult(
-                        document_id=item.document_id,
+                        document_id=resolved_id,
                         status="success",
                         # light mode: drop the document body. The
                         # caller already knows the document_id (they
@@ -451,7 +461,7 @@ class MetadataService:
             except SAGEError as exc:
                 results.append(
                     BulkMetadataItemResult(
-                        document_id=item.document_id,
+                        document_id=echo_id,
                         status="error",
                         error=sage_error_to_envelope(exc),
                     )
