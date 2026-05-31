@@ -26,9 +26,11 @@ from sage.adapters.stubs import (
     StubContentStore,
 )
 from sage.config import VaultConfig
-from sage.models.enums import PipelineStatus, SourceType
+from sage.models.enums import PipelineStatus, RetrievalMode, SourceType
 from sage.models.schemas import (
+    DiscoverResponse,
     Document,
+    ErrorResponse,
     IngestRequest,
     ListHeadingsResponse,
     ReadProjectionResponse,
@@ -572,6 +574,12 @@ def _doc_with_every_document_field() -> Document:
 # post-factory.
 _READ_PROJECTION_DELIVERY_FIELDS = {"written_to", "content_size"}
 
+# Self-describing read markers (CAS-ADR-039). ``read_meta`` is populated by
+# the from_document factory from the body text, not from a Document field, so
+# the Document-sourced exhaustive-fields closure does not apply to it. The
+# dedicated marker regression tests below assert its population directly.
+_READ_META_FIELD = {"read_meta"}
+
 
 # T1: ReadProjectionResponse exhaustive fields — the keystone F4 closure.
 def test_from_document_populates_every_read_projection_response_field():
@@ -580,7 +588,7 @@ def test_from_document_populates_every_read_projection_response_field():
     # Three-branch closure-test idiom. ReadProjectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadProjectionResponse.model_fields.items():
-        if field_name in _READ_PROJECTION_DELIVERY_FIELDS:
+        if field_name in _READ_PROJECTION_DELIVERY_FIELDS | _READ_META_FIELD:
             continue
         value = getattr(response, field_name)
         annotation = field_info.annotation
@@ -613,6 +621,8 @@ def test_from_document_populates_every_read_section_response_field():
     # Three-branch closure-test idiom. ReadSectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadSectionResponse.model_fields.items():
+        if field_name in _READ_META_FIELD:
+            continue
         value = getattr(response, field_name)
         annotation = field_info.annotation
         default = field_info.default
@@ -656,3 +666,74 @@ def test_from_document_populates_every_list_headings_response_field():
             assert value is not None, (
                 f"ListHeadingsResponse.{field_name} not populated by from_document"
             )
+
+
+# ---------------------------------------------------------------------------
+# Self-describing read markers (CAS-ADR-039).
+#
+# Every read-path response carries a ``read_meta`` sub-object so a delivered
+# success is distinguishable from a transport-truncated fragment, and a
+# thin/empty body from a populated one, without a heuristic over body content.
+# These tests exercise the foundation markers directly:
+# success / body_present / body_length.
+# ---------------------------------------------------------------------------
+
+
+def test_read_projection_marks_populated_body():
+    """A projection read with text reports body_present and body_length."""
+    doc = _doc_with_every_document_field()
+    text = "the canonical projection text"
+    response = ReadProjectionResponse.from_document(doc, projection_text=text)
+    assert response.read_meta.success is True
+    assert response.read_meta.body_present is True
+    assert response.read_meta.body_length == len(text)
+
+
+def test_read_projection_marks_empty_body():
+    """An empty projection is body_present=False — distinguishable from a
+    populated read without inspecting projection_text itself."""
+    doc = _doc_with_every_document_field()
+    response = ReadProjectionResponse.from_document(doc, projection_text="")
+    assert response.read_meta.success is True
+    assert response.read_meta.body_present is False
+    assert response.read_meta.body_length == 0
+
+
+def test_read_section_marks_populated_body():
+    """A section read with text reports body_present and body_length."""
+    doc = _doc_with_every_document_field()
+    text = "concatenated section text"
+    response = ReadSectionResponse.from_document(
+        doc, heading_path="A > B", chunk_count=2, section_text=text
+    )
+    assert response.read_meta.success is True
+    assert response.read_meta.body_present is True
+    assert response.read_meta.body_length == len(text)
+
+
+def test_read_section_marks_empty_body():
+    """An empty section body is body_present=False."""
+    doc = _doc_with_every_document_field()
+    response = ReadSectionResponse.from_document(
+        doc, heading_path="A > B", chunk_count=0, section_text=""
+    )
+    assert response.read_meta.success is True
+    assert response.read_meta.body_present is False
+    assert response.read_meta.body_length == 0
+
+
+def test_discover_response_carries_success_marker_no_body():
+    """A search/catalog response carries a success marker but no body:
+    body_length is null where no content body applies."""
+    response = DiscoverResponse(mode=RetrievalMode.CATALOG, results=[], total_available=0)
+    assert response.read_meta.success is True
+    assert response.read_meta.body_present is False
+    assert response.read_meta.body_length is None
+
+
+def test_error_response_carries_failure_marker():
+    """The error envelope rides the same carrier with success=False — the
+    failure-side parallel of the success marker."""
+    response = ErrorResponse(code="document_not_found", message="no such document")
+    assert response.read_meta.success is False
+    assert response.read_meta.body_present is False

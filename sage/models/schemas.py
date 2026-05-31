@@ -901,6 +901,32 @@ class ParseFilenameResponse(BaseModel):
     )
 
 
+class ReadMeta(BaseModel):
+    """Self-describing markers for a SAGE read response (CAS-ADR-039).
+
+    Nested as ``read_meta`` on every read-path response model so a caller
+    can tell a delivered success apart from a transport-truncated fragment,
+    and a thin/empty body apart from a populated one, without inferring
+    either from body content. The same carrier rides the error envelope
+    with ``success=False``.
+    """
+
+    success: bool = Field(
+        description=(
+            "True on a delivered success response; the complete sub-object's "
+            "presence distinguishes a real response from a transport-truncated "
+            "fragment."
+        )
+    )
+    body_present: bool = Field(description="Whether a content body is present.")
+    body_length: int | None = Field(
+        default=None,
+        description=(
+            "Body length when present; null for write-to-path delivery or no-body responses."
+        ),
+    )
+
+
 class DocumentWithContent(Document):
     """Document record optionally accompanied by file-delivery information.
 
@@ -944,6 +970,13 @@ class DocumentWithContent(Document):
             "Absolute path where SAGE wrote the source file bytes. "
             "Populated only when the request specified `write_to_path`. "
             "Equals the caller-supplied value."
+        ),
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=(
+            "Self-describing read markers (CAS-ADR-039). The service overwrites "
+            "the default to reflect the delivered content state."
         ),
     )
 
@@ -2969,6 +3002,10 @@ class DiscoverResponse(BaseModel):
             "(re-page at this limit to fit inline)."
         ),
     )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description="Self-describing read markers (CAS-ADR-039).",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3029,6 +3066,10 @@ class ReadProjectionResponse(BaseModel):
             "only when the request specified write_to_path."
         ),
     )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description="Self-describing read markers (CAS-ADR-039).",
+    )
 
     @classmethod
     def from_document(cls, doc: "Document", projection_text: str) -> "ReadProjectionResponse":
@@ -3052,6 +3093,11 @@ class ReadProjectionResponse(BaseModel):
             doc_type=doc.doc_type,
             source_path=doc.source_path,
             projection_text=projection_text,
+            read_meta=ReadMeta(
+                success=True,
+                body_present=bool(projection_text),
+                body_length=len(projection_text),
+            ),
         )
 
 
@@ -3061,6 +3107,10 @@ class ReadSectionResponse(BaseModel):
     heading_path: str = Field(description="Heading-path prefix that scoped the section read.")
     chunk_count: int = Field(description="Number of chunks matched by the heading_path prefix.")
     section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description="Self-describing read markers (CAS-ADR-039).",
+    )
 
     @classmethod
     def from_document(
@@ -3085,6 +3135,11 @@ class ReadSectionResponse(BaseModel):
             heading_path=heading_path,
             chunk_count=chunk_count,
             section_text=section_text,
+            read_meta=ReadMeta(
+                success=True,
+                body_present=bool(section_text),
+                body_length=len(section_text),
+            ),
         )
 
 
@@ -3968,5 +4023,12 @@ class ErrorResponse(BaseModel):
             "Additional context. Structure varies by error type (e.g., "
             "current_state and attempted_action for lifecycle transition "
             "errors)."
+        ),
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=False, body_present=False),
+        description=(
+            "Self-describing read markers (CAS-ADR-039). `success=False` on the "
+            "error envelope, parallel to the success-response marker."
         ),
     )

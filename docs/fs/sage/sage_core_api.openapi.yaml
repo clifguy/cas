@@ -3472,6 +3472,8 @@ components:
             `reason="response_exceeds_inline_budget"`,
             `response_size_bytes`, `budget_bytes`, `recommended_limit`
             (re-page at this limit to fit inline).
+        read_meta:
+          $ref: "#/components/schemas/ReadMeta"
 
     DiscoverHit:
       type: object
@@ -4335,6 +4337,33 @@ components:
         pipeline_status:
           $ref: "#/components/schemas/PipelineStatus"
 
+    ReadMeta:
+      type: object
+      description: >-
+        Self-describing markers for a SAGE read response (CAS-ADR-039).
+        Nested as `read_meta` on every read-path response model so a
+        caller can tell a delivered success apart from a transport-truncated
+        fragment, and a thin/empty body apart from a populated one. The same
+        carrier rides the error envelope with `success=false`.
+      required: [success, body_present]
+      properties:
+        success:
+          type: boolean
+          description: >-
+            True on a delivered success response; the complete sub-object's
+            presence distinguishes a real response from a transport-truncated
+            fragment.
+        body_present:
+          type: boolean
+          description: Whether a content body is present.
+        body_length:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >-
+            Body length when present; null for write-to-path delivery or
+            no-body responses.
+
     DocumentWithContent:
       description: >-
         Document record optionally accompanied by file-delivery
@@ -4380,6 +4409,8 @@ components:
                 Absolute path where SAGE wrote the source file bytes.
                 Populated only when the request specified
                 `write_to_path`. Equals the caller-supplied value.
+            read_meta:
+              $ref: "#/components/schemas/ReadMeta"
 
     TraverseResponse:
       type: object
@@ -5163,6 +5194,8 @@ components:
           nullable: true
           description: >-
             Byte count of the projection text written to disk. Populated only when the request specified write_to_path.
+        read_meta:
+          $ref: "#/components/schemas/ReadMeta"
 
     ReadSectionResponse:
       type: object
@@ -5184,6 +5217,8 @@ components:
         section_text:
           type: string
           description: Concatenated text of all chunks under the heading path.
+        read_meta:
+          $ref: "#/components/schemas/ReadMeta"
 
     ListHeadingsResponse:
       type: object
@@ -5810,6 +5845,8 @@ components:
             Additional context. Structure varies by error type
             (e.g., current_state and attempted_action for lifecycle
             transition errors).
+        read_meta:
+          $ref: "#/components/schemas/ReadMeta"
 
   # ---------------------------------------------------------------------------
   # Tags

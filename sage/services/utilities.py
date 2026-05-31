@@ -48,6 +48,7 @@ from sage.models.schemas import (
     EvalRetrievalResult,
     ExportProjectionResponse,
     ListHeadingsResponse,
+    ReadMeta,
     ReadProjectionResponse,
     ReadSectionResponse,
     RefreshViewsResponse,
@@ -269,6 +270,9 @@ class UtilitiesService:
         response.projection_text = None
         response.written_to = write_to_path
         response.content_size = len(data)
+        # Body was delivered to disk, not inline: no inline body present and
+        # body_length is null for write-to-path delivery (CAS-ADR-039).
+        response.read_meta = ReadMeta(success=True, body_present=False)
         return response
 
     # ------------------------------------------------------------------
