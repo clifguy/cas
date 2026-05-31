@@ -43,8 +43,15 @@ def register_app_tools(
         directory: str,
         max_depth: int | None = None,
     ) -> dict:
-        """Walk a directory, match files against vault adapters, hash files,
-        parse filenames, and check hashes against the SAGE vault.
+        """Scan a filesystem directory for pre-ingest discovery: walk the
+        path, match files against vault adapters, hash files, parse
+        filenames, and check the hashes against the SAGE vault.
+
+        To enumerate documents already in a vault (not files on disk), this
+        is the wrong tool — use ``search(mode="catalog",
+        response_mode="light")`` instead, the canonical vault-document
+        enumerator. ``list_directory`` only inspects the filesystem and
+        requires a ``directory`` argument.
 
         Side-effect free with respect to the vault: no documents are
         created, no metadata is written. Intended as the discovery
