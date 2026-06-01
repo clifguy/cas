@@ -337,6 +337,8 @@ def register_sage_tools(
           exceed MCP tool-result size ceilings.
 
         Error modes:
+        - ``invalid_document_id`` (400): the supplied document_id is not a
+          well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
         - ``content_file_missing`` (404): only when bytes are
           requested (either delivery mode); the document record
@@ -954,6 +956,8 @@ def register_sage_tools(
         chains that have not yet been merged.
 
         Error modes:
+        - ``invalid_document_id`` (400): the supplied document_id is not a
+          well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
 
         Args:
@@ -1232,6 +1236,8 @@ def register_sage_tools(
         document.
 
         Error modes:
+        - ``invalid_document_id`` (400): the supplied document_id is not a
+          well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
         - ``no_projection`` (404): the document exists but has no
           stored projection (e.g. ingestion failed mid-pipeline or
