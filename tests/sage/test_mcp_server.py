@@ -254,6 +254,74 @@ def test_error_response_vault_not_found_returns_unknown_vault():
     assert "Unknown vault_id: x" in result["message"]
 
 
+def test_error_response_malformed_document_id_returns_invalid_document_id():
+    """A malformed-document_id ValidationError is relabeled from the generic
+    internal_error to the structured invalid_document_id (400) shape carrying
+    the offending value."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from sage.mcp_server import _error_response
+    from sage.models.schemas import DocumentIdStr
+
+    try:
+        TypeAdapter(DocumentIdStr).validate_python("bad")
+    except ValidationError as exc:
+        result = _error_response(exc)
+    assert result["error"] == "invalid_document_id"
+    assert result["detail"]["document_id"] == "bad"
+    assert "bad" in result["message"]
+
+
+def test_error_response_malformed_vault_id_stays_internal_error():
+    """The relabel is document-id-specific. A malformed vault_id is a
+    different typed-alias rejection and must still surface as internal_error,
+    not get swept into invalid_document_id -- the anti-coincidental guard
+    against a blanket ValidationError remap."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from sage.mcp_server import _error_response
+    from sage.models.schemas import VaultIdStr
+
+    try:
+        TypeAdapter(VaultIdStr).validate_python("not a vault id!")
+    except ValidationError as exc:
+        result = _error_response(exc)
+    assert result["error"] == "internal_error"
+
+
+def test_translate_validation_error_maps_invalid_document_id():
+    """translate_validation_error rebuilds the InvalidDocumentIdError (400)
+    from the PydanticCustomError ctx -- the one translation both transports
+    consume."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from sage.api.errors import InvalidDocumentIdError, translate_validation_error
+    from sage.models.schemas import DocumentIdStr
+
+    try:
+        TypeAdapter(DocumentIdStr).validate_python("bad")
+    except ValidationError as exc:
+        sage_err = translate_validation_error(exc)
+    assert isinstance(sage_err, InvalidDocumentIdError)
+    assert sage_err.code == "invalid_document_id"
+    assert sage_err.status_code == 400
+    assert sage_err.detail["document_id"] == "bad"
+
+
+def test_translate_validation_error_ignores_unrelated_validation():
+    """An unrelated validation error (a malformed vault_id) is not matched,
+    so the caller keeps its default fall-through path."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from sage.api.errors import translate_validation_error
+    from sage.models.schemas import VaultIdStr
+
+    try:
+        TypeAdapter(VaultIdStr).validate_python("not a vault id!")
+    except ValidationError as exc:
+        assert translate_validation_error(exc) is None
+
+
 # ---------------------------------------------------------------------------
 # Unknown-parameter rejection at the FastMCP boundary (CAS-ADR-037).
 # Integration test: invoking a real registered SAGE MCP tool through the
@@ -439,6 +507,52 @@ async def test_get_document_returns_full_record(vault_services):
 async def test_get_document_not_found(vault_services):
     result = _parse(await get_document("test_vault", "deadbeef_nonexistent"))
     assert result["error"] == "document_not_found"
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda: get_document("test_vault", document_id="not-a-doc-id"),
+        lambda: read_projection("test_vault", document_id="not-a-doc-id"),
+        lambda: list_headings("test_vault", document_id="not-a-doc-id"),
+        lambda: read_section("test_vault", "Heading", document_id="not-a-doc-id"),
+        lambda: traverse("test_vault", start_id="not-a-doc-id"),
+        lambda: chain("test_vault", "supersedes", document_id="not-a-doc-id"),
+    ],
+    ids=["get_document", "read_projection", "list_headings", "read_section", "traverse", "chain"],
+)
+async def test_malformed_document_id_yields_invalid_document_id(invoke, vault_services):
+    """Every read/graph tool that validates a document_id at the boundary
+    rejects a malformed value with the structured invalid_document_id (400)
+    envelope -- the contract is a boundary property, not a per-tool one."""
+    result = _parse(await invoke())
+    assert result["error"] == "invalid_document_id", f"got: {result!r}"
+    assert result["detail"]["document_id"] == "not-a-doc-id", f"got: {result!r}"
+    assert "not-a-doc-id" in result["message"]
+
+
+async def test_read_path_three_way_error_distinctness(vault_services):
+    """A malformed id, a well-formed-but-absent id, and a genuine internal
+    error are three distinct, distinguishable shapes on the read path. The
+    malformed case no longer collides with internal_error, and the
+    well-formed-absent case still carries the id_well_formed:true
+    discriminator."""
+    from sage.mcp_server import _error_response
+
+    malformed = _parse(await get_document("test_vault", document_id="not-a-doc-id"))
+    absent = _parse(await get_document("test_vault", "deadbeef_nonexistent"))
+    internal = _error_response(ValueError("boom"))
+
+    assert malformed["error"] == "invalid_document_id"
+    assert absent["error"] == "document_not_found"
+    assert absent["detail"]["id_well_formed"] is True
+    assert absent["detail"]["ever_existed"] is False
+    assert internal["error"] == "internal_error"
+    assert len({malformed["error"], absent["error"], internal["error"]}) == 3
+    # The malformed message is caller-actionable, not a raw Pydantic regex
+    # dump.
+    assert "not-a-doc-id" in malformed["message"]
+    assert "must match" not in malformed["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -2182,15 +2296,19 @@ async def test_recompute_pipeline_tool_unknown_document_returns_envelope(vault_s
 
 
 async def test_recompute_pipeline_tool_invalid_document_id_returns_envelope(vault_services):
-    """An empty document_id must fail typed-alias validation at the tool
-    boundary and surface as a structured error envelope (the convention
-    catches the pydantic ValidationError as ``ValueError`` and funnels it
-    through ``_error_response``, which maps it to ``internal_error``; see
-    ``test_sage_admin_migrate_vault.py``).
+    """An empty document_id fails typed-alias validation at the tool
+    boundary and surfaces as the structured ``invalid_document_id`` (400)
+    envelope -- the convention catches the pydantic ValidationError as
+    ``ValueError`` and funnels it through ``_error_response``, which now
+    maps the malformed-document_id case to the caller-actionable code
+    (carrying the offending value) rather than the generic
+    ``internal_error``. The fix is surface-wide: it applies to every tool
+    that validates a document_id at the boundary, not only the read tools.
     """
     result = _parse(await recompute_pipeline("test_vault", ""))
     assert "error" in result
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_document_id"
+    assert result["detail"]["document_id"] == ""
 
 
 async def test_recompute_pipeline_tool_concurrent_returns_409(vault_services):

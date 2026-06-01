@@ -45,8 +45,24 @@ _DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
 
 def _validate_document_id(v: str) -> str:
+    """Reject-flavor validator for the document-id shape.
+
+    A non-conforming value is rejected with a structured
+    ``PydanticCustomError`` of type ``invalid_document_id`` rather than a
+    bare ``ValueError``: the error carries the offending value in ``ctx``
+    so the request-boundary translator can rebuild a caller-actionable
+    ``invalid_document_id`` (400) envelope on both transports without
+    parsing a raw validator message. The models layer cannot import the
+    error classes (leaf-layer contract), hence the embedded ``ctx``.
+    """
     if not _DOCUMENT_ID_RE.fullmatch(v):
-        raise ValueError(f"document id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})")
+        raise PydanticCustomError(
+            "invalid_document_id",
+            "document_id {value} is not a well-formed document id "
+            "(expected 8 hex characters, an underscore, then a lowercase "
+            "alphanumeric/underscore slug)",
+            {"document_id": v, "value": v, "expected_pattern": _DOCUMENT_ID_RE.pattern},
+        )
     return v
 
 

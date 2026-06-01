@@ -54,6 +54,29 @@ class DocumentNotFoundError(SAGEError):
         )
 
 
+class InvalidDocumentIdError(SAGEError):
+    """400: the supplied document_id is not a well-formed id.
+
+    A syntactically-malformed id is rejected at the request boundary and
+    surfaces as this structured 400 — distinct from the 404
+    ``document_not_found`` discriminator, which fires only for a
+    well-formed id that resolves to no document. The boundary precedes
+    the discriminator by design: malformed *syntax* is a client error,
+    not a miss. The ``detail`` carries the offending value so a caller
+    can correct its call without parsing the message.
+    """
+
+    def __init__(self, document_id: str) -> None:
+        super().__init__(
+            "invalid_document_id",
+            f"document_id {document_id!r} is not a well-formed document id "
+            "(expected 8 hex characters, an underscore, then a lowercase "
+            "alphanumeric/underscore slug)",
+            400,
+            {"document_id": document_id},
+        )
+
+
 class InvalidLifecycleTransitionError(SAGEError):
     """409: action is known but invalid from current state (BH-012)."""
 
@@ -1267,6 +1290,17 @@ def translate_validation_error(
                 received_type=str(ctx.get("received_type", "")),
                 example=str(ctx.get("example", "")),
             )
+
+        # 0b) Custom ``invalid_document_id`` raised from the DocumentIdStr
+        # AfterValidator via PydanticCustomError. Same leaf-layer-contract
+        # reasoning as above: the validator embeds the offending value in
+        # ``ctx`` and we rebuild the public 400 envelope here. Reconciles the
+        # reject-at-boundary rule (a malformed id is a client error caught
+        # before lookup) with the self-describing not-found discriminator (a
+        # well-formed-but-absent id is a 404): malformed syntax surfaces as
+        # ``invalid_document_id`` (400), never as the generic internal_error.
+        if err_type == "invalid_document_id":
+            return InvalidDocumentIdError(str(ctx.get("document_id", input_value)))
 
         # 1) Invalid `mode` enum value: caller passed a string not in RetrievalMode.
         if loc and loc[0] == "mode" and err_type in ("enum", "literal_error"):

@@ -132,6 +132,22 @@ async def test_get_document_404(client):
     assert resp.json()["code"] == "document_not_found"
 
 
+async def test_get_document_malformed_id_returns_invalid_document_id_400(client):
+    """A malformed document_id on the FastAPI read path returns the structured
+    invalid_document_id (400) envelope, not FastAPI's native 422 nor the 404
+    not-found discriminator. The vault is registered, so binding reaches the
+    document_id path-parameter validator; that rejection is translated into
+    the typed SAGE 400 by translate_validation_error -- the HTTP-surface
+    counterpart of the MCP boundary fix. Distinguishable from the native 422
+    ``{"detail": [...]}`` array by both the status code and the ``code`` field.
+    """
+    resp = await client.get("/sage_vaults/test_vault/documents/not-a-doc-id")
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_document_id", body
+    assert body["detail"]["document_id"] == "not-a-doc-id", body
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle transition
 # ---------------------------------------------------------------------------

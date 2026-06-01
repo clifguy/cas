@@ -964,7 +964,10 @@ def test_fastmcp_tool_rejects_non_canonical_document_id() -> None:
     result = asyncio.run(get_document(vault_id="cas", document_id="not-an-id"))
     assert isinstance(result, dict), f"Expected dict envelope, got {type(result).__name__}"
     assert "error" in result, f"Expected SAGE error envelope with 'error' key, got: {result!r}"
-    # The validator's ValueError surfaces through error_response as
-    # ``internal_error`` (the fall-through bucket for non-SAGEError ValueErrors).
-    # What matters is the envelope shape, not the specific error code.
+    # A malformed document_id is rejected at the boundary as the structured
+    # ``invalid_document_id`` (400) envelope -- not the generic
+    # ``internal_error`` -- so the caller gets a caller-actionable code plus
+    # the offending value, never a raw Pydantic dump.
+    assert result["error"] == "invalid_document_id", f"got: {result!r}"
+    assert result["detail"]["document_id"] == "not-an-id", f"got: {result!r}"
     assert "message" in result, f"Expected 'message' in error envelope, got: {result!r}"
