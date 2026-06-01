@@ -149,6 +149,84 @@ async def test_get_document_malformed_id_returns_invalid_document_id_400(client)
 
 
 # ---------------------------------------------------------------------------
+# Typed-alias structured-error family on the FastAPI transport.
+#
+# The generic RequestValidationError handler routes every translate-recognized
+# alias rejection to its structured 400 (status_code=sage_err.status_code), so a
+# malformed value on any alias-bearing endpoint returns 400 + code + detail
+# rather than FastAPI's native 422. The detail key is the alias name. user_id is
+# absent here: SetEditorsRequest (its only carrier) is wired to no route, so it
+# has no FastAPI surface -- it is covered at the shared choke point in
+# test_mcp_server.py::test_translate_validation_error_maps_typed_alias_family.
+# ---------------------------------------------------------------------------
+
+
+async def test_malformed_vault_id_returns_invalid_vault_id_400(client):
+    """A malformed vault_id path segment returns the structured invalid_vault_id
+    (400) from binding validation, not FastAPI's native 422."""
+    resp = await client.get("/sage_vaults/NOT-A-VAULT/documents/deadbeef_a")
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_vault_id", body
+    assert body["detail"]["vault_id"] == "NOT-A-VAULT", body
+
+
+async def test_malformed_edge_id_returns_invalid_edge_id_400(client):
+    """A malformed edge_id path segment on DELETE /edges/{edge_id} returns the
+    structured invalid_edge_id (400)."""
+    resp = await client.delete("/sage_vaults/test_vault/edges/not-a-uuid")
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_edge_id", body
+    assert body["detail"]["edge_id"] == "not-a-uuid", body
+
+
+async def test_malformed_function_id_returns_invalid_function_id_400(client):
+    """A malformed function_id path segment on GET /preconditions/{function_id}
+    returns the structured invalid_function_id (400)."""
+    resp = await client.get("/sage_vaults/test_vault/preconditions/not-a-fn")
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_function_id", body
+    assert body["detail"]["function_id"] == "not-a-fn", body
+
+
+async def test_malformed_document_date_returns_invalid_document_date_400(client):
+    """A malformed document_date in the metadata-patch body returns the
+    structured invalid_document_date (400)."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/metadata",
+        json={"items": [{"document_id": "deadbeef_a", "document_date": "2026-13-99"}]},
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_document_date", body
+    assert body["detail"]["document_date"] == "2026-13-99", body
+
+
+async def test_malformed_sha256_returns_invalid_sha256_400(client):
+    """A malformed synced_from_content_hash in the create-edges body returns the
+    structured invalid_sha256 (400)."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "items": [
+                {
+                    "source_id": "deadbeef_a",
+                    "target_id": "deadbeef_b",
+                    "edge_type": "supersedes",
+                    "synced_from_content_hash": "deadbeef",
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_sha256", body
+    assert body["detail"]["sha256"] == "deadbeef", body
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle transition
 # ---------------------------------------------------------------------------
 
@@ -671,7 +749,12 @@ async def test_refresh_views_200(client):
     ["not-a-uuid", "12345", "deadbeef-dead-beef"],
     ids=["random_text", "digits", "truncated_uuid"],
 )
-async def test_edge_id_route_rejects_non_uuid_422(client, method, path, bad_input):
-    """Non-UUID edge_id path params surface as 422 (Pydantic validation)."""
+async def test_edge_id_route_rejects_non_uuid_400(client, method, path, bad_input):
+    """Non-UUID edge_id path params surface as the structured invalid_edge_id
+    (400): the typed-alias family translates the binding rejection into a typed
+    SAGE 400 instead of FastAPI's native 422."""
     resp = await client.request(method, path.format(edge_id=bad_input))
-    assert resp.status_code == 422
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_edge_id", body
+    assert body["detail"]["edge_id"] == bad_input, body

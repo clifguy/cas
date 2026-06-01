@@ -64,13 +64,16 @@ async def test_sage_admin_migrate_vault_invalid_vault_id_shape_returns_error_env
     empty_registry,
 ):
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
-    and surfaces as a standard error envelope, not a raised exception."""
+    and surfaces as the structured invalid_vault_id (400) envelope carrying
+    the offending value, not a raised exception."""
     result = await mcp_server.migrate_vault(vault_id="not a vault id!")
 
     assert isinstance(result, dict)
     assert "error" in result, f"expected error envelope, got {result!r}"
-    # ValidationError funnels through `_error_response` -> internal_error.
-    assert result["error"] == "internal_error"
+    # The VaultIdStr ValidationError funnels through `_error_response` and is
+    # relabeled to the structured invalid_vault_id (400) family code.
+    assert result["error"] == "invalid_vault_id"
+    assert result["detail"]["vault_id"] == "not a vault id!"
 
 
 async def test_sage_admin_migrate_vault_unknown_vault_returns_error_envelope(

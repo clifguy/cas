@@ -71,12 +71,14 @@ async def test_mcp_tool_round_trip_returns_dict_matching_response_model(seeded_m
 
 
 async def test_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registry):
-    """A vault_id that fails the VaultIdStr adapter surfaces as the error envelope."""
+    """A vault_id that fails the VaultIdStr adapter surfaces the structured
+    invalid_vault_id (400) envelope carrying the offending value."""
     result = await mcp_server.update_metadata(vault_id="not a vault id!", items=[])
 
     assert isinstance(result, dict)
     assert "error" in result
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_vault_id"
+    assert result["detail"]["vault_id"] == "not a vault id!"
 
 
 async def test_mcp_tool_unknown_vault_returns_error_envelope(empty_registry):

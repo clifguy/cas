@@ -49,7 +49,7 @@ from pydantic import ValidationError
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
 from sage._tool_rename_mapping import REMOVED_TOOLS, RENAME_MAPPING
-from sage.api.errors import SAGEError, translate_validation_error
+from sage.api.errors import _TYPED_ALIAS_CODES, SAGEError, translate_validation_error
 from sage.app_tools import register_app_tools
 from sage.config import load_vault_config
 from sage.mcp_init import (
@@ -141,12 +141,14 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
         payload = {"error": "unknown_vault", "message": str(exc)}
     elif isinstance(exc, ValidationError) and (
         (sage_err := translate_validation_error(exc)) is not None
-        and sage_err.code == "invalid_document_id"
+        and sage_err.code in _TYPED_ALIAS_CODES
     ):
-        # A malformed document_id rejected by the DocumentIdStr boundary
-        # validator surfaces as the structured invalid_document_id (400)
-        # rather than the generic internal_error. Scoped to that one code so
-        # every other ValidationError category keeps its current MCP shape.
+        # A malformed typed-alias boundary value (vault_id, edge_id, sha256,
+        # function_id, document_date, user_id, or document_id) surfaces as its
+        # structured invalid_<alias> (400) rather than the generic
+        # internal_error. Scoped to the family via _TYPED_ALIAS_CODES so every
+        # other ValidationError category -- e.g. the discover/filters
+        # mode/unknown-key cases -- keeps its current MCP shape.
         payload = {"error": sage_err.code, "message": sage_err.message}
         if sage_err.detail:
             payload["detail"] = sage_err.detail

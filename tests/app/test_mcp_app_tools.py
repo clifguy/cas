@@ -544,7 +544,8 @@ class TestEdgeIdValidation:
     async def test_invalid_uuid_rejected(self, single_vault, tool_fn, bad_input):
         result = _parse(await tool_fn("test_vault", bad_input))
         assert "error" in result
-        assert "edge id must be a UUID" in result["message"]
+        assert result["error"] == "invalid_edge_id"
+        assert result["detail"]["edge_id"] == bad_input
 
     @pytest.mark.parametrize(
         "action",

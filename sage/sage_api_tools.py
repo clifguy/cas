@@ -561,9 +561,11 @@ def register_sage_tools(
         returns a success envelope whenever at least one item is processed,
         so inspect each ``BulkLinkItemResult.status`` and the aggregate
         ``success_count`` / ``error_count``. An error envelope is returned
-        only when up-front validation rejects the call (invalid
-        ``vault_id``, malformed ``items``, unknown vault, or invalid
-        ``response_mode``). Empty ``items`` is valid: empty ``results``,
+        only when up-front validation rejects the call: ``invalid_vault_id``
+        (malformed ``vault_id``), ``invalid_sha256`` (a per-item
+        ``synced_from_content_hash`` is not a well-formed hash), another
+        malformed ``items`` shape, ``unknown_vault``, or invalid
+        ``response_mode``. Empty ``items`` is valid: empty ``results``,
         zero counts.
 
         Per-item error modes (inside the response envelope):
@@ -706,9 +708,11 @@ def register_sage_tools(
 
         Batch-level error modes (the tool's error envelope): ``legacy_form``
         (a per-item ``tags`` is a bare list or ``tier3_metadata`` a bare
-        key/value dict; detail names the ops-object shape), ``unknown_vault``,
-        and ``internal_error`` (malformed ``vault_id`` / ``items``, or
-        invalid ``response_mode``).
+        key/value dict; detail names the ops-object shape),
+        ``invalid_vault_id`` (400, malformed ``vault_id``),
+        ``invalid_document_date`` (400, a per-item ``document_date`` is not a
+        YYYY-MM-DD calendar date), ``unknown_vault``, and ``internal_error``
+        (a malformed ``items`` shape or invalid ``response_mode``).
 
         Args:
             vault_id: Target vault identifier.
@@ -789,6 +793,9 @@ def register_sage_tools(
         The returned ``edge_id`` is the value to pass here.
 
         Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation at the boundary.
+        - ``invalid_edge_id`` (400): ``edge_id`` is not a well-formed UUID.
         - ``edge_not_found`` (404): no production edge with that id (raised
           on dry-run too).
 
@@ -823,6 +830,10 @@ def register_sage_tools(
         gap rather than re-querying each dependency.
 
         Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
+          validation at the boundary.
+        - ``invalid_function_id`` (400): ``function_id`` is not a well-formed
+          document id.
         - ``document_not_found`` (404): no document with ``function_id``.
 
         Args:
