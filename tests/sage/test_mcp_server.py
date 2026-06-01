@@ -272,11 +272,11 @@ def test_error_response_malformed_document_id_returns_invalid_document_id():
     assert "bad" in result["message"]
 
 
-def test_error_response_malformed_vault_id_stays_internal_error():
-    """The relabel is document-id-specific. A malformed vault_id is a
-    different typed-alias rejection and must still surface as internal_error,
-    not get swept into invalid_document_id -- the anti-coincidental guard
-    against a blanket ValidationError remap."""
+def test_error_response_malformed_vault_id_returns_invalid_vault_id():
+    """The structured-error relabel covers the whole typed-alias family: a
+    malformed vault_id surfaces as the structured invalid_vault_id (400)
+    envelope carrying the offending value -- not the generic internal_error it
+    would produce if the relabel were scoped to document_id alone."""
     from pydantic import TypeAdapter, ValidationError
 
     from sage.mcp_server import _error_response
@@ -286,7 +286,9 @@ def test_error_response_malformed_vault_id_stays_internal_error():
         TypeAdapter(VaultIdStr).validate_python("not a vault id!")
     except ValidationError as exc:
         result = _error_response(exc)
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_vault_id"
+    assert result["detail"]["vault_id"] == "not a vault id!"
+    assert "not a vault id!" in result["message"]
 
 
 def test_translate_validation_error_maps_invalid_document_id():
@@ -309,15 +311,17 @@ def test_translate_validation_error_maps_invalid_document_id():
 
 
 def test_translate_validation_error_ignores_unrelated_validation():
-    """An unrelated validation error (a malformed vault_id) is not matched,
-    so the caller keeps its default fall-through path."""
+    """A validation error outside the typed-alias family (here an int-parse
+    failure) is not matched, so the caller keeps its default fall-through
+    path. Guards that the family branch is not a blanket remap of every
+    ValidationError -- vault_id, a family member, is asserted to map in
+    test_translate_validation_error_maps_typed_alias_family."""
     from pydantic import TypeAdapter, ValidationError
 
     from sage.api.errors import translate_validation_error
-    from sage.models.schemas import VaultIdStr
 
     try:
-        TypeAdapter(VaultIdStr).validate_python("not a vault id!")
+        TypeAdapter(int).validate_python("not-an-int")
     except ValidationError as exc:
         assert translate_validation_error(exc) is None
 
@@ -553,6 +557,164 @@ async def test_read_path_three_way_error_distinctness(vault_services):
     # dump.
     assert "not-a-doc-id" in malformed["message"]
     assert "must match" not in malformed["message"]
+
+
+# ---------------------------------------------------------------------------
+# Typed-alias structured-error family.
+#
+# Each sibling reject-flavor validator surfaces a malformed value as its own
+# invalid_<alias> (400) via the shared translate_validation_error ->
+# InvalidTypedAliasError -> _error_response path, keyed off the single
+# _TYPED_ALIAS_CODES frozenset. document_id keeps its own InvalidDocumentIdError
+# and must not regress. The `detail` key for each code is the alias name (the
+# validator is shared across fields, so it labels by type not by the specific
+# field that failed).
+# ---------------------------------------------------------------------------
+
+# (external code, schemas alias name, malformed value, detail key == code suffix)
+_TYPED_ALIAS_FAMILY = [
+    ("invalid_vault_id", "VaultIdStr", "not a vault id!", "vault_id"),
+    ("invalid_edge_id", "EdgeIdStr", "not-a-uuid", "edge_id"),
+    ("invalid_sha256", "Sha256Str", "deadbeef", "sha256"),
+    ("invalid_function_id", "FunctionIdStr", "not-a-fn", "function_id"),
+    ("invalid_document_date", "DocumentDateStr", "2026-13-99", "document_date"),
+    ("invalid_user_id", "UserIdStr", "not-a-uuid", "user_id"),
+]
+
+
+def _alias_validation_error(alias_name: str, bad_value: str):
+    """Build a real pydantic ValidationError by running the named alias's
+    TypeAdapter against a malformed value -- never a hand-faked error dict, so
+    the err_type and ctx are exactly what the production validator emits."""
+    from pydantic import TypeAdapter, ValidationError
+
+    import sage.models.schemas as _schemas
+
+    alias = getattr(_schemas, alias_name)
+    try:
+        TypeAdapter(alias).validate_python(bad_value)
+    except ValidationError as exc:
+        return exc
+    raise AssertionError(f"{alias_name} unexpectedly accepted {bad_value!r}")
+
+
+@pytest.mark.parametrize(
+    "code,alias_name,bad_value,detail_key",
+    _TYPED_ALIAS_FAMILY,
+    ids=[c for c, *_ in _TYPED_ALIAS_FAMILY],
+)
+def test_translate_validation_error_maps_typed_alias_family(
+    code, alias_name, bad_value, detail_key
+):
+    """Each family validator's ValidationError is rebuilt as the single
+    InvalidTypedAliasError (400) carrying the offending value under its argument
+    key plus an `expected` hint -- the one translation both transports consume."""
+    from sage.api.errors import InvalidTypedAliasError, translate_validation_error
+
+    sage_err = translate_validation_error(_alias_validation_error(alias_name, bad_value))
+    assert isinstance(sage_err, InvalidTypedAliasError)
+    assert sage_err.code == code
+    assert sage_err.status_code == 400
+    assert sage_err.detail[detail_key] == bad_value
+    assert sage_err.detail["expected"]
+
+
+@pytest.mark.parametrize(
+    "code,alias_name,bad_value,detail_key",
+    _TYPED_ALIAS_FAMILY,
+    ids=[c for c, *_ in _TYPED_ALIAS_FAMILY],
+)
+def test_error_response_maps_typed_alias_family(code, alias_name, bad_value, detail_key):
+    """The MCP choke point _error_response envelopes each family code (not the
+    generic internal_error). This is the sole MCP-side coverage for
+    invalid_user_id and invalid_sha256, whose only direct surfaces are a model
+    field (no dedicated MCP tool param of their own)."""
+    from sage.mcp_server import _error_response
+
+    result = _error_response(_alias_validation_error(alias_name, bad_value))
+    assert result["error"] == code
+    assert result["detail"][detail_key] == bad_value
+    assert bad_value in result["message"]
+
+
+def test_error_response_typed_alias_family_is_scoped():
+    """A ValidationError outside the family (an int-parse failure) still
+    surfaces as internal_error -- _error_response must not broaden into a
+    blanket remap of every ValidationError; the discover/filters
+    mode/unknown-key cases keep their current MCP shape."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from sage.mcp_server import _error_response
+
+    try:
+        TypeAdapter(int).validate_python("not-an-int")
+    except ValidationError as exc:
+        result = _error_response(exc)
+    assert result["error"] == "internal_error"
+
+
+def test_translate_validation_error_document_id_unchanged():
+    """Branch-ordering regression guard: invalid_document_id keeps its own
+    InvalidDocumentIdError shape ({document_id: value}, no `expected` key) and is
+    NOT swept into the generic InvalidTypedAliasError family branch. A
+    misordering that put the family branch first would break document_id's
+    distinct three-key ctx via **ctx."""
+    from sage.api.errors import InvalidDocumentIdError, translate_validation_error
+
+    sage_err = translate_validation_error(_alias_validation_error("DocumentIdStr", "bad"))
+    assert isinstance(sage_err, InvalidDocumentIdError)
+    assert sage_err.detail == {"document_id": "bad"}
+    assert "expected" not in sage_err.detail
+
+
+async def test_mcp_tool_malformed_edge_id_yields_invalid_edge_id(vault_services):
+    """delete_edge validates edge_id at the boundary before any graph lookup;
+    a malformed value surfaces the structured invalid_edge_id (400)."""
+    result = _parse(await _sage_unlink_tool("test_vault", edge_id="not-a-uuid"))
+    assert result["error"] == "invalid_edge_id", f"got: {result!r}"
+    assert result["detail"]["edge_id"] == "not-a-uuid"
+
+
+async def test_mcp_tool_malformed_function_id_yields_invalid_function_id(vault_services):
+    """verify_preconditions validates function_id at the boundary before any
+    lookup; a malformed value surfaces the structured invalid_function_id (400)."""
+    result = _parse(await verify_preconditions("test_vault", function_id="not-a-fn"))
+    assert result["error"] == "invalid_function_id", f"got: {result!r}"
+    assert result["detail"]["function_id"] == "not-a-fn"
+
+
+@pytest.mark.parametrize(
+    "bad_date", ["2026-13-99", "2026/01/01"], ids=["impossible_calendar", "bad_shape"]
+)
+async def test_mcp_tool_malformed_document_date_yields_invalid_document_date(
+    bad_date, vault_services
+):
+    """update_metadata parses items up front (BulkMetadataItem.model_validate);
+    both document_date failure sub-modes (impossible calendar date, bad shape)
+    surface the structured invalid_document_date (400)."""
+    result = _parse(
+        await _update_metadata_bulk(
+            "test_vault", items=[{"document_id": "deadbeef_a", "document_date": bad_date}]
+        )
+    )
+    assert result["error"] == "invalid_document_date", f"got: {result!r}"
+    assert result["detail"]["document_date"] == bad_date
+
+
+async def test_mcp_tool_malformed_sha256_yields_invalid_sha256(vault_services):
+    """create_edges parses items up front (BulkLinkItem.model_validate); a
+    malformed synced_from_content_hash surfaces the structured invalid_sha256
+    (400). This is the caller-reachable MCP sha256 surface -- verify_hash
+    intentionally skips Sha256Str validation."""
+    item = {
+        "source_id": "deadbeef_a",
+        "target_id": "deadbeef_b",
+        "edge_type": "supersedes",
+        "synced_from_content_hash": "deadbeef",
+    }
+    result = _parse(await _create_edges_bulk("test_vault", items=[item]))
+    assert result["error"] == "invalid_sha256", f"got: {result!r}"
+    assert result["detail"]["sha256"] == "deadbeef"
 
 
 # ---------------------------------------------------------------------------

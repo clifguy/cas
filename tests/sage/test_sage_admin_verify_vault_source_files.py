@@ -59,12 +59,14 @@ async def test_verify_vault_source_files_invalid_vault_id_shape_returns_error_en
     empty_registry,
 ):
     """Whitespace + punctuation in vault_id fails the VaultIdStr adapter
-    and surfaces as a standard error envelope, not a raised exception."""
+    and surfaces as the structured invalid_vault_id (400) envelope carrying
+    the offending value, not a raised exception."""
     result = await mcp_server.verify_vault_source_files(vault_id="not a vault id!")
 
     assert isinstance(result, dict)
     assert "error" in result, f"expected error envelope, got {result!r}"
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_vault_id"
+    assert result["detail"]["vault_id"] == "not a vault id!"
 
 
 async def test_verify_vault_source_files_unknown_vault_returns_error_envelope(

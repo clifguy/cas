@@ -148,11 +148,13 @@ async def test_a1_mcp_tool_round_trip_returns_dict_matching_response_model(seede
 
 
 async def test_a2_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registry):
-    """A2 — vault_id failing the VaultIdStr adapter surfaces an error envelope."""
+    """A2 — vault_id failing the VaultIdStr adapter surfaces the structured
+    invalid_vault_id (400) envelope carrying the offending value."""
     result = await mcp_server.create_edges(vault_id="not a vault id!", items=[])
     assert isinstance(result, dict)
     assert "error" in result
-    assert result["error"] == "internal_error"
+    assert result["error"] == "invalid_vault_id"
+    assert result["detail"]["vault_id"] == "not a vault id!"
 
 
 async def test_a3_mcp_tool_unknown_vault_returns_error_envelope(empty_registry):

@@ -77,6 +77,50 @@ class InvalidDocumentIdError(SAGEError):
         )
 
 
+#: Single source of truth for the typed-alias boundary-error family. Shared by
+#: ``translate_validation_error`` (which rebuilds the structured 400 from the
+#: validator's ctx) and the MCP ``_error_response`` choke point (which envelopes
+#: these codes instead of the generic ``internal_error``). ``invalid_document_id``
+#: keeps its own ``InvalidDocumentIdError`` but joins the set so both dispatch
+#: points recognize the whole family from one place. Adding a future alias means
+#: adding its code here plus raising the shared-shape ``PydanticCustomError`` in
+#: its validator -- no new error class or dispatch branch.
+_TYPED_ALIAS_CODES: frozenset[str] = frozenset(
+    {
+        "invalid_document_id",
+        "invalid_vault_id",
+        "invalid_edge_id",
+        "invalid_sha256",
+        "invalid_function_id",
+        "invalid_document_date",
+        "invalid_user_id",
+    }
+)
+
+
+class InvalidTypedAliasError(SAGEError):
+    """400: a typed-alias boundary value failed its shape validator.
+
+    One parameterized error for the typed-alias family (vault_id, edge_id,
+    sha256, function_id, document_date, user_id). The leaf-layer validator in
+    ``sage/models/schemas.py`` raises a ``PydanticCustomError`` carrying a
+    uniform ``{argument, value, expected}`` ctx; the request-boundary translator
+    rebuilds this structured 400 from that ctx, so a malformed value surfaces as
+    a caller-actionable ``invalid_<argument>`` code -- with the offending value
+    and the expected shape in ``detail`` -- instead of the generic
+    ``internal_error`` (MCP) / native 422 (HTTP). ``invalid_document_id`` keeps
+    its own ``InvalidDocumentIdError``.
+    """
+
+    def __init__(self, code: str, argument: str, value: object, expected: str) -> None:
+        super().__init__(
+            code,
+            f"{argument} {value!r} is not a well-formed {argument} (expected {expected})",
+            400,
+            {argument: value, "expected": expected},
+        )
+
+
 class InvalidLifecycleTransitionError(SAGEError):
     """409: action is known but invalid from current state (BH-012)."""
 
@@ -1301,6 +1345,22 @@ def translate_validation_error(
         # ``invalid_document_id`` (400), never as the generic internal_error.
         if err_type == "invalid_document_id":
             return InvalidDocumentIdError(str(ctx.get("document_id", input_value)))
+
+        # 0c) The rest of the typed-alias family: vault_id, edge_id, sha256,
+        # function_id, document_date, user_id. Same leaf-layer-contract
+        # reasoning as ``invalid_document_id`` above -- the validator embeds a
+        # uniform ``{argument, value, expected}`` ctx and we rebuild the public
+        # 400 here via the single parameterized ``InvalidTypedAliasError``.
+        # Placed AFTER the ``invalid_document_id`` branch, which keeps its own
+        # distinct error and three-key ctx; the ordering matters because
+        # ``invalid_document_id`` is itself a member of the family set.
+        if err_type in _TYPED_ALIAS_CODES:
+            return InvalidTypedAliasError(
+                code=err_type,
+                argument=str(ctx.get("argument", "")),
+                value=ctx.get("value", input_value),
+                expected=str(ctx.get("expected", "")),
+            )
 
         # 1) Invalid `mode` enum value: caller passed a string not in RetrievalMode.
         if loc and loc[0] == "mode" and err_type in ("enum", "literal_error"):

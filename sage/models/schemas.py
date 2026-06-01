@@ -73,7 +73,11 @@ def _validate_edge_id(v: str) -> str:
     try:
         return str(uuid.UUID(v))
     except ValueError as exc:
-        raise ValueError(f"edge id must be a UUID (got {v!r})") from exc
+        raise PydanticCustomError(
+            "invalid_edge_id",
+            "edge_id {value} is not a well-formed edge id (expected {expected})",
+            {"argument": "edge_id", "value": v, "expected": "an RFC 4122 UUID"},
+        ) from exc
 
 
 EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id)]
@@ -84,7 +88,15 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 def _validate_sha256(v: str) -> str:
     if not _SHA256_RE.fullmatch(v):
-        raise ValueError(f"hash must match {_SHA256_RE.pattern!r} (got {v!r})")
+        raise PydanticCustomError(
+            "invalid_sha256",
+            "sha256 {value} is not a well-formed content hash (expected {expected})",
+            {
+                "argument": "sha256",
+                "value": v,
+                "expected": "'sha256:' followed by 64 lowercase hex characters",
+            },
+        )
     return v
 
 
@@ -109,11 +121,19 @@ def _validate_document_date(v: str | None) -> str | None:
     if v is None:
         return v
     if not _DOCUMENT_DATE_RE.fullmatch(v):
-        raise ValueError(f"document_date must be YYYY-MM-DD (got {v!r})")
+        raise PydanticCustomError(
+            "invalid_document_date",
+            "document_date {value} is not a well-formed date (expected {expected})",
+            {"argument": "document_date", "value": v, "expected": "a YYYY-MM-DD calendar date"},
+        )
     try:
         date.fromisoformat(v)
     except ValueError as exc:
-        raise ValueError(f"document_date must be a valid calendar date (got {v!r})") from exc
+        raise PydanticCustomError(
+            "invalid_document_date",
+            "document_date {value} is not a valid calendar date (expected {expected})",
+            {"argument": "document_date", "value": v, "expected": "a YYYY-MM-DD calendar date"},
+        ) from exc
     return v
 
 
@@ -135,7 +155,11 @@ def _validate_user_id(v: str) -> str:
     try:
         return str(uuid.UUID(v))
     except ValueError as exc:
-        raise ValueError(f"user id must be a UUID (got {v!r})") from exc
+        raise PydanticCustomError(
+            "invalid_user_id",
+            "user_id {value} is not a well-formed user id (expected {expected})",
+            {"argument": "user_id", "value": v, "expected": "an RFC 4122 UUID"},
+        ) from exc
 
 
 UserIdStr = Annotated[str, AfterValidator(_validate_user_id)]
@@ -157,7 +181,16 @@ def _validate_vault_id(v: str) -> str:
     Flavor: reject.
     """
     if not _VAULT_ID_RE.fullmatch(v):
-        raise ValueError(f"vault id must match {_VAULT_ID_RE.pattern!r} (got {v!r})")
+        raise PydanticCustomError(
+            "invalid_vault_id",
+            "vault_id {value} is not a well-formed vault id (expected {expected})",
+            {
+                "argument": "vault_id",
+                "value": v,
+                "expected": "a lowercase slug of ASCII alphanumerics, underscore, "
+                "or hyphen, starting alphanumeric, at most 64 characters",
+            },
+        )
     return v
 
 
@@ -177,7 +210,16 @@ def _validate_function_id(v: str) -> str:
     Flavor: reject.
     """
     if not _DOCUMENT_ID_RE.fullmatch(v):
-        raise ValueError(f"function id must match {_DOCUMENT_ID_RE.pattern!r} (got {v!r})")
+        raise PydanticCustomError(
+            "invalid_function_id",
+            "function_id {value} is not a well-formed function id (expected {expected})",
+            {
+                "argument": "function_id",
+                "value": v,
+                "expected": "8 hex characters, an underscore, then a lowercase "
+                "alphanumeric/underscore slug",
+            },
+        )
     return v
 
 

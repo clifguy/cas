@@ -925,13 +925,16 @@ def test_discover_request_document_id_rejects_non_canonical(bad_value: str) -> N
 
 
 def test_fastapi_handler_rejects_non_canonical_vault_id() -> None:
-    """A malformed vault_id in a route path returns HTTP 422 from the alias's validator.
+    """A malformed vault_id in a route path returns the structured
+    invalid_vault_id (400) from the alias's validator.
 
     Uses the existing FastAPI TestClient infrastructure. The error must
     come from ``_validate_vault_id`` (shape rejection), not from
     ``VaultNotFoundError`` (registry miss). The distinction is observable
-    by status code: 422 means request-binding validation rejected the
-    input; 404 means binding passed and the registry then rejected.
+    by status code: 400 (``invalid_vault_id``) means request-binding
+    validation rejected the input -- the typed-alias family translates the
+    binding rejection into a typed SAGE 400 instead of FastAPI's native 422;
+    404 would mean binding passed and the registry then rejected.
     """
     from fastapi.testclient import TestClient
 
@@ -943,9 +946,11 @@ def test_fastapi_handler_rejects_non_canonical_vault_id() -> None:
         # Any handler under /sage_vaults/{vault_id}/... works as a probe;
         # use a documents endpoint that exists in the registry.
         resp = client.get("/sage_vaults/VAULT-WITH-UPPER/documents/14405c6d_x")
-    assert resp.status_code == 422, (
-        f"Expected 422 from vault_id alias validator, got {resp.status_code}: {resp.text[:300]}"
+    assert resp.status_code == 400, (
+        f"Expected 400 invalid_vault_id from the vault_id alias validator, got "
+        f"{resp.status_code}: {resp.text[:300]}"
     )
+    assert resp.json()["code"] == "invalid_vault_id", resp.text
 
 
 def test_fastmcp_tool_rejects_non_canonical_document_id() -> None:
@@ -971,3 +976,48 @@ def test_fastmcp_tool_rejects_non_canonical_document_id() -> None:
     assert result["error"] == "invalid_document_id", f"got: {result!r}"
     assert result["detail"]["document_id"] == "not-an-id", f"got: {result!r}"
     assert "message" in result, f"Expected 'message' in error envelope, got: {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Leaf-layer structured-error contract for the typed-alias family.
+#
+# Each sibling reject validator must raise PydanticCustomError with its own
+# external code and a uniform ctx {argument, value, expected}, so the
+# request-boundary translator can rebuild the invalid_<alias> (400) envelope on
+# both transports without parsing a raw validator message (mirrors
+# _validate_document_id). The `argument` is the alias name -- the validator is
+# shared across fields, so it labels by type, not by the field that failed.
+# ---------------------------------------------------------------------------
+
+_TYPED_ALIAS_FAMILY_CONTRACT = [
+    ("invalid_vault_id", VaultIdStr, "not a vault id!", "vault_id"),
+    ("invalid_edge_id", EdgeIdStr, "not-a-uuid", "edge_id"),
+    ("invalid_sha256", Sha256Str, "deadbeef", "sha256"),
+    ("invalid_function_id", FunctionIdStr, "not-a-fn", "function_id"),
+    ("invalid_document_date", DocumentDateStr, "2026-13-99", "document_date"),
+    ("invalid_user_id", UserIdStr, "not-a-uuid", "user_id"),
+]
+
+
+@pytest.mark.parametrize(
+    "code,alias,bad_value,argument",
+    _TYPED_ALIAS_FAMILY_CONTRACT,
+    ids=[c for c, *_ in _TYPED_ALIAS_FAMILY_CONTRACT],
+)
+def test_typed_alias_validator_raises_structured_custom_error(
+    code: str, alias: type, bad_value: str, argument: str
+) -> None:
+    """Each sibling reject validator raises a PydanticCustomError whose external
+    type is its invalid_<alias> code and whose ctx carries the uniform
+    {argument, value, expected} triple -- the leaf-layer half of the contract
+    that translate_validation_error consumes."""
+    from pydantic import TypeAdapter, ValidationError
+
+    with pytest.raises(ValidationError) as excinfo:
+        TypeAdapter(alias).validate_python(bad_value)
+    err = excinfo.value.errors()[0]
+    assert err["type"] == code, err
+    ctx = err["ctx"]
+    assert ctx["argument"] == argument, ctx
+    assert ctx["value"] == bad_value, ctx
+    assert ctx["expected"], ctx
