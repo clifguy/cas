@@ -1,7 +1,7 @@
 ---
 name: cas-code-review
 description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5) catalogued in the AI-First SDLC Tooling Survey. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
-version: 0.1.1
+version: 0.1.2
 ---
 
 # cas-code-review
@@ -146,9 +146,9 @@ Every shape-bearing field carries its alias. `notes` and `rationale` are bare `s
   - `sage/source_adapters/` (per-adapter modules)
   - `domains/<domain>/agents/` and `domains/<domain>/workflows/` (per-domain configs)
 - For each parallel directory, does it contain analogous code that needs the same remediation? Search the parallel directory for the same pattern the remediation targeted (the old shape, not the new one).
-- If analogous code exists and is not in the diff, surface every missing site as a follow-up. Be specific: name the files, name the lines, name the pattern.
+- If analogous code exists and is not in the diff, surface every missing site for the commit message or PR body. Be specific: name the files, name the lines, name the pattern.
 
-**What "correct" looks like.** A remediation diff that, before merging, has explicitly enumerated every parallel directory and either swept it or carries an inline note explaining why it was out of scope. F4 is a discipline failure; the only fix is to make the discipline visible in the diff.
+**What "correct" looks like.** A remediation diff that, before merging, has explicitly enumerated every parallel directory and either swept it or **declared it out of scope, with a rationale, in the commit message or PR body** — not in an inline code comment. Per §P1 / the *CAS Code-Surface Discipline* steering document, ticket and scope scaffolding (including "deferred to a follow-up, and here is why") belongs on the ephemeral surface, not the durable one. An inline code comment is the right home only when it states a *code branch's own* narrow scope as a durable property of the code (e.g., "this branch does not yet honor `expected_head_version`; see CAS-ADR-038"), never to enumerate deferred parallel sites. F4 is a discipline failure; the fix is to make the enumeration visible — in the commit message for deferred sites, in code comments only for in-code scope limits.
 
 ---
 
