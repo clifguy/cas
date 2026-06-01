@@ -1,7 +1,7 @@
 ---
 name: cas-code-review
 description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5) catalogued in the AI-First SDLC Tooling Survey. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
-version: 0.1.0
+version: 0.1.1
 ---
 
 # cas-code-review
@@ -187,7 +187,7 @@ Every vault-scoped endpoint takes `vault_id: str = Depends(get_vault_id)` as one
 
 **Convention reference.** The *CAS Code-Surface Discipline* steering document (vault: cas, `doc_type=steering_document`, tag `code-surface-discipline`) is the source-of-truth specification for what may and may not appear in durable surfaces, including the SAGE-as-ticketing and `domains/` exceptions and worked right-vs-wrong examples. Cite it when surfacing a finding so the rationale is traceable rather than re-derived.
 
-**Already gated deterministically.** Nothing today. A pre-commit hook over the staged diff could mechanically catch the bulk of these (`grep` for `T-[0-9]{4}`, `PIM`, `pim_health`, `/Users/clifguy`, etc.); not yet implemented. Until it lands, this section is the only gate.
+**Already gated deterministically.** `tests/test_public_posture.py` is the authoritative deterministic gate and runs in CI. It catches hyphenated `T-NNNN` refs in `.py` docstrings and `#` comments (T2 — via AST + tokenize, so the same token inside a string literal is correctly NOT flagged), use-case terms outside `domains/` across `.py`/`.yaml`/`.yml`/`.json`/`.md` (T1), personal filesystem paths (T3), and SDLC-scaffolding terms in `.py` docstrings/comments. It excludes the `domains/` and `.claude/` subtrees by design. This section's residual value is the heuristic reach *beyond* that scanner: prose that leaks intent ("added for the X flow", "fix from issue #123"), PR or issue numbers, internal URLs, and use-case leakage in surfaces the scanner does not parse. **Anything `test_public_posture` would fail, flag here too** — the pre-commit heuristic and the CI gate must never disagree. For any mechanically-checkable case, prefer running `.venv/bin/pytest tests/test_public_posture.py` over eyeballing the diff.
 
 **Scope note.** This is a forward-only ratchet on NEW changes. Legacy violations (the existing ~1,300 `T-NNNN` references and the broader use-case-specific surface area) are addressed by a separate cleanup pass and are not the concern of this section — the section fires when a diff *adds* a violation, not when an unrelated change touches a file that already contains one. Removing a legacy violation is always welcome but never required by this gate unless the diff also modifies the same docstring/comment.
 
