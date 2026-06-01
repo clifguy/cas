@@ -1251,8 +1251,6 @@ async def test_reabstract_background_sets_failed_on_error(
 ):
     """BH-119: The background task should set pipeline_status to 'failed'
     when the abstraction provider raises an exception."""
-    import asyncio
-
     _create_test_file(tmp_vault_dir, "reports/bgfail.md", "# BG Fail\n\nContent.")
 
     # Ingest with the normal stub first so initial ingestion succeeds,
@@ -1273,10 +1271,7 @@ async def test_reabstract_background_sets_failed_on_error(
     response = await ingestion_service_failing_llm.reabstract(doc_id)
     assert response["status"] == "reabstract_started"
 
-    # Allow the background task to complete and fail (0.1s yield + work)
-    await asyncio.sleep(0.5)
-
-    doc = await graph_store.get_document(doc_id)
+    doc = await _await_pipeline_terminal(graph_store, doc_id)
     assert doc.pipeline_status == PipelineStatus.FAILED
 
 
