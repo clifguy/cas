@@ -51,6 +51,7 @@ import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
 from sage._tool_rename_mapping import REMOVED_TOOLS, RENAME_MAPPING
 from sage.api.errors import _TYPED_ALIAS_CODES, SAGEError, translate_validation_error
 from sage.app_tools import register_app_tools
+from sage.build_info import BUILD_IDENTITY, SERVER_INSTRUCTIONS
 from sage.config import load_vault_config
 from sage.mcp_init import (
     SAGEServices,
@@ -417,7 +418,12 @@ class _LoggingFastMCP(FastMCP):
         return result
 
 
-mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan)
+# The build identity captured at import is advertised on the MCP initialize
+# handshake (``instructions`` and ``serverInfo.version``) so a connecting
+# client can tell at a glance whether this long-running process is serving
+# code older than the working tree. See ``sage.build_info``.
+mcp = _LoggingFastMCP("SAGE", lifespan=_lifespan, instructions=SERVER_INSTRUCTIONS)
+mcp._mcp_server.version = BUILD_IDENTITY
 
 # ---------------------------------------------------------------------------
 # Register tools from submodules
@@ -508,7 +514,8 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
     therefore does not duplicate the shared read spine, which carries no
     ``admin_`` prefix and so resolves to ``sage``.
     """
-    server = _LoggingFastMCP(surface, lifespan=_lifespan)
+    server = _LoggingFastMCP(surface, lifespan=_lifespan, instructions=SERVER_INSTRUCTIONS)
+    server._mcp_server.version = BUILD_IDENTITY
     sage_tools = register_sage_tools(
         server, _get_vault, _serialize, _error_response, _get_vaults, get_vault_registry_service
     )
