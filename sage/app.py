@@ -221,6 +221,13 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     app.state.utilities_service = services.utilities_service
 
 
+#: Canonical HTTP/SSE MCP mount points as ``(mount_path, surface)`` pairs.
+#: Single source of truth for both the mounter below and the
+#: ``uvicorn.access`` message-endpoint suppression filter in ``sage.__main__``:
+#: a mount added here is covered by both without a second edit.
+MCP_HTTP_MOUNTS: tuple[tuple[str, str], ...] = (("/mcp", "sage"), ("/mcp_admin", "sage_admin"))
+
+
 def _mount_partitioned_mcp(app: FastAPI) -> None:
     """Mount the ordinary and maintenance MCP surfaces as SSE sub-apps.
 
@@ -244,7 +251,7 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
     from sage.mcp_server import build_partitioned_server
 
     mounts: dict[str, object] = {}
-    for path, surface in (("/mcp", "sage"), ("/mcp_admin", "sage_admin")):
+    for path, surface in MCP_HTTP_MOUNTS:
         server = build_partitioned_server(surface)
         sse_app = server.sse_app()
         sse_app.add_middleware(_GracefulSSEMiddleware)

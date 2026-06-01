@@ -22,7 +22,12 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 # ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 import uvicorn
 
-from sage.app import create_app
+from sage.app import MCP_HTTP_MOUNTS, create_app
+
+#: SSE message-transport endpoint of every mounted MCP surface, derived from
+#: the canonical mount list so a newly mounted surface is suppressed without a
+#: second edit here. ``str.startswith`` accepts this tuple directly.
+_MCP_MESSAGE_PREFIXES: tuple[str, ...] = tuple(f"{path}/messages/" for path, _ in MCP_HTTP_MOUNTS)
 
 
 def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = None) -> Path:
@@ -56,12 +61,17 @@ def _resolve_vault_root(args: argparse.Namespace, env: dict[str, str] | None = N
 
 
 class _DropMcpMessagesAccessLogs(_logging.Filter):
-    """Drop uvicorn.access records for /mcp/messages/.
+    """Drop uvicorn.access records for any MCP mount's /messages/ endpoint.
 
-    The MCP SSE transport hits this endpoint on every JSON-RPC message
-    (often twice per logical tool call, plus extras for notifications).
-    ``_LoggingFastMCP.call_tool`` override already surfaces
-    the tool name; these access lines add no signal beyond that.
+    Every mounted MCP surface exposes its SSE message transport at
+    ``<mount>/messages/`` (e.g. ``/mcp/messages/`` and
+    ``/mcp_admin/messages/``). The transport hits that endpoint on every
+    JSON-RPC message (often twice per logical tool call, plus extras for
+    notifications and idle reconnect handshakes). ``_LoggingFastMCP.call_tool``
+    already surfaces the tool name; these access lines add no signal beyond
+    that, so they are dropped for all mounts uniformly. The suppressed
+    prefixes are derived from the canonical mount list (``_MCP_MESSAGE_PREFIXES``)
+    so a newly mounted surface is covered automatically.
     """
 
     def filter(self, record: _logging.LogRecord) -> bool:
@@ -71,7 +81,7 @@ class _DropMcpMessagesAccessLogs(_logging.Filter):
         path = args[2]
         if not isinstance(path, str):
             return True
-        return not path.startswith("/mcp/messages/")
+        return not path.startswith(_MCP_MESSAGE_PREFIXES)
 
 
 # Uvicorn's default log_config with a timestamp prefix added, matching the
