@@ -355,8 +355,8 @@ class LanceDBContentStore(ContentStore):
         sum, Table.list_versions() length, Table.stats() fragment
         counts), calls Table.optimize(cleanup_older_than=...), then
         captures the post-optimize state and returns both. LanceDB's
-        Table.optimize() returns None in the pinned version (0.30.2);
-        the snapshots are the caller-visible evidence of reclamation.
+        Table.optimize() return value is ignored; the snapshots are the
+        caller-visible evidence of reclamation.
 
         cleanup_older_than is forwarded verbatim to LanceDB. The latest
         version is never removed regardless of the threshold.
