@@ -2038,9 +2038,9 @@ paths:
         settle to seconds.
 
 
-        LanceDB's ``Table.optimize()`` returns ``None`` in the pinned
-        version (0.30.2); the caller-visible evidence of reclamation
-        comes from the pre/post observations of on-disk byte count,
+        LanceDB's ``Table.optimize()`` return value is ignored; the
+        caller-visible evidence of reclamation comes from the pre/post
+        observations of on-disk byte count,
         ``Table.list_versions()`` length, and ``Table.stats()``
         fragment counts captured by this report.
       tags: [Maintenance]
@@ -5542,8 +5542,8 @@ components:
         - post_small_fragments
       description: >-
         Result of an optimize_vault_content_store call. LanceDB's
-        Table.optimize() returns None in the pinned version (0.30.2);
-        the caller-visible evidence of reclamation is the delta
+        Table.optimize() return value is ignored; the caller-visible
+        evidence of reclamation is the delta
         between pre- and post-optimize observations of on-disk byte
         count, version-history length, and fragment counts captured by
         this report.
