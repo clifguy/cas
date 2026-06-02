@@ -124,6 +124,35 @@ async def test_bh_004_wal_mode_enabled(graph_store):
 
 
 # ---------------------------------------------------------------------------
+# Connection-setup PRAGMA hygiene: busy_timeout + synchronous=NORMAL
+#
+# Under WAL, a writer holding the database briefly must not bounce a
+# concurrent connection straight to SQLITE_BUSY; busy_timeout gives it a
+# bounded wait. synchronous=NORMAL is the WAL-safe durability/throughput
+# tradeoff. Both are per-connection PRAGMAs set in _get_connection.
+# ---------------------------------------------------------------------------
+
+
+async def test_busy_timeout_pragma_set(graph_store):
+    """Every pooled connection is opened with a ~30s busy_timeout.
+
+    SQLite's compile-time default is 0 (no wait -> immediate SQLITE_BUSY);
+    this asserts the configured 30_000 ms so a brief writer hold does not
+    surface as an error to a concurrent connection.
+    """
+    assert await graph_store.get_busy_timeout() == 30_000
+
+
+async def test_synchronous_pragma_normal(graph_store):
+    """Every pooled connection is opened with synchronous=NORMAL (==1).
+
+    SQLite's default is FULL (==2). NORMAL is the WAL-safe setting; the
+    integer-valued PRAGMA reads back 1 for NORMAL.
+    """
+    assert await graph_store.get_synchronous() == 1
+
+
+# ---------------------------------------------------------------------------
 # BH-005: Concurrent writes to different documents succeed
 # ---------------------------------------------------------------------------
 

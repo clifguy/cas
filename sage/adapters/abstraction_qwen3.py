@@ -7,6 +7,7 @@ and generate density-proportional semantic abstracts on Apple Silicon.
 import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from sage.adapters.interfaces import AbstractionProvider
 from sage.utils.unified_memory import (
@@ -89,6 +90,12 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._tokenizer = None
         self._generate_fn = None
         self._greedy_sampler = None
+
+        # Dedicated single-thread executor for the blocking model load and
+        # inference. Created lazily on first generate_abstract and released
+        # in unload(). max_workers=1 pins every model operation to one
+        # thread and serializes inference; see generate_abstract.
+        self._executor: ThreadPoolExecutor | None = None
 
         # Idle tracker for the eviction policy. Updated at the
         # end of every successful generate_abstract; consulted by
@@ -237,7 +244,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         async with _generation_lock:
             # Preflight unified-memory check (guardrail 1).
             # Surfaces a structured error to the MCP caller in place of
-            # an MLX-side process abort or kernel panic (F8).
+            # an MLX-side process abort or kernel panic (F8). Runs on the
+            # event loop before dispatch -- it is a cheap syscall and must
+            # gate the offloaded work.
             free = free_unified_memory_bytes()
             threshold = min_free_bytes()
             if free < threshold:
@@ -247,23 +256,23 @@ class Qwen3AbstractionProvider(AbstractionProvider):
                     model_id=self._model_id,
                 )
 
-            # Lazy model load (AD-026 revised, AD-035)
-            self._ensure_loaded()
-
-            # Truncate if needed (AD-031)
-            truncated_text = self._truncate_for_context(text, max_tokens, doc_type)
-
-            # Build prompt and generate (AD-028, AD-029)
-            prompt = self._build_prompt(truncated_text, doc_type)
-            result = self._generate_fn(
-                self._model,
-                self._tokenizer,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                verbose=False,
-                sampler=self._greedy_sampler,
+            # Run the blocking model load + inference on a dedicated
+            # single-thread executor so the multi-second MLX generation and
+            # the first-call model load never freeze the lone event loop.
+            # The single worker thread keeps every model operation on one
+            # thread and, with _generation_lock, preserves the
+            # one-inference-at-a-time guarantee -- no second MLX context, so
+            # the resident-memory budget is untouched. The lock is held
+            # across the await, so the executor never queues more than one
+            # generation.
+            if self._executor is None:
+                self._executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="sage-abstraction"
+                )
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                self._executor, self._generate_sync, text, max_tokens, doc_type
             )
-            # Errors from _generate_fn propagate naturally (AD-033)
 
         # Post-process (AD-027)
         abstract = result.strip() if result else ""
@@ -278,6 +287,28 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._last_used_at = time.monotonic()
 
         return abstract
+
+    def _generate_sync(self, text: str, max_tokens: int, doc_type: str | None) -> str:
+        """Blocking model load + inference. Runs on the dedicated executor.
+
+        Lazily loads the MLX model on first use (AD-026 revised, AD-035),
+        truncates the input to the context window (AD-031), builds the
+        chat-template prompt (AD-028), and invokes the model with greedy
+        decoding (AD-029). Errors from the model propagate naturally
+        (AD-033). Always invoked through the single-thread executor so the
+        ~16 GB load and the multi-second generation stay off the loop.
+        """
+        self._ensure_loaded()
+        truncated_text = self._truncate_for_context(text, max_tokens, doc_type)
+        prompt = self._build_prompt(truncated_text, doc_type)
+        return self._generate_fn(
+            self._model,
+            self._tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            verbose=False,
+            sampler=self._greedy_sampler,
+        )
 
     # ── Idle-driven eviction primitive ───────────────────────
     #
@@ -320,14 +351,25 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         existing lazy-load path in ``_ensure_loaded``.
         """
         async with _generation_lock:
-            if self._model is None:
-                return False
+            was_loaded = self._model is not None
 
             self._model = None
             self._tokenizer = None
             self._generate_fn = None
             self._greedy_sampler = None
             self._last_used_at = None
+
+            # Release the dedicated inference thread alongside the model so
+            # an evicted (or never-completed) provider holds no resident
+            # worker. The next generate_abstract re-creates both via the
+            # lazy paths. Done before the early return so a provider whose
+            # first model load failed still sheds its executor.
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
+                self._executor = None
+
+            if not was_loaded:
+                return False
 
             # Best-effort: clear the MLX/Metal command-buffer cache so
             # the freed memory is actually returned to unified memory

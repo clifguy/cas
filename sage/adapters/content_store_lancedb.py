@@ -4,6 +4,7 @@ Embedded columnar vector database with native FTS support.
 Stores document chunks with embeddings for semantic and keyword search.
 """
 
+import asyncio
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -63,6 +64,11 @@ class LanceDBContentStore(ContentStore):
         query_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
     ) -> None:
         self._query_timer = query_timer
+        # Serializes mutating operations to the single content table so
+        # concurrent writers cannot race. Reads do not take this lock and
+        # proceed on the event loop unimpeded. Per-instance; binds to the
+        # running loop on first await.
+        self._write_lock = asyncio.Lock()
         with self._query_timer.measure("initialize"):
             self._brain_root = Path(brain_root)
             self._brain_root.mkdir(parents=True, exist_ok=True)
@@ -220,39 +226,48 @@ class LanceDBContentStore(ContentStore):
         """Store embedded chunks for a document.
 
         Replaces any existing chunks for the same document_id (AD-025).
+        The LanceDB add and the O(table size) FTS rebuild run off the
+        event loop on a worker thread, serialized to the single content
+        table by ``_write_lock`` so concurrent writers cannot race. A
+        concurrent search on the loop is unaffected.
         """
         with self._query_timer.measure("index_chunks", params={"chunks": len(chunks)}):
-            table = self._ensure_table()
+            async with self._write_lock:
+                await asyncio.to_thread(self._index_chunks_sync, document_id, chunks)
 
-            # Remove existing chunks for this document first (AD-025)
-            try:
-                table.delete(f"document_id = '{_escape_sql(document_id)}'")
-            except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
-                pass  # Table might be empty or document might not exist
+    def _index_chunks_sync(self, document_id: str, chunks: list[Chunk]) -> None:
+        """Blocking body of index_chunks. Runs on a worker thread."""
+        table = self._ensure_table()
 
-            if not chunks:
-                self._rebuild_fts(table)
-                return
+        # Remove existing chunks for this document first (AD-025)
+        try:
+            table.delete(f"document_id = '{_escape_sql(document_id)}'")
+        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+            pass  # Table might be empty or document might not exist
 
-            # Build rows as list of dicts for LanceDB
-            rows = []
-            for chunk in chunks:
-                embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
-                rows.append(
-                    {
-                        "document_id": chunk.document_id,
-                        "heading_path": chunk.heading_path,
-                        "content": chunk.content,
-                        "chunk_index": chunk.chunk_index,
-                        "vector": embedding,
-                        "doc_type": chunk.doc_type,
-                        "lifecycle_status": chunk.lifecycle_status,
-                        "project": chunk.project,
-                    }
-                )
-
-            table.add(rows)
+        if not chunks:
             self._rebuild_fts(table)
+            return
+
+        # Build rows as list of dicts for LanceDB
+        rows = []
+        for chunk in chunks:
+            embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
+            rows.append(
+                {
+                    "document_id": chunk.document_id,
+                    "heading_path": chunk.heading_path,
+                    "content": chunk.content,
+                    "chunk_index": chunk.chunk_index,
+                    "vector": embedding,
+                    "doc_type": chunk.doc_type,
+                    "lifecycle_status": chunk.lifecycle_status,
+                    "project": chunk.project,
+                }
+            )
+
+        table.add(rows)
+        self._rebuild_fts(table)
 
     async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
         """Replace the synthetic document-header chunk for a document.
@@ -263,28 +278,35 @@ class LanceDBContentStore(ContentStore):
         touched.
         """
         with self._query_timer.measure("replace_synthetic_header_chunk"):
-            table = self._ensure_table()
+            async with self._write_lock:
+                await asyncio.to_thread(
+                    self._replace_synthetic_header_chunk_sync, document_id, chunk
+                )
 
-            doc_id_sql = _escape_sql(document_id)
-            marker_sql = _escape_sql(SYNTHETIC_HEADER_HEADING_PATH)
-            try:
-                table.delete(f"document_id = '{doc_id_sql}' AND heading_path = '{marker_sql}'")
-            except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
-                pass
+    def _replace_synthetic_header_chunk_sync(self, document_id: str, chunk: Chunk) -> None:
+        """Blocking body of replace_synthetic_header_chunk. Worker thread."""
+        table = self._ensure_table()
 
-            embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
-            row = {
-                "document_id": chunk.document_id,
-                "heading_path": chunk.heading_path,
-                "content": chunk.content,
-                "chunk_index": chunk.chunk_index,
-                "vector": embedding,
-                "doc_type": chunk.doc_type,
-                "lifecycle_status": chunk.lifecycle_status,
-                "project": chunk.project,
-            }
-            table.add([row])
-            self._rebuild_fts(table)
+        doc_id_sql = _escape_sql(document_id)
+        marker_sql = _escape_sql(SYNTHETIC_HEADER_HEADING_PATH)
+        try:
+            table.delete(f"document_id = '{doc_id_sql}' AND heading_path = '{marker_sql}'")
+        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+            pass
+
+        embedding = chunk.embedding or [0.0] * VECTOR_DIMENSIONS
+        row = {
+            "document_id": chunk.document_id,
+            "heading_path": chunk.heading_path,
+            "content": chunk.content,
+            "chunk_index": chunk.chunk_index,
+            "vector": embedding,
+            "doc_type": chunk.doc_type,
+            "lifecycle_status": chunk.lifecycle_status,
+            "project": chunk.project,
+        }
+        table.add([row])
+        self._rebuild_fts(table)
 
     async def count_chunks(self) -> int:
         """Return the total number of chunk rows across all documents.
@@ -325,7 +347,15 @@ class LanceDBContentStore(ContentStore):
         all-zero snapshot). delete_unverified is deliberately not
         exposed: the running SAGE process holds the dataset open, so
         LanceDB's safety floor (7-day age) must be respected.
+
+        Runs off the event loop under ``_write_lock`` so compaction does
+        not race a concurrent write to the table or freeze the loop.
         """
+        async with self._write_lock:
+            return await asyncio.to_thread(self._optimize_sync, cleanup_older_than)
+
+    def _optimize_sync(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
+        """Blocking body of optimize. Runs on a worker thread."""
         table = self._get_table()
         if table is None:
             return ContentStoreOptimizeSnapshot(
@@ -371,16 +401,21 @@ class LanceDBContentStore(ContentStore):
         Idempotent: removing a non-existent document is a no-op.
         """
         with self._query_timer.measure("remove_document"):
-            table = self._get_table()
-            if table is None:
-                return
+            async with self._write_lock:
+                await asyncio.to_thread(self._remove_document_sync, document_id)
 
-            try:
-                table.delete(f"document_id = '{_escape_sql(document_id)}'")
-            except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
-                pass  # No rows to delete is fine
+    def _remove_document_sync(self, document_id: str) -> None:
+        """Blocking body of remove_document. Runs on a worker thread."""
+        table = self._get_table()
+        if table is None:
+            return
 
-            self._rebuild_fts(table)
+        try:
+            table.delete(f"document_id = '{_escape_sql(document_id)}'")
+        except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
+            pass  # No rows to delete is fine
+
+        self._rebuild_fts(table)
 
     async def update_chunk_metadata(
         self,
@@ -389,21 +424,30 @@ class LanceDBContentStore(ContentStore):
     ) -> None:
         """Update metadata columns on all chunks for a document."""
         with self._query_timer.measure("update_chunk_metadata"):
-            table = self._get_table()
-            if table is None:
-                return
+            async with self._write_lock:
+                await asyncio.to_thread(self._update_chunk_metadata_sync, document_id, metadata)
 
-            updates = {k: v for k, v in metadata.items() if k in _FILTERABLE_COLUMNS}
-            if not updates:
-                return
+    def _update_chunk_metadata_sync(
+        self,
+        document_id: str,
+        metadata: dict[str, str | None],
+    ) -> None:
+        """Blocking body of update_chunk_metadata. Runs on a worker thread."""
+        table = self._get_table()
+        if table is None:
+            return
 
-            try:
-                table.update(
-                    where=f"document_id = '{_escape_sql(document_id)}'",
-                    values=updates,
-                )
-            except Exception as exc:
-                logger.warning("update_chunk_metadata failed for %s: %s", document_id, exc)
+        updates = {k: v for k, v in metadata.items() if k in _FILTERABLE_COLUMNS}
+        if not updates:
+            return
+
+        try:
+            table.update(
+                where=f"document_id = '{_escape_sql(document_id)}'",
+                values=updates,
+            )
+        except Exception as exc:
+            logger.warning("update_chunk_metadata failed for %s: %s", document_id, exc)
 
     async def search_semantic(
         self,
