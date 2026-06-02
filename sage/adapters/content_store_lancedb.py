@@ -52,8 +52,10 @@ class LanceDBContentStore(ContentStore):
     """Production content store backed by LanceDB.
 
     Data is persisted at brain_root on disk. The chunks table is created
-    lazily on the first index_chunks call (AD-009). FTS index is rebuilt
-    eagerly after every mutation (AD-019).
+    lazily on the first index_chunks call (AD-009). The FTS indexes are
+    built once on the first populated write and maintained incrementally:
+    the native backend covers newly added rows and honors deletes
+    immediately, so no per-mutation rebuild is needed (AD-009).
     """
 
     def __init__(
@@ -174,7 +176,7 @@ class LanceDBContentStore(ContentStore):
                 schema=CHUNKS_SCHEMA,
             )
             self._table_exists = True
-            self._rebuild_fts(new_table)
+            self._ensure_fts_indexes(new_table)
             recovery_path.unlink(missing_ok=True)
             logger.info("Schema migration complete: %d rows migrated", len(rows))
         except Exception:
@@ -203,24 +205,40 @@ class LanceDBContentStore(ContentStore):
                 clauses.append(f"{key} = '{_escape_sql(value)}'")
         return " AND ".join(clauses) if clauses else None
 
-    def _rebuild_fts(self, table: lancedb.table.Table) -> None:
-        """Rebuild FTS indexes on content and heading_path columns (AD-019, AD-102).
+    def _ensure_fts_indexes(self, table: lancedb.table.Table) -> None:
+        """Create the content and heading_path FTS indexes if absent (AD-102).
 
-        Two separate FTS indexes are maintained so that BM25 search
-        (``table.search(query, query_type="fts")``) covers both the body
+        Two separate FTS indexes back BM25 search
+        (``table.search(query, query_type="fts")``) over both the body
         content AND the heading_path tokens. The heading_path index lets
         agents find a section by its heading text alone (the equivalent of
         Word's Find on a heading) without needing to know document
         structure or call deterministic-mode lookups.
 
-        Called after every mutation to keep search results consistent.
+        The native FTS backend covers newly added rows via a scan of the
+        unindexed delta and honors deletes immediately, so the indexes are
+        built once and maintained incrementally rather than rebuilt after
+        every mutation; ``table.optimize()`` folds the delta into the index
+        on a maintenance cadence. Positions are not stored
+        (``with_position=False``): only keyword/BM25 queries are ever
+        issued, never phrase queries, so positional data would be dead
+        weight that roughly doubles each index build.
         """
-        try:
-            table.create_fts_index("content", replace=True, with_position=True)
-            table.create_fts_index("heading_path", replace=True, with_position=True)
-        except Exception:
-            # FTS index creation can fail on empty tables; that's fine
-            logger.debug("FTS index rebuild skipped (likely empty table)")
+        indexed = {column for index in table.list_indices() for column in index.columns}
+        for column in ("content", "heading_path"):
+            if column in indexed:
+                continue
+            try:
+                table.create_fts_index(
+                    column,
+                    use_tantivy=False,
+                    with_position=False,
+                    replace=False,
+                )
+            except Exception:
+                # Index creation fails on an empty table; it is created on
+                # the first write that adds rows.
+                logger.debug("FTS index creation skipped for %s (likely empty table)", column)
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         """Store embedded chunks for a document.
@@ -246,7 +264,7 @@ class LanceDBContentStore(ContentStore):
             pass  # Table might be empty or document might not exist
 
         if not chunks:
-            self._rebuild_fts(table)
+            self._ensure_fts_indexes(table)
             return
 
         # Build rows as list of dicts for LanceDB
@@ -267,7 +285,7 @@ class LanceDBContentStore(ContentStore):
             )
 
         table.add(rows)
-        self._rebuild_fts(table)
+        self._ensure_fts_indexes(table)
 
     async def replace_synthetic_header_chunk(self, document_id: str, chunk: Chunk) -> None:
         """Replace the synthetic document-header chunk for a document.
@@ -306,7 +324,7 @@ class LanceDBContentStore(ContentStore):
             "project": chunk.project,
         }
         table.add([row])
-        self._rebuild_fts(table)
+        self._ensure_fts_indexes(table)
 
     async def count_chunks(self) -> int:
         """Return the total number of chunk rows across all documents.
@@ -415,7 +433,7 @@ class LanceDBContentStore(ContentStore):
         except Exception:  # noqa: S110 -- best-effort cleanup; absent rows are expected
             pass  # No rows to delete is fine
 
-        self._rebuild_fts(table)
+        self._ensure_fts_indexes(table)
 
     async def update_chunk_metadata(
         self,
@@ -497,7 +515,7 @@ class LanceDBContentStore(ContentStore):
         limit: int = 10,
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
-        """BM25 keyword search using LanceDB native FTS (AD-018, AD-019).
+        """BM25 keyword search using LanceDB native FTS (AD-018).
 
         Returns results ranked by relevance score, descending.
         When filters are provided, only matching chunks are searched.

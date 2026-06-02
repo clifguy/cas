@@ -264,7 +264,7 @@ class DocxAdapter(SourceAdapter):
 
     # 0.3.0: chunks indexed with heading-context (heading_path embedded with
     # content, plus FTS index on heading_path) — see content_store_lancedb
-    # _rebuild_fts and ingestion._stage2_indexing.
+    # _ensure_fts_indexes and ingestion._stage2_indexing.
     # 0.4.0: chunker emits one chunk per heading regardless of body content,
     # so heading paragraphs whose next paragraph is another heading still
     # have their heading_path indexed (Word-Find equivalence).

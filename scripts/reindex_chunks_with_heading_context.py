@@ -165,12 +165,10 @@ async def reindex_with_services(
     elapsed = datetime.now(timezone.utc) - started
     print(f"\nDone. {n_done} document(s) re-indexed in {elapsed.total_seconds():.1f}s.")
 
-    # Compact LanceDB fragments and prune old version metadata.
-    # ``cleanup_older_than=timedelta(0)`` removes every version except
-    # the latest. Without this, the FTS-index version churn from
-    # _rebuild_fts (called per index_chunks) accumulates dramatically —
-    # we observed 121 GB of _indices/ retained as version history when
-    # the actual chunk data was 591 MB.
+    # Compact LanceDB fragments, fold the FTS delta into the index, and
+    # prune old version metadata. ``cleanup_older_than=timedelta(0)`` removes
+    # every version except the latest, reclaiming the fragment and version
+    # churn from the bulk re-index above.
     try:
         table = store._get_table()
         if table is not None:
