@@ -33,7 +33,7 @@ test = [
     "pyyaml>=6.0",
     "reportlab>=4.0",
     "Pillow>=10.0",
-    "import-linter>=2.0",
+    "import-linter>=2.11",
 ]
 mlx = [
     "mlx-lm>=0.20",
