@@ -1,12 +1,21 @@
-"""IngestionService background-task tracking tests.
+"""IngestionService off-loop worker reference-safety tests.
 
-Locks in the invariant that Stage 2-3 dispatch and reabstract dispatch hold
-strong references to their asyncio.Task in a per-service set until the task's
-done callback fires. The set closes the asyncio "task disappears mid-execution"
-window documented at https://docs.python.org/3/library/asyncio-task.html
-("Save a reference to the result of this function, to avoid a task
-disappearing mid-execution. The event loop only keeps weak references to
-tasks.").
+Pins the structural guarantee that closes the asyncio "task disappears
+mid-execution" window (https://docs.python.org/3/library/asyncio-task.html:
+"The event loop only keeps weak references to tasks"). Previously, each
+wait_for_pipeline=False ingest spawned its own fire-and-forget task and relied
+on a per-dispatch tracking set to hold a strong reference. With the persistent
+abstraction queue the model is simpler and stronger:
+
+* Queued work is plain data on an ``asyncio.Queue`` the service holds — not a
+  task, so it cannot be GC'd mid-flight.
+* A single long-lived worker task drains the queue; the service holds a strong
+  reference to it in ``_worker_task``, so it survives a GC pass while in flight.
+* Both the ingest and the reabstract entry points feed that one worker — there
+  is no per-dispatch task proliferation.
+
+The user-visible outcome the original silent-loss guard protected — chunks
+land and the document reaches a terminal status — is asserted directly.
 """
 
 import asyncio
@@ -38,13 +47,12 @@ async def _await_terminal(graph_store, doc_id: str, *, attempts: int = 400) -> P
     raise AssertionError(f"document {doc_id} did not reach terminal status in time")
 
 
-async def test_background_dispatch_retains_task_reference_until_done(
-    tmp_vault_dir, ingestion_service, graph_store
+async def test_enqueued_work_drains_to_terminal_with_chunks(
+    tmp_vault_dir, ingestion_service, graph_store, stub_content_store
 ):
-    """While the Stage 2 background task is in flight, ``_background_tasks``
-    must hold a strong reference to it. After completion, the done callback
-    must drain the set.
-    """
+    """A wait_for_pipeline=False ingest enqueues Stage 2-3 work that the single
+    worker drains to a terminal status with chunks indexed. While the worker is
+    gated mid-job, the service holds a live ``_worker_task``."""
     _create_test_file(tmp_vault_dir, "samples/a1.md", "# A1\n\nContent.")
 
     gate = asyncio.Event()
@@ -60,34 +68,30 @@ async def test_background_dispatch_retains_task_reference_until_done(
     result = await ingestion_service.ingest(request, wait_for_pipeline=False)
     doc_id = result.document.id
 
-    # Yield twice so the background task starts and reaches gate.wait() inside
-    # the embed step. One yield schedules it; the second lets it advance past
-    # the synchronous prelude in _stage2_indexing.
+    # Yield so the worker starts and reaches gate.wait() inside the embed step.
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    # Invariant during in-flight: tracking set is populated.
-    assert hasattr(ingestion_service, "_background_tasks"), (
-        "IngestionService must declare _background_tasks for background-dispatch tracking."
-    )
-    assert len(ingestion_service._background_tasks) == 1
+    # Invariant during in-flight: a single live worker task is held.
+    assert ingestion_service._worker_task is not None
+    assert not ingestion_service._worker_task.done()
 
     gate.set()
-    await _await_terminal(graph_store, doc_id)
+    terminal = await _await_terminal(graph_store, doc_id)
+    assert terminal in {PipelineStatus.ABSTRACTION_COMPLETE, PipelineStatus.ABSTRACTION_SKIPPED}
+    chunks = await stub_content_store.get_all_chunks(doc_id)
+    assert chunks, "Stage 2 must have indexed chunks; no-chunks is the silent-loss failure mode."
 
-    # Done callback drains the set. Yield once to let add_done_callback fire.
-    await asyncio.sleep(0.05)
-    assert ingestion_service._background_tasks == set()
+    await ingestion_service.stop_worker()
 
 
-async def test_background_dispatch_survives_dropped_caller_reference(
+async def test_worker_task_survives_dropped_caller_reference(
     tmp_vault_dir, ingestion_service, graph_store, stub_content_store
 ):
-    """The IngestionService must hold a strong reference to the Stage 2
-    background task so the task cannot be GC'd while in flight even when the
-    caller drops every reference it held. Use weakref + gc.collect() to assert
-    the strong-reference invariant deterministically.
-    """
+    """The IngestionService holds a strong reference to the single worker task,
+    so it cannot be GC'd while draining even when the caller drops every local
+    reference. weakref + gc.collect() makes the strong-reference invariant
+    deterministic."""
     _create_test_file(tmp_vault_dir, "samples/a2.md", "# A2\n\nContent.")
 
     gate = asyncio.Event()
@@ -106,95 +110,74 @@ async def test_background_dispatch_survives_dropped_caller_reference(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    # Capture a weakref to the in-flight task via the tracking set.
-    assert len(ingestion_service._background_tasks) == 1
-    (in_flight_task,) = tuple(ingestion_service._background_tasks)
-    task_ref = weakref.ref(in_flight_task)
-    del in_flight_task
+    worker_task = ingestion_service._worker_task
+    assert worker_task is not None
+    task_ref = weakref.ref(worker_task)
+    del worker_task
 
-    # Drop our local references and force a GC pass. The asyncio event loop
-    # only keeps a weak reference to scheduled tasks; the tracking set is what
-    # keeps this one alive.
     gc.collect()
     gc.collect()
 
-    # Strong reference survives because IngestionService holds it.
-    assert task_ref() is not None, (
-        "background task was GC'd despite being in flight — tracking set missing"
-    )
-    assert task_ref() in ingestion_service._background_tasks
+    assert task_ref() is not None, "worker task was GC'd despite being held by the service"
+    assert task_ref() is ingestion_service._worker_task
 
-    # Release the gate and confirm Stage 2 completes successfully (chunks land
-    # in the content store, terminal status reached). This is the user-visible
-    # outcome the fix protects.
     gate.set()
     terminal = await _await_terminal(graph_store, doc_id)
     assert terminal in {PipelineStatus.ABSTRACTION_COMPLETE, PipelineStatus.ABSTRACTION_SKIPPED}
     chunks = await stub_content_store.get_all_chunks(doc_id)
-    assert chunks, (
-        "Stage 2 must have indexed chunks; the no-chunks state is the silent-loss "
-        "failure mode this tracking set closes."
-    )
+    assert chunks, "Stage 2 must have indexed chunks; the no-chunks state is the silent-loss mode."
 
-    # After completion the done callback drained the set; the weakref's
-    # referent is no longer kept alive by the service.
-    await asyncio.sleep(0.05)
-    assert ingestion_service._background_tasks == set()
+    await ingestion_service.stop_worker()
 
 
-async def test_reabstract_background_also_tracked(tmp_vault_dir, ingestion_service, graph_store):
-    """The reabstract dispatch site shares the same ``_background_tasks`` set.
-    Without symmetric coverage at the reabstract call site, that path remains
-    vulnerable to the same GC-driven silent loss.
-    """
+async def test_ingest_and_reabstract_share_one_worker(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """Both the ingest and the reabstract entry points feed the SAME single
+    worker draining one queue — not a per-dispatch task each. A gated job holds
+    the worker while a second entry point enqueues behind it; exactly one
+    worker task exists."""
+    # Seed one fully-indexed document so reabstract has chunks to work from.
     _create_test_file(tmp_vault_dir, "samples/a3.md", "# A3\n\nContent.")
+    seed = await ingestion_service.ingest(
+        IngestRequest(source="samples/a3.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=True,
+    )
+    seeded_id = seed.document.id
 
-    # Run the initial ingest fully so Stage 2 chunks land and the document
-    # is ready to reabstract.
-    request = IngestRequest(source="samples/a3.md", source_type=SourceType.MARKDOWN)
-    result = await ingestion_service.ingest(request, wait_for_pipeline=True)
-    doc_id = result.document.id
-
-    # Gate the abstraction provider so the reabstract background task hangs
-    # inside generate_abstract, holding the tracking-set reservation.
     entered = asyncio.Event()
     gate = asyncio.Event()
 
-    async def gated_abstract(text: str, max_tokens: int, doc_type):
+    async def gated_abstract(text: str, max_tokens: int, doc_type) -> str:
         entered.set()
         await gate.wait()
         return "gated stub abstract"
 
     ingestion_service._abstraction.generate_abstract = gated_abstract
 
-    await ingestion_service.reabstract(doc_id)
-
-    # Wait until the background task is actually inside generate_abstract.
+    # Reabstract enqueues a Stage-3 job; the worker enters generate_abstract
+    # and blocks on the gate.
+    await ingestion_service.reabstract(seeded_id)
     await asyncio.wait_for(entered.wait(), timeout=2.0)
 
+    # A concurrent wait=False ingest enqueues behind the gated job — same queue,
+    # same single worker.
+    _create_test_file(tmp_vault_dir, "samples/a4.md", "# A4\n\nDifferent content.")
+    second = await ingestion_service.ingest(
+        IngestRequest(source="samples/a4.md", source_type=SourceType.MARKDOWN),
+        wait_for_pipeline=False,
+    )
+
     try:
-        # The reabstract task must be in the same tracking set as ingest's
-        # Stage 2-3 task. Single set, both call sites.
-        assert len(ingestion_service._background_tasks) == 1
-        (in_flight_task,) = tuple(ingestion_service._background_tasks)
-        assert not in_flight_task.done()
+        assert ingestion_service._worker_task is not None
+        assert not ingestion_service._worker_task.done()
+        assert ingestion_service._abstraction_queue is not None
     finally:
         gate.set()
 
-    # Release the gate, let reabstract complete, and confirm the set drains.
-    await asyncio.sleep(0.2)
-    for _ in range(200):
-        if not ingestion_service._background_tasks:
-            break
-        await asyncio.sleep(0.01)
-    assert ingestion_service._background_tasks == set()
+    # Both reach terminal once the gate releases — drained by the one worker.
+    assert await _await_terminal(graph_store, seeded_id) == PipelineStatus.ABSTRACTION_COMPLETE
+    second_terminal = await _await_terminal(graph_store, second.document.id)
+    assert second_terminal == PipelineStatus.ABSTRACTION_COMPLETE
 
-
-# Each test above pins a distinct production invariant. Pre-fix
-# (``asyncio.create_task(...)`` with the return value discarded), the
-# tracking set never existed and the asyncio event loop's weak reference
-# was the only thing keeping a dispatched task alive between awaits. The
-# weakref + ``gc.collect()`` harness above demonstrates the
-# strong-reference contract deterministically; the symmetry test ensures
-# both the ingest and the reabstract dispatch sites participate in the
-# same set.
+    await ingestion_service.stop_worker()

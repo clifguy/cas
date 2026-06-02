@@ -270,6 +270,40 @@ def _deep_merge_dicts(base: dict, override: dict) -> dict:
     return result
 
 
+@dataclass
+class _AbstractionJob:
+    """A unit of abstraction work drained by the per-vault worker.
+
+    ``projection`` is carried in memory for ingest-time and recompute jobs
+    (Stage 2-3). When ``None`` the worker derives the input at processing
+    time: from the document's chunks if they exist (Stage 3 only), otherwise
+    by re-projecting from source (Stage 1 then Stage 2-3) -- the startup
+    recovery path.
+    """
+
+    document_id: str
+    projection: ProjectionResult | None
+    doc_type: str | None
+    attempts: int = 0
+
+
+@dataclass
+class _InflightClaim:
+    """A per-document reservation held while abstraction work is queued or in
+    flight.
+
+    One claim serializes the three entry points (ingest, reabstract,
+    recompute) plus startup recovery so a document is never abstracted twice
+    concurrently. ``pending`` counts outstanding jobs so the claim is released
+    only when the last one terminates; ``start_time`` feeds the 409 raised
+    when an external reabstract/recompute collides with an in-flight job.
+    """
+
+    kind: str
+    start_time: datetime
+    pending: int = 1
+
+
 class IngestionService:
     def __init__(
         self,
@@ -298,26 +332,23 @@ class IngestionService:
         # silently no-ops when absent.
         self._graph_ops_service = graph_ops_service
 
-        # Per-document reabstract single-flight tracker. Membership ==
-        # "reabstract is currently in flight for this document_id"; the
-        # value is the start_time embedded in the 409 raised on contention.
-        self._reabstract_in_flight: dict[str, datetime] = {}
+        # Unified per-document in-flight claim for the abstraction queue. One
+        # claim governs ingest-time abstraction, reabstract, recompute_pipeline,
+        # and startup recovery, so the same document is never abstracted twice
+        # concurrently. Checked and set synchronously at enqueue; released by
+        # the worker when the last queued/in-flight job for the document
+        # terminates.
+        self._inflight: dict[str, _InflightClaim] = {}
 
-        # Per-document recompute_pipeline single-flight tracker. Same shape
-        # and contract as ``_reabstract_in_flight``; tracked separately
-        # because a recompute_pipeline and a reabstract may legitimately
-        # overlap on different documents (or on the same document if the
-        # operator wants to interleave the recoveries).
-        self._recompute_pipeline_in_flight: dict[str, datetime] = {}
-
-        # Strong references to dispatched background pipeline tasks. The
-        # asyncio event loop only keeps weak references to scheduled tasks,
-        # so a bare ``asyncio.create_task(...)`` whose return value is
-        # discarded can be garbage-collected mid-execution, leaving the
-        # document at a non-terminal ``pipeline_status`` with no chunks --
-        # the silent-loss failure mode this set closes structurally. Tasks
-        # are added on dispatch and removed by their own ``done`` callback.
-        self._background_tasks: set[asyncio.Task] = set()
+        # In-memory abstraction work queue drained by a single per-vault worker.
+        # The queue is created lazily on first enqueue (so it binds to the
+        # running loop) and is NOT itself durable: durability comes from the
+        # graph store's pipeline_status, which the worker re-derives pending
+        # work from on startup (recover_incomplete_documents). The single
+        # long-lived worker task is the strong reference that closes the GC
+        # "task disappears mid-execution" silent-loss window.
+        self._abstraction_queue: asyncio.Queue[_AbstractionJob] | None = None
+        self._worker_task: asyncio.Task | None = None
 
         # Build the vault's FilenameParser once per service instance (CAS-ADR-015).
         # Only active when the vault's metadata_extraction block declares a
@@ -342,22 +373,209 @@ class IngestionService:
         """Return the runtime adapter registry."""
         return dict(self._adapters)
 
-    def _dispatch_background(self, coro) -> asyncio.Task:
-        """Schedule a background pipeline coroutine and retain a strong reference.
+    # ------------------------------------------------------------------
+    # Persistent off-loop abstraction queue
+    # ------------------------------------------------------------------
 
-        Wraps ``asyncio.create_task`` with two safeguards against the
-        weak-only-reference silent-loss class: the returned task is added to
-        ``_background_tasks`` immediately (supplementing the event loop's
-        weak reference with a strong one), and an ``add_done_callback`` is
-        registered to drain the entry when the task terminates (success,
-        failure, or cancellation alike). Callers must route every
-        fire-and-forget pipeline dispatch through this helper rather than
-        calling ``asyncio.create_task`` directly.
+    def _try_claim(
+        self, document_id: str, kind: str, *, allow_join: bool = False
+    ) -> _InflightClaim | None:
+        """Synchronously reserve abstraction work for a document.
+
+        Returns ``None`` when the caller now holds (or has joined) the claim
+        and may enqueue. Returns the EXISTING claim when one is already held
+        and ``allow_join`` is False, so the caller can reject (the external
+        reabstract/recompute 409). ``allow_join`` is for the ingest path,
+        whose freshly-inserted document id effectively never collides but must
+        never raise on the rare force-reingest race -- it joins the existing
+        claim instead, and the serial worker keeps the two jobs from
+        overlapping. Check-and-set runs in one scheduling slice (no await), so
+        two callers cannot both pass.
         """
-        task = asyncio.create_task(coro)
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return task
+        existing = self._inflight.get(document_id)
+        if existing is not None:
+            if allow_join:
+                existing.pending += 1
+                return None
+            return existing
+        self._inflight[document_id] = _InflightClaim(
+            kind=kind, start_time=datetime.now(timezone.utc)
+        )
+        return None
+
+    def _release_claim(self, document_id: str) -> None:
+        """Decrement a document's in-flight claim, dropping it when the last
+        queued/in-flight job terminates."""
+        claim = self._inflight.get(document_id)
+        if claim is None:
+            return
+        claim.pending -= 1
+        if claim.pending <= 0:
+            del self._inflight[document_id]
+
+    def _enqueue_abstraction_job(self, job: _AbstractionJob) -> None:
+        """Put a job on the queue and ensure the single worker is draining.
+
+        The caller is responsible for having claimed ``job.document_id`` first
+        (so an external reabstract/recompute is rejected while the job pends).
+        """
+        queue = self._ensure_worker_running()
+        queue.put_nowait(job)
+
+    def _ensure_worker_running(self) -> "asyncio.Queue[_AbstractionJob]":
+        """Lazily create the queue and start the single drain worker, bound to
+        the running event loop. Idempotent; restarts the worker if a prior one
+        was stopped (stop_worker) or died. Returns the queue."""
+        if self._abstraction_queue is None:
+            self._abstraction_queue = asyncio.Queue()
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(self._abstraction_worker())
+        return self._abstraction_queue
+
+    async def _abstraction_worker(self) -> None:
+        """Drain the abstraction queue one job at a time.
+
+        A single worker per vault, combined with the process-wide generation
+        lock in the abstraction provider, keeps inference one-at-a-time and
+        within the RAM budget. The worker is the durable strong reference to
+        in-flight work; queued jobs are plain data, immune to the GC
+        "task disappears mid-execution" class.
+        """
+        queue = self._abstraction_queue
+        if queue is None:
+            return
+        while True:
+            job = await queue.get()
+            try:
+                await self._process_abstraction_job(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "abstraction worker: unhandled error for document %s",
+                    job.document_id,
+                )
+            finally:
+                queue.task_done()
+
+    async def _process_abstraction_job(self, job: _AbstractionJob) -> None:
+        """Run one job with bounded retry.
+
+        On terminal failure (after ``max_attempts``) stamp a structured
+        ``pipeline_error`` rather than stranding the document. The claim is
+        released when the job terminates, whether it succeeded or exhausted
+        its attempts.
+        """
+        document_id = job.document_id
+        max_attempts = self._config.abstraction.max_attempts
+        last_exc: Exception | None = None
+        try:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    await self._run_job_work(job)
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning(
+                        "abstraction attempt %d/%d failed for %s: %s",
+                        attempt,
+                        max_attempts,
+                        document_id,
+                        exc,
+                    )
+                    if attempt < max_attempts:
+                        await self._sleep_for_backoff(self._compute_backoff(attempt))
+            await self._stamp_abstraction_failed(document_id, max_attempts, last_exc)
+        finally:
+            self._release_claim(document_id)
+
+    async def _run_job_work(self, job: _AbstractionJob) -> None:
+        """Execute a single job attempt, dispatching by available input:
+        in-memory projection (Stage 2-3), existing chunks (Stage 3 only), or
+        re-projection from source (Stage 1 then Stage 2-3)."""
+        document_id = job.document_id
+        if job.projection is not None:
+            await self._execute_pipeline_stages(document_id, job.projection, job.doc_type)
+        elif await self._content_store.has_chunks(document_id):
+            await self._execute_abstract_from_chunks(document_id, job.doc_type)
+        else:
+            projection = await self._reproject_from_source(document_id)
+            await self._execute_pipeline_stages(document_id, projection, job.doc_type)
+
+    def _compute_backoff(self, attempt: int) -> float:
+        """Exponential backoff with a configured cap: the delay before retry
+        ``attempt`` (1-indexed) is min(base * 2**(attempt-1), max)."""
+        cfg = self._config.abstraction
+        return min(
+            cfg.retry_backoff_base_seconds * (2 ** (attempt - 1)),
+            cfg.retry_backoff_max_seconds,
+        )
+
+    async def _sleep_for_backoff(self, seconds: float) -> None:
+        """Indirection over asyncio.sleep so tests can observe or skip backoff."""
+        await asyncio.sleep(seconds)
+
+    async def _stamp_abstraction_failed(
+        self, document_id: str, attempts: int, exc: Exception | None
+    ) -> None:
+        """Record a terminal, structured failure surfaced via get_document."""
+        detail = f"{type(exc).__name__}: {exc}" if exc is not None else "unknown error"
+        message = f"abstraction failed after {attempts} attempts; last error: {detail}"
+        async with self._locks.lock(document_id):
+            await self._store.update_document(
+                document_id,
+                {
+                    "pipeline_status": PipelineStatus.FAILED.value,
+                    "pipeline_error": message,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+
+    async def stop_worker(self) -> None:
+        """Cancel and await the drain worker. Safe to call when no worker is
+        running (idempotent). Pending queued jobs are dropped; they are
+        re-derived from pipeline_status on the next recover_incomplete_documents
+        call. Wired into the lifespan teardown and registry reload."""
+        task = self._worker_task
+        self._worker_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def recover_incomplete_documents(self) -> int:
+        """Re-derive pending abstraction work from pipeline_status and enqueue it.
+
+        Called at process startup (the standalone MCP and FastAPI lifespans)
+        so a document left non-terminal by a crash or a stopped worker is
+        recovered rather than stranded. Terminal states (abstraction_complete,
+        abstraction_skipped, failed) are left alone: skip and failed are
+        deliberate operator territory. Returns the number of documents enqueued.
+        """
+        non_terminal = {
+            PipelineStatus.PROJECTION_COMPLETE.value,
+            PipelineStatus.INDEXING_IN_PROGRESS.value,
+            PipelineStatus.INDEXING_COMPLETE.value,
+            PipelineStatus.ABSTRACTION_IN_PROGRESS.value,
+        }
+        documents = await self._store.list_all_documents()
+        enqueued = 0
+        for doc in documents:
+            if doc.pipeline_status not in non_terminal:
+                continue
+            # Skip documents a live operation already claimed.
+            if self._try_claim(doc.id, "recovery") is not None:
+                continue
+            self._enqueue_abstraction_job(
+                _AbstractionJob(document_id=doc.id, projection=None, doc_type=doc.doc_type)
+            )
+            enqueued += 1
+        return enqueued
 
     def _merge_adapter_config(
         self, source_type: SourceType, request_config: dict | None
@@ -850,18 +1068,22 @@ class IngestionService:
         # Stages 2-3 (indexing, abstraction) run sync or async per the
         # caller's wait_for_pipeline choice (BH-026, BH-130). Sequential
         # execution (wait_for_pipeline=True) caps peak memory at one
-        # document's embeddings and abstraction context -- the bulk
-        # ingest path. Fire-and-forget (wait_for_pipeline=False) hands
-        # the work to ``_dispatch_background`` so the IngestionService
-        # holds a strong reference to the task until it terminates,
-        # closing the GC silent-loss window (event loop keeps only weak
-        # references to scheduled tasks).
+        # document's embeddings and abstraction context -- the bulk ingest
+        # path -- and keeps fail-fast semantics. Fire-and-forget
+        # (wait_for_pipeline=False) hands Stage 2-3 to the abstraction queue:
+        # a single worker drains it one job at a time with bounded retry, and
+        # durability comes from the graph store's pipeline_status, re-derived
+        # on startup by recover_incomplete_documents.
         if wait_for_pipeline:
             await self._run_background_pipeline(doc.id, projection, doc.doc_type)
             doc = await self._store.get_document(doc.id) or doc
         else:
-            self._dispatch_background(
-                self._run_background_pipeline(doc.id, projection, doc.doc_type)
+            # The freshly-inserted document id effectively never collides, but
+            # allow_join keeps the rare force-reingest race from raising; the
+            # serial worker prevents overlap.
+            self._try_claim(doc.id, "ingest", allow_join=True)
+            self._enqueue_abstraction_job(
+                _AbstractionJob(document_id=doc.id, projection=projection, doc_type=doc.doc_type)
             )
 
         return IngestResult(document=doc, is_new=is_new)
@@ -872,50 +1094,15 @@ class IngestionService:
         projection: ProjectionResult,
         doc_type: str | None,
     ) -> None:
-        """Run Stages 2-3 as a background task. Updates pipeline_status
-        in the graph store as it progresses. Catches all exceptions and
-        sets pipeline_status to failed with pipeline_error.
+        """Run Stages 2-3 inline for the wait_for_pipeline=True path.
+
+        Fail-fast: a stage failure stamps pipeline_status=failed with no
+        retry. Queued work runs the same stages through the worker
+        (``_process_abstraction_job``), which layers bounded retry on top of
+        ``_execute_pipeline_stages``.
         """
         try:
-            await self._stage2_indexing(document_id, projection)
-
-            # Run vault-declared identifier_mention inference after
-            # Stage 2 (chunks materialized in the content store) and before
-            # Stage 3 (abstraction). Placement here -- rather than after
-            # abstraction -- ensures inferred edges appear even when
-            # abstraction is disabled or skipped on empty text.
-            await self._infer_identifier_mention_edges(document_id)
-
-            # Check abstraction config
-            if not self._config.abstraction.enabled:
-                # BH-025: abstraction_skipped
-                async with self._locks.lock(document_id):
-                    await self._store.update_document(
-                        document_id,
-                        {
-                            "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                return
-
-            # BH-134: empty projection text (e.g., Word template with no body)
-            # transitions to abstraction_skipped rather than crashing the
-            # abstraction provider's strict-quality edge guard. Other
-            # projection surfaces -- style inventory, tags, metadata --
-            # are already persisted by Stage 2.
-            if not projection.text.strip():
-                async with self._locks.lock(document_id):
-                    await self._store.update_document(
-                        document_id,
-                        {
-                            "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                return
-
-            await self._stage3_abstraction(document_id, projection, doc_type)
+            await self._execute_pipeline_stages(document_id, projection, doc_type)
         except Exception as exc:
             logger.exception("Pipeline failed for document %s", document_id)
             async with self._locks.lock(document_id):
@@ -927,6 +1114,59 @@ class IngestionService:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
+
+    async def _execute_pipeline_stages(
+        self,
+        document_id: str,
+        projection: ProjectionResult,
+        doc_type: str | None,
+    ) -> None:
+        """Stage 2 (indexing) then Stage 3 (abstraction), raising on failure.
+
+        The raising contract lets the queue worker own the terminal status: it
+        retries before stamping FAILED. The inline wrapper
+        (``_run_background_pipeline``) catches and stamps FAILED itself.
+        Abstraction is skipped (terminal ``abstraction_skipped``) when the
+        vault disables it or the projection text is empty (BH-025, BH-134).
+        """
+        await self._stage2_indexing(document_id, projection)
+
+        # Run vault-declared identifier_mention inference after Stage 2
+        # (chunks materialized in the content store) and before Stage 3
+        # (abstraction). Placement here -- rather than after abstraction --
+        # ensures inferred edges appear even when abstraction is disabled or
+        # skipped on empty text.
+        await self._infer_identifier_mention_edges(document_id)
+
+        # BH-025: abstraction disabled -> abstraction_skipped.
+        if not self._config.abstraction.enabled:
+            async with self._locks.lock(document_id):
+                await self._store.update_document(
+                    document_id,
+                    {
+                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            return
+
+        # BH-134: empty projection text (e.g., Word template with no body)
+        # transitions to abstraction_skipped rather than crashing the
+        # abstraction provider's strict-quality edge guard. Other projection
+        # surfaces -- style inventory, tags, metadata -- are already persisted
+        # by Stage 2.
+        if not projection.text.strip():
+            async with self._locks.lock(document_id):
+                await self._store.update_document(
+                    document_id,
+                    {
+                        "pipeline_status": PipelineStatus.ABSTRACTION_SKIPPED.value,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            return
+
+        await self._stage3_abstraction(document_id, projection, doc_type)
 
     async def _infer_identifier_mention_edges(self, document_id: str) -> None:
         """Run identifier_mention inference for the just-indexed doc.
@@ -1110,16 +1350,13 @@ class IngestionService:
         await self._refresh_header_chunk(document_id)
 
     async def reabstract(self, document_id: str) -> dict:
-        """Re-run abstraction on an existing document (fire-and-forget).
+        """Re-run abstraction on an existing document via the abstraction queue.
 
-        Validates that the document and its projection chunks exist,
-        sets pipeline_status to ABSTRACTION_IN_PROGRESS, then spawns
-        the actual abstraction work in a background asyncio.Task.
-        Returns immediately with a status dict.
-
-        The caller can poll get_document to observe when
-        pipeline_status transitions to ABSTRACTION_COMPLETE (success)
-        or FAILED (error).
+        Validates the document and its chunks synchronously, claims the
+        document (raising ReabstractDocumentAlreadyInFlightError if a job is
+        already queued or in flight for it), pre-marks ABSTRACTION_IN_PROGRESS,
+        and enqueues a Stage-3-from-chunks job. Returns immediately; the caller
+        polls get_document for the transition to ABSTRACTION_COMPLETE or FAILED.
 
         Args:
             document_id: ID of the document to re-abstract.
@@ -1130,8 +1367,8 @@ class IngestionService:
         Raises:
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
-            ReabstractDocumentAlreadyInFlightError: A reabstract is already
-                running for this document_id.
+            ReabstractDocumentAlreadyInFlightError: Abstraction work is already
+                queued or in flight for this document_id.
         """
         doc = await self._store.get_document(document_id)
         if doc is None:
@@ -1140,20 +1377,13 @@ class IngestionService:
         if not await self._content_store.has_chunks(document_id):
             raise NoProjectionError(document_id)
 
-        # Per-document single-flight: synchronous check + reservation
-        # write within the same scheduling slice (no await between them),
-        # so two callers cannot both pass the membership test.
-        if document_id in self._reabstract_in_flight:
-            raise ReabstractDocumentAlreadyInFlightError(
-                document_id, self._reabstract_in_flight[document_id]
-            )
-        start_time = datetime.now(timezone.utc)
-        self._reabstract_in_flight[document_id] = start_time
+        existing = self._try_claim(document_id, "reabstract")
+        if existing is not None:
+            raise ReabstractDocumentAlreadyInFlightError(document_id, existing.start_time)
 
-        # Mark in-progress before dispatching background work. If the
-        # status write fails, drop the reservation so future calls can
-        # proceed (otherwise the orphan reservation would permanently
-        # 409 every subsequent reabstract against this document).
+        # Pre-mark in-progress before enqueue. If the status write fails, drop
+        # the claim so future calls can proceed (otherwise the orphan claim
+        # would permanently 409 every subsequent reabstract against this doc).
         try:
             async with self._locks.lock(document_id):
                 await self._store.update_document(
@@ -1164,85 +1394,60 @@ class IngestionService:
                     },
                 )
         except Exception:
-            self._reabstract_in_flight.pop(document_id, None)
+            self._release_claim(document_id)
             raise
 
-        self._dispatch_background(self._reabstract_background(document_id, doc.doc_type))
+        self._enqueue_abstraction_job(
+            _AbstractionJob(document_id=document_id, projection=None, doc_type=doc.doc_type)
+        )
 
         now = datetime.now(timezone.utc)
-        logger.info("reabstract dispatched for %s at %s", document_id, now.isoformat())
+        logger.info("reabstract enqueued for %s at %s", document_id, now.isoformat())
         return {
             "status": "reabstract_started",
             "document_id": document_id,
             "dispatched_at": now.isoformat(),
         }
 
-    async def _reabstract_background(self, document_id: str, doc_type: str | None) -> None:
-        """Background worker for reabstract. Loads chunks, generates
-        abstract, and updates the document. Sets pipeline_status to
-        FAILED on error.
+    async def _execute_abstract_from_chunks(self, document_id: str, doc_type: str | None) -> None:
+        """Stage 3 from stored chunks, raising on failure.
 
-        The initial sleep yields control so the MCP tool response can
-        flush through the SSE transport before heavy work begins.
-        Without it, the synchronous MLX model load and inference
-        block the event loop and prevent the "reabstract_started"
-        response from reaching the client.
+        Reconstructs the projection text from body chunks (excluding the
+        synthetic header so its title/source/tags restatement does not feed
+        the abstraction prompt), regenerates the abstract, and refreshes the
+        header chunk for retrieval. Used by the worker for reabstract jobs and
+        for startup recovery of documents that still have chunks.
         """
-        await asyncio.sleep(0.1)
-        try:
-            try:
-                chunks = await self._content_store.get_all_chunks(document_id)
-                # Exclude the synthetic header chunk from the
-                # reconstituted projection text so its title/source/tags
-                # restatement does not feed back into the abstraction prompt.
-                body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
-                projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
-                abstract = await self._generate_abstract_text(projection_text, doc_type)
-                now = datetime.now(timezone.utc)
-                async with self._locks.lock(document_id):
-                    await self._store.update_document(
-                        document_id,
-                        {
-                            "semantic_abstract": abstract,
-                            "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
-                            "updated_at": now.isoformat(),
-                        },
-                    )
+        chunks = await self._content_store.get_all_chunks(document_id)
+        body_chunks = [c for c in chunks if c.heading_path != SYNTHETIC_HEADER_HEADING_PATH]
+        projection_text = "\n\n".join(chunk.content for chunk in body_chunks)
+        abstract = await self._generate_abstract_text(projection_text, doc_type)
+        now = datetime.now(timezone.utc)
+        async with self._locks.lock(document_id):
+            await self._store.update_document(
+                document_id,
+                {
+                    "semantic_abstract": abstract,
+                    "pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value,
+                    "updated_at": now.isoformat(),
+                },
+            )
 
-                # Refresh the synthetic header chunk so the new abstract is
-                # indexed for retrieval.
-                await self._refresh_header_chunk(document_id)
-            except Exception:
-                logger.exception("Background reabstract failed for document %s", document_id)
-                async with self._locks.lock(document_id):
-                    await self._store.update_document(
-                        document_id,
-                        {
-                            "pipeline_status": PipelineStatus.FAILED.value,
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-        finally:
-            # Release the per-document single-flight reservation regardless of
-            # whether the background task succeeded or terminated in FAILED.
-            self._reabstract_in_flight.pop(document_id, None)
+        # Refresh the synthetic header chunk so the new abstract is indexed.
+        await self._refresh_header_chunk(document_id)
 
     async def recompute_pipeline(self, document_id: str) -> dict:
-        """Re-run Stages 1-3 against an existing document (fire-and-forget).
+        """Re-run Stages 1-3 against an existing document via the abstraction queue.
 
-        Operator-facing repair for documents stuck at
-        ``pipeline_status=projection_complete`` with no LanceDB chunks --
-        the silent-loss state that can occur when a Stage 2 background
-        dispatch is garbage-collected or its host process dies mid-
-        execution. Re-projects from the document's ``source_path``
-        (synchronously, so source-missing errors surface in the caller's
-        response envelope) and dispatches Stage 2-3 via
-        ``_dispatch_background`` so the new task is held in
-        ``_background_tasks`` until terminal.
+        Operator-facing repair for a document stuck non-terminal with stale or
+        missing LanceDB chunks. Re-projects from the document's ``source_path``
+        synchronously (so adapter/source errors surface in the caller's
+        response envelope rather than as a FAILED stamp), claims the document,
+        wipes stale chunks, and enqueues a Stage 2-3 job onto the worker.
 
-        Per-document single-flight: a second concurrent caller against the
-        same ``document_id`` raises
-        ``RecomputePipelineAlreadyInFlightError`` rather than queueing.
+        Per-document single-flight: a second concurrent caller against the same
+        ``document_id`` raises ``RecomputePipelineAlreadyInFlightError`` rather
+        than queueing.
 
         Args:
             document_id: ID of the document to re-run.
@@ -1257,8 +1462,8 @@ class IngestionService:
                 source_type.
             SourceFileNotFoundError: Source file resolved from
                 ``document.source_path`` does not exist on disk.
-            RecomputePipelineAlreadyInFlightError: A recompute_pipeline is
-                already running for this document_id.
+            RecomputePipelineAlreadyInFlightError: Abstraction work is already
+                queued or in flight for this document_id.
         """
         doc = await self._store.get_document(document_id)
         if doc is None:
@@ -1275,19 +1480,15 @@ class IngestionService:
         if not source_path.exists():
             raise SourceFileNotFoundError(doc.source_path)
 
-        # Per-document single-flight: synchronous check + reservation write
-        # within the same scheduling slice (no await between them).
-        if document_id in self._recompute_pipeline_in_flight:
-            raise RecomputePipelineAlreadyInFlightError(
-                document_id, self._recompute_pipeline_in_flight[document_id]
-            )
-        start_time = datetime.now(timezone.utc)
-        self._recompute_pipeline_in_flight[document_id] = start_time
+        existing = self._try_claim(document_id, "recompute")
+        if existing is not None:
+            raise RecomputePipelineAlreadyInFlightError(document_id, existing.start_time)
 
         # Stage 1 (projection) runs synchronously so adapter / source errors
         # surface in the caller's response envelope rather than as a FAILED
-        # stamp on the document. Drop the reservation on synchronous failure
-        # so the operator can retry without restarting the service.
+        # stamp on the document. Drop the claim on synchronous failure so the
+        # operator can retry without restarting the service.
+        start_time = datetime.now(timezone.utc)
         try:
             merged_config = self._merge_adapter_config(doc.source_type, None)
             projection = await adapter.project(source_path, merged_config)
@@ -1301,39 +1502,59 @@ class IngestionService:
                 },
             )
         except Exception:
-            self._recompute_pipeline_in_flight.pop(document_id, None)
+            self._release_claim(document_id)
             raise
 
         # Wipe stale chunks so Stage 2 re-indexes from scratch. Idempotent on
         # an empty store.
         await self._content_store.remove_document(document_id)
 
-        self._dispatch_background(
-            self._recompute_pipeline_background(document_id, projection, doc.doc_type)
+        self._enqueue_abstraction_job(
+            _AbstractionJob(document_id=document_id, projection=projection, doc_type=doc.doc_type)
         )
 
-        logger.info(
-            "recompute_pipeline dispatched for %s at %s", document_id, start_time.isoformat()
-        )
+        logger.info("recompute_pipeline enqueued for %s at %s", document_id, start_time.isoformat())
         return {
             "status": "recompute_pipeline_started",
             "document_id": document_id,
             "dispatched_at": start_time.isoformat(),
         }
 
-    async def _recompute_pipeline_background(
-        self,
-        document_id: str,
-        projection: ProjectionResult,
-        doc_type: str | None,
-    ) -> None:
-        """Background worker for recompute_pipeline: re-runs Stages 2-3 and
-        releases the single-flight reservation in a ``finally`` block.
+    async def _reproject_from_source(self, document_id: str) -> ProjectionResult:
+        """Stage 1 for the startup-recovery path: re-project a document from
+        its source file and wipe stale chunks.
+
+        Used by the worker for recovery jobs whose document has no chunks (e.g.
+        stranded at projection_complete). Raises if the document, adapter, or
+        source file is missing -- the worker treats that as an attempt failure
+        and ultimately stamps FAILED.
         """
-        try:
-            await self._run_background_pipeline(document_id, projection, doc_type)
-        finally:
-            self._recompute_pipeline_in_flight.pop(document_id, None)
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(document_id)
+        adapter = self._adapters.get(doc.source_type)
+        if adapter is None:
+            raise AdapterNotFoundError(doc.source_type)
+        if doc.source_path is None:
+            raise SourceFileNotFoundError("(none)")
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        source_path = storage_root / doc.source_path
+        if not source_path.exists():
+            raise SourceFileNotFoundError(doc.source_path)
+        merged_config = self._merge_adapter_config(doc.source_type, None)
+        projection = await adapter.project(source_path, merged_config)
+        now = datetime.now(timezone.utc)
+        await self._store.update_document(
+            document_id,
+            {
+                "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
+                "pipeline_error": None,
+                "projected_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            },
+        )
+        await self._content_store.remove_document(document_id)
+        return projection
 
     @staticmethod
     def _resolve_doc_type_for_tier3(

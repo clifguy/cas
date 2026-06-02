@@ -161,11 +161,14 @@ async def test_post_reabstract_deferred_streams_failure_without_aborting(
     # Two skipped docs in deterministic insertion order.
     fail_doc = _make_skipped_doc(_id("router_fail_a"))
     ok_doc = _make_skipped_doc(_id("router_ok_b"))
-    for doc in (fail_doc, ok_doc):
+    # fail_doc carries the FAILME marker so _SelectivelyFailingProvider fails
+    # it on every attempt (the worker retries before terminal FAILED); ok_doc
+    # has no marker and succeeds.
+    for doc, body in ((fail_doc, "FAILME Body."), (ok_doc, "Body.")):
         await services.graph_store.insert_document(doc)
         await services.content_store.index_chunks(
             doc.id,
-            [Chunk(document_id=doc.id, heading_path="Body", content="Body.", chunk_index=0)],
+            [Chunk(document_id=doc.id, heading_path="Body", content=body, chunk_index=0)],
         )
 
     transport = ASGITransport(app=app)

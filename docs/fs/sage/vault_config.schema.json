@@ -126,6 +126,24 @@
           "type": "number",
           "minimum": 0,
           "description": "Per-word scaling factor for the density-proportional abstract budget. Combined with base_abstract_tokens as `min(base_abstract_tokens + word_count * tokens_per_word, max_abstract_tokens)` to set the per-document budget."
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "Maximum number of attempts the abstraction worker makes for a queued document before stamping pipeline_status 'failed'. Applies only to queued work (concurrent ingest, reabstract, recompute, startup recovery); the synchronous wait-for-pipeline path remains fail-fast. The first attempt counts toward this total, so max_attempts=3 means one initial try plus two retries."
+        },
+        "retry_backoff_base_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1.0,
+          "description": "Base delay in seconds for the abstraction worker's exponential retry backoff. The delay before retry k (1-indexed) is min(retry_backoff_base_seconds * 2**(k-1), retry_backoff_max_seconds)."
+        },
+        "retry_backoff_max_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 30.0,
+          "description": "Upper bound in seconds on the abstraction worker's retry backoff delay, capping the exponential growth so a poison document cannot stall the queue indefinitely."
         }
       }
     },

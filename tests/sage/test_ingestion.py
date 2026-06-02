@@ -1198,16 +1198,33 @@ async def test_reabstract_sets_pipeline_status_in_progress(
 ):
     """BH-117: reabstract should set pipeline_status to
     abstraction_in_progress before returning."""
+    import asyncio
+
     _create_test_file(tmp_vault_dir, "reports/status.md", "# Status Test\n\nContent.")
 
     request = IngestRequest(source="reports/status.md", source_type=SourceType.MARKDOWN)
     result = await ingestion_service.ingest(request)
     doc_id = result.document.id
 
+    # Gate abstraction so the queued reabstract job cannot race to
+    # ABSTRACTION_COMPLETE before we observe the synchronous in-progress
+    # pre-stamp. (Pre-queue, the background task slept 0.1s; the worker has no
+    # such delay, so the gate is what makes the transient deterministic.)
+    gate = asyncio.Event()
+
+    async def gated_abstract(text: str, max_tokens: int, doc_type: str | None) -> str:
+        await gate.wait()
+        return "gated abstract"
+
+    ingestion_service._abstraction.generate_abstract = gated_abstract
+
     await ingestion_service.reabstract(doc_id)
 
     doc = await graph_store.get_document(doc_id)
     assert doc.pipeline_status == PipelineStatus.ABSTRACTION_IN_PROGRESS
+
+    gate.set()
+    await ingestion_service.stop_worker()
 
 
 async def test_reabstract_background_updates_abstract_on_success(
@@ -1733,9 +1750,9 @@ async def test_recompute_pipeline_source_path_missing_raises(
     with pytest.raises(SourceFileNotFoundError):
         await ingestion_service.recompute_pipeline(doc_id)
 
-    # The reservation must NOT be held after a synchronous failure -- otherwise
-    # the operator would have to restart the service to retry.
-    assert doc_id not in ingestion_service._recompute_pipeline_in_flight
+    # The claim must NOT be held after a synchronous failure -- otherwise the
+    # operator would have to restart the service to retry.
+    assert doc_id not in ingestion_service._inflight
 
 
 # ---------------------------------------------------------------------------

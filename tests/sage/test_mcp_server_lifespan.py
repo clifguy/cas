@@ -58,10 +58,21 @@ class _FakeGraphStore:
         self.close_called = True
 
 
+class _FakeIngestionService:
+    """Stub abstraction-queue hooks the standalone lifespan + reload path call."""
+
+    async def recover_incomplete_documents(self) -> int:
+        return 0
+
+    async def stop_worker(self) -> None:
+        pass
+
+
 class _FakeServices:
     def __init__(self, config: VaultConfig) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore()
+        self.ingestion_service = _FakeIngestionService()
         # Reload_vault_in_registry reads old.timing_thread to stop it
         # after a successful build. None is the no-timing-thread sentinel.
         self.timing_thread = None

@@ -154,20 +154,25 @@ class _GatedAbstractionProvider(AbstractionProvider):
 
 
 class _SelectivelyFailingProvider(AbstractionProvider):
-    """Stub provider that fails on the first call and succeeds afterward.
+    """Stub provider that fails whenever the input text carries ``_FAIL_MARKER``
+    and succeeds otherwise.
 
-    Used by the per-document failure test (#5) to exercise the loop's
-    isolation contract: one document's failure must not abort the
-    sibling reabstract attempts.
+    Used by the per-document failure tests to exercise the loop's isolation
+    contract: one document's failure must not abort the sibling reabstract
+    attempts. Keying on text rather than call order keeps the failure
+    deterministic even though the abstraction queue worker retries a failing
+    document several times before it reaches a terminal FAILED state.
     """
+
+    _FAIL_MARKER = "FAILME"
 
     def __init__(self) -> None:
         self.call_count = 0
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         self.call_count += 1
-        if self.call_count == 1:
-            raise RuntimeError("simulated LLM failure for first call")
+        if self._FAIL_MARKER in text:
+            raise RuntimeError("simulated LLM failure for marked document")
         return f"stub abstract after {self.call_count} calls"
 
 
@@ -366,7 +371,9 @@ async def test_reabstract_deferred_records_per_document_failure(
     # graph_store.list_all_documents returns in insertion order.
     fail_doc = _make_skipped_doc(_id("deferred_fail_a"))
     ok_doc = _make_skipped_doc(_id("deferred_ok_b"))
-    await _seed_doc_with_chunks(graph_store, stub_content_store, fail_doc)
+    await _seed_doc_with_chunks(
+        graph_store, stub_content_store, fail_doc, body_text="FAILME body content."
+    )
     await _seed_doc_with_chunks(graph_store, stub_content_store, ok_doc)
 
     maintenance = _build_maintenance(
@@ -657,7 +664,9 @@ async def test_reabstract_deferred_events_emits_failed_then_continues(
 
     fail_doc = _make_skipped_doc(_id("stream_fail_a"))
     ok_doc = _make_skipped_doc(_id("stream_ok_b"))
-    await _seed_doc_with_chunks(graph_store, stub_content_store, fail_doc)
+    await _seed_doc_with_chunks(
+        graph_store, stub_content_store, fail_doc, body_text="FAILME body content."
+    )
     await _seed_doc_with_chunks(graph_store, stub_content_store, ok_doc)
 
     maintenance = _build_maintenance(
