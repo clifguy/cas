@@ -1,14 +1,14 @@
 """Event-loop offload + write-serialization tests for LanceDBContentStore.
 
-Asserts that the blocking LanceDB write path (``table.add`` + the
-``create_fts_index`` rebuild) runs off the asyncio event loop and that
-concurrent writers to the single content table are serialized. Reads stay
-on the loop: while a write is in flight off-loop, a concurrent ``search``
-must return within normal latency (the freeze this ticket removes).
+Asserts that the blocking LanceDB write path (``table.add`` + the FTS
+index maintenance) runs off the asyncio event loop and that concurrent
+writers to the single content table are serialized. Reads stay on the
+loop: while a write is in flight off-loop, a concurrent ``search`` must
+return within normal latency (no event-loop freeze).
 
 Uses a real embedded LanceDBContentStore against a tmp dir -- fast on a
-fresh directory -- and gates the write at ``_rebuild_fts`` so the test
-controls when the worker thread is mid-write.
+fresh directory -- and gates the write at ``_ensure_fts_indexes`` so the
+test controls when the worker thread is mid-write.
 """
 
 import asyncio
@@ -49,12 +49,12 @@ async def _wait_until(predicate: Callable[[], bool]) -> None:
 
 
 async def test_index_chunks_write_off_loop_search_stays_responsive(store, monkeypatch):
-    """While a write is gated mid-FTS-rebuild in its worker thread, a
-    concurrent ``search_semantic`` returns within normal latency.
+    """While a write is gated mid-FTS-index-maintenance in its worker
+    thread, a concurrent ``search_semantic`` returns within normal latency.
 
-    Regression guard for the on-loop block: if the FTS rebuild ran on the
-    loop, the gated write would freeze it and both the ``_wait_until``
-    probe and the concurrent search would time out.
+    Regression guard for the on-loop block: if the FTS index maintenance
+    ran on the loop, the gated write would freeze it and both the
+    ``_wait_until`` probe and the concurrent search would time out.
     """
     # A fully-indexed document the concurrent read will retrieve.
     await store.index_chunks("aaaaaaaa_existing", [_chunk("aaaaaaaa_existing", lead=1.0)])
@@ -63,13 +63,13 @@ async def test_index_chunks_write_off_loop_search_stays_responsive(store, monkey
     release = threading.Event()
     in_progress = threading.Event()
 
-    def blocking_rebuild(table):
+    def blocking_ensure(table):
         in_progress.set()
         started.set()
         release.wait(timeout=2.0)
         in_progress.clear()
 
-    monkeypatch.setattr(store, "_rebuild_fts", blocking_rebuild)
+    monkeypatch.setattr(store, "_ensure_fts_indexes", blocking_ensure)
 
     write_task = asyncio.create_task(
         store.index_chunks("bbbbbbbb_new", [_chunk("bbbbbbbb_new", lead=0.5)])
@@ -94,15 +94,15 @@ async def test_concurrent_writes_serialize_to_one_table(store, monkeypatch):
     body: at most one writer is active at any instant.
 
     Pins the serialization requirement. Without the per-instance write
-    lock, both coroutines would run their rebuild bodies on separate
+    lock, both coroutines would run their write bodies on separate
     default-executor threads and ``max_active`` would reach 2.
     """
     counter_lock = threading.Lock()
     active = 0
     max_active = 0
-    real_rebuild = store._rebuild_fts
+    real_ensure = store._ensure_fts_indexes
 
-    def counting_rebuild(table):
+    def counting_ensure(table):
         nonlocal active, max_active
         with counter_lock:
             active += 1
@@ -110,9 +110,9 @@ async def test_concurrent_writes_serialize_to_one_table(store, monkeypatch):
         time.sleep(0.05)  # widen the overlap window
         with counter_lock:
             active -= 1
-        real_rebuild(table)
+        real_ensure(table)
 
-    monkeypatch.setattr(store, "_rebuild_fts", counting_rebuild)
+    monkeypatch.setattr(store, "_ensure_fts_indexes", counting_ensure)
 
     await asyncio.gather(
         store.index_chunks("aaaaaaaa_doc_a", [_chunk("aaaaaaaa_doc_a")]),

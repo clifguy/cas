@@ -271,9 +271,10 @@ async def reproject_vault_with_services(
         f"{n_failed} failed in {elapsed.total_seconds():.1f}s."
     )
 
-    # Compact LanceDB to prune the FTS-rebuild version history. Per the
-    # existing reindex script: index_chunks calls _rebuild_fts on every
-    # invocation, and version metadata accumulates without optimize().
+    # Compact LanceDB: fold the FTS delta into the index, compact fragments,
+    # and prune old version metadata. Each index_chunks call writes a new
+    # fragment and leaves added rows in the unindexed FTS delta; version
+    # metadata accumulates without optimize().
     if n_done > 0:
         try:
             table = content_store._get_table()

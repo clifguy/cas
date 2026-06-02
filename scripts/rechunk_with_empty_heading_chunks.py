@@ -210,15 +210,14 @@ async def rechunk_vault(vault_id: str, *, execute: bool, batch_size: int) -> int
         elapsed = datetime.now(timezone.utc) - started
         print(f"\nDone. {n_done} re-chunked, {n_failed} failed, in {elapsed.total_seconds():.1f}s.")
 
-        # Compact LanceDB fragments and prune old version metadata.
-        # Each index_chunks call writes a new fragment AND triggers
-        # _rebuild_fts which writes new tantivy index versions. Without
-        # pruning, vault-wide rewrites accumulate stale FTS index versions
-        # — we measured 121 GB of _indices/ for an in-flight rewrite where
-        # the actual chunk data was 591 MB. ``cleanup_older_than=timedelta(0)``
-        # removes every version except the latest, reclaiming that space.
-        # Safe for one-shot maintenance scripts where time-travel is not
-        # needed.
+        # Compact LanceDB fragments, fold the FTS delta into the index, and
+        # prune old version metadata. Each index_chunks call writes a new
+        # fragment and leaves the added rows in the unindexed FTS delta;
+        # optimize folds them in and removes superseded versions so a
+        # vault-wide rewrite does not retain stale fragments and versions.
+        # ``cleanup_older_than=timedelta(0)`` removes every version except
+        # the latest. Safe for one-shot maintenance scripts where
+        # time-travel is not needed.
         try:
             table = store._get_table()
             if table is not None:
