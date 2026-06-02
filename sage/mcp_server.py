@@ -199,10 +199,29 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
                     "Skipping vault at %s: failed to load (%s)", config_path, exc
                 )
 
+        # Re-derive abstraction work left pending by a prior crash or a stopped
+        # worker across every registered vault. The in-memory queue is not
+        # itself durable; pipeline_status in the graph store is the durable
+        # record the worker reconstructs from. Best-effort per vault.
+        for vault_id, services in list(_vaults.items()):
+            try:
+                recovered = await services.ingestion_service.recover_incomplete_documents()
+                if recovered:
+                    _logging.getLogger(__name__).info(
+                        "Recovered %d incomplete document(s) for vault %s",
+                        recovered,
+                        vault_id,
+                    )
+            except Exception:
+                _logging.getLogger(__name__).exception(
+                    "Abstraction recovery failed for vault %s", vault_id
+                )
+
     yield
 
     if standalone:
         for services in _vaults.values():
+            await services.ingestion_service.stop_worker()
             await services.graph_store.close()
         _vaults.clear()
         set_stack_config(None)

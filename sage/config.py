@@ -244,6 +244,37 @@ class VaultAbstractionConfig(BaseModel):
             "max_abstract_tokens)` to set the per-document budget."
         ),
     )
+    max_attempts: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Maximum number of attempts the abstraction worker makes for a "
+            "queued document before stamping pipeline_status 'failed'. "
+            "Applies only to queued work (concurrent ingest, reabstract, "
+            "recompute, startup recovery); the synchronous wait-for-pipeline "
+            "path remains fail-fast. The first attempt counts toward this "
+            "total, so max_attempts=3 means one initial try plus two retries."
+        ),
+    )
+    retry_backoff_base_seconds: float = Field(
+        default=1.0,
+        ge=0,
+        description=(
+            "Base delay in seconds for the abstraction worker's exponential "
+            "retry backoff. The delay before retry k (1-indexed) is "
+            "min(retry_backoff_base_seconds * 2**(k-1), "
+            "retry_backoff_max_seconds)."
+        ),
+    )
+    retry_backoff_max_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Upper bound in seconds on the abstraction worker's retry backoff "
+            "delay, capping the exponential growth so a poison document cannot "
+            "stall the queue indefinitely."
+        ),
+    )
 
 
 class StackAbstractionConfig(BaseModel):

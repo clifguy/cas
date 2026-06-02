@@ -204,7 +204,10 @@ async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
         ok_doc = _make_skipped_doc(_id("tool_mix_ok_b"))
         pdf_doc = _make_skipped_doc(_id("tool_mix_pdf_c"), source_type=SourceType.PDF)
 
-        for doc in (fail_doc, ok_doc, pdf_doc):
+        # fail_doc carries the FAILME marker so _SelectivelyFailingProvider
+        # fails it on every attempt (the worker retries before terminal
+        # FAILED); the others have no marker and succeed / skip.
+        for doc, body in ((fail_doc, "FAILME Body."), (ok_doc, "Body."), (pdf_doc, "Body.")):
             await services.graph_store.insert_document(doc)
             await services.content_store.index_chunks(
                 doc.id,
@@ -212,7 +215,7 @@ async def test_sage_admin_reabstract_deferred_vault_aggregates_streaming_events(
                     Chunk(
                         document_id=doc.id,
                         heading_path="Body",
-                        content="Body.",
+                        content=body,
                         chunk_index=0,
                     )
                 ],

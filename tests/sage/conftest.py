@@ -173,6 +173,11 @@ def minimal_vault_config_dict(tmp_vault_dir):
         "source_adapters": {
             "adapters": [{"source_type": "markdown", "enabled": True}],
         },
+        # Zero the abstraction-queue retry backoff so tests that exercise a
+        # failing provider exhaust their attempts instantly instead of sleeping
+        # through the production exponential backoff. Other abstraction defaults
+        # (enabled, token budget, max_attempts) are left at their model defaults.
+        "abstraction": {"retry_backoff_base_seconds": 0.0},
         "metadata_extraction": {},
         "edge_inference": {
             "tier_assignments": [

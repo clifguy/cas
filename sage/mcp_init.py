@@ -558,6 +558,7 @@ async def reload_vault_in_registry(
 
     # New services built successfully — safe to tear down old and install new.
     if old is not None:
+        await old.ingestion_service.stop_worker()
         if old.timing_thread is not None:
             old.timing_thread.stop(timeout=1.0)
         await old.graph_store.close()

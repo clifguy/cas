@@ -158,12 +158,23 @@ class _FakeGraphStore:
         pass
 
 
+class _FakeIngestionService:
+    """Stub abstraction-queue hooks the FastAPI lifespan calls."""
+
+    async def recover_incomplete_documents(self) -> int:
+        return 0
+
+    async def stop_worker(self) -> None:
+        pass
+
+
 class _FakeServices:
     """Stand-in for SAGEServices in lifespan tests."""
 
     def __init__(self, vault_id: str) -> None:
         self.vault_id = vault_id
         self.graph_store = _FakeGraphStore()
+        self.ingestion_service = _FakeIngestionService()
 
 
 def _patch_initialize_vault(monkeypatch, *, fail_for: set[str] | None = None):

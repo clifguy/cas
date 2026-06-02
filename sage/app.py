@@ -338,9 +338,24 @@ def create_app(
             # No configs = empty vault registry (valid per BE-002)
             pass
 
+        # Re-derive abstraction work left pending by a prior crash or a stopped
+        # worker, across every registered vault. The in-memory queue is not
+        # itself durable; pipeline_status in the graph store is the durable
+        # record the worker reconstructs from. Best-effort per vault.
+        for vault_id, services in list(app.state.vault_registry.items()):
+            try:
+                recovered = await services.ingestion_service.recover_incomplete_documents()
+                if recovered:
+                    logger.info(
+                        "Recovered %d incomplete document(s) for vault %s", recovered, vault_id
+                    )
+            except Exception:
+                logger.exception("Abstraction recovery failed for vault %s", vault_id)
+
         yield
 
         for services in app.state.vault_registry.values():
+            await services.ingestion_service.stop_worker()
             await services.graph_store.close()
         app.state.vault_registry.clear()
         set_stack_config(None)

@@ -101,9 +101,16 @@ class _FakeUserService:
 
 class _FakeIngestionService:
     """Satisfies VaultRegistryService._build_vault_summary's iteration over
-    ``services.ingestion_service.registered_adapters``."""
+    ``services.ingestion_service.registered_adapters``, plus the abstraction-
+    queue hooks the standalone/FastAPI lifespans and reload path now call."""
 
     registered_adapters: dict = {}
+
+    async def recover_incomplete_documents(self) -> int:
+        return 0
+
+    async def stop_worker(self) -> None:
+        pass
 
 
 class _FakeServices:
