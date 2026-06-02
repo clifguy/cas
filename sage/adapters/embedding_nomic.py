@@ -4,7 +4,9 @@ Uses sentence-transformers to load nomic-ai/nomic-embed-text-v1.5.
 Produces 768-dimensional L2-normalized embeddings.
 """
 
+import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from sage.adapters.interfaces import EmbeddingProvider
 
@@ -60,6 +62,11 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             self._dimensions,
         )
 
+        # Dedicated single-thread executor for blocking inference. Created
+        # lazily on first embed. max_workers=1 keeps every encode on one
+        # thread and serializes them; see embed.
+        self._executor: ThreadPoolExecutor | None = None
+
     @property
     def dimensions(self) -> int:
         return self._dimensions
@@ -69,14 +76,28 @@ class NomicEmbeddingProvider(EmbeddingProvider):
 
         Empty input returns empty output immediately (AD-006).
         Order is preserved (AD-002).
+
+        The synchronous ``encode`` runs on a dedicated single-thread
+        executor so it never freezes the event loop. Releasing the GIL
+        inside the C extension does not unblock the loop on its own: the
+        loop runs on the calling thread, so a direct call would stall every
+        concurrent request for the encode's full duration. The single
+        worker thread keeps inference on one thread and serializes encodes.
         """
         if not texts:
             return []
 
-        # sentence-transformers encode is synchronous; call directly
-        # since it releases the GIL during model inference.
-        # batch_size=8 bounds per-batch memory for long sequences
-        # (attention scales quadratically with sequence length).
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-embedding")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._embed_sync, texts)
+
+    def _embed_sync(self, texts: list[str]) -> list[list[float]]:
+        """Blocking embedding inference. Runs on the dedicated executor.
+
+        batch_size=8 bounds per-batch memory for long sequences (attention
+        scales quadratically with sequence length).
+        """
         embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
         return [vec.tolist() for vec in embeddings]
 

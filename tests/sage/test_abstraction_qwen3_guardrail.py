@@ -58,7 +58,9 @@ def provider(monkeypatch):
         # _generate_fn is set by the individual test before invocation
 
     monkeypatch.setattr(p, "_ensure_loaded", fake_ensure_loaded)
-    return p
+    yield p
+    if p._executor is not None:
+        p._executor.shutdown(wait=False)
 
 
 async def test_t0029_preflight_below_threshold_raises_structured_error(provider, monkeypatch):

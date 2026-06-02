@@ -67,7 +67,9 @@ def provider(monkeypatch):
         p._generate_fn = lambda *a, **k: "GENERATED ABSTRACT"
 
     monkeypatch.setattr(p, "_ensure_loaded", fake_ensure_loaded)
-    return p
+    yield p
+    if p._executor is not None:
+        p._executor.shutdown(wait=False)
 
 
 def _load(provider) -> None:

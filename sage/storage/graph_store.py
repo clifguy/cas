@@ -175,6 +175,11 @@ class GraphStore:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA foreign_keys=ON;")
+            # Bounded wait instead of an immediate SQLITE_BUSY when another
+            # connection holds the database briefly, and the WAL-safe
+            # durability/throughput setting. Both are per-connection.
+            conn.execute("PRAGMA busy_timeout=30000;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
             self._local.conn = conn
             with self._all_connections_lock:
                 self._all_connections.append(conn)
@@ -2125,6 +2130,24 @@ class GraphStore:
     def _get_journal_mode_sync(self) -> str:
         conn = self._get_connection()
         row = conn.execute("PRAGMA journal_mode;").fetchone()
+        return row[0]
+
+    async def get_busy_timeout(self) -> int:
+        with self._query_timer.measure("get_busy_timeout"):
+            return await self._run(self._get_busy_timeout_sync)
+
+    def _get_busy_timeout_sync(self) -> int:
+        conn = self._get_connection()
+        row = conn.execute("PRAGMA busy_timeout;").fetchone()
+        return row[0]
+
+    async def get_synchronous(self) -> int:
+        with self._query_timer.measure("get_synchronous"):
+            return await self._run(self._get_synchronous_sync)
+
+    def _get_synchronous_sync(self) -> int:
+        conn = self._get_connection()
+        row = conn.execute("PRAGMA synchronous;").fetchone()
         return row[0]
 
     # ------------------------------------------------------------------
