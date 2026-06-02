@@ -1214,18 +1214,38 @@ async def test_optimize_content_store_reclaims_disk_after_churn(lancedb_vault):
 
 
 async def test_optimize_content_store_is_noop_on_clean_table(lancedb_vault):
-    """A second call against an already-optimized table reports
-    no further reclamation; the table remains queryable.
+    """Optimize converges to a fixpoint; at the fixpoint a further call
+    reports no further reclamation and the table remains queryable.
+
+    Incremental FTS maintenance leaves newly-written rows in an unindexed
+    delta that the first optimize folds into the index; that fold can mint
+    a dataset version a subsequent optimize then prunes, so convergence may
+    take more than one pass. The invariant under test is that optimize
+    *does* converge and that at the fixpoint it is a true no-op.
     """
     _registry, services, _vault_dir = lancedb_vault
     content_store = services.content_store
     maintenance = services.maintenance_service
 
     await _churn_chunks(content_store, cycles=30)
-    await maintenance.optimize_content_store(cleanup_older_than_days=0)
 
-    report = await maintenance.optimize_content_store(cleanup_older_than_days=0)
-    # No further version pruning -- everything already at the latest.
+    # Optimize until it reaches a fixpoint (no version or fragment change).
+    report = None
+    for _ in range(6):
+        report = await maintenance.optimize_content_store(cleanup_older_than_days=0)
+        if (
+            report.pre_versions == report.post_versions
+            and report.pre_fragments == report.post_fragments
+        ):
+            break
+    else:
+        raise AssertionError(
+            f"optimize did not reach a fixpoint within 6 passes; last "
+            f"versions={report.pre_versions}->{report.post_versions} "
+            f"fragments={report.pre_fragments}->{report.post_fragments}"
+        )
+
+    # At the fixpoint, a further optimize reclaims nothing.
     assert report.pre_versions == report.post_versions
     # Fragments may already be merged; if they were, count stays put.
     assert report.pre_fragments == report.post_fragments
