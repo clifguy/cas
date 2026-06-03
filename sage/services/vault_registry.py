@@ -185,6 +185,13 @@ class VaultRegistryService:
             registered = self._registry.pop(vault_id, None)
             if registered is not None:
                 try:
+                    registered.close_timing()
+                except BaseException:
+                    logger.exception(
+                        "timing teardown failed during create_vault rollback for vault_id=%s",
+                        vault_id,
+                    )
+                try:
                     await registered.graph_store.close()
                 except BaseException:
                     logger.exception(

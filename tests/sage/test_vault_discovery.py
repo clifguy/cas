@@ -176,6 +176,11 @@ class _FakeServices:
         self.graph_store = _FakeGraphStore()
         self.ingestion_service = _FakeIngestionService()
 
+    def close_timing(self) -> None:
+        # SAGEServices.close_timing stops the timing flusher and releases the
+        # timing.log handle on teardown; the fake owns neither, so it no-ops.
+        pass
+
 
 def _patch_initialize_vault(monkeypatch, *, fail_for: set[str] | None = None):
     """Replace sage.app._initialize_vault with a recorder.

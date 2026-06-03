@@ -222,6 +222,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     if standalone:
         for services in _vaults.values():
             await services.ingestion_service.stop_worker()
+            services.close_timing()
             await services.graph_store.close()
         _vaults.clear()
         set_stack_config(None)

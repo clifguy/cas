@@ -54,19 +54,20 @@ async def initialize_services_for_test(config, **kwargs):
     """Async context manager wrapping ``initialize_services`` for tests.
 
     Guarantees that on exit (normal or exceptional) the per-vault
-    ``VaultTimingThread`` is stopped and the graph store is closed.
-    Replaces the
+    ``VaultTimingThread`` is stopped, its ``timing.log`` file handle is
+    released, and the graph store is closed (the first two via
+    ``close_timing``). Replaces the
     ``services = await initialize_services(...); try:...; finally:
     await services.graph_store.close()`` pattern, which historically
-    forgot to stop the timing thread and leaked it into subsequent
-    tests, polluting their caplog windows on the timing loggers.
+    forgot to stop the timing thread and leaked it (and its log handle)
+    into subsequent tests, polluting their caplog windows on the timing
+    loggers.
     """
     services = await initialize_services(config, **kwargs)
     try:
         yield services
     finally:
-        if services.timing_thread is not None:
-            services.timing_thread.stop(timeout=1.0)
+        services.close_timing()
         await services.graph_store.close()
 
 

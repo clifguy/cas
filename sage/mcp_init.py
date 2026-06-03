@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,35 +55,96 @@ _TIMING_LOGGER_NAMES = (
 )
 
 
+@dataclass
+class _TimingHandlerRef:
+    """Reference-count entry for a process-global timing-log handler.
+
+    The three timing loggers are process-global, but the
+    ``RotatingFileHandler`` behind them is per-vault — keyed by the resolved
+    ``timing.log`` path. Several ``SAGEServices`` can map to one path (a vault
+    reload reuses its ``brain_root``), so the handler outlives any single
+    services instance. Reference counting closes the open file handle exactly
+    once, when the last holder of the path tears down.
+    """
+
+    handler: logging.handlers.RotatingFileHandler
+    refcount: int
+
+
+# Guards ``_timing_handlers``; install/release run inside synchronous critical
+# sections so concurrent vault initialization (startup fan-out) stays correct.
+_timing_handler_lock = threading.Lock()
+# Reference-counted timing-log handlers, keyed by resolved (str) log path. The
+# handlers attach to the process-global timing loggers, so their lifecycle
+# spans more than one SAGEServices and needs cross-call coordination; this
+# registry is that coordination point. Entries are created on first install
+# and removed when the last reference is released.
+_timing_handlers: dict[str, _TimingHandlerRef] = {}
+
+
 def _install_timing_handler(
     log_path: Path,
 ) -> logging.handlers.RotatingFileHandler:
-    """Attach a per-vault rotating FileHandler to the three timing loggers.
+    """Attach (or reuse) the per-vault timing handler under a reference count.
 
-    Idempotent: if a handler already points at ``log_path`` on a logger,
-    it is reused. ``propagate`` is disabled on the timing loggers so
-    records don't bubble up to the root logger (which would mix them
-    into the normal app stream).
+    The first caller for ``log_path`` opens a ``RotatingFileHandler`` on the
+    file and attaches it to the three timing loggers; later callers reuse that
+    handler and bump its reference count. ``propagate`` is disabled on the
+    timing loggers so records don't bubble up to the root logger (which would
+    mix them into the normal app stream). The open file handle is released only
+    by the matching ``_release_timing_handler`` call that drops the count to
+    zero, so a vault reload (which reuses the path) keeps logging across the
+    swap and a failed reload leaves the surviving vault's handler intact.
     """
-    handler = logging.handlers.RotatingFileHandler(
-        str(log_path),
-        maxBytes=50_000_000,
-        backupCount=3,
-    )
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    for name in _TIMING_LOGGER_NAMES:
-        logger = logging.getLogger(name)
-        logger.setLevel(logging.DEBUG)
-        existing = [
-            h
-            for h in logger.handlers
-            if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == log_path
-        ]
-        if not existing:
-            logger.addHandler(handler)
-        logger.propagate = False
-    return handler
+    key = str(log_path)
+    with _timing_handler_lock:
+        ref = _timing_handlers.get(key)
+        if ref is None:
+            handler = logging.handlers.RotatingFileHandler(
+                key,
+                maxBytes=50_000_000,
+                backupCount=3,
+            )
+            handler.setLevel(logging.DEBUG)
+            handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+            for name in _TIMING_LOGGER_NAMES:
+                logger = logging.getLogger(name)
+                logger.setLevel(logging.DEBUG)
+                logger.addHandler(handler)
+                logger.propagate = False
+            ref = _TimingHandlerRef(handler=handler, refcount=0)
+            _timing_handlers[key] = ref
+        ref.refcount += 1
+        return ref.handler
+
+
+def _release_timing_handler(handler: logging.Handler | None) -> None:
+    """Drop one reference to a per-vault timing handler; close it on the last.
+
+    Inverse of ``_install_timing_handler``. Decrements the reference count for
+    the entry holding ``handler``; on reaching zero it detaches the handler
+    from the three timing loggers and closes it, releasing the ``timing.log``
+    file handle. A ``None`` handler (timing disabled) or one already fully
+    released is a no-op, so this is safe on any teardown path and safe to call
+    more than once.
+    """
+    if handler is None:
+        return
+    with _timing_handler_lock:
+        key = next(
+            (k for k, ref in _timing_handlers.items() if ref.handler is handler),
+            None,
+        )
+        if key is None:
+            return
+        ref = _timing_handlers[key]
+        ref.refcount -= 1
+        if ref.refcount > 0:
+            return
+        del _timing_handlers[key]
+        for name in _TIMING_LOGGER_NAMES:
+            logging.getLogger(name).removeHandler(handler)
+        handler.close()
 
 
 def _build_vault_timers(
@@ -156,6 +218,29 @@ class SAGEServices:
     # None when timing is disabled or when the content store was injected
     # without going through _build_vault_timers (test paths).
     timing_thread: VaultTimingThread | None = None
+    # Per-vault rotating file handler behind the three timing loggers. Held so
+    # close_timing() can release the per-path reference and let the last holder
+    # close the timing.log file handle on teardown. Shares the timing_thread's
+    # lifecycle (both built by _build_vault_timers); None when timing is
+    # disabled.
+    timing_handler: logging.Handler | None = None
+
+    def close_timing(self) -> None:
+        """Stop the timing flusher and release this vault's timing.log handle.
+
+        Stops the per-vault ``VaultTimingThread`` (when running) and drops this
+        vault's reference to the shared per-path timing handler, which closes
+        the underlying ``timing.log`` file once the last referencing vault
+        tears down. Idempotent: the handler reference is cleared after release,
+        so a second call is a no-op. Invoked from every vault-teardown path —
+        production lifespan shutdown, registry reload and create-rollback, the
+        migration CLI, and the test context manager — so the file handle never
+        outlives the services that opened it.
+        """
+        if self.timing_thread is not None:
+            self.timing_thread.stop(timeout=1.0)
+        _release_timing_handler(self.timing_handler)
+        self.timing_handler = None
 
 
 # Stack-wide SAGE Core API config (CAS-ADR-030). Loaded once at
@@ -316,6 +401,7 @@ async def initialize_services(
     # passed in by the caller (explicit content_store, factory-built
     # content_store) are owned by the caller and not closed on cleanup.
     timing_thread: VaultTimingThread | None = None
+    timing_handler: logging.Handler | None = None
     graph_store: GraphStore | None = None
     content_store_owned_here: ContentStore | None = None
 
@@ -323,7 +409,7 @@ async def initialize_services(
         brain_root = Path(config.vault.brain_root).expanduser()
         brain_root.mkdir(parents=True, exist_ok=True)
 
-        storage_timer, content_timer, retrieval_timer, timing_thread, _timing_handler = (
+        storage_timer, content_timer, retrieval_timer, timing_thread, timing_handler = (
             _build_vault_timers(config.timing, brain_root)
         )
 
@@ -471,6 +557,7 @@ async def initialize_services(
             config_path=config_path,
             content_store_factory=content_store_factory,
             timing_thread=timing_thread,
+            timing_handler=timing_handler,
         )
     except BaseException:
         # AC2 + Risk: release partially-allocated resources without
@@ -486,6 +573,10 @@ async def initialize_services(
                 timing_thread.stop(timeout=1.0)
             except Exception:
                 _logger.exception("initialize_services cleanup: failed to stop timing_thread")
+        try:
+            _release_timing_handler(timing_handler)
+        except Exception:
+            _logger.exception("initialize_services cleanup: failed to release timing handler")
         if graph_store is not None:
             try:
                 await graph_store.close()
@@ -559,8 +650,7 @@ async def reload_vault_in_registry(
     # New services built successfully — safe to tear down old and install new.
     if old is not None:
         await old.ingestion_service.stop_worker()
-        if old.timing_thread is not None:
-            old.timing_thread.stop(timeout=1.0)
+        old.close_timing()
         await old.graph_store.close()
     registry[vault_id] = new_services
     return new_services
