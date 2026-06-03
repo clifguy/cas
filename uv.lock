@@ -114,7 +114,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'test'", specifier = ">=0.27" },
     { name = "hypothesis", marker = "extra == 'test'", specifier = ">=6.150" },
     { name = "import-linter", marker = "extra == 'test'", specifier = ">=2.11" },
-    { name = "jsonschema", extras = ["format"], marker = "extra == 'test'", specifier = ">=4.23" },
+    { name = "jsonschema", extras = ["format"], marker = "extra == 'test'", specifier = ">=4.26.0" },
     { name = "lancedb", specifier = ">=0.33.0" },
     { name = "markdown-it-py", specifier = ">=3.0" },
     { name = "mcp", specifier = ">=1.0" },
