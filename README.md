@@ -32,10 +32,10 @@ Requires Python 3.14, [uv](https://docs.astral.sh/uv/), and an Apple-Silicon Mac
 
 ```
 brew install uv
-uv sync --extra test --extra mlx
+uv sync --extra test --extra mlx --extra dev
 ```
 
-`uv sync` creates `.venv/` and installs the project editable from the lockfile. `pyproject.toml` carries the abstract compatibility ranges; `uv.lock` carries the exact resolved versions.
+`uv sync` creates `.venv/` and installs the project editable from the lockfile. The `dev` extra provides `ruff` and `pre-commit` (the repo uses pre-commit hooks). `pyproject.toml` carries the abstract compatibility ranges; `uv.lock` carries the exact resolved versions.
 
 The SAGE MCP surface is split across two stdio servers. The **ordinary** server (`sage.mcp_server`) is always enabled and carries the read spine plus the everyday mutation spine. The **maintenance** server (`sage.mcp_server_admin`) is opt-in and additive — it registers the vault- and stack-level administrative tools (the `admin_*` tools) and does not duplicate the read spine; a maintenance session enables both servers and reads through the ordinary one. Server enablement in the client's MCP settings is the only role declaration.
 
