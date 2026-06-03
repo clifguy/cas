@@ -73,9 +73,14 @@ class _FakeServices:
         self.config = config
         self.graph_store = _FakeGraphStore()
         self.ingestion_service = _FakeIngestionService()
-        # Reload_vault_in_registry reads old.timing_thread to stop it
-        # after a successful build. None is the no-timing-thread sentinel.
+        # reload_vault_in_registry and the standalone-lifespan teardown call
+        # close_timing() on each services. None is the no-timing-thread
+        # sentinel; the no-op close_timing below stands in for the real
+        # stop-thread-and-release-handler teardown.
         self.timing_thread = None
+
+    def close_timing(self) -> None:
+        pass
 
 
 @pytest.fixture

@@ -90,6 +90,7 @@ async def _migrate_vault(config: VaultConfig, config_path: Path) -> None:
         abstraction_provider=StubAbstractionProvider(),
         registry_service=None,
     )
+    services.close_timing()
     await services.graph_store.close()
 
 

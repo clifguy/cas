@@ -412,6 +412,67 @@ async def test_mcp_init_attaches_per_vault_file_handler(minimal_vault_config_dic
                 logger.propagate = True
 
 
+# ── timing-handler reference counting ────────────────────────────────
+
+
+def test_install_timing_handler_is_reference_counted(tmp_path):
+    """A second install for the same log path reuses the handler and bumps a
+    reference count; the open file handle is released only when the LAST
+    reference is dropped. This is the property that keeps a same-brain_root
+    vault reload logging across the old->new services swap, and that closes
+    the timing.log handle on final teardown.
+
+    Trap (anti-coincidental): if install opened a second file instead of
+    refcounting, or release closed on the first drop, the mid-state
+    assertion — still attached and open after exactly one release — fails.
+    """
+    from sage.mcp_init import _install_timing_handler, _release_timing_handler
+
+    names = ("sage.storage.timing", "sage.content.timing", "sage.retrieval.timing")
+    log_path = tmp_path / "timing.log"
+
+    # First reference (vault load): opens the file and attaches the handler.
+    h1 = _install_timing_handler(log_path)
+    # Second reference (the reload's freshly-built services): reuses it.
+    h2 = _install_timing_handler(log_path)
+    assert h2 is h1, "second install for the same path must reuse the handler"
+    for name in names:
+        assert h1 in logging.getLogger(name).handlers
+    assert h1.stream is not None and not h1.stream.closed
+
+    # Drop the OLD services' reference. The surviving vault still holds one,
+    # so the handler must stay attached and open.
+    _release_timing_handler(h1)
+    for name in names:
+        assert h1 in logging.getLogger(name).handlers, (
+            "handler was closed out from under the surviving vault on reload"
+        )
+    assert not h1.stream.closed
+
+    # Drop the last reference: now it detaches from all three loggers and
+    # closes the file handle.
+    _release_timing_handler(h1)
+    for name in names:
+        assert h1 not in logging.getLogger(name).handlers
+    assert h1.stream is None or h1.stream.closed
+
+    # A redundant release is a harmless no-op (idempotent teardown).
+    _release_timing_handler(h1)
+
+
+def test_release_timing_handler_ignores_none_and_unknown():
+    """``_release_timing_handler`` is a no-op for a None handler (timing
+    disabled) and for a handler it never tracked, so every teardown path can
+    call it unconditionally and more than once without raising.
+    """
+    from sage.mcp_init import _release_timing_handler
+
+    _release_timing_handler(None)  # timing-disabled path: must not raise
+
+    untracked = logging.Handler()  # never installed into the registry
+    _release_timing_handler(untracked)  # must not raise, must not close anything
+
+
 # ── 10. VaultTimingThread smoke test ─────────────────────────────────
 
 
