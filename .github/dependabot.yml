@@ -3,9 +3,12 @@ updates:
   # Routine uv version-update PRs are disabled (limit 0): the uv ecosystem
   # rewrites pyproject.toml floors/pins rather than doing lockfile-only updates
   # (dependabot-core#12162). Dependencies stay current via a deliberate
-  # `uv lock --upgrade` (see CLAUDE.md). Security updates still flow at limit 0.
-  # Re-enable with `versioning-strategy: lockfile-only` once the uv ecosystem
-  # supports it.
+  # `uv lock --upgrade` (see CLAUDE.md). Dependabot vulnerability alerts are
+  # enabled at the repo level for CVE notifications; automated security-update
+  # PRs are intentionally left off, since a uv security PR would hit the same
+  # floor-rewrite behavior — a flagged CVE is remediated by a scoped
+  # `uv lock --upgrade-package <dep>`. Re-enable lockfile-aware version updates
+  # with `versioning-strategy: lockfile-only` once the uv ecosystem supports it.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
