@@ -7,6 +7,8 @@ correct services via the vault_id path parameter.
 """
 
 import logging
+import os
+import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -34,9 +36,11 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
+from sage.build_info import BUILD_IDENTITY
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import initialize_services
 from sage.services.vault_registry import VaultRegistryService
+from sage.startup_banner import render_startup_banner
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +326,10 @@ def create_app(
         if content_store_factory is not None:
             init_overrides["content_store_factory"] = content_store_factory
 
+        # Vaults that fail to load are logged-and-dropped below; collect them
+        # here too so the end-of-startup banner can report the skipped set.
+        skipped_vaults: list[tuple[str, str]] = []
+
         if vault_root is not None:
             for cp in discover_vault_configs(vault_root):
                 try:
@@ -329,6 +337,7 @@ def create_app(
                     await _initialize_vault(app, vc, config_path=cp, **init_overrides)
                 except Exception as exc:
                     logger.error("Skipping vault at %s: failed to load (%s)", cp, exc)
+                    skipped_vaults.append((str(cp), f"{type(exc).__name__}: {exc}"))
         elif configs is not None:
             for vc in configs:
                 await _initialize_vault(app, vc, **init_overrides)
@@ -351,6 +360,20 @@ def create_app(
                     )
             except Exception:
                 logger.exception("Abstraction recovery failed for vault %s", vault_id)
+
+        logger.info(
+            "%s",
+            render_startup_banner(
+                build_identity=BUILD_IDENTITY,
+                api_version=app.version,
+                python_version=sys.version.split()[0],
+                pid=os.getpid(),
+                vault_root=vault_root,
+                loaded_vault_ids=sorted(app.state.vault_registry),
+                skipped_vaults=skipped_vaults,
+                mcp_mounts=sorted(getattr(app.state, "mcp_mounts", {})),
+            ),
+        )
 
         yield
 
