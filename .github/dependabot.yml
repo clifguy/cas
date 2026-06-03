@@ -1,13 +1,16 @@
 version: 2
 updates:
-  # uv.lock is the source of truth for resolved dependencies; the "uv"
-  # ecosystem opens lockfile-update PRs (a deliberate, reviewable relock)
-  # rather than floating the pyproject.toml >= floors.
+  # Routine uv version-update PRs are disabled (limit 0): the uv ecosystem
+  # rewrites pyproject.toml floors/pins rather than doing lockfile-only updates
+  # (dependabot-core#12162). Dependencies stay current via a deliberate
+  # `uv lock --upgrade` (see CLAUDE.md). Security updates still flow at limit 0.
+  # Re-enable with `versioning-strategy: lockfile-only` once the uv ecosystem
+  # supports it.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "github-actions"
     directory: "/"
