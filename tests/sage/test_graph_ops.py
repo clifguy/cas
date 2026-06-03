@@ -34,6 +34,7 @@ from sage.models.schemas import (
     DocumentSummary,
     Edge,
     LinkRequest,
+    StagingEdge,
     TraversalNode,
     TraverseRequest,
 )
@@ -636,6 +637,167 @@ async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
         )
         with pytest.raises(_sqlite3.IntegrityError):
             await graph_store.insert_edge(dup)
+
+
+# ---------------------------------------------------------------------------
+# Write-path transaction hygiene
+#
+# A single-shot writer (insert_edge / insert_staging_edge) commits its own
+# transaction on success and must roll it back on failure. A re-raised
+# IntegrityError that leaves the transaction open holds the WAL write lock
+# until the store is closed; a sibling pool connection then blocks on that
+# lock for the full busy_timeout and surfaces as
+# `sqlite3.OperationalError: database is locked`. These tests pin the
+# rollback-on-raise invariant that keeps the BH-037 duplicate-edge path from
+# producing that flake.
+# ---------------------------------------------------------------------------
+
+
+def _assert_no_open_transaction(store: GraphStore) -> None:
+    """Assert that no connection owned by ``store`` holds an open transaction.
+
+    `sqlite3.Connection.in_transaction` is True while an implicit transaction
+    (opened before a DML statement under the default isolation level) is still
+    uncommitted and un-rolled-back. After a re-raised IntegrityError that flag
+    must be False on every store connection.
+    """
+    open_conns = [c for c in store._all_connections if c.in_transaction]
+    assert not open_conns, (
+        f"{len(open_conns)} of {len(store._all_connections)} store connection(s) "
+        "left an open transaction after a re-raised IntegrityError"
+    )
+
+
+async def test_insert_edge_raise_path_rolls_back_failed_transaction(graph_store):
+    """A duplicate insert_edge under the default on_conflict="raise" both
+    re-raises IntegrityError and rolls back, leaving no open transaction on the
+    store's connection -- matching insert_document's discipline.
+    """
+    import sqlite3 as _sqlite3
+
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    base_time = datetime.now(timezone.utc) - timedelta(hours=3)
+    first = Edge(
+        id=_eid("edge_first"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=base_time,
+        rationale="first",
+    )
+    await graph_store.insert_edge(first)
+
+    dup = Edge(
+        id=_eid("edge_dup"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=base_time + timedelta(hours=1),
+        rationale="dup",
+    )
+    with pytest.raises(_sqlite3.IntegrityError):
+        await graph_store.insert_edge(dup)
+
+    _assert_no_open_transaction(graph_store)
+
+
+async def test_insert_edge_raise_path_releases_write_lock(graph_store):
+    """After a re-raised IntegrityError, a second independent connection can
+    acquire the write lock -- proving the failed insert did not leave a write
+    transaction open. This is the deterministic form of the BH-037 flake: the
+    connection-pool occasionally routes the next op to a fresh connection,
+    which (on the un-rolled-back path) blocks on the held lock for busy_timeout
+    and raises "database is locked".
+    """
+    import sqlite3 as _sqlite3
+
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    base_time = datetime.now(timezone.utc) - timedelta(hours=3)
+    first = Edge(
+        id=_eid("edge_first"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=base_time,
+        rationale="first",
+    )
+    await graph_store.insert_edge(first)
+
+    dup = Edge(
+        id=_eid("edge_dup"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        resolution_policy=ResolutionPolicy.TRANSITIVE_BOTH,
+        source_valid_from_version=_id("doc_a"),
+        target_valid_from_version=_id("doc_b"),
+        created_at=base_time + timedelta(hours=1),
+        rationale="dup",
+    )
+    with pytest.raises(_sqlite3.IntegrityError):
+        await graph_store.insert_edge(dup)
+
+    # A fresh connection simulates a second pool worker. With a short
+    # busy_timeout, a lock left held by the failed insert surfaces in ~2s as
+    # "database is locked" instead of blocking for the production 30s.
+    probe = _sqlite3.connect(str(graph_store._db_path))
+    try:
+        probe.execute("PRAGMA busy_timeout=2000;")
+        probe.execute("BEGIN IMMEDIATE;")  # acquire the write lock or raise
+        probe.rollback()
+    finally:
+        probe.close()
+
+
+async def test_insert_staging_edge_raise_path_rolls_back_failed_transaction(graph_store):
+    """The staging-edge twin of insert_edge has the same single-shot
+    commit/rollback ownership: a duplicate insert_staging_edge under
+    on_conflict="raise" must roll back the failed transaction, leaving no open
+    transaction on the store's connection.
+    """
+    import sqlite3 as _sqlite3
+
+    await graph_store.insert_document(_make_doc(_id("doc_a")))
+    await graph_store.insert_document(_make_doc(_id("doc_b")))
+
+    base_time = datetime.now(timezone.utc) - timedelta(hours=3)
+    first = StagingEdge(
+        id=_eid("staging_first"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        inference_evidence="first",
+        confidence_tier=2,
+        created_at=base_time,
+    )
+    await graph_store.insert_staging_edge(first)
+
+    dup = StagingEdge(
+        id=_eid("staging_dup"),
+        source_id=_id("doc_a"),
+        target_id=_id("doc_b"),
+        edge_type=EdgeType.REFERENCES,
+        inference_evidence="dup",
+        confidence_tier=2,
+        created_at=base_time + timedelta(hours=1),
+    )
+    with pytest.raises(_sqlite3.IntegrityError):
+        await graph_store.insert_staging_edge(dup, on_conflict="raise")
+
+    _assert_no_open_transaction(graph_store)
 
 
 # ---------------------------------------------------------------------------

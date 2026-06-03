@@ -887,8 +887,13 @@ class GraphStore:
             self._exec_insert_edge(conn, edge)
             conn.commit()
         except sqlite3.IntegrityError as exc:
+            # Roll back the failed insert before re-raising or resolving the
+            # conflict. This method owns its transaction (it commits on
+            # success), so a leftover open transaction would hold the WAL write
+            # lock until close() and block sibling pool connections -- matching
+            # _insert_document_sync's discipline.
+            conn.rollback()
             if on_conflict == "noop" and _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
-                conn.rollback()
                 existing = self._find_edge_by_natural_key_sync(
                     edge.source_id, edge.target_id, edge.edge_type.value
                 )
@@ -1593,8 +1598,11 @@ class GraphStore:
             )
             conn.commit()
         except sqlite3.IntegrityError as exc:
+            # Roll back the failed insert before re-raising or resolving the
+            # conflict, so the store's transaction never stays open holding the
+            # WAL write lock (see _insert_edge_sync).
+            conn.rollback()
             if on_conflict == "noop" and _is_unique_violation(exc, _STAGING_EDGES_UNIQ_INDEX):
-                conn.rollback()
                 existing = self._find_staging_edge_by_natural_key_sync(
                     edge.source_id, edge.target_id, edge.edge_type.value
                 )
