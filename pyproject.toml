@@ -5,7 +5,7 @@ description = "Clif's Agentic System: SAGE, ROOT Harness, and CAS Application"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.136.3",
-    "uvicorn[standard]>=0.32",
+    "uvicorn[standard]>=0.48.0",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
     "mcp>=1.0",

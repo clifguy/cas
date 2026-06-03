@@ -140,7 +140,7 @@ requires-dist = [
     { name = "sentence-transformers", specifier = ">=5.5.1" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.11.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.48.0" },
 ]
 provides-extras = ["test", "mlx", "ocr", "dev"]
 
