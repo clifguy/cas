@@ -47,7 +47,7 @@ ocr = [
     "ocrmypdf>=16.0",
 ]
 dev = [
-    "ruff==0.15.12",
+    "ruff==0.15.15",
     "pre-commit>=4.0",
 ]
 
