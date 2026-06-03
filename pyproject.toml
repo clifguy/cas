@@ -2,17 +2,20 @@
 name = "cas"
 version = "0.1.0"
 description = "Clif's Agentic System: SAGE, ROOT Harness, and CAS Application"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.136.3",
     "uvicorn[standard]>=0.32",
     "pydantic>=2.13.4",
     "pyyaml>=6.0",
     "mcp>=1.0",
-    "lancedb==0.33.0",
+    "lancedb>=0.33.0",
     "sentence-transformers>=5.5.1",
+    # Direct so [tool.uv.sources] can route it through the CPU wheel index on
+    # Linux (the default PyPI build there is CUDA). Resolved exactly by uv.lock.
+    "torch>=2.11.0",
     "einops>=0.8",
-    "pyarrow==24.0.0",
+    "pyarrow>=24.0.0",
     "python-docx>=1.1",
     "openpyxl>=3.1.5",
     "pdfplumber>=0.11",
@@ -36,7 +39,9 @@ test = [
     "import-linter>=2.11",
 ]
 mlx = [
-    "mlx-lm>=0.31.3",
+    # Apple-Silicon-only; the marker keeps it out of the Linux resolution path
+    # so the universal lock resolves (no Linux wheels exist for mlx-lm).
+    "mlx-lm>=0.31.3 ; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 ocr = [
     "ocrmypdf>=16.0",
@@ -44,6 +49,20 @@ ocr = [
 dev = [
     "ruff==0.15.12",
     "pre-commit>=4.0",
+]
+
+# torch is a CPU-only workload everywhere (no CUDA). On Linux the default PyPI
+# build is the large CUDA wheel, so route torch to the PyTorch CPU index there;
+# on macOS the PyPI wheel is already CPU/MPS (the CPU index has no macOS wheels),
+# so fall back to PyPI. The lock records the exact resolved build per platform.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
 
 [tool.setuptools.packages.find]

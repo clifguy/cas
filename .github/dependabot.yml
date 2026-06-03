@@ -1,6 +1,9 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # uv.lock is the source of truth for resolved dependencies; the "uv"
+  # ecosystem opens lockfile-update PRs (a deliberate, reviewable relock)
+  # rather than floating the pyproject.toml >= floors.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
