@@ -20,3 +20,14 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+
+  # npm version-update PRs ARE enabled (unlike uv above): the
+  # pyproject-floor-rewrite defect (dependabot-core#12162) that disables uv
+  # version-updates is specific to the uv ecosystem and does not affect npm,
+  # so the frontend dependency tree gets ordinary lockfile-aware version
+  # updates. `directory: /app` targets the app/package.json manifest.
+  - package-ecosystem: "npm"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
