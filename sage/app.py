@@ -36,7 +36,7 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
-from sage.build_info import API_VERSION, BUILD_IDENTITY
+from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import initialize_services
 from sage.services.vault_registry import VaultRegistryService
@@ -365,7 +365,7 @@ def create_app(
             "%s",
             render_startup_banner(
                 build_identity=BUILD_IDENTITY,
-                api_version=app.version,
+                version=RELEASE_VERSION,
                 python_version=sys.version.split()[0],
                 pid=os.getpid(),
                 vault_root=vault_root,

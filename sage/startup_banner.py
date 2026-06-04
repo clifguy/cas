@@ -46,7 +46,7 @@ def _identity_hint(build_identity: str) -> str:
 def render_startup_banner(
     *,
     build_identity: str,
-    api_version: str,
+    version: str,
     python_version: str,
     pid: int,
     vault_root: Path | None,
@@ -59,7 +59,7 @@ def render_startup_banner(
     Args:
         build_identity: The running build identity (short SHA, optionally with
             a ``-dirty`` suffix, or the ``unknown`` sentinel).
-        api_version: The FastAPI application version string.
+        version: The running release version string to display (e.g. ``"1.0.12"``).
         python_version: The interpreter version (e.g. ``"3.14.0"``).
         pid: The server process id.
         vault_root: The resolved vault-root directory, or ``None`` when the
@@ -86,7 +86,7 @@ def render_startup_banner(
         # of the ``[date time] INFO:`` log-record prefix the formatter prepends.
         "",
         _RULE,
-        f" {HEADER}  ·  build {build_identity}{_identity_hint(build_identity)}  ·  v{api_version}",
+        f" {HEADER}  ·  build {build_identity}{_identity_hint(build_identity)}  ·  v{version}",
         f" python {python_version}  ·  pid {pid}",
         f" vault root: {root_text}",
         f" vaults loaded ({len(loaded_vault_ids)}): {loaded_text}",
