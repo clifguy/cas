@@ -48,6 +48,7 @@ async def app_with_vault(tmp_path):
     yield app, config
     await asyncio.sleep(0.2)
     for services in app.state.vault_registry.values():
+        services.close_timing()
         await services.graph_store.close()
 
 
