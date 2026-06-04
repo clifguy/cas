@@ -84,6 +84,7 @@ async def empty_registry():
     # Close anything left behind by the test
     for services in list(_mcp._vaults.values()):
         try:
+            services.close_timing()
             await services.graph_store.close()
         except Exception:  # noqa: S110 -- teardown cleanup; close errors must not fail the test
             pass

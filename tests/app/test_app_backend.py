@@ -570,6 +570,7 @@ async def scan_app(tmp_path):
 
     await asyncio.sleep(0.1)
     for services in app.state.vault_registry.values():
+        services.close_timing()
         await services.graph_store.close()
 
 
@@ -743,6 +744,7 @@ async def ingest_app(tmp_path):
 
     await asyncio.sleep(0.3)
     for services in app.state.vault_registry.values():
+        services.close_timing()
         await services.graph_store.close()
 
 
