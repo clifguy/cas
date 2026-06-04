@@ -31,3 +31,16 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      # react and react-dom are a lockstep pair: React's startup guard aborts
+      # the app when the two packages resolve to different versions. Dependabot
+      # treats them as independent packages, so an ungrouped run bumps one
+      # without the other and breaks the build. Group the react family (runtime
+      # packages plus their DefinitelyTyped types) into a single PR so the
+      # versions always move together.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
