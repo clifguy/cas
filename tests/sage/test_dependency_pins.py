@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
@@ -67,6 +68,16 @@ def _locked_versions() -> dict[str, set[str]]:
 def _project_dependency_names() -> set[str]:
     deps = _pyproject()["project"]["dependencies"]
     return {Requirement(raw).name.lower() for raw in deps}
+
+
+def _direct_dependency_specifier(name: str) -> SpecifierSet | None:
+    """Return the version specifier for a direct ``[project.dependencies]``
+    entry, or ``None`` if the package is not declared directly."""
+    for raw in _pyproject()["project"]["dependencies"]:
+        req = Requirement(raw)
+        if req.name.lower() == name:
+            return req.specifier
+    return None
 
 
 def test_uv_lock_present_and_parseable() -> None:
@@ -152,4 +163,31 @@ def test_ci_installs_from_lockfile() -> None:
     )
     assert "pip install -e" not in ci_text, (
         "CI must not `pip install -e` the project -- that bypasses uv.lock."
+    )
+
+
+def test_transformers_upper_bound_pinned() -> None:
+    """``transformers`` is a direct dependency carrying a ``< 5.12`` ceiling.
+
+    Forward-looking guard: transformers 5.12 removes
+    ``get_extended_attention_mask``, which nomic-embed-text's remote modeling
+    code still calls at load time -- crossing it would be a startup
+    ``AttributeError``. transformers is otherwise only transitive (via
+    sentence-transformers / mlx-lm), so the bound must be declared directly to
+    apply. The ceiling is asserted by what it admits/excludes rather than a
+    literal string, so a reformat that keeps the bound still passes; a future
+    edit that drops or loosens it past 5.12.0 fails here.
+    """
+    spec = _direct_dependency_specifier("transformers")
+    assert spec is not None, (
+        "transformers must be a direct [project.dependencies] entry to carry "
+        "the < 5.12 upper bound (a transitive-only dep cannot pin it)."
+    )
+    assert spec.contains("5.11.0"), (
+        f"transformers specifier {spec} must admit 5.11.x (the bound is an "
+        "upper ceiling, not an exact pin)."
+    )
+    assert not spec.contains("5.12.0"), (
+        f"transformers specifier {spec} must exclude 5.12.0 -- the release that "
+        "removes get_extended_attention_mask."
     )

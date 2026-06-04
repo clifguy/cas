@@ -15,6 +15,49 @@ logger = logging.getLogger(__name__)
 NOMIC_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 EXPECTED_DIMENSIONS = 768
 
+# PyTorch's ``_IncompatibleKeys`` success repr, emitted as a cosmetic WARNING
+# by nomic's remote modeling code on a clean state-dict load.
+_KEYS_MATCHED_MESSAGE = "<All keys matched successfully>"
+
+
+class _NomicKeysMatchedFilter(logging.Filter):
+    """Swallow the cosmetic ``<All keys matched successfully>`` WARNING that
+    nomic-embed-text's remote modeling code emits on a clean state-dict load.
+
+    The match is narrowed to that exact message at WARNING level. A real key
+    mismatch uses a longer ``_IncompatibleKeys(...)`` repr and stays visible,
+    as does nomic's genuinely-useful ``scaled_dot_product_attention not
+    available`` note.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno != logging.WARNING:
+            return True
+        return record.getMessage() != _KEYS_MATCHED_MESSAGE
+
+
+_keys_matched_filter = _NomicKeysMatchedFilter()
+
+
+def _install_nomic_keys_matched_filter() -> None:
+    """Attach the content filter to the root logger's handlers (idempotent).
+
+    nomic logs the warning through a *named* logger whose name embeds the HF
+    snapshot hash, so the durable, name-independent suppression is a content
+    filter on the *handler* that prints the propagated record -- an ancestor
+    logger's own filters are not consulted for records that propagate up from a
+    named child logger. Called right before the eager model load, when the
+    process's root handler is already in place. Falls back to
+    ``logging.lastResort`` when the root logger carries no handlers, so a
+    caller that has not configured logging is covered too.
+    """
+    targets = list(logging.getLogger().handlers) or [logging.lastResort]
+    for handler in targets:
+        if handler is not None and not any(
+            isinstance(existing, _NomicKeysMatchedFilter) for existing in handler.filters
+        ):
+            handler.addFilter(_keys_matched_filter)
+
 
 class NomicEmbeddingProvider(EmbeddingProvider):
     """Production embedding provider using nomic-embed-text-v1.5.
@@ -35,6 +78,10 @@ class NomicEmbeddingProvider(EmbeddingProvider):
 
         self._model_name = model_name
         logger.info("Loading embedding model: %s (device=cpu)", model_name)
+        # Quiet the cosmetic ``<All keys matched successfully>`` WARNING the
+        # model load emits; install here, where the process's log handlers are
+        # in place, immediately before the load.
+        _install_nomic_keys_matched_filter()
         try:
             # Force CPU to avoid MPS memory contention on Apple Silicon
             # unified memory. MPS attention tensors scale quadratically
