@@ -41,6 +41,10 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history + tags so setuptools-scm can compute the VCS-derived
+          # version; a shallow checkout has no tags and falls to fallback_version.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -159,6 +163,10 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history + tags so setuptools-scm can compute the VCS-derived
+          # version; a shallow checkout has no tags and falls to fallback_version.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -224,6 +232,10 @@ jobs:
       TRANSFORMERS_OFFLINE: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history + tags so setuptools-scm can compute the VCS-derived
+          # version; a shallow checkout has no tags and falls to fallback_version.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0

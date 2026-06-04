@@ -113,6 +113,15 @@ def test_banner_010_unknown_identity_hint() -> None:
     assert "unavailable" in text
 
 
+def test_banner_013_leading_blank_line() -> None:
+    """The banner begins with a blank line so its dashed rule starts on its own
+    line, clear of the ``[date time] INFO:`` log-record prefix the formatter
+    prepends to the single banner record."""
+    text = _render()
+    assert text.startswith("\n")
+    assert text.splitlines()[0] == ""
+
+
 # ---------------------------------------------------------------------------
 # Emission — driving the create_app lifespan
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 [project]
 name = "cas"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Clif's Agentic System: SAGE, ROOT Harness, and CAS Application"
 requires-python = ">=3.14"
 dependencies = [
@@ -50,6 +50,11 @@ dev = [
     "ruff==0.15.12",
     "pre-commit>=4.0",
 ]
+
+# Recompute the dynamic (setuptools-scm) version when the git commit or tags
+# change, so an editable rebuild reflects new commits and the release tag.
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
 
 # torch is a CPU-only workload everywhere (no CUDA). On Linux the default PyPI
 # build is the large CUDA wheel, so route torch to the PyTorch CPU index there;
@@ -157,5 +162,18 @@ forbidden_modules = [
 ]
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools>=75.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
+
+# VCS-derived versioning: the version is computed from git tags + commits at
+# build time (uv sync), single-sourcing it from the repository instead of a
+# hand-edited literal. ``no-guess-dev`` keeps the base release segment pinned
+# to the last tag (e.g. 1.0.0) between tags, so the committed OpenAPI
+# info.version and its drift guard do not churn on every commit. No
+# ``version_file`` is written: a generated, tracked module would leave the
+# working tree perpetually dirty. ``fallback_version`` mirrors build_info's
+# runtime ``unknown`` degradation when built outside a git checkout.
+[tool.setuptools_scm]
+version_scheme = "no-guess-dev"
+local_scheme = "node-and-date"
+fallback_version = "0.0.0"
