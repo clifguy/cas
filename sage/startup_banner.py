@@ -82,6 +82,9 @@ def render_startup_banner(
     mounts_text = ", ".join(mcp_mounts) if mcp_mounts else "—"
 
     lines = [
+        # Leading blank line so the dashed rule starts on its own line, clear
+        # of the ``[date time] INFO:`` log-record prefix the formatter prepends.
+        "",
         _RULE,
         f" {HEADER}  ·  build {build_identity}{_identity_hint(build_identity)}  ·  v{api_version}",
         f" python {python_version}  ·  pid {pid}",

@@ -48,11 +48,19 @@ def _locked_versions() -> dict[str, set[str]]:
     wheel on macOS and the ``+cpu`` index wheel on Linux, so it has two
     entries differentiated by ``resolution-markers``. Collect every resolved
     version per name so the env-match check holds on whichever platform runs.
+
+    The root project carries a VCS-derived dynamic version, which uv omits
+    from the lock entirely (the ``[[package]]`` block has no ``version``
+    field); such version-less entries have no pinned version to track and are
+    skipped.
     """
     data = tomllib.loads(UV_LOCK_PATH.read_text(encoding="utf-8"))
     versions: dict[str, set[str]] = {}
     for pkg in data["package"]:
-        versions.setdefault(pkg["name"].lower(), set()).add(pkg["version"])
+        pkg_version = pkg.get("version")
+        if pkg_version is None:
+            continue
+        versions.setdefault(pkg["name"].lower(), set()).add(pkg_version)
     return versions
 
 

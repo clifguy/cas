@@ -28,6 +28,7 @@ import pytest
 import yaml
 from fastapi.routing import APIRoute
 
+from sage import build_info
 from sage.app import create_app
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -411,6 +412,48 @@ def test_spec_is_valid_openapi_31(
     assert isinstance(spec["components"].get("schemas"), dict), (
         f"{spec_fixture}: components.schemas must be a dict"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 3a: info.version is single-sourced from build_info.API_VERSION
+# ---------------------------------------------------------------------------
+
+
+def test_openapi_info_version_matches_api_version(
+    sage_core_spec: dict | None,
+    cas_app_spec: dict | None,
+    live_openapi: dict,
+):
+    """The live /openapi.json info.version and BOTH committed specs that the
+    single FastAPI app serves (SAGE Core API and CAS Application API) equal
+    build_info.API_VERSION.
+
+    Single-source guard. The API version is VCS-derived and read once via
+    build_info.API_VERSION; the FastAPI ``version=`` argument (and thus the
+    live OpenAPI document) and every committed contract for that one app must
+    track it, so the literals that previously drifted (app version, package
+    version, committed specs) can no longer diverge. The CAS App spec is
+    mounted at /app on the same server, so it shares the live version and is
+    checked alongside the SAGE Core spec. Skipped only when the distribution
+    metadata is absent (API_VERSION == UNKNOWN), i.e. a bare uninstalled
+    checkout where no version can resolve.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
+    if build_info.API_VERSION == build_info.UNKNOWN:
+        pytest.skip("distribution metadata absent; API_VERSION is unknown")
+
+    assert live_openapi["info"]["version"] == build_info.API_VERSION, (
+        "live /openapi.json info.version diverges from build_info.API_VERSION "
+        "(the FastAPI version= argument is not wired to the single source)"
+    )
+    for label, spec in (("sage_core_api", sage_core_spec), ("cas_app_api", cas_app_spec)):
+        assert spec["info"]["version"] == build_info.API_VERSION, (
+            f"committed {label}.openapi.yaml info.version "
+            f"{spec['info']['version']!r} diverges from build_info.API_VERSION "
+            f"{build_info.API_VERSION!r}; update the committed info.version to track the "
+            "release tag"
+        )
 
 
 # ---------------------------------------------------------------------------

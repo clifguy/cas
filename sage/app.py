@@ -36,7 +36,7 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
-from sage.build_info import BUILD_IDENTITY
+from sage.build_info import API_VERSION, BUILD_IDENTITY
 from sage.config import VaultConfig, load_vault_config
 from sage.mcp_init import initialize_services
 from sage.services.vault_registry import VaultRegistryService
@@ -386,7 +386,7 @@ def create_app(
 
     app = FastAPI(
         title="SAGE Core API",
-        version="0.1.0",
+        version=API_VERSION,
         description="Salience-Aware Graph Engine - Core API",
         lifespan=lifespan,
     )

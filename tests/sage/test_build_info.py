@@ -10,6 +10,8 @@ connecting client really receives.
 
 from __future__ import annotations
 
+import importlib.metadata
+import re
 import subprocess
 from pathlib import Path
 
@@ -113,10 +115,64 @@ def test_bld_006_missing_git_binary_returns_unknown(
 
 
 def test_bld_007_render_embeds_identity_and_remedy() -> None:
-    """The rendered line carries the identity verbatim and names the restart remedy."""
-    text = build_info._render_instructions("abc1234-dirty")
-    assert "abc1234-dirty" in text
+    """The rendered line carries the composed version+build verbatim and names
+    the restart remedy."""
+    text = build_info._render_instructions("1.0.0+abc1234")
+    assert "1.0.0+abc1234" in text
     assert "restart" in text.lower()
+
+
+# --------------------------------------------------------------------------
+# Version resolution — _base_release / _compute_api_version / _compose_*
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("1.0.0", "1.0.0"),
+        ("1.0.0.post3.dev2+g85ad722", "1.0.0"),
+        ("1.2", "1.2"),
+        ("2", "2"),
+        ("1.0.0rc1", "1.0.0"),
+        ("", build_info.UNKNOWN),
+        ("abc", build_info.UNKNOWN),
+    ],
+)
+def test_bld_012_base_release_extraction_strips_suffixes(version: str, expected: str) -> None:
+    """_base_release returns the leading numeric release segment, stripping any
+    pre/post/dev/local suffix, and degrades to UNKNOWN for non-versions."""
+    assert build_info._base_release(version) == expected
+
+
+@pytest.mark.parametrize(
+    "api_version,build_identity,expected",
+    [
+        ("1.0.0", "cc019b8", "1.0.0+cc019b8"),
+        (build_info.UNKNOWN, "cc019b8", "cc019b8"),
+        ("1.0.0", build_info.UNKNOWN, "1.0.0"),
+        (build_info.UNKNOWN, build_info.UNKNOWN, build_info.UNKNOWN),
+    ],
+)
+def test_bld_013_version_with_build_composition(
+    api_version: str, build_identity: str, expected: str
+) -> None:
+    """_compose_version_with_build joins the two parts, but never emits an
+    'unknown' fragment when only one side is degraded."""
+    assert build_info._compose_version_with_build(api_version, build_identity) == expected
+
+
+def test_bld_011_api_version_is_base_release_segment() -> None:
+    """API_VERSION is the stable base release segment of the installed
+    distribution version (no .dev/.post/+local suffix), or the UNKNOWN sentinel
+    outside an installed distribution."""
+    api_version = build_info.API_VERSION
+    if api_version == build_info.UNKNOWN:
+        return
+    assert re.fullmatch(r"\d+(\.\d+){0,2}", api_version), (
+        f"API_VERSION carries a non-base suffix: {api_version!r}"
+    )
+    assert api_version == build_info._base_release(importlib.metadata.version("cas"))
 
 
 # --------------------------------------------------------------------------
@@ -150,10 +206,28 @@ def test_bld_009_instructions_frozen_at_import(monkeypatch: pytest.MonkeyPatch) 
     assert build_info.BUILD_IDENTITY in opts.instructions
 
 
-def test_bld_010_serverinfo_version_reports_identity() -> None:
-    """serverInfo.version reports the build identity, not the default mcp pkg version."""
+def test_bld_010_serverinfo_version_reports_composed_version() -> None:
+    """serverInfo.version reports the composed version+build, not the default
+    mcp pkg version nor the bare build identity."""
     from sage import mcp_server
 
     server = mcp_server.build_partitioned_server("sage")
     opts = server._mcp_server.create_initialization_options()
-    assert opts.server_version == build_info.BUILD_IDENTITY
+    assert opts.server_version == build_info.VERSION_WITH_BUILD
+
+
+def test_bld_014_serverinfo_version_carries_both_parts() -> None:
+    """The served serverInfo.version carries both the release version and the
+    build identity — the 'version+build' handshake requirement.
+
+    Independent of BLD-010: even if VERSION_WITH_BUILD were to collapse to one
+    part, this asserts both substrings are present in the served value.
+    """
+    if build_info.UNKNOWN in (build_info.API_VERSION, build_info.BUILD_IDENTITY):
+        pytest.skip("degraded environment: API_VERSION or BUILD_IDENTITY is unknown")
+    from sage import mcp_server
+
+    server = mcp_server.build_partitioned_server("sage")
+    opts = server._mcp_server.create_initialization_options()
+    assert build_info.API_VERSION in opts.server_version
+    assert build_info.BUILD_IDENTITY in opts.server_version
