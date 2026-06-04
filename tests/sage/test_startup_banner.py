@@ -29,7 +29,7 @@ from sage.startup_banner import render_startup_banner
 
 _BASE_KW = {
     "build_identity": "cc019b8",
-    "api_version": "0.1.0",
+    "version": "0.1.0",
     "python_version": "3.14.0",
     "pid": 4242,
     "vault_root": Path("/home/u/sage_vaults"),
@@ -51,8 +51,8 @@ def test_banner_001_build_identity_verbatim() -> None:
 
 
 def test_banner_002_process_facts_present() -> None:
-    """API version, Python version, and PID all appear in the banner."""
-    text = _render(api_version="0.1.0", python_version="3.14.0", pid=4242)
+    """The version, Python version, and PID all appear in the banner."""
+    text = _render(version="0.1.0", python_version="3.14.0", pid=4242)
     assert "0.1.0" in text
     assert "3.14.0" in text
     assert "4242" in text

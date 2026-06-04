@@ -34,7 +34,7 @@ openapi: "3.1.0"
 
 info:
   title: CAS Application API
-  version: "1.0.0"
+  version: "1.0"
   description: >-
     HTTP API for the CAS Application backend. Provides workflow tools
     (directory scan, batch ingest with two-phase edge inference) that

@@ -171,14 +171,17 @@ forbidden_modules = [
 requires = ["setuptools>=75.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
-# VCS-derived versioning: the version is computed from git tags + commits at
-# build time (uv sync), single-sourcing it from the repository instead of a
-# hand-edited literal. ``no-guess-dev`` keeps the base release segment pinned
-# to the last tag (e.g. 1.0.0) between tags, so the committed OpenAPI
-# info.version and its drift guard do not churn on every commit. No
-# ``version_file`` is written: a generated, tracked module would leave the
-# working tree perpetually dirty. ``fallback_version`` mirrors build_info's
-# runtime ``unknown`` degradation when built outside a git checkout.
+# VCS-derived versioning: the version is computed from git tags + commits,
+# single-sourcing it from the repository instead of a hand-edited literal. The
+# running version (sage.build_info.RELEASE_VERSION) is MAJOR.MINOR.PATCH with
+# PATCH = commit distance since the last vMAJOR.MINOR.0 tag, read live from git
+# at import; this setuptools-scm config is the no-git fallback, where
+# ``no-guess-dev`` keeps the commit distance in the ``.devN`` segment that
+# build_info parses. The committed OpenAPI info.version tracks only MAJOR.MINOR,
+# so it does not churn between minor releases. No ``version_file`` is written: a
+# generated, tracked module would leave the working tree perpetually dirty.
+# ``fallback_version`` mirrors build_info's runtime ``unknown`` degradation when
+# built outside a git checkout.
 [tool.setuptools_scm]
 version_scheme = "no-guess-dev"
 local_scheme = "node-and-date"

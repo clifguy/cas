@@ -7,12 +7,15 @@ a ``-dirty`` marker when the checked-out tree carried uncommitted *tracked*
 changes — and surfaces it, together with the release version, to connecting
 MCP clients.
 
-It also single-sources the API/release version. The version is VCS-derived
-(computed from git tags + commits at build time) and read once here from the
-installed distribution metadata, then reduced to its stable base release
-segment so the value does not drift between release tags. The FastAPI app
-version, the OpenAPI document, the startup banner, and the MCP handshake all
-read it from here — there is no second read site.
+It also single-sources the project version, derived live from VCS state. The
+running ``RELEASE_VERSION`` is ``MAJOR.MINOR.PATCH`` where PATCH is the commit
+distance since the most recent ``vMAJOR.MINOR.0`` tag (read from ``git
+describe`` at import, with the installed distribution metadata as the fallback
+when no git checkout is present). ``API_VERSION`` is its ``MAJOR.MINOR``
+contract segment: the FastAPI app version, the OpenAPI document, and the
+committed OpenAPI specs track it, so they stay stable between minor releases.
+The MCP handshake and startup banner surface the full ``RELEASE_VERSION`` with
+the build identity. There is no second read site.
 
 Every value is computed **once at import** and frozen in module constants for
 the lifetime of the process. The build identity therefore reflects the code
@@ -40,9 +43,14 @@ UNKNOWN: str = "unknown"
 #: Distribution name as declared in ``pyproject.toml`` ``[project].name``.
 _DIST_NAME: str = "cas"
 
-#: Matches the leading numeric release segment (``N``, ``N.N`` or ``N.N.N``) of
-#: a PEP 440 version, ignoring any pre/post/dev/local suffix.
-_RELEASE_RE = re.compile(r"^\d+(?:\.\d+){0,2}")
+#: Matches ``git describe --long`` output ``<tag>-<distance>-g<sha>`` and
+#: captures MAJOR, MINOR, and the commit distance. The tag's own patch segment
+#: (``(?:\.\d+)?``) is consumed but discarded — PATCH comes from the distance.
+_DESCRIBE_RE = re.compile(r"^v?(\d+)\.(\d+)(?:\.\d+)?-(\d+)-g[0-9a-f]+", re.IGNORECASE)
+
+#: Matches a setuptools-scm ``no-guess-dev`` distribution version and captures
+#: MAJOR, MINOR, and the ``.devN`` commit distance (absent → exactly on a tag).
+_METADATA_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?(?:\.post\d+)?(?:\.dev(\d+))?")
 
 _GIT_TIMEOUT_S: float = 5.0
 
@@ -81,54 +89,121 @@ def _compute_build_identity(repo_dir: Path) -> str:
         return UNKNOWN
 
 
-def _base_release(version: str) -> str:
-    """Return the leading numeric release segment of a PEP 440 version.
+def _parse_describe(describe_out: str) -> str | None:
+    """Map ``git describe --long`` output to ``MAJOR.MINOR.PATCH``.
 
-    ``"1.0.0.post3.dev2+gabc1234"`` → ``"1.0.0"``; ``"1.2"`` → ``"1.2"``.
-    Reducing to the base release keeps the value stable between release tags,
-    so surfaces that report it do not churn on every commit. Returns
-    :data:`UNKNOWN` when the string carries no leading numeric release
-    (defensive; a VCS-derived version always does).
+    ``"v1.0.0-12-g162d19b"`` → ``"1.0.12"``. PATCH is the commit distance since
+    the tag, not the tag's own third segment, so it auto-increments per commit.
+    Returns ``None`` when the string does not match (caller degrades to
+    :data:`UNKNOWN`).
     """
-    match = _RELEASE_RE.match(version)
-    return match.group(0) if match else UNKNOWN
+    match = _DESCRIBE_RE.match(describe_out.strip())
+    if match is None:
+        return None
+    major, minor, distance = match.group(1), match.group(2), match.group(3)
+    return f"{major}.{minor}.{int(distance)}"
 
 
-def _compute_api_version() -> str:
-    """Return the public release version of the installed distribution.
+def _parse_metadata_version(version: str) -> str | None:
+    """Map a setuptools-scm distribution version to ``MAJOR.MINOR.PATCH``.
 
-    Reads the version the build backend resolved from VCS state at install
-    time and reduces it to its base release segment. Outside an installed
-    distribution (package metadata absent) it degrades to :data:`UNKNOWN`,
-    mirroring the build-identity fallback.
+    The no-git fallback: ``"1.0.0.post1.dev12+g…"`` → ``"1.0.12"`` (PATCH is the
+    ``.devN`` commit distance); a clean tag ``"1.0.0"`` → ``"1.0.0"`` (PATCH 0).
+    Returns ``None`` for a non-version string.
+    """
+    match = _METADATA_RE.match(version.strip())
+    if match is None:
+        return None
+    major, minor, distance = match.group(1), match.group(2), match.group(3)
+    return f"{major}.{minor}.{int(distance) if distance is not None else 0}"
+
+
+def _major_minor(version: str) -> str:
+    """Reduce ``MAJOR.MINOR.PATCH`` to its ``MAJOR.MINOR`` contract segment.
+
+    ``"1.0.12"`` → ``"1.0"``. Passes :data:`UNKNOWN` through, and degrades a
+    malformed value to :data:`UNKNOWN` rather than emitting a partial string.
+    """
+    if version == UNKNOWN:
+        return UNKNOWN
+    parts = version.split(".")
+    if len(parts) < 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return UNKNOWN
+    return f"{parts[0]}.{parts[1]}"
+
+
+def _compute_release_version(repo_dir: Path) -> str:
+    """Return the live ``MAJOR.MINOR.PATCH`` release version for ``repo_dir``.
+
+    Runs ``git describe`` against the version-tag history and derives PATCH from
+    the commit distance. Any failure — not a git checkout, no ``v*`` tag, git
+    binary absent, timeout, unparseable output — yields :data:`UNKNOWN` so the
+    caller can fall back to distribution metadata.
     """
     try:
-        return _base_release(importlib.metadata.version(_DIST_NAME))
-    except importlib.metadata.PackageNotFoundError:
+        described = subprocess.run(
+            ["git", "describe", "--long", "--tags", "--match", "v*"],  # noqa: S607 -- 'git' resolved from PATH; constant args, internal cwd
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_S,
+        )
+        if described.returncode != 0 or not described.stdout.strip():
+            return UNKNOWN
+        parsed = _parse_describe(described.stdout.strip())
+        return parsed if parsed is not None else UNKNOWN
+    except (OSError, subprocess.SubprocessError):
         return UNKNOWN
 
 
-def _compose_version_with_build(api_version: str, build_identity: str) -> str:
+def _release_from_metadata() -> str:
+    """Return the ``MAJOR.MINOR.PATCH`` release version from installed metadata.
+
+    The fallback when the process runs outside a git checkout. Reads the version
+    the build backend resolved from VCS state at install time. Degrades to
+    :data:`UNKNOWN` when the package metadata is absent or unparseable.
+    """
+    try:
+        parsed = _parse_metadata_version(importlib.metadata.version(_DIST_NAME))
+    except importlib.metadata.PackageNotFoundError:
+        return UNKNOWN
+    return parsed if parsed is not None else UNKNOWN
+
+
+def _resolve_release_version() -> str:
+    """Resolve the running release version: live git first, metadata fallback.
+
+    Prefers ``git describe`` (accurate at every restart with no reinstall);
+    falls back to the installed distribution metadata when no git checkout is
+    present. :data:`UNKNOWN` only when neither resolves.
+    """
+    from_git = _compute_release_version(_SAGE_PKG_DIR)
+    if from_git != UNKNOWN:
+        return from_git
+    return _release_from_metadata()
+
+
+def _compose_version_with_build(release_version: str, build_identity: str) -> str:
     """Compose the ``<version>+<build>`` string surfaced on the MCP handshake.
 
-    With both parts known: ``"1.0.0+cc019b8"``. When either side is
+    With both parts known: ``"1.0.12+cc019b8"``. When either side is
     :data:`UNKNOWN`, fall back to the known side rather than emit an
     ``unknown`` fragment; when both are unknown, return :data:`UNKNOWN`.
     """
-    api_unknown = api_version == UNKNOWN
+    version_unknown = release_version == UNKNOWN
     build_unknown = build_identity == UNKNOWN
-    if api_unknown and build_unknown:
+    if version_unknown and build_unknown:
         return UNKNOWN
-    if api_unknown:
+    if version_unknown:
         return build_identity
     if build_unknown:
-        return api_version
-    return f"{api_version}+{build_identity}"
+        return release_version
+    return f"{release_version}+{build_identity}"
 
 
 def _render_instructions(version_with_build: str) -> str:
     """Render the one-line MCP ``instructions`` string carrying the running
-    version and build identity (e.g. ``1.0.0+cc019b8``)."""
+    version and build identity (e.g. ``1.0.12+cc019b8``)."""
     return (
         f"SAGE running build: {version_with_build}. This is the running "
         "version and git build this server process loaded at startup. If the "
@@ -141,13 +216,17 @@ def _render_instructions(version_with_build: str) -> str:
 #: The build identity captured once at import time, frozen for the process.
 BUILD_IDENTITY: str = _compute_build_identity(_SAGE_PKG_DIR)
 
-#: The public API/release version (base release segment, stable between tags),
-#: read once at import from the installed distribution metadata.
-API_VERSION: str = _compute_api_version()
+#: The running project version ``MAJOR.MINOR.PATCH`` (PATCH = commit distance
+#: since the last tag), resolved once at import from git, metadata as fallback.
+RELEASE_VERSION: str = _resolve_release_version()
 
-#: The composed ``<version>+<build>`` string (e.g. ``1.0.0+cc019b8``) advertised
+#: The ``MAJOR.MINOR`` contract version (major.minor of :data:`RELEASE_VERSION`):
+#: the FastAPI/OpenAPI version, stable between minor releases.
+API_VERSION: str = _major_minor(RELEASE_VERSION)
+
+#: The composed ``<release>+<build>`` string (e.g. ``1.0.12+cc019b8``) advertised
 #: as the MCP ``serverInfo.version``, frozen at import.
-VERSION_WITH_BUILD: str = _compose_version_with_build(API_VERSION, BUILD_IDENTITY)
+VERSION_WITH_BUILD: str = _compose_version_with_build(RELEASE_VERSION, BUILD_IDENTITY)
 
 #: The MCP ``instructions`` string surfacing :data:`VERSION_WITH_BUILD`, frozen
 #: at import so every served server advertises the same import-time value.
