@@ -164,6 +164,10 @@ class StubContentStore(ContentStore):
         """Return the total number of chunk rows across all documents."""
         return sum(len(chunks) for chunks in self._store.values())
 
+    async def count_retained_versions(self) -> int:
+        """Return 0: the in-memory stub has no on-disk version history."""
+        return 0
+
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """No-op: the in-memory stub has no on-disk presence to reclaim.
 

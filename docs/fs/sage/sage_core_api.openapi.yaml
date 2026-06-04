@@ -4910,6 +4910,7 @@ components:
         - staging_edge_count
         - lancedb_size_bytes
         - lancedb_chunk_count
+        - lancedb_version_count
         - sqlite_size_bytes
         - health
       description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
@@ -4949,6 +4950,9 @@ components:
         lancedb_chunk_count:
           type: integer
           description: Total chunk row count across all documents.
+        lancedb_version_count:
+          type: integer
+          description: Count of retained LanceDB dataset versions for the chunks table; rises with un-optimized write churn.
         sqlite_size_bytes:
           type: integer
           description: Size of the graph.db SQLite file in bytes.

@@ -3,6 +3,7 @@ import { Link, useOutletContext } from 'react-router-dom';
 import type { VaultContext } from '../App';
 import type { VaultStats } from '../api/types';
 import { getVaultStats } from '../api/vaults';
+import BloatIndicator from '../components/BloatIndicator';
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
@@ -97,6 +98,7 @@ export default function Dashboard() {
             </div>
           )}
           <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
+          <BloatIndicator versionCount={stats.lancedb_version_count} />
         </div>
       </Section>
 

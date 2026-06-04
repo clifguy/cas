@@ -401,6 +401,22 @@ class TestLanceDBContentStore:
         await content_store.remove_document("doc_a")
         assert await content_store.count_chunks() == 2
 
+    async def test_ad_106_count_retained_versions_empty_store(self, content_store):
+        """AD-106: count_retained_versions returns 0 before the chunks table exists."""
+        assert await content_store.count_retained_versions() == 0
+
+
+async def test_stub_content_store_reports_zero_retained_versions():
+    """StubContentStore has no on-disk versioning, so count_retained_versions is 0.
+
+    The substrate-agnostic contract: callers routing through the ContentStore
+    interface receive a well-formed integer without special-casing the stub.
+    """
+    from sage.adapters.stubs import StubContentStore
+
+    store = StubContentStore()
+    assert await store.count_retained_versions() == 0
+
     async def test_ad_016_semantic_search_ranking(self, populated_store, embedding_provider):
         """AD-016: Semantic search returns results ranked by cosine similarity."""
         query_vec = (await embedding_provider.embed(["health data sync"]))[0]
