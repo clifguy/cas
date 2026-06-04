@@ -368,6 +368,8 @@ class TestVaultStatistics:
         assert isinstance(body["lancedb_size_bytes"], int)
         assert isinstance(body["lancedb_chunk_count"], int)
         assert body["lancedb_chunk_count"] >= 0
+        assert isinstance(body["lancedb_version_count"], int)
+        assert body["lancedb_version_count"] >= 0
         assert isinstance(body["sqlite_size_bytes"], int)
         assert body["last_ingestion_at"] is not None
 

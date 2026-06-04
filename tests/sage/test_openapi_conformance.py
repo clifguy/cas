@@ -487,6 +487,32 @@ def test_vault_stats_response_documents_lancedb_chunk_count(
     )
 
 
+def test_vault_stats_response_documents_lancedb_version_count(
+    sage_core_spec: dict | None,
+):
+    """Spot regression guard for the bloat-indicator version-count field."""
+    assert sage_core_spec is not None, "sage_core_api spec is missing"
+
+    schemas = sage_core_spec["components"]["schemas"]
+    assert "VaultStatsResponse" in schemas, "components.schemas.VaultStatsResponse is not defined"
+    vault_stats = schemas["VaultStatsResponse"]
+
+    properties = vault_stats.get("properties") or {}
+    assert "lancedb_version_count" in properties, (
+        "VaultStatsResponse.properties.lancedb_version_count is missing"
+    )
+    field = properties["lancedb_version_count"]
+    assert field.get("type") == "integer", (
+        f"VaultStatsResponse.lancedb_version_count must have type 'integer', "
+        f"got {field.get('type')!r}"
+    )
+
+    required = vault_stats.get("required") or []
+    assert "lancedb_version_count" in required, (
+        "VaultStatsResponse must list 'lancedb_version_count' in 'required'"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Every public Pydantic field in sage.models.schemas has a description
 # ---------------------------------------------------------------------------

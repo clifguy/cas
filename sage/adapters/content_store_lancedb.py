@@ -337,6 +337,20 @@ class LanceDBContentStore(ContentStore):
                 return 0
             return table.count_rows()
 
+    async def count_retained_versions(self) -> int:
+        """Return the number of retained LanceDB dataset versions.
+
+        Reads ``Table.list_versions()`` without mutating the store. Each
+        write mints a dataset version (header / FTS rebuild included), so
+        this rises monotonically with un-optimized churn. Returns 0 when
+        the chunks table has not yet been created.
+        """
+        with self._query_timer.measure("count_retained_versions"):
+            table = self._get_table()
+            if table is None:
+                return 0
+            return len(table.list_versions())
+
     def _lancedb_dir_bytes(self) -> int:
         """Sum of file sizes under the LanceDB directory (recursive walk).
 

@@ -93,6 +93,7 @@ class VaultConfigService:
                     lancedb_size += f.stat().st_size
 
         lancedb_chunk_count = await self._content_store.count_chunks()
+        lancedb_version_count = await self._content_store.count_retained_versions()
 
         return VaultStatsResponse(
             total_documents=total_documents,
@@ -104,6 +105,7 @@ class VaultConfigService:
             staging_edge_count=staging_count,
             lancedb_size_bytes=lancedb_size,
             lancedb_chunk_count=lancedb_chunk_count,
+            lancedb_version_count=lancedb_version_count,
             sqlite_size_bytes=sqlite_size,
             last_ingestion_at=last_ingestion,
             health=HealthIndicators(

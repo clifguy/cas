@@ -1213,6 +1213,38 @@ async def test_optimize_content_store_reclaims_disk_after_churn(lancedb_vault):
     assert entry["post_versions"] == report.post_versions
 
 
+async def test_count_retained_versions_rises_with_churn(lancedb_vault):
+    """Retained-version count rises with un-optimized write churn.
+
+    This is the read-only signal behind the dashboard bloat indicator:
+    each write mints a LanceDB dataset version (header / FTS rebuild
+    included), so an un-optimized vault accumulates versions monotonically.
+    A fresh churned vault must report more than the single baseline version.
+    """
+    _registry, services, _vault_dir = lancedb_vault
+    content_store = services.content_store
+
+    await _churn_chunks(content_store, cycles=15)
+
+    assert await content_store.count_retained_versions() > 1
+
+
+async def test_get_stats_surfaces_retained_version_count(lancedb_vault):
+    """get_stats exposes the retained-version count to the dashboard.
+
+    Regression guard: the value the HTTP stats endpoint returns must equal
+    the content store's own read-only measure, not a constant.
+    """
+    _registry, services, _vault_dir = lancedb_vault
+    content_store = services.content_store
+
+    await _churn_chunks(content_store, cycles=15)
+
+    stats = await services.vault_config_service.get_stats()
+    assert stats.lancedb_version_count == await content_store.count_retained_versions()
+    assert stats.lancedb_version_count > 1
+
+
 async def test_optimize_content_store_is_noop_on_clean_table(lancedb_vault):
     """Optimize converges to a fixpoint; at the fixpoint a further call
     reports no further reclamation and the table remains queryable.

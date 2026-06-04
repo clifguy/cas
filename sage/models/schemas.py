@@ -3985,6 +3985,12 @@ class VaultStatsResponse(BaseModel):
     )
     lancedb_size_bytes: int = Field(description="On-disk size of the LanceDB directory in bytes.")
     lancedb_chunk_count: int = Field(description="Total chunk row count across all documents.")
+    lancedb_version_count: int = Field(
+        description=(
+            "Count of retained LanceDB dataset versions for the chunks table; "
+            "rises with un-optimized write churn."
+        )
+    )
     sqlite_size_bytes: int = Field(description="Size of the graph.db SQLite file in bytes.")
     last_ingestion_at: datetime | None = Field(
         description="Timestamp of the most recent successful ingestion, if any."

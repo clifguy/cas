@@ -165,6 +165,17 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
+    async def count_retained_versions(self) -> int:
+        """Return the number of retained dataset versions in the store.
+
+        Read-only. Rises monotonically with un-optimized write churn and is
+        independent of corpus size, so it is the self-calibrating signal
+        behind the dashboard bloat indicator. Returns 0 for substrates with
+        no on-disk versioning and when the underlying table has not been
+        created yet.
+        """
+
+    @abstractmethod
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """Reclaim disk by compacting fragments and pruning old versions.
 
