@@ -259,9 +259,11 @@ class VaultTimingThread:
     def _run(self) -> None:
         while not self._stop_event.wait(timeout=self._interval):
             for timer in self._timers:
-                # noqa: BLE001/S110 — flusher must never crash the daemon.
-                # If the timing logger itself is broken, logging the
-                # failure would also fail; silent skip is intentional.
+                # The flusher must never crash the daemon, so the broad
+                # except-and-pass below (suppressed via BLE001, S110) is
+                # intentional. If the timing logger itself is broken,
+                # logging the failure would also fail; silent skip is
+                # intentional.
                 try:
                     timer.flush()
                 except Exception:  # noqa: BLE001, S110
