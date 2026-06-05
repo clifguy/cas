@@ -83,7 +83,9 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
     yield app
     await asyncio.sleep(0.5)
-    await app.state.graph_store.close()
+    for services in app.state.vault_registry.values():
+        services.close_timing()
+        await services.graph_store.close()
 
 
 @pytest.fixture

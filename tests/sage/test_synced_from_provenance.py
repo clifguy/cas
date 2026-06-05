@@ -268,7 +268,9 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     )
     yield app
     await asyncio.sleep(0.1)
-    await app.state.graph_store.close()
+    for services in app.state.vault_registry.values():
+        services.close_timing()
+        await services.graph_store.close()
 
 
 @pytest.fixture

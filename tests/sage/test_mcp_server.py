@@ -203,7 +203,13 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
             yield services
         finally:
             await asyncio.sleep(0.5)
-            _mcp._vaults.pop("test_vault", None)
+            # A reload swaps the registry slot for a fresh bundle; the helper's
+            # exit only closes the original ``services``. Release the post-swap
+            # bundle's timing + graph store here so neither leaks.
+            current = _mcp._vaults.pop("test_vault", None)
+            if current is not None and current is not services:
+                current.close_timing()
+                await current.graph_store.close()
 
 
 def _parse(result: str | dict) -> dict:
@@ -2005,6 +2011,13 @@ async def test_reload_vault_stops_old_timing_thread(vault_services, monkeypatch)
     # on TimingConfig defaults). Install a fake we can observe regardless.
     fake_thread = MagicMock()
     fake_thread.stop = MagicMock()
+    # Stop the real flusher before swapping in the observable fake. Otherwise
+    # the fake's no-op stop() leaves the real thread running, and close_timing
+    # on the old bundle (which now sees the fake) never stops it — an orphaned
+    # VaultTimingThread the root timing guard would flag.
+    _real_thread = _mcp._vaults["test_vault"].timing_thread
+    if _real_thread is not None:
+        _real_thread.stop(timeout=1.0)
     _mcp._vaults["test_vault"].timing_thread = fake_thread
 
     result = _parse(await reload_vault("test_vault"))
@@ -2056,6 +2069,7 @@ async def test_reload_vault_preserves_content_store_factory_across_two_reloads(
             # original ``services`` (idempotent if reload already did).
             current = _mcp._vaults.get("factory_vault")
             if current is not None and current is not services:
+                current.close_timing()
                 await current.graph_store.close()
             _mcp._vaults.pop("factory_vault", None)
 
@@ -2108,6 +2122,7 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
             # original ``services`` (idempotent if reload already did).
             current = _mcp._vaults.get("yaml_reload_vault")
             if current is not None and current is not services:
+                current.close_timing()
                 await current.graph_store.close()
             _mcp._vaults.pop("yaml_reload_vault", None)
 
@@ -2158,6 +2173,7 @@ async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir,
             # already closed it).
             current = _mcp._vaults.get("test_vault")
             if current is not None and current is not services:
+                current.close_timing()
                 await current.graph_store.close()
             _mcp._vaults.pop("test_vault", None)
 

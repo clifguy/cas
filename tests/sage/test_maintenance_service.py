@@ -81,11 +81,13 @@ async def _close_registry_vault(registry: dict[str, SAGEServices], vault_id: str
 
     ``migrate_vault()`` reload paths swap the registry entry for a fresh
     SAGEServices and close the old graph_store as part of the swap; this
-    helper closes whatever is bound at teardown time. ``GraphStore.close``
-    is idempotent, so it's safe even on the no-swap path.
+    helper closes whatever is bound at teardown time. ``close_timing`` and
+    ``GraphStore.close`` are both idempotent, so this is safe even on the
+    no-swap path (where the bootstrap context manager already released them).
     """
     current = registry.get(vault_id)
     if current is not None:
+        current.close_timing()
         await current.graph_store.close()
 
 

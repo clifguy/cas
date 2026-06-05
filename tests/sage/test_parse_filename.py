@@ -52,7 +52,9 @@ async def pim_app(tmp_vault_dir):
     config = VaultConfig.model_validate(_pim_vault_config_dict(tmp_vault_dir))
     app = await _build_app(config)
     yield app
-    await app.state.graph_store.close()
+    for services in app.state.vault_registry.values():
+        services.close_timing()
+        await services.graph_store.close()
 
 
 @pytest.fixture
@@ -63,7 +65,9 @@ async def no_pattern_app(tmp_vault_dir):
     config = VaultConfig.model_validate(config_dict)
     app = await _build_app(config)
     yield app
-    await app.state.graph_store.close()
+    for services in app.state.vault_registry.values():
+        services.close_timing()
+        await services.graph_store.close()
 
 
 @pytest.fixture

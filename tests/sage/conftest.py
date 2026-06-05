@@ -7,7 +7,6 @@ fresh SQLite database via pytest's tmp_path fixture.
 
 import asyncio
 import contextlib
-import threading
 
 import pytest
 
@@ -19,7 +18,6 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.config import VaultConfig
-from sage.instrumentation.timing import VaultTimingThread
 from sage.mcp_init import initialize_services
 from sage.models.enums import SourceType
 from sage.services.graph_ops import GraphOpsService
@@ -69,57 +67,6 @@ async def initialize_services_for_test(config, **kwargs):
     finally:
         services.close_timing()
         await services.graph_store.close()
-
-
-_TIMING_FLUSH_THREAD_NAME_PREFIX = "sage-timing-flush"
-
-
-def stop_leaked_timing_threads() -> None:
-    """Stop any ``VaultTimingThread`` still alive in this process.
-
-    Safety net for test-side leaks. ``VaultTimingThread`` is not a
-    ``threading.Thread`` subclass — it wraps one whose default name is
-    ``sage-timing-flush``. We walk ``threading.enumerate()``, match by
-    name prefix, then recover the wrapper through the bound-method
-    target stored on the inner thread (``Thread._target.__self__``)
-    so we can call its ``stop()`` method. Other daemon threads
-    (logging, asyncio, etc.) are left untouched. Wired into the
-    ``_stop_leaked_vault_timing_threads`` autouse fixture below; safe
-    to call directly from tests too.
-    """
-    for thread in list(threading.enumerate()):
-        if not thread.is_alive():
-            continue
-        if not thread.name.startswith(_TIMING_FLUSH_THREAD_NAME_PREFIX):
-            continue
-        target = getattr(thread, "_target", None)
-        wrapper = getattr(target, "__self__", None)
-        if isinstance(wrapper, VaultTimingThread):
-            # Safety net must never propagate. Tests can monkey-patch
-            # VaultTimingThread.stop to raise (e.g.,
-            # test_initialize_services_cleanup.py exercises the
-            # cleanup-doesn't-mask-original failure mode); a propagating
-            # exception here would ERROR the test on teardown. Mirrors
-            # the production swallow pattern in
-            # sage/instrumentation/timing.py:VaultTimingThread._run.
-            try:
-                wrapper.stop(timeout=1.0)
-            except Exception:  # noqa: S110 — see comment above
-                pass
-
-
-@pytest.fixture(autouse=True)
-def _stop_leaked_vault_timing_threads():
-    """Safety net: kill any ``VaultTimingThread`` a test forgot to stop.
-
-    Runs after every test in the ``tests/sage/`` subtree. Catches
-    leaks from sites that have not yet adopted
-    ``initialize_services_for_test`` so the failure mode (leaked
-    daemon thread flushing into the next test's caplog) cannot
-    recur silently.
-    """
-    yield
-    stop_leaked_timing_threads()
 
 
 @pytest.fixture

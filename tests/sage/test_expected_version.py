@@ -478,6 +478,7 @@ async def seeded_http_app(minimal_vault_config_dict, monkeypatch):
 
     await asyncio.sleep(0.1)
     if vault_id in app.state.vault_registry:
+        app.state.vault_registry[vault_id].close_timing()
         await app.state.vault_registry[vault_id].graph_store.close()
     _mcp._vaults.clear()
 

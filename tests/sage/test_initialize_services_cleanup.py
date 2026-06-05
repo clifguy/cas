@@ -216,3 +216,12 @@ async def test_initialize_services_cleanup_does_not_mask_original_exception(
             embedding_provider=StubEmbeddingProvider(),
             abstraction_provider=StubAbstractionProvider(),
         )
+
+    # The deliberately-broken stop() above prevented initialize_services from
+    # stopping the flusher thread (the handler was still released by cleanup),
+    # so the thread is still alive. Restore stop() and reap it explicitly so
+    # the leak does not trip the root-conftest timing guard.
+    from tests.helpers.timing_leaks import stop_leaked_timing_threads
+
+    monkeypatch.undo()
+    stop_leaked_timing_threads()

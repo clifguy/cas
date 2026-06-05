@@ -53,6 +53,7 @@ async def seeded_mcp_vault(minimal_vault_config_dict, monkeypatch, empty_registr
 
     yield vault_id, seeded_ids
 
+    services.close_timing()
     await services.graph_store.close()
 
 
@@ -222,6 +223,7 @@ async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empt
 
     yield vault_id, seeded_ids
 
+    services.close_timing()
     await services.graph_store.close()
 
 

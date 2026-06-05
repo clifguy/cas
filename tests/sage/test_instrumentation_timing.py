@@ -500,11 +500,11 @@ def test_vault_timing_thread_flushes_periodically(caplog):
     with caplog.at_level(logging.DEBUG, logger="sage.storage.timing"):
         flush_thread.start()
         # Poll for patience under CI load (the interval is 50 ms but CI
-        # scheduling jitter can stretch the wait). The autouse
-        # _stop_leaked_vault_timing_threads fixture in tests/sage/conftest.py
-        # ensures no earlier test's VaultTimingThread is still flushing
-        # into this caplog window, so summaries[0] is this timer's
-        # summary — no need to filter by suppressed key.
+        # scheduling jitter can stretch the wait). The autouse timing-leak
+        # guard in the root tests/conftest.py reaps any earlier test's leaked
+        # VaultTimingThread, so none is still flushing into this caplog window
+        # and summaries[0] is this timer's summary — no need to filter by
+        # suppressed key.
         deadline = time.monotonic() + 1.0
         summaries: list[dict] = []
         while time.monotonic() < deadline:
