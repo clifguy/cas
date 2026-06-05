@@ -76,6 +76,7 @@ async def legacy_db_app(minimal_vault_config_dict, monkeypatch):
 
     await asyncio.sleep(0.1)
     if vault_id in registry:
+        registry[vault_id].close_timing()
         await registry[vault_id].graph_store.close()
     mcp_server._vaults.clear()
 
@@ -131,6 +132,7 @@ async def test_post_admin_migrate_is_idempotent_when_no_work_pending(
                 assert report.backfills_applied == []
     finally:
         await asyncio.sleep(0.1)
+        app.state.vault_registry[vault_id].close_timing()
         await app.state.vault_registry[vault_id].graph_store.close()
         mcp_server._vaults.clear()
 
@@ -172,6 +174,7 @@ async def lancedb_app(minimal_vault_config_dict, tmp_path, monkeypatch):
     finally:
         await asyncio.sleep(0.1)
         if vault_id in registry:
+            registry[vault_id].close_timing()
             await registry[vault_id].graph_store.close()
         mcp_server._vaults.clear()
 

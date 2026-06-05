@@ -9,7 +9,12 @@ from typing import Any
 import pytest
 import yaml
 
+from sage.mcp_init import _timing_handlers
 from tests.helpers.schema_validation import SchemaValidator
+from tests.helpers.timing_leaks import (
+    alive_timing_thread_idents,
+    check_and_reap_timing_leaks,
+)
 
 # Default to stub providers on every pytest invocation. Stubs both the
 # embedding provider (Avoids accidental ~270 MB nomic loads) and the
@@ -81,6 +86,32 @@ def _redirect_vaults_root(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(vault_management, "_VAULTS_ROOT", fake_root)
     monkeypatch.setattr(vault_registry, "_VAULTS_ROOT", fake_root)
     yield fake_root
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_leaked_timing_resources():
+    """Fail (and reap) when a test leaks a per-vault timing handler or thread.
+
+    Any test that builds real services with timing enabled (the default) and
+    tears down without releasing them leaves the ``timing.log`` handler attached
+    to the three process-global timing loggers and the ``VaultTimingThread``
+    running. Neither surfaces as an "unclosed file" ``ResourceWarning`` — the
+    loggers keep the handler reachable, so CPython never garbage-collects it and
+    ``logging.shutdown()`` closes it cleanly only at interpreter exit — so this
+    guard asserts on the observable that actually moves: a net-new entry in the
+    ``_timing_handlers`` registry or a net-new live ``sage-timing-flush`` thread
+    introduced by the test. Lives at the root conftest so every test tree
+    (``tests/app``, ``tests/sage``, and any future tree) shares one
+    garbage-collection-independent check.
+
+    The remedy at a leaking site is to build services through
+    ``initialize_services_for_test`` or to call ``services.close_timing()``
+    before ``graph_store.close()`` on teardown.
+    """
+    handlers_before = set(_timing_handlers)
+    threads_before = alive_timing_thread_idents()
+    yield
+    check_and_reap_timing_leaks(handlers_before, threads_before)
 
 
 def load_invalid_fixture(component: str, filename: str) -> Any:

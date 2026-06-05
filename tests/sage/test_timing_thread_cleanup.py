@@ -1,14 +1,16 @@
 """Tests for the test-side timing-thread cleanup machinery.
 
-The helpers under test live in ``tests/sage/conftest.py``:
+The helpers under test:
 
-- ``initialize_services_for_test`` (async context manager) — wraps
-  ``initialize_services`` so that callers can no longer forget to stop
-  the ``VaultTimingThread`` and close the graph store on exit.
-- ``stop_leaked_timing_threads`` (function) — sweeps
-  ``threading.enumerate()`` for any ``VaultTimingThread`` instance still
-  alive in the current process and stops it. Wired into an autouse
-  fixture as the safety net.
+- ``initialize_services_for_test`` (async context manager, in
+  ``tests/sage/conftest.py``) — wraps ``initialize_services`` so that
+  callers can no longer forget to stop the ``VaultTimingThread`` and close
+  the graph store on exit.
+- ``stop_leaked_timing_threads`` (function, in
+  ``tests/helpers/timing_leaks.py``) — sweeps ``threading.enumerate()`` for
+  any ``VaultTimingThread`` instance still alive in the current process and
+  stops it. The root-conftest timing-leak guard calls it to reap a detected
+  thread leak.
 
 These tests are the implementation contract for both symbols.
 """
@@ -121,7 +123,7 @@ async def test_helper_closes_graph_store_on_exit(minimal_config):
 
 def test_stop_leaked_timing_threads_targets_only_vault_timing_threads():
     from sage.instrumentation import QueryTimer, TimingConfig
-    from tests.sage.conftest import stop_leaked_timing_threads
+    from tests.helpers.timing_leaks import stop_leaked_timing_threads
 
     # Start an unrelated long-sleeping daemon thread; it must survive.
     sentinel_done = threading.Event()
@@ -165,7 +167,7 @@ def test_stop_leaked_timing_threads_targets_only_vault_timing_threads():
 
 
 def test_stop_leaked_timing_threads_no_op_when_nothing_alive():
-    from tests.sage.conftest import stop_leaked_timing_threads
+    from tests.helpers.timing_leaks import stop_leaked_timing_threads
 
     # Precondition: no VaultTimingThread instances alive. If this fails,
     # something earlier leaked — the autouse safety net itself is broken.
@@ -193,7 +195,7 @@ def test_stop_leaked_timing_threads_no_op_when_nothing_alive():
 
 def test_stop_leaked_timing_threads_swallows_stop_exceptions(monkeypatch):
     from sage.instrumentation import QueryTimer, TimingConfig
-    from tests.sage.conftest import stop_leaked_timing_threads
+    from tests.helpers.timing_leaks import stop_leaked_timing_threads
 
     # Start a real VaultTimingThread.
     timer = QueryTimer(

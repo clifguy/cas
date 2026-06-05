@@ -41,6 +41,7 @@ async def seeded_app(minimal_vault_config_dict, monkeypatch):
 
     await asyncio.sleep(0.1)
     if vault_id in app.state.vault_registry:
+        app.state.vault_registry[vault_id].close_timing()
         await app.state.vault_registry[vault_id].graph_store.close()
     mcp_server._vaults.clear()
 
@@ -153,6 +154,7 @@ async def seeded_six_app(minimal_vault_config_dict, monkeypatch):
 
     await asyncio.sleep(0.1)
     if vault_id in app.state.vault_registry:
+        app.state.vault_registry[vault_id].close_timing()
         await app.state.vault_registry[vault_id].graph_store.close()
     mcp_server._vaults.clear()
 

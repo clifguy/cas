@@ -162,7 +162,9 @@ async def test_mcp_admin_mount_reads_shared_vault_registry(minimal_config):
         result = await admin_server.call_tool("admin_list_vaults", {})
         assert minimal_config.vault.id in str(result)
     finally:
-        await app.state.graph_store.close()
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
         mcp_server._vaults.pop(minimal_config.vault.id, None)
 
 
