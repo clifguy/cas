@@ -168,6 +168,10 @@ class StubContentStore(ContentStore):
         """Return 0: the in-memory stub has no on-disk version history."""
         return 0
 
+    async def count_small_fragments(self) -> int:
+        """Return 0: the in-memory stub has no on-disk fragments."""
+        return 0
+
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """No-op: the in-memory stub has no on-disk presence to reclaim.
 

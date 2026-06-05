@@ -1,15 +1,10 @@
 import { useState, useEffect } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
 import type { VaultContext } from '../App';
-import type { VaultStats } from '../api/types';
+import type { LastOptimizeSummary, VaultStats } from '../api/types';
 import { getVaultStats } from '../api/vaults';
 import BloatIndicator from '../components/BloatIndicator';
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
+import { formatBytes } from '../utils/format';
 
 function formatCount(n: number): string {
   return n.toLocaleString();
@@ -98,7 +93,11 @@ export default function Dashboard() {
             </div>
           )}
           <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
-          <BloatIndicator versionCount={stats.lancedb_version_count} />
+          <BloatIndicator
+            versionCount={stats.lancedb_version_count}
+            smallFragmentCount={stats.lancedb_small_fragment_count}
+          />
+          <LastOptimizeCard summary={stats.last_optimize} />
         </div>
       </Section>
 
@@ -172,6 +171,38 @@ function BreakdownCard({ label, data, formatKey, linkParam }: { label: string; d
           <span style={{ fontWeight: 600 }}>{v}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+function LastOptimizeCard({ summary }: { summary: LastOptimizeSummary | null }) {
+  return (
+    <div
+      data-testid="last-optimize-card"
+      style={{
+        border: '1px solid #ddd',
+        borderRadius: 4,
+        padding: '12px 16px',
+        background: '#f5f5f5',
+        height: '100%',
+        boxSizing: 'border-box',
+      }}
+    >
+      {summary ? (
+        <>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>
+            {new Date(summary.at).toLocaleDateString()}
+          </div>
+          <div style={{ fontSize: 12, color: '#666' }}>
+            Last optimized · reclaimed {formatBytes(summary.bytes_reclaimed)}
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 18, fontWeight: 700, color: '#999' }}>Never</div>
+          <div style={{ fontSize: 12, color: '#666' }}>Last optimized</div>
+        </>
+      )}
     </div>
   );
 }

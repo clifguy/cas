@@ -43,9 +43,11 @@ export interface VaultStats {
   lancedb_size_bytes: number;
   lancedb_chunk_count: number;
   lancedb_version_count: number;
+  lancedb_small_fragment_count: number;
   sqlite_size_bytes: number;
   last_ingestion_at: string | null;
   health: HealthIndicators;
+  last_optimize: LastOptimizeSummary | null;
 }
 
 export interface HealthIndicators {
@@ -53,6 +55,13 @@ export interface HealthIndicators {
   pending_edge_count: number;
   deferred_abstract_count: number | null;
   failed_ingestion_count: number;
+}
+
+export interface LastOptimizeSummary {
+  at: string;
+  bytes_reclaimed: number;
+  versions_cleaned: number;
+  fragments_merged: number;
 }
 
 // --- Document ---

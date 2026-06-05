@@ -1107,6 +1107,14 @@ async def _bootstrap_lancedb_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     """
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = _minimal_config(tmp_path)
+    # get_stats reads the maintenance log from config_path_for_vault(...).parent;
+    # redirect it to tmp_path so the reader agrees with the writer's
+    # _vault_dir override below (the canonical ~/sage_vaults/<id>/ path does
+    # not exist in test environments).
+    monkeypatch.setattr(
+        "sage.services.vault_config.config_path_for_vault",
+        lambda vault_id: tmp_path / "vault_config.yaml",
+    )
     registry: dict[str, SAGEServices] = {}
     registry_service = VaultRegistryService(registry, initialize_services)
     async with initialize_services_for_test(
@@ -1245,6 +1253,127 @@ async def test_get_stats_surfaces_retained_version_count(lancedb_vault):
     stats = await services.vault_config_service.get_stats()
     assert stats.lancedb_version_count == await content_store.count_retained_versions()
     assert stats.lancedb_version_count > 1
+
+
+async def test_count_small_fragments_rises_with_churn(lancedb_vault):
+    """Small-fragment count rises with un-optimized write churn.
+
+    Companion signal to the retained-version count: un-compacted small
+    fragments accumulate as small writes land without an optimize. Unlike a
+    total fragment count, this measure stays near zero on a healthy store
+    regardless of corpus size, so it is self-calibrating. A churned vault
+    must report at least one small fragment.
+    """
+    _registry, services, _vault_dir = lancedb_vault
+    content_store = services.content_store
+
+    await _churn_chunks(content_store, cycles=15)
+
+    assert await content_store.count_small_fragments() > 0
+
+
+async def test_get_stats_surfaces_small_fragment_count(lancedb_vault):
+    """get_stats exposes the small-fragment count to the dashboard.
+
+    Regression guard: the value the HTTP stats endpoint returns must equal
+    the content store's own read-only measure, not a constant.
+    """
+    _registry, services, _vault_dir = lancedb_vault
+    content_store = services.content_store
+
+    await _churn_chunks(content_store, cycles=15)
+
+    stats = await services.vault_config_service.get_stats()
+    assert stats.lancedb_small_fragment_count == await content_store.count_small_fragments()
+    assert stats.lancedb_small_fragment_count > 0
+
+
+async def test_read_last_optimize_summary_none_when_no_log(tmp_path):
+    """No maintenance log on disk → reader returns None (never-optimized vault)."""
+    from sage.services.maintenance_log import read_last_optimize_summary
+
+    assert read_last_optimize_summary(tmp_path) is None
+
+
+async def test_read_last_optimize_summary_after_optimize(lancedb_vault):
+    """Round-trip: a real optimize writes the audit record and the reader
+    returns a summary whose fields match that record.
+
+    Guards writer/reader key agreement -- renaming a key in either half
+    breaks this test.
+    """
+    from sage.services.maintenance_log import read_last_optimize_summary
+
+    _registry, services, vault_dir = lancedb_vault
+    content_store = services.content_store
+    maintenance = services.maintenance_service
+
+    await _churn_chunks(content_store, cycles=30)
+    report = await maintenance.optimize_content_store(cleanup_older_than_days=0)
+
+    summary = read_last_optimize_summary(vault_dir)
+    assert summary is not None
+    assert summary.bytes_reclaimed == report.bytes_reclaimed
+    assert summary.versions_cleaned == report.pre_versions - report.post_versions
+    assert summary.fragments_merged == report.pre_fragments - report.post_fragments
+    # `at` parses the record timestamp; it must fall within the optimize window.
+    assert summary.at >= report.started_at
+
+
+async def test_read_last_optimize_summary_picks_most_recent_and_filters(tmp_path):
+    """Reader returns the most-recent optimize record (append-order) and
+    ignores non-optimize lines.
+    """
+    from sage.services.maintenance_log import (
+        MAINTENANCE_LOG_FILENAME,
+        read_last_optimize_summary,
+    )
+
+    older = {
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "operation": "optimize_vault_content_store",
+        "bytes_reclaimed": 100,
+        "pre_versions": 9,
+        "post_versions": 4,
+        "pre_fragments": 8,
+        "post_fragments": 3,
+    }
+    other = {"timestamp": "2026-01-02T00:00:00+00:00", "operation": "purge_document"}
+    newer = {
+        "timestamp": "2026-02-02T00:00:00+00:00",
+        "operation": "optimize_vault_content_store",
+        "bytes_reclaimed": 999,
+        "pre_versions": 20,
+        "post_versions": 2,
+        "pre_fragments": 30,
+        "post_fragments": 5,
+    }
+    log = tmp_path / MAINTENANCE_LOG_FILENAME
+    log.write_text("\n".join(json.dumps(r) for r in (older, other, newer)) + "\n")
+
+    summary = read_last_optimize_summary(tmp_path)
+    assert summary is not None
+    assert summary.bytes_reclaimed == 999
+    assert summary.versions_cleaned == 18
+    assert summary.fragments_merged == 25
+
+
+async def test_get_stats_surfaces_last_optimize(lancedb_vault):
+    """get_stats surfaces the last-optimize summary; None before any optimize."""
+    _registry, services, _vault_dir = lancedb_vault
+    content_store = services.content_store
+    maintenance = services.maintenance_service
+
+    await _churn_chunks(content_store, cycles=30)
+
+    stats_before = await services.vault_config_service.get_stats()
+    assert stats_before.last_optimize is None
+
+    report = await maintenance.optimize_content_store(cleanup_older_than_days=0)
+
+    stats_after = await services.vault_config_service.get_stats()
+    assert stats_after.last_optimize is not None
+    assert stats_after.last_optimize.bytes_reclaimed == report.bytes_reclaimed
 
 
 async def test_optimize_content_store_is_noop_on_clean_table(lancedb_vault):

@@ -3973,6 +3973,15 @@ class HealthIndicators(BaseModel):
     failed_ingestion_count: int = Field(description="Documents with pipeline_status=failed.")
 
 
+class LastOptimizeSummary(BaseModel):
+    at: datetime = Field(description="UTC timestamp of the most recent content-store optimize.")
+    bytes_reclaimed: int = Field(description="Bytes reclaimed by the most recent optimize.")
+    versions_cleaned: int = Field(
+        description="Dataset versions pruned by the most recent optimize."
+    )
+    fragments_merged: int = Field(description="Fragments merged by the most recent optimize.")
+
+
 class VaultStatsResponse(BaseModel):
     total_documents: int = Field(description="Total number of documents in the vault.")
     by_lifecycle_status: dict[str, int] = Field(description="Document count per lifecycle status.")
@@ -3991,11 +4000,25 @@ class VaultStatsResponse(BaseModel):
             "rises with un-optimized write churn."
         )
     )
+    lancedb_small_fragment_count: int = Field(
+        description=(
+            "Count of small (un-compacted) LanceDB fragments for the chunks "
+            "table; rises with un-optimized write churn and is merged away by "
+            "optimize."
+        )
+    )
     sqlite_size_bytes: int = Field(description="Size of the graph.db SQLite file in bytes.")
     last_ingestion_at: datetime | None = Field(
         description="Timestamp of the most recent successful ingestion, if any."
     )
     health: HealthIndicators = Field(description="Vault-level health indicators.")
+    last_optimize: LastOptimizeSummary | None = Field(
+        default=None,
+        description=(
+            "Summary of the most recent content-store optimize, or null if the "
+            "vault has never been optimized."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

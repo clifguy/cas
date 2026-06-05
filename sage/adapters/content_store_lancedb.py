@@ -351,6 +351,21 @@ class LanceDBContentStore(ContentStore):
                 return 0
             return len(table.list_versions())
 
+    async def count_small_fragments(self) -> int:
+        """Return the number of small (un-compacted) LanceDB fragments.
+
+        Reads ``Table.stats()["fragment_stats"]["num_small_fragments"]``
+        without mutating the store. Small fragments accumulate as small
+        writes land and are merged by ``optimize``, so this rises with
+        un-optimized churn while staying near zero on a healthy store.
+        Returns 0 when the chunks table has not yet been created.
+        """
+        with self._query_timer.measure("count_small_fragments"):
+            table = self._get_table()
+            if table is None:
+                return 0
+            return table.stats()["fragment_stats"]["num_small_fragments"]
+
     def _lancedb_dir_bytes(self) -> int:
         """Sum of file sizes under the LanceDB directory (recursive walk).
 
