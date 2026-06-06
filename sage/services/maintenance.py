@@ -38,6 +38,7 @@ from sage.models.schemas import (
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
 )
+from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.storage.graph_store import GraphStore
 from sage.storage.migrations import (
     BACKFILL_PLAN,
@@ -403,7 +404,7 @@ class MaintenanceService:
         do not apply to an optimize call.
         """
         vault_dir = self._vault_dir or config_path_for_vault(self._vault_id).parent
-        audit_path = vault_dir / ".maintenance_log.jsonl"
+        audit_path = vault_dir / MAINTENANCE_LOG_FILENAME
         audit_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),

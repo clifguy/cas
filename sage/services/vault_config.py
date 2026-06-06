@@ -34,6 +34,7 @@ from sage.models.schemas import (
     VaultConfigPreview,
     VaultStatsResponse,
 )
+from sage.services.maintenance_log import read_last_optimize_summary
 from sage.storage.graph_store import GraphStore
 from sage.vault_management import (
     _ALL_SECTIONS,
@@ -94,6 +95,10 @@ class VaultConfigService:
 
         lancedb_chunk_count = await self._content_store.count_chunks()
         lancedb_version_count = await self._content_store.count_retained_versions()
+        lancedb_small_fragment_count = await self._content_store.count_small_fragments()
+
+        vault_dir = config_path_for_vault(config.vault.id).parent
+        last_optimize = read_last_optimize_summary(vault_dir)
 
         return VaultStatsResponse(
             total_documents=total_documents,
@@ -106,8 +111,10 @@ class VaultConfigService:
             lancedb_size_bytes=lancedb_size,
             lancedb_chunk_count=lancedb_chunk_count,
             lancedb_version_count=lancedb_version_count,
+            lancedb_small_fragment_count=lancedb_small_fragment_count,
             sqlite_size_bytes=sqlite_size,
             last_ingestion_at=last_ingestion,
+            last_optimize=last_optimize,
             health=HealthIndicators(
                 pending_metadata_count=pending_metadata_count,
                 pending_edge_count=staging_count,

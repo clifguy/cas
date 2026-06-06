@@ -6,14 +6,38 @@ export type BloatState = 'ok' | 'warn' | 'red';
 // churn and are independent of corpus size, so fixed thresholds stay
 // meaningful across vaults: a handful is healthy; tens signal accumulating
 // drift; ~50+ matches the observed reclamation pathology.
-const WARN_THRESHOLD = 20;
-const RED_THRESHOLD = 50;
+const VERSION_WARN_THRESHOLD = 20;
+const VERSION_RED_THRESHOLD = 50;
 
-/** Map a retained-version count to a self-calibrating ok/warn/red state. */
-export function bloatState(versionCount: number): BloatState {
-  if (versionCount >= RED_THRESHOLD) return 'red';
-  if (versionCount >= WARN_THRESHOLD) return 'warn';
+// Small (un-compacted) fragments are likewise corpus-size-independent: a
+// healthy, recently-optimized store sits near zero. Thresholds are provisional
+// (no empirical baseline yet) and set conservatively to avoid false alarms.
+const SMALL_FRAGMENT_WARN_THRESHOLD = 10;
+const SMALL_FRAGMENT_RED_THRESHOLD = 25;
+
+const SEVERITY: Record<BloatState, number> = { ok: 0, warn: 1, red: 2 };
+
+function versionState(versionCount: number): BloatState {
+  if (versionCount >= VERSION_RED_THRESHOLD) return 'red';
+  if (versionCount >= VERSION_WARN_THRESHOLD) return 'warn';
   return 'ok';
+}
+
+function smallFragmentState(smallFragmentCount: number): BloatState {
+  if (smallFragmentCount >= SMALL_FRAGMENT_RED_THRESHOLD) return 'red';
+  if (smallFragmentCount >= SMALL_FRAGMENT_WARN_THRESHOLD) return 'warn';
+  return 'ok';
+}
+
+/**
+ * Map the retained-version and small-fragment counts to a single
+ * self-calibrating ok/warn/red state, taking the worse of the two signals so
+ * either dimension can flag a drifting store.
+ */
+export function bloatState(versionCount: number, smallFragmentCount: number): BloatState {
+  const vs = versionState(versionCount);
+  const fs = smallFragmentState(smallFragmentCount);
+  return SEVERITY[vs] >= SEVERITY[fs] ? vs : fs;
 }
 
 const STATE_STYLE: Record<BloatState, React.CSSProperties> = {
@@ -24,11 +48,18 @@ const STATE_STYLE: Record<BloatState, React.CSSProperties> = {
 
 /**
  * Vault-health card for LanceDB content-store bloat. Surfaces the retained
- * dataset-version count as a thresholded state rather than a bare number, and
- * points a drifting store at the Maintenance-page optimize action.
+ * dataset-version count and the small (un-compacted) fragment count as a
+ * thresholded state rather than bare numbers, and points a drifting store at
+ * the Maintenance-page optimize action.
  */
-export default function BloatIndicator({ versionCount }: { versionCount: number }) {
-  const state = bloatState(versionCount);
+export default function BloatIndicator({
+  versionCount,
+  smallFragmentCount,
+}: {
+  versionCount: number;
+  smallFragmentCount: number;
+}) {
+  const state = bloatState(versionCount, smallFragmentCount);
   const flagged = state !== 'ok';
   return (
     <div
@@ -43,10 +74,12 @@ export default function BloatIndicator({ versionCount }: { versionCount: number 
         ...STATE_STYLE[state],
       }}
     >
-      <div data-testid="bloat-count" style={{ fontSize: 24, fontWeight: 700 }}>
-        {versionCount}
+      <div style={{ fontSize: 24, fontWeight: 700 }}>
+        <span data-testid="bloat-version-count">{versionCount}</span>
+        <span style={{ color: '#999' }}> / </span>
+        <span data-testid="bloat-small-fragment-count">{smallFragmentCount}</span>
       </div>
-      <div style={{ fontSize: 12, color: '#666' }}>Content-store versions</div>
+      <div style={{ fontSize: 12, color: '#666' }}>Content-store versions / small fragments</div>
       {flagged && (
         <Link
           to="/maintenance"

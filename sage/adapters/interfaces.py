@@ -176,6 +176,18 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
+    async def count_small_fragments(self) -> int:
+        """Return the number of small (un-compacted) fragments in the store.
+
+        Read-only. Small fragments accumulate with un-optimized write churn
+        and are merged away by ``optimize``; unlike a total fragment count,
+        a healthy store keeps this near zero regardless of corpus size, so it
+        is a self-calibrating bloat signal alongside the retained-version
+        count. Returns 0 for substrates with no on-disk fragments and when
+        the underlying table has not been created yet.
+        """
+
+    @abstractmethod
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """Reclaim disk by compacting fragments and pruning old versions.
 

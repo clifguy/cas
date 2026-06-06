@@ -4898,6 +4898,29 @@ components:
           type: integer
           description: Documents with pipeline_status=failed.
 
+    LastOptimizeSummary:
+      type: object
+      required:
+        - at
+        - bytes_reclaimed
+        - versions_cleaned
+        - fragments_merged
+      description: Summary of a vault's most recent content-store optimize, surfaced inside vault-stats responses.
+      properties:
+        at:
+          type: string
+          format: date-time
+          description: UTC timestamp of the most recent content-store optimize.
+        bytes_reclaimed:
+          type: integer
+          description: Bytes reclaimed by the most recent optimize.
+        versions_cleaned:
+          type: integer
+          description: Dataset versions pruned by the most recent optimize.
+        fragments_merged:
+          type: integer
+          description: Fragments merged by the most recent optimize.
+
     VaultStatsResponse:
       type: object
       required:
@@ -4911,6 +4934,7 @@ components:
         - lancedb_size_bytes
         - lancedb_chunk_count
         - lancedb_version_count
+        - lancedb_small_fragment_count
         - sqlite_size_bytes
         - health
       description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
@@ -4953,6 +4977,9 @@ components:
         lancedb_version_count:
           type: integer
           description: Count of retained LanceDB dataset versions for the chunks table; rises with un-optimized write churn.
+        lancedb_small_fragment_count:
+          type: integer
+          description: Count of small (un-compacted) LanceDB fragments for the chunks table; rises with un-optimized write churn and is merged away by optimize.
         sqlite_size_bytes:
           type: integer
           description: Size of the graph.db SQLite file in bytes.
@@ -4963,6 +4990,8 @@ components:
           description: Timestamp of the most recent successful ingestion, if any.
         health:
           $ref: "#/components/schemas/HealthIndicators"
+        last_optimize:
+          $ref: "#/components/schemas/LastOptimizeSummary"
 
     # -------------------------------------------------------------------------
     # Vault Configuration

@@ -15,6 +15,7 @@ import type {
   ReabstractProgressEvent,
   ReabstractSummaryEvent,
 } from '../api/types';
+import { formatBytes } from '../utils/format';
 import {
   startReabstract,
   getDeferredCount,
@@ -473,7 +474,7 @@ function OptimizeOperation({ vaultId }: { vaultId: string }) {
           </div>
           <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 13 }}>
             <li data-testid="optimize-bytes-reclaimed">
-              Bytes reclaimed: <strong>{report.bytes_reclaimed}</strong>
+              Reclaimed: <strong>{formatBytes(report.bytes_reclaimed)}</strong>
             </li>
             <li data-testid="optimize-versions-cleaned">
               Versions cleaned up:{' '}

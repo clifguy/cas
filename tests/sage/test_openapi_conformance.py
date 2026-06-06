@@ -513,6 +513,62 @@ def test_vault_stats_response_documents_lancedb_version_count(
     )
 
 
+def test_vault_stats_response_documents_lancedb_small_fragment_count(
+    sage_core_spec: dict | None,
+):
+    """Spot regression guard for the bloat-indicator small-fragment field."""
+    assert sage_core_spec is not None, "sage_core_api spec is missing"
+
+    schemas = sage_core_spec["components"]["schemas"]
+    assert "VaultStatsResponse" in schemas, "components.schemas.VaultStatsResponse is not defined"
+    vault_stats = schemas["VaultStatsResponse"]
+
+    properties = vault_stats.get("properties") or {}
+    assert "lancedb_small_fragment_count" in properties, (
+        "VaultStatsResponse.properties.lancedb_small_fragment_count is missing"
+    )
+    field = properties["lancedb_small_fragment_count"]
+    assert field.get("type") == "integer", (
+        f"VaultStatsResponse.lancedb_small_fragment_count must have type 'integer', "
+        f"got {field.get('type')!r}"
+    )
+
+    required = vault_stats.get("required") or []
+    assert "lancedb_small_fragment_count" in required, (
+        "VaultStatsResponse must list 'lancedb_small_fragment_count' in 'required'"
+    )
+
+
+def test_vault_stats_response_documents_last_optimize(
+    sage_core_spec: dict | None,
+):
+    """Spot guard for the optional last-optimize summary.
+
+    The property is a nested optional ($ref to LastOptimizeSummary) and so
+    must NOT appear in VaultStatsResponse.required; the referenced schema
+    must define the four summary fields and mark them required.
+    """
+    assert sage_core_spec is not None, "sage_core_api spec is missing"
+
+    schemas = sage_core_spec["components"]["schemas"]
+    vault_stats = schemas["VaultStatsResponse"]
+
+    properties = vault_stats.get("properties") or {}
+    assert "last_optimize" in properties, "VaultStatsResponse.properties.last_optimize is missing"
+    required = vault_stats.get("required") or []
+    assert "last_optimize" not in required, (
+        "last_optimize is optional and must not be listed in VaultStatsResponse.required"
+    )
+
+    assert "LastOptimizeSummary" in schemas, "components.schemas.LastOptimizeSummary is not defined"
+    summary = schemas["LastOptimizeSummary"]
+    summary_props = summary.get("properties") or {}
+    summary_required = summary.get("required") or []
+    for name in ("at", "bytes_reclaimed", "versions_cleaned", "fragments_merged"):
+        assert name in summary_props, f"LastOptimizeSummary.properties.{name} is missing"
+        assert name in summary_required, f"LastOptimizeSummary must list '{name}' in 'required'"
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Every public Pydantic field in sage.models.schemas has a description
 # ---------------------------------------------------------------------------

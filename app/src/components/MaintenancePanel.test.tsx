@@ -472,7 +472,7 @@ describe('OptimizeOperation — running state', () => {
 // ---------------------------------------------------------------------------
 
 describe('OptimizeOperation — completion', () => {
-  it('O9: summary renders bytes_reclaimed, versions cleaned, and fragments merged with distinct values', async () => {
+  it('O9: summary renders humanized reclaimed bytes, versions cleaned, and fragments merged with distinct values', async () => {
     startOptimizeContentStoreMock.mockResolvedValue(
       makeReport({
         bytes_reclaimed: 1234,
@@ -490,7 +490,9 @@ describe('OptimizeOperation — completion', () => {
     await waitFor(() =>
       expect(screen.getByTestId('optimize-summary')).toBeInTheDocument(),
     );
-    expect(screen.getByTestId('optimize-bytes-reclaimed')).toHaveTextContent('1234');
+    // bytes_reclaimed=1234 renders humanized (1.2 KB), not as a raw integer.
+    expect(screen.getByTestId('optimize-bytes-reclaimed')).toHaveTextContent('1.2 KB');
+    expect(screen.getByTestId('optimize-bytes-reclaimed')).not.toHaveTextContent('1234');
     expect(screen.getByTestId('optimize-versions-cleaned')).toHaveTextContent('5');
     expect(screen.getByTestId('optimize-fragments-merged')).toHaveTextContent('8');
 
