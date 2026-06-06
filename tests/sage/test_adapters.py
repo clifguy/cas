@@ -409,29 +409,6 @@ class TestLanceDBContentStore:
         """count_small_fragments returns 0 before the chunks table exists."""
         assert await content_store.count_small_fragments() == 0
 
-
-async def test_stub_content_store_reports_zero_retained_versions():
-    """StubContentStore has no on-disk versioning, so count_retained_versions is 0.
-
-    The substrate-agnostic contract: callers routing through the ContentStore
-    interface receive a well-formed integer without special-casing the stub.
-    """
-    from sage.adapters.stubs import StubContentStore
-
-    store = StubContentStore()
-    assert await store.count_retained_versions() == 0
-
-
-async def test_stub_content_store_reports_zero_small_fragments():
-    """StubContentStore has no on-disk fragments, so count_small_fragments is 0.
-
-    Same substrate-agnostic contract as the retained-version measure.
-    """
-    from sage.adapters.stubs import StubContentStore
-
-    store = StubContentStore()
-    assert await store.count_small_fragments() == 0
-
     async def test_ad_016_semantic_search_ranking(self, populated_store, embedding_provider):
         """AD-016: Semantic search returns results ranked by cosine similarity."""
         query_vec = (await embedding_provider.embed(["health data sync"]))[0]
@@ -722,6 +699,29 @@ async def test_stub_content_store_reports_zero_small_fragments():
         old_results = await content_store.search_bm25("old", limit=10)
         for r in old_results:
             assert r.document_id != "doc_001"
+
+
+async def test_stub_content_store_reports_zero_retained_versions():
+    """StubContentStore has no on-disk versioning, so count_retained_versions is 0.
+
+    The substrate-agnostic contract: callers routing through the ContentStore
+    interface receive a well-formed integer without special-casing the stub.
+    """
+    from sage.adapters.stubs import StubContentStore
+
+    store = StubContentStore()
+    assert await store.count_retained_versions() == 0
+
+
+async def test_stub_content_store_reports_zero_small_fragments():
+    """StubContentStore has no on-disk fragments, so count_small_fragments is 0.
+
+    Same substrate-agnostic contract as the retained-version measure.
+    """
+    from sage.adapters.stubs import StubContentStore
+
+    store = StubContentStore()
+    assert await store.count_small_fragments() == 0
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
