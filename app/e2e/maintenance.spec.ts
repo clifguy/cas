@@ -85,8 +85,8 @@ test('optimize-content-store row triggers the backend and renders the report', a
   page,
 }) => {
   // C3: stub the optimize endpoint so the test doesn't actually touch
-  // LanceDB. A recognizable bytes_reclaimed value (999999) makes a route
-  // mismatch (stub never fires) loudly visible in the assertion.
+  // LanceDB. A recognizable bytes_reclaimed value (2_500_000 -> "2.5 MB"
+  // humanized) makes a route mismatch (stub never fires) loudly visible.
   //
   // The API client uses relative paths that Vite proxies to the FastAPI
   // backend, so the browser-level request URL is the Vite host
@@ -102,7 +102,7 @@ test('optimize-content-store row triggers the backend and renders the report', a
         finished_at: '2026-05-28T12:00:05Z',
         pre_bytes: 10_000,
         post_bytes: 1,
-        bytes_reclaimed: 999999,
+        bytes_reclaimed: 2_500_000,
         pre_versions: 20,
         post_versions: 17,
         pre_fragments: 30,
@@ -129,5 +129,7 @@ test('optimize-content-store row triggers the backend and renders the report', a
   await page.getByTestId('optimize-confirm-apply').click();
 
   await expect(page.getByTestId('optimize-summary')).toBeVisible();
-  await expect(page.getByTestId('optimize-bytes-reclaimed')).toContainText('999999');
+  // Reclaimed bytes render humanized (2.5 MB), not as a raw integer.
+  await expect(page.getByTestId('optimize-bytes-reclaimed')).toContainText('2.5 MB');
+  await expect(page.getByTestId('optimize-bytes-reclaimed')).not.toContainText('2500000');
 });
