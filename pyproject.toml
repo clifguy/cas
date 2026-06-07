@@ -175,7 +175,8 @@ build-backend = "setuptools.build_meta"
 # single-sourcing it from the repository instead of a hand-edited literal. The
 # running version (sage.build_info.RELEASE_VERSION) is MAJOR.MINOR.PATCH with
 # PATCH = commit distance since the last vMAJOR.MINOR.0 tag, read live from git
-# at import; this setuptools-scm config is the no-git fallback, where
+# at import; a build-time-baked SAGE_BUILD_VERSION env stamp and then this
+# setuptools-scm metadata are the successive no-git fallbacks, where
 # ``no-guess-dev`` keeps the commit distance in the ``.devN`` segment that
 # build_info parses. The committed OpenAPI info.version tracks only MAJOR.MINOR,
 # so it does not churn between minor releases. No ``version_file`` is written: a

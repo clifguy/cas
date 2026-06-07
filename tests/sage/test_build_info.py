@@ -234,6 +234,9 @@ def test_bld_022_resolve_falls_back_to_metadata_when_git_unknown(
 ) -> None:
     """_resolve_release_version uses the metadata fallback when the git path
     yields UNKNOWN — proving the fallback is wired, not dead."""
+    # Neutralize the baked tier (it sits above metadata) so a populated
+    # SAGE_BUILD_VERSION in the ambient env cannot shadow the metadata path.
+    monkeypatch.delenv("SAGE_BUILD_VERSION", raising=False)
     monkeypatch.setattr(
         build_info, "_compute_release_version", lambda *_a, **_k: build_info.UNKNOWN
     )
@@ -247,6 +250,83 @@ def test_bld_023_resolve_prefers_git_over_metadata(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(build_info, "_compute_release_version", lambda *_a, **_k: "1.0.7")
     monkeypatch.setattr(build_info, "_release_from_metadata", lambda: "9.9.9")
     assert build_info._resolve_release_version() == "1.0.7"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("1.2.3", "1.2.3"),
+        ("10.0.18", "10.0.18"),
+        (" 1.2.3 ", "1.2.3"),
+    ],
+)
+def test_bld_024_release_from_baked_reads_env(
+    raw: str, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_release_from_baked reads the SAGE_BUILD_VERSION stamp and returns it
+    verbatim (surrounding whitespace stripped). The PATCH segment is preserved
+    in full — proving the value is NOT routed through _parse_metadata_version,
+    which would collapse ``1.2.3`` to ``1.2.0``."""
+    monkeypatch.setenv("SAGE_BUILD_VERSION", raw)
+    assert build_info._release_from_baked() == expected
+
+
+@pytest.mark.parametrize("raw", ["", "1.2", "abc", "1.2.3.4", "v1.2.3", "1.2.x"])
+def test_bld_025_release_from_baked_rejects_malformed(
+    raw: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed or partial stamp (empty, missing PATCH, leading 'v', extra
+    segment, non-numeric) degrades to UNKNOWN rather than raising — the strict
+    MAJOR.MINOR.PATCH anchor rejects everything _parse_metadata_version would
+    leniently accept."""
+    monkeypatch.setenv("SAGE_BUILD_VERSION", raw)
+    assert build_info._release_from_baked() == build_info.UNKNOWN
+
+
+def test_bld_026_release_from_baked_unset_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the stamp unset (the dev-box default), _release_from_baked yields
+    UNKNOWN so resolution falls through unchanged to the metadata tier."""
+    monkeypatch.delenv("SAGE_BUILD_VERSION", raising=False)
+    assert build_info._release_from_baked() == build_info.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    "from_git,from_baked,from_metadata,expected",
+    [
+        ("1.0.7", "3.3.3", "9.9.9", "1.0.7"),  # git wins; baked + metadata ignored
+        (build_info.UNKNOWN, "3.1.4", "9.9.9", "3.1.4"),  # baked wins; metadata NOT consulted
+        (build_info.UNKNOWN, build_info.UNKNOWN, "9.9.5", "9.9.5"),  # metadata wins
+    ],
+)
+def test_bld_027_resolve_precedence_git_then_baked_then_metadata(
+    from_git: str,
+    from_baked: str,
+    from_metadata: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_resolve_release_version honors live git > baked stamp > installed
+    metadata. The middle row is load-bearing: were the baked tier placed below
+    metadata, it would return ``9.9.9`` — the baked stamp must take precedence
+    over metadata, which is never absent in a repo-less build (setuptools-scm's
+    ``fallback_version`` makes it ``0.0.0``)."""
+    monkeypatch.setattr(build_info, "_compute_release_version", lambda *_a, **_k: from_git)
+    monkeypatch.setattr(build_info, "_release_from_baked", lambda: from_baked)
+    monkeypatch.setattr(build_info, "_release_from_metadata", lambda: from_metadata)
+    assert build_info._resolve_release_version() == expected
+
+
+def test_bld_028_resolve_all_tiers_unknown_degrades_not_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When git, baked, and metadata all yield UNKNOWN, _resolve_release_version
+    returns UNKNOWN rather than raising — the repo-less, stamp-less degradation."""
+    monkeypatch.setattr(
+        build_info, "_compute_release_version", lambda *_a, **_k: build_info.UNKNOWN
+    )
+    monkeypatch.setattr(build_info, "_release_from_baked", lambda: build_info.UNKNOWN)
+    monkeypatch.setattr(build_info, "_release_from_metadata", lambda: build_info.UNKNOWN)
+    assert build_info._resolve_release_version() == build_info.UNKNOWN
 
 
 @pytest.mark.parametrize(
