@@ -457,11 +457,11 @@ def test_openapi_info_version_matches_api_version(
 
 
 # ---------------------------------------------------------------------------
-# Test 4: VaultStatsResponse documents lancedb_chunk_count
+# Test 4: VaultStatsResponse documents content_store_chunk_count
 # ---------------------------------------------------------------------------
 
 
-def test_vault_stats_response_documents_lancedb_chunk_count(
+def test_vault_stats_response_documents_content_store_chunk_count(
     sage_core_spec: dict | None,
 ):
     """Spot regression guard for the field that motivated this work."""
@@ -472,22 +472,22 @@ def test_vault_stats_response_documents_lancedb_chunk_count(
     vault_stats = schemas["VaultStatsResponse"]
 
     properties = vault_stats.get("properties") or {}
-    assert "lancedb_chunk_count" in properties, (
-        "VaultStatsResponse.properties.lancedb_chunk_count is missing"
+    assert "content_store_chunk_count" in properties, (
+        "VaultStatsResponse.properties.content_store_chunk_count is missing"
     )
-    field = properties["lancedb_chunk_count"]
+    field = properties["content_store_chunk_count"]
     assert field.get("type") == "integer", (
-        f"VaultStatsResponse.lancedb_chunk_count must have type 'integer', "
+        f"VaultStatsResponse.content_store_chunk_count must have type 'integer', "
         f"got {field.get('type')!r}"
     )
 
     required = vault_stats.get("required") or []
-    assert "lancedb_chunk_count" in required, (
-        "VaultStatsResponse must list 'lancedb_chunk_count' in 'required'"
+    assert "content_store_chunk_count" in required, (
+        "VaultStatsResponse must list 'content_store_chunk_count' in 'required'"
     )
 
 
-def test_vault_stats_response_documents_lancedb_version_count(
+def test_vault_stats_response_documents_content_store_version_count(
     sage_core_spec: dict | None,
 ):
     """Spot regression guard for the bloat-indicator version-count field."""
@@ -498,22 +498,22 @@ def test_vault_stats_response_documents_lancedb_version_count(
     vault_stats = schemas["VaultStatsResponse"]
 
     properties = vault_stats.get("properties") or {}
-    assert "lancedb_version_count" in properties, (
-        "VaultStatsResponse.properties.lancedb_version_count is missing"
+    assert "content_store_version_count" in properties, (
+        "VaultStatsResponse.properties.content_store_version_count is missing"
     )
-    field = properties["lancedb_version_count"]
+    field = properties["content_store_version_count"]
     assert field.get("type") == "integer", (
-        f"VaultStatsResponse.lancedb_version_count must have type 'integer', "
+        f"VaultStatsResponse.content_store_version_count must have type 'integer', "
         f"got {field.get('type')!r}"
     )
 
     required = vault_stats.get("required") or []
-    assert "lancedb_version_count" in required, (
-        "VaultStatsResponse must list 'lancedb_version_count' in 'required'"
+    assert "content_store_version_count" in required, (
+        "VaultStatsResponse must list 'content_store_version_count' in 'required'"
     )
 
 
-def test_vault_stats_response_documents_lancedb_small_fragment_count(
+def test_vault_stats_response_documents_content_store_small_fragment_count(
     sage_core_spec: dict | None,
 ):
     """Spot regression guard for the bloat-indicator small-fragment field."""
@@ -524,18 +524,18 @@ def test_vault_stats_response_documents_lancedb_small_fragment_count(
     vault_stats = schemas["VaultStatsResponse"]
 
     properties = vault_stats.get("properties") or {}
-    assert "lancedb_small_fragment_count" in properties, (
-        "VaultStatsResponse.properties.lancedb_small_fragment_count is missing"
+    assert "content_store_small_fragment_count" in properties, (
+        "VaultStatsResponse.properties.content_store_small_fragment_count is missing"
     )
-    field = properties["lancedb_small_fragment_count"]
+    field = properties["content_store_small_fragment_count"]
     assert field.get("type") == "integer", (
-        f"VaultStatsResponse.lancedb_small_fragment_count must have type 'integer', "
+        f"VaultStatsResponse.content_store_small_fragment_count must have type 'integer', "
         f"got {field.get('type')!r}"
     )
 
     required = vault_stats.get("required") or []
-    assert "lancedb_small_fragment_count" in required, (
-        "VaultStatsResponse must list 'lancedb_small_fragment_count' in 'required'"
+    assert "content_store_small_fragment_count" in required, (
+        "VaultStatsResponse must list 'content_store_small_fragment_count' in 'required'"
     )
 
 

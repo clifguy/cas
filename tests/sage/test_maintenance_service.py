@@ -1251,8 +1251,8 @@ async def test_get_stats_surfaces_retained_version_count(lancedb_vault):
     await _churn_chunks(content_store, cycles=15)
 
     stats = await services.vault_config_service.get_stats()
-    assert stats.lancedb_version_count == await content_store.count_retained_versions()
-    assert stats.lancedb_version_count > 1
+    assert stats.content_store_version_count == await content_store.count_retained_versions()
+    assert stats.content_store_version_count > 1
 
 
 async def test_count_small_fragments_rises_with_churn(lancedb_vault):
@@ -1284,8 +1284,8 @@ async def test_get_stats_surfaces_small_fragment_count(lancedb_vault):
     await _churn_chunks(content_store, cycles=15)
 
     stats = await services.vault_config_service.get_stats()
-    assert stats.lancedb_small_fragment_count == await content_store.count_small_fragments()
-    assert stats.lancedb_small_fragment_count > 0
+    assert stats.content_store_small_fragment_count == await content_store.count_small_fragments()
+    assert stats.content_store_small_fragment_count > 0
 
 
 async def test_read_last_optimize_summary_none_when_no_log(tmp_path):

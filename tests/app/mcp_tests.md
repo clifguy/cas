@@ -87,7 +87,7 @@ including health indicator counts. Mirrors the HTTP stats endpoint response.
   - `by_lifecycle_status`, `by_doc_type`, `by_source_type` (objects)
   - `total_edges`, `by_edge_type` (integer, object)
   - `staging_edge_count` (integer)
-  - `lancedb_size_bytes`, `sqlite_size_bytes` (integers)
+  - `content_store_size_bytes`, `sqlite_size_bytes` (integers)
   - `last_ingestion_at` (string or null)
   - `health` object with: `pending_metadata_count`, `pending_edge_count`,
     `deferred_abstract_count`, `failed_ingestion_count`

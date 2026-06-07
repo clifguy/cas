@@ -64,8 +64,8 @@ export default function Dashboard() {
         {/* Storage */}
         <StatGroupLabel>Storage</StatGroupLabel>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <CountCard value={formatCount(stats.lancedb_chunk_count)} label="LanceDB Chunks" />
-          <CountCard value={formatBytes(stats.lancedb_size_bytes)} label="LanceDB" />
+          <CountCard value={formatCount(stats.content_store_chunk_count)} label="Content Store Chunks" />
+          <CountCard value={formatBytes(stats.content_store_size_bytes)} label="Content Store" />
           <CountCard value={formatBytes(stats.sqlite_size_bytes)} label="SQLite" />
           <CountCard
             value={stats.last_ingestion_at ? new Date(stats.last_ingestion_at).toLocaleDateString() : '-'}
@@ -94,8 +94,8 @@ export default function Dashboard() {
           )}
           <HealthCard label="Failed ingestions" count={stats.health.failed_ingestion_count} linkTo="/search?pipeline_status=failed" />
           <BloatIndicator
-            versionCount={stats.lancedb_version_count}
-            smallFragmentCount={stats.lancedb_small_fragment_count}
+            versionCount={stats.content_store_version_count}
+            smallFragmentCount={stats.content_store_small_fragment_count}
           />
           <LastOptimizeCard summary={stats.last_optimize} />
         </div>
