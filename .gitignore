@@ -27,3 +27,7 @@ CLAUDE.local.md
 
 # Generated data files
 repo_file_inventory.xlsx
+
+# Session-continuity / planning context artifacts at repo root — transient
+# handoff notes, deleted once their planning work completes; not tracked.
+/context-*.md
