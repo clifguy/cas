@@ -1,0 +1,40 @@
+# Representative query set for the keyword-backend fidelity evaluation
+# (scripts/eval_keyword_fidelity.py). A mix of identifier-style lookups,
+# single-term keywords, and multi-term conceptual queries spanning the kinds of
+# content a SAGE portfolio vault holds (architecture decisions, tickets,
+# steering documents, retrieval internals). The corpus is a disposable slice of
+# such content, so these queries are written to land on terms broadly present
+# across it rather than on any one document.
+queries:
+  - reciprocal rank fusion
+  - supersedes edge version history
+  - vault configuration source of truth
+  - lifecycle status active archived
+  - metadata extraction caller responsibility
+  - content store adapter interface
+  - graph store sqlite
+  - deployment target profile
+  - semantic abstract generation
+  - hybrid retrieval vector keyword
+  - reciprocal rank fusion constant
+  - chain head invariant
+  - ingestion pipeline stages
+  - failure record severity
+  - steering document conventions
+  - embedding provider nomic
+  - MCP tool surface
+  - document projection reconstruction
+  - tier3 metadata ticket id
+  - reference document supersession
+  - BM25 keyword search
+  - full text search index
+  - LanceDB content store
+  - retrieval fidelity evaluation
+  - depends_on edge traversal
+  - synthetic header chunk
+  - abstraction provider benchmark
+  - orchestrator steward boundary rule
+  - schema derived pydantic model
+  - single source of truth principle
+  - catalog mode enumeration
+  - recommended limit budget hint

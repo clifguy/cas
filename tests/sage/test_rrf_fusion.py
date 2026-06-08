@@ -1,0 +1,118 @@
+"""Tests for the extracted Reciprocal Rank Fusion helper.
+
+``rrf_fuse`` was lifted out of ``RetrievalService._hybrid_rrf`` so the keyword
+backend fidelity harness can fuse alternative keyword arms through the identical
+formula. These tests pin the exact fused scores (so a silent change to ``k`` or
+the ``+1`` offset is caught), prove the fusion ranks by *rank position* rather
+than raw score magnitude (the central premise of the native-FTS-vs-managed
+evaluation), and assert the production method is a pass-through to the helper.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from sage.adapters.interfaces import SearchResult
+from sage.services.retrieval import RetrievalService
+from sage.utils.rrf import DEFAULT_RRF_K, rrf_fuse
+
+K = DEFAULT_RRF_K  # 60
+
+
+def _result(doc_id: str, score: float = 0.0, heading_path: str = "body") -> SearchResult:
+    return SearchResult(
+        document_id=doc_id,
+        heading_path=heading_path,
+        content=f"content of {doc_id}",
+        score=score,
+    )
+
+
+def test_rrf_fuse_hand_computed_scores() -> None:
+    """Fused scores equal the hand-computed 1/(k+rank+1) sums and sort order.
+
+    vector = [d1, d2, d3], keyword = [d2, d4]. d2 appears in both lists so its
+    contributions accumulate; the remaining docs each contribute from a single
+    list. The expected order is purely a consequence of those sums.
+    """
+    vector = [_result("d1"), _result("d2"), _result("d3")]
+    keyword = [_result("d2"), _result("d4")]
+
+    fused = rrf_fuse(vector, keyword, limit=10)
+
+    expected = {
+        "d1": 1 / (K + 0 + 1),  # vector rank 0
+        "d2": 1 / (K + 1 + 1) + 1 / (K + 0 + 1),  # vector rank 1 + keyword rank 0
+        "d3": 1 / (K + 2 + 1),  # vector rank 2
+        "d4": 1 / (K + 1 + 1),  # keyword rank 1
+    }
+    # Order: d2 (two contributions) > d1 (1/61) > d4 (1/62) > d3 (1/63).
+    assert [r.document_id for r in fused] == ["d2", "d1", "d4", "d3"]
+    for r in fused:
+        assert r.score == pytest.approx(expected[r.document_id])
+
+
+def test_rrf_fuse_uses_rank_not_score() -> None:
+    """Fusion ranks by list position, ignoring the per-result score magnitude.
+
+    The keyword list is ordered best-first but its *scores* are inverted: the
+    rank-0 element carries a tiny score and the rank-1 element a huge one. A
+    fusion that summed raw scores (the exact mistake this evaluation exists to
+    rule out) would put the huge-score element first. Correct RRF keeps the
+    rank-0 element ahead, scored 1/61 vs 1/62.
+    """
+    vector: list[SearchResult] = []
+    keyword = [_result("k_first", score=0.01), _result("k_last", score=99.0)]
+
+    fused = rrf_fuse(vector, keyword, limit=10)
+
+    assert [r.document_id for r in fused] == ["k_first", "k_last"]
+    assert fused[0].score == pytest.approx(1 / (K + 0 + 1))  # 1/61, the larger
+    assert fused[1].score == pytest.approx(1 / (K + 1 + 1))  # 1/62, the smaller
+    assert fused[0].score > fused[1].score
+
+
+class _FixedContentStore:
+    """Minimal content store returning fixed vector and BM25 lists.
+
+    Deliberately not a full ``ContentStore`` subclass: ``_hybrid_rrf`` touches
+    only ``search_semantic`` and ``search_bm25``, so a fake exposing just those
+    two keeps the delegation test focused.
+    """
+
+    def __init__(self, vector: list[SearchResult], bm25: list[SearchResult]) -> None:
+        self._vector = vector
+        self._bm25 = bm25
+
+    async def search_semantic(self, query_embedding, limit, filters=None):  # noqa: ANN001
+        return self._vector[:limit]
+
+    async def search_bm25(self, query, limit, filters=None):  # noqa: ANN001
+        return self._bm25[:limit]
+
+
+async def test_hybrid_rrf_delegates_unchanged() -> None:
+    """``RetrievalService._hybrid_rrf`` is a pass-through to ``rrf_fuse``.
+
+    Guards the refactor: the production method must fetch both arms and fuse
+    them through the shared helper with no behavioural drift. Inputs include a
+    document (``b``) present in both arms so accumulation is exercised.
+    """
+    vector = [_result("a"), _result("b")]
+    bm25 = [_result("b"), _result("c")]
+    store = _FixedContentStore(vector, bm25)
+    service = RetrievalService(
+        graph_store=None,  # type: ignore[arg-type]
+        content_store=store,  # type: ignore[arg-type]
+        embedding_provider=None,  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+    )
+
+    fused = await service._hybrid_rrf([0.0] * 4, "query", limit=10, filters=None)
+    expected = rrf_fuse(vector, bm25, limit=10)
+
+    assert [(r.document_id, r.heading_path) for r in fused] == [
+        (r.document_id, r.heading_path) for r in expected
+    ]
+    for got, want in zip(fused, expected, strict=True):
+        assert got.score == pytest.approx(want.score)
