@@ -284,6 +284,19 @@ class TestSageGetVaultConfig:
         # The provider must be one of the documented enum values.
         assert result["abstraction"]["provider"] in {"qwen3-mlx", "stub"}
 
+    async def test_mcp_get_stack_config_surfaces_profile(self, registered_vault):
+        """`get_stack_config` surfaces the active deployment-profile marker
+        (CAS-ADR-042) additively, alongside the abstraction section.
+
+        Additive only — does not assert provider/model absent, so it stays
+        compatible with the abstraction config that ships beside it.
+        """
+        from sage.mcp_server import get_stack_config
+
+        result = _parse(await get_stack_config())
+        assert "profile" in result
+        assert result["profile"] == "local"
+
 
 # ---------------------------------------------------------------------------
 # 3. update_vault_config

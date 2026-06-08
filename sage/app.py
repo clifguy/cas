@@ -303,8 +303,8 @@ def create_app(
         # Use the MCP server's _vaults dict as the canonical registry so
         # both the REST API and MCP SSE transport share the same services.
         from sage.mcp_init import (
-            build_stack_abstraction_provider,
             load_stack_config_or_default,
+            resolve_stack_abstraction_provider,
             set_stack_config,
         )
         from sage.mcp_server import _vaults
@@ -315,12 +315,13 @@ def create_app(
         # VaultConfigService instances pick up the same singleton.
         _ensure_registry_service(app)
 
-        # CAS-ADR-030: load the stack-wide config once and build the
-        # abstraction provider once; thread it through every per-vault
-        # initialize_services call.
+        # CAS-ADR-042: load the stack-wide config once and resolve the active
+        # deployment profile's abstraction binding once; thread it through every
+        # per-vault initialize_services call. For the local profile the binding
+        # is the stack-wide provider built per CAS-ADR-030.
         stack_cfg = load_stack_config_or_default()
         set_stack_config(stack_cfg)
-        stack_provider = build_stack_abstraction_provider(stack_cfg)
+        stack_provider = resolve_stack_abstraction_provider(stack_cfg)
 
         init_overrides: dict = {"abstraction_provider": stack_provider}
         if content_store_factory is not None:
