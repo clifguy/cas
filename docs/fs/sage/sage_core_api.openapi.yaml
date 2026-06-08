@@ -1122,8 +1122,8 @@ paths:
 
         Response contents: total document count; counts per lifecycle
         state; counts per `doc_type`; counts per `pipeline_status`;
-        storage figures (`lancedb_size_bytes` is computed by walking
-        the on-disk LanceDB directory, `lancedb_chunk_count` is the
+        storage figures (`content_store_size_bytes` is computed by walking
+        the on-disk content-store directory, `content_store_chunk_count` is the
         row count from the chunks table, `sqlite_size_bytes` covers
         the graph.db file and WAL/SHM siblings when present in the MCP
         variant); and health indicators.
@@ -4931,10 +4931,10 @@ components:
         - total_edges
         - by_edge_type
         - staging_edge_count
-        - lancedb_size_bytes
-        - lancedb_chunk_count
-        - lancedb_version_count
-        - lancedb_small_fragment_count
+        - content_store_size_bytes
+        - content_store_chunk_count
+        - content_store_version_count
+        - content_store_small_fragment_count
         - sqlite_size_bytes
         - health
       description: Response body for the vault-stats endpoint; carries document, edge, and storage counts plus health indicators.
@@ -4968,18 +4968,18 @@ components:
         staging_edge_count:
           type: integer
           description: Number of edges in the Tier 2 staging table awaiting review.
-        lancedb_size_bytes:
+        content_store_size_bytes:
           type: integer
-          description: On-disk size of the LanceDB directory in bytes.
-        lancedb_chunk_count:
+          description: On-disk size of the content store in bytes.
+        content_store_chunk_count:
           type: integer
           description: Total chunk row count across all documents.
-        lancedb_version_count:
+        content_store_version_count:
           type: integer
-          description: Count of retained LanceDB dataset versions for the chunks table; rises with un-optimized write churn.
-        lancedb_small_fragment_count:
+          description: Count of retained content-store dataset versions for the chunks table; rises with un-optimized write churn.
+        content_store_small_fragment_count:
           type: integer
-          description: Count of small (un-compacted) LanceDB fragments for the chunks table; rises with un-optimized write churn and is merged away by optimize.
+          description: Count of small (un-compacted) content-store fragments for the chunks table; rises with un-optimized write churn and is merged away by optimize.
         sqlite_size_bytes:
           type: integer
           description: Size of the graph.db SQLite file in bytes.

@@ -40,10 +40,10 @@ export interface VaultStats {
   total_edges: number;
   by_edge_type: Record<string, number>;
   staging_edge_count: number;
-  lancedb_size_bytes: number;
-  lancedb_chunk_count: number;
-  lancedb_version_count: number;
-  lancedb_small_fragment_count: number;
+  content_store_size_bytes: number;
+  content_store_chunk_count: number;
+  content_store_version_count: number;
+  content_store_small_fragment_count: number;
   sqlite_size_bytes: number;
   last_ingestion_at: string | null;
   health: HealthIndicators;

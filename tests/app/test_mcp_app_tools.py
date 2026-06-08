@@ -308,33 +308,33 @@ class TestSageVaultStats:
         result = _parse(await get_vault_stats("test_vault"))
         assert result["sqlite_size_bytes"] > 0
 
-    async def test_lancedb_size_bytes_nonzero_after_indexing(self, single_vault):
-        """lancedb_size_bytes reflects actual LanceDB directory size."""
+    async def test_content_store_size_bytes_nonzero_after_indexing(self, single_vault):
+        """content_store_size_bytes reflects actual content-store directory size."""
         services, config = single_vault
         await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.5)  # allow indexing to complete
 
         result = _parse(await get_vault_stats("test_vault"))
-        assert result["lancedb_size_bytes"] > 0
+        assert result["content_store_size_bytes"] > 0
 
     async def test_storage_sizes_zero_for_empty_vault(self, single_vault):
-        """Empty vault has sqlite overhead but zero LanceDB (no table yet)."""
+        """Empty vault has sqlite overhead but zero content store (no table yet)."""
         result = _parse(await get_vault_stats("test_vault"))
         # SQLite file exists with schema, so it has some size
         assert result["sqlite_size_bytes"] > 0
-        # LanceDB directory may not exist or be empty before first ingest
-        assert result["lancedb_size_bytes"] >= 0
+        # Content-store directory may not exist or be empty before first ingest
+        assert result["content_store_size_bytes"] >= 0
         # Chunk count is 0 before any indexing
-        assert result["lancedb_chunk_count"] == 0
+        assert result["content_store_chunk_count"] == 0
 
-    async def test_lancedb_chunk_count_nonzero_after_indexing(self, single_vault):
-        """lancedb_chunk_count reflects the number of indexed chunk rows."""
+    async def test_content_store_chunk_count_nonzero_after_indexing(self, single_vault):
+        """content_store_chunk_count reflects the number of indexed chunk rows."""
         services, config = single_vault
         await ingest_document("test_vault", "sample.md", "markdown")
         await asyncio.sleep(0.5)  # allow indexing to complete
 
         result = _parse(await get_vault_stats("test_vault"))
-        assert result["lancedb_chunk_count"] > 0
+        assert result["content_store_chunk_count"] > 0
 
 
 # ---------------------------------------------------------------------------

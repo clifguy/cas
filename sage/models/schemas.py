@@ -3992,17 +3992,19 @@ class VaultStatsResponse(BaseModel):
     staging_edge_count: int = Field(
         description="Number of edges in the Tier 2 staging table awaiting review."
     )
-    lancedb_size_bytes: int = Field(description="On-disk size of the LanceDB directory in bytes.")
-    lancedb_chunk_count: int = Field(description="Total chunk row count across all documents.")
-    lancedb_version_count: int = Field(
+    content_store_size_bytes: int = Field(description="On-disk size of the content store in bytes.")
+    content_store_chunk_count: int = Field(
+        description="Total chunk row count across all documents."
+    )
+    content_store_version_count: int = Field(
         description=(
-            "Count of retained LanceDB dataset versions for the chunks table; "
+            "Count of retained content-store dataset versions for the chunks table; "
             "rises with un-optimized write churn."
         )
     )
-    lancedb_small_fragment_count: int = Field(
+    content_store_small_fragment_count: int = Field(
         description=(
-            "Count of small (un-compacted) LanceDB fragments for the chunks "
+            "Count of small (un-compacted) content-store fragments for the chunks "
             "table; rises with un-optimized write churn and is merged away by "
             "optimize."
         )

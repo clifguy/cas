@@ -1,7 +1,7 @@
 // Vitest specs for the Dashboard's content-store bloat + last-optimize wiring.
 //
-// Proves the Dashboard threads lancedb_version_count and
-// lancedb_small_fragment_count from the stats payload into the BloatIndicator
+// Proves the Dashboard threads content_store_version_count and
+// content_store_small_fragment_count from the stats payload into the BloatIndicator
 // card (healthy below the flag thresholds, flagged above either), and renders
 // the last-optimize summary card from stats.last_optimize.
 
@@ -43,10 +43,10 @@ function makeStats(
     total_edges: 0,
     by_edge_type: {},
     staging_edge_count: 0,
-    lancedb_size_bytes: 1000,
-    lancedb_chunk_count: 5,
-    lancedb_version_count: versionCount,
-    lancedb_small_fragment_count: smallFragmentCount,
+    content_store_size_bytes: 1000,
+    content_store_chunk_count: 5,
+    content_store_version_count: versionCount,
+    content_store_small_fragment_count: smallFragmentCount,
     sqlite_size_bytes: 500,
     last_ingestion_at: null,
     last_optimize: lastOptimize,

@@ -69,14 +69,14 @@ from sage.utils.date_parsing import parse_document_date
 # RRF constant (standard value from the original Reciprocal Rank Fusion paper).
 _RRF_K = 60
 
-# Filter keys that LanceDB can pre-filter on as chunk-row columns. Pure
+# Filter keys the content store can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
 # document_id IN-clause resolution entirely. Keep in sync with
 # ``_FILTERABLE_COLUMNS`` in sage/adapters/content_store_lancedb.py.
 _CHUNK_PUSHDOWN_KEYS = frozenset({"doc_type", "lifecycle_status", "project"})
 
 # Over-fetch multipliers applied to ``DiscoverRequest.limit`` when
-# computing how many candidate chunks LanceDB returns before
+# computing how many candidate chunks the content store returns before
 # post-search dedup, RRF re-rank, and min_relevance culls. See
 # ``RetrievalService._fetch_limit`` for the tier semantics.
 _FETCH_MULTIPLIER_NONE = 5
@@ -197,7 +197,7 @@ class RetrievalService:
     def _fetch_limit(request: DiscoverRequest) -> int:
         """Compute content store fetch limit.
 
-        Over-fetch headroom compensates for post-LanceDB culls:
+        Over-fetch headroom compensates for post-search culls:
         document-level dedup (one hit per doc), the inner RRF re-rank
         fetch multiplier, and the optional ``min_relevance`` threshold.
         The size of the headroom depends on what kind of filtering the
@@ -205,8 +205,8 @@ class RetrievalService:
 
         * No filters → 5x. Dedup-only headroom.
         * All pushdownable (``doc_type``, ``lifecycle_status``,
-          ``project``) → 3x. LanceDB has already filtered at the column
-          level, so the only remaining cull is dedup.
+          ``project``) → 3x. The content store has already filtered at the
+          column level, so the only remaining cull is dedup.
         * Mixed (any of ``tags``, ``pipeline_status``, ``document_ids``,
           ``tier3_metadata``) → 10x. Graph-resolved ``document_id`` IN
           clause may
@@ -237,13 +237,13 @@ class RetrievalService:
         """Build the pre-search filter dict for the content store.
 
         Resolves all metadata filters into a content-store pre-filter so
-        the LanceDB top-K cutoff operates on the correct corpus. Two
+        the content-store top-K cutoff operates on the correct corpus. Two
         kinds of filters merge here:
 
         * Chunk-level (``_CHUNK_PUSHDOWN_KEYS``): ``doc_type``,
           ``lifecycle_status``, and ``project`` are stored on each chunk
-          row. Passed through directly to LanceDB as column predicates
-          (for ``doc_type``, for the other two).
+          row. Passed through directly to the content store as column
+          predicates (for ``doc_type``, for the other two).
         * Document-level: ``tags``, ``pipeline_status``,
           ``document_ids``, ``tier3_metadata``. Resolved against the
           graph store into a list of matching ``document_id`` values
@@ -255,7 +255,7 @@ class RetrievalService:
         ``document_id`` list is empty, callers short-circuit to an empty
         result rather than running an unfiltered chunk search. Pure
         pushdown filter sets do not need the short-circuit because
-        LanceDB returns zero rows naturally when no chunk matches.
+        the content store returns zero rows naturally when no chunk matches.
         """
         if not request.filters:
             return None, False
