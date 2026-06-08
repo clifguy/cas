@@ -1,0 +1,81 @@
+# Judged gold set for the keyword-backend RELEVANCE evaluation
+# (scripts/eval_keyword_fidelity.py --mode relevance).
+#
+# Deliberately KEYWORD-SKEWED: the queries are exact identifiers and distinctive,
+# low-semantic-overlap phrasings drawn from specific architecture decisions. This
+# is the case where the keyword arm earns its keep -- where an exact token or a
+# rare phrase, not broad semantic similarity, is the decisive retrieval signal --
+# and therefore where native Postgres `ts_rank` and LanceDB BM25 are most likely
+# to diverge. A semantic-paraphrase gold set would favour the vector arm and
+# under-measure the keyword arm's contribution.
+#
+# Judgement source: known-item with light grades. Each query names one PRIMARY
+# target document (the obvious owning record, graded 2) and optionally a few
+# secondary-relevant documents (graded 1). No LLM judges retrieval at eval time.
+#
+# Selectors are stable, not the opaque hashed document id:
+#   - `adr:<id>` resolves to the ADR carrying that tier3 adr_id (the active
+#     version), which outlives re-versioning -- the version-proof handle.
+#   - a `source_path` (e.g. `imports/...md`) resolves to the active document at
+#     that path. Re-point if the target is later re-versioned.
+# The harness pins every resolved target into the disposable slice, so each
+# judged answer is present in the corpus regardless of the sampling seed/size.
+queries:
+  # --- exact-identifier queries (the identifier token IS the signal) ---------
+  - query: "CAS-ADR-042"
+    primary: "adr:042"
+  - query: "CAS-ADR-040"
+    primary: "adr:040"
+  - query: "CAS-ADR-037"
+    primary: "adr:037"
+  - query: "CAS-ADR-034"
+    primary: "adr:034"
+  - query: "CAS-ADR-028"
+    primary: "adr:028"
+  - query: "CAS-ADR-017"
+    primary: "adr:017"
+  - query: "CAS-ADR-011"
+    primary: "adr:011"
+  - query: "CAS-ADR-001"
+    primary: "adr:001"
+
+  # --- distinctive rare-phrase queries (low semantic overlap, one owner) -----
+  - query: "stack-scope profile co-varying switch adapter ports"
+    primary: "adr:042"
+  - query: "typed-alias value-shape per-field errors request boundary"
+    primary: "adr:040"
+  - query: "chain-scoped edge resolution anchor retraction primitives"
+    primary: "adr:017"
+    relevant: ["adr:023"]
+  - query: "reject unknown caller-supplied kwargs framework boundary"
+    primary: "adr:037"
+  - query: "verb naming convention for MCP tools"
+    primary: "adr:033"
+  - query: "ordinary versus maintenance MCP surface roles"
+    primary: "adr:034"
+  - query: "terminal lifecycle states are barriers not labels"
+    primary: "adr:036"
+  - query: "no-peer-call rule enforced via steward tool surface"
+    primary: "adr:027"
+  - query: "abstraction provider and model stack-wide config not per-vault"
+    primary: "adr:030"
+  - query: "Tier-2 doc_type vocabulary and Tier-3 typed metadata"
+    primary: "adr:028"
+    relevant: ["adr:031"]
+  - query: "self-describing read responses body-form freshness"
+    primary: "adr:039"
+  - query: "single serial per-vault abstraction consumer pipeline-status"
+    primary: "adr:041"
+  - query: "auto edge inference repair chains provenance gate"
+    primary: "adr:019"
+  - query: "vault-config-declared tier3 uniqueness"
+    primary: "adr:031"
+  - query: "enduring-concept discipline ADRs reference categories"
+    primary: "adr:035"
+  - query: "two-type agent taxonomy steward orchestrator"
+    primary: "adr:010"
+  - query: "LangGraph as ROOT Harness orchestration engine"
+    primary: "adr:001"
+  - query: "supersedes-edge version history documentation vault"
+    primary: "adr:022"
+    relevant: ["adr:023"]
