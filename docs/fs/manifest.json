@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.32",
+  "substrate_version": "1.33",
   "revision_history": [
+    {
+      "version": "1.33",
+      "date": "2026-06-07",
+      "summary": "De-substrate the VaultStatsResponse content-store stats surface in sage_core_api.openapi.yaml: rename the four storage fields lancedb_size_bytes / lancedb_chunk_count / lancedb_version_count / lancedb_small_fragment_count to content_store_size_bytes / content_store_chunk_count / content_store_version_count / content_store_small_fragment_count across the required list, the properties block (with verbatim-synced descriptions reworded from 'LanceDB' to 'content store'), and the GET /sage_vaults/{vault_id}/stats endpoint description prose, so the caller-facing surface names the capability rather than the current LanceDB backend ahead of a second content-store backend. Supersedes the field names introduced in substrate v1.10 (the GET /stats backfill that added lancedb_chunk_count). Pydantic mirror renamed in lockstep (VaultStatsResponse in sage/models/schemas.py); the producer kwargs in sage/services/vault_config.py and the CAS Application dashboard interface and cards follow. No behavioral change -- identical integer values, names only; no new component schemas, no shape changes. Gate tests pass with no new allowlist entries: test_openapi_conformance.py YAML<->Pydantic field parity and verbatim-description parity stay green because both sides rename symmetrically, and the three VaultStatsResponse spot-guards now assert the content_store_* names."
+    },
     {
       "version": "1.32",
       "date": "2026-05-31",

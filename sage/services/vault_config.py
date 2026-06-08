@@ -93,9 +93,9 @@ class VaultConfigService:
                 if f.is_file():
                     lancedb_size += f.stat().st_size
 
-        lancedb_chunk_count = await self._content_store.count_chunks()
-        lancedb_version_count = await self._content_store.count_retained_versions()
-        lancedb_small_fragment_count = await self._content_store.count_small_fragments()
+        content_store_chunk_count = await self._content_store.count_chunks()
+        content_store_version_count = await self._content_store.count_retained_versions()
+        content_store_small_fragment_count = await self._content_store.count_small_fragments()
 
         vault_dir = config_path_for_vault(config.vault.id).parent
         last_optimize = read_last_optimize_summary(vault_dir)
@@ -109,9 +109,9 @@ class VaultConfigService:
             by_edge_type=by_edge_type,
             staging_edge_count=staging_count,
             content_store_size_bytes=lancedb_size,
-            content_store_chunk_count=lancedb_chunk_count,
-            content_store_version_count=lancedb_version_count,
-            content_store_small_fragment_count=lancedb_small_fragment_count,
+            content_store_chunk_count=content_store_chunk_count,
+            content_store_version_count=content_store_version_count,
+            content_store_small_fragment_count=content_store_small_fragment_count,
             sqlite_size_bytes=sqlite_size,
             last_ingestion_at=last_ingestion,
             last_optimize=last_optimize,
