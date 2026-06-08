@@ -65,9 +65,7 @@ from sage.models.schemas import (
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.storage.graph_store import EdgeQueryRow, GraphStore
 from sage.utils.date_parsing import parse_document_date
-
-# RRF constant (standard value from the original Reciprocal Rank Fusion paper).
-_RRF_K = 60
+from sage.utils.rrf import rrf_fuse
 
 # Filter keys the content store can pre-filter on as chunk-row columns. Pure
 # pushdown sets (every active key in this set) bypass the graph-store
@@ -826,7 +824,9 @@ class RetrievalService:
     ) -> list[SearchResult]:
         """Reciprocal Rank Fusion of vector and BM25 results (BH-027).
 
-        RRF score = sum(1 / (k + rank)) across result lists.
+        RRF score = sum(1 / (k + rank)) across result lists. The fusion math
+        lives in ``sage.utils.rrf.rrf_fuse`` so the keyword-backend fidelity
+        harness can fuse alternative keyword arms through the identical formula.
         """
         # Fetch more candidates than needed so RRF can re-rank
         fetch_limit = limit * 3
@@ -842,37 +842,7 @@ class RetrievalService:
             filters=filters,
         )
 
-        # Build RRF scores keyed by (document_id, heading_path)
-        rrf_scores: dict[tuple[str, str], float] = {}
-        result_map: dict[tuple[str, str], SearchResult] = {}
-
-        for rank, result in enumerate(vector_results):
-            key = (result.document_id, result.heading_path)
-            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (_RRF_K + rank + 1)
-            result_map[key] = result
-
-        for rank, result in enumerate(bm25_results):
-            key = (result.document_id, result.heading_path)
-            rrf_scores[key] = rrf_scores.get(key, 0.0) + 1.0 / (_RRF_K + rank + 1)
-            if key not in result_map:
-                result_map[key] = result
-
-        # Sort by RRF score descending
-        ranked_keys = sorted(rrf_scores, key=lambda k: rrf_scores[k], reverse=True)
-
-        results = []
-        for key in ranked_keys[:limit]:
-            original = result_map[key]
-            results.append(
-                SearchResult(
-                    document_id=original.document_id,
-                    heading_path=original.heading_path,
-                    content=original.content,
-                    score=rrf_scores[key],
-                )
-            )
-
-        return results
+        return rrf_fuse(vector_results, bm25_results, limit)
 
     async def _results_to_hits(
         self,

@@ -56,6 +56,13 @@ dev = [
     "ruff==0.15.12",
     "pre-commit>=4.0",
 ]
+eval = [
+    # Postgres driver for the keyword-backend fidelity evaluation harness
+    # (scripts/eval_keyword_fidelity.py, sage/utils/keyword_fidelity_eval.py).
+    # Not installed in CI or production; the harness's Postgres-touching test
+    # skips when the driver or a server is absent.
+    "psycopg[binary]>=3.2",
+]
 
 # Recompute the dynamic (setuptools-scm) version when the git commit or tags
 # change, so an editable rebuild reflects new commits and the release tag.
