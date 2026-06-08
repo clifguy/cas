@@ -200,17 +200,17 @@ class TestTrimToSentenceBoundary:
 class TestStackAbstractionConfigProvider:
     """Tests for the ``provider`` dispatch key on StackAbstractionConfig."""
 
-    def test_cfg_001_default_provider_is_qwen3_mlx(self):
+    def test_cfg_001_default_provider_is_local_mlx(self):
         """A StackAbstractionConfig built with no kwargs has
-        provider="qwen3-mlx".
+        provider="local-mlx".
 
-        The default mirrors the JSON schema's `default: "qwen3-mlx"` at the
+        The default mirrors the JSON schema's `default: "local-mlx"` at the
         stack scope so a sage/config.yaml that omits the field still
         constructs a usable provider.
         """
         config = StackAbstractionConfig()
         assert isinstance(config.provider, str)
-        assert config.provider == "qwen3-mlx"
+        assert config.provider == "local-mlx"
 
     def test_cfg_002_unknown_provider_rejected(self):
         """Pydantic Literal rejects keys outside the supported set.

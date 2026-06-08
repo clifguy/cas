@@ -27,7 +27,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.2",
+      "version": "0.3",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model) plus the deployment-profile marker that co-binds the adapter-port implementations for one deployment target. The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.34",
+  "substrate_version": "1.35",
   "revision_history": [
+    {
+      "version": "1.35",
+      "date": "2026-06-08",
+      "summary": "Add the hosted `anthropic` abstraction provider and rename the provider enum value `qwen3-mlx` -> `local-mlx` (T-0286, CAS-ADR-030, CAS-ADR-042). sage/sage_core_config.schema.json bumped v0.2->v0.3: the abstraction `provider` enum becomes `['local-mlx', 'anthropic', 'stub']` (default `local-mlx`), and the `provider` and `model` field descriptions are reworded -- the `model` wording is now provider-conditional (required for `local-mlx` or `anthropic`; a local model id vs a Claude model id), replacing the blanket 'Should be a local model for Phase 1' assertion. Pydantic `StackAbstractionConfig` in sage/config.py mirrors the Literal, default, and both descriptions verbatim (Principle 8); sage/config.yaml renames the value to `local-mlx` and documents the `anthropic` option (model = a Claude id, key from ANTHROPIC_API_KEY). New module sage/adapters/abstraction_prompt.py holds the shared relevance-triage system prompt (SYSTEM_PROMPT_TEMPLATE + _format_system_prompt), re-exported from sage/adapters/abstraction_qwen3.py for backward compatibility; new sage/adapters/abstraction_anthropic.py implements AnthropicAbstractionProvider against the unchanged AbstractionProvider ABC -- a lazy AsyncAnthropic client (API key from the environment, never passed in), a density-proportional Messages API call, deliberately not serialized behind the local provider's MLX _generation_lock (the F-8 guard stays scoped to local providers). The build_stack_abstraction_provider factory in sage/mcp_init.py renames its `qwen3-mlx` branch to `local-mlx` and adds an `anthropic` branch (model-required, loud ValueError when null). The `anthropic` SDK is added to [project].dependencies (cross-platform pure-Python, no Apple-Silicon marker), relocked in uv.lock. Caller-invisibility is preserved and now guarded: no document-path response (ingest_document, get_document, search, get_vault_config) exposes the provider/model, while admin_get_stack_config retains them for operator introspection. Tests: tests/sage/test_abstraction_anthropic.py (ANTH-001..007, incl. the lock-scope guard); STK-006..008 in tests/sage/test_stack_abstraction_dispatch.py (anthropic dispatch, null-model fail-loud, and the MLX-free construction proof that runs on the Linux CI runner); SCH-S-001/002/004 updated for the enum rename; tests/app/test_mcp_vault_management.py gains the caller-invisibility guard with a get_stack_config positive control. The verbatim-description and field-description gates in test_openapi_conformance.py pass without allowlist additions. Non-goal: no per-document abstraction provenance (CAS-ADR-020)."
+    },
     {
       "version": "1.34",
       "date": "2026-06-08",

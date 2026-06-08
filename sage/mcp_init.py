@@ -297,16 +297,23 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     Dispatch contract:
       1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (env override)
       2. stack.abstraction.provider == "stub" -> Stub (explicit opt-out)
-      3. stack.abstraction.provider == "qwen3-mlx"
+      3. stack.abstraction.provider == "local-mlx"
          and stack.abstraction.model is None -> raise ValueError
-      4. stack.abstraction.provider == "qwen3-mlx"
-         and stack.abstraction.model is not None -> Qwen3 (factory)
+      4. stack.abstraction.provider == "local-mlx"
+         and stack.abstraction.model is not None -> local MLX provider (factory)
+      5. stack.abstraction.provider == "anthropic"
+         and stack.abstraction.model is None -> raise ValueError
+      6. stack.abstraction.provider == "anthropic"
+         and stack.abstraction.model is not None -> hosted Claude provider
 
     The env override remains the topmost short-circuit so that tests
-    cannot load Qwen3 alongside the running MCP server (F-8).
-    Provider/model live at stack scope because the Qwen3 provider is a
+    cannot load the local MLX model alongside the running MCP server (F-8).
+    Provider/model live at stack scope because the local MLX provider is a
     process-wide singleton; co-locating the config with the resource
-    boundary resolves the layering contradiction (ADR-030).
+    boundary resolves the layering contradiction (ADR-030). The hosted
+    'anthropic' provider is constructed without loading any local model and
+    carries no unified-memory budget, so it is not serialized behind the
+    local provider's generation lock.
     """
     if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
         return StubAbstractionProvider()
@@ -314,11 +321,11 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     abstraction = stack_config.abstraction
     if abstraction.provider == "stub":
         return StubAbstractionProvider()
-    if abstraction.provider == "qwen3-mlx":
+    if abstraction.provider == "local-mlx":
         if abstraction.model is None:
             raise ValueError(
                 "sage_core_config.abstraction.model is required when "
-                "abstraction.provider is 'qwen3-mlx' (CAS-ADR-030). Set "
+                "abstraction.provider is 'local-mlx' (CAS-ADR-030). Set "
                 "the model identifier in sage/config.yaml, or set "
                 "abstraction.provider to 'stub' to opt the whole stack "
                 "out of semantic abstract generation."
@@ -326,6 +333,18 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
         from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
 
         return get_qwen3_abstraction_provider(model_id=abstraction.model)
+    if abstraction.provider == "anthropic":
+        if abstraction.model is None:
+            raise ValueError(
+                "sage_core_config.abstraction.model is required when "
+                "abstraction.provider is 'anthropic' (CAS-ADR-030). Set "
+                "the Claude model identifier in sage/config.yaml, or set "
+                "abstraction.provider to 'stub' to opt the whole stack "
+                "out of semantic abstract generation."
+            )
+        from sage.adapters.abstraction_anthropic import AnthropicAbstractionProvider
+
+        return AnthropicAbstractionProvider(model_id=abstraction.model)
     raise ValueError(  # pragma: no cover - schema-validated upstream
         f"Unknown stack abstraction provider: {abstraction.provider!r}"
     )
