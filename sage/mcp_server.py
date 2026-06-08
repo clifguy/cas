@@ -55,9 +55,9 @@ from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
 from sage.config import load_vault_config
 from sage.mcp_init import (
     SAGEServices,
-    build_stack_abstraction_provider,
     initialize_services,
     load_stack_config_or_default,
+    resolve_stack_abstraction_provider,
     set_stack_config,
 )
 from sage.sage_api_tools import register_sage_tools
@@ -175,12 +175,13 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     if standalone:
         from sage.vault_discovery import discover_vault_configs
 
-        # CAS-ADR-030: build the SAGE-stack-wide abstraction provider once
-        # at process startup; share it across every vault that doesn't opt
-        # out via vault.abstraction.enabled = False.
+        # CAS-ADR-042: resolve the active deployment profile once at process
+        # startup and share its abstraction binding across every vault that
+        # doesn't opt out via vault.abstraction.enabled = False. For the local
+        # profile the binding is the stack-wide provider built per CAS-ADR-030.
         stack_cfg = load_stack_config_or_default()
         set_stack_config(stack_cfg)
-        stack_abstraction_provider = build_stack_abstraction_provider(stack_cfg)
+        stack_abstraction_provider = resolve_stack_abstraction_provider(stack_cfg)
 
         for config_path in discover_vault_configs(_vault_root):
             try:

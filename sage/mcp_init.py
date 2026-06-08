@@ -9,8 +9,9 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from sage import profiles
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.embedding_nomic import get_nomic_embedding_provider
 from sage.adapters.interfaces import (
@@ -330,6 +331,55 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     )
 
 
+def _local_abstraction_binding(stack_config: SageCoreConfig) -> AbstractionProvider:
+    """Late-binding factory for the local profile's abstraction seam.
+
+    Delegates to the module-level ``build_stack_abstraction_provider`` by name
+    rather than by captured reference, so a test that monkeypatches
+    ``sage.mcp_init.build_stack_abstraction_provider`` is honored through the
+    resolver path (the registry would otherwise pin the original function object
+    captured at import and silently bypass the patch).
+    """
+    return build_stack_abstraction_provider(stack_config)
+
+
+# Register the abstraction-provider binding for the local deployment profile
+# (CAS-ADR-042). The abstraction provider is the keystone seam, and its binding
+# is the whole stack-provider factory above: a future profile attaches its own
+# abstraction binding by registering a different factory here, not by branching
+# this dispatch. ``sage.profiles`` imports no SAGE runtime wiring, so the
+# dependency is one-directional (mcp_init -> profiles) with no import cycle.
+profiles.register_binding(
+    profiles.LOCAL_PROFILE,
+    profiles.ABSTRACTION_SEAM,
+    _local_abstraction_binding,
+)
+
+
+def resolve_stack_profile(stack_config: SageCoreConfig) -> profiles.ResolvedProfile:
+    """Resolve the active deployment profile from the stack config.
+
+    Reads ``stack_config.profile`` and assembles its registered bindings once.
+    The schema enum has already rejected an out-of-range profile value at
+    config load, so the unknown-profile guard inside ``resolve_profile`` is the
+    second line of defense.
+    """
+    return profiles.resolve_profile(stack_config.profile, stack_config)
+
+
+def resolve_stack_abstraction_provider(stack_config: SageCoreConfig) -> AbstractionProvider:
+    """Resolve the abstraction provider for the active deployment profile.
+
+    Thin typed accessor over ``resolve_stack_profile``: returns the binding the
+    active profile assembles for the abstraction seam. For the ``local`` profile
+    that binding is ``build_stack_abstraction_provider``, so the result matches
+    the direct-call behavior exactly while routing the construction path through
+    the profile seam (CAS-ADR-042).
+    """
+    resolved = resolve_stack_profile(stack_config)
+    return cast(AbstractionProvider, resolved.binding(profiles.ABSTRACTION_SEAM))
+
+
 # Closure-pair invariant: the canonical declaration of kwargs that
 # every transport-reachable production call site of ``initialize_services``
 # must thread. ``tests/sage/test_initialize_services_conformance.py`` walks
@@ -629,10 +679,12 @@ async def reload_vault_in_registry(
             config_path = old.config_path
         content_store_factory = old.content_store_factory
 
-    # CAS-ADR-030: thread the stack-built abstraction provider through.
-    # Falls back to the default stack config when no lifespan has run
-    # (test paths that exercise reload directly).
-    stack_provider = build_stack_abstraction_provider(get_stack_config())
+    # CAS-ADR-042: resolve the active deployment profile and thread its
+    # abstraction binding through. For the local profile this is the same
+    # stack-built provider as before (CAS-ADR-030). Falls back to the default
+    # stack config when no lifespan has run (test paths that exercise reload
+    # directly).
+    stack_provider = resolve_stack_abstraction_provider(get_stack_config())
 
     # Build new BEFORE touching old. If initialize_services raises,
     # ``old`` remains installed in the registry and fully functional. The

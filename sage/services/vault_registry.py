@@ -163,10 +163,12 @@ class VaultRegistryService:
         old_yaml_bytes = config_path.read_bytes() if config_path.exists() else None
         _write_config_yaml(config_path, body.config)
 
-        # CAS-ADR-030: thread the stack-built abstraction provider through.
-        from sage.mcp_init import build_stack_abstraction_provider, get_stack_config
+        # CAS-ADR-042: thread the active deployment profile's abstraction
+        # binding through. For the local profile this is the stack-built
+        # provider (CAS-ADR-030).
+        from sage.mcp_init import get_stack_config, resolve_stack_abstraction_provider
 
-        stack_provider = build_stack_abstraction_provider(get_stack_config())
+        stack_provider = resolve_stack_abstraction_provider(get_stack_config())
 
         try:
             services = await self._initialize_services(

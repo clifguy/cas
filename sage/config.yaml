@@ -8,7 +8,14 @@
 # startup. Per-vault knobs (enabled, token-budget tuning) remain in the
 # vault config's `abstraction:` block.
 #
-# Schema: docs/fs/sage/sage_core_config.schema.json (v0.1).
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.2).
+
+# Deployment-profile marker (CAS-ADR-042). The single stack-scope selection
+# that co-binds the adapter-port implementations for one deployment target.
+# `local` -- the on-box, single-process deployment -- is the only profile
+# available today; it is resolved once at startup and its bindings are the
+# current behavior. An unrecognized value fails loud at startup.
+profile: local
 
 abstraction:
   # Dispatch key. `qwen3-mlx` loads Qwen3AbstractionProvider with the

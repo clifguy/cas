@@ -315,6 +315,20 @@ class SageCoreConfig(BaseModel):
     SAGE process; per-vault configuration lives in `VaultConfig`.
     """
 
+    profile: Literal["local"] = Field(
+        default="local",
+        description=(
+            "Deployment-profile marker (CAS-ADR-042). A deployment profile "
+            "is the single stack-scope selection that co-binds the "
+            "adapter-port implementations for one deployment target; the "
+            "layer above the ports stays profile-invariant. The resolver "
+            "assembles 'local' (the on-box, single-process deployment whose "
+            "bindings match today's behavior) once at stack startup, and it "
+            "is the only profile available today. Additional profiles attach "
+            "their bindings by registration as the cloud adapters land, and "
+            "an unrecognized value fails loud at startup."
+        ),
+    )
     abstraction: StackAbstractionConfig = Field(
         default_factory=StackAbstractionConfig,
         description=(

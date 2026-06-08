@@ -2420,10 +2420,12 @@ def register_sage_tools(
         SAGE process (e.g., the abstraction provider singleton). Per-vault
         knobs live in `admin_get_vault_config`.
 
-        Today the response carries one section, `abstraction`, with:
-          - `provider`: dispatch key (`"qwen3-mlx"` or `"stub"`).
-          - `model`: the model identifier passed to the provider's factory
-            (string, or null when the stack is stub-only).
+        Today the response carries:
+          - `profile`: the active deployment-profile marker (e.g. `"local"`),
+            the stack-scope selection that co-binds the adapter ports.
+          - `abstraction`: with `provider` (dispatch key, `"qwen3-mlx"` or
+            `"stub"`) and `model` (the identifier passed to the provider's
+            factory; string, or null when the stack is stub-only).
 
         The shape is forward-compatible: new top-level sections can be added
         without changing the contract of existing callers.
