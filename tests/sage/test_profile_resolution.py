@@ -25,9 +25,9 @@ from sage.mcp_init import (
 def _stub_stack_config() -> SageCoreConfig:
     """A `local`-profile stack config whose abstraction binding is the stub.
 
-    `provider="stub"` is deterministic and provider-rename-proof (only
-    `qwen3-mlx` is renamed elsewhere; `stub` is stable), so resolving the
-    profile assembles without loading MLX (CLAUDE.md RAM rule / F-8).
+    `provider="stub"` is deterministic and provider-rename-proof (`stub` is
+    stable across provider renames), so resolving the profile assembles
+    without loading MLX (CLAUDE.md RAM rule / F-8).
     """
     return SageCoreConfig(abstraction=StackAbstractionConfig(provider="stub", model=None))
 
@@ -101,7 +101,7 @@ def test_prf_004_resolve_stack_abstraction_provider_routes_through_factory(monke
     resolver accessor and the direct factory call must return that sentinel.
 
     Anti-coincidental-pass: if the accessor bypassed the registered factory it
-    would not return the sentinel. (The `"qwen3-mlx"` provider value is the
+    would not return the sentinel. (The `"local-mlx"` provider value is the
     current enum literal; a later provider rename updates it in lockstep with
     the schema and config.)
     """
@@ -118,7 +118,7 @@ def test_prf_004_resolve_stack_abstraction_provider_routes_through_factory(monke
     )
 
     cfg = SageCoreConfig(
-        abstraction=StackAbstractionConfig(provider="qwen3-mlx", model="mlx-community/test")
+        abstraction=StackAbstractionConfig(provider="local-mlx", model="mlx-community/test")
     )
     via_resolver = resolve_stack_abstraction_provider(cfg)
     via_factory = build_stack_abstraction_provider(cfg)

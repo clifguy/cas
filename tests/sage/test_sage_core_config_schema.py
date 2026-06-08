@@ -29,25 +29,30 @@ def _abstraction_schema() -> dict:
 
 def test_sch_s_001_stack_unknown_provider_rejected():
     """A stack-config `abstraction.provider` value outside the enum fails
-    validation against the stack schema.
+    validation against the stack schema; the in-enum values pass.
 
     Anti-coincidental-pass: an unknown value (``"ollama"``) must fail, not
     just any string. A typo that left the field as bare ``"type": "string"``
-    (no enum) would silently accept it.
+    (no enum) would silently accept it. The retired ``"qwen3-mlx"`` value is
+    asserted to fail too, proving the rename to ``"local-mlx"`` took (not just
+    that ``"anthropic"`` was added alongside the old key).
     """
     schema = _abstraction_schema()
-    instance = {
-        "provider": "ollama",
-        "model": "mlx-community/test",
-    }
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(instance, schema)
+
+    # Positive controls: every documented enum value validates.
+    for good in ("local-mlx", "anthropic", "stub"):
+        jsonschema.validate({"provider": good, "model": "x"}, schema)
+
+    # Unknown value and the retired pre-rename key both fail.
+    for bad in ("ollama", "qwen3-mlx"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"provider": bad, "model": "mlx-community/test"}, schema)
 
 
 def test_sch_s_002_stack_provider_absent_passes_default_applied():
     """An abstraction block with `provider` absent validates against the
     schema, and `StackAbstractionConfig.model_validate` applies the
-    Pydantic default of `"qwen3-mlx"`.
+    Pydantic default of `"local-mlx"`.
 
     Confirms the two single-source-of-truth points (JSON Schema and
     Pydantic model) agree on the default per CAS principle 1.
@@ -62,7 +67,7 @@ def test_sch_s_002_stack_provider_absent_passes_default_applied():
     from sage.config import StackAbstractionConfig
 
     cfg = StackAbstractionConfig.model_validate(instance)
-    assert cfg.provider == "qwen3-mlx"
+    assert cfg.provider == "local-mlx"
 
 
 def test_sch_s_003_stack_additional_properties_rejected():
@@ -75,7 +80,7 @@ def test_sch_s_003_stack_additional_properties_rejected():
     """
     schema = _abstraction_schema()
     instance = {
-        "provider": "qwen3-mlx",
+        "provider": "local-mlx",
         "model": "mlx-community/test",
         "max_abstract_tokens": 500,  # vault-scope field; must be rejected here
     }
@@ -85,7 +90,7 @@ def test_sch_s_003_stack_additional_properties_rejected():
 
 def test_sch_s_004_stack_provider_field_shape():
     """Structural assertion: the schema declares `provider` as a string
-    enum with the documented values and a `qwen3-mlx` default, and `model`
+    enum with the documented values and a `local-mlx` default, and `model`
     as nullable string with default null.
 
     Catches drift in any single property — a missing `enum` makes
@@ -96,8 +101,8 @@ def test_sch_s_004_stack_provider_field_shape():
     schema = _abstraction_schema()
     provider = schema["properties"]["provider"]
     assert provider["type"] == "string"
-    assert provider["enum"] == ["qwen3-mlx", "stub"]
-    assert provider["default"] == "qwen3-mlx"
+    assert provider["enum"] == ["local-mlx", "anthropic", "stub"]
+    assert provider["default"] == "local-mlx"
 
     model = schema["properties"]["model"]
     # nullable string: declared as either ["string", "null"] or via oneOf

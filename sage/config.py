@@ -283,26 +283,29 @@ class StackAbstractionConfig(BaseModel):
     Loaded once at SAGE process startup before any vault is registered.
     Carries the provider dispatch key and the model identifier passed to
     the provider's factory. Co-located with the resource boundary because
-    the Qwen3 provider is enforced as a process-wide singleton.
+    the local MLX provider is enforced as a process-wide singleton.
     """
 
-    provider: Literal["qwen3-mlx", "stub"] = Field(
-        default="qwen3-mlx",
+    provider: Literal["local-mlx", "anthropic", "stub"] = Field(
+        default="local-mlx",
         description=(
             "Abstraction provider dispatch key (Abstraction Provider "
             "Evaluation Framework §3.6, re-anchored at stack scope by "
-            "CAS-ADR-030). 'qwen3-mlx' loads Qwen3AbstractionProvider "
-            "with the model identifier from the 'model' field. 'stub' "
-            "loads StubAbstractionProvider (test/disabled stacks)."
+            "CAS-ADR-030). 'local-mlx' loads the local MLX provider "
+            "(Qwen3) with the model identifier from the 'model' field. "
+            "'anthropic' loads the hosted Claude provider with the model "
+            "identifier from the 'model' field. 'stub' loads the stub "
+            "provider (test/disabled stacks)."
         ),
     )
     model: str | None = Field(
         default=None,
         description=(
             "LLM model identifier for abstract generation, passed to the "
-            "provider's factory. Required when provider is 'qwen3-mlx' "
-            "(startup fails loudly if null). Ignored when provider is "
-            "'stub'. Should be a local model for Phase 1."
+            "provider's factory. Required when provider is 'local-mlx' or "
+            "'anthropic' (startup fails loudly if null): a local model "
+            "identifier for 'local-mlx', a Claude model identifier for "
+            "'anthropic'. Ignored when provider is 'stub'."
         ),
     )
 
@@ -334,7 +337,7 @@ class SageCoreConfig(BaseModel):
         description=(
             "Stack-wide abstraction provider configuration (CAS-ADR-030). "
             "The provider and model identifier are SAGE-process-wide "
-            "because the Qwen3 provider is enforced as a singleton across "
+            "because the local MLX provider is enforced as a singleton across "
             "the process; co-locating the config with the resource "
             "boundary avoids the layering contradiction where a per-vault "
             "field controls a stack-wide resource. Per-vault opt-in and "
