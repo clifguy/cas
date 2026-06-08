@@ -9,25 +9,30 @@ MCP clients.
 
 It also single-sources the project version, derived live from VCS state. The
 running ``RELEASE_VERSION`` is ``MAJOR.MINOR.PATCH`` where PATCH is the commit
-distance since the most recent ``vMAJOR.MINOR.0`` tag (read from ``git
-describe`` at import, with the installed distribution metadata as the fallback
-when no git checkout is present). ``API_VERSION`` is its ``MAJOR.MINOR``
-contract segment: the FastAPI app version, the OpenAPI document, and the
-committed OpenAPI specs track it, so they stay stable between minor releases.
-The MCP handshake and startup banner surface the full ``RELEASE_VERSION`` with
-the build identity. There is no second read site.
+distance since the most recent ``vMAJOR.MINOR.0`` tag, resolved at import across
+three tiers: live ``git describe`` (the dev-box path); then a build-time-baked
+stamp read from the ``SAGE_BUILD_VERSION`` environment variable, which a
+repo-less build populates from a build ARG (e.g. a container's
+``ARG SAGE_BUILD_VERSION`` → ``ENV SAGE_BUILD_VERSION=1.2.3``) so a ``.git``-less
+deploy still reports its real version; then the installed distribution metadata.
+``API_VERSION`` is its ``MAJOR.MINOR`` contract segment: the FastAPI app version,
+the OpenAPI document, and the committed OpenAPI specs track it, so they stay
+stable between minor releases. The MCP handshake and startup banner surface the
+full ``RELEASE_VERSION`` with the build identity. There is no second read site.
 
 Every value is computed **once at import** and frozen in module constants for
 the lifetime of the process. The build identity therefore reflects the code
 the running process actually loaded, never a value re-read from disk per
 request: if it disagrees with the repository HEAD, the process is serving
-stale code. Outside a git checkout / installed distribution (e.g. a bare
-source tree) both degrade to the literal ``"unknown"`` rather than failing.
+stale code. With no git checkout, no ``SAGE_BUILD_VERSION`` stamp, and no
+installed distribution metadata, the values degrade to the literal
+``"unknown"`` rather than failing.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -51,6 +56,15 @@ _DESCRIBE_RE = re.compile(r"^v?(\d+)\.(\d+)(?:\.\d+)?-(\d+)-g[0-9a-f]+", re.IGNO
 #: Matches a setuptools-scm ``no-guess-dev`` distribution version and captures
 #: MAJOR, MINOR, and the ``.devN`` commit distance (absent → exactly on a tag).
 _METADATA_RE = re.compile(r"^(\d+)\.(\d+)(?:\.\d+)?(?:\.post\d+)?(?:\.dev(\d+))?")
+
+#: Environment variable carrying the build-time-baked release version, read once
+#: at import as the fallback when no live git checkout is present.
+_BAKED_VERSION_ENV: str = "SAGE_BUILD_VERSION"
+
+#: Matches a strict, complete ``MAJOR.MINOR.PATCH`` stamp. Unlike
+#: :data:`_METADATA_RE` it requires and preserves all three segments, so a baked
+#: ``1.2.3`` round-trips verbatim rather than collapsing to ``1.2.0``.
+_BAKED_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 _GIT_TIMEOUT_S: float = 5.0
 
@@ -170,16 +184,43 @@ def _release_from_metadata() -> str:
     return parsed if parsed is not None else UNKNOWN
 
 
-def _resolve_release_version() -> str:
-    """Resolve the running release version: live git first, metadata fallback.
+def _release_from_baked() -> str:
+    """Return the build-time-baked ``MAJOR.MINOR.PATCH`` release version, if any.
 
-    Prefers ``git describe`` (accurate at every restart with no reinstall);
-    falls back to the installed distribution metadata when no git checkout is
-    present. :data:`UNKNOWN` only when neither resolves.
+    Reads the :data:`_BAKED_VERSION_ENV` (``SAGE_BUILD_VERSION``) environment
+    variable, which a repo-less build (e.g. a container image) populates from a
+    build ARG so the runtime reports its real version where live git is absent.
+    The value must be a strict, complete ``MAJOR.MINOR.PATCH`` stamp; an unset,
+    empty, or malformed value degrades to :data:`UNKNOWN` rather than raising.
+    """
+    raw = os.environ.get(_BAKED_VERSION_ENV)
+    if not raw:
+        return UNKNOWN
+    match = _BAKED_RE.match(raw.strip())
+    if match is None:
+        return UNKNOWN
+    return f"{int(match.group(1))}.{int(match.group(2))}.{int(match.group(3))}"
+
+
+def _resolve_release_version() -> str:
+    """Resolve the running release version across three tiers.
+
+    Order of preference: live ``git describe`` (accurate at every restart with
+    no reinstall, the dev-box path) → the build-time-baked
+    :data:`_BAKED_VERSION_ENV` stamp (a repo-less deploy's real version) → the
+    installed distribution metadata. :data:`UNKNOWN` only when none resolves.
+
+    The baked stamp sits *above* metadata deliberately: setuptools-scm's
+    ``fallback_version`` means metadata is never absent in a repo-less build (it
+    reports ``0.0.0``), so a lower-priority baked tier would be shadowed and
+    never consulted.
     """
     from_git = _compute_release_version(_SAGE_PKG_DIR)
     if from_git != UNKNOWN:
         return from_git
+    from_baked = _release_from_baked()
+    if from_baked != UNKNOWN:
+        return from_baked
     return _release_from_metadata()
 
 
