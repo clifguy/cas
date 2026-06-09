@@ -350,8 +350,10 @@ async def test_cr_020_mixed_traverse_per_edge_policy(graph_store, graph_ops_serv
 
 
 async def test_cr_021_anchor_document_missing_suppresses_with_warn(
-    graph_store, graph_ops_service, caplog
+    sqlite_graph_store, sqlite_graph_ops_service, caplog
 ):
+    graph_store = sqlite_graph_store
+    graph_ops_service = sqlite_graph_ops_service
     await _seed_ab_worked_example(graph_store, graph_ops_service)
 
     # Purge a3 (the source anchor) directly from the documents table.

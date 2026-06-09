@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from sage.adapters.interfaces import GraphStore
+from sage.adapters.interfaces import GraphStore, NaturalKeyConflict
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
@@ -827,7 +827,7 @@ class SqliteGraphStore(GraphStore):
         """Insert an edge. Return ``(stored_edge, created)``.
 
         Under ``on_conflict="raise"`` (default), a duplicate natural-key
-        triple raises ``sqlite3.IntegrityError`` and the caller is
+        triple raises ``NaturalKeyConflict`` and the caller is
         expected to handle it (or, for atomic operations, allow the
         transaction to roll back).
 
@@ -851,15 +851,19 @@ class SqliteGraphStore(GraphStore):
             # lock until close() and block sibling pool connections -- matching
             # _insert_document_sync's discipline.
             conn.rollback()
-            if on_conflict == "noop" and _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+            is_natural_key = _is_unique_violation(exc, _EDGES_UNIQ_INDEX)
+            if on_conflict == "noop" and is_natural_key:
                 existing = self._find_edge_by_natural_key_sync(
                     edge.source_id, edge.target_id, edge.edge_type.value
                 )
-                if existing is None:
-                    # Race or matcher false-positive: the row vanished
-                    # between INSERT and lookup. Surface the original.
-                    raise
-                return existing, False
+                if existing is not None:
+                    return existing, False
+                # Race or matcher false-positive: the row vanished between
+                # INSERT and lookup. Fall through to the neutral conflict signal.
+            if is_natural_key:
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
             raise
         return edge, True
 
@@ -974,6 +978,13 @@ class SqliteGraphStore(GraphStore):
             self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
             self._exec_insert_edge(conn, edge)
             conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            if _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
+            raise
         except Exception:
             conn.rollback()
             raise
@@ -1025,6 +1036,10 @@ class SqliteGraphStore(GraphStore):
         except sqlite3.IntegrityError as exc:
             conn.rollback()
             self._maybe_raise_tier3_violation(conn, exc, new_doc, supersedes_id=predecessor_id)
+            if _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
             raise
         except Exception:
             conn.rollback()
@@ -1294,6 +1309,15 @@ class SqliteGraphStore(GraphStore):
                     [tombstone_version, *tombstone_edge_ids],
                 )
             conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            if _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                raise NaturalKeyConflict(
+                    merged_from_edge.source_id,
+                    merged_from_edge.target_id,
+                    merged_from_edge.edge_type.value,
+                ) from exc
+            raise
         except Exception:
             conn.rollback()
             raise
@@ -1525,7 +1549,7 @@ class SqliteGraphStore(GraphStore):
         """Insert a staging edge. Return ``(stored_edge, created)``.
 
         Under ``on_conflict="raise"`` (default), a duplicate natural-key
-        triple raises ``sqlite3.IntegrityError``.
+        triple raises ``NaturalKeyConflict``.
 
         Under ``on_conflict="noop"``, a duplicate is converted
         to a no-op: the pre-existing staging edge is loaded and returned
@@ -1560,13 +1584,19 @@ class SqliteGraphStore(GraphStore):
             # conflict, so the store's transaction never stays open holding the
             # WAL write lock (see _insert_edge_sync).
             conn.rollback()
-            if on_conflict == "noop" and _is_unique_violation(exc, _STAGING_EDGES_UNIQ_INDEX):
+            is_natural_key = _is_unique_violation(exc, _STAGING_EDGES_UNIQ_INDEX)
+            if on_conflict == "noop" and is_natural_key:
                 existing = self._find_staging_edge_by_natural_key_sync(
                     edge.source_id, edge.target_id, edge.edge_type.value
                 )
-                if existing is None:
-                    raise
-                return existing, False
+                if existing is not None:
+                    return existing, False
+                # Race: the row vanished between INSERT and lookup. Fall through
+                # to the neutral conflict signal.
+            if is_natural_key:
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
             raise
         return edge, True
 
