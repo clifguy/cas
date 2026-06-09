@@ -37,8 +37,12 @@ def test_chunks_table_has_vector_fts_and_indexes():
     """The content chunks table carries the pgvector embedding column, the
     generated tsvector full-text column, and their HNSW + GIN indexes."""
     assert "vector(768)" in pgschema.CHUNKS_TABLE
-    assert "to_tsvector('english', content)" in pgschema.CHUNKS_TABLE
     assert "tsvector" in pgschema.CHUNKS_TABLE
+    # The generated tsv weaves heading_path (weight A) and content (weight D)
+    # so keyword search matches terms that appear only in a heading.
+    assert "to_tsvector('english', heading_path)" in pgschema.CHUNKS_TABLE
+    assert "to_tsvector('english', content)" in pgschema.CHUNKS_TABLE
+    assert "setweight" in pgschema.CHUNKS_TABLE
     content_idx = "\n".join(pgschema.CONTENT_INDEXES)
     assert "USING GIN (tsv)" in content_idx
     assert "USING hnsw (embedding vector_cosine_ops)" in content_idx
@@ -177,6 +181,21 @@ async def test_schema_is_usable_end_to_end(pg_pool):
             ("keyword",),
         )
         assert (await cur.fetchone())[0] == "doc1"
+
+        # The weighted tsv covers heading_path (weight A): a term that appears
+        # only in a heading is still findable via ts_rank. A distinct embedding
+        # keeps doc1 the unique nearest neighbour for the vector query below.
+        far_embedding = [1.0] + [0.0] * 767
+        await conn.execute(
+            "INSERT INTO chunks (document_id, heading_path, content, chunk_index, embedding) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            ("doc2", "Section > headingonlyterm notes", "no body match present", 0, far_embedding),
+        )
+        cur = await conn.execute(
+            "SELECT document_id FROM chunks WHERE tsv @@ websearch_to_tsquery('english', %s)",
+            ("headingonlyterm",),
+        )
+        assert (await cur.fetchone())[0] == "doc2"
 
         cur = await conn.execute(
             "SELECT document_id FROM chunks ORDER BY embedding <=> %s::vector LIMIT 1",

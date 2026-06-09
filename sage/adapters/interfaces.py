@@ -196,6 +196,18 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
+    async def measured_byte_size(self) -> int:
+        """Return the content store's on-disk byte footprint.
+
+        Read-only. The substrate-native total size of the chunk store
+        (e.g. a directory byte sum for a file-backed store, or the total
+        relation size for a relational one), so the dashboard can report
+        content-store size without knowing which binding is active.
+        Returns 0 for substrates with no on-disk presence and when the
+        underlying store has not been created yet.
+        """
+
+    @abstractmethod
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """Reclaim disk by compacting fragments and pruning old versions.
 

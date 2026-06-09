@@ -192,7 +192,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     doc_type text,
     lifecycle_status text,
     project text,
-    tsv tsvector GENERATED ALWAYS AS (to_tsvector('{TEXT_SEARCH_CONFIG}', content)) STORED
+    tsv tsvector GENERATED ALWAYS AS (
+        setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', heading_path), 'A')
+        || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', content), 'D')
+    ) STORED
 );
 """
 
