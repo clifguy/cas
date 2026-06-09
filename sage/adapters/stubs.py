@@ -176,6 +176,10 @@ class StubContentStore(ContentStore):
         """Return 0: the in-memory stub has no on-disk fragments."""
         return 0
 
+    async def measured_byte_size(self) -> int:
+        """Return 0: the in-memory stub has no on-disk footprint."""
+        return 0
+
     async def optimize(self, cleanup_older_than: timedelta) -> ContentStoreOptimizeSnapshot:
         """No-op: the in-memory stub has no on-disk presence to reclaim.
 
