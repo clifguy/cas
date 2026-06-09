@@ -27,8 +27,8 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.3",
-      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model) plus the deployment-profile marker that co-binds the adapter-port implementations for one deployment target. The on-disk file is sage/config.yaml at the repo root.",
+      "version": "0.4",
+      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, and the Postgres storage-engine connection parameters (non-secret; password from the environment). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
     {
@@ -183,6 +183,11 @@
   "deferred": [],
   "substrate_version": "1.35",
   "revision_history": [
+    {
+      "version": "1.36",
+      "date": "2026-06-08",
+      "summary": "Add the Postgres storage-engine connection block to the stack config and stand up the local Postgres runtime, schema/DDL bootstrap, async psycopg3 driver + pool, and pytest harness (T-0292, CAS-ADR-042). sage/sage_core_config.schema.json bumped v0.3->v0.4: a new top-level `postgres` object (additionalProperties:false) carries non-secret connection parameters -- host (null => local unix socket), port, database, user (null => OS peer auth), sslmode, min_pool_size, max_pool_size, and the extensions list the bootstrap enables (default ['vector','pgstattuple']; 'pg_repack' is local-runbook-only because managed/containerized targets may not carry it). The password is never in config -- it is read from $SAGE_PG_PASSWORD by the pool's conninfo composer. Pydantic StackPostgresConfig in sage/config.py mirrors the schema verbatim (Principle 8, model_config extra='forbid') and SageCoreConfig gains a `postgres` field; sage/config.yaml gains the local-socket default block; the (StackPostgresConfig, #/properties/postgres) pair is registered in SAGE_CONFIG_CLASS_TO_SCHEMA so the verbatim-description gate covers it. New package sage/storage/postgres/ holds schema.py (the canonical idempotent DDL both the local and the cloud target provision from -- documents/edges/staging_edges/users/document_tags graph tables dialect-substituted from migrations.py per the T-0289 audit, plus the content chunks table with a vector(768) column + HNSW index and a generated tsvector column + GIN index per the T-0291 native-ts_rank decision -- with identifier guards and a disposable-target guard) and pool.py (PostgresConnectionParams, build_conninfo, create_pool over psycopg_pool.AsyncConnectionPool with a pgvector-registering configure hook; lazy psycopg/pgvector imports so the module stays importable without the driver and sage.storage imports no upstream layer). scripts/bootstrap_postgres.py is the dev-provisioning CLI over bootstrap_schema. The storage test harness (tests/sage/conftest.py) adds session-scoped disposable-schema fixtures that skip when SAGE_TEST_PG_DSN is unset (psycopg importorskip); .github/workflows/ci.yml test job gains a pgvector/pgvector:pg17 service container so the storage tests run in CI. psycopg[binary,pool] + pgvector are added to the test extra and relocked in uv.lock. Strict scope fence: no profile flip (T-0299), no data migration (T-0298), no GraphStore/ContentStore adapter (T-0294/T-0296), no chain-head trigger or dynamic per-vault tier3 partial-unique indexes (deferred to T-0296); the live serving path does not import the pool. Setup runbook at docs/process/postgres-local-runtime.md (Homebrew postgresql@17 + pgvector under launchd, socket, CREATE EXTENSION incl. local pg_repack). The verbatim-description and field-description gates in test_openapi_conformance.py pass with the one new registry entry and no allowlist additions."
+    },
     {
       "version": "1.35",
       "date": "2026-06-08",

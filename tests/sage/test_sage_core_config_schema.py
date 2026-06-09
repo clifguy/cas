@@ -186,3 +186,83 @@ def test_sch_s_008_loader_fails_loud_on_unknown_profile(tmp_path):
     good.write_text("profile: local\nabstraction:\n  provider: stub\n  model: null\n")
     cfg = load_sage_core_config(good)
     assert cfg.profile == "local"
+
+
+# ---------------------------------------------------------------------------
+# Postgres storage-engine connection block (CAS-ADR-042). SCH-S-009..012.
+# ---------------------------------------------------------------------------
+
+
+def _postgres_schema() -> dict:
+    return _stack_schema()["properties"]["postgres"]
+
+
+def test_sch_s_009_postgres_additional_properties_rejected():
+    """The stack `postgres` block forbids unknown properties at both gates.
+
+    Anti-coincidental-pass: the positive controls (a known field) must validate,
+    while an unknown key is rejected by the JSON Schema *and* by
+    StackPostgresConfig (model_config extra='forbid'). If additionalProperties
+    were relaxed, or the model defaulted to extra='ignore', a typo'd connection
+    field would pass silently.
+    """
+    from pydantic import ValidationError
+
+    from sage.config import StackPostgresConfig
+
+    schema = _postgres_schema()
+    jsonschema.validate({"database": "sage"}, schema)  # positive control
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({"bogus": "x"}, schema)
+
+    StackPostgresConfig.model_validate({"database": "sage"})  # positive control
+    with pytest.raises(ValidationError):
+        StackPostgresConfig.model_validate({"bogus": "x"})
+
+
+def test_sch_s_010_postgres_absent_passes_defaults_applied():
+    """An instance with `postgres` absent validates against the schema, and
+    SageCoreConfig applies the documented socket-default connection parameters.
+    """
+    jsonschema.validate({}, _stack_schema())
+
+    from sage.config import SageCoreConfig
+
+    pg = SageCoreConfig.model_validate({}).postgres
+    assert pg.host is None and pg.user is None and pg.sslmode is None
+    assert pg.port == 5432 and pg.database == "sage"
+    assert pg.min_pool_size == 1 and pg.max_pool_size == 10
+    assert pg.extensions == ["vector", "pgstattuple"]
+
+
+def test_sch_s_011_postgres_full_block_agrees_schema_and_model():
+    """A fully-specified `postgres` block validates against the JSON Schema and
+    round-trips through StackPostgresConfig with identical values (Principle 8).
+    """
+    block = {
+        "host": "db.example",
+        "port": 6432,
+        "database": "sage_cloud",
+        "user": "svc",
+        "sslmode": "require",
+        "min_pool_size": 2,
+        "max_pool_size": 20,
+        "extensions": ["vector", "pgstattuple", "pg_repack"],
+    }
+    jsonschema.validate({"postgres": block}, _stack_schema())
+
+    from sage.config import StackPostgresConfig
+
+    pg = StackPostgresConfig.model_validate(block)
+    assert pg.model_dump() == block
+
+
+def test_sch_s_012_postgres_config_carries_no_secret():
+    """StackPostgresConfig has no password/DSN field: a credential cannot be
+    sourced from configuration -- the pool reads it from the environment.
+    """
+    from sage.config import StackPostgresConfig
+
+    fields = set(StackPostgresConfig.model_fields)
+    assert "password" not in fields
+    assert "dsn" not in fields
