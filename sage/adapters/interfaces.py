@@ -1,14 +1,22 @@
 """Abstract base classes for swappable external dependencies.
 
-Production implementations: LanceDB (ContentStore), sentence-transformers
-(EmbeddingProvider), MLX/Qwen3 (AbstractionProvider). Stubs in stubs.py
-provide deterministic behavior for testing.
+Production implementations: SQLite (GraphStore), LanceDB (ContentStore),
+sentence-transformers (EmbeddingProvider), MLX/Qwen3 (AbstractionProvider).
+Stubs in stubs.py provide deterministic behavior for testing.
+
+The port value types these signatures reference (``EdgeQueryRow``,
+``LinkReadContext``, ``OnConflict``) live in ``sage.models.graph_rows`` so the
+port depends only on the models leaf, never on a concrete store module.
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TypedDict
+
+from sage.models.enums import ResolutionPolicy
+from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
+from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 
 # Reserved heading_path marker for the per-document synthetic header chunk
 # carrying title, source filename stem, tags, semantic_abstract, and
@@ -223,3 +231,274 @@ class AbstractionProvider(ABC):
         avoid restating identifying metadata the agent already sees.
         Pass None when no doc_type is available.
         """
+
+
+class GraphStore(ABC):
+    """Interface for the document/edge/user graph store (SQLite in production).
+
+    Captures the surface the service layer consumes. Backend-specific
+    introspection that has no cross-store meaning (SQLite PRAGMA readers) is
+    intentionally omitted from the port and lives only on the concrete impl.
+    """
+
+    # --- Lifecycle ---
+    @abstractmethod
+    async def initialize(self, migrate: bool = False) -> None:
+        """Prepare the store for use; apply pending migrations when migrate=True."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Release all backing resources. Idempotent; subsequent ops raise."""
+
+    # --- Documents ---
+    @abstractmethod
+    async def insert_document(self, doc: Document) -> None:
+        """Persist a new document record."""
+
+    @abstractmethod
+    async def get_document(self, doc_id: str) -> Document | None:
+        """Return the document with this id, or None if absent."""
+
+    @abstractmethod
+    async def update_document(self, doc_id: str, updates: dict) -> Document | None:
+        """Apply a partial update; return the updated document or None if absent."""
+
+    @abstractmethod
+    async def list_all_documents(self) -> list[Document]:
+        """Return every document record in the store."""
+
+    @abstractmethod
+    async def query_documents(
+        self,
+        filters: dict[str, object] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        *,
+        default_exclude_failed: bool = True,
+    ) -> tuple[list[Document], int]:
+        """Filtered, paginated, optionally-sorted document query.
+
+        Returns the page plus the total count of matching rows. By default
+        excludes documents whose pipeline ended in a failed state.
+        """
+
+    @abstractmethod
+    async def find_by_source_path(self, source_path: str) -> list[Document]:
+        """Return documents whose source_path matches exactly."""
+
+    @abstractmethod
+    async def find_documents_by_title(self, title: str) -> list[Document]:
+        """Return documents whose title matches exactly."""
+
+    @abstractmethod
+    async def search_metadata(self, query: str, limit: int = 20) -> list[Document]:
+        """Keyword search over indexed document metadata."""
+
+    @abstractmethod
+    async def search_abstracts(self, query: str, limit: int = 20) -> list[Document]:
+        """Keyword search over generated semantic abstracts."""
+
+    # --- Tier3 unique indexes ---
+    @abstractmethod
+    async def ensure_tier3_unique_index(self, doc_type: str, field: str) -> None:
+        """Create the partial unique index enforcing a tier3 field's uniqueness."""
+
+    @abstractmethod
+    async def drop_tier3_unique_index(self, doc_type: str, field: str) -> None:
+        """Drop the tier3 unique index for a (doc_type, field) pair."""
+
+    @abstractmethod
+    async def tier3_unique_index_exists(self, doc_type: str, field: str) -> bool:
+        """Return True if the tier3 unique index for this pair exists."""
+
+    @abstractmethod
+    async def find_chain_heads_with_tier3_value(
+        self, doc_type: str, field: str
+    ) -> list[tuple[object, list[str]]]:
+        """Group chain-head documents by their tier3 field value.
+
+        Returns (value, [head_ids]) pairs so callers can detect collisions
+        before enabling a uniqueness constraint.
+        """
+
+    # --- Edges ---
+    @abstractmethod
+    async def insert_edge(self, edge: Edge, on_conflict: OnConflict = "raise") -> tuple[Edge, bool]:
+        """Insert an edge; return (edge, created). on_conflict picks raise vs no-op."""
+
+    @abstractmethod
+    async def find_edge_by_natural_key(
+        self, source_id: str, target_id: str | None, edge_type: str
+    ) -> Edge | None:
+        """Look up an edge by its (source, target, type) natural key."""
+
+    @abstractmethod
+    async def supersede_atomic(
+        self, predecessor_id: str, predecessor_updates: dict, edge: Edge
+    ) -> Document | None:
+        """Atomically mark a predecessor superseded and insert the supersedes edge."""
+
+    @abstractmethod
+    async def insert_with_supersede_atomic(
+        self,
+        new_doc: Document,
+        predecessor_id: str,
+        predecessor_updates: dict,
+        edge: Edge,
+    ) -> tuple[Document, Document]:
+        """Atomically insert a new document and supersede its predecessor."""
+
+    @abstractmethod
+    async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
+        """Return edges originating at a source, optionally filtered by type."""
+
+    @abstractmethod
+    async def get_edges_by_target(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
+        """Return edges pointing at a target, optionally filtered by type."""
+
+    @abstractmethod
+    async def query_edges(
+        self,
+        *,
+        filters: dict[str, object] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[EdgeQueryRow], int]:
+        """Filtered, paginated edge enumeration with computed retraction state."""
+
+    @abstractmethod
+    async def get_supersedes_lineage(self, doc_id: str) -> list[str]:
+        """Return the ordered supersedes lineage ids reachable from a document."""
+
+    @abstractmethod
+    async def has_supersedes_successor(self, doc_id: str) -> bool:
+        """Return True if any edge supersedes this document."""
+
+    @abstractmethod
+    async def has_supersedes_predecessor(self, doc_id: str) -> bool:
+        """Return True if this document supersedes another."""
+
+    @abstractmethod
+    async def find_tombstone_candidates(self, lineage_ids: list[str]) -> list[str]:
+        """Return lineage ids eligible for tombstoning during a merge."""
+
+    @abstractmethod
+    async def merge_atomic(
+        self,
+        merged_from_edge: Edge,
+        tombstone_edge_ids: list[str],
+        tombstone_version: str,
+    ) -> None:
+        """Atomically record a merge: insert the merged_from edge and tombstones."""
+
+    @abstractmethod
+    async def read_link_context(
+        self, request: LinkRequest, policy: ResolutionPolicy
+    ) -> LinkReadContext:
+        """Pre-fetch the state needed to validate and execute a link request."""
+
+    @abstractmethod
+    async def get_retracts_for_edges(self, edge_ids: list[str]) -> dict[str, list[Edge]]:
+        """Map each edge id to the retracts edges that disclaim it."""
+
+    @abstractmethod
+    async def get_edge(self, edge_id: str) -> Edge | None:
+        """Return the edge with this id, or None if absent."""
+
+    @abstractmethod
+    async def delete_edge(self, edge_id: str) -> bool:
+        """Delete an edge by id; return True if a row was removed."""
+
+    @abstractmethod
+    async def find_documents_by_hashes(self, hashes: list[str]) -> dict[str, str]:
+        """Map source content hashes to the document ids that carry them."""
+
+    # --- Staging edges ---
+    @abstractmethod
+    async def list_staging_edges(self) -> list[StagingEdge]:
+        """Return all pending staging edges."""
+
+    @abstractmethod
+    async def get_staging_edge(self, edge_id: str) -> StagingEdge | None:
+        """Return the staging edge with this id, or None if absent."""
+
+    @abstractmethod
+    async def insert_staging_edge(
+        self, edge: StagingEdge, on_conflict: OnConflict = "raise"
+    ) -> tuple[StagingEdge, bool]:
+        """Insert a staging edge; return (edge, created)."""
+
+    @abstractmethod
+    async def delete_staging_edge(self, edge_id: str) -> bool:
+        """Delete a staging edge by id; return True if a row was removed."""
+
+    @abstractmethod
+    async def count_staging_edges(self) -> int:
+        """Return the number of pending staging edges."""
+
+    # --- Statistics ---
+    @abstractmethod
+    async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
+        """Return document counts grouped by a metadata field's value."""
+
+    @abstractmethod
+    async def get_edge_counts_by_type(self) -> dict[str, int]:
+        """Return edge counts grouped by edge type."""
+
+    @abstractmethod
+    async def get_total_document_count(self) -> int:
+        """Return the total number of documents."""
+
+    @abstractmethod
+    async def get_total_edge_count(self) -> int:
+        """Return the total number of edges."""
+
+    @abstractmethod
+    async def get_last_ingestion_at(self) -> datetime | None:
+        """Return the most recent ingestion timestamp, or None if empty."""
+
+    @abstractmethod
+    async def count_documents_by_pipeline_status(self, status: str) -> int:
+        """Return the number of documents in a given pipeline status."""
+
+    @abstractmethod
+    async def list_pending_metadata_documents(self) -> list[Document]:
+        """Return documents awaiting metadata confirmation."""
+
+    # --- Traversal ---
+    @abstractmethod
+    async def traverse(
+        self, start_id: str, edge_type: str | None, direction: str, depth: int
+    ) -> list[dict]:
+        """Walk the edge graph from a start document with chain-scoped resolution."""
+
+    @abstractmethod
+    async def chain_walk(self, start_id: str, edge_type: str) -> list[dict]:
+        """Walk an edge chain to both ends, returning ordered positional metadata."""
+
+    @abstractmethod
+    async def list_provenance_edges(self, edge_types: list[str]) -> list[dict]:
+        """Return provenance edges of the requested types for integrity checks."""
+
+    @abstractmethod
+    async def head_with_hash_for_chain(self, target_id: str, edge_type: str = "supersedes") -> dict:
+        """Return the chain head id and its source content hash for a target."""
+
+    # --- Users ---
+    @abstractmethod
+    async def insert_user(self, user: User) -> None:
+        """Persist a new user record."""
+
+    @abstractmethod
+    async def get_user(self, user_id: str) -> User | None:
+        """Return the user with this id, or None if absent."""
+
+    @abstractmethod
+    async def get_user_by_display_name(self, display_name: str) -> User | None:
+        """Return the user with this display name, or None if absent."""
+
+    @abstractmethod
+    async def list_users(self) -> list[User]:
+        """Return all user records."""

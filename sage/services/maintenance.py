@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sage.adapters.interfaces import ContentStore
+from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import ReabstractAlreadyInFlightError
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, ReabstractOutcome, StalenessBasis
@@ -39,7 +39,7 @@ from sage.models.schemas import (
     Tier3UniquenessCollision,
 )
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.migrations import (
     BACKFILL_PLAN,
     MIGRATION_PLAN,
@@ -202,7 +202,7 @@ class MaintenanceService:
             # need to be torn down pre-migration. If fresh.initialize
             # raises, self._graph_store is untouched and the registry
             # view remains live.
-            fresh = GraphStore(self._db_path)
+            fresh = SqliteGraphStore(self._db_path)
             try:
                 await fresh.initialize(migrate=True)
             finally:

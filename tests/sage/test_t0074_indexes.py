@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 
 def _index_names(db_path) -> set[str]:
@@ -49,7 +49,7 @@ def _explain(db_path, sql: str, params: tuple = ()) -> str:
 
 async def test_t0074_new_doc_indexes_present_after_init(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -61,7 +61,7 @@ async def test_t0074_new_doc_indexes_present_after_init(tmp_path):
 
 async def test_t0074_composite_edge_indexes_replace_single_column(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -78,14 +78,14 @@ async def test_t0074_composite_edge_indexes_replace_single_column(tmp_path):
 async def test_t0074_init_is_idempotent_on_existing_db(tmp_path):
     db_path = tmp_path / "graph.db"
 
-    store1 = GraphStore(db_path)
+    store1 = SqliteGraphStore(db_path)
     await store1.initialize()
     await store1.close()
     before = _index_names(db_path)
 
     # Second initialize must not fail (the DROP and CREATE statements
     # are both idempotent forms) and must leave the index set unchanged.
-    store2 = GraphStore(db_path)
+    store2 = SqliteGraphStore(db_path)
     await store2.initialize()
     await store2.close()
     after = _index_names(db_path)
@@ -126,7 +126,7 @@ async def test_t0074_legacy_single_column_edge_indexes_are_migrated_away(tmp_pat
     assert "idx_edges_source" in pre_indexes
     assert "idx_edges_target" in pre_indexes
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     await store.close()
 
@@ -139,7 +139,7 @@ async def test_t0074_legacy_single_column_edge_indexes_are_migrated_away(tmp_pat
 
 async def test_t0074_query_planner_picks_new_doc_type_index(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -149,7 +149,7 @@ async def test_t0074_query_planner_picks_new_doc_type_index(tmp_path):
 
 async def test_t0074_query_planner_picks_composite_doc_type_lifecycle(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -163,7 +163,7 @@ async def test_t0074_query_planner_picks_composite_doc_type_lifecycle(tmp_path):
 
 async def test_t0074_query_planner_picks_composite_edge_index_outbound(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -177,7 +177,7 @@ async def test_t0074_query_planner_picks_composite_edge_index_outbound(tmp_path)
 
 async def test_t0074_query_planner_picks_composite_edge_index_inbound(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -196,7 +196,7 @@ async def test_t0074_source_only_edge_query_uses_composite_via_left_prefix(tmp_p
     traversal.
     """
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -213,7 +213,7 @@ async def test_t0111_query_planner_picks_synced_from_content_hash_index(tmp_path
     drift sweep is index-driven, not a full scan.
     """
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 

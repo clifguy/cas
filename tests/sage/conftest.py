@@ -27,7 +27,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.user_service import UserService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.locks import DocumentLockManager
 
 
@@ -175,7 +175,7 @@ def extended_config(extended_vault_config_dict):
 @pytest.fixture
 async def graph_store(tmp_vault_dir):
     """Initialized graph store in a temp directory."""
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db")
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db")
     await store.initialize()
     yield store
     await store.close()

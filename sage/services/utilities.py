@@ -31,6 +31,7 @@ from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
+    GraphStore,
 )
 from sage.api.errors import (
     AssertionsFileInvalidError,
@@ -56,7 +57,6 @@ from sage.models.schemas import (
     RefreshViewsResponse,
 )
 from sage.services.read_diagnostics import build_not_found_detail
-from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 

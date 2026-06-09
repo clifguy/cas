@@ -30,8 +30,8 @@ diagnostic, telling the caller whether re-resolution is worth attempting
 at all.
 """
 
+from sage.adapters.interfaces import GraphStore
 from sage.services.identity import document_id_slug, is_well_formed_document_id
-from sage.storage.graph_store import GraphStore
 
 
 async def build_not_found_detail(store: GraphStore, document_id: str) -> dict:

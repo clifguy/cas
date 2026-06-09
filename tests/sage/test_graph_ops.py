@@ -38,7 +38,7 @@ from sage.models.schemas import (
     TraversalNode,
     TraverseRequest,
 )
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from tests.sage._sentinel_rows import build_sentinel_row
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -653,7 +653,7 @@ async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
 # ---------------------------------------------------------------------------
 
 
-def _assert_no_open_transaction(store: GraphStore) -> None:
+def _assert_no_open_transaction(store: SqliteGraphStore) -> None:
     """Assert that no connection owned by ``store`` holds an open transaction.
 
     `sqlite3.Connection.in_transaction` is True while an implicit transaction
@@ -1529,7 +1529,7 @@ async def test_unlink_nonexistent_edge_raises_404(graph_store, graph_ops_service
 
 
 # ---------------------------------------------------------------------------
-# GraphStore get_edge / delete_edge
+# SqliteGraphStore get_edge / delete_edge
 # ---------------------------------------------------------------------------
 
 
@@ -1762,7 +1762,7 @@ async def test_chain_no_slice_returns_full(graph_store, graph_ops_service):
 #
 # The traversal hot path at sage/services/graph_ops.py:663 constructs an
 # ``Edge`` directly from a CTE join row, deliberately bypassing the
-# canonical factory ``GraphStore._row_to_edge`` per the BH-101 performance
+# canonical factory ``SqliteGraphStore._row_to_edge`` per the BH-101 performance
 # rationale (per-row ``model_validate`` cost on a thousands-of-rows hot
 # path). Per the *CAS Projection-Point Audit Conventions* steering
 # document (cas vault, doc_type=steering_document), excluded projection
@@ -1905,7 +1905,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
     """(F4 closure pair, T2 -- parity guard on the BH-101 excluded
     projection point): the inline ``Edge`` construction at
     sage/services/graph_ops.py:663 and the canonical factory
-    ``GraphStore._row_to_edge`` (sage/storage/graph_store.py) construct
+    ``SqliteGraphStore._row_to_edge`` (sage/storage/graph_store.py) construct
     field-equivalent ``Edge`` instances from equivalent row inputs.
 
     The exhaustive-fields test on the canonical factory itself is
@@ -1927,7 +1927,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
     row = _edge_row_with_every_edge_field()
     cte_row = _edge_cte_row_with_every_edge_field()
 
-    edge_canonical = GraphStore._row_to_edge(row)
+    edge_canonical = SqliteGraphStore._row_to_edge(row)
     edge_inline = _build_edge_from_cte_row(cte_row)
 
     # Both halves of the parity must produce identical Edge instances.
@@ -1943,7 +1943,7 @@ def test_edge_cte_row_parity_with_row_to_edge():
             )
     assert not divergences, (
         "Edge inline construction at sage/services/graph_ops.py:663 "
-        "diverged from canonical GraphStore._row_to_edge factory on "
+        "diverged from canonical SqliteGraphStore._row_to_edge factory on "
         f"the following fields: {divergences}. The two paths must "
         "remain field-equivalent per the BH-101 exclusion guard "
         "(T-0124, T-0123) in the *CAS Projection-Point Audit "

@@ -23,7 +23,7 @@ from sage.adapters.interfaces import Chunk
 from sage.maintenance._internal import _purge_one, _PurgeOneResult
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 VECTOR_DIMENSIONS = 768
 VAULT_ID = "purge_one_helper_test"
@@ -135,7 +135,7 @@ async def helper_vault():
     storage_root.mkdir(parents=True, exist_ok=True)
     _write_vault_config(vault_dir, brain_root, storage_root)
 
-    graph = GraphStore(brain_root / "graph.db")
+    graph = SqliteGraphStore(brain_root / "graph.db")
     await graph.initialize()
     await graph.insert_document(_make_doc(TARGET_DOC_ID))
     await graph.close()

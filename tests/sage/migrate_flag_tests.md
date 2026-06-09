@@ -11,7 +11,7 @@ remains always-on regardless of the flag.
 
 ---
 
-## TEST-SAGE-MIG-001: GraphStore detects pending SQLite migrations
+## TEST-SAGE-MIG-001: SqliteGraphStore detects pending SQLite migrations
 
 **Artifact:** `sage/storage/migrations.py`, `sage/storage/graph_store.py`
 **Category:** detection
@@ -31,14 +31,14 @@ that returns the list of pending migrations for the given database.
 
 ---
 
-## TEST-SAGE-MIG-002: GraphStore.initialize(migrate=False) on legacy schema raises
+## TEST-SAGE-MIG-002: SqliteGraphStore.initialize(migrate=False) on legacy schema raises
 
 **Artifact:** `sage/storage/graph_store.py:initialize`
 **Category:** gating
 
 **Precondition:** A SQLite database missing one or more migration columns.
 
-**Input:** Construct `GraphStore(db_path)` and call `initialize(migrate=False)`.
+**Input:** Construct `SqliteGraphStore(db_path)` and call `initialize(migrate=False)`.
 
 **Expected:**
 - A `SchemaMigrationRequired` exception (or equivalent named subclass of
@@ -49,7 +49,7 @@ that returns the list of pending migrations for the given database.
 
 ---
 
-## TEST-SAGE-MIG-003: GraphStore.initialize(migrate=True) on legacy schema applies migrations
+## TEST-SAGE-MIG-003: SqliteGraphStore.initialize(migrate=True) on legacy schema applies migrations
 
 **Artifact:** `sage/storage/graph_store.py:initialize`
 **Category:** application
@@ -58,7 +58,7 @@ that returns the list of pending migrations for the given database.
 populated with at least one row in `documents` and `edges` to verify
 that data is preserved across the migration.
 
-**Input:** Construct `GraphStore(db_path)` and call `initialize(migrate=True)`.
+**Input:** Construct `SqliteGraphStore(db_path)` and call `initialize(migrate=True)`.
 
 **Expected:**
 - Initialization succeeds.
@@ -68,7 +68,7 @@ that data is preserved across the migration.
 
 ---
 
-## TEST-SAGE-MIG-004: GraphStore.initialize(migrate=False) on current schema starts normally
+## TEST-SAGE-MIG-004: SqliteGraphStore.initialize(migrate=False) on current schema starts normally
 
 **Artifact:** `sage/storage/graph_store.py:initialize`
 **Category:** no-op
@@ -76,7 +76,7 @@ that data is preserved across the migration.
 **Precondition:** A SQLite database whose schema matches the current
 `TABLES + MIGRATIONS` definition (i.e., no pending migrations).
 
-**Input:** Call `initialize(migrate=False)` on a fresh GraphStore.
+**Input:** Call `initialize(migrate=False)` on a fresh SqliteGraphStore.
 
 **Expected:**
 - Initialization succeeds without raising.
@@ -180,7 +180,7 @@ with logging captured at INFO level.
 
 ---
 
-## TEST-SAGE-MIG-010: initialize_services threads migrate flag to GraphStore and LanceDB
+## TEST-SAGE-MIG-010: initialize_services threads migrate flag to SqliteGraphStore and LanceDB
 
 **Artifact:** `sage/mcp_init.py:initialize_services`
 **Category:** plumbing

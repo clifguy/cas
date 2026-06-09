@@ -11,6 +11,7 @@ Owns the work behind three endpoints:
 import uuid
 from datetime import datetime, timezone
 
+from sage.adapters.interfaces import GraphStore
 from sage.api.errors import StagingEdgeNotFoundError
 from sage.models.schemas import (
     Edge,
@@ -18,7 +19,6 @@ from sage.models.schemas import (
     StagingEdgeConfirmResponse,
     StagingEdgeDismissResponse,
 )
-from sage.storage.graph_store import GraphStore
 
 
 class StagingEdgesService:

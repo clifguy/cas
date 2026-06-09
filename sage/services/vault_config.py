@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sage.adapters.interfaces import ContentStore
+from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DestructiveConfigChangeError,
     VaultConfigValidationError,
@@ -35,7 +35,6 @@ from sage.models.schemas import (
     VaultStatsResponse,
 )
 from sage.services.maintenance_log import read_last_optimize_summary
-from sage.storage.graph_store import GraphStore
 from sage.vault_management import (
     _ALL_SECTIONS,
     _atomic_write_bytes,

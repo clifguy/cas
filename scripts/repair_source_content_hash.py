@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.vault_management import config_path_for_vault
 
 _CANONICAL_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -70,7 +70,7 @@ class RepairResult:
     rewrites_applied: int = 0
 
 
-async def repair_with_services(*, graph: GraphStore, execute: bool) -> RepairResult:
+async def repair_with_services(*, graph: SqliteGraphStore, execute: bool) -> RepairResult:
     """Service-level entry point. Tests call this directly with a graph fixture."""
     result = RepairResult()
     documents = await graph.list_all_documents()

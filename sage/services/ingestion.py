@@ -32,6 +32,7 @@ from sage.adapters.interfaces import (
     Chunk,
     ContentStore,
     EmbeddingProvider,
+    GraphStore,
 )
 from sage.api.errors import (
     AdapterNotFoundError,
@@ -61,7 +62,6 @@ from sage.services.identifier_mention_inference import infer_identifier_mentions
 from sage.services.identity import generate_document_id
 from sage.services.metadata import _wire_version
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
-from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 from sage.storage.migrations import Tier3UniqueViolation
 
