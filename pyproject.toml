@@ -47,6 +47,13 @@ test = [
     "reportlab>=4.0",
     "Pillow>=10.0",
     "import-linter>=2.11",
+    # Postgres storage engine driver + async pool for the storage test harness
+    # (the disposable-schema fixture and the schema/DDL bootstrap run against a
+    # real Postgres) and pgvector type registration (CAS-ADR-042). The `pool`
+    # extra adds psycopg_pool (AsyncConnectionPool); the live serving path does
+    # not import these yet, so they stay test-scoped until the profile flip.
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
 ]
 mlx = [
     # Apple-Silicon-only; the marker keeps it out of the Linux resolution path

@@ -39,6 +39,27 @@ jobs:
     timeout-minutes: 20
     env:
       PYTHONUNBUFFERED: "1"
+    services:
+      # Real Postgres + pgvector so the storage tests exercise the engine the
+      # deployment profiles externalize state to (CAS-ADR-042) instead of
+      # skipping. The pgvector image ships the `vector` extension and, being
+      # built on the official postgres image, the `pgstattuple` contrib module
+      # the bootstrap enables. The storage harness creates disposable schemas
+      # in this throwaway container DB; SAGE_TEST_PG_DSN (set on the pytest step)
+      # points at it.
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v6
         with:
@@ -76,6 +97,9 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           SAGE_TEST_STUB_PROVIDERS: "1"
+          # Points the storage harness at the Postgres service container above so
+          # the PG-touching storage tests run here instead of skipping.
+          SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
           .venv/bin/pytest -v --tb=short \
             --cov=sage --cov=app \

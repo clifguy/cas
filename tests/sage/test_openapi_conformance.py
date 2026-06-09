@@ -998,6 +998,11 @@ SAGE_CONFIG_CLASS_TO_SCHEMA: list[tuple[str, str, str]] = [
         "#/properties/abstraction",
     ),
     (
+        "StackPostgresConfig",
+        "sage/sage_core_config.schema.json",
+        "#/properties/postgres",
+    ),
+    (
         "SageCoreConfig",
         "sage/sage_core_config.schema.json",
         "#",

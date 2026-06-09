@@ -7,6 +7,7 @@ fresh SQLite database via pytest's tmp_path fixture.
 
 import asyncio
 import contextlib
+import os
 
 import pytest
 
@@ -300,3 +301,78 @@ def ingestion_service_failing_llm(
         config=minimal_config,
         source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
     )
+
+
+# ---------------------------------------------------------------------------
+# Postgres storage harness (CAS-ADR-042)
+#
+# Storage tests run against a real Postgres named by SAGE_TEST_PG_DSN. When that
+# is unset (or psycopg is absent) the tests skip -- local runs without a server
+# and the default CI path stay green; CI's storage job sets the DSN to a pgvector
+# service container. The harness provisions a disposable, uniquely-named schema
+# per session (never the live working database: assert_disposable_target refuses
+# 'public' and any non-'sage_test_' schema, and the harness drops only that
+# schema, never a database), runs the canonical bootstrap into it, and hands out
+# a pool bound to that schema. Per-test isolation is a truncation at pool setup.
+# ---------------------------------------------------------------------------
+
+_PG_TABLES = ("documents", "edges", "staging_edges", "users", "document_tags", "chunks")
+
+
+@pytest.fixture(scope="session")
+def pg_dsn():
+    """Session Postgres DSN, or skip when no test server is configured."""
+    pytest.importorskip("psycopg")
+    dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set SAGE_TEST_PG_DSN to a throwaway Postgres to run the storage tests")
+    return dsn
+
+
+@pytest.fixture(scope="session")
+def pg_schema(pg_dsn):
+    """Provision a disposable schema for the session; drop it at the end.
+
+    A sync fixture whose async work runs under ``asyncio.run`` so a
+    session-scoped resource does not collide with pytest-asyncio's per-test
+    event loop. ``assert_disposable_target`` guarantees the schema is a
+    ``sage_test_*`` throwaway, never the live working database.
+    """
+    import psycopg
+
+    from sage.storage.postgres.schema import assert_disposable_target, bootstrap_schema
+
+    schema = assert_disposable_target("sage_test_" + os.urandom(4).hex())
+
+    async def _setup() -> None:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+
+    async def _teardown() -> None:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
+
+    asyncio.run(_setup())
+    try:
+        yield schema
+    finally:
+        asyncio.run(_teardown())
+
+
+@pytest.fixture
+async def pg_pool(pg_dsn, pg_schema):
+    """An opened async pool bound to the session's disposable schema.
+
+    Truncates all tables at setup so each test starts from a clean slate, then
+    closes the pool on teardown.
+    """
+    from sage.storage.postgres.pool import pool_from_conninfo
+
+    pool = pool_from_conninfo(pg_dsn, search_path=f"{pg_schema},public")
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(f"TRUNCATE {', '.join(_PG_TABLES)} CASCADE")  # noqa: S608
+        yield pool
+    finally:
+        await pool.close()

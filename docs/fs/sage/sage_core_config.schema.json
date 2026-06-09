@@ -29,6 +29,54 @@
           "description": "LLM model identifier for abstract generation, passed to the provider's factory. Required when provider is 'local-mlx' or 'anthropic' (startup fails loudly if null): a local model identifier for 'local-mlx', a Claude model identifier for 'anthropic'. Ignored when provider is 'stub'."
         }
       }
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Connection parameters for the Postgres storage engine (CAS-ADR-042). Both deployment targets externalize durable graph and content state to a networked relational engine -- a local unix socket on the on-box target, a managed endpoint on the hosted target -- with the embedded SQLite/LanceDB stores retained as a fallback binding. Non-secret parameters only: the password is read from the environment (SAGE_PG_PASSWORD), never from this file. The block configures the async driver and connection pool the store adapters share and the idempotent schema bootstrap; it is not yet wired into the live storage binding, so today it is consumed only by the provisioning CLI and the storage test harness.",
+      "properties": {
+        "host": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Postgres server hostname. Null selects a local unix-domain socket connection (the on-box default: peer authentication, no password); a hostname or address selects a TCP connection (the hosted target)."
+        },
+        "port": {
+          "type": "integer",
+          "default": 5432,
+          "description": "Postgres server TCP port. Ignored for a unix-socket connection (host null)."
+        },
+        "database": {
+          "type": "string",
+          "default": "sage",
+          "description": "Name of the database to connect to within the Postgres server."
+        },
+        "user": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Postgres role to connect as. Null defers to the operating-system user, which the local socket authenticates by peer."
+        },
+        "sslmode": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "libpq sslmode for the connection (for example 'require' for a managed hosted endpoint). Null leaves the libpq default and is typical for a local socket."
+        },
+        "min_pool_size": {
+          "type": "integer",
+          "default": 1,
+          "description": "Minimum number of connections the async pool keeps open."
+        },
+        "max_pool_size": {
+          "type": "integer",
+          "default": 10,
+          "description": "Maximum number of connections the async pool will open."
+        },
+        "extensions": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": ["vector", "pgstattuple"],
+          "description": "Postgres extensions the schema bootstrap enables in the target database. 'vector' (pgvector) is required for the content store's embedding column; 'pgstattuple' backs bloat measurement. 'pg_repack' is documented for the local runtime but kept out of this default because managed and containerized targets may not carry it."
+        }
+      }
     }
   }
 }
