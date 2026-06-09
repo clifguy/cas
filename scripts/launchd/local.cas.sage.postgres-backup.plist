@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template for the SAGE Postgres backup (CAS-ADR-042).
+
+  This is a TEMPLATE: replace the {{...}} placeholders with host-specific
+  absolute paths before installing into ~/Library/LaunchAgents/. See the runbook
+  docs/process/postgres-backup-restore.md for the install procedure.
+
+    {{PYTHON}}      absolute path to the project venv python
+    {{REPO}}        absolute path to the cas repository checkout
+    {{BACKUP_DIR}}  the Time-Machine-covered backup folder (e.g. ~/sage_vaults_backups)
+    {{LOG_DIR}}     a folder for the agent's stdout/stderr logs
+
+  Fires thrice daily at 02:00, 12:00, and 18:00 local time. pg_dump takes an
+  MVCC-consistent snapshot, so a scheduled run is safe during active ingest.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.cas.sage.postgres-backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{PYTHON}}</string>
+        <string>{{REPO}}/scripts/backup_postgres.py</string>
+        <string>--dir</string>
+        <string>{{BACKUP_DIR}}</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>2</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>12</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>18</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>{{LOG_DIR}}/sage-postgres-backup.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{LOG_DIR}}/sage-postgres-backup.err.log</string>
+</dict>
+</plist>

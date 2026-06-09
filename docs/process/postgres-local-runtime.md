@@ -93,6 +93,9 @@ the throwaway database (extensions are database-global; schemas are not).
 
 ## Notes
 
+- **Backups:** the durable Postgres state is dumped on a schedule and restored
+  per `postgres-backup-restore.md`. The live data directory is excluded from Time
+  Machine there; the `pg_dump` output is the authoritative backup.
 - **Stop / restart:** `brew services stop postgresql@17` /
   `brew services restart postgresql@17`. Logs: `~/Library/LaunchAgents` plus the
   Homebrew log under `$(brew --prefix)/var/log`.
