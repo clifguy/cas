@@ -25,6 +25,9 @@ CLAUDE.local.md
 # Claude Code scratch (worktrees created by EnterWorktree)
 .claude/worktrees/
 
+# Claude Code runtime locks (e.g. scheduled_tasks.lock — singleton scheduler lock)
+.claude/*.lock
+
 # Generated data files
 repo_file_inventory.xlsx
 
