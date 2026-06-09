@@ -41,7 +41,7 @@ from sage.models.schemas import (
     Document,
 )
 from sage.services.retrieval import RetrievalService
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 
 @pytest.fixture(autouse=True)
@@ -99,13 +99,13 @@ def _doc(doc_id: str = "deadbeef_t73") -> Document:
 
 
 async def test_storage_emits_record_for_get_document(tmp_vault_dir, caplog):
-    """Real GraphStore + real QueryTimer → one DEBUG record with the right JSON."""
+    """Real SqliteGraphStore + real QueryTimer → one DEBUG record with the right JSON."""
     timer = QueryTimer(
         logger_name="sage.storage.timing",
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="storage",
     )
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
     await store.initialize()
     try:
         await store.insert_document(_doc())
@@ -216,7 +216,7 @@ async def test_warn_threshold_drives_warning_level(tmp_vault_dir, caplog):
         ),
         layer="storage",
     )
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
     await store.initialize()
     try:
         caplog.clear()
@@ -246,7 +246,7 @@ async def test_fast_path_suppresses_and_summary_aggregates(tmp_vault_dir, caplog
         ),
         layer="storage",
     )
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
     await store.initialize()
     try:
         caplog.clear()
@@ -278,7 +278,7 @@ async def test_fast_path_suppresses_and_summary_aggregates(tmp_vault_dir, caplog
 
 async def test_null_query_timer_default_is_silent(tmp_vault_dir, caplog):
     """Default kwarg = NULL_QUERY_TIMER: real query emits zero records."""
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db")
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db")
     await store.initialize()
     try:
         caplog.clear()
@@ -304,7 +304,7 @@ async def test_uninstrumented_method_emits_nothing(tmp_vault_dir, caplog):
         config=TimingConfig(emit_threshold_ms=0.0),
         layer="storage",
     )
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db", query_timer=timer)
     await store.initialize()
     try:
         caplog.clear()

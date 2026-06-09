@@ -30,7 +30,7 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
 )
 from sage.services.identity import generate_document_id
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.migrations import (
     BACKFILL_PLAN,
     _backfill_document_tags_apply,
@@ -510,9 +510,9 @@ async def test_t0078_tag_filter_query_uses_join_table_plan(graph_store):
     """
     import inspect
 
-    from sage.storage.graph_store import GraphStore
+    from sage.storage.graph_store import SqliteGraphStore
 
-    source = inspect.getsource(GraphStore._query_documents_sync)
+    source = inspect.getsource(SqliteGraphStore._query_documents_sync)
     assert "json_each(tags)" not in source, (
         "_query_documents_sync still references json_each(tags); "
         "tag filter has not been rewritten to use document_tags"
@@ -708,7 +708,7 @@ async def test_t0078_backfill_plan_includes_document_tags():
 
 
 # ---------------------------------------------------------------------------
-# Exhaustive-fields closure test for ``GraphStore._row_to_edge``.
+# Exhaustive-fields closure test for ``SqliteGraphStore._row_to_edge``.
 #
 # ``_row_to_edge`` is the single owning factory for the
 # ``sqlite3.Row -> Edge`` projection (sage/storage/graph_store.py). Per the
@@ -722,7 +722,7 @@ async def test_t0078_backfill_plan_includes_document_tags():
 
 def _edge_row_with_every_edge_field() -> sqlite3.Row:
     """Build a ``sqlite3.Row`` with every column consumed by
-    ``GraphStore._row_to_edge`` set to a distinct non-default sentinel.
+    ``SqliteGraphStore._row_to_edge`` set to a distinct non-default sentinel.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
     ; only the column->value mapping is per-ticket. The real
@@ -769,13 +769,13 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
 
 def test_row_to_edge_populates_every_edge_field():
     """(F4 closure pair, T1): every ``Edge`` field is populated by
-    ``GraphStore._row_to_edge`` from a sentinel row dict whose columns are
+    ``SqliteGraphStore._row_to_edge`` from a sentinel row dict whose columns are
     all non-default. Iterates ``Edge.model_fields`` so the assertion grows
     automatically when a field is added to ``Edge``; if the new field is
     not wired through ``_row_to_edge``, the loop trips the assertion.
     """
     row = _edge_row_with_every_edge_field()
-    edge = GraphStore._row_to_edge(row)
+    edge = SqliteGraphStore._row_to_edge(row)
     for field_name, field_info in Edge.model_fields.items():
         value = getattr(edge, field_name)
         annotation = field_info.annotation
@@ -804,7 +804,7 @@ def test_row_to_edge_populates_every_edge_field():
 
 
 # ---------------------------------------------------------------------------
-# Exhaustive-fields closure test for ``GraphStore._row_to_staging_edge``.
+# Exhaustive-fields closure test for ``SqliteGraphStore._row_to_staging_edge``.
 #
 # ``_row_to_staging_edge`` is the single owning factory for the
 # ``sqlite3.Row -> StagingEdge`` projection (sage/storage/graph_store.py).
@@ -819,7 +819,7 @@ def test_row_to_edge_populates_every_edge_field():
 
 def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
     """Build a ``sqlite3.Row`` with every column consumed by
-    ``GraphStore._row_to_staging_edge`` set to a distinct non-default
+    ``SqliteGraphStore._row_to_staging_edge`` set to a distinct non-default
     sentinel.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
@@ -856,7 +856,7 @@ def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
 
 def test_row_to_staging_edge_populates_every_staging_edge_field():
     """(F4 closure pair, T1): every ``StagingEdge`` field is
-    populated by ``GraphStore._row_to_staging_edge`` from a sentinel
+    populated by ``SqliteGraphStore._row_to_staging_edge`` from a sentinel
     row dict whose columns are all non-default. Iterates
     ``StagingEdge.model_fields`` so the assertion grows automatically
     when a field is added to ``StagingEdge``; if the new field is not
@@ -864,7 +864,7 @@ def test_row_to_staging_edge_populates_every_staging_edge_field():
     assertion.
     """
     row = _staging_edge_row_with_every_staging_edge_field()
-    staging_edge = GraphStore._row_to_staging_edge(row)
+    staging_edge = SqliteGraphStore._row_to_staging_edge(row)
     for field_name, field_info in StagingEdge.model_fields.items():
         value = getattr(staging_edge, field_name)
         annotation = field_info.annotation

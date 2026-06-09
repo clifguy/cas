@@ -13,9 +13,9 @@ import jsonschema
 import yaml
 from pydantic import ValidationError
 
+from sage.adapters.interfaces import GraphStore
 from sage.api.errors import VaultConfigValidationError
 from sage.config import VaultConfig
-from sage.storage.graph_store import GraphStore
 
 _REQUIRED_SECTIONS = (
     "vault",

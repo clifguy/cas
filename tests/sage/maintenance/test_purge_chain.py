@@ -28,7 +28,7 @@ from sage.adapters.interfaces import Chunk
 from sage.maintenance import purge_chain
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 VECTOR_DIMENSIONS = 768
 VAULT_ID = "purge_chain_test"
@@ -241,7 +241,7 @@ async def _build_base_vault() -> dict:
     storage_root.mkdir(parents=True, exist_ok=True)
     _write_vault_config(vault_dir, brain_root, storage_root)
 
-    graph = GraphStore(brain_root / "graph.db")
+    graph = SqliteGraphStore(brain_root / "graph.db")
     await graph.initialize()
     await graph.close()
 
@@ -267,7 +267,7 @@ async def populated_chain_vault():
     paths = await _build_base_vault()
     brain_root = paths["brain_root"]
 
-    graph = GraphStore(brain_root / "graph.db")
+    graph = SqliteGraphStore(brain_root / "graph.db")
     await graph.initialize()
     for doc_id, version in [(DOC_V1, "v1"), (DOC_V2, "v2"), (DOC_V3, "v3")]:
         await graph.insert_document(_make_doc(doc_id, tags=[version], version_label=version))
@@ -303,7 +303,7 @@ async def branched_chain_vault():
     paths = await _build_base_vault()
     brain_root = paths["brain_root"]
 
-    graph = GraphStore(brain_root / "graph.db")
+    graph = SqliteGraphStore(brain_root / "graph.db")
     await graph.initialize()
     for doc_id, version in [(DOC_V2A, "v2a"), (DOC_V2B, "v2b"), (DOC_V3, "v3")]:
         await graph.insert_document(_make_doc(doc_id, tags=[version], version_label=version))

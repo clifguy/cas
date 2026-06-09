@@ -13,11 +13,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sage.adapters.interfaces import GraphStore
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.source_adapters.base import SourceAdapter
-from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 

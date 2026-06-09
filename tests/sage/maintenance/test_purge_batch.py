@@ -42,7 +42,7 @@ from sage.adapters.interfaces import Chunk
 from sage.maintenance import purge_batch
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 VECTOR_DIMENSIONS = 768
 VAULT_ID = "purge_batch_test"
@@ -273,7 +273,7 @@ async def populated_vault():
         DOC_POST: now + timedelta(hours=24),
     }
 
-    graph = GraphStore(brain_root / "graph.db")
+    graph = SqliteGraphStore(brain_root / "graph.db")
     await graph.initialize()
     docs = {
         DOC_PRE: _make_doc(DOC_PRE, created_at=offsets[DOC_PRE], tags=["control"]),

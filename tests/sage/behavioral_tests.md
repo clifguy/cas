@@ -142,17 +142,17 @@ contention from reaching callers.
 **Rationale:** indexed_at captures when content entered the content store,
 independent of abstraction.
 
-### TEST-SAGE-BH-137: GraphStore.close() is a dispatch barrier (post-close raise-on-use)
+### TEST-SAGE-BH-137: SqliteGraphStore.close() is a dispatch barrier (post-close raise-on-use)
 
-**Artifact:** `sage/storage/graph_store.py` (`GraphStore._run`, `GraphStore.close`)
+**Artifact:** `sage/storage/graph_store.py` (`SqliteGraphStore._run`, `SqliteGraphStore.close`)
 **Category:** storage, lifecycle, test-pattern
 **Decision:** After `close()` returns, the dispatch boundary in `_run` raises
-`RuntimeError("GraphStore is closed")` for any subsequent operation, including
+`RuntimeError("SqliteGraphStore is closed")` for any subsequent operation, including
 from threads or asyncio tasks that never touched the store before close. Per
 CAS-ADR-036. The barrier is the primary signal; the pre-barrier internal-state
 idiom (`_executor is None`, `_all_connections == []`) is the legacy signal.
 
-**Precondition:** Live `GraphStore` instance with at least one operation
+**Precondition:** Live `SqliteGraphStore` instance with at least one operation
 already dispatched (so `_executor` is non-`None` and `_all_connections` is
 non-empty).
 
@@ -3217,7 +3217,7 @@ state behind.
 pipeline terminal. (B is the would-be successor; in this test it already
 exists so we exercise set_lifecycle directly.)
 
-**Input:** Monkeypatch `GraphStore.insert_edge` to raise
+**Input:** Monkeypatch `SqliteGraphStore.insert_edge` to raise
 `RuntimeError("simulated lock contention")`. Then call
 `set_lifecycle(A.id, action="supersede", successor_id=B.id)`.
 
@@ -3249,7 +3249,7 @@ at all -- never an orphan successor with an active predecessor.
 **Precondition:** Document A active, pipeline terminal. A second source
 file present in the vault (would-be successor).
 
-**Input:** Monkeypatch `GraphStore.insert_with_supersede_atomic` to raise
+**Input:** Monkeypatch `SqliteGraphStore.insert_with_supersede_atomic` to raise
 `RuntimeError` mid-transaction (simulating a SQLite lock / constraint
 failure during the commit). Then call
 `ingest(source=successor_file, predecessor_id=A.id)`.

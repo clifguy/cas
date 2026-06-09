@@ -39,11 +39,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from sage.adapters.interfaces import GraphStore
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
 from sage.services.graph_ops import GraphOpsService
-from sage.storage.graph_store import GraphStore
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices

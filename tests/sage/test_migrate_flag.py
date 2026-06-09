@@ -27,7 +27,7 @@ from sage.adapters.stubs import (
 )
 from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.migrations import (
     MIGRATION_PLAN,
     POST_MIGRATION_DDL,
@@ -191,14 +191,14 @@ def test_mig_001_pending_migrations_is_readonly(tmp_path):
     assert pre == post, "detection must not mutate the database"
 
 
-# ── MIG-002: GraphStore.initialize(migrate=False) raises on legacy ─
+# ── MIG-002: SqliteGraphStore.initialize(migrate=False) raises on legacy ─
 
 
 async def test_mig_002_graphstore_refuses_without_flag(tmp_path):
     db_path = tmp_path / "graph.db"
     _build_legacy_db(db_path)
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     with pytest.raises(SchemaMigrationRequired) as exc_info:
         await store.initialize(migrate=False)
 
@@ -212,7 +212,7 @@ async def test_mig_002_graphstore_refuses_without_flag(tmp_path):
     await store.close()
 
 
-# ── MIG-003: GraphStore.initialize(migrate=True) applies, preserves data ─
+# ── MIG-003: SqliteGraphStore.initialize(migrate=True) applies, preserves data ─
 
 
 async def test_mig_003_graphstore_applies_with_flag(tmp_path):
@@ -220,7 +220,7 @@ async def test_mig_003_graphstore_applies_with_flag(tmp_path):
     _build_legacy_db(db_path)
     _seed_legacy_row(db_path, doc_id="abc12345_seed")
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     try:
         cols = _columns(db_path, "documents")
@@ -271,12 +271,12 @@ async def test_mig_004_graphstore_current_schema_no_op(tmp_path):
     so initialize(migrate=False) succeeds without raising."""
     db_path = tmp_path / "graph.db"
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=False)  # creates fresh, current schema
     await store.close()
 
     # Re-open without migrate; should still succeed.
-    store2 = GraphStore(db_path)
+    store2 = SqliteGraphStore(db_path)
     await store2.initialize(migrate=False)
     await store2.close()
 
@@ -366,7 +366,7 @@ async def test_t0080_rationale_kind_backfill_on_legacy_db(tmp_path):
 
     assert "rationale_kind" not in _columns(db_path, "edges")
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     try:
         assert "rationale_kind" in _columns(db_path, "edges")
@@ -417,7 +417,7 @@ async def test_t0080_rationale_kind_backfill_is_idempotent(tmp_path):
         ],
     )
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     await store.close()
 
@@ -427,7 +427,7 @@ async def test_t0080_rationale_kind_backfill_is_idempotent(tmp_path):
     finally:
         conn.close()
 
-    store2 = GraphStore(db_path)
+    store2 = SqliteGraphStore(db_path)
     await store2.initialize(migrate=True)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -480,7 +480,7 @@ async def test_t0110_synced_from_columns_added_and_idempotent(tmp_path):
     assert "synced_from_version" not in _columns(db_path, "edges")
     assert "synced_from_content_hash" not in _columns(db_path, "edges")
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     try:
         cols = _columns(db_path, "edges")
@@ -502,7 +502,7 @@ async def test_t0110_synced_from_columns_added_and_idempotent(tmp_path):
 
     # Second run is idempotent: no error, columns unchanged, existing
     # row still NULL.
-    store2 = GraphStore(db_path)
+    store2 = SqliteGraphStore(db_path)
     await store2.initialize(migrate=True)
     try:
         cols = _columns(db_path, "edges")
@@ -785,7 +785,7 @@ def _has_index(db_path: Path, table: str, index_name: str) -> bool:
 async def test_t0079_unique_indexes_present_on_fresh_vault(tmp_path):
     """Fresh-vault initialize creates both unique indexes."""
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=False)
     try:
         assert _has_index(db_path, "edges", "idx_edges_uniq_natural_key")
@@ -797,7 +797,7 @@ async def test_t0079_unique_indexes_present_on_fresh_vault(tmp_path):
 async def test_t0079_unique_index_blocks_direct_duplicate_insert(tmp_path):
     """After the migration, direct duplicate INSERTs raise IntegrityError."""
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=False)
     try:
         conn = sqlite3.connect(str(db_path))
@@ -843,7 +843,7 @@ async def test_t0079_migration_fails_clearly_when_duplicates_present(tmp_path):
     # Seed two documents and two duplicate edges on the legacy schema
     # (which has no unique index). The first time the migration
     # tries to CREATE UNIQUE INDEX, SQLite refuses; the wrapper in
-    # GraphStore._initialize_sync translates the IntegrityError.
+    # SqliteGraphStore._initialize_sync translates the IntegrityError.
     conn = sqlite3.connect(str(db_path))
     try:
         now = datetime.now(timezone.utc).isoformat()
@@ -865,7 +865,7 @@ async def test_t0079_migration_fails_clearly_when_duplicates_present(tmp_path):
     finally:
         conn.close()
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     with pytest.raises(DuplicateEdgesPresentError) as exc_info:
         await store.initialize(migrate=True)
     msg = str(exc_info.value)
@@ -901,7 +901,7 @@ async def test_t0079_migration_succeeds_after_dedup(tmp_path):
     finally:
         conn.close()
 
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     try:
         assert _has_index(db_path, "edges", "idx_edges_uniq_natural_key")

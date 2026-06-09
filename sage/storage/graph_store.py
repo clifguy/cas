@@ -11,11 +11,11 @@ import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, TypeVar
 
+from sage.adapters.interfaces import GraphStore
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
@@ -25,6 +25,7 @@ from sage.models.enums import (
     SourceType,
     UserType,
 )
+from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 from sage.storage.migrations import (
     BACKFILL_PLAN,
@@ -99,27 +100,6 @@ def _is_tier3_unique_violation(exc: sqlite3.IntegrityError) -> str | None:
     return match.group(1) if match else None
 
 
-@dataclass(frozen=True)
-class EdgeQueryRow:
-    """Edge enumeration result row with computed retraction envelope.
-
-    Wraps a hydrated ``Edge`` and adds two fields computed via LEFT JOIN
-    against the earliest ``retracts``-type edge that disclaims this row:
-    ``retracted_at`` carries the timestamp of that disclaiming edge,
-    ``retracted_by_edge_id`` its id. Both are ``None`` when this row is
-    still live (no disclaiming retracts edge exists). For rows that are
-    themselves ``retracts`` edges, these fields are likewise ``None``
-    (a retracts edge isn't itself subject to retraction); the row's own
-    ``edge.retracted_edge_id`` carries the id of the edge it disclaims.
-    """
-
-    edge: Edge
-    retracted_at: datetime | None
-    retracted_by_edge_id: str | None
-
-
-OnConflict = Literal["raise", "noop"]
-
 # Defense-in-depth gate for tier3 keys that get interpolated into the
 # JSON path of a json_extract() expression. The service layer validates
 # the same keys against the doc_type's metadata_schema; this regex is
@@ -128,29 +108,7 @@ OnConflict = Literal["raise", "noop"]
 _TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
 
 
-@dataclass(frozen=True)
-class LinkReadContext:
-    """Pre-fetched state needed to validate and execute a LinkRequest.
-
-    Populated by `GraphStore.read_link_context` in a single executor
-    submission so the service layer can validate without issuing further
-    per-query round-trips. Fields that are not applicable to the request's
-    edge type are left at their default (empty / False / None).
-    """
-
-    source_exists: bool
-    target_exists: bool
-    retracted_edge: Edge | None = None
-    source_lineage: frozenset[str] = field(default_factory=frozenset)
-    target_lineage: frozenset[str] = field(default_factory=frozenset)
-    source_anchor_exists: bool = True
-    target_anchor_exists: bool = True
-    has_sup_predecessor: bool = False
-    has_sup_successor: bool = False
-    tombstone_candidates: tuple[str, ...] = ()
-
-
-class GraphStore:
+class SqliteGraphStore(GraphStore):
     def __init__(
         self,
         db_path: Path,
@@ -198,7 +156,7 @@ class GraphStore:
         handle on a fresh worker thread.
         """
         if self._closed:
-            raise RuntimeError("GraphStore is closed")
+            raise RuntimeError("SqliteGraphStore is closed")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
 
@@ -238,7 +196,7 @@ class GraphStore:
             if pending_bf:
                 details_parts.append("backfill: " + ", ".join(b.name for b in pending_bf))
             raise SchemaMigrationRequired(
-                f"GraphStore at {self._db_path} has pending schema work "
+                f"SqliteGraphStore at {self._db_path} has pending schema work "
                 f"({'; '.join(details_parts)}). Re-run the server with "
                 f"--migrate to apply."
             )
@@ -1341,7 +1299,7 @@ class GraphStore:
             raise
 
     async def read_link_context(
-        self, request: "LinkRequest", policy: ResolutionPolicy
+        self, request: LinkRequest, policy: ResolutionPolicy
     ) -> LinkReadContext:
         """Fetch all state needed to validate a LinkRequest in one submission.
 
@@ -1360,7 +1318,7 @@ class GraphStore:
             return await self._run(self._read_link_context_sync, request, policy)
 
     def _read_link_context_sync(
-        self, request: "LinkRequest", policy: ResolutionPolicy
+        self, request: LinkRequest, policy: ResolutionPolicy
     ) -> LinkReadContext:
         conn = self._get_connection()
 

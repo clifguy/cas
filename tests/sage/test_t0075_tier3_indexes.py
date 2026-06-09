@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 
 def _index_names(db_path) -> set[str]:
@@ -43,7 +43,7 @@ def _explain(db_path, sql: str, params: tuple = ()) -> str:
 
 async def test_t0075_expression_indexes_present_after_init(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -55,7 +55,7 @@ async def test_t0075_expression_indexes_present_after_init(tmp_path):
 
 async def test_t0075_query_planner_picks_ticket_id_expression_index(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -69,7 +69,7 @@ async def test_t0075_query_planner_picks_ticket_id_expression_index(tmp_path):
 
 async def test_t0075_query_planner_picks_failure_id_expression_index(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -83,7 +83,7 @@ async def test_t0075_query_planner_picks_failure_id_expression_index(tmp_path):
 
 async def test_t0075_query_planner_picks_tool_name_expression_index(tmp_path):
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize()
     await store.close()
 
@@ -98,12 +98,12 @@ async def test_t0075_query_planner_picks_tool_name_expression_index(tmp_path):
 async def test_t0075_init_is_idempotent_on_existing_db(tmp_path):
     db_path = tmp_path / "graph.db"
 
-    store1 = GraphStore(db_path)
+    store1 = SqliteGraphStore(db_path)
     await store1.initialize()
     await store1.close()
     before = _index_names(db_path)
 
-    store2 = GraphStore(db_path)
+    store2 = SqliteGraphStore(db_path)
     await store2.initialize()
     await store2.close()
     after = _index_names(db_path)

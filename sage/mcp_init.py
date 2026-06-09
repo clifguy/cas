@@ -18,6 +18,7 @@ from sage.adapters.interfaces import (
     AbstractionProvider,
     ContentStore,
     EmbeddingProvider,
+    GraphStore,
 )
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import SageCoreConfig, VaultConfig
@@ -44,7 +45,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.locks import DocumentLockManager
 
 _logger = logging.getLogger(__name__)
@@ -215,6 +216,12 @@ class SAGEServices:
     # the services tuple so the factory survives across reloads without
     # adding module-level mutable state. None in production.
     content_store_factory: Callable[[Path], ContentStore] | None = None
+    # Mirror of content_store_factory for the graph store: when set, reload
+    # paths re-invoke this factory with the vault's brain_root instead of
+    # constructing a SqliteGraphStore. Carried on the services tuple so the
+    # factory survives across reloads without module-level mutable state.
+    # None in production.
+    graph_store_factory: Callable[[Path], GraphStore] | None = None
     # Per-vault background flusher for query-timing summary records.
     # None when timing is disabled or when the content store was injected
     # without going through _build_vault_timers (test paths).
@@ -418,6 +425,8 @@ REQUIRED_TRANSPORT_KWARGS: frozenset[str] = frozenset({"config_path", "registry_
 async def initialize_services(
     config: VaultConfig,
     *,
+    graph_store: GraphStore | None = None,
+    graph_store_factory: Callable[[Path], GraphStore] | None = None,
     content_store: ContentStore | None = None,
     content_store_factory: Callable[[Path], ContentStore] | None = None,
     embedding_provider: EmbeddingProvider | None = None,
@@ -438,6 +447,16 @@ async def initialize_services(
 
     Args:
         config: Loaded and validated vault configuration.
+        graph_store: Optional override (default: SqliteGraphStore). When
+            supplied, the caller owns the lifecycle and the store is assumed
+            already initialized — cleanup on failure does NOT close it.
+        graph_store_factory: Optional callable invoked with the vault's
+            ``brain_root`` to build a GraphStore. Used by hermetic tests to
+            substitute ``StubGraphStore`` without mutating module state.
+            Ignored if ``graph_store`` is also passed; stored on the returned
+            ``SAGEServices`` so reload paths reuse the same factory. When this
+            factory builds the graph store, the caller owns the lifecycle —
+            cleanup on failure does NOT close it.
         content_store: Optional override (default: LanceDBContentStore).
             When supplied, the caller owns the lifecycle — cleanup on
             failure does NOT close it.
@@ -471,7 +490,7 @@ async def initialize_services(
     # content_store) are owned by the caller and not closed on cleanup.
     timing_thread: VaultTimingThread | None = None
     timing_handler: logging.Handler | None = None
-    graph_store: GraphStore | None = None
+    graph_store_owned_here: GraphStore | None = None
     content_store_owned_here: ContentStore | None = None
 
     try:
@@ -482,8 +501,18 @@ async def initialize_services(
             _build_vault_timers(config.timing, brain_root)
         )
 
-        graph_store = GraphStore(brain_root / "graph.db", query_timer=storage_timer)
-        await graph_store.initialize(migrate=migrate)
+        # Graph store: explicit instance > factory > production SQLite.
+        # Only the SQLite path (constructed inside this function with no
+        # external handle) is initialized and tracked for cleanup. Caller-
+        # supplied and factory-supplied stores are the caller's responsibility
+        # and are assumed ready for use.
+        if graph_store is None:
+            if graph_store_factory is not None:
+                graph_store = graph_store_factory(brain_root)
+            else:
+                graph_store = SqliteGraphStore(brain_root / "graph.db", query_timer=storage_timer)
+                await graph_store.initialize(migrate=migrate)
+                graph_store_owned_here = graph_store
 
         lock_manager = DocumentLockManager()
 
@@ -625,6 +654,7 @@ async def initialize_services(
             maintenance_service=maintenance_service,
             config_path=config_path,
             content_store_factory=content_store_factory,
+            graph_store_factory=graph_store_factory,
             timing_thread=timing_thread,
             timing_handler=timing_handler,
         )
@@ -646,9 +676,9 @@ async def initialize_services(
             _release_timing_handler(timing_handler)
         except Exception:
             _logger.exception("initialize_services cleanup: failed to release timing handler")
-        if graph_store is not None:
+        if graph_store_owned_here is not None:
             try:
-                await graph_store.close()
+                await graph_store_owned_here.close()
             except Exception:
                 _logger.exception("initialize_services cleanup: failed to close graph_store")
         if content_store_owned_here is not None:
@@ -687,16 +717,19 @@ async def reload_vault_in_registry(
     - ``VaultRegistryService.reload`` (FastAPI PUT-config endpoint).
     - ``reload_vault`` MCP tool (via delegation).
 
-    Carries the predecessor's ``content_store_factory`` and (when the caller
-    does not supply one) ``config_path`` forward so hermetic-lifespan-test
-    setups survive reload and on-disk YAML edits round-trip correctly.
+    Carries the predecessor's ``content_store_factory`` / ``graph_store_factory``
+    and (when the caller does not supply one) ``config_path`` forward so
+    hermetic-lifespan-test setups survive reload and on-disk YAML edits
+    round-trip correctly.
     """
     old = registry.get(vault_id)
     content_store_factory = None
+    graph_store_factory = None
     if old is not None:
         if config_path is None:
             config_path = old.config_path
         content_store_factory = old.content_store_factory
+        graph_store_factory = old.graph_store_factory
 
     # CAS-ADR-042: resolve the active deployment profile and thread its
     # abstraction binding through. For the local profile this is the same
@@ -714,6 +747,7 @@ async def reload_vault_in_registry(
         config,
         config_path=config_path,
         registry_service=registry_service,
+        graph_store_factory=graph_store_factory,
         content_store_factory=content_store_factory,
         abstraction_provider=stack_provider,
     )

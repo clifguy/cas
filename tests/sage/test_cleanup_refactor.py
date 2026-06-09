@@ -280,9 +280,9 @@ class TestTraversalNaming:
         # We just verify the rename didn't break anything by importing
         import inspect
 
-        from sage.storage.graph_store import GraphStore
+        from sage.storage.graph_store import SqliteGraphStore
 
-        source = inspect.getsource(GraphStore._traverse_sync)
+        source = inspect.getsource(SqliteGraphStore._traverse_sync)
         assert "match_col" in source
         assert "follow_col" in source
         # Old names should be gone

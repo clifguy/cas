@@ -23,8 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sage.adapters.interfaces import GraphStore
 from sage.adapters.stubs import StubContentStore
-from sage.storage.graph_store import GraphStore
 
 
 @dataclass(frozen=True)

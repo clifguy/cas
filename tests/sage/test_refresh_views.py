@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
+from sage.adapters.interfaces import GraphStore
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.services.utilities import UtilitiesService
-from sage.storage.graph_store import GraphStore
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 

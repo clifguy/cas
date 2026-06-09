@@ -28,6 +28,7 @@ from sage.adapters.interfaces import (
     SYNTHETIC_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
+    GraphStore,
     SearchResult,
 )
 from sage.api.errors import (
@@ -53,6 +54,7 @@ from sage.models.enums import (
     RetrievalScope,
     RetrievalTarget,
 )
+from sage.models.graph_rows import EdgeQueryRow
 from sage.models.schemas import (
     DiscoverHit,
     DiscoverRequest,
@@ -63,7 +65,6 @@ from sage.models.schemas import (
     EdgeHit,
 )
 from sage.services.read_diagnostics import build_not_found_detail
-from sage.storage.graph_store import EdgeQueryRow, GraphStore
 from sage.utils.date_parsing import parse_document_date
 from sage.utils.rrf import rrf_fuse
 

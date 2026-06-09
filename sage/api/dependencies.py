@@ -8,6 +8,7 @@ look up the correct SAGEServices instance.
 
 from fastapi import Depends, Request
 
+from sage.adapters.interfaces import GraphStore
 from sage.api.errors import VaultNotFoundError
 from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
@@ -24,7 +25,6 @@ from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
 from sage.services.vault_registry import VaultRegistryService
-from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
 

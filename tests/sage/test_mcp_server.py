@@ -1813,7 +1813,7 @@ async def test_reload_vault_reinitializes_services(vault_services):
 
 
 async def test_reload_vault_closes_old_graph_store(vault_services):
-    """Old GraphStore connections are closed after reload, and the
+    """Old SqliteGraphStore connections are closed after reload, and the
     closed store enforces the CAS-ADR-036 barrier: post-close dispatch
     raises rather than silently re-opening a connection.
     """
@@ -1934,7 +1934,7 @@ async def test_reload_vault_failure_keeps_old_services_in_registry(vault_service
     # The internal-state assertions match the idiom used by
     # test_reload_vault_closes_old_graph_store (above) for the closure
     # detection: _executor goes to None and _all_connections is cleared by
-    # GraphStore.close(). The behavioural co-assertion below (per
+    # SqliteGraphStore.close(). The behavioural co-assertion below (per
     # TEST-SAGE-BH-137) confirms the post-CAS-ADR-036 dispatch barrier did
     # not engage — a successful list_all_documents() through _run is the
     # contrapositive of the close-barrier RuntimeError.
@@ -2279,7 +2279,7 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
     initialized; the live graph_store assertion is the trap.
     """
     import sage.mcp_init as _mcp_init
-    from sage.storage.graph_store import GraphStore as _RealGraphStore
+    from sage.storage.graph_store import SqliteGraphStore as _RealGraphStore
     from sage.storage.migrations import Migration
 
     # Force fake pending work so migrate_vault enters the migration branch.
@@ -2301,7 +2301,7 @@ async def test_sage_admin_migrate_vault_atomicity_via_mcp_surface(
         async def initialize(self, migrate: bool = False) -> None:
             return None
 
-    monkeypatch.setattr("sage.services.maintenance.GraphStore", NoOpFreshGraphStore)
+    monkeypatch.setattr("sage.services.maintenance.SqliteGraphStore", NoOpFreshGraphStore)
 
     async def failing_initialize_services(*args, **kwargs):
         raise SAGEError(
