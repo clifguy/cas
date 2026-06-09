@@ -43,7 +43,7 @@ class StagingEdgesService:
         already created the production edge -- the underlying
         ``insert_edge`` invocation passes ``on_conflict="noop"``, which
         returns the existing production edge's id rather than raising
-        ``IntegrityError``. The staging row is then consumed in either
+        ``NaturalKeyConflict``. The staging row is then consumed in either
         case. Callers cannot distinguish "this confirm caused the
         production edge to be created" from "the production edge
         pre-existed; this confirm only consumed the staging row" by
@@ -77,7 +77,7 @@ class StagingEdgesService:
         # (e.g., a parallel create_edge or earlier auto-inference path
         # already created the edge), confirm-staging is idempotent:
         # consume the staging row and surface the existing production
-        # edge's id rather than raising IntegrityError to the caller.
+        # edge's id rather than raising NaturalKeyConflict to the caller.
         stored, _created = await self._store.insert_edge(candidate, on_conflict="noop")
         await self._store.delete_staging_edge(edge_id)
 

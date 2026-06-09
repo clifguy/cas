@@ -174,6 +174,42 @@ def tier3_retrieval_service(graph_store, stub_content_store, stub_embedding_prov
     )
 
 
+@pytest.fixture
+def sqlite_tier3_ingestion_service(
+    sqlite_graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    tier3_config,
+):
+    """SQLite-pinned tier3 ingestion, for the json_extract SQL-trace test."""
+    lifecycle = LifecycleService(sqlite_graph_store, lock_manager, tier3_config)
+    return IngestionService(
+        graph_store=sqlite_graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=tier3_config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle,
+    )
+
+
+@pytest.fixture
+def sqlite_tier3_retrieval_service(
+    sqlite_graph_store, stub_content_store, stub_embedding_provider, tier3_config
+):
+    """SQLite-pinned tier3 retrieval, for the json_extract SQL-trace test."""
+    return RetrievalService(
+        graph_store=sqlite_graph_store,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        config=tier3_config,
+    )
+
+
 def _write_md(tmp_vault_dir: Path, relative_path: str, body: str) -> None:
     full_path = tmp_vault_dir / "sources" / relative_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1135,8 +1171,14 @@ async def test_t0075_catalog_filter_unknown_tier3_key_raises_against_doc_type_sc
 
 
 async def test_t0075_catalog_filter_pushes_tier3_into_sql_not_python(
-    tmp_vault_dir, tier3_ingestion_service, tier3_retrieval_service, graph_store
+    tmp_vault_dir,
+    sqlite_tier3_ingestion_service,
+    sqlite_tier3_retrieval_service,
+    sqlite_graph_store,
 ):
+    tier3_ingestion_service = sqlite_tier3_ingestion_service
+    tier3_retrieval_service = sqlite_tier3_retrieval_service
+    graph_store = sqlite_graph_store
     """The optimization gate: the SQL emitted for a catalog-mode tier3
     filter must contain a json_extract predicate, and the legacy
     wide-fetch / Python-post-filter phase must not fire.

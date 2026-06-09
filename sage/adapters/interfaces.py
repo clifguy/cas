@@ -245,6 +245,29 @@ class AbstractionProvider(ABC):
         """
 
 
+class NaturalKeyConflict(Exception):
+    """Storage-layer signal that an edge or staging-edge natural-key triple
+    ``(source_id, target_id, edge_type)`` already exists.
+
+    Backend-neutral by design: every concrete store translates its driver's
+    unique-violation (SQLite's ``IntegrityError`` on the natural-key index,
+    Postgres's ``UniqueViolation`` on the same index) into this one type, so
+    callers above the port — and the cross-backend parity tests — never branch
+    on the driver. Raised at every write escape point where a natural-key
+    duplicate surfaces under ``on_conflict="raise"``; the ``on_conflict="noop"``
+    path resolves the duplicate internally and never raises this.
+    """
+
+    def __init__(self, source_id: str, target_id: str | None, edge_type: str) -> None:
+        super().__init__(
+            f"edge natural key (source={source_id!r}, target={target_id!r}, "
+            f"type={edge_type!r}) already exists"
+        )
+        self.source_id = source_id
+        self.target_id = target_id
+        self.edge_type = edge_type
+
+
 class GraphStore(ABC):
     """Interface for the document/edge/user graph store (SQLite in production).
 

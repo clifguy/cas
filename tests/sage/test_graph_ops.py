@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic_core import PydanticUndefined
 
+from sage.adapters.interfaces import NaturalKeyConflict
 from sage.api.errors import (
     DocumentNotFoundError,
     EdgeNotFoundError,
@@ -164,12 +165,10 @@ async def test_bh_023_failed_doc_does_not_satisfy_preconditions(graph_store, gra
 # (source_id, target_id, edge_type) prevents duplicate rows. The
 # idempotent contract is exposed via `_create_edge` (returns the
 # pre-existing edge with `created=False`); non-idempotent `link`
-# propagates `sqlite3.IntegrityError`.
+# propagates `NaturalKeyConflict`.
 
 
 async def test_bh_031_duplicate_edges_now_blocked(graph_store, graph_ops_service):
-    import sqlite3 as _sqlite3
-
     doc_a = _make_doc(_id("doc_a"))
     doc_b = _make_doc(_id("doc_b"))
     await graph_store.insert_document(doc_a)
@@ -187,7 +186,7 @@ async def test_bh_031_duplicate_edges_now_blocked(graph_store, graph_ops_service
             )
         )
     ).edge
-    with pytest.raises(_sqlite3.IntegrityError):
+    with pytest.raises(NaturalKeyConflict):
         await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
@@ -403,8 +402,6 @@ async def test_bh_037_traversal_collapses_multipath_hits(graph_store, graph_ops_
 
 
 async def test_t0079_insert_edge_raises_on_duplicate(graph_store):
-    import sqlite3 as _sqlite3
-
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
@@ -432,7 +429,7 @@ async def test_t0079_insert_edge_raises_on_duplicate(graph_store):
         created_at=datetime.now(timezone.utc),
         rationale="Second",
     )
-    with pytest.raises(_sqlite3.IntegrityError):
+    with pytest.raises(NaturalKeyConflict):
         await graph_store.insert_edge(dup, on_conflict="raise")
 
 
@@ -509,9 +506,7 @@ async def test_t0079_link_idempotent_returns_existing(graph_store, graph_ops_ser
 
 
 async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_service):
-    """graph_ops._create_edge_strict (non-idempotent) propagates the IntegrityError."""
-    import sqlite3 as _sqlite3
-
+    """graph_ops._create_edge_strict (non-idempotent) propagates NaturalKeyConflict."""
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
@@ -525,7 +520,7 @@ async def test_t0079_link_still_raises_on_duplicate(graph_store, graph_ops_servi
             rationale="first",
         )
     )
-    with pytest.raises(_sqlite3.IntegrityError):
+    with pytest.raises(NaturalKeyConflict):
         await graph_ops_service._create_edge_strict(
             LinkRequest(
                 source_id=_id("doc_a"),
@@ -604,8 +599,6 @@ async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
     between the same pair via direct INSERT) is now blocked at the
     storage layer. This test pins the post-invariant.
     """
-    import sqlite3 as _sqlite3
-
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
@@ -635,7 +628,7 @@ async def test_bh_037_legacy_three_duplicate_edges_storage_blocked(graph_store):
             created_at=base_time + timedelta(hours=i),
             rationale=f"rationale {i}",
         )
-        with pytest.raises(_sqlite3.IntegrityError):
+        with pytest.raises(NaturalKeyConflict):
             await graph_store.insert_edge(dup)
 
 
@@ -668,13 +661,12 @@ def _assert_no_open_transaction(store: SqliteGraphStore) -> None:
     )
 
 
-async def test_insert_edge_raise_path_rolls_back_failed_transaction(graph_store):
+async def test_insert_edge_raise_path_rolls_back_failed_transaction(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """A duplicate insert_edge under the default on_conflict="raise" both
-    re-raises IntegrityError and rolls back, leaving no open transaction on the
+    re-raises NaturalKeyConflict and rolls back, leaving no open transaction on the
     store's connection -- matching insert_document's discipline.
     """
-    import sqlite3 as _sqlite3
-
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
@@ -703,13 +695,14 @@ async def test_insert_edge_raise_path_rolls_back_failed_transaction(graph_store)
         created_at=base_time + timedelta(hours=1),
         rationale="dup",
     )
-    with pytest.raises(_sqlite3.IntegrityError):
+    with pytest.raises(NaturalKeyConflict):
         await graph_store.insert_edge(dup)
 
     _assert_no_open_transaction(graph_store)
 
 
-async def test_insert_edge_raise_path_releases_write_lock(graph_store):
+async def test_insert_edge_raise_path_releases_write_lock(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """After a re-raised IntegrityError, a second independent connection can
     acquire the write lock -- proving the failed insert did not leave a write
     transaction open. This is the deterministic form of the BH-037 flake: the
@@ -747,7 +740,7 @@ async def test_insert_edge_raise_path_releases_write_lock(graph_store):
         created_at=base_time + timedelta(hours=1),
         rationale="dup",
     )
-    with pytest.raises(_sqlite3.IntegrityError):
+    with pytest.raises(NaturalKeyConflict):
         await graph_store.insert_edge(dup)
 
     # A fresh connection simulates a second pool worker. With a short
@@ -762,14 +755,13 @@ async def test_insert_edge_raise_path_releases_write_lock(graph_store):
         probe.close()
 
 
-async def test_insert_staging_edge_raise_path_rolls_back_failed_transaction(graph_store):
+async def test_insert_staging_edge_raise_path_rolls_back_failed_transaction(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """The staging-edge twin of insert_edge has the same single-shot
     commit/rollback ownership: a duplicate insert_staging_edge under
     on_conflict="raise" must roll back the failed transaction, leaving no open
     transaction on the store's connection.
     """
-    import sqlite3 as _sqlite3
-
     await graph_store.insert_document(_make_doc(_id("doc_a")))
     await graph_store.insert_document(_make_doc(_id("doc_b")))
 
@@ -794,7 +786,7 @@ async def test_insert_staging_edge_raise_path_rolls_back_failed_transaction(grap
         confidence_tier=2,
         created_at=base_time + timedelta(hours=1),
     )
-    with pytest.raises(_sqlite3.IntegrityError):
+    with pytest.raises(NaturalKeyConflict):
         await graph_store.insert_staging_edge(dup, on_conflict="raise")
 
     _assert_no_open_transaction(graph_store)

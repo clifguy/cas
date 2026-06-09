@@ -72,8 +72,10 @@ def _make_doc(doc_id: str) -> Document:
 
 
 async def test_link_transitive_both_bounded_executor_submissions(
-    graph_store, graph_ops_service, monkeypatch
+    sqlite_graph_store, sqlite_graph_ops_service, monkeypatch
 ):
+    graph_store = sqlite_graph_store
+    graph_ops_service = sqlite_graph_ops_service
     """A transitive_both link must issue ≤ 2 executor submissions.
 
     Pre-fix baseline was 7 (get_document × 4, get_supersedes_lineage × 2,
@@ -108,8 +110,10 @@ async def test_link_transitive_both_bounded_executor_submissions(
 
 
 async def test_link_merged_from_bounded_executor_submissions(
-    graph_store, graph_ops_service, monkeypatch
+    sqlite_graph_store, sqlite_graph_ops_service, monkeypatch
 ):
+    graph_store = sqlite_graph_store
+    graph_ops_service = sqlite_graph_ops_service
     """A merged_from link must issue ≤ 2 executor submissions.
 
     Pre-fix baseline was 8+ (get_document × 2, has_supersedes_predecessor,
@@ -147,7 +151,11 @@ async def test_link_merged_from_bounded_executor_submissions(
 # ---------------------------------------------------------------------------
 
 
-async def test_link_serializes_concurrent_calls(graph_store, graph_ops_service, monkeypatch):
+async def test_link_serializes_concurrent_calls(
+    sqlite_graph_store, sqlite_graph_ops_service, monkeypatch
+):
+    graph_store = sqlite_graph_store
+    graph_ops_service = sqlite_graph_ops_service
     """Concurrent link calls must not overlap inside the store.
 
     We wrap graph_store._run to count simultaneous calls. With the

@@ -5,11 +5,10 @@ Covers behavioral tests BH-021, BH-023, BH-031 through BH-037.
 
 import asyncio
 import logging
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from sage.adapters.interfaces import GraphStore
+from sage.adapters.interfaces import GraphStore, NaturalKeyConflict
 from sage.api.errors import (
     DocumentNotFoundError,
     EdgeAnchorPolicyViolationError,
@@ -222,7 +221,7 @@ class GraphOpsService:
         of those fields for forward compatibility; this does not
         unblock ``sync_target`` link creation today.
 
-        Raises ``sqlite3.IntegrityError`` if an edge with the same
+        Raises ``NaturalKeyConflict`` if an edge with the same
         natural-key triple (source_id, target_id, edge_type) already
         exists (unique constraint). For idempotent semantics
         (no-op on duplicate, return existing edge), use
@@ -382,7 +381,7 @@ class GraphOpsService:
     async def _create_edge_impl(self, request: LinkRequest, *, on_conflict: str) -> LinkResponse:
         """Shared implementation used by ``_create_edge_strict`` and ``_create_edge``.
 
-        ``on_conflict="raise"`` lets the storage-layer IntegrityError
+        ``on_conflict="raise"`` lets the storage-layer NaturalKeyConflict
         propagate. ``on_conflict="noop"`` translates it into a return of
         the pre-existing edge with ``created=False``.
 
@@ -471,7 +470,7 @@ class GraphOpsService:
             # (no insert happens), so without this pre-check a dry-run
             # would silently report ``created=True`` for what would
             # actually be a real-run no-op. Real-run does not need
-            # this pre-check: the IntegrityError path below already
+            # this pre-check: the natural-key conflict path below already
             # handles the dup case correctly (and adding the read
             # here on every real-run link broke the executor-
             # submission bound). Note: ``target_id`` may be null on
@@ -492,14 +491,14 @@ class GraphOpsService:
                             existing_rationale=existing.rationale,
                             dry_run=True,
                         )
-                    # on_conflict="raise" path: real-run would hit
-                    # IntegrityError on insert; dry-run preserves
+                    # on_conflict="raise" path: real-run would hit a
+                    # natural-key conflict on insert; dry-run preserves
                     # that contract by raising synchronously here so
                     # callers see the same shape of outcome.
-                    raise sqlite3.IntegrityError(
-                        "UNIQUE constraint would fail: edges natural key "
-                        f"({request.source_id}, {request.target_id}, "
-                        f"{request.edge_type.value})"
+                    raise NaturalKeyConflict(
+                        request.source_id,
+                        request.target_id,
+                        request.edge_type.value,
                     )
 
             # Prefer the caller-supplied rationale_kind; otherwise
@@ -551,7 +550,7 @@ class GraphOpsService:
                         list(ctx.tombstone_candidates),
                         request.target_id,
                     )
-                except sqlite3.IntegrityError:
+                except NaturalKeyConflict:
                     if on_conflict == "noop":
                         existing = await self._store.find_edge_by_natural_key(
                             request.source_id,

@@ -178,6 +178,26 @@ def unique_keys_maintenance_service(
     )
 
 
+@pytest.fixture
+def sqlite_unique_keys_maintenance_service(
+    sqlite_graph_store, unique_keys_config, tmp_vault_dir, stub_content_store
+):
+    """MaintenanceService pinned to SQLite.
+
+    ``migrate_vault`` is a SQLite-runtime schema-migration flow (it simulates
+    ALTERs on a throwaway sqlite db and inspects ``sqlite_master``) with no
+    Postgres analog in scope; tests that drive it run SQLite-only.
+    """
+    return MaintenanceService(
+        vault_id="test_tier3_unique_vault",
+        db_path=tmp_vault_dir / "brain" / "graph.db",
+        graph_store=sqlite_graph_store,
+        config=unique_keys_config,
+        registry_service=None,
+        content_store=stub_content_store,
+    )
+
+
 def _write_md(tmp_vault_dir: Path, relative_path: str, body: str) -> None:
     full_path = tmp_vault_dir / "sources" / relative_path
     full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -761,8 +781,10 @@ async def test_t14_migration_scan_treats_supersession_chain_as_one_artifact(
 
 
 async def test_t15_migrate_vault_refuses_activation_on_collision(
-    graph_store, unique_keys_maintenance_service, tmp_vault_dir
+    sqlite_graph_store, sqlite_unique_keys_maintenance_service, tmp_vault_dir
 ):
+    graph_store = sqlite_graph_store
+    unique_keys_maintenance_service = sqlite_unique_keys_maintenance_service
     """T15: `migrate_vault` returns the collision in
     `tier3_uniqueness_collisions` and the partial UNIQUE index is NOT
     created. Anti-coincidental: unconditionally creating the index would
@@ -787,8 +809,10 @@ async def test_t15_migrate_vault_refuses_activation_on_collision(
 
 
 async def test_t16_migrate_vault_creates_index_on_clean_portfolio(
-    graph_store, unique_keys_maintenance_service
+    sqlite_graph_store, sqlite_unique_keys_maintenance_service
 ):
+    graph_store = sqlite_graph_store
+    unique_keys_maintenance_service = sqlite_unique_keys_maintenance_service
     """T16: a portfolio without collisions activates cleanly: the partial
     UNIQUE index is created and a subsequent colliding insert raises
     `Tier3UniqueViolation`. Anti-coincidental: gating index creation on
@@ -810,7 +834,8 @@ async def test_t16_migrate_vault_creates_index_on_clean_portfolio(
         await graph_store.insert_document(_make_ticket_doc("b", "T-0001"))
 
 
-async def test_t16_migration_is_idempotent(graph_store, unique_keys_maintenance_service):
+async def test_t16_migration_is_idempotent(sqlite_unique_keys_maintenance_service):
+    unique_keys_maintenance_service = sqlite_unique_keys_maintenance_service
     """Re-running `migrate_vault` on an already-activated vault produces
     the same activations and no side effects. The CREATE UNIQUE INDEX
     IF NOT EXISTS makes index creation idempotent; this guards the
