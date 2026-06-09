@@ -283,26 +283,94 @@ class StackAbstractionConfig(BaseModel):
     Loaded once at SAGE process startup before any vault is registered.
     Carries the provider dispatch key and the model identifier passed to
     the provider's factory. Co-located with the resource boundary because
-    the Qwen3 provider is enforced as a process-wide singleton.
+    the local MLX provider is enforced as a process-wide singleton.
     """
 
-    provider: Literal["qwen3-mlx", "stub"] = Field(
-        default="qwen3-mlx",
+    provider: Literal["local-mlx", "anthropic", "stub"] = Field(
+        default="local-mlx",
         description=(
             "Abstraction provider dispatch key (Abstraction Provider "
             "Evaluation Framework §3.6, re-anchored at stack scope by "
-            "CAS-ADR-030). 'qwen3-mlx' loads Qwen3AbstractionProvider "
-            "with the model identifier from the 'model' field. 'stub' "
-            "loads StubAbstractionProvider (test/disabled stacks)."
+            "CAS-ADR-030). 'local-mlx' loads the local MLX provider "
+            "(Qwen3) with the model identifier from the 'model' field. "
+            "'anthropic' loads the hosted Claude provider with the model "
+            "identifier from the 'model' field. 'stub' loads the stub "
+            "provider (test/disabled stacks)."
         ),
     )
     model: str | None = Field(
         default=None,
         description=(
             "LLM model identifier for abstract generation, passed to the "
-            "provider's factory. Required when provider is 'qwen3-mlx' "
-            "(startup fails loudly if null). Ignored when provider is "
-            "'stub'. Should be a local model for Phase 1."
+            "provider's factory. Required when provider is 'local-mlx' or "
+            "'anthropic' (startup fails loudly if null): a local model "
+            "identifier for 'local-mlx', a Claude model identifier for "
+            "'anthropic'. Ignored when provider is 'stub'."
+        ),
+    )
+
+
+class StackPostgresConfig(BaseModel):
+    """Stack-wide Postgres connection parameters (CAS-ADR-042).
+
+    Non-secret connection parameters for the Postgres storage engine the
+    deployment profiles externalize durable state to. The password is read
+    from the environment, never carried here. Consumed today only by the
+    provisioning CLI and the storage test harness; the live storage binding
+    arrives with the profile flip.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    host: str | None = Field(
+        default=None,
+        description=(
+            "Postgres server hostname. Null selects a local unix-domain "
+            "socket connection (the on-box default: peer authentication, no "
+            "password); a hostname or address selects a TCP connection (the "
+            "hosted target)."
+        ),
+    )
+    port: int = Field(
+        default=5432,
+        description=("Postgres server TCP port. Ignored for a unix-socket connection (host null)."),
+    )
+    database: str = Field(
+        default="sage",
+        description="Name of the database to connect to within the Postgres server.",
+    )
+    user: str | None = Field(
+        default=None,
+        description=(
+            "Postgres role to connect as. Null defers to the operating-system "
+            "user, which the local socket authenticates by peer."
+        ),
+    )
+    sslmode: str | None = Field(
+        default=None,
+        description=(
+            "libpq sslmode for the connection (for example 'require' for a "
+            "managed hosted endpoint). Null leaves the libpq default and is "
+            "typical for a local socket."
+        ),
+    )
+    min_pool_size: int = Field(
+        default=1,
+        description="Minimum number of connections the async pool keeps open.",
+    )
+    max_pool_size: int = Field(
+        default=10,
+        description="Maximum number of connections the async pool will open.",
+    )
+    extensions: list[str] = Field(
+        default_factory=lambda: ["vector", "pgstattuple"],
+        description=(
+            "Postgres extensions the schema bootstrap enables in the target "
+            "database. 'vector' (pgvector) is required for the content store's "
+            "embedding column; 'pgstattuple' backs bloat measurement. "
+            "'pg_repack' is documented for the local runtime but kept out of "
+            "this default because managed and containerized targets may not "
+            "carry it."
         ),
     )
 
@@ -315,17 +383,48 @@ class SageCoreConfig(BaseModel):
     SAGE process; per-vault configuration lives in `VaultConfig`.
     """
 
+    profile: Literal["local"] = Field(
+        default="local",
+        description=(
+            "Deployment-profile marker (CAS-ADR-042). A deployment profile "
+            "is the single stack-scope selection that co-binds the "
+            "adapter-port implementations for one deployment target; the "
+            "layer above the ports stays profile-invariant. The resolver "
+            "assembles 'local' (the on-box, single-process deployment whose "
+            "bindings match today's behavior) once at stack startup, and it "
+            "is the only profile available today. Additional profiles attach "
+            "their bindings by registration as the cloud adapters land, and "
+            "an unrecognized value fails loud at startup."
+        ),
+    )
     abstraction: StackAbstractionConfig = Field(
         default_factory=StackAbstractionConfig,
         description=(
             "Stack-wide abstraction provider configuration (CAS-ADR-030). "
             "The provider and model identifier are SAGE-process-wide "
-            "because the Qwen3 provider is enforced as a singleton across "
+            "because the local MLX provider is enforced as a singleton across "
             "the process; co-locating the config with the resource "
             "boundary avoids the layering contradiction where a per-vault "
             "field controls a stack-wide resource. Per-vault opt-in and "
             "token-budget tuning live in the vault config's abstraction "
             "block."
+        ),
+    )
+    postgres: StackPostgresConfig = Field(
+        default_factory=StackPostgresConfig,
+        description=(
+            "Connection parameters for the Postgres storage engine "
+            "(CAS-ADR-042). Both deployment targets externalize durable graph "
+            "and content state to a networked relational engine -- a local "
+            "unix socket on the on-box target, a managed endpoint on the "
+            "hosted target -- with the embedded SQLite/LanceDB stores "
+            "retained as a fallback binding. Non-secret parameters only: the "
+            "password is read from the environment (SAGE_PG_PASSWORD), never "
+            "from this file. The block configures the async driver and "
+            "connection pool the store adapters share and the idempotent "
+            "schema bootstrap; it is not yet wired into the live storage "
+            "binding, so today it is consumed only by the provisioning CLI "
+            "and the storage test harness."
         ),
     )
 

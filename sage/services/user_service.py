@@ -3,10 +3,10 @@
 import uuid
 from datetime import datetime, timezone
 
+from sage.adapters.interfaces import GraphStore
 from sage.config import VaultConfig
 from sage.models.enums import UserType
 from sage.models.schemas import RegisterUserRequest, User
-from sage.storage.graph_store import GraphStore
 
 
 class UserService:

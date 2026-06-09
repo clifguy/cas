@@ -24,7 +24,7 @@ from sage.models.enums import (
     TraversalDirection,
 )
 from sage.models.schemas import Document, LinkRequest, TraverseRequest
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 
 # T1 ----------------------------------------------------------------------
 
@@ -104,7 +104,7 @@ async def test_t9_index_idx_edges_rationale_kind_is_used(tmp_path):
     columns or whether the planner picked it for the target predicate.
     """
     db_path = tmp_path / "graph.db"
-    store = GraphStore(db_path)
+    store = SqliteGraphStore(db_path)
     await store.initialize(migrate=True)
     try:
         conn = sqlite3.connect(str(db_path))

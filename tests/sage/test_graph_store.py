@@ -30,7 +30,7 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
 )
 from sage.services.identity import generate_document_id
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.migrations import (
     BACKFILL_PLAN,
     _backfill_document_tags_apply,
@@ -118,7 +118,8 @@ def test_bh_003_same_path_different_timestamps():
 # ---------------------------------------------------------------------------
 
 
-async def test_bh_004_wal_mode_enabled(graph_store):
+async def test_bh_004_wal_mode_enabled(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     mode = await graph_store.get_journal_mode()
     assert mode == "wal"
 
@@ -133,7 +134,8 @@ async def test_bh_004_wal_mode_enabled(graph_store):
 # ---------------------------------------------------------------------------
 
 
-async def test_busy_timeout_pragma_set(graph_store):
+async def test_busy_timeout_pragma_set(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """Every pooled connection is opened with a ~30s busy_timeout.
 
     SQLite's compile-time default is 0 (no wait -> immediate SQLITE_BUSY);
@@ -143,7 +145,8 @@ async def test_busy_timeout_pragma_set(graph_store):
     assert await graph_store.get_busy_timeout() == 30_000
 
 
-async def test_synchronous_pragma_normal(graph_store):
+async def test_synchronous_pragma_normal(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """Every pooled connection is opened with synchronous=NORMAL (==1).
 
     SQLite's default is FULL (==2). NORMAL is the WAL-safe setting; the
@@ -435,7 +438,8 @@ def _make_doc_with_tags(doc_id: str, tags: list[str]) -> Document:
     return doc
 
 
-async def test_t0078_insert_with_tags_populates_join_table(graph_store):
+async def test_t0078_insert_with_tags_populates_join_table(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#1: insert document with tags -> matching join rows."""
     doc = _make_doc_with_tags(_id("doc_t1"), ["alpha", "beta"])
     await graph_store.insert_document(doc)
@@ -443,7 +447,8 @@ async def test_t0078_insert_with_tags_populates_join_table(graph_store):
     assert rows == [(doc.id, "alpha"), (doc.id, "beta")]
 
 
-async def test_t0078_insert_with_no_tags_creates_no_join_rows(graph_store):
+async def test_t0078_insert_with_no_tags_creates_no_join_rows(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#2: insert with empty tags -> zero join rows.
 
     Vacuous pre-implementation (no hook runs, join table is always empty).
@@ -455,7 +460,8 @@ async def test_t0078_insert_with_no_tags_creates_no_join_rows(graph_store):
     assert _join_rows(graph_store._db_path, doc.id) == []
 
 
-async def test_t0078_update_tags_add(graph_store):
+async def test_t0078_update_tags_add(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#3: update ["a"] -> ["a","b"] reflects in join table."""
     doc = _make_doc_with_tags(_id("doc_t3"), ["a"])
     await graph_store.insert_document(doc)
@@ -464,7 +470,8 @@ async def test_t0078_update_tags_add(graph_store):
     assert rows == [(doc.id, "a"), (doc.id, "b")]
 
 
-async def test_t0078_update_tags_remove(graph_store):
+async def test_t0078_update_tags_remove(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#4: update ["a","b"] -> ["a"] removes the dropped row."""
     doc = _make_doc_with_tags(_id("doc_t4"), ["a", "b"])
     await graph_store.insert_document(doc)
@@ -472,7 +479,8 @@ async def test_t0078_update_tags_remove(graph_store):
     assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "a")]
 
 
-async def test_t0078_update_tags_full_replace(graph_store):
+async def test_t0078_update_tags_full_replace(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#5: update ["a"] -> ["c"] replaces the row entirely."""
     doc = _make_doc_with_tags(_id("doc_t5"), ["a"])
     await graph_store.insert_document(doc)
@@ -480,7 +488,8 @@ async def test_t0078_update_tags_full_replace(graph_store):
     assert _join_rows(graph_store._db_path, doc.id) == [(doc.id, "c")]
 
 
-async def test_t0078_update_without_tags_key_preserves_join(graph_store):
+async def test_t0078_update_without_tags_key_preserves_join(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#6: update title only -> join rows unchanged.
 
     Seeds the join table via the insert hook so the "unchanged" claim is
@@ -498,7 +507,8 @@ async def test_t0078_update_without_tags_key_preserves_join(graph_store):
     assert _join_rows(graph_store._db_path, doc.id) == pre
 
 
-async def test_t0078_tag_filter_query_uses_join_table_plan(graph_store):
+async def test_t0078_tag_filter_query_uses_join_table_plan(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#7: the production tag-filter query path uses the join table.
 
     Two assertions:
@@ -510,9 +520,9 @@ async def test_t0078_tag_filter_query_uses_join_table_plan(graph_store):
     """
     import inspect
 
-    from sage.storage.graph_store import GraphStore
+    from sage.storage.graph_store import SqliteGraphStore
 
-    source = inspect.getsource(GraphStore._query_documents_sync)
+    source = inspect.getsource(SqliteGraphStore._query_documents_sync)
     assert "json_each(tags)" not in source, (
         "_query_documents_sync still references json_each(tags); "
         "tag filter has not been rewritten to use document_tags"
@@ -572,7 +582,8 @@ async def test_t0078_tag_filter_and_semantics(graph_store):
     assert total == 2
 
 
-async def test_t0078_backfill_populates_from_json(graph_store):
+async def test_t0078_backfill_populates_from_json(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#9: backfill helper fills join table from existing JSON.
 
     Simulates an unmigrated state by inserting a document directly via SQL
@@ -626,7 +637,8 @@ async def test_t0078_backfill_populates_from_json(graph_store):
     assert rows == [(doc_id, "p"), (doc_id, "q"), (doc_id, "r")]
 
 
-async def test_t0078_backfill_is_idempotent(graph_store):
+async def test_t0078_backfill_is_idempotent(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#10: re-running backfill does not duplicate or error."""
     doc_id = _id("doc_idem")
     now = datetime.now(timezone.utc).isoformat()
@@ -669,7 +681,8 @@ async def test_t0078_backfill_is_idempotent(graph_store):
     assert rows == [(doc_id, "s"), (doc_id, "t")]
 
 
-async def test_t0078_fk_cascade_on_document_delete(graph_store):
+async def test_t0078_fk_cascade_on_document_delete(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """#11: deleting a document cascades to document_tags rows."""
     doc = _make_doc_with_tags(_id("doc_fk"), ["m", "n"])
     await graph_store.insert_document(doc)
@@ -686,7 +699,9 @@ async def test_t0078_fk_cascade_on_document_delete(graph_store):
     assert _join_rows(graph_store._db_path, doc.id) == []
 
 
-async def test_t0078_metadata_service_e2e(metadata_service, graph_store):
+async def test_t0078_metadata_service_e2e(sqlite_metadata_service, sqlite_graph_store):
+    metadata_service = sqlite_metadata_service
+    graph_store = sqlite_graph_store
     """#12: ListFieldPatch through MetadataService syncs the join table."""
     doc = _make_doc_with_tags(_id("doc_e2e"), ["initial"])
     await graph_store.insert_document(doc)
@@ -708,7 +723,7 @@ async def test_t0078_backfill_plan_includes_document_tags():
 
 
 # ---------------------------------------------------------------------------
-# Exhaustive-fields closure test for ``GraphStore._row_to_edge``.
+# Exhaustive-fields closure test for ``SqliteGraphStore._row_to_edge``.
 #
 # ``_row_to_edge`` is the single owning factory for the
 # ``sqlite3.Row -> Edge`` projection (sage/storage/graph_store.py). Per the
@@ -722,7 +737,7 @@ async def test_t0078_backfill_plan_includes_document_tags():
 
 def _edge_row_with_every_edge_field() -> sqlite3.Row:
     """Build a ``sqlite3.Row`` with every column consumed by
-    ``GraphStore._row_to_edge`` set to a distinct non-default sentinel.
+    ``SqliteGraphStore._row_to_edge`` set to a distinct non-default sentinel.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
     ; only the column->value mapping is per-ticket. The real
@@ -769,13 +784,13 @@ def _edge_row_with_every_edge_field() -> sqlite3.Row:
 
 def test_row_to_edge_populates_every_edge_field():
     """(F4 closure pair, T1): every ``Edge`` field is populated by
-    ``GraphStore._row_to_edge`` from a sentinel row dict whose columns are
+    ``SqliteGraphStore._row_to_edge`` from a sentinel row dict whose columns are
     all non-default. Iterates ``Edge.model_fields`` so the assertion grows
     automatically when a field is added to ``Edge``; if the new field is
     not wired through ``_row_to_edge``, the loop trips the assertion.
     """
     row = _edge_row_with_every_edge_field()
-    edge = GraphStore._row_to_edge(row)
+    edge = SqliteGraphStore._row_to_edge(row)
     for field_name, field_info in Edge.model_fields.items():
         value = getattr(edge, field_name)
         annotation = field_info.annotation
@@ -804,7 +819,7 @@ def test_row_to_edge_populates_every_edge_field():
 
 
 # ---------------------------------------------------------------------------
-# Exhaustive-fields closure test for ``GraphStore._row_to_staging_edge``.
+# Exhaustive-fields closure test for ``SqliteGraphStore._row_to_staging_edge``.
 #
 # ``_row_to_staging_edge`` is the single owning factory for the
 # ``sqlite3.Row -> StagingEdge`` projection (sage/storage/graph_store.py).
@@ -819,7 +834,7 @@ def test_row_to_edge_populates_every_edge_field():
 
 def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
     """Build a ``sqlite3.Row`` with every column consumed by
-    ``GraphStore._row_to_staging_edge`` set to a distinct non-default
+    ``SqliteGraphStore._row_to_staging_edge`` set to a distinct non-default
     sentinel.
 
     Delegates the row-construction scaffold to ``build_sentinel_row``
@@ -856,7 +871,7 @@ def _staging_edge_row_with_every_staging_edge_field() -> sqlite3.Row:
 
 def test_row_to_staging_edge_populates_every_staging_edge_field():
     """(F4 closure pair, T1): every ``StagingEdge`` field is
-    populated by ``GraphStore._row_to_staging_edge`` from a sentinel
+    populated by ``SqliteGraphStore._row_to_staging_edge`` from a sentinel
     row dict whose columns are all non-default. Iterates
     ``StagingEdge.model_fields`` so the assertion grows automatically
     when a field is added to ``StagingEdge``; if the new field is not
@@ -864,7 +879,7 @@ def test_row_to_staging_edge_populates_every_staging_edge_field():
     assertion.
     """
     row = _staging_edge_row_with_every_staging_edge_field()
-    staging_edge = GraphStore._row_to_staging_edge(row)
+    staging_edge = SqliteGraphStore._row_to_staging_edge(row)
     for field_name, field_info in StagingEdge.model_fields.items():
         value = getattr(staging_edge, field_name)
         annotation = field_info.annotation
@@ -1207,7 +1222,8 @@ async def test_t0157_query_edges_null_target_on_retracts_preserved(graph_store):
 # ---------------------------------------------------------------------------
 
 
-async def test_close_sets_closed_flag_idempotent(graph_store):
+async def test_close_sets_closed_flag_idempotent(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """A second close() returns cleanly; _closed stays True; bookkeeping
     stays released. Idempotency is the ADR-036 contract for nested
     cleanup paths (a rollback during partial allocation may
@@ -1253,7 +1269,8 @@ async def test_run_raises_from_fresh_thread_after_close(graph_store):
         await graph_store.list_all_documents()
 
 
-async def test_close_during_in_flight_dispatch_completes_then_raises(graph_store):
+async def test_close_during_in_flight_dispatch_completes_then_raises(sqlite_graph_store):
+    graph_store = sqlite_graph_store
     """Three-regime check: in-flight call (already past the _run barrier
     when close() is awaited) drains via `executor.shutdown(wait=True)`
     and completes; close() returns; subsequent dispatch raises.

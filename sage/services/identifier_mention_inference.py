@@ -26,11 +26,11 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from sage.adapters.interfaces import GraphStore
 from sage.config import pattern_is_discriminating
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import LinkRequest
 from sage.services.graph_ops import GraphOpsService
-from sage.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 

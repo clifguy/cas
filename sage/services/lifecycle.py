@@ -9,7 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sage.adapters.interfaces import ContentStore
+from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidActionError,
@@ -37,7 +37,6 @@ from sage.models.schemas import (
 )
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
-from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
 

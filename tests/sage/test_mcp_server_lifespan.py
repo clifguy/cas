@@ -245,13 +245,15 @@ async def test_sage_reload_vault_threads_registry_service_into_initialize_servic
     mcp_server._vaults.clear()
 
     # Seed the registry with a fake services entry to satisfy the reload
-    # preconditions (config_path + content_store_factory + graph_store.close).
+    # preconditions (config_path + content_store_factory + graph_store_factory
+    # + graph_store.close).
     from sage.config import load_vault_config
 
     config = load_vault_config(config_path)
     old_services = _FakeServices(config)
     old_services.config_path = config_path
     old_services.content_store_factory = None
+    old_services.graph_store_factory = None
     mcp_server._vaults["vault_a"] = old_services
 
     captured: list[dict] = []

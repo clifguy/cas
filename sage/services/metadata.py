@@ -6,7 +6,7 @@ from typing import Callable, NamedTuple
 
 import jsonschema
 
-from sage.adapters.interfaces import ContentStore
+from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidDocTypeError,
@@ -34,7 +34,6 @@ from sage.models.schemas import (
     UpdateMetadataResponse,
 )
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
-from sage.storage.graph_store import GraphStore
 from sage.storage.locks import DocumentLockManager
 
 

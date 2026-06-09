@@ -22,6 +22,7 @@ without a live server.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -326,6 +327,362 @@ def render_scorecard(result: FidelityResult) -> str:
     lines.append("## Recommendation")
     lines.append("")
     lines.append(_RECOMMENDATION_PROSE[result.recommendation])
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Relevance metrics (graded NDCG + rank-of-target MRR / success@k)
+# ---------------------------------------------------------------------------
+#
+# The divergence layer above asks "do the two keyword arms rank the same?".
+# This layer asks the harder question "does each arm rank the *right answer*
+# highly?" -- absolute relevance against a judged gold set, the go/no-go gate
+# for keeping native ts_rank as the cloud keyword arm. The metrics are pure and
+# graded: NDCG@k rewards highly-graded targets at shallow ranks; MRR and
+# success@k track where the primary target lands.
+
+# Relevance grades for the gold set. The primary (known-item) target is grade 2;
+# secondary-relevant docs are grade 1. Binary judgement is the special case where
+# only primaries are supplied.
+GRADE_PRIMARY = 2.0
+GRADE_SECONDARY = 1.0
+
+# Arm identifiers. Each query is scored under three arms: the vector-only ranking
+# (the floor -- what hybrid retrieval would return with no keyword arm), and the
+# two keyword arms each fused with that same vector ranking through ``rrf_fuse``.
+ARM_VECTOR = "vector"
+ARM_BM25 = "bm25_fused"
+ARM_TSRANK = "tsrank_fused"
+
+# Human-readable arm labels for the scorecard.
+_ARM_LABELS = {
+    ARM_VECTOR: "vector-only",
+    ARM_BM25: "LanceDB BM25 (fused)",
+    ARM_TSRANK: "Postgres ts_rank (fused)",
+}
+
+# Adequacy tolerance for the go/no-go banding. ``ts_rank`` is "adequate" when its
+# absolute relevance (NDCG@k and success@k) trails LanceDB BM25 by no more than
+# this on the worse of the two metrics; a gap at or beyond twice this escalates.
+# A calibration knob, surfaced in the scorecard so the per-arm gap stays auditable
+# rather than load-bearing.
+DEFAULT_REL_DELTA = 0.05
+
+
+def dcg_at_k(ranked_ids: list[str], gains: dict[str, float], k: int) -> float:
+    """Discounted Cumulative Gain at ``k`` with graded gains.
+
+    ``gains`` maps a document id to its relevance grade; ids absent from the map
+    contribute zero. The standard log discount ``gain / log2(rank + 1)`` rewards
+    relevant docs at shallow ranks. ``ranked_ids`` is 1-based for the discount.
+    """
+    if k <= 0:
+        raise ValueError("k must be positive")
+    total = 0.0
+    for rank, doc_id in enumerate(ranked_ids[:k], start=1):
+        gain = gains.get(doc_id, 0.0)
+        if gain:
+            total += gain / math.log2(rank + 1)
+    return total
+
+
+def ndcg_at_k(ranked_ids: list[str], gains: dict[str, float], k: int) -> float:
+    """Normalized DCG@k: ``DCG / ideal-DCG`` in ``[0, 1]``.
+
+    The ideal DCG places the highest available grades at the shallowest ranks.
+    Returns 0.0 when no relevant doc is reachable (empty ``gains``) -- a ranking
+    that surfaces none of the relevant docs scores 0, never undefined.
+    """
+    dcg = dcg_at_k(ranked_ids, gains, k)
+    ideal_grades = sorted(gains.values(), reverse=True)
+    idcg = 0.0
+    for rank, gain in enumerate(ideal_grades[:k], start=1):
+        if gain:
+            idcg += gain / math.log2(rank + 1)
+    if idcg == 0.0:
+        return 0.0
+    return dcg / idcg
+
+
+def reciprocal_rank(ranked_ids: list[str], relevant_ids: set[str]) -> float:
+    """Reciprocal rank of the first relevant id: ``1 / rank``, or 0.0 if none."""
+    for rank, doc_id in enumerate(ranked_ids, start=1):
+        if doc_id in relevant_ids:
+            return 1.0 / rank
+    return 0.0
+
+
+def success_at_k(ranked_ids: list[str], relevant_ids: set[str], k: int) -> float:
+    """1.0 if any relevant id appears in the top-``k``, else 0.0."""
+    if k <= 0:
+        raise ValueError("k must be positive")
+    return 1.0 if any(doc_id in relevant_ids for doc_id in ranked_ids[:k]) else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Gold-set model
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GoldQuery:
+    """One judged query: a primary (known-item) target plus optional secondaries.
+
+    ``primary_id`` / ``relevant_ids`` carry stable selectors (e.g. a vault
+    ``source_path``) in the on-disk gold set; the harness resolves them to
+    document ids before scoring. The metrics treat the primary as grade 2 and
+    each secondary as grade 1.
+    """
+
+    query: str
+    primary_id: str
+    relevant_ids: list[str] = field(default_factory=list)
+
+    def gains(self) -> dict[str, float]:
+        """Map every relevant id to its grade (primary 2, secondaries 1)."""
+        graded: dict[str, float] = {self.primary_id: GRADE_PRIMARY}
+        for rid in self.relevant_ids:
+            graded.setdefault(rid, GRADE_SECONDARY)
+        return graded
+
+    def relevant_set(self) -> set[str]:
+        """The set of all relevant ids (primary + secondaries)."""
+        return {self.primary_id, *self.relevant_ids}
+
+
+def parse_gold_entry(entry: dict[str, object]) -> GoldQuery:
+    """Parse one gold-set mapping into a ``GoldQuery``, failing loudly on gaps.
+
+    A missing ``query`` or ``primary`` is a stale/typo'd gold set, not a
+    zero-score query -- raise so the eval cannot silently grade against nothing.
+    """
+    query = entry.get("query")
+    primary = entry.get("primary")
+    if not query or not primary:
+        raise ValueError(f"gold entry needs both 'query' and 'primary': {entry!r}")
+    relevant = entry.get("relevant") or []
+    if not isinstance(relevant, list):
+        raise ValueError(f"gold entry 'relevant' must be a list: {entry!r}")
+    return GoldQuery(
+        query=str(query),
+        primary_id=str(primary),
+        relevant_ids=[str(rid) for rid in relevant],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Relevance aggregation + recommendation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ArmRelevance:
+    """Aggregate relevance for one arm across the gold set."""
+
+    arm: str
+    mean_ndcg_at_k: float
+    mean_reciprocal_rank: float
+    mean_success_at_k: float
+
+
+@dataclass
+class QueryRelevance:
+    """Per-query relevance for every arm, with the scored top-K retained."""
+
+    query: str
+    per_arm: dict[str, dict[str, float]]
+    topk: dict[str, list[str]]
+
+
+@dataclass
+class RelevanceResult:
+    """Aggregate absolute-relevance verdict over the gold set."""
+
+    k: int
+    num_queries: int
+    delta: float
+    arms: dict[str, ArmRelevance]
+    recommendation: str
+    per_query: list[QueryRelevance] = field(default_factory=list)
+
+
+def recommend_relevance(
+    ts_rank: ArmRelevance,
+    bm25: ArmRelevance,
+    *,
+    delta: float = DEFAULT_REL_DELTA,
+    escalate_delta: float | None = None,
+) -> str:
+    """Map the ``ts_rank``-vs-BM25 absolute-relevance gap to a go/no-go token.
+
+    The gap is the worse of the NDCG@k and success@k regressions of ``ts_rank``
+    relative to BM25 (the incumbent). At or within ``delta`` the keyword arm is
+    adequate (keep native); at or beyond ``escalate_delta`` (default ``2*delta``)
+    it has materially degraded (escalate); between is borderline.
+    """
+    if escalate_delta is None:
+        escalate_delta = 2 * delta
+    gap = max(
+        bm25.mean_ndcg_at_k - ts_rank.mean_ndcg_at_k,
+        bm25.mean_success_at_k - ts_rank.mean_success_at_k,
+    )
+    if gap <= delta:
+        return REC_NATIVE
+    if gap >= escalate_delta:
+        return REC_MANAGED
+    return REC_BORDERLINE
+
+
+def run_relevance_eval(
+    gold: list[GoldQuery],
+    vector_fn: RankingFn,
+    bm25_fn: RankingFn,
+    ts_rank_fn: RankingFn,
+    k: int,
+    *,
+    delta: float = DEFAULT_REL_DELTA,
+) -> RelevanceResult:
+    """Grade absolute relevance of each arm against the gold set.
+
+    For every gold query the vector arm is scored alone and each keyword arm is
+    fused with that same vector arm through the production ``rrf_fuse`` and
+    document-deduped -- so the scored ranking is the shape the hybrid discover
+    path returns, not the raw keyword list. Each arm is then graded with NDCG@k,
+    MRR, and success@k against the query's judged labels.
+    """
+    if not gold:
+        raise ValueError("gold set is empty")
+
+    per_query: list[QueryRelevance] = []
+    for gq in gold:
+        vector = vector_fn(gq.query)
+        bm25 = bm25_fn(gq.query)
+        ts_rank = ts_rank_fn(gq.query)
+        fuse_limit = len(vector) + max(len(bm25), len(ts_rank))
+        fuse_limit = max(fuse_limit, 1)
+
+        rankings = {
+            ARM_VECTOR: _topk_doc_ids(vector, len(vector) + 1),
+            ARM_BM25: _topk_doc_ids(rrf_fuse(vector, bm25, limit=fuse_limit), fuse_limit + 1),
+            ARM_TSRANK: _topk_doc_ids(rrf_fuse(vector, ts_rank, limit=fuse_limit), fuse_limit + 1),
+        }
+
+        gains = gq.gains()
+        relevant = gq.relevant_set()
+        per_arm = {
+            arm: {
+                "ndcg": ndcg_at_k(ranking, gains, k),
+                "rr": reciprocal_rank(ranking, relevant),
+                "success": success_at_k(ranking, relevant, k),
+            }
+            for arm, ranking in rankings.items()
+        }
+        per_query.append(
+            QueryRelevance(
+                query=gq.query,
+                per_arm=per_arm,
+                topk={arm: ranking[:k] for arm, ranking in rankings.items()},
+            )
+        )
+
+    n = len(per_query)
+    arms = {
+        arm: ArmRelevance(
+            arm=arm,
+            mean_ndcg_at_k=sum(q.per_arm[arm]["ndcg"] for q in per_query) / n,
+            mean_reciprocal_rank=sum(q.per_arm[arm]["rr"] for q in per_query) / n,
+            mean_success_at_k=sum(q.per_arm[arm]["success"] for q in per_query) / n,
+        )
+        for arm in (ARM_VECTOR, ARM_BM25, ARM_TSRANK)
+    }
+
+    return RelevanceResult(
+        k=k,
+        num_queries=n,
+        delta=delta,
+        arms=arms,
+        recommendation=recommend_relevance(arms[ARM_TSRANK], arms[ARM_BM25], delta=delta),
+        per_query=per_query,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Relevance scorecard rendering
+# ---------------------------------------------------------------------------
+
+_RELEVANCE_RECOMMENDATION_PROSE = {
+    REC_NATIVE: (
+        "**Keep native Postgres `ts_rank`.** On the keyword-skewed gold set its "
+        "graded relevance (NDCG@k), MRR, and success@k stay within tolerance of "
+        "LanceDB BM25; the keyword arm does not degrade under native FTS, so no "
+        "external managed search service is warranted."
+    ),
+    REC_MANAGED: (
+        "**Escalate beyond native `ts_rank`.** On the keyword-skewed gold set "
+        "`ts_rank` retrieves materially worse than LanceDB BM25 (NDCG@k / "
+        "success@k gap beyond tolerance); evaluate Azure AI Search or a "
+        "self-managed Postgres BM25 extension before adopting native FTS."
+    ),
+    REC_BORDERLINE: (
+        "**Borderline.** `ts_rank` trails LanceDB BM25 by a margin between the "
+        "adequacy and escalation thresholds; weigh the per-query regressions and "
+        "the cost of a managed service before deciding."
+    ),
+}
+
+
+def render_relevance_scorecard(result: RelevanceResult) -> str:
+    """Render the relevance result as a one-page Markdown scorecard."""
+    k = result.k
+    lines: list[str] = []
+    lines.append("# Keyword-backend relevance scorecard")
+    lines.append("")
+    lines.append(
+        "Absolute retrieval relevance of each keyword arm on a deliberately "
+        "**keyword-skewed** judged gold set (exact identifiers, rare/code-like "
+        "tokens, low-semantic-overlap phrasings). Each keyword arm is fused with "
+        "the same vector ranking through the production Reciprocal Rank Fusion; "
+        "the vector-only arm is the floor."
+    )
+    lines.append("")
+    lines.append("## Aggregate (per arm)")
+    lines.append("")
+    lines.append(f"- Queries: **{result.num_queries}**, K = **{k}**")
+    lines.append(f"- Adequacy tolerance (delta): **{result.delta:.3f}**")
+    lines.append("")
+    lines.append(f"| Arm | NDCG@{k} | MRR | success@{k} |")
+    lines.append("|---|---|---|---|")
+    for arm in (ARM_VECTOR, ARM_BM25, ARM_TSRANK):
+        a = result.arms[arm]
+        lines.append(
+            f"| {_ARM_LABELS[arm]} | {a.mean_ndcg_at_k:.3f} | "
+            f"{a.mean_reciprocal_rank:.3f} | {a.mean_success_at_k:.3f} |"
+        )
+    lines.append("")
+    bm25 = result.arms[ARM_BM25]
+    ts_rank = result.arms[ARM_TSRANK]
+    lines.append(
+        f"`ts_rank` vs BM25 gap — NDCG@{k}: "
+        f"**{bm25.mean_ndcg_at_k - ts_rank.mean_ndcg_at_k:+.3f}**, "
+        f"success@{k}: **{bm25.mean_success_at_k - ts_rank.mean_success_at_k:+.3f}** "
+        "(positive = `ts_rank` worse)."
+    )
+    lines.append("")
+    lines.append("## Per-query")
+    lines.append("")
+    lines.append(f"| Query | NDCG@{k} (vec / bm25 / ts) | MRR (vec / bm25 / ts) |")
+    lines.append("|---|---|---|")
+    for q in result.per_query:
+        v, b, t = q.per_arm[ARM_VECTOR], q.per_arm[ARM_BM25], q.per_arm[ARM_TSRANK]
+        lines.append(
+            f"| {q.query} | {v['ndcg']:.2f} / {b['ndcg']:.2f} / {t['ndcg']:.2f} "
+            f"| {v['rr']:.2f} / {b['rr']:.2f} / {t['rr']:.2f} |"
+        )
+    lines.append("")
+    lines.append("## Recommendation")
+    lines.append("")
+    lines.append(_RELEVANCE_RECOMMENDATION_PROSE[result.recommendation])
     lines.append("")
     return "\n".join(lines)
 

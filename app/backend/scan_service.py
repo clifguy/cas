@@ -18,9 +18,9 @@ from app.backend.models import (
     ScanResultResponse,
 )
 from app.backend.scan import ScanResult, build_extension_map, scan_directory
+from sage.adapters.interfaces import GraphStore
 from sage.config import VaultConfig
 from sage.services.ingestion import IngestionService
-from sage.storage.graph_store import GraphStore
 
 
 def _scan_result_to_response(sr: ScanResult) -> ScanResultResponse:

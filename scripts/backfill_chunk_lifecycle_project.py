@@ -35,7 +35,7 @@ from pathlib import Path
 
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.config import load_vault_config
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.vault_management import config_path_for_vault
 
 _VAULTS_ROOT = Path("~/sage_vaults").expanduser()
@@ -52,7 +52,7 @@ def discover_vault_ids() -> list[str]:
 
 async def run(
     *,
-    graph_store: GraphStore,
+    graph_store: SqliteGraphStore,
     brain_root: Path,
     execute: bool,
     out=None,
@@ -145,7 +145,7 @@ async def _backfill_vault(vault_id: str, *, execute: bool) -> int:
     config = load_vault_config(config_path)
     brain_root = Path(config.vault.brain_root).expanduser().resolve()
 
-    graph_store = GraphStore(brain_root / "graph.db")
+    graph_store = SqliteGraphStore(brain_root / "graph.db")
     await graph_store.initialize()
     try:
         print(f"=== Vault: {vault_id} ===")

@@ -282,7 +282,84 @@ class TestSageGetVaultConfig:
         assert "provider" in result["abstraction"]
         assert "model" in result["abstraction"]
         # The provider must be one of the documented enum values.
-        assert result["abstraction"]["provider"] in {"qwen3-mlx", "stub"}
+        assert result["abstraction"]["provider"] in {"local-mlx", "anthropic", "stub"}
+
+    async def test_mcp_document_responses_do_not_leak_abstraction_provider_or_model(
+        self, registered_vault
+    ):
+        """No document-path response leaks the abstraction provider or model
+        identity (CAS-ADR-030). The provider/model are operator-facing config,
+        surfaced only by ``get_stack_config`` -- callers triaging documents
+        must never see which producer made an abstract (producers are
+        fungible; provenance carries no caller-relevant signal).
+
+        Anti-coincidental-pass: the stack config is set to sentinel values
+        (``provider="anthropic"``, ``model="claude-haiku-4-5"``) and the
+        POSITIVE CONTROL asserts ``get_stack_config`` *does* surface both --
+        proving the tokens are configured and detectable. The four
+        document-path responses (``ingest_document``, ``get_document``,
+        ``search``, ``get_vault_config``) must then contain neither token, so
+        the absence assertions cannot pass merely because the tokens were
+        never present.
+        """
+        import json as _json
+
+        import sage.mcp_init as _mcp_init
+        from sage.config import SageCoreConfig, StackAbstractionConfig
+        from sage.mcp_server import get_document, get_stack_config, search
+
+        PROVIDER_TOKEN = "anthropic"
+        MODEL_TOKEN = "claude-haiku-4-5"
+
+        saved = _mcp_init.get_stack_config()
+        _mcp_init.set_stack_config(
+            SageCoreConfig(
+                abstraction=StackAbstractionConfig(provider=PROVIDER_TOKEN, model=MODEL_TOKEN)
+            )
+        )
+        try:
+            # Positive control: get_stack_config surfaces both tokens.
+            stack = _parse(await get_stack_config())
+            stack_blob = _json.dumps(stack)
+            assert PROVIDER_TOKEN in stack_blob
+            assert MODEL_TOKEN in stack_blob
+
+            # Ingest a document, then exercise the four document-path tools.
+            sources = Path(registered_vault["vault"]["storage_root"])
+            sources.mkdir(parents=True, exist_ok=True)
+            (sources / "sample.md").write_text("# Sample\n\nContent for triage.")
+            ingest_result = _parse(await ingest_document("test_vault", "sample.md", "markdown"))
+            await asyncio.sleep(0.2)
+            doc_id = ingest_result["id"]
+
+            doc_result = _parse(await get_document("test_vault", doc_id))
+            search_result = _parse(await search("test_vault", query="Content", mode="keyword"))
+            vault_cfg_result = _parse(await get_vault_config("test_vault"))
+
+            for label, response in (
+                ("ingest_document", ingest_result),
+                ("get_document", doc_result),
+                ("search", search_result),
+                ("get_vault_config", vault_cfg_result),
+            ):
+                blob = _json.dumps(response)
+                assert PROVIDER_TOKEN not in blob, f"{label} response leaks the provider identity"
+                assert MODEL_TOKEN not in blob, f"{label} response leaks the model identity"
+        finally:
+            _mcp_init.set_stack_config(saved)
+
+    async def test_mcp_get_stack_config_surfaces_profile(self, registered_vault):
+        """`get_stack_config` surfaces the active deployment-profile marker
+        (CAS-ADR-042) additively, alongside the abstraction section.
+
+        Additive only — does not assert provider/model absent, so it stays
+        compatible with the abstraction config that ships beside it.
+        """
+        from sage.mcp_server import get_stack_config
+
+        result = _parse(await get_stack_config())
+        assert "profile" in result
+        assert result["profile"] == "local"
 
 
 # ---------------------------------------------------------------------------

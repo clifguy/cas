@@ -366,11 +366,21 @@ class LanceDBContentStore(ContentStore):
                 return 0
             return table.stats()["fragment_stats"]["num_small_fragments"]
 
+    async def measured_byte_size(self) -> int:
+        """Return the recursive byte sum of the LanceDB directory.
+
+        The on-disk footprint of the chunk store; 0 when nothing has been
+        written yet. The canonical source for the dashboard's
+        content-store size, read through the binding-agnostic port.
+        """
+        with self._query_timer.measure("measured_byte_size"):
+            return self._lancedb_dir_bytes()
+
     def _lancedb_dir_bytes(self) -> int:
         """Sum of file sizes under the LanceDB directory (recursive walk).
 
-        Mirrors the pattern in sage/services/vault_config.py:88-93. Used
-        by ``optimize`` to capture pre/post on-disk byte counts.
+        Backs both ``measured_byte_size`` and ``optimize``'s pre/post
+        on-disk byte capture.
         """
         lancedb_dir = self._brain_root / "lancedb"
         if not lancedb_dir.exists():

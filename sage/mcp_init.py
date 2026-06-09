@@ -9,14 +9,16 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from sage import profiles
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.embedding_nomic import get_nomic_embedding_provider
 from sage.adapters.interfaces import (
     AbstractionProvider,
     ContentStore,
     EmbeddingProvider,
+    GraphStore,
 )
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import SageCoreConfig, VaultConfig
@@ -43,7 +45,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.locks import DocumentLockManager
 
 _logger = logging.getLogger(__name__)
@@ -214,6 +216,12 @@ class SAGEServices:
     # the services tuple so the factory survives across reloads without
     # adding module-level mutable state. None in production.
     content_store_factory: Callable[[Path], ContentStore] | None = None
+    # Mirror of content_store_factory for the graph store: when set, reload
+    # paths re-invoke this factory with the vault's brain_root instead of
+    # constructing a SqliteGraphStore. Carried on the services tuple so the
+    # factory survives across reloads without module-level mutable state.
+    # None in production.
+    graph_store_factory: Callable[[Path], GraphStore] | None = None
     # Per-vault background flusher for query-timing summary records.
     # None when timing is disabled or when the content store was injected
     # without going through _build_vault_timers (test paths).
@@ -296,16 +304,23 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     Dispatch contract:
       1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (env override)
       2. stack.abstraction.provider == "stub" -> Stub (explicit opt-out)
-      3. stack.abstraction.provider == "qwen3-mlx"
+      3. stack.abstraction.provider == "local-mlx"
          and stack.abstraction.model is None -> raise ValueError
-      4. stack.abstraction.provider == "qwen3-mlx"
-         and stack.abstraction.model is not None -> Qwen3 (factory)
+      4. stack.abstraction.provider == "local-mlx"
+         and stack.abstraction.model is not None -> local MLX provider (factory)
+      5. stack.abstraction.provider == "anthropic"
+         and stack.abstraction.model is None -> raise ValueError
+      6. stack.abstraction.provider == "anthropic"
+         and stack.abstraction.model is not None -> hosted Claude provider
 
     The env override remains the topmost short-circuit so that tests
-    cannot load Qwen3 alongside the running MCP server (F-8).
-    Provider/model live at stack scope because the Qwen3 provider is a
+    cannot load the local MLX model alongside the running MCP server (F-8).
+    Provider/model live at stack scope because the local MLX provider is a
     process-wide singleton; co-locating the config with the resource
-    boundary resolves the layering contradiction (ADR-030).
+    boundary resolves the layering contradiction (ADR-030). The hosted
+    'anthropic' provider is constructed without loading any local model and
+    carries no unified-memory budget, so it is not serialized behind the
+    local provider's generation lock.
     """
     if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
         return StubAbstractionProvider()
@@ -313,11 +328,11 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     abstraction = stack_config.abstraction
     if abstraction.provider == "stub":
         return StubAbstractionProvider()
-    if abstraction.provider == "qwen3-mlx":
+    if abstraction.provider == "local-mlx":
         if abstraction.model is None:
             raise ValueError(
                 "sage_core_config.abstraction.model is required when "
-                "abstraction.provider is 'qwen3-mlx' (CAS-ADR-030). Set "
+                "abstraction.provider is 'local-mlx' (CAS-ADR-030). Set "
                 "the model identifier in sage/config.yaml, or set "
                 "abstraction.provider to 'stub' to opt the whole stack "
                 "out of semantic abstract generation."
@@ -325,9 +340,70 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
         from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
 
         return get_qwen3_abstraction_provider(model_id=abstraction.model)
+    if abstraction.provider == "anthropic":
+        if abstraction.model is None:
+            raise ValueError(
+                "sage_core_config.abstraction.model is required when "
+                "abstraction.provider is 'anthropic' (CAS-ADR-030). Set "
+                "the Claude model identifier in sage/config.yaml, or set "
+                "abstraction.provider to 'stub' to opt the whole stack "
+                "out of semantic abstract generation."
+            )
+        from sage.adapters.abstraction_anthropic import AnthropicAbstractionProvider
+
+        return AnthropicAbstractionProvider(model_id=abstraction.model)
     raise ValueError(  # pragma: no cover - schema-validated upstream
         f"Unknown stack abstraction provider: {abstraction.provider!r}"
     )
+
+
+def _local_abstraction_binding(stack_config: SageCoreConfig) -> AbstractionProvider:
+    """Late-binding factory for the local profile's abstraction seam.
+
+    Delegates to the module-level ``build_stack_abstraction_provider`` by name
+    rather than by captured reference, so a test that monkeypatches
+    ``sage.mcp_init.build_stack_abstraction_provider`` is honored through the
+    resolver path (the registry would otherwise pin the original function object
+    captured at import and silently bypass the patch).
+    """
+    return build_stack_abstraction_provider(stack_config)
+
+
+# Register the abstraction-provider binding for the local deployment profile
+# (CAS-ADR-042). The abstraction provider is the keystone seam, and its binding
+# is the whole stack-provider factory above: a future profile attaches its own
+# abstraction binding by registering a different factory here, not by branching
+# this dispatch. ``sage.profiles`` imports no SAGE runtime wiring, so the
+# dependency is one-directional (mcp_init -> profiles) with no import cycle.
+profiles.register_binding(
+    profiles.LOCAL_PROFILE,
+    profiles.ABSTRACTION_SEAM,
+    _local_abstraction_binding,
+)
+
+
+def resolve_stack_profile(stack_config: SageCoreConfig) -> profiles.ResolvedProfile:
+    """Resolve the active deployment profile from the stack config.
+
+    Reads ``stack_config.profile`` and assembles its registered bindings once.
+    The schema enum has already rejected an out-of-range profile value at
+    config load, so the unknown-profile guard inside ``resolve_profile`` is the
+    second line of defense.
+    """
+    return profiles.resolve_profile(stack_config.profile, stack_config)
+
+
+def resolve_stack_abstraction_provider(stack_config: SageCoreConfig) -> AbstractionProvider:
+    """Resolve the abstraction provider for the active deployment profile.
+
+    Thin typed accessor over ``resolve_stack_profile``: returns the binding the
+    active profile assembles for the abstraction seam. For the ``local`` profile
+    that binding is ``build_stack_abstraction_provider``, so the result matches
+    the direct-call behavior exactly while routing the construction path through
+    the profile seam (CAS-ADR-042).
+    """
+    resolved = resolve_stack_profile(stack_config)
+    return cast(AbstractionProvider, resolved.binding(profiles.ABSTRACTION_SEAM))
 
 
 # Closure-pair invariant: the canonical declaration of kwargs that
@@ -349,6 +425,8 @@ REQUIRED_TRANSPORT_KWARGS: frozenset[str] = frozenset({"config_path", "registry_
 async def initialize_services(
     config: VaultConfig,
     *,
+    graph_store: GraphStore | None = None,
+    graph_store_factory: Callable[[Path], GraphStore] | None = None,
     content_store: ContentStore | None = None,
     content_store_factory: Callable[[Path], ContentStore] | None = None,
     embedding_provider: EmbeddingProvider | None = None,
@@ -369,6 +447,16 @@ async def initialize_services(
 
     Args:
         config: Loaded and validated vault configuration.
+        graph_store: Optional override (default: SqliteGraphStore). When
+            supplied, the caller owns the lifecycle and the store is assumed
+            already initialized — cleanup on failure does NOT close it.
+        graph_store_factory: Optional callable invoked with the vault's
+            ``brain_root`` to build a GraphStore. Used by hermetic tests to
+            substitute ``StubGraphStore`` without mutating module state.
+            Ignored if ``graph_store`` is also passed; stored on the returned
+            ``SAGEServices`` so reload paths reuse the same factory. When this
+            factory builds the graph store, the caller owns the lifecycle —
+            cleanup on failure does NOT close it.
         content_store: Optional override (default: LanceDBContentStore).
             When supplied, the caller owns the lifecycle — cleanup on
             failure does NOT close it.
@@ -402,7 +490,7 @@ async def initialize_services(
     # content_store) are owned by the caller and not closed on cleanup.
     timing_thread: VaultTimingThread | None = None
     timing_handler: logging.Handler | None = None
-    graph_store: GraphStore | None = None
+    graph_store_owned_here: GraphStore | None = None
     content_store_owned_here: ContentStore | None = None
 
     try:
@@ -413,8 +501,18 @@ async def initialize_services(
             _build_vault_timers(config.timing, brain_root)
         )
 
-        graph_store = GraphStore(brain_root / "graph.db", query_timer=storage_timer)
-        await graph_store.initialize(migrate=migrate)
+        # Graph store: explicit instance > factory > production SQLite.
+        # Only the SQLite path (constructed inside this function with no
+        # external handle) is initialized and tracked for cleanup. Caller-
+        # supplied and factory-supplied stores are the caller's responsibility
+        # and are assumed ready for use.
+        if graph_store is None:
+            if graph_store_factory is not None:
+                graph_store = graph_store_factory(brain_root)
+            else:
+                graph_store = SqliteGraphStore(brain_root / "graph.db", query_timer=storage_timer)
+                await graph_store.initialize(migrate=migrate)
+                graph_store_owned_here = graph_store
 
         lock_manager = DocumentLockManager()
 
@@ -556,6 +654,7 @@ async def initialize_services(
             maintenance_service=maintenance_service,
             config_path=config_path,
             content_store_factory=content_store_factory,
+            graph_store_factory=graph_store_factory,
             timing_thread=timing_thread,
             timing_handler=timing_handler,
         )
@@ -577,9 +676,9 @@ async def initialize_services(
             _release_timing_handler(timing_handler)
         except Exception:
             _logger.exception("initialize_services cleanup: failed to release timing handler")
-        if graph_store is not None:
+        if graph_store_owned_here is not None:
             try:
-                await graph_store.close()
+                await graph_store_owned_here.close()
             except Exception:
                 _logger.exception("initialize_services cleanup: failed to close graph_store")
         if content_store_owned_here is not None:
@@ -618,21 +717,26 @@ async def reload_vault_in_registry(
     - ``VaultRegistryService.reload`` (FastAPI PUT-config endpoint).
     - ``reload_vault`` MCP tool (via delegation).
 
-    Carries the predecessor's ``content_store_factory`` and (when the caller
-    does not supply one) ``config_path`` forward so hermetic-lifespan-test
-    setups survive reload and on-disk YAML edits round-trip correctly.
+    Carries the predecessor's ``content_store_factory`` / ``graph_store_factory``
+    and (when the caller does not supply one) ``config_path`` forward so
+    hermetic-lifespan-test setups survive reload and on-disk YAML edits
+    round-trip correctly.
     """
     old = registry.get(vault_id)
     content_store_factory = None
+    graph_store_factory = None
     if old is not None:
         if config_path is None:
             config_path = old.config_path
         content_store_factory = old.content_store_factory
+        graph_store_factory = old.graph_store_factory
 
-    # CAS-ADR-030: thread the stack-built abstraction provider through.
-    # Falls back to the default stack config when no lifespan has run
-    # (test paths that exercise reload directly).
-    stack_provider = build_stack_abstraction_provider(get_stack_config())
+    # CAS-ADR-042: resolve the active deployment profile and thread its
+    # abstraction binding through. For the local profile this is the same
+    # stack-built provider as before (CAS-ADR-030). Falls back to the default
+    # stack config when no lifespan has run (test paths that exercise reload
+    # directly).
+    stack_provider = resolve_stack_abstraction_provider(get_stack_config())
 
     # Build new BEFORE touching old. If initialize_services raises,
     # ``old`` remains installed in the registry and fully functional. The
@@ -643,6 +747,7 @@ async def reload_vault_in_registry(
         config,
         config_path=config_path,
         registry_service=registry_service,
+        graph_store_factory=graph_store_factory,
         content_store_factory=content_store_factory,
         abstraction_provider=stack_provider,
     )

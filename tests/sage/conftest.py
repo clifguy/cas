@@ -7,6 +7,7 @@ fresh SQLite database via pytest's tmp_path fixture.
 
 import asyncio
 import contextlib
+import os
 
 import pytest
 
@@ -26,7 +27,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
 from sage.services.user_service import UserService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.locks import DocumentLockManager
 
 
@@ -172,12 +173,72 @@ def extended_config(extended_vault_config_dict):
 
 
 @pytest.fixture
-async def graph_store(tmp_vault_dir):
-    """Initialized graph store in a temp directory."""
-    store = GraphStore(tmp_vault_dir / "brain" / "graph.db")
+async def sqlite_graph_store(tmp_vault_dir):
+    """SQLite graph store, unparametrized.
+
+    Used by tests that assert SQLite-specific mechanism (PRAGMAs, the
+    thread-pool close barrier, the on-disk document_tags join table, backfills)
+    and so have no Postgres analog. Behavioral tests use the parametrized
+    ``graph_store`` fixture instead.
+    """
+    store = SqliteGraphStore(tmp_vault_dir / "brain" / "graph.db")
     await store.initialize()
     yield store
     await store.close()
+
+
+@pytest.fixture
+async def postgres_graph_store(pg_dsn, pg_schema):
+    """A PostgresGraphStore over a per-test-truncated session schema.
+
+    ``pg_dsn`` / ``pg_schema`` are signature dependencies (not getfixturevalue),
+    so pytest resolves the session Postgres provisioning *before* this async
+    body enters the event loop. ``pg_dsn`` importorskips psycopg and skips
+    without ``SAGE_TEST_PG_DSN``, so this fixture is never built on a machine
+    without a configured server.
+    """
+    from sage.storage.postgres.graph_store import PostgresGraphStore
+    from sage.storage.postgres.pool import pool_from_conninfo
+
+    pool = pool_from_conninfo(pg_dsn, search_path=f"{pg_schema},public")
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(f"TRUNCATE {', '.join(_PG_TABLES)} CASCADE")  # noqa: S608
+            # The session schema persists across tests: tables truncate but
+            # per-vault tier3 unique indexes a prior test created do not. Drop
+            # them so each test starts from the bare schema (the SQLite store
+            # gets a fresh db file per test and has no such leak).
+            cur = await conn.execute(
+                "SELECT indexname FROM pg_indexes "
+                "WHERE schemaname = current_schema() "
+                "AND indexname LIKE 'idx_tier3_unique_%'"
+            )
+            for (idxname,) in await cur.fetchall():
+                await conn.execute(f'DROP INDEX IF EXISTS "{idxname}"')  # noqa: S608
+        store = PostgresGraphStore(pool)
+        await store.initialize(migrate=True)
+        yield store
+        await store.close()
+    finally:
+        await pool.close()
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+def graph_store(request):
+    """Initialized graph store, parametrized over backends (CAS-ADR-042).
+
+    The same behavioral test body runs against both the embedded SQLite store
+    and the Postgres store, proving cross-backend parity. A sync dispatcher that
+    delegates to one async backend fixture per param: the ``postgres`` param
+    *skips* when ``SAGE_TEST_PG_DSN`` is unset (via ``pg_dsn``), so the default
+    and local-without-server runs exercise SQLite only; the storage CI job sets
+    the DSN and runs both. Tests asserting SQLite-internal mechanism use the
+    unparametrized ``sqlite_graph_store`` fixture instead.
+    """
+    if request.param == "postgres":
+        return request.getfixturevalue("postgres_graph_store")
+    return request.getfixturevalue("sqlite_graph_store")
 
 
 @pytest.fixture
@@ -226,8 +287,20 @@ def metadata_service(graph_store, lock_manager, minimal_config, stub_content_sto
 
 
 @pytest.fixture
+def sqlite_metadata_service(sqlite_graph_store, lock_manager, minimal_config, stub_content_store):
+    """MetadataService pinned to SQLite, for tests that inspect the on-disk store."""
+    return MetadataService(sqlite_graph_store, lock_manager, minimal_config, stub_content_store)
+
+
+@pytest.fixture
 def graph_ops_service(graph_store, minimal_config):
     return GraphOpsService(graph_store, minimal_config)
+
+
+@pytest.fixture
+def sqlite_graph_ops_service(sqlite_graph_store, minimal_config):
+    """GraphOpsService pinned to SQLite, for tests that reach into the store."""
+    return GraphOpsService(sqlite_graph_store, minimal_config)
 
 
 @pytest.fixture
@@ -300,3 +373,78 @@ def ingestion_service_failing_llm(
         config=minimal_config,
         source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
     )
+
+
+# ---------------------------------------------------------------------------
+# Postgres storage harness (CAS-ADR-042)
+#
+# Storage tests run against a real Postgres named by SAGE_TEST_PG_DSN. When that
+# is unset (or psycopg is absent) the tests skip -- local runs without a server
+# and the default CI path stay green; CI's storage job sets the DSN to a pgvector
+# service container. The harness provisions a disposable, uniquely-named schema
+# per session (never the live working database: assert_disposable_target refuses
+# 'public' and any non-'sage_test_' schema, and the harness drops only that
+# schema, never a database), runs the canonical bootstrap into it, and hands out
+# a pool bound to that schema. Per-test isolation is a truncation at pool setup.
+# ---------------------------------------------------------------------------
+
+_PG_TABLES = ("documents", "edges", "staging_edges", "users", "document_tags", "chunks")
+
+
+@pytest.fixture(scope="session")
+def pg_dsn():
+    """Session Postgres DSN, or skip when no test server is configured."""
+    pytest.importorskip("psycopg")
+    dsn = os.environ.get("SAGE_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set SAGE_TEST_PG_DSN to a throwaway Postgres to run the storage tests")
+    return dsn
+
+
+@pytest.fixture(scope="session")
+def pg_schema(pg_dsn):
+    """Provision a disposable schema for the session; drop it at the end.
+
+    A sync fixture whose async work runs under ``asyncio.run`` so a
+    session-scoped resource does not collide with pytest-asyncio's per-test
+    event loop. ``assert_disposable_target`` guarantees the schema is a
+    ``sage_test_*`` throwaway, never the live working database.
+    """
+    import psycopg
+
+    from sage.storage.postgres.schema import assert_disposable_target, bootstrap_schema
+
+    schema = assert_disposable_target("sage_test_" + os.urandom(4).hex())
+
+    async def _setup() -> None:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+
+    async def _teardown() -> None:
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
+
+    asyncio.run(_setup())
+    try:
+        yield schema
+    finally:
+        asyncio.run(_teardown())
+
+
+@pytest.fixture
+async def pg_pool(pg_dsn, pg_schema):
+    """An opened async pool bound to the session's disposable schema.
+
+    Truncates all tables at setup so each test starts from a clean slate, then
+    closes the pool on teardown.
+    """
+    from sage.storage.postgres.pool import pool_from_conninfo
+
+    pool = pool_from_conninfo(pg_dsn, search_path=f"{pg_schema},public")
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(f"TRUNCATE {', '.join(_PG_TABLES)} CASCADE")  # noqa: S608
+        yield pool
+    finally:
+        await pool.close()

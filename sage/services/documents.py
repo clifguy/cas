@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sage.adapters.interfaces import GraphStore
 from sage.api.errors import (
     BinaryContentRefusedError,
     ContentDeliveryConflictError,
@@ -27,7 +28,6 @@ from sage.config import VaultConfig
 from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES
 from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse, ReadMeta
 from sage.services.read_diagnostics import build_not_found_detail
-from sage.storage.graph_store import GraphStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
 

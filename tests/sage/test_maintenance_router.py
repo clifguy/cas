@@ -22,7 +22,7 @@ from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import MigrationReport, OptimizeContentStoreReport
 from sage.services.maintenance import MaintenanceService
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from tests.sage.test_maintenance_service import _churn_chunks
 from tests.sage.test_migrate_flag import _build_legacy_db
 
@@ -35,7 +35,7 @@ async def legacy_db_app(minimal_vault_config_dict, monkeypatch):
     app boots normally (with the freshly-migrated schema), then we close
     the live graph_store, replace the file on disk with a legacy-shape
     one, and rewire the registry entry to point at a new uninitialized
-    GraphStore handle bound to the legacy file. After this, a POST to
+    SqliteGraphStore handle bound to the legacy file. After this, a POST to
     /admin/migrate has real pending work.
     """
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
@@ -56,7 +56,7 @@ async def legacy_db_app(minimal_vault_config_dict, monkeypatch):
     db_path.unlink()
     _build_legacy_db(db_path)
 
-    legacy_gs = GraphStore(db_path)
+    legacy_gs = SqliteGraphStore(db_path)
     registry_service = app.state.vault_registry_service
     new_maintenance = MaintenanceService(
         vault_id=vault_id,

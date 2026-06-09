@@ -19,7 +19,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sage.adapters.interfaces import ContentStore
+from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DestructiveConfigChangeError,
     VaultConfigValidationError,
@@ -35,7 +35,6 @@ from sage.models.schemas import (
     VaultStatsResponse,
 )
 from sage.services.maintenance_log import read_last_optimize_summary
-from sage.storage.graph_store import GraphStore
 from sage.vault_management import (
     _ALL_SECTIONS,
     _atomic_write_bytes,
@@ -86,13 +85,7 @@ class VaultConfigService:
         sqlite_path = brain_root / "graph.db"
         sqlite_size = sqlite_path.stat().st_size if sqlite_path.exists() else 0
 
-        lancedb_dir = brain_root / "lancedb"
-        lancedb_size = 0
-        if lancedb_dir.exists():
-            for f in lancedb_dir.rglob("*"):
-                if f.is_file():
-                    lancedb_size += f.stat().st_size
-
+        content_store_size_bytes = await self._content_store.measured_byte_size()
         content_store_chunk_count = await self._content_store.count_chunks()
         content_store_version_count = await self._content_store.count_retained_versions()
         content_store_small_fragment_count = await self._content_store.count_small_fragments()
@@ -108,7 +101,7 @@ class VaultConfigService:
             total_edges=total_edges,
             by_edge_type=by_edge_type,
             staging_edge_count=staging_count,
-            content_store_size_bytes=lancedb_size,
+            content_store_size_bytes=content_store_size_bytes,
             content_store_chunk_count=content_store_chunk_count,
             content_store_version_count=content_store_version_count,
             content_store_small_fragment_count=content_store_small_fragment_count,

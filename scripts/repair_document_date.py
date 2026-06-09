@@ -39,7 +39,7 @@ from datetime import datetime
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.vault_management import config_path_for_vault
 
 _DOCUMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -74,7 +74,7 @@ def _normalize(value: str) -> str | None:
     return parsed.date().isoformat()
 
 
-async def repair_with_services(*, graph: GraphStore, execute: bool) -> RepairResult:
+async def repair_with_services(*, graph: SqliteGraphStore, execute: bool) -> RepairResult:
     """Service-level entry point. Tests call this directly with a graph fixture."""
     result = RepairResult()
     documents = await graph.list_all_documents()

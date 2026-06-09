@@ -40,7 +40,7 @@ from sage.models.schemas import (
 )
 from sage.services.maintenance import MaintenanceService
 from sage.services.vault_registry import VaultRegistryService
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.migrations import MIGRATION_PLAN
 from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_migrate_flag import _build_legacy_db, _minimal_config
@@ -82,7 +82,7 @@ async def _close_registry_vault(registry: dict[str, SAGEServices], vault_id: str
     ``migrate_vault()`` reload paths swap the registry entry for a fresh
     SAGEServices and close the old graph_store as part of the swap; this
     helper closes whatever is bound at teardown time. ``close_timing`` and
-    ``GraphStore.close`` are both idempotent, so this is safe even on the
+    ``SqliteGraphStore.close`` are both idempotent, so this is safe even on the
     no-swap path (where the bootstrap context manager already released them).
     """
     current = registry.get(vault_id)
@@ -122,7 +122,7 @@ async def _swap_in_legacy_db(
     The freshly-initialized graph_store from
     ``_bootstrap_post_migration_vault`` is closed and discarded; its db
     file is replaced with a legacy-shape DB built by ``_build_legacy_db``.
-    A new (uninitialized) GraphStore handle is constructed against the
+    A new (uninitialized) SqliteGraphStore handle is constructed against the
     legacy file and bound to a new MaintenanceService. The registry entry
     is mutated to point at the legacy graph_store + the new
     MaintenanceService so the reload path inside ``migrate_vault`` closes
@@ -133,7 +133,7 @@ async def _swap_in_legacy_db(
     db_path.unlink()
     _build_legacy_db(db_path)
 
-    legacy_gs = GraphStore(db_path)
+    legacy_gs = SqliteGraphStore(db_path)
     maintenance = MaintenanceService(
         vault_id=services.config.vault.id,
         db_path=db_path,
@@ -387,7 +387,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_migration_fails(
     The ``_executor is not None`` assertion is the structural trap.
     """
     from sage.api.errors import SAGEError
-    from sage.storage.graph_store import GraphStore as _RealGraphStore
+    from sage.storage.graph_store import SqliteGraphStore as _RealGraphStore
     from sage.storage.migrations import Migration
 
     registry, services, registry_service = post_migration_vault
@@ -412,7 +412,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_migration_fails(
     )
 
     # The fresh-handle's ``initialize(migrate=True)`` call goes through the
-    # ``GraphStore`` binding in ``sage.services.maintenance``'s module
+    # ``SqliteGraphStore`` binding in ``sage.services.maintenance``'s module
     # namespace. Replace just that binding with a subclass that raises on
     # migrate=True. The original ``services.graph_store`` was constructed
     # earlier through a different module path, so it is unaffected by the
@@ -427,7 +427,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_migration_fails(
                 )
             await super().initialize(migrate=migrate)
 
-    monkeypatch.setattr("sage.services.maintenance.GraphStore", FailingFreshGraphStore)
+    monkeypatch.setattr("sage.services.maintenance.SqliteGraphStore", FailingFreshGraphStore)
 
     # Build a maintenance service against the live graph_store.
     maintenance = MaintenanceService(
@@ -482,7 +482,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_post_migration_reload_f
     the live store open on the reload-failure path.
     """
     from sage.api.errors import SAGEError
-    from sage.storage.graph_store import GraphStore as _RealGraphStore
+    from sage.storage.graph_store import SqliteGraphStore as _RealGraphStore
     from sage.storage.migrations import Migration
 
     registry, services, registry_service = post_migration_vault
@@ -511,7 +511,7 @@ async def test_migrate_vault_keeps_graph_store_open_when_post_migration_reload_f
             # work; skip applying them.
             return None
 
-    monkeypatch.setattr("sage.services.maintenance.GraphStore", NoOpFreshGraphStore)
+    monkeypatch.setattr("sage.services.maintenance.SqliteGraphStore", NoOpFreshGraphStore)
 
     # Inject the reload failure via the standard idiom: monkeypatch
     # ``initialize_services`` at both possible call sites. ``reload_vault_in_registry``

@@ -1,20 +1,30 @@
 # SAGE Core API stack-wide configuration (CAS-ADR-030, T-0103).
 #
 # Per ADR-030, the abstraction provider and model identifier live here at
-# stack scope rather than in each vault's vault_config.yaml. The Qwen3
+# stack scope rather than in each vault's vault_config.yaml. The local MLX
 # provider is enforced as a SAGE-process-wide singleton; co-locating the
 # config with the resource boundary avoids the layering contradiction
 # that surfaced when per-vault model pins silently skipped vaults at
 # startup. Per-vault knobs (enabled, token-budget tuning) remain in the
 # vault config's `abstraction:` block.
 #
-# Schema: docs/fs/sage/sage_core_config.schema.json (v0.1).
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.4).
+
+# Deployment-profile marker (CAS-ADR-042). The single stack-scope selection
+# that co-binds the adapter-port implementations for one deployment target.
+# `local` -- the on-box, single-process deployment -- is the only profile
+# available today; it is resolved once at startup and its bindings are the
+# current behavior. An unrecognized value fails loud at startup.
+profile: local
 
 abstraction:
-  # Dispatch key. `qwen3-mlx` loads Qwen3AbstractionProvider with the
-  # model identifier below. `stub` opts the whole stack out of semantic
-  # abstract generation (test/dev only).
-  provider: qwen3-mlx
+  # Dispatch key. `local-mlx` loads the local MLX provider (Qwen3) with the
+  # model identifier below. `anthropic` loads the hosted Claude provider
+  # (model below = a Claude model id, e.g. claude-haiku-4-5; the API key is
+  # read from ANTHROPIC_API_KEY) -- the option that lets this stack run on a
+  # non-Apple target. `stub` opts the whole stack out of semantic abstract
+  # generation (test/dev only).
+  provider: local-mlx
 
   # LLM model identifier passed to the provider factory. The chosen
   # model is shared by every vault on this SAGE process.
@@ -26,3 +36,26 @@ abstraction:
   # process). Existing 30B-generated abstracts in those vaults remain
   # unchanged per the T-0103 ticket ("no reabstract").
   model: mlx-community/Qwen3-8B-4bit
+
+# Postgres storage-engine connection parameters (CAS-ADR-042). Both deployment
+# targets externalize durable graph + content state to Postgres -- a local unix
+# socket here, a managed endpoint in the cloud -- with SQLite/LanceDB retained
+# as a fallback binding. Non-secret values only: the password (when a TCP/cloud
+# endpoint needs one) is read from $SAGE_PG_PASSWORD, never from this file. Not
+# yet wired into the live storage path; today this block is consumed only by the
+# provisioning CLI (scripts/bootstrap_postgres.py) and the storage test harness.
+# The local on-box default below connects over the unix socket as the OS user
+# (peer auth, no password). The values here equal the schema/Pydantic defaults;
+# they are spelled out for discoverability. pg_repack is enabled separately per
+# docs/process/postgres-local-runtime.md (it is not in every target's allowlist).
+postgres:
+  host: null            # null => local unix-domain socket
+  port: 5432
+  database: sage
+  user: null            # null => operating-system user (peer auth)
+  sslmode: null         # e.g. "require" for a managed hosted endpoint
+  min_pool_size: 1
+  max_pool_size: 10
+  extensions:
+    - vector
+    - pgstattuple

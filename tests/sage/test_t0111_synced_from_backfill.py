@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from sage.storage.graph_store import GraphStore
+from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.migrations import (
     _backfill_synced_from_version_from_rationale_apply,
     _backfill_synced_from_version_from_rationale_detect,
@@ -25,7 +25,7 @@ from sage.storage.migrations import (
 async def db_path(tmp_path: Path) -> Path:
     """Freshly-initialized graph.db; backfill tests drive raw SQL after."""
     path = tmp_path / "graph.db"
-    store = GraphStore(path)
+    store = SqliteGraphStore(path)
     await store.initialize(migrate=True)
     await store.close()
     return path

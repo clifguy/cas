@@ -145,8 +145,10 @@ async def test_t1_round_trip_both_attributes_via_link_and_traverse(
 
 
 async def test_t2_omitted_attributes_default_to_none_and_persist_as_null(
-    graph_store, graph_ops_service, tmp_vault_dir
+    sqlite_graph_store, sqlite_graph_ops_service, tmp_vault_dir
 ):
+    graph_store = sqlite_graph_store
+    graph_ops_service = sqlite_graph_ops_service
     """TEST-2. A ``derived_from`` edge created without supplying either
     attribute stores SQL ``NULL`` and serializes as ``None`` on the Edge
     model. Both the Pydantic round-trip and a direct ``SELECT`` confirm

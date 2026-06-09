@@ -11,11 +11,11 @@ import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, TypeVar
 
+from sage.adapters.interfaces import GraphStore, NaturalKeyConflict
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
@@ -25,6 +25,7 @@ from sage.models.enums import (
     SourceType,
     UserType,
 )
+from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
 from sage.storage.migrations import (
     BACKFILL_PLAN,
@@ -99,27 +100,6 @@ def _is_tier3_unique_violation(exc: sqlite3.IntegrityError) -> str | None:
     return match.group(1) if match else None
 
 
-@dataclass(frozen=True)
-class EdgeQueryRow:
-    """Edge enumeration result row with computed retraction envelope.
-
-    Wraps a hydrated ``Edge`` and adds two fields computed via LEFT JOIN
-    against the earliest ``retracts``-type edge that disclaims this row:
-    ``retracted_at`` carries the timestamp of that disclaiming edge,
-    ``retracted_by_edge_id`` its id. Both are ``None`` when this row is
-    still live (no disclaiming retracts edge exists). For rows that are
-    themselves ``retracts`` edges, these fields are likewise ``None``
-    (a retracts edge isn't itself subject to retraction); the row's own
-    ``edge.retracted_edge_id`` carries the id of the edge it disclaims.
-    """
-
-    edge: Edge
-    retracted_at: datetime | None
-    retracted_by_edge_id: str | None
-
-
-OnConflict = Literal["raise", "noop"]
-
 # Defense-in-depth gate for tier3 keys that get interpolated into the
 # JSON path of a json_extract() expression. The service layer validates
 # the same keys against the doc_type's metadata_schema; this regex is
@@ -128,29 +108,7 @@ OnConflict = Literal["raise", "noop"]
 _TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
 
 
-@dataclass(frozen=True)
-class LinkReadContext:
-    """Pre-fetched state needed to validate and execute a LinkRequest.
-
-    Populated by `GraphStore.read_link_context` in a single executor
-    submission so the service layer can validate without issuing further
-    per-query round-trips. Fields that are not applicable to the request's
-    edge type are left at their default (empty / False / None).
-    """
-
-    source_exists: bool
-    target_exists: bool
-    retracted_edge: Edge | None = None
-    source_lineage: frozenset[str] = field(default_factory=frozenset)
-    target_lineage: frozenset[str] = field(default_factory=frozenset)
-    source_anchor_exists: bool = True
-    target_anchor_exists: bool = True
-    has_sup_predecessor: bool = False
-    has_sup_successor: bool = False
-    tombstone_candidates: tuple[str, ...] = ()
-
-
-class GraphStore:
+class SqliteGraphStore(GraphStore):
     def __init__(
         self,
         db_path: Path,
@@ -198,7 +156,7 @@ class GraphStore:
         handle on a fresh worker thread.
         """
         if self._closed:
-            raise RuntimeError("GraphStore is closed")
+            raise RuntimeError("SqliteGraphStore is closed")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, fn, *args)
 
@@ -238,7 +196,7 @@ class GraphStore:
             if pending_bf:
                 details_parts.append("backfill: " + ", ".join(b.name for b in pending_bf))
             raise SchemaMigrationRequired(
-                f"GraphStore at {self._db_path} has pending schema work "
+                f"SqliteGraphStore at {self._db_path} has pending schema work "
                 f"({'; '.join(details_parts)}). Re-run the server with "
                 f"--migrate to apply."
             )
@@ -869,7 +827,7 @@ class GraphStore:
         """Insert an edge. Return ``(stored_edge, created)``.
 
         Under ``on_conflict="raise"`` (default), a duplicate natural-key
-        triple raises ``sqlite3.IntegrityError`` and the caller is
+        triple raises ``NaturalKeyConflict`` and the caller is
         expected to handle it (or, for atomic operations, allow the
         transaction to roll back).
 
@@ -893,15 +851,19 @@ class GraphStore:
             # lock until close() and block sibling pool connections -- matching
             # _insert_document_sync's discipline.
             conn.rollback()
-            if on_conflict == "noop" and _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+            is_natural_key = _is_unique_violation(exc, _EDGES_UNIQ_INDEX)
+            if on_conflict == "noop" and is_natural_key:
                 existing = self._find_edge_by_natural_key_sync(
                     edge.source_id, edge.target_id, edge.edge_type.value
                 )
-                if existing is None:
-                    # Race or matcher false-positive: the row vanished
-                    # between INSERT and lookup. Surface the original.
-                    raise
-                return existing, False
+                if existing is not None:
+                    return existing, False
+                # Race or matcher false-positive: the row vanished between
+                # INSERT and lookup. Fall through to the neutral conflict signal.
+            if is_natural_key:
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
             raise
         return edge, True
 
@@ -1016,6 +978,13 @@ class GraphStore:
             self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
             self._exec_insert_edge(conn, edge)
             conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            if _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
+            raise
         except Exception:
             conn.rollback()
             raise
@@ -1067,6 +1036,10 @@ class GraphStore:
         except sqlite3.IntegrityError as exc:
             conn.rollback()
             self._maybe_raise_tier3_violation(conn, exc, new_doc, supersedes_id=predecessor_id)
+            if _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
             raise
         except Exception:
             conn.rollback()
@@ -1336,12 +1309,21 @@ class GraphStore:
                     [tombstone_version, *tombstone_edge_ids],
                 )
             conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.rollback()
+            if _is_unique_violation(exc, _EDGES_UNIQ_INDEX):
+                raise NaturalKeyConflict(
+                    merged_from_edge.source_id,
+                    merged_from_edge.target_id,
+                    merged_from_edge.edge_type.value,
+                ) from exc
+            raise
         except Exception:
             conn.rollback()
             raise
 
     async def read_link_context(
-        self, request: "LinkRequest", policy: ResolutionPolicy
+        self, request: LinkRequest, policy: ResolutionPolicy
     ) -> LinkReadContext:
         """Fetch all state needed to validate a LinkRequest in one submission.
 
@@ -1360,7 +1342,7 @@ class GraphStore:
             return await self._run(self._read_link_context_sync, request, policy)
 
     def _read_link_context_sync(
-        self, request: "LinkRequest", policy: ResolutionPolicy
+        self, request: LinkRequest, policy: ResolutionPolicy
     ) -> LinkReadContext:
         conn = self._get_connection()
 
@@ -1567,7 +1549,7 @@ class GraphStore:
         """Insert a staging edge. Return ``(stored_edge, created)``.
 
         Under ``on_conflict="raise"`` (default), a duplicate natural-key
-        triple raises ``sqlite3.IntegrityError``.
+        triple raises ``NaturalKeyConflict``.
 
         Under ``on_conflict="noop"``, a duplicate is converted
         to a no-op: the pre-existing staging edge is loaded and returned
@@ -1602,13 +1584,19 @@ class GraphStore:
             # conflict, so the store's transaction never stays open holding the
             # WAL write lock (see _insert_edge_sync).
             conn.rollback()
-            if on_conflict == "noop" and _is_unique_violation(exc, _STAGING_EDGES_UNIQ_INDEX):
+            is_natural_key = _is_unique_violation(exc, _STAGING_EDGES_UNIQ_INDEX)
+            if on_conflict == "noop" and is_natural_key:
                 existing = self._find_staging_edge_by_natural_key_sync(
                     edge.source_id, edge.target_id, edge.edge_type.value
                 )
-                if existing is None:
-                    raise
-                return existing, False
+                if existing is not None:
+                    return existing, False
+                # Race: the row vanished between INSERT and lookup. Fall through
+                # to the neutral conflict signal.
+            if is_natural_key:
+                raise NaturalKeyConflict(
+                    edge.source_id, edge.target_id, edge.edge_type.value
+                ) from exc
             raise
         return edge, True
 

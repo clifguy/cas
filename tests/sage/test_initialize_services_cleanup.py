@@ -98,7 +98,7 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
 ):
     """N6: failed initialize_services must close the graph store.
 
-    ``GraphStore.__init__`` constructs an executor and connection pool;
+    ``SqliteGraphStore.__init__`` constructs an executor and connection pool;
     ``.initialize()`` opens connections to apply schema. If a downstream
     constructor raises, the executor and connections leak.
 
@@ -106,7 +106,7 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
     not None and ``_all_connections`` is non-empty after the failure. The
     assertions on the graph store's internal state are the trap.
 
-    We capture the graph_store reference by patching the GraphStore class
+    We capture the graph_store reference by patching the SqliteGraphStore class
     so we can inspect it after the failure.
     """
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -115,19 +115,19 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
     from sage.storage import graph_store as _gs_module
 
     captured: dict = {}
-    original_graph_store_cls = _gs_module.GraphStore
+    original_graph_store_cls = _gs_module.SqliteGraphStore
 
     class CapturingGraphStore(original_graph_store_cls):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             captured["graph_store"] = self
 
-    # Patch the GraphStore class at the import site inside mcp_init.
+    # Patch the SqliteGraphStore class at the import site inside mcp_init.
     import sage.mcp_init as _mcp_init
 
-    monkeypatch.setattr(_mcp_init, "GraphStore", CapturingGraphStore)
+    monkeypatch.setattr(_mcp_init, "SqliteGraphStore", CapturingGraphStore)
 
-    # Patch bootstrap_owner to raise AFTER GraphStore is constructed and
+    # Patch bootstrap_owner to raise AFTER SqliteGraphStore is constructed and
     # initialized.
     async def raising_bootstrap(self):
         raise SAGEError(
@@ -151,15 +151,17 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
         )
 
     # The graph store must have been constructed
-    assert "graph_store" in captured, "GraphStore was never constructed; test fixture is broken"
+    assert "graph_store" in captured, (
+        "SqliteGraphStore was never constructed; test fixture is broken"
+    )
     graph_store = captured["graph_store"]
 
     # Cleanup must have closed the graph store
     assert graph_store._executor is None, (
-        "GraphStore._executor not closed on failure (connection pool leaked)"
+        "SqliteGraphStore._executor not closed on failure (connection pool leaked)"
     )
     assert graph_store._all_connections == [], (
-        f"GraphStore._all_connections has {len(graph_store._all_connections)} "
+        f"SqliteGraphStore._all_connections has {len(graph_store._all_connections)} "
         "leaked connections on failure"
     )
     # Behavioural co-assertion per TEST-SAGE-BH-137: the CAS-ADR-036 dispatch
