@@ -28,6 +28,19 @@ Idempotency is truncate-then-load: the target tables are reset (and any
 pre-existing tier3 partial-unique indexes dropped) before each run, so a
 re-run against the same schema reproduces the same rows rather than colliding
 on a primary key. The source stores are only ever read; they are never mutated.
+
+Two fidelity refinements keep one bad row from hiding the rest of the picture:
+
+- A source edge row that fails model validation (e.g. a hand-repaired row
+  whose id predates boundary validation) is reported in the result's
+  ``invalid_source_edges`` instead of aborting the vault. The invalid row is
+  excluded from the copied edge set *and* from the source chain-head
+  computation, so the reconciliation stays internally consistent over the
+  valid rows while ``ok`` is false until the source data is repaired.
+- An empty-dict ``tier3_metadata`` compares equal to NULL: the Postgres
+  adapter normalizes falsy tier3 to NULL on insert, so a faithful copy of a
+  ``{}`` source row reads back as None. Documents where this normalization
+  applied are noted in ``tier3_empty_normalized``, not flagged as mismatches.
 """
 
 from __future__ import annotations
@@ -36,6 +49,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, computed_field
 
+from sage.adapters.interfaces import EdgeReadFailure
 from sage.models.enums import EdgeType
 from sage.storage.migrations import Tier3UniqueIndexBlockedError
 
@@ -83,6 +97,9 @@ class DocumentReconciliation(BaseModel):
     extra: list[str] = []  # in target, absent in source
     field_mismatch: list[str] = []  # present both sides, differing model fields
     hash_mismatch: list[HashMismatch] = []
+    # Docs whose tier3_metadata compared equal only after `{}` -> NULL
+    # normalization (the adapter's insert-time normalization). Informational.
+    tier3_empty_normalized: list[str] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -226,6 +243,10 @@ class VaultMigrationReport(BaseModel):
     staging_edges: IdSetReconciliation
     tier3_indexes_created: list[str] = []
     tier3_indexes_blocked: list[Tier3IndexBlocked] = []
+    # Source edge rows that failed model validation and were not migrated.
+    # Any entry fails the verdict: a faithful copy cannot carry the row, so
+    # the source needs repair before cutover.
+    invalid_source_edges: list[EdgeReadFailure] = []
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -240,6 +261,7 @@ class VaultMigrationReport(BaseModel):
             and self.users.ok
             and self.staging_edges.ok
             and not self.tier3_indexes_blocked
+            and not self.invalid_source_edges
         )
 
 
@@ -268,13 +290,20 @@ _EDGE_COMPARE_FIELDS: tuple[str, ...] = (
 
 
 def reconcile_documents(source: list[Document], target: list[Document]) -> DocumentReconciliation:
-    """Compare two document sets by id, full-field equality, and content hash."""
+    """Compare two document sets by id, full-field equality, and content hash.
+
+    ``tier3_metadata`` compares with ``{}`` normalized to None on both sides
+    (the adapter's insert-time normalization), so the two representations of
+    "no tier3 metadata" reconcile as equal; docs that needed the normalization
+    are noted in ``tier3_empty_normalized``.
+    """
     src_by_id = {d.id: d for d in source}
     tgt_by_id = {d.id: d for d in target}
     missing = sorted(src_by_id.keys() - tgt_by_id.keys())
     extra = sorted(tgt_by_id.keys() - src_by_id.keys())
     field_mismatch: list[str] = []
     hash_mismatch: list[HashMismatch] = []
+    tier3_empty_normalized: list[str] = []
     for did in sorted(src_by_id.keys() & tgt_by_id.keys()):
         s, t = src_by_id[did], tgt_by_id[did]
         if s.source_content_hash != t.source_content_hash:
@@ -285,8 +314,17 @@ def reconcile_documents(source: list[Document], target: list[Document]) -> Docum
                     target_hash=t.source_content_hash,
                 )
             )
-        if s.model_dump() != t.model_dump():
+        s_dump = s.model_dump()
+        t_dump = t.model_dump()
+        normalized = False
+        for dump in (s_dump, t_dump):
+            if dump.get("tier3_metadata") == {}:
+                dump["tier3_metadata"] = None
+                normalized = True
+        if s_dump != t_dump:
             field_mismatch.append(did)
+        elif normalized:
+            tier3_empty_normalized.append(did)
     return DocumentReconciliation(
         source_count=len(source),
         target_count=len(target),
@@ -294,6 +332,7 @@ def reconcile_documents(source: list[Document], target: list[Document]) -> Docum
         extra=extra,
         field_mismatch=field_mismatch,
         hash_mismatch=hash_mismatch,
+        tier3_empty_normalized=tier3_empty_normalized,
     )
 
 
@@ -417,7 +456,7 @@ async def migrate_vault(
     source_docs = await source_graph.list_all_documents()
     source_users = await source_graph.list_users()
     source_staging = await source_graph.list_staging_edges()
-    source_edges = await _collect_edges(source_graph, source_docs)
+    source_edges, invalid_source_edges = await _collect_edges(source_graph, source_docs)
 
     # Source chain-head truth is implied by the supersedes edge set: a document
     # is a chain head iff no supersedes edge targets it (the same rule the
@@ -467,7 +506,7 @@ async def migrate_vault(
         target_docs = await target_graph.list_all_documents()
         target_users = await target_graph.list_users()
         target_staging = await target_graph.list_staging_edges()
-        target_edges = await _collect_edges(target_graph, target_docs)
+        target_edges, _ = await _collect_edges(target_graph, target_docs)
         target_chain_heads = await _target_chain_head_map(target_pool)
     else:
         target_docs = []
@@ -492,25 +531,35 @@ async def migrate_vault(
         ),
         tier3_indexes_created=tier3_created,
         tier3_indexes_blocked=tier3_blocked,
+        invalid_source_edges=invalid_source_edges,
     )
 
 
-async def _collect_edges(graph: GraphStore, docs: list[Document]) -> list[Edge]:
+async def _collect_edges(
+    graph: GraphStore, docs: list[Document]
+) -> tuple[list[Edge], list[EdgeReadFailure]]:
     """Enumerate every edge in the vault as raw ``Edge`` objects.
 
     Each edge has exactly one source document, so iterating every document and
     collecting its outbound edges yields the full edge set exactly once. This is
     the only enumeration that returns ``Edge`` (``query_edges`` returns rows with
     computed retraction state, which ``insert_edge`` cannot consume).
+
+    Rows that fail model validation come back as ``EdgeReadFailure`` entries
+    rather than aborting the walk, so the result is always the complete
+    valid/invalid partition of the vault's edge rows.
     """
     edges: list[Edge] = []
+    failures: list[EdgeReadFailure] = []
     seen: set[str] = set()
     for doc in docs:
-        for edge in await graph.get_edges_by_source(doc.id):
+        got, failed = await graph.get_edges_by_source_with_failures(doc.id)
+        for edge in got:
             if edge.id not in seen:
                 seen.add(edge.id)
                 edges.append(edge)
-    return edges
+        failures.extend(failed)
+    return edges, failures
 
 
 async def _create_tier3_indexes(

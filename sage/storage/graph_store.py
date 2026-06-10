@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from sage.adapters.interfaces import GraphStore, NaturalKeyConflict
+from sage.adapters.interfaces import EdgeReadFailure, GraphStore, NaturalKeyConflict
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.enums import (
     EdgeType,
@@ -1062,6 +1062,43 @@ class SqliteGraphStore(GraphStore):
         else:
             rows = conn.execute("SELECT * FROM edges WHERE source_id = ?", (source_id,)).fetchall()
         return [self._row_to_edge(r) for r in rows]
+
+    async def get_edges_by_source_with_failures(
+        self, source_id: str
+    ) -> tuple[list[Edge], list[EdgeReadFailure]]:
+        with self._query_timer.measure("get_edges_by_source_with_failures"):
+            return await self._run(self._get_edges_by_source_with_failures_sync, source_id)
+
+    def _get_edges_by_source_with_failures_sync(
+        self, source_id: str
+    ) -> tuple[list[Edge], list[EdgeReadFailure]]:
+        """Per-row conversion: a row that fails validation becomes a failure entry.
+
+        The embedded store can hold rows written before boundary validation
+        existed (hand repairs, historical imports). Enumeration callers that
+        must see the complete picture -- one ``EdgeReadFailure`` per malformed
+        row instead of an exception on the first -- use this; the strict
+        :meth:`get_edges_by_source` semantics are unchanged.
+        """
+        conn = self._get_connection()
+        rows = conn.execute("SELECT * FROM edges WHERE source_id = ?", (source_id,)).fetchall()
+        edges: list[Edge] = []
+        failures: list[EdgeReadFailure] = []
+        for row in rows:
+            try:
+                edges.append(self._row_to_edge(row))
+            except Exception as exc:  # noqa: BLE001 -- per-row containment: report, never abort
+                keys = row.keys()
+                failures.append(
+                    EdgeReadFailure(
+                        raw_id=str(row["id"]),
+                        source_id=row["source_id"] if "source_id" in keys else None,
+                        target_id=row["target_id"] if "target_id" in keys else None,
+                        edge_type=row["edge_type"] if "edge_type" in keys else None,
+                        error=str(exc),
+                    )
+                )
+        return edges, failures
 
     async def get_edges_by_target(self, target_id: str, edge_type: str | None = None) -> list[Edge]:
         with self._query_timer.measure("get_edges_by_target"):

@@ -49,6 +49,23 @@ class SearchResult:
     score: float
 
 
+@dataclass(frozen=True)
+class EdgeReadFailure:
+    """An edge row that failed model validation during enumeration.
+
+    Carries the raw stored values deliberately unvalidated -- the row is being
+    reported precisely because it violates the model contract -- plus the
+    validation error text, so a caller can enumerate every malformed row in a
+    store instead of aborting on the first one.
+    """
+
+    raw_id: str
+    source_id: str | None
+    target_id: str | None
+    edge_type: str | None
+    error: str
+
+
 class ContentStoreOptimizeSnapshot(TypedDict):
     """Pre/post observations captured around ContentStore.optimize().
 
@@ -388,6 +405,20 @@ class GraphStore(ABC):
     @abstractmethod
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
         """Return edges originating at a source, optionally filtered by type."""
+
+    async def get_edges_by_source_with_failures(
+        self, source_id: str
+    ) -> tuple[list[Edge], list[EdgeReadFailure]]:
+        """Return a source's outbound edges plus per-row validation failures.
+
+        Default: delegate to :meth:`get_edges_by_source` and report no
+        failures, which is correct for stores whose rows were all validated at
+        insert time. A store that can hold pre-validation history overrides
+        this to convert each row independently, so one malformed row is
+        reported as an :class:`EdgeReadFailure` instead of aborting the whole
+        enumeration.
+        """
+        return await self.get_edges_by_source(source_id), []
 
     @abstractmethod
     async def get_edges_by_target(self, target_id: str, edge_type: str | None = None) -> list[Edge]:

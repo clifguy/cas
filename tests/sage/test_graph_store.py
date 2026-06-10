@@ -1306,3 +1306,76 @@ async def test_close_during_in_flight_dispatch_completes_then_raises(sqlite_grap
 
     with pytest.raises(RuntimeError, match="closed"):
         await graph_store.list_all_documents()
+
+
+async def test_get_edges_by_source_with_failures_contains_malformed_row(
+    sqlite_graph_store, tmp_vault_dir
+):
+    """A non-UUID edge row is reported per-row, not raised; strict reads stay strict.
+
+    Rows like this predate boundary validation and can only be staged below
+    the validated API, so the fixture writes the bad row with raw SQL.
+    """
+    from pydantic import ValidationError
+
+    now = datetime.now(timezone.utc)
+    user_id = str(uuid.uuid4())
+
+    def _make_doc(doc_id: str) -> Document:
+        return Document(
+            id=doc_id,
+            title=f"Doc {doc_id}",
+            source_type=SourceType.MARKDOWN,
+            source_path=f"imports/{doc_id}.md",
+            source_content_hash="sha256:" + "a" * 64,
+            adapter_version="0.5.0",
+            created_by=user_id,
+            created_at=now,
+            last_modified_by=user_id,
+            updated_at=now,
+            pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+        )
+
+    await sqlite_graph_store.insert_document(_make_doc(_id("doc_src")))
+    await sqlite_graph_store.insert_document(_make_doc(_id("doc_tgt")))
+    valid_id = str(uuid.uuid4())
+    await sqlite_graph_store.insert_edge(
+        Edge(
+            id=valid_id,
+            source_id=_id("doc_src"),
+            target_id=_id("doc_tgt"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=now,
+        )
+    )
+
+    raw = sqlite3.connect(tmp_vault_dir / "brain" / "graph.db")
+    try:
+        raw.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "deadbeef_not_a_uuid",
+                _id("doc_src"),
+                _id("doc_tgt"),
+                "derived_from",
+                now.isoformat(),
+            ),
+        )
+        raw.commit()
+    finally:
+        raw.close()
+
+    edges, failures = await sqlite_graph_store.get_edges_by_source_with_failures(_id("doc_src"))
+    assert [e.id for e in edges] == [valid_id]
+    assert len(failures) == 1
+    failure = failures[0]
+    assert failure.raw_id == "deadbeef_not_a_uuid"
+    assert failure.source_id == _id("doc_src")
+    assert failure.target_id == _id("doc_tgt")
+    assert failure.edge_type == "derived_from"
+    assert failure.error
+
+    # Strict read semantics are unchanged: the same store still raises.
+    with pytest.raises(ValidationError):
+        await sqlite_graph_store.get_edges_by_source(_id("doc_src"))
