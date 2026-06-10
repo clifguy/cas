@@ -41,6 +41,7 @@ from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.postgres.graph_store import PostgresGraphStore
 from sage.storage.postgres.pool import (
     PostgresConnectionParams,
+    build_conn_kwargs,
     create_pool,
     pool_from_conninfo,
 )
@@ -88,6 +89,28 @@ def _target_extensions(dsn: str | None) -> list[str]:
     return list(load_stack_config_or_default().postgres.extensions)
 
 
+def _build_target_conninfo(dsn: str | None) -> str:
+    """Compose the libpq conninfo for the target engine.
+
+    A ``--dsn`` passes through verbatim; without it the connection parameters
+    come from the stack config's postgres block (password from the
+    environment, per the pool module's rule).
+    """
+    if dsn:
+        return dsn
+    from psycopg.conninfo import make_conninfo
+
+    pg = load_stack_config_or_default().postgres
+    params = PostgresConnectionParams(
+        host=pg.host,
+        port=pg.port,
+        database=pg.database,
+        user=pg.user,
+        sslmode=pg.sslmode,
+    )
+    return make_conninfo(**build_conn_kwargs(params))
+
+
 def _emit_report(report: VaultMigrationReport, report_dir: Path | None, out) -> None:
     """Print a one-line verdict and (optionally) write the full JSON report."""
     verb = "EXECUTED" if report.executed else "DRY-RUN"
@@ -106,6 +129,13 @@ def _emit_report(report: VaultMigrationReport, report_dir: Path | None, out) -> 
                 f"  tier3 BLOCKED: {blocked.doc_type}.{blocked.field} — {blocked.message}",
                 file=sys.stderr,
             )
+    if report.invalid_source_edges:
+        for bad in report.invalid_source_edges:
+            print(
+                f"  invalid source edge SKIPPED: {bad.raw_id} "
+                f"({bad.edge_type}: {bad.source_id} -> {bad.target_id}) — {bad.error}",
+                file=sys.stderr,
+            )
     if report_dir is not None:
         report_dir.mkdir(parents=True, exist_ok=True)
         path = report_dir / f"{report.vault_id}-migration-report.json"
@@ -113,9 +143,19 @@ def _emit_report(report: VaultMigrationReport, report_dir: Path | None, out) -> 
         print(f"  report written to {path}", file=out)
 
 
-async def _provision_schema(pool, schema: str, extensions: list[str]) -> None:
-    """Idempotently create the target schema, extensions, tables, and indexes."""
-    async with pool.connection() as conn:
+async def _provision_target(dsn: str | None, schema: str, extensions: list[str]) -> None:
+    """Idempotently create the target schema, extensions, tables, and indexes.
+
+    Runs over a plain (non-pool) connection because the pool's per-connection
+    configure hook registers the pgvector type, which exists only after the
+    ``vector`` extension is created here. Must complete before the pool opens,
+    or a fresh database can never serve a pooled connection.
+    """
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(
+        _build_target_conninfo(dsn), autocommit=True
+    ) as conn:
         await bootstrap_schema(conn, schema=schema, extensions=extensions)
 
 
@@ -142,11 +182,14 @@ async def _migrate_one(
     await source_graph.initialize()
     source_content = LanceDBContentStore(brain_root)
 
+    # Provisioning precedes pool.open(): the pool's configure hook needs the
+    # vector extension to exist. A dry-run never touches the target, so the
+    # pool stays unopened and an unprovisioned target is still inspectable.
     pool = _build_target_pool(dsn, schema)
-    await pool.open()
+    if execute:
+        await _provision_target(dsn, schema, _target_extensions(dsn))
+        await pool.open()
     try:
-        if execute:
-            await _provision_schema(pool, schema, _target_extensions(dsn))
         report = await migrate_vault(
             source_graph=source_graph,
             source_content=source_content,

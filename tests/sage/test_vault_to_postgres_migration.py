@@ -13,11 +13,13 @@ Two layers:
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.content_store_postgres import PostgresContentStore
-from sage.adapters.interfaces import Chunk
+from sage.adapters.interfaces import Chunk, EdgeReadFailure, GraphStore
 from sage.config import VaultConfig
 from sage.migration.vault_to_postgres import (
     AbstractReconciliation,
@@ -47,6 +49,11 @@ _E_SUPERSEDES = "11111111-1111-4111-8111-111111111111"
 _E_DERIVED = "22222222-2222-4222-8222-222222222222"
 _E_RETRACTS = "33333333-3333-4333-8333-333333333333"
 _E_STAGING = "44444444-4444-4444-8444-444444444444"
+
+# A deliberately non-UUID edge id, the shape a hand-repaired row that predates
+# boundary validation carries on disk.
+_BAD_EDGE_ID = "deadbeef_manual_repair"
+_EMPTY_TIER3_DOC = "eeeeeeee_empty"
 
 
 def _hash(suffix: str) -> str:
@@ -223,6 +230,58 @@ def test_report_ok_is_conjunction():
     assert _all_ok_report(executed=False).ok is False
 
 
+def test_reconcile_documents_treats_empty_tier3_as_null():
+    # The Postgres adapter normalizes an empty tier3 dict to NULL on insert, so
+    # a faithful copy of a `{}` source row reads back as None. Same semantics,
+    # two representations: the comparison must not flag it.
+    src = [_doc("aaaaaaaa_a", _hash("a"), tier3_metadata={})]
+    tgt = [_doc("aaaaaaaa_a", _hash("a"), tier3_metadata=None)]
+    result = reconcile_documents(src, tgt)
+    assert result.ok is True
+    assert result.field_mismatch == []
+    assert result.tier3_empty_normalized == ["aaaaaaaa_a"]
+
+
+def test_reconcile_documents_real_tier3_mismatch_still_flagged():
+    # Normalization covers exactly `{}` vs None; a populated dict against None
+    # is a genuine fidelity failure and must keep flagging.
+    src = [_doc("aaaaaaaa_a", _hash("a"), tier3_metadata={"k": "v"})]
+    tgt = [_doc("aaaaaaaa_a", _hash("a"), tier3_metadata=None)]
+    result = reconcile_documents(src, tgt)
+    assert result.ok is False
+    assert result.field_mismatch == ["aaaaaaaa_a"]
+    assert result.tier3_empty_normalized == []
+
+
+def test_report_ok_fails_on_invalid_source_edges():
+    report = _all_ok_report()
+    assert report.ok is True
+    report.invalid_source_edges = [
+        EdgeReadFailure(
+            raw_id=_BAD_EDGE_ID,
+            source_id="dddddddd_dep",
+            target_id="cccccccc_ref",
+            edge_type="references",
+            error="edge_id is not a well-formed edge id",
+        )
+    ]
+    assert report.ok is False
+
+
+async def test_lenient_edge_read_default_passthrough():
+    # The ABC default delegates to the strict read and reports no failures, so
+    # stores whose rows were validated at insert time need no override.
+    class _StrictOnly:
+        async def get_edges_by_source(self, source_id, edge_type=None):
+            return [_edge(_E_SUPERSEDES, "bbbbbbbb_b", "aaaaaaaa_a")]
+
+    edges, failures = await GraphStore.get_edges_by_source_with_failures(
+        _StrictOnly(), "bbbbbbbb_b"
+    )
+    assert [e.id for e in edges] == [_E_SUPERSEDES]
+    assert failures == []
+
+
 # ---------------------------------------------------------------------------
 # B. Integration (real Postgres; skips without SAGE_TEST_PG_DSN)
 # ---------------------------------------------------------------------------
@@ -278,7 +337,43 @@ def _ticket_config() -> VaultConfig:
     )
 
 
-async def _build_source_vault(tmp_path):
+def _inject_malformed_edge(db_path: Path) -> None:
+    """Write an edge row with a non-UUID id straight into the store file.
+
+    Bypasses the model layer on purpose: such rows exist only where history
+    predates boundary validation, and the migration must report them rather
+    than crash, so the fixture has to stage them below the validated API.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO edges (id, source_id, target_id, edge_type, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (_BAD_EDGE_ID, "dddddddd_dep", "cccccccc_ref", "references", _NOW.isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _force_empty_tier3(db_path: Path, doc_id: str) -> None:
+    """Set a document's stored tier3_metadata to the literal ``'{}'``.
+
+    ``insert_document`` normalizes falsy tier3 to NULL, but the metadata-update
+    path serializes whatever dict it is given, so real vaults carry ``'{}'``
+    rows; stage that on-disk state directly.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE documents SET tier3_metadata = '{}' WHERE id = ?", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _build_source_vault(
+    tmp_path, *, malformed_edge: bool = False, empty_tier3_doc: bool = False
+):
     """Seed a real SQLite + LanceDB source vault and return (graph, content)."""
     brain = tmp_path / "brain"
     brain.mkdir(parents=True, exist_ok=True)
@@ -354,6 +449,12 @@ async def _build_source_vault(tmp_path):
         "cccccccc_ref",
         [Chunk("cccccccc_ref", "Note", "a note", _embedding(3), 0, "note", "active")],
     )
+
+    if empty_tier3_doc:
+        await graph.insert_document(_doc(_EMPTY_TIER3_DOC, _hash("e"), doc_type="note"))
+        _force_empty_tier3(brain / "graph.db", _EMPTY_TIER3_DOC)
+    if malformed_edge:
+        _inject_malformed_edge(brain / "graph.db")
     return graph, content
 
 
@@ -365,9 +466,11 @@ async def _target_count(pool, table: str) -> int:
 
 
 async def _run_migration(
-    tmp_path, pg_pool, *, execute: bool
+    tmp_path, pg_pool, *, execute: bool, malformed_edge: bool = False, empty_tier3_doc: bool = False
 ) -> tuple[VaultMigrationReport, object, object]:
-    source_graph, source_content = await _build_source_vault(tmp_path)
+    source_graph, source_content = await _build_source_vault(
+        tmp_path, malformed_edge=malformed_edge, empty_tier3_doc=empty_tier3_doc
+    )
     target_graph = PostgresGraphStore(pg_pool)
     target_content = PostgresContentStore(pg_pool)
     report = await migrate_vault(
@@ -493,3 +596,35 @@ async def test_migrated_hashes_resolve_via_port(tmp_path, pg_pool):
     source_hashes = [d.source_content_hash for d in await source_graph.list_all_documents()]
     resolved = await target_graph.find_documents_by_hashes(source_hashes)
     assert set(resolved.keys()) == set(source_hashes)
+
+
+async def test_migrate_vault_contains_malformed_edge(tmp_path, pg_pool):
+    """One schema-violating source edge fails the verdict, not the run."""
+    report, _, _ = await _run_migration(tmp_path, pg_pool, execute=True, malformed_edge=True)
+    assert report.ok is False
+    assert [f.raw_id for f in report.invalid_source_edges] == [_BAD_EDGE_ID]
+    failure = report.invalid_source_edges[0]
+    assert failure.source_id == "dddddddd_dep"
+    assert failure.target_id == "cccccccc_ref"
+    assert failure.edge_type == "references"
+    assert failure.error
+    # The valid edge set still round-trips faithfully around the bad row.
+    assert report.edges.ok is True
+    assert report.edges.source_count == report.edges.target_count == 3
+    assert await _target_count(pg_pool, "edges") == 3
+
+
+async def test_migrate_vault_empty_dict_tier3_reconciles_clean(tmp_path, pg_pool):
+    """A source doc whose stored tier3 is ``'{}'`` reconciles against NULL."""
+    report, _, _ = await _run_migration(tmp_path, pg_pool, execute=True, empty_tier3_doc=True)
+    assert report.ok is True, report.model_dump()
+    assert report.documents.ok is True
+    assert report.documents.tier3_empty_normalized == [_EMPTY_TIER3_DOC]
+
+
+async def test_dry_run_reports_invalid_edges(tmp_path, pg_pool):
+    """Dry-run enumerates invalid source edges, making it the data-quality probe."""
+    report, _, _ = await _run_migration(tmp_path, pg_pool, execute=False, malformed_edge=True)
+    assert report.executed is False
+    assert [f.raw_id for f in report.invalid_source_edges] == [_BAD_EDGE_ID]
+    assert await _target_count(pg_pool, "edges") == 0

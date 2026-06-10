@@ -40,6 +40,21 @@ def _concrete_public_methods() -> set[str]:
     }
 
 
+def _port_default_methods() -> set[str]:
+    """Public concrete (defaulted) methods defined directly on the GraphStore ABC.
+
+    A defaulted port method is port surface even though it is not abstract:
+    implementations may override it (the SQLite store overrides the lenient
+    edge enumeration for per-row failure containment), and T4/T5 must treat
+    such an override as port-conformant rather than as seam drift.
+    """
+    return {
+        name
+        for name, val in vars(GraphStore).items()
+        if not name.startswith("_") and inspect.isfunction(val)
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Structural contract (T1-T5)
 # --------------------------------------------------------------------------- #
@@ -92,22 +107,26 @@ def test_abc_surface_matches_consumed_concrete_surface():
     """
     concrete_public = _concrete_public_methods()
     abc_methods = set(GraphStore.__abstractmethods__)
+    port_surface = abc_methods | _port_default_methods()
 
     # Every abstract method is implemented as a public concrete method.
     assert abc_methods <= concrete_public
     # The only public concrete methods outside the port are the SQLite-only trio.
-    assert concrete_public - abc_methods == SQLITE_ONLY_METHODS
+    assert concrete_public - port_surface == SQLITE_ONLY_METHODS
     # And nothing in the divergence list leaked into the port.
-    assert abc_methods.isdisjoint(SQLITE_ONLY_METHODS)
+    assert port_surface.isdisjoint(SQLITE_ONLY_METHODS)
 
 
-@pytest.mark.parametrize("method_name", sorted(GraphStore.__abstractmethods__))
+@pytest.mark.parametrize(
+    "method_name", sorted(set(GraphStore.__abstractmethods__) | _port_default_methods())
+)
 def test_concrete_signature_matches_port(method_name):
     """T5: each concrete method's signature matches the port's exactly.
 
     Trap: a parameter rename, default change, or return-type drift between the
     port and the concrete would break substitutability silently while T2-T4 stay
-    green. Strict signature equality surfaces it per method.
+    green. Strict signature equality surfaces it per method. Defaulted port
+    methods are included so an override cannot drift from the port shape.
     """
     abc_sig = inspect.signature(getattr(GraphStore, method_name))
     concrete_sig = inspect.signature(getattr(SqliteGraphStore, method_name))
