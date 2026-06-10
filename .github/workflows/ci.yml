@@ -97,6 +97,10 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
           SAGE_TEST_STUB_PROVIDERS: "1"
+          # Pin service construction to the embedded stores; tests that
+          # exercise the Postgres binding clear this per-test and use the
+          # DSN below.
+          SAGE_TEST_STORAGE_BACKEND: "embedded"
           # Points the storage harness at the Postgres service container above so
           # the PG-touching storage tests run here instead of skipping.
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
@@ -252,6 +256,9 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       SAGE_TEST_STUB_PROVIDERS: "1"
+      # The e2e SAGE backend has no Postgres service in this job; pin its
+      # durable-storage binding to the embedded stores.
+      SAGE_TEST_STORAGE_BACKEND: "embedded"
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     steps:

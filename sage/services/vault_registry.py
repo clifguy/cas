@@ -194,7 +194,7 @@ class VaultRegistryService:
                         vault_id,
                     )
                 try:
-                    await registered.graph_store.close()
+                    await registered.close_storage()
                 except BaseException:
                     logger.exception(
                         "graph_store close failed during create_vault rollback for vault_id=%s",

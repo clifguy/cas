@@ -117,8 +117,8 @@ class _FakeServices:
     """Minimal SAGEServices stand-in covering every attribute touched by
     the six drivers below: graph_store (close + list), config_path /
     content_store_factory / graph_store_factory / timing_thread
-    (reload_vault_in_registry's close-and-reuse branch), close_timing (every
-    teardown path now calls it), user_service.bootstrap_owner
+    (reload_vault_in_registry's close-and-reuse branch), close_timing and
+    close_storage (every teardown path calls them), user_service.bootstrap_owner
     (VaultRegistryService.create_vault), ingestion_service (the same method's
     _build_vault_summary)."""
 
@@ -131,12 +131,19 @@ class _FakeServices:
         self.config_path: Path | None = None
         self.content_store_factory: Any = None
         self.graph_store_factory: Any = None
+        self.storage: Any = None
 
     def close_timing(self) -> None:
         # reload_vault_in_registry, the migrate CLI, and both lifespans call
         # services.close_timing() on teardown; the fake owns no timing
         # thread/handler, so this is a no-op.
         pass
+
+    async def close_storage(self) -> None:
+        # Every teardown path calls services.close_storage(); mirror the
+        # real implementation (graph store closed, then the storage handle's
+        # resource released — the fake owns no handle).
+        await self.graph_store.close()
 
 
 @pytest.fixture

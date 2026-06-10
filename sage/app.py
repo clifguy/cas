@@ -381,7 +381,7 @@ def create_app(
         for services in app.state.vault_registry.values():
             await services.ingestion_service.stop_worker()
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
         app.state.vault_registry.clear()
         set_stack_config(None)
 

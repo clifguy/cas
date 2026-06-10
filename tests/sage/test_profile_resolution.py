@@ -162,3 +162,41 @@ def test_prf_006_resolver_honors_monkeypatched_factory(monkeypatch):
     )
 
     assert resolve_stack_abstraction_provider(_stub_stack_config()) is sentinel
+
+
+def test_prf_007_local_profile_registers_the_storage_binding():
+    """Importing `sage.mcp_init` registers the durable-storage binding for the
+    `local` profile, and the resolved binding is a storage provisioner.
+
+    Anti-coincidental-pass: if the `register_binding(LOCAL_PROFILE,
+    STORAGE_SEAM, ...)` line were dropped, the seam would be absent from the
+    resolved bindings and the `binding()` accessor would raise KeyError -- so
+    this asserts both seam membership and the provisioner type. (Under the
+    test session's SAGE_TEST_STORAGE_BACKEND=embedded pin the assembled
+    provisioner is the embedded one regardless of the config key.)
+    """
+    from sage.storage_binding import VaultStorageProvisioner
+
+    resolved = resolve_stack_profile(_stub_stack_config())
+    assert profiles.STORAGE_SEAM in resolved.bindings
+    assert isinstance(resolved.binding(profiles.STORAGE_SEAM), VaultStorageProvisioner)
+
+
+def test_prf_008_storage_resolver_honors_monkeypatched_factory(monkeypatch):
+    """The local storage binding resolves `build_stack_storage_provisioner` by
+    late binding, so a monkeypatch of that `sage.mcp_init` attribute is honored
+    through `resolve_stack_storage_provisioner` -- the same delegation guarantee
+    PRF-006 pins for the abstraction seam.
+
+    Anti-coincidental-pass: a captured-reference registration would return a
+    real provisioner instead of the sentinel, failing the identity assertion.
+    """
+    from sage.mcp_init import resolve_stack_storage_provisioner
+
+    sentinel = object()
+    monkeypatch.setattr(
+        "sage.mcp_init.build_stack_storage_provisioner",
+        lambda _cfg: sentinel,
+    )
+
+    assert resolve_stack_storage_provisioner(_stub_stack_config()) is sentinel

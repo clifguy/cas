@@ -67,7 +67,32 @@ async def initialize_services_for_test(config, **kwargs):
         yield services
     finally:
         services.close_timing()
-        await services.graph_store.close()
+        await services.close_storage()
+
+
+def stack_postgres_config_from_dsn(dsn: str, monkeypatch, extensions=("vector",)):
+    """Translate a test-harness DSN into a `StackPostgresConfig`.
+
+    The live storage binding composes its connection from the stack config
+    (password from the environment, never from config), so tests that drive
+    the binding against the `SAGE_TEST_PG_DSN` server need this translation.
+    Any password embedded in the DSN is exported via monkeypatch so the
+    pool's env-only password rule still holds.
+    """
+    from psycopg.conninfo import conninfo_to_dict
+
+    from sage.config import StackPostgresConfig
+
+    parsed = conninfo_to_dict(dsn)
+    if parsed.get("password"):
+        monkeypatch.setenv("SAGE_PG_PASSWORD", str(parsed["password"]))
+    return StackPostgresConfig(
+        host=parsed.get("host"),
+        port=int(parsed.get("port") or 5432),
+        database=str(parsed.get("dbname") or "postgres"),
+        user=parsed.get("user"),
+        extensions=list(extensions),
+    )
 
 
 @pytest.fixture

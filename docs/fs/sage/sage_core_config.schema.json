@@ -12,6 +12,12 @@
       "default": "local",
       "description": "Deployment-profile marker (CAS-ADR-042). A deployment profile is the single stack-scope selection that co-binds the adapter-port implementations for one deployment target; the layer above the ports stays profile-invariant. The resolver assembles 'local' (the on-box, single-process deployment whose bindings match today's behavior) once at stack startup, and it is the only profile available today. Additional profiles attach their bindings by registration as the cloud adapters land, and an unrecognized value fails loud at startup."
     },
+    "storage_backend": {
+      "type": "string",
+      "enum": ["postgres", "embedded"],
+      "default": "postgres",
+      "description": "Durable-storage binding selector (CAS-ADR-042). 'postgres' (the default) binds the graph and content stores to the Postgres adapters configured by the 'postgres' block; each vault's rows live in a Postgres schema named by its vault id. 'embedded' selects the file-based fallback pair -- SQLite graph store and LanceDB content store under each vault's brain root. The two stores co-vary as one binding and are not selectable individually. Flipping the key repoints the binding at restart and never moves data; copying state between backends is the operator migration tooling's job."
+    },
     "abstraction": {
       "type": "object",
       "description": "Stack-wide abstraction provider configuration (CAS-ADR-030). The provider and model identifier are SAGE-process-wide because the local MLX provider is enforced as a singleton across the process; co-locating the config with the resource boundary avoids the layering contradiction where a per-vault field controls a stack-wide resource. Per-vault opt-in and token-budget tuning live in the vault config's abstraction block.",
@@ -33,7 +39,7 @@
     "postgres": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Connection parameters for the Postgres storage engine (CAS-ADR-042). Both deployment targets externalize durable graph and content state to a networked relational engine -- a local unix socket on the on-box target, a managed endpoint on the hosted target -- with the embedded SQLite/LanceDB stores retained as a fallback binding. Non-secret parameters only: the password is read from the environment (SAGE_PG_PASSWORD), never from this file. The block configures the async driver and connection pool the store adapters share and the idempotent schema bootstrap; it is not yet wired into the live storage binding, so today it is consumed only by the provisioning CLI and the storage test harness.",
+      "description": "Connection parameters for the Postgres storage engine (CAS-ADR-042). Both deployment targets externalize durable graph and content state to a networked relational engine -- a local unix socket on the on-box target, a managed endpoint on the hosted target -- with the embedded SQLite/LanceDB stores retained as a fallback binding. Non-secret parameters only: the password is read from the environment (SAGE_PG_PASSWORD), never from this file. The block configures the async driver and connection pool the store adapters share and the idempotent schema bootstrap; it is consumed by the live storage binding (when 'storage_backend' selects 'postgres'), the provisioning CLI, and the storage test harness.",
       "properties": {
         "host": {
           "type": ["string", "null"],

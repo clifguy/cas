@@ -32,6 +32,13 @@ dependencies = [
     "pypdf>=6.11.0",
     "markdown-it-py>=3.0",
     "mdit-py-plugins>=0.4.0",
+    # Postgres storage engine: async driver + connection pool (`pool` adds
+    # psycopg_pool's AsyncConnectionPool) and pgvector type registration
+    # (CAS-ADR-042). Serving-path runtime dependencies since the local
+    # profile's durable-storage binding defaults to the Postgres adapters;
+    # the embedded SQLite/LanceDB fallback needs neither.
+    "psycopg[binary,pool]>=3.2",
+    "pgvector>=0.3",
 ]
 
 [project.optional-dependencies]
@@ -47,13 +54,6 @@ test = [
     "reportlab>=4.0",
     "Pillow>=10.0",
     "import-linter>=2.11",
-    # Postgres storage engine driver + async pool for the storage test harness
-    # (the disposable-schema fixture and the schema/DDL bootstrap run against a
-    # real Postgres) and pgvector type registration (CAS-ADR-042). The `pool`
-    # extra adds psycopg_pool (AsyncConnectionPool); the live serving path does
-    # not import these yet, so they stay test-scoped until the profile flip.
-    "psycopg[binary,pool]>=3.2",
-    "pgvector>=0.3",
 ]
 mlx = [
     # Apple-Silicon-only; the marker keeps it out of the Linux resolution path
@@ -66,13 +66,6 @@ ocr = [
 dev = [
     "ruff==0.15.12",
     "pre-commit>=4.0",
-]
-eval = [
-    # Postgres driver for the keyword-backend fidelity evaluation harness
-    # (scripts/eval_keyword_fidelity.py, sage/utils/keyword_fidelity_eval.py).
-    # Not installed in CI or production; the harness's Postgres-touching test
-    # skips when the driver or a server is absent.
-    "psycopg[binary]>=3.2",
 ]
 
 # Recompute the dynamic (setuptools-scm) version when the git commit or tags

@@ -223,3 +223,254 @@ async def test_di_009_enabled_false_substitutes_stub_even_when_provider_injected
         # Anti-coincidence: must NOT be the injected sentinel.
         assert wired is not sentinel
         assert getattr(wired, "marker", None) is None
+
+
+# ---------------------------------------------------------------------------
+# DI-013..DI-015: durable-storage binding dispatch (CAS-ADR-042).
+# The default-store construction moved from hardcoded SQLite/LanceDB branches
+# to the storage provisioner resolved through the profile seam. Injection
+# precedence is unchanged: explicit instance > factory > provisioner default.
+# ---------------------------------------------------------------------------
+
+
+async def test_di_013_injected_stores_never_consult_the_provisioner(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch
+):
+    """With both stores injected, `initialize_services` succeeds without
+    resolving the storage provisioner at all.
+
+    Anti-coincidental-pass: the storage-binding factory is monkeypatched to
+    raise, so a dispatch that consulted the provisioner even when both slots
+    are filled (quietly building a second store set and leaking its pool)
+    fails this test loudly. Hermetic: no database of either backend is touched.
+    """
+    import sage.mcp_init as _mcp_init
+    from sage.adapters.stubs import StubGraphStore
+
+    def exploding_factory(_cfg):
+        raise AssertionError("storage provisioner consulted despite full injection")
+
+    monkeypatch.setattr(_mcp_init, "build_stack_storage_provisioner", exploding_factory)
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    async with initialize_services_for_test(
+        config,
+        graph_store=StubGraphStore(),
+        content_store=StubContentStore(),
+        abstraction_provider=StubAbstractionProvider(),
+    ) as services:
+        assert isinstance(services.graph_store, StubGraphStore)
+        assert services.storage is None
+
+
+async def test_di_014_no_overrides_postgres_backend_builds_postgres_stores(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch, pg_dsn
+):
+    """With the stack config selecting `postgres` and the test env override
+    cleared, a no-override `initialize_services` builds `PostgresGraphStore`
+    and `PostgresContentStore` over a per-vault pool, records the storage
+    handle on the services, and `close_storage()` closes the pool.
+
+    This is the binding flip itself. Anti-coincidental-pass drill (run during
+    verification): reverting the dispatch to the prior hardcoded
+    SQLite/LanceDB branches must fail the isinstance assertions here.
+    """
+    import copy
+    import uuid
+
+    import psycopg
+
+    from sage.adapters.content_store_postgres import PostgresContentStore
+    from sage.config import SageCoreConfig
+    from sage.mcp_init import set_stack_config
+    from sage.storage.postgres.graph_store import PostgresGraphStore
+    from tests.sage.conftest import stack_postgres_config_from_dsn
+
+    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
+
+    vault_id = f"sage_test_{uuid.uuid4().hex[:10]}"
+    cfg_dict = copy.deepcopy(minimal_vault_config_dict)
+    cfg_dict["vault"]["id"] = vault_id
+    config = VaultConfig.model_validate(cfg_dict)
+
+    stack = SageCoreConfig(
+        storage_backend="postgres",
+        postgres=stack_postgres_config_from_dsn(pg_dsn, monkeypatch),
+    )
+    set_stack_config(stack)
+    try:
+        async with initialize_services_for_test(
+            config, abstraction_provider=StubAbstractionProvider()
+        ) as services:
+            assert isinstance(services.graph_store, PostgresGraphStore)
+            assert isinstance(services.content_store, PostgresContentStore)
+            assert services.storage is not None
+            pool = services.storage.pool
+            assert pool is not None and not pool.closed
+        # initialize_services_for_test teardown ran close_storage().
+        assert pool.closed
+    finally:
+        set_stack_config(None)
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{vault_id}" CASCADE')
+
+
+async def test_di_015_postgres_services_run_ingest_search_traverse_lifecycle(
+    minimal_vault_config_dict, tmp_vault_dir, monkeypatch, pg_dsn
+):
+    """Service-level end-to-end on Postgres-backed services: ingest a chain
+    of two documents, keyword-search them, traverse the supersedes edge, and
+    run a lifecycle transition.
+
+    The store-level parity suite (parametrized `graph_store` fixture) covers
+    each operation in isolation; this is the service-layer composition the
+    cutover relies on — including the per-vault search_path isolation, the
+    chain-head trigger installed at vault open, and Postgres FTS serving the
+    keyword arm.
+    """
+    import asyncio
+    import copy
+    import uuid
+
+    import psycopg
+
+    from sage.config import SageCoreConfig
+    from sage.mcp_init import set_stack_config
+    from sage.models.enums import RetrievalMode, SourceType
+    from sage.models.schemas import (
+        BulkLifecycleItem,
+        BulkLifecycleRequest,
+        DiscoverRequest,
+        IngestRequest,
+        TraverseRequest,
+    )
+    from tests.sage.conftest import stack_postgres_config_from_dsn
+
+    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
+
+    vault_id = f"sage_test_{uuid.uuid4().hex[:10]}"
+    cfg_dict = copy.deepcopy(minimal_vault_config_dict)
+    cfg_dict["vault"]["id"] = vault_id
+    config = VaultConfig.model_validate(cfg_dict)
+
+    def _write_source(name: str, body: str) -> None:
+        path = tmp_vault_dir / "sources" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+
+    async def _await_terminal_pipeline(services, doc_id: str) -> None:
+        from sage.models.enums import TERMINAL_PIPELINE_STATUSES
+
+        for _ in range(100):
+            doc = await services.graph_store.get_document(doc_id)
+            assert doc is not None
+            if doc.pipeline_status in TERMINAL_PIPELINE_STATUSES:
+                return
+            await asyncio.sleep(0.1)
+        raise AssertionError(f"document {doc_id} never reached a terminal pipeline status")
+
+    stack = SageCoreConfig(
+        storage_backend="postgres",
+        postgres=stack_postgres_config_from_dsn(pg_dsn, monkeypatch),
+    )
+    set_stack_config(stack)
+    try:
+        async with initialize_services_for_test(
+            config, abstraction_provider=StubAbstractionProvider()
+        ) as services:
+            try:
+                # Ingest a two-document supersedes chain.
+                _write_source("alpha_v1.md", "# Alpha\n\nZirconium fastener torque table.\n")
+                _write_source("alpha_v2.md", "# Alpha v2\n\nZirconium fastener torque table.\n")
+                first = await services.ingestion_service.ingest(
+                    IngestRequest(
+                        source="alpha_v1.md",
+                        source_type=SourceType.MARKDOWN,
+                        metadata={"title": "Alpha"},
+                    )
+                )
+                second = await services.ingestion_service.ingest(
+                    IngestRequest(
+                        source="alpha_v2.md",
+                        source_type=SourceType.MARKDOWN,
+                        metadata={"title": "Alpha v2"},
+                        predecessor_id=first.document.id,
+                    )
+                )
+                await _await_terminal_pipeline(services, second.document.id)
+
+                # Keyword search runs on the Postgres FTS arm.
+                response = await services.retrieval_service.discover(
+                    DiscoverRequest(mode=RetrievalMode.KEYWORD, query="zirconium fastener")
+                )
+                hit_ids = [h.document.id for h in response.results]
+                assert second.document.id in hit_ids
+
+                # Traverse the supersedes edge written at ingest.
+                traversal = await services.graph_ops_service.traverse(
+                    TraverseRequest(
+                        start_id=second.document.id,
+                        edge_type="supersedes",
+                        direction="outbound",
+                    )
+                )
+                traversed_ids = {n.document.id for n in traversal.nodes}
+                assert first.document.id in traversed_ids
+
+                # Lifecycle transition through the service layer.
+                bulk = await services.lifecycle_service.bulk_set_lifecycle(
+                    BulkLifecycleRequest(
+                        items=[BulkLifecycleItem(document_id=second.document.id, action="complete")]
+                    )
+                )
+                assert bulk.results[0].status == "success"
+                completed = await services.graph_store.get_document(second.document.id)
+                assert completed is not None
+                assert completed.lifecycle_status == "completed"
+            finally:
+                await services.ingestion_service.stop_worker()
+    finally:
+        set_stack_config(None)
+        async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{vault_id}" CASCADE')
+
+
+async def test_reload_vault_in_registry_closes_old_storage_handle(
+    minimal_vault_config_dict, tmp_vault_dir
+):
+    """`reload_vault_in_registry` releases the predecessor services' storage
+    handle (the resource backing the stores — the pool, on the Postgres
+    binding) when it tears the old services down.
+
+    Hermetic: a stub handle with a closed flag stands in for the pool-owning
+    handle. Anti-coincidental-pass: removing the `close_storage()` call at
+    the reload teardown site leaves the flag False and fails this test.
+    """
+    from sage.adapters.stubs import StubGraphStore
+    from sage.mcp_init import reload_vault_in_registry
+
+    class FlagHandle:
+        def __init__(self):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    async with initialize_services_for_test(
+        config,
+        graph_store_factory=lambda _root: StubGraphStore(),
+        content_store=StubContentStore(),
+        abstraction_provider=StubAbstractionProvider(),
+    ) as old:
+        handle = FlagHandle()
+        old.storage = handle
+        registry = {"test_vault": old}
+
+        new_services = await reload_vault_in_registry(registry, "test_vault", config)
+        try:
+            assert registry["test_vault"] is new_services
+            assert handle.closed, "old services' storage handle was not closed on reload"
+        finally:
+            new_services.close_timing()
+            await new_services.close_storage()

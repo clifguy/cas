@@ -157,6 +157,11 @@ class _FakeServices:
     def close_timing(self) -> None:
         pass
 
+    async def close_storage(self) -> None:
+        # Every teardown path calls services.close_storage(); the fake
+        # mirrors the real contract (graph store closed, no storage handle).
+        await self.graph_store.close()
+
 
 def _materialize_vault(
     root: Path, vault_id: str, base_config: dict, malformed: bool = False

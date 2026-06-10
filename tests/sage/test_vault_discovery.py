@@ -181,6 +181,11 @@ class _FakeServices:
         # timing.log handle on teardown; the fake owns neither, so it no-ops.
         pass
 
+    async def close_storage(self) -> None:
+        # Every teardown path calls services.close_storage(); the fake
+        # mirrors the real contract (graph store closed, no storage handle).
+        await self.graph_store.close()
+
 
 def _patch_initialize_vault(monkeypatch, *, fail_for: set[str] | None = None):
     """Replace sage.app._initialize_vault with a recorder.
