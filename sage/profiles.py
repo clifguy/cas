@@ -33,8 +33,47 @@ LOCAL_PROFILE = "local"
 # portable at all.
 ABSTRACTION_SEAM = "abstraction_provider"
 
+# Seam name for the durable-storage binding (CAS-ADR-042): the provisioner
+# that opens a vault's graph and content stores as one co-varying pair --
+# Postgres adapters over a per-vault pool, or the embedded SQLite/LanceDB
+# fallback. One seam rather than two because the stores share their backing
+# resource (the pool) and the embedded pair is one coherent fallback binding.
+STORAGE_SEAM = "storage_provisioner"
+
 # A binding factory assembles one seam's implementation from the stack config.
 BindingFactory = Callable[[SageCoreConfig], object]
+
+
+class _LazyBindings(Mapping[str, object]):
+    """Seam-name-to-binding mapping that runs each factory once, on demand.
+
+    Assembly is per-seam lazy so that asking for one seam's binding can never
+    fail (or pay a construction cost) on an unrelated seam's account -- a
+    caller resolving the storage binding must not trip over an abstraction
+    misconfiguration, and vice versa. Membership checks (``seam in bindings``)
+    consult the factory registry without building anything.
+    """
+
+    def __init__(self, factories: Mapping[str, "BindingFactory"], stack_config) -> None:
+        self._factories = dict(factories)
+        self._stack_config = stack_config
+        self._built: dict[str, object] = {}
+
+    def __getitem__(self, seam: str) -> object:
+        if seam not in self._factories:
+            raise KeyError(seam)
+        if seam not in self._built:
+            self._built[seam] = self._factories[seam](self._stack_config)
+        return self._built[seam]
+
+    def __iter__(self):
+        return iter(self._factories)
+
+    def __len__(self) -> int:
+        return len(self._factories)
+
+    def __contains__(self, seam: object) -> bool:
+        return seam in self._factories
 
 
 @dataclass(frozen=True)
@@ -42,8 +81,9 @@ class ResolvedProfile:
     """The assembled bindings for one resolved deployment profile.
 
     ``bindings`` maps a seam name to the object that seam's registered factory
-    produced from the stack config. :meth:`binding` is the accessor a caller
-    casts at the call site to the seam's known port type.
+    produces from the stack config -- lazily, once per seam, on first access.
+    :meth:`binding` is the accessor a caller casts at the call site to the
+    seam's known port type.
     """
 
     profile: str
@@ -84,7 +124,8 @@ def resolve_profile(profile: str, stack_config: SageCoreConfig) -> ResolvedProfi
     """Assemble the registered bindings for ``profile`` from ``stack_config``.
 
     Each factory registered for the profile is called once with the stack
-    config; the results are collected by seam name into a
+    config, lazily on the seam's first access (see :class:`_LazyBindings`),
+    and the results are reachable by seam name on the returned
     :class:`ResolvedProfile`. An unregistered profile fails loud here -- the
     resolver never silently returns an empty assembly -- which is the second
     line of defense behind the schema-level enum that rejects an unknown
@@ -96,5 +137,4 @@ def resolve_profile(profile: str, stack_config: SageCoreConfig) -> ResolvedProfi
             f"Unknown deployment profile {profile!r}; no bindings registered. "
             f"Registered profiles: {sorted(_REGISTRY)}."
         )
-    assembled = {seam: factory(stack_config) for seam, factory in seams.items()}
-    return ResolvedProfile(profile=profile, bindings=assembled)
+    return ResolvedProfile(profile=profile, bindings=_LazyBindings(seams, stack_config))

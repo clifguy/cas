@@ -90,6 +90,8 @@ dependencies = [
     { name = "mdit-py-plugins" },
     { name = "openpyxl" },
     { name = "pdfplumber" },
+    { name = "pgvector" },
+    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pypdf" },
@@ -107,9 +109,6 @@ dev = [
     { name = "pre-commit" },
     { name = "ruff" },
 ]
-eval = [
-    { name = "psycopg", extra = ["binary"] },
-]
 mlx = [
     { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
 ]
@@ -121,9 +120,7 @@ test = [
     { name = "hypothesis" },
     { name = "import-linter" },
     { name = "jsonschema", extra = ["format"] },
-    { name = "pgvector" },
     { name = "pillow" },
-    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -149,11 +146,10 @@ requires-dist = [
     { name = "ocrmypdf", marker = "extra == 'ocr'", specifier = ">=16.0" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pdfplumber", specifier = ">=0.11" },
-    { name = "pgvector", marker = "extra == 'test'", specifier = ">=0.3" },
+    { name = "pgvector", specifier = ">=0.3" },
     { name = "pillow", marker = "extra == 'test'", specifier = ">=10.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'eval'", specifier = ">=3.2" },
-    { name = "psycopg", extras = ["binary", "pool"], marker = "extra == 'test'", specifier = ">=3.2" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pyarrow", specifier = ">=24.0.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pypdf", specifier = ">=6.11.0" },
@@ -172,7 +168,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.9,<5.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
-provides-extras = ["test", "mlx", "ocr", "dev", "eval"]
+provides-extras = ["test", "mlx", "ocr", "dev"]
 
 [[package]]
 name = "certifi"

@@ -4982,7 +4982,7 @@ components:
           description: Count of small (un-compacted) content-store fragments for the chunks table; rises with un-optimized write churn and is merged away by optimize.
         sqlite_size_bytes:
           type: integer
-          description: Size of the graph.db SQLite file in bytes.
+          description: Size of the embedded graph store's graph.db SQLite file in bytes. Under the Postgres durable-storage binding this reports the intact embedded fallback file -- 0 when the vault never had one, frozen at its pre-cutover size for a migrated vault.
         last_ingestion_at:
           type: string
           format: date-time

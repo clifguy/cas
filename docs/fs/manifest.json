@@ -27,8 +27,8 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.4",
-      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, and the Postgres storage-engine connection parameters (non-secret; password from the environment). The on-disk file is sage/config.yaml at the repo root.",
+      "version": "0.5",
+      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres default, embedded SQLite/LanceDB fallback), and the Postgres storage-engine connection parameters (non-secret; password from the environment). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
     {
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.35",
+  "substrate_version": "1.37",
   "revision_history": [
+    {
+      "version": "1.37",
+      "date": "2026-06-10",
+      "summary": "Flip the local profile's durable-storage binding to Postgres with the embedded SQLite/LanceDB pair as the selectable fallback (T-0299, CAS-ADR-042). sage/sage_core_config.schema.json bumped v0.4->v0.5: a new top-level `storage_backend` string enum (['postgres','embedded'], default 'postgres') selects the durable-storage binding as one co-varying key -- the embedded pair is a single coherent fallback, not per-store knobs -- and the `postgres` block description drops the 'not yet wired into the live storage binding' clause now that the live serving path consumes it. Pydantic SageCoreConfig in sage/config.py gains the mirrored `storage_backend` Literal field (Principle 8, verbatim description); sage/config.yaml sets `storage_backend: postgres` explicitly and rewrites the postgres block comment. The binding lands as a new profile seam: sage/profiles.py gains STORAGE_SEAM, and sage/storage_binding.py holds the local profile's binding -- a provisioner per backend (EmbeddedVaultStorageProvisioner reproducing the prior hardcoded SqliteGraphStore/LanceDBContentStore construction; PostgresVaultStorageProvisioner building a per-vault search_path-bound AsyncConnectionPool over the stack postgres block, validating the vault id as a schema name, bootstrapping the schema idempotently over a plain connection before the pgvector-configured pool opens, and returning PostgresGraphStore + PostgresContentStore over the shared pool) -- registered for the local profile in sage/mcp_init.py with an env-first dispatch (SAGE_TEST_STORAGE_BACKEND overrides the config key, mirroring SAGE_TEST_STUB_PROVIDERS). initialize_services replaces its hardcoded default store branches with the resolved provisioner (injection precedence unchanged: explicit instance > factory > provisioner default; signature unchanged, so the six call sites pinned by test_initialize_services_conformance.py are untouched); SAGEServices gains a storage handle and close_storage(), and the vault teardown sites close the handle (pool) instead of the bare graph store. psycopg[binary,pool] + pgvector move from the test extra to [project].dependencies and uv.lock is relocked; LOCK_TRACKED in test_dependency_pins.py gains psycopg/psycopg-pool/pgvector. Rollback is documented in docs/process/postgres-local-runtime.md: set storage_backend: embedded and restart -- the embedded stores under each vault's brain root are never written by the Postgres binding and remain intact (frozen at migration time; no reverse migration). Tests: SCH-S-013..015 (selector shape/enum/default agreement), PRF-007/008 (storage seam registration + resolver routing), STO-001..005 in new tests/sage/test_storage_binding.py (config + env dispatch, embedded parity, Postgres bootstrap/round-trip/close idempotence, schema-name fail-loud), DI-010..012 in tests/sage/test_mcp_init.py (injection-wins guard, no-override Postgres construction, service-level end-to-end on Postgres), and a reload-teardown handle-close guard. Also corrects substrate_version, which had remained 1.35 when revision 1.36 landed."
+    },
     {
       "version": "1.36",
       "date": "2026-06-08",

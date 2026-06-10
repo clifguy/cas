@@ -24,6 +24,14 @@ from tests.helpers.timing_leaks import (
 # monkeypatch.delenv calls (see test_di_005).
 os.environ.setdefault("SAGE_TEST_STUB_PROVIDERS", "1")
 
+# Pin the durable-storage binding to the embedded SQLite/LanceDB pair for
+# every pytest invocation. The stack default is postgres, so without this
+# pin each of the hundreds of tests that build services without injecting
+# stores would require a provisioned Postgres. Tests that exercise the
+# Postgres binding clear the variable per-test (monkeypatch.delenv) and
+# gate on SAGE_TEST_PG_DSN.
+os.environ.setdefault("SAGE_TEST_STORAGE_BACKEND", "embedded")
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INVALID_FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures" / "invalid"
 

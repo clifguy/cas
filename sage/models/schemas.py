@@ -4009,7 +4009,14 @@ class VaultStatsResponse(BaseModel):
             "optimize."
         )
     )
-    sqlite_size_bytes: int = Field(description="Size of the graph.db SQLite file in bytes.")
+    sqlite_size_bytes: int = Field(
+        description=(
+            "Size of the embedded graph store's graph.db SQLite file in "
+            "bytes. Under the Postgres durable-storage binding this reports "
+            "the intact embedded fallback file -- 0 when the vault never had "
+            "one, frozen at its pre-cutover size for a migrated vault."
+        )
+    )
     last_ingestion_at: datetime | None = Field(
         description="Timestamp of the most recent successful ingestion, if any."
     )

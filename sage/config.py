@@ -315,9 +315,9 @@ class StackPostgresConfig(BaseModel):
 
     Non-secret connection parameters for the Postgres storage engine the
     deployment profiles externalize durable state to. The password is read
-    from the environment, never carried here. Consumed today only by the
-    provisioning CLI and the storage test harness; the live storage binding
-    arrives with the profile flip.
+    from the environment, never carried here. Consumed by the live storage
+    binding (when ``storage_backend`` selects ``postgres``), the provisioning
+    CLI, and the storage test harness.
     """
 
     model_config = {"extra": "forbid"}
@@ -397,6 +397,21 @@ class SageCoreConfig(BaseModel):
             "an unrecognized value fails loud at startup."
         ),
     )
+    storage_backend: Literal["postgres", "embedded"] = Field(
+        default="postgres",
+        description=(
+            "Durable-storage binding selector (CAS-ADR-042). 'postgres' (the "
+            "default) binds the graph and content stores to the Postgres "
+            "adapters configured by the 'postgres' block; each vault's rows "
+            "live in a Postgres schema named by its vault id. 'embedded' "
+            "selects the file-based fallback pair -- SQLite graph store and "
+            "LanceDB content store under each vault's brain root. The two "
+            "stores co-vary as one binding and are not selectable "
+            "individually. Flipping the key repoints the binding at restart "
+            "and never moves data; copying state between backends is the "
+            "operator migration tooling's job."
+        ),
+    )
     abstraction: StackAbstractionConfig = Field(
         default_factory=StackAbstractionConfig,
         description=(
@@ -422,9 +437,9 @@ class SageCoreConfig(BaseModel):
             "password is read from the environment (SAGE_PG_PASSWORD), never "
             "from this file. The block configures the async driver and "
             "connection pool the store adapters share and the idempotent "
-            "schema bootstrap; it is not yet wired into the live storage "
-            "binding, so today it is consumed only by the provisioning CLI "
-            "and the storage test harness."
+            "schema bootstrap; it is consumed by the live storage binding "
+            "(when 'storage_backend' selects 'postgres'), the provisioning "
+            "CLI, and the storage test harness."
         ),
     )
 

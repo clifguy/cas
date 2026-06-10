@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from sage import profiles
-from sage.adapters.content_store_lancedb import LanceDBContentStore
 from sage.adapters.embedding_nomic import get_nomic_embedding_provider
 from sage.adapters.interfaces import (
     AbstractionProvider,
@@ -45,8 +44,12 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
-from sage.storage.graph_store import SqliteGraphStore
 from sage.storage.locks import DocumentLockManager
+from sage.storage_binding import (
+    VaultStorageHandle,
+    VaultStorageProvisioner,
+    build_stack_storage_provisioner,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -212,14 +215,14 @@ class SAGEServices:
     config_path: Path | None = None
     # Test-only hook: when set, reload paths (reload_vault,
     # reload_vault_in_registry) re-invoke this factory with the vault's
-    # brain_root instead of constructing a LanceDBContentStore. Carried on
+    # brain_root instead of consulting the storage provisioner. Carried on
     # the services tuple so the factory survives across reloads without
     # adding module-level mutable state. None in production.
     content_store_factory: Callable[[Path], ContentStore] | None = None
     # Mirror of content_store_factory for the graph store: when set, reload
     # paths re-invoke this factory with the vault's brain_root instead of
-    # constructing a SqliteGraphStore. Carried on the services tuple so the
-    # factory survives across reloads without module-level mutable state.
+    # consulting the storage provisioner. Carried on the services tuple so
+    # the factory survives across reloads without module-level mutable state.
     # None in production.
     graph_store_factory: Callable[[Path], GraphStore] | None = None
     # Per-vault background flusher for query-timing summary records.
@@ -232,6 +235,26 @@ class SAGEServices:
     # lifecycle (both built by _build_vault_timers); None when timing is
     # disabled.
     timing_handler: logging.Handler | None = None
+    # Handle for the durable-storage pair the storage provisioner opened for
+    # this vault (CAS-ADR-042). Owns the backing resource — the per-vault
+    # connection pool on the Postgres binding; nothing beyond the stores on
+    # the embedded binding. None when the caller filled both store slots
+    # itself, in which case the provisioner was never consulted.
+    storage: "VaultStorageHandle | None" = None
+
+    async def close_storage(self) -> None:
+        """Close the graph store, then release the storage handle's resource.
+
+        The graph-store close preserves the pre-seam teardown contract
+        (injected stores included — every teardown path closed
+        ``graph_store`` unconditionally); the handle close then releases the
+        backing resource the provisioner opened (the pool, on the Postgres
+        binding). Both closes are idempotent. Invoked from every vault
+        teardown path in place of the former bare ``graph_store.close()``.
+        """
+        await self.graph_store.close()
+        if self.storage is not None:
+            await self.storage.close()
 
     def close_timing(self) -> None:
         """Stop the timing flusher and release this vault's timing.log handle.
@@ -382,6 +405,30 @@ profiles.register_binding(
 )
 
 
+def _local_storage_binding(stack_config: SageCoreConfig) -> VaultStorageProvisioner:
+    """Late-binding factory for the local profile's durable-storage seam.
+
+    Delegates to ``build_stack_storage_provisioner`` by module-global name
+    rather than by captured reference, for the same reason as
+    ``_local_abstraction_binding``: a test that monkeypatches
+    ``sage.mcp_init.build_stack_storage_provisioner`` must be honored through
+    the resolver path.
+    """
+    return build_stack_storage_provisioner(stack_config)
+
+
+# Register the durable-storage binding for the local deployment profile
+# (CAS-ADR-042). The binding is the backend dispatch in sage.storage_binding:
+# Postgres adapters over a per-vault pool by default, with the embedded
+# SQLite/LanceDB pair selectable as the fallback. A future profile attaches
+# its own storage binding by registering a different factory here.
+profiles.register_binding(
+    profiles.LOCAL_PROFILE,
+    profiles.STORAGE_SEAM,
+    _local_storage_binding,
+)
+
+
 def resolve_stack_profile(stack_config: SageCoreConfig) -> profiles.ResolvedProfile:
     """Resolve the active deployment profile from the stack config.
 
@@ -404,6 +451,19 @@ def resolve_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstract
     """
     resolved = resolve_stack_profile(stack_config)
     return cast(AbstractionProvider, resolved.binding(profiles.ABSTRACTION_SEAM))
+
+
+def resolve_stack_storage_provisioner(stack_config: SageCoreConfig) -> VaultStorageProvisioner:
+    """Resolve the durable-storage provisioner for the active deployment profile.
+
+    Thin typed accessor over ``resolve_stack_profile``, mirroring
+    ``resolve_stack_abstraction_provider``: returns the binding the active
+    profile assembles for the storage seam. For the ``local`` profile that
+    binding is ``build_stack_storage_provisioner``'s backend dispatch
+    (CAS-ADR-042).
+    """
+    resolved = resolve_stack_profile(stack_config)
+    return cast(VaultStorageProvisioner, resolved.binding(profiles.STORAGE_SEAM))
 
 
 # Closure-pair invariant: the canonical declaration of kwargs that
@@ -447,9 +507,11 @@ async def initialize_services(
 
     Args:
         config: Loaded and validated vault configuration.
-        graph_store: Optional override (default: SqliteGraphStore). When
-            supplied, the caller owns the lifecycle and the store is assumed
-            already initialized — cleanup on failure does NOT close it.
+        graph_store: Optional override (default: built by the active
+            profile's storage provisioner per the stack config's
+            storage_backend key). When supplied, the caller owns the
+            lifecycle and the store is assumed already initialized —
+            cleanup on failure does NOT close it.
         graph_store_factory: Optional callable invoked with the vault's
             ``brain_root`` to build a GraphStore. Used by hermetic tests to
             substitute ``StubGraphStore`` without mutating module state.
@@ -457,9 +519,10 @@ async def initialize_services(
             ``SAGEServices`` so reload paths reuse the same factory. When this
             factory builds the graph store, the caller owns the lifecycle —
             cleanup on failure does NOT close it.
-        content_store: Optional override (default: LanceDBContentStore).
-            When supplied, the caller owns the lifecycle — cleanup on
-            failure does NOT close it.
+        content_store: Optional override (default: built by the active
+            profile's storage provisioner per the stack config's
+            storage_backend key). When supplied, the caller owns the
+            lifecycle — cleanup on failure does NOT close it.
         content_store_factory: Optional callable invoked with the vault's
             ``brain_root`` to build a ContentStore. Used by hermetic
             lifespan tests to substitute ``StubContentStore`` without
@@ -492,6 +555,7 @@ async def initialize_services(
     timing_handler: logging.Handler | None = None
     graph_store_owned_here: GraphStore | None = None
     content_store_owned_here: ContentStore | None = None
+    storage_handle: VaultStorageHandle | None = None
 
     try:
         brain_root = Path(config.vault.brain_root).expanduser()
@@ -501,35 +565,46 @@ async def initialize_services(
             _build_vault_timers(config.timing, brain_root)
         )
 
-        # Graph store: explicit instance > factory > production SQLite.
-        # Only the SQLite path (constructed inside this function with no
-        # external handle) is initialized and tracked for cleanup. Caller-
-        # supplied and factory-supplied stores are the caller's responsibility
-        # and are assumed ready for use.
-        if graph_store is None:
-            if graph_store_factory is not None:
-                graph_store = graph_store_factory(brain_root)
-            else:
-                graph_store = SqliteGraphStore(brain_root / "graph.db", query_timer=storage_timer)
-                await graph_store.initialize(migrate=migrate)
+        # Durable stores: explicit instance > factory > the provisioner the
+        # active deployment profile binds for the storage seam (CAS-ADR-042) —
+        # Postgres adapters over a per-vault pool, or the embedded
+        # SQLite/LanceDB fallback, per the stack config's storage_backend key.
+        # Only provisioner-built stores (no external handle) are tracked for
+        # cleanup; caller-supplied and factory-supplied stores remain the
+        # caller's responsibility and are assumed ready for use. The
+        # provisioner is consulted only for the slots injection leaves empty,
+        # so a fully-injected call never pays a backend connection.
+        if graph_store is None and graph_store_factory is not None:
+            graph_store = graph_store_factory(brain_root)
+        if content_store is None and content_store_factory is not None:
+            content_store = content_store_factory(brain_root)
+
+        need_graph = graph_store is None
+        need_content = content_store is None
+        if need_graph or need_content:
+            provisioner = resolve_stack_storage_provisioner(get_stack_config())
+            storage_handle = await provisioner.open_vault_storage(
+                config.vault.id,
+                brain_root,
+                need_graph=need_graph,
+                need_content=need_content,
+                storage_timer=storage_timer,
+                content_timer=content_timer,
+                migrate=migrate,
+            )
+            if need_graph:
+                graph_store = storage_handle.graph_store
                 graph_store_owned_here = graph_store
+            if need_content:
+                content_store = storage_handle.content_store
+                content_store_owned_here = content_store
+        if graph_store is None or content_store is None:
+            raise RuntimeError(
+                "storage provisioner returned no store for a requested slot "
+                f"(graph={graph_store!r}, content={content_store!r})"
+            )
 
         lock_manager = DocumentLockManager()
-
-        # Content store: explicit instance > factory > production LanceDB.
-        # Only the LanceDB path (constructed inside this function with no
-        # external handle) is tracked for cleanup. Caller-supplied and
-        # factory-supplied stores remain the caller's responsibility.
-        if content_store is None:
-            if content_store_factory is not None:
-                content_store = content_store_factory(brain_root)
-            else:
-                content_store = LanceDBContentStore(
-                    brain_root,
-                    migrate=migrate,
-                    query_timer=content_timer,
-                )
-                content_store_owned_here = content_store
 
         # Embedding provider: injected or production Nomic. CI sets
         # SAGE_TEST_STUB_PROVIDERS=1 so the ~700 tests that construct
@@ -657,6 +732,7 @@ async def initialize_services(
             graph_store_factory=graph_store_factory,
             timing_thread=timing_thread,
             timing_handler=timing_handler,
+            storage=storage_handle,
         )
     except BaseException:
         # AC2 + Risk: release partially-allocated resources without
@@ -690,6 +766,11 @@ async def initialize_services(
                         await result
             except Exception:
                 _logger.exception("initialize_services cleanup: failed to close content_store")
+        if storage_handle is not None:
+            try:
+                await storage_handle.close()
+            except Exception:
+                _logger.exception("initialize_services cleanup: failed to close storage handle")
         raise
 
 
@@ -756,6 +837,6 @@ async def reload_vault_in_registry(
     if old is not None:
         await old.ingestion_service.stop_worker()
         old.close_timing()
-        await old.graph_store.close()
+        await old.close_storage()
     registry[vault_id] = new_services
     return new_services

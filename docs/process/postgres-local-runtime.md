@@ -3,9 +3,10 @@
 SAGE's durable graph and content state externalizes to PostgreSQL in both
 deployment targets (CAS-ADR-042). This runbook stands up the **local** target on
 macOS (Apple Silicon, Homebrew): a persistent Postgres instance under `launchd`,
-the extensions SAGE needs, and the schema bootstrap. The embedded SQLite/LanceDB
-stores remain the live local binding for now — this provisions the engine; it
-does not switch SAGE onto it.
+the extensions SAGE needs, and the schema bootstrap. Postgres is the local
+profile's default durable-storage binding (`storage_backend: postgres` in
+`sage/config.yaml`); §6 covers selecting between it and the embedded
+SQLite/LanceDB fallback, the cutover order, and rollback.
 
 > The connection defaults live in the `postgres` block of `sage/config.yaml`
 > (host `null` ⇒ local unix socket, user `null` ⇒ the OS user via peer auth,
@@ -90,6 +91,49 @@ export SAGE_TEST_PG_DSN="postgresql:///sage_test"   # socket form (peer auth)
 The harness creates and drops its own `sage_test_*` schemas inside that database;
 the one-time bootstrap above is only needed to enable the `vector` extension in
 the throwaway database (extensions are database-global; schemas are not).
+
+## 6. Storage backend selection, cutover, and rollback
+
+The `storage_backend` key in `sage/config.yaml` selects the durable-storage
+binding as one co-varying switch: `postgres` (the default) binds the graph and
+content stores to the Postgres adapters over the `postgres:` block above;
+`embedded` selects the file-based fallback pair (SQLite graph store + LanceDB
+content store under each vault's brain root). The binding is resolved once at
+startup — flipping the key takes effect at the next server restart and never
+moves data by itself.
+
+Under the Postgres binding, each vault's rows live in a schema named by its
+vault id, bootstrapped idempotently at vault open. The vault id must therefore
+be a valid schema identifier (`^[a-z_][a-z0-9_]*$`); a vault whose id is not
+fails loud at startup and is skipped. Each vault opens its own connection pool
+(`min_pool_size`/`max_pool_size` from the `postgres:` block), so N vaults hold
+at least N idle connections and up to N×`max_pool_size` under load — comfortable
+against the server's default `max_connections = 100` for a handful of vaults,
+worth revisiting past a dozen.
+
+**Cutover (embedded → postgres).** Order matters: copy the data before
+repointing the binding.
+
+```sh
+# 1. Copy each vault's embedded state into its Postgres schema and reconcile.
+#    Dry-run first; --execute writes. Exit 0 + "ok" per vault gates the flip.
+.venv/bin/python scripts/migrate_vault_to_postgres.py --all-vaults
+.venv/bin/python scripts/migrate_vault_to_postgres.py --all-vaults --execute
+
+# 2. Set `storage_backend: postgres` in sage/config.yaml (the committed default).
+# 3. Restart SAGE (and any MCP server processes).
+```
+
+The migration reads the embedded stores and never modifies them; they stay
+intact under each vault's brain root as the rollback copy.
+
+**Rollback (postgres → embedded).** Set `storage_backend: embedded` in
+`sage/config.yaml` and restart. The vaults reopen from the untouched embedded
+stores. The caveat is the divergence window: writes made while on Postgres do
+**not** flow back — there is no reverse migration — so rolling back repoints to
+the embedded state frozen at the last cutover migration. Re-running the
+migration with `--execute` truncates and reloads the Postgres schemas from the
+embedded stores, which re-converges the two in the forward direction only.
 
 ## Notes
 

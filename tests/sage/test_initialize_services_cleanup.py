@@ -122,10 +122,10 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
             super().__init__(*args, **kwargs)
             captured["graph_store"] = self
 
-    # Patch the SqliteGraphStore class at the import site inside mcp_init.
-    import sage.mcp_init as _mcp_init
-
-    monkeypatch.setattr(_mcp_init, "SqliteGraphStore", CapturingGraphStore)
+    # Patch the SqliteGraphStore class on its source module: the embedded
+    # storage provisioner imports it at call time, so the patch is honored
+    # through the provisioner path.
+    monkeypatch.setattr(_gs_module, "SqliteGraphStore", CapturingGraphStore)
 
     # Patch bootstrap_owner to raise AFTER SqliteGraphStore is constructed and
     # initialized.

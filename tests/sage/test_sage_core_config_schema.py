@@ -266,3 +266,71 @@ def test_sch_s_012_postgres_config_carries_no_secret():
     fields = set(StackPostgresConfig.model_fields)
     assert "password" not in fields
     assert "dsn" not in fields
+
+
+# ---------------------------------------------------------------------------
+# Storage-backend selector (CAS-ADR-042). SCH-S-013..015.
+# ---------------------------------------------------------------------------
+
+
+def test_sch_s_013_storage_backend_field_shape():
+    """Structural assertion: the schema declares a top-level `storage_backend`
+    as a string enum of `postgres` and `embedded`, defaulting to `postgres`.
+
+    Catches drift in any single property — a missing `enum` makes SCH-S-014
+    incapable of detecting an unknown backend value; a missing `default` makes
+    SCH-S-015's Pydantic default test depend on the Pydantic side alone.
+    """
+    schema = _stack_schema()
+    backend = schema["properties"]["storage_backend"]
+    assert backend["type"] == "string"
+    assert backend["enum"] == ["postgres", "embedded"]
+    assert backend["default"] == "postgres"
+
+
+def test_sch_s_014_unknown_storage_backend_rejected():
+    """A stack config whose `storage_backend` is outside the enum fails
+    validation against the JSON Schema *and* against SageCoreConfig; both
+    in-enum values pass both gates.
+
+    Anti-coincidental-pass: the positive controls must pass so the failure is
+    attributable to the enum. `lancedb` is asserted to fail specifically — the
+    embedded pair is selected as one coherent binding (`embedded`), so a
+    store-name value passing would mean the selector decomposed into per-store
+    knobs, which CAS-ADR-042's co-variation rule forbids.
+    """
+    from pydantic import ValidationError
+
+    from sage.config import SageCoreConfig
+
+    schema = _stack_schema()
+
+    for good in ("postgres", "embedded"):
+        jsonschema.validate({"storage_backend": good}, schema)
+        SageCoreConfig.model_validate({"storage_backend": good})
+
+    for bad in ("lancedb", "sqlite"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"storage_backend": bad}, schema)
+        with pytest.raises(ValidationError):
+            SageCoreConfig.model_validate({"storage_backend": bad})
+
+
+def test_sch_s_015_storage_backend_absent_passes_default_applied():
+    """An instance with `storage_backend` absent validates against the schema,
+    and `SageCoreConfig.model_validate` applies the Pydantic default of
+    `"postgres"`.
+
+    Confirms the two single-source-of-truth points (JSON Schema and Pydantic
+    model) agree on the default per CAS principle 1: the local profile binds
+    Postgres unless the config selects the embedded fallback.
+    """
+    schema = _stack_schema()
+    instance: dict = {}  # storage_backend deliberately absent
+    jsonschema.validate(instance, schema)
+    assert schema["properties"]["storage_backend"]["default"] == "postgres"
+
+    from sage.config import SageCoreConfig
+
+    cfg = SageCoreConfig.model_validate(instance)
+    assert cfg.storage_backend == "postgres"

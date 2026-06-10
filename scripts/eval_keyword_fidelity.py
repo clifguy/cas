@@ -23,7 +23,7 @@ against the throwaway store and table, which it owns end-to-end and tears down o
 exit. It reads the source vault only through SAGE's own content-store adapter and
 makes no change to it.
 
-Requires the ``eval`` extra (``uv sync --extra eval``) for ``psycopg`` and a
+Requires ``psycopg`` (a base dependency since the Postgres storage binding) and a
 reachable Postgres named by ``--pg-dsn`` / ``SAGE_EVAL_PG_DSN``. Stand up a
 throwaway instance, for example::
 

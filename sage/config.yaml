@@ -8,7 +8,7 @@
 # startup. Per-vault knobs (enabled, token-budget tuning) remain in the
 # vault config's `abstraction:` block.
 #
-# Schema: docs/fs/sage/sage_core_config.schema.json (v0.4).
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.5).
 
 # Deployment-profile marker (CAS-ADR-042). The single stack-scope selection
 # that co-binds the adapter-port implementations for one deployment target.
@@ -16,6 +16,18 @@
 # available today; it is resolved once at startup and its bindings are the
 # current behavior. An unrecognized value fails loud at startup.
 profile: local
+
+# Durable-storage binding selector (CAS-ADR-042). `postgres` binds the graph
+# and content stores to the Postgres adapters configured by the `postgres:`
+# block below (each vault's rows live in a Postgres schema named by its vault
+# id). `embedded` selects the file-based fallback pair -- SQLite graph store
+# and LanceDB content store under each vault's brain root -- as one coherent
+# binding; the stores are not selectable individually. Flipping this key
+# repoints the binding at the next restart and never moves data: rollback to
+# the embedded stores is `embedded` + restart (they are left intact by the
+# Postgres binding), and copying state between backends is the operator
+# migration tooling's job. See docs/process/postgres-local-runtime.md.
+storage_backend: postgres
 
 abstraction:
   # Dispatch key. `local-mlx` loads the local MLX provider (Qwen3) with the
@@ -41,13 +53,14 @@ abstraction:
 # targets externalize durable graph + content state to Postgres -- a local unix
 # socket here, a managed endpoint in the cloud -- with SQLite/LanceDB retained
 # as a fallback binding. Non-secret values only: the password (when a TCP/cloud
-# endpoint needs one) is read from $SAGE_PG_PASSWORD, never from this file. Not
-# yet wired into the live storage path; today this block is consumed only by the
-# provisioning CLI (scripts/bootstrap_postgres.py) and the storage test harness.
-# The local on-box default below connects over the unix socket as the OS user
-# (peer auth, no password). The values here equal the schema/Pydantic defaults;
-# they are spelled out for discoverability. pg_repack is enabled separately per
-# docs/process/postgres-local-runtime.md (it is not in every target's allowlist).
+# endpoint needs one) is read from $SAGE_PG_PASSWORD, never from this file.
+# Consumed by the live storage binding (when `storage_backend` above selects
+# `postgres`), the provisioning CLI (scripts/bootstrap_postgres.py), and the
+# storage test harness. The local on-box default below connects over the unix
+# socket as the OS user (peer auth, no password). The values here equal the
+# schema/Pydantic defaults; they are spelled out for discoverability. pg_repack
+# is enabled separately per docs/process/postgres-local-runtime.md (it is not
+# in every target's allowlist).
 postgres:
   host: null            # null => local unix-domain socket
   port: 5432

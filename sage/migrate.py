@@ -91,11 +91,19 @@ async def _migrate_vault(config: VaultConfig, config_path: Path) -> None:
         registry_service=None,
     )
     services.close_timing()
-    await services.graph_store.close()
+    await services.close_storage()
 
 
 async def _run(args: argparse.Namespace) -> int:
     """Async body of main(). Returns process exit code."""
+    # Load the stack config so the storage binding this CLI migrates is the
+    # same one the serving binary will open (CAS-ADR-042): without it,
+    # initialize_services would resolve the binding from the default stack
+    # config instead of the deployed sage/config.yaml.
+    from sage.mcp_init import load_stack_config_or_default, set_stack_config
+
+    set_stack_config(load_stack_config_or_default())
+
     vault_root = _resolve_vault_root(args)
     discovered = discover_vault_configs(vault_root)
 
