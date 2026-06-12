@@ -1012,6 +1012,11 @@ SAGE_CONFIG_CLASS_TO_SCHEMA: list[tuple[str, str, str]] = [
         "#/properties/postgres",
     ),
     (
+        "StackAuthConfig",
+        "sage/sage_core_config.schema.json",
+        "#/properties/auth",
+    ),
+    (
         "SageCoreConfig",
         "sage/sage_core_config.schema.json",
         "#",

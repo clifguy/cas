@@ -164,7 +164,12 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
 # leading T-NNNN points at the remediation ticket where applicable.
 # ---------------------------------------------------------------------------
 
-KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {}
+KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
+    # The Entra directory tenant identifier (an external identity-provider
+    # GUID) is not a SAGE document id; the DocumentIdStr alias would impose
+    # SAGE's id grammar on a foreign identifier. Plain str is correct.
+    ("StackAuthConfig", "tenant_id"): "identity-provider tenant id, not a SAGE document id",
+}
 
 
 # ---------------------------------------------------------------------------

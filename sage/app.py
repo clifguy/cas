@@ -37,9 +37,14 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
+from sage.auth import AuthMiddleware
 from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
-from sage.config import VaultConfig, load_vault_config
-from sage.mcp_init import initialize_services
+from sage.config import SageCoreConfig, VaultConfig, load_vault_config
+from sage.mcp_init import (
+    initialize_services,
+    load_stack_config_or_default,
+    resolve_stack_auth_validator,
+)
 from sage.services.vault_registry import VaultRegistryService
 from sage.startup_banner import render_startup_banner
 
@@ -311,6 +316,7 @@ def create_app(
     configs: list[VaultConfig] | None = None,
     *,
     content_store_factory: Callable[[Path], ContentStore] | None = None,
+    stack_config: SageCoreConfig | None = None,
 ) -> FastAPI:
     """Create and configure the SAGE Core API application.
 
@@ -335,16 +341,27 @@ def create_app(
     Exactly one of ``vault_root``, ``config``, or ``configs`` should be
     provided. None is also valid: the registry stays empty (BE-002).
 
+    ``stack_config`` overrides the stack-wide configuration the process
+    would otherwise load from ``sage/config.yaml`` (or ``$SAGE_CONFIG_PATH``).
+    It selects the deployment profile's bindings, including the auth
+    validator the request middleware enforces; tests pass it to exercise the
+    enabled-auth path without a config file on disk.
+
     Schema migrations are not applied at startup. Use
     ``python -m sage.migrate`` to advance schemas before starting the server.
     """
+
+    # Resolve the stack config once. The auth middleware (added at
+    # construction, below) and the lifespan's profile-binding resolution both
+    # read it, so load it here and let the lifespan reuse it rather than read
+    # it a second time.
+    stack_cfg = stack_config if stack_config is not None else load_stack_config_or_default()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Use the MCP server's _vaults dict as the canonical registry so
         # both the REST API and MCP SSE transport share the same services.
         from sage.mcp_init import (
-            load_stack_config_or_default,
             resolve_stack_abstraction_provider,
             set_stack_config,
         )
@@ -356,11 +373,11 @@ def create_app(
         # VaultConfigService instances pick up the same singleton.
         _ensure_registry_service(app)
 
-        # CAS-ADR-042: load the stack-wide config once and resolve the active
-        # deployment profile's abstraction binding once; thread it through every
-        # per-vault initialize_services call. For the local profile the binding
-        # is the stack-wide provider built per CAS-ADR-030.
-        stack_cfg = load_stack_config_or_default()
+        # CAS-ADR-042: publish the stack-wide config resolved at construction
+        # and resolve the active deployment profile's abstraction binding once;
+        # thread it through every per-vault initialize_services call. For the
+        # local profile the binding is the stack-wide provider built per
+        # CAS-ADR-030.
         set_stack_config(stack_cfg)
         stack_provider = resolve_stack_abstraction_provider(stack_cfg)
 
@@ -488,5 +505,18 @@ def create_app(
     # partitioned like the stdio servers: /mcp = ordinary, /mcp_admin =
     # maintenance. Full surface = connect to both.
     _mount_partitioned_mcp(app)
+
+    # CAS-ADR-042: enforce the deployment profile's bearer-token validator
+    # across every HTTP surface. A pass-through validator under the on-box
+    # default (no auth); an Entra JWT validator under a profile that
+    # authenticates callers. One pure-ASGI middleware on the parent app guards
+    # the REST routes and the mounted MCP sub-apps identically, so
+    # authorization is uniform regardless of surface; the liveness probe is
+    # exempt so an orchestrator can poll it without a token.
+    app.add_middleware(
+        AuthMiddleware,
+        validator=resolve_stack_auth_validator(stack_cfg),
+        exempt_paths=frozenset({"/health"}),
+    )
 
     return app

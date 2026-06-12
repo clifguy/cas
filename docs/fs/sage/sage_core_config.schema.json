@@ -83,6 +83,56 @@
           "description": "Postgres extensions the schema bootstrap enables in the target database. 'vector' (pgvector) is required for the content store's embedding column; 'pgstattuple' backs bloat measurement. 'pg_repack' is documented for the local runtime but kept out of this default because managed and containerized targets may not carry it."
         }
       }
+    },
+    "auth": {
+      "type": ["object", "null"],
+      "default": null,
+      "additionalProperties": false,
+      "description": "OAuth resource-server binding (CAS-ADR-042). Absent (the default) installs a pass-through validator -- the on-box deployment runs with no auth. Present and enabled, it binds the process as an OAuth resource server that validates an Entra-issued bearer token uniformly across the REST and MCP surfaces against the configured issuer and audience. Non-secret directory coordinates only; token-signing keys are fetched from the issuer's published JWKS endpoint at runtime. Resolved once at startup through the deployment profile's auth seam.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master switch. When false (the default) the process authenticates no one. When true it validates a bearer token on every request to a protected surface against the issuer and audience below."
+        },
+        "tenant_id": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Identity-provider tenant identifier. Derives the default issuer and JWKS endpoint when those are not set explicitly. Required when 'enabled' is true and 'issuer'/'jwks_uri' are not both given."
+        },
+        "audience": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Expected token audience -- the resource server's application ID URI (for example 'api://<app-id>'). A token whose 'aud' claim does not equal this value is rejected. Required when 'enabled' is true."
+        },
+        "issuer": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Expected token issuer. When null it is derived from 'tenant_id' as 'https://login.microsoftonline.com/<tenant_id>/v2.0'. A token whose 'iss' claim does not equal the resolved issuer is rejected."
+        },
+        "jwks_uri": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Endpoint publishing the issuer's token-signing public keys. When null it is derived from 'tenant_id' as 'https://login.microsoftonline.com/<tenant_id>/discovery/v2.0/keys'. Signing keys are fetched and cached from here at runtime."
+        },
+        "required_scopes": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": ["Sage.Access"],
+          "description": "Delegated scopes (the token's space-delimited 'scp' claim) of which an accepted token must carry at least one. The delegated scope is the authorization unit for every surface uniformly; a token carrying neither a required scope nor a required role is rejected as insufficiently authorized."
+        },
+        "required_roles": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": ["Sage.Reader"],
+          "description": "Application roles (the token's 'roles' claim) of which an accepted token may instead carry at least one -- the app-only complement to 'required_scopes'. An empty list disables role-based acceptance."
+        },
+        "resource_metadata_url": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Optional protected-resource-metadata URL advertised in the 'WWW-Authenticate' challenge so a client can discover how to obtain a token. When null the challenge omits the pointer; the metadata document itself is served by the edge facade, not by this process."
+        }
+      }
     }
   }
 }

@@ -20,6 +20,7 @@ from sage.adapters.interfaces import (
     GraphStore,
 )
 from sage.adapters.stubs import StubAbstractionProvider
+from sage.auth import TokenValidator, build_auth_validator
 from sage.config import SageCoreConfig, VaultConfig
 from sage.instrumentation.timing import (
     NULL_QUERY_TIMER,
@@ -459,6 +460,30 @@ profiles.register_binding(
 )
 
 
+def _local_auth_binding(stack_config: SageCoreConfig) -> TokenValidator:
+    """Late-binding factory for the local profile's auth seam.
+
+    Delegates to ``build_auth_validator`` by module-global name rather than
+    by captured reference, for the same reason as ``_local_storage_binding``:
+    a test that monkeypatches ``sage.mcp_init.build_auth_validator`` must be
+    honored through the resolver path.
+    """
+    return build_auth_validator(stack_config.auth)
+
+
+# Register the OAuth resource-server binding for the local deployment profile
+# (CAS-ADR-042). The binding is the validator dispatch in sage.auth: a
+# pass-through validator when the auth block is absent or disabled (the on-box
+# default authenticates no one), an issuer/audience-bound JWT validator when
+# it is enabled. A future profile attaches its own auth binding by registering
+# a different factory here.
+profiles.register_binding(
+    profiles.LOCAL_PROFILE,
+    profiles.AUTH_SEAM,
+    _local_auth_binding,
+)
+
+
 def resolve_stack_profile(stack_config: SageCoreConfig) -> profiles.ResolvedProfile:
     """Resolve the active deployment profile from the stack config.
 
@@ -494,6 +519,19 @@ def resolve_stack_storage_provisioner(stack_config: SageCoreConfig) -> VaultStor
     """
     resolved = resolve_stack_profile(stack_config)
     return cast(VaultStorageProvisioner, resolved.binding(profiles.STORAGE_SEAM))
+
+
+def resolve_stack_auth_validator(stack_config: SageCoreConfig) -> TokenValidator:
+    """Resolve the token validator for the active deployment profile.
+
+    Thin typed accessor over ``resolve_stack_profile``, mirroring
+    ``resolve_stack_abstraction_provider``: returns the binding the active
+    profile assembles for the auth seam. For the ``local`` profile that
+    binding is ``build_auth_validator``'s dispatch -- a pass-through
+    validator unless the stack config's auth block is enabled (CAS-ADR-042).
+    """
+    resolved = resolve_stack_profile(stack_config)
+    return cast(TokenValidator, resolved.binding(profiles.AUTH_SEAM))
 
 
 # Closure-pair invariant: the canonical declaration of kwargs that
