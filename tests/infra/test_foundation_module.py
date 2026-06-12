@@ -201,6 +201,19 @@ def test_foundation_exposes_required_outputs() -> None:
     )
 
 
+def test_foundation_exposes_vnet_id_output() -> None:
+    """The foundation exposes the virtual network's resource id — the relational
+    store module needs it to link its private DNS zone to the VNet, and a
+    consumer should compose through a named output rather than string-splitting a
+    subnet id.
+    """
+    names = [name for name, _ in _output_lines(FOUNDATION.read_text(encoding="utf-8"))]
+    lowered = [n.lower() for n in names]
+    assert any("vnet" in n and "id" in n for n in lowered), (
+        f"missing a VNet id output; have {names}"
+    )
+
+
 def test_foundation_outputs_contain_no_secrets() -> None:
     """No module output exposes a secret (shared key, admin password) or a
     hardcoded identity GUID — a local mirror of the bicep

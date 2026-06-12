@@ -145,6 +145,9 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   }
 }
 
+@description('Resource id of the hosting virtual network.')
+output vnetId string = vnet.id
+
 @description('Resource id of the Azure Container Apps environment.')
 output acaEnvironmentId string = acaEnvironment.id
 
