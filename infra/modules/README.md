@@ -50,6 +50,21 @@ The relational-store module (`postgres.bicep`) deploys into the delegated
 Postgres subnet and exposes `postgresServerFqdn`, `postgresDatabaseName`, and
 `postgresServerName` for the cloud profile configuration to consume.
 
+The identity module (`identity.bicep`) provisions the two user-assigned managed
+identities the container apps run as (SAGE and the CAS BFF) and exposes, for
+each, its resource id, principal id, and client id. The Key Vault module grants
+those principals data-plane read; the relational-store module grants the SAGE
+principal a database role; the container apps attach the identities by resource
+id at deploy time.
+
+The Key Vault module (`keyvault.bicep`) provisions the secrets vault under Azure
+RBAC, granting the SAGE and CAS BFF identities read of the secrets and
+certificates they consume, and exposes `keyVaultUri`, `keyVaultName`, and the
+canonical `anthropicSecretName` / `tlsCertificateName`. Secret values and the
+wildcard TLS certificate are loaded out of band per
+[`../../docs/process/key-vault-secrets.md`](../../docs/process/key-vault-secrets.md);
+no secret material is committed.
+
 ## The API facade
 
 `apim.bicep` provisions the public edge for SAGE (its REST and MCP surfaces):
