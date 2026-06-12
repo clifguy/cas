@@ -194,6 +194,93 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  # ---------------------------------------------------------------------------
+  # Interactive sign-in (backend-for-frontend)
+  #
+  # The OIDC redirect callback (GET /app/auth/callback) is a browser-facing
+  # redirect mechanism, not a documented JSON API operation, so it is excluded
+  # from this surface (include_in_schema=False on the route; allowlisted in the
+  # OpenAPI conformance gate's infra-paths).
+  # ---------------------------------------------------------------------------
+
+  /app/auth/login:
+    get:
+      operationId: begin_login
+      summary: Begin interactive sign-in and return the identity-provider authorization URL.
+      description: >-
+        Starts the confidential-client authorization-code flow and returns the
+        identity-provider authorization URL the single-page app navigates the
+        browser to. A short-lived pre-login record is held server-side so the
+        callback can validate the round-trip; no tokens are issued to the
+        browser here. Available only when the deployment is configured for
+        interactive auth; otherwise returns 503 `auth_not_configured`.
+      tags: [Auth]
+      responses:
+        "200":
+          description: The authorization URL and anti-forgery state to begin sign-in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginChallengeResponse"
+        "503":
+          description: >-
+            `auth_not_configured`: interactive sign-in is not configured for
+            this deployment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /app/auth/me:
+    get:
+      operationId: get_session
+      summary: Report whether the caller has a live session.
+      description: >-
+        Reads the session cookie and reports whether it resolves to a live
+        server-side session, returning the signed-in user's identity claims
+        when it does. Used by the single-page app to decide whether to render
+        the signed-in experience or send the user to sign in. Available only
+        when the deployment is configured for interactive auth; otherwise
+        returns 503 `auth_not_configured`.
+      tags: [Auth]
+      responses:
+        "200":
+          description: The caller's session state and, when present, their identity claims.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInfoResponse"
+        "503":
+          description: >-
+            `auth_not_configured`: interactive sign-in is not configured for
+            this deployment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /app/auth/logout:
+    post:
+      operationId: end_session
+      summary: End the session and clear the session cookie.
+      description: >-
+        Deletes the caller's server-side session and clears the session cookie.
+        Idempotent: returns 204 whether or not a live session was present.
+        Available only when the deployment is configured for interactive auth;
+        otherwise returns 503 `auth_not_configured`.
+      tags: [Auth]
+      responses:
+        "204":
+          description: The session was ended and the cookie cleared.
+        "503":
+          description: >-
+            `auth_not_configured`: interactive sign-in is not configured for
+            this deployment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 # =============================================================================
 # Components
 # =============================================================================
@@ -491,3 +578,65 @@ components:
           type: object
           nullable: true
           description: Additional context. Structure varies by error type (e.g., current_state and attempted_action for lifecycle transition errors).
+
+    # -------------------------------------------------------------------------
+    # Interactive sign-in (backend-for-frontend)
+    # -------------------------------------------------------------------------
+
+    LoginChallengeResponse:
+      type: object
+      required: [authorization_url, state]
+      description: Returned by /app/auth/login to start the interactive sign-in.
+      properties:
+        authorization_url:
+          type: string
+          description: >-
+            Identity-provider authorization URL the browser is sent to in
+            order to sign in. The single-page app navigates the browser to
+            this URL.
+        state:
+          type: string
+          description: >-
+            Opaque anti-forgery value bound to this sign-in attempt; echoed
+            back on the callback and validated server-side.
+
+    UserClaims:
+      type: object
+      required: [subject]
+      description: Identity-provider claims describing the signed-in user.
+      properties:
+        subject:
+          type: string
+          description: >-
+            Stable identity-provider subject for the signed-in user (the
+            directory object id, or the OIDC subject when that is absent).
+        name:
+          type: string
+          nullable: true
+          description: >-
+            Human-readable display name from the identity-provider claims,
+            when present.
+        email:
+          type: string
+          nullable: true
+          description: >-
+            Sign-in email or user-principal name from the identity-provider
+            claims, when present.
+
+    SessionInfoResponse:
+      type: object
+      required: [authenticated]
+      description: Returned by /app/auth/me describing the caller's session state.
+      properties:
+        authenticated:
+          type: boolean
+          description: >-
+            True when the request carries a live server-side session; false
+            otherwise.
+        user:
+          description: >-
+            The signed-in user's identity claims when authenticated; null
+            when no live session is present.
+          anyOf:
+            - $ref: "#/components/schemas/UserClaims"
+            - type: "null"

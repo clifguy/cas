@@ -34,12 +34,15 @@ __all__ = [
     "ErrorResponse",
     "IngestFileItem",
     "IngestRequest",
+    "LoginChallengeResponse",
     "ParsedMetadata",
     "ProgressEvent",
     "ScanRequest",
     "ScanResponse",
     "ScanResultResponse",
+    "SessionInfoResponse",
     "SummaryEvent",
+    "UserClaims",
 ]
 
 
@@ -254,5 +257,61 @@ class SummaryEvent(BaseModel):
         description=(
             "Optional edge-inference warnings (e.g. ambiguous version "
             "chains). Present only when warnings were produced."
+        ),
+    )
+
+
+class LoginChallengeResponse(BaseModel):
+    """Returned by /app/auth/login to start the interactive sign-in."""
+
+    authorization_url: str = Field(
+        description=(
+            "Identity-provider authorization URL the browser is sent to in "
+            "order to sign in. The single-page app navigates the browser to "
+            "this URL."
+        )
+    )
+    state: str = Field(
+        description=(
+            "Opaque anti-forgery value bound to this sign-in attempt; echoed "
+            "back on the callback and validated server-side."
+        )
+    )
+
+
+class UserClaims(BaseModel):
+    """Identity-provider claims describing the signed-in user."""
+
+    subject: str = Field(
+        description=(
+            "Stable identity-provider subject for the signed-in user (the "
+            "directory object id, or the OIDC subject when that is absent)."
+        )
+    )
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable display name from the identity-provider claims, when present."
+        ),
+    )
+    email: str | None = Field(
+        default=None,
+        description=(
+            "Sign-in email or user-principal name from the identity-provider claims, when present."
+        ),
+    )
+
+
+class SessionInfoResponse(BaseModel):
+    """Returned by /app/auth/me describing the caller's session state."""
+
+    authenticated: bool = Field(
+        description=("True when the request carries a live server-side session; false otherwise.")
+    )
+    user: UserClaims | None = Field(
+        default=None,
+        description=(
+            "The signed-in user's identity claims when authenticated; null "
+            "when no live session is present."
         ),
     )

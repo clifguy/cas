@@ -48,6 +48,11 @@ _INFRA_PATHS = {
     # documented API surface (also excluded from the OpenAPI schema via
     # include_in_schema=False on the route).
     "/health",
+    # OIDC redirect callback: a browser-facing redirect mechanism (302 + cookie),
+    # not a documented JSON API operation -- the same category as /health. The
+    # route carries include_in_schema=False; this entry keeps it out of the
+    # code-vs-spec coverage comparison.
+    "/app/auth/callback",
 }
 
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
