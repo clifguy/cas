@@ -44,3 +44,21 @@ module foundation 'modules/foundation.bicep' = {
 The foundation module exposes `acaEnvironmentId`, `acaEnvironmentDefaultDomain`,
 `acrLoginServer`, `acaInfraSubnetId`, and `postgresSubnetId` as outputs for
 later modules (a relational store, an API facade, …) to consume.
+
+## The API facade
+
+`apim.bicep` provisions the public edge for SAGE (its REST and MCP surfaces):
+an API Management service whose inbound policy validates Entra-issued JWTs,
+serves the MCP OAuth discovery handshake (`/.well-known/oauth-protected-resource`
+plus the `WWW-Authenticate` challenge), and denies the maintenance mount so it
+never reaches the backend. The CAS BFF does not go through the facade — it uses
+the container ingress directly.
+
+The module takes the orchestrator's `location`, `environmentName`, and `tags`,
+plus `sageBackendHostname` (the SAGE container app the facade routes to),
+`sageAudience` (the resource-server audience the JWT policy checks), and
+`publisherEmail`; the SKU is the `apimSku` parameter (default `Consumption`).
+The issuing tenant is derived from the deployment context — no identity GUID is
+written into the module. The inbound policy is authored as versioned XML under
+[`../policies/`](../policies/) and loaded with `loadTextContent`; the
+environment-specific coordinates reach it as API Management named values.
