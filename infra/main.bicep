@@ -3,9 +3,9 @@
 // Targets the subscription so it can create the resource group that every
 // hosting-environment module deploys into. Hosting-environment modules live
 // under infra/modules/ and are wired in below as the cloud deployment
-// profile (CAS-ADR-042) is built out; at this scaffold stage the template
-// deploys only the resource group and its tags, which gives the pipeline a
-// real, idempotent footprint to plan and apply.
+// profile (CAS-ADR-042) is built out. The foundation module is wired first; it
+// establishes the shared network and compute environment that later modules
+// consume through its outputs.
 
 targetScope = 'subscription'
 
@@ -31,17 +31,25 @@ resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   tags: tags
 }
 
-// Hosting-environment modules deploy into the resource group above. As each
-// lands it is wired here, scoped to rg. The foundation module is first:
-//
-//   module foundation 'modules/foundation.bicep' = {
-//     name: 'foundation'
-//     scope: rg
-//     params: {
-//       location: location
-//       tags: tags
-//     }
-//   }
+// Hosting-environment modules deploy into the resource group above, scoped to
+// rg. The foundation module is first: it establishes the shared network and
+// compute environment (VNet, ACA environment, Log Analytics, ACR) that later
+// modules consume through its outputs.
+module foundation 'modules/foundation.bicep' = {
+  name: 'foundation'
+  scope: rg
+  params: {
+    location: location
+    environmentName: environmentName
+    tags: tags
+  }
+}
 
 @description('Provisioned resource group name, consumed by module deployments.')
 output deployedResourceGroupName string = rg.name
+
+@description('Resource id of the Azure Container Apps environment.')
+output acaEnvironmentId string = foundation.outputs.acaEnvironmentId
+
+@description('Login server host of the Azure Container Registry.')
+output acrLoginServer string = foundation.outputs.acrLoginServer

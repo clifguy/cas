@@ -27,7 +27,7 @@ that group.
 ## Wiring a module
 
 Add the module to [`../main.bicep`](../main.bicep), scoped to the resource
-group, passing `location` and `tags`:
+group, passing the orchestrator's `location`, `environmentName`, and `tags`:
 
 ```bicep
 module foundation 'modules/foundation.bicep' = {
@@ -35,7 +35,12 @@ module foundation 'modules/foundation.bicep' = {
   scope: rg
   params: {
     location: location
+    environmentName: environmentName
     tags: tags
   }
 }
 ```
+
+The foundation module exposes `acaEnvironmentId`, `acaEnvironmentDefaultDomain`,
+`acrLoginServer`, `acaInfraSubnetId`, and `postgresSubnetId` as outputs for
+later modules (a relational store, an API facade, …) to consume.
