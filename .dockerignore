@@ -1,0 +1,44 @@
+# Keep the build context small and force a repo-less build.
+#
+# The Dockerfile COPYs only the paths it needs (pyproject.toml, uv.lock,
+# sage/, app/backend/, deploy/), so most of this is belt-and-suspenders plus
+# context-size reduction. Excluding .git is load-bearing: with no git in the
+# context, setuptools-scm falls back to its pinned version and the runtime
+# version comes from the SAGE_BUILD_VERSION build arg.
+
+.git
+.gitignore
+.github
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+
+# Frontend SPA and its toolchain (never part of the SAGE infra-server image).
+app/node_modules
+app/dist
+app/src
+app/public
+app/index.html
+app/*.json
+app/*.ts
+app/*.cjs
+app/*.html
+app/playwright-report
+app/test-results
+
+# Test, docs, and process scaffolding -- not needed at runtime.
+tests
+docs
+*.md
+plan
+context-*.md
+
+# Local env / editor / OS noise.
+.env
+.env.*
+.vscode
+.idea
+.DS_Store

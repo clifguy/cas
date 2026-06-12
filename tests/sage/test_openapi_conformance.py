@@ -44,6 +44,10 @@ _INFRA_PATHS = {
     "/docs",
     "/docs/oauth2-redirect",
     "/redoc",
+    # Operational liveness probe for container health checks; not part of the
+    # documented API surface (also excluded from the OpenAPI schema via
+    # include_in_schema=False on the route).
+    "/health",
 }
 
 _HTTP_METHODS = {"get", "post", "put", "patch", "delete"}
