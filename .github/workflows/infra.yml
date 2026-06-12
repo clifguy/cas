@@ -1,0 +1,83 @@
+name: infra
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infra.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# OIDC: the deploy identity is a Microsoft Entra workload identity federated
+# to this repository's GitHub OIDC token. No client secret is stored. The
+# id-token write permission lets the workflow request that token.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    # Compile + lint the Bicep. Needs no Azure credentials, so it runs on
+    # every infra change and is the authoritative compile gate (bicepconfig
+    # rules at error level fail the build). az is preinstalled on the runner;
+    # `az bicep build` installs the Bicep CLI on first use.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and lint Bicep
+        run: az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/main.json"
+
+  what-if:
+    # Preview the deployment on pull requests. Dormant until the federated
+    # deploy identity is configured (the AZURE_CLIENT_ID repository
+    # variable); see docs/process/azure-deployment.md for the one-time
+    # bootstrap. Identity coordinates are repository variables, not secrets.
+    needs: validate
+    if: github.event_name == 'pull_request' && vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deployment what-if
+        run: |
+          az deployment sub what-if \
+            --location eastus2 \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam
+
+  deploy:
+    # Apply the deployment. Gated behind the azure-prod environment (manual
+    # approval / required reviewer) and dormant until the deploy identity is
+    # configured. Runs on pushes to main and manual dispatch, never on a PR.
+    needs: validate
+    if: github.event_name != 'pull_request' && vars.AZURE_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: azure-prod
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy
+        run: |
+          az deployment sub create \
+            --location eastus2 \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam
