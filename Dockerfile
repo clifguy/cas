@@ -74,6 +74,10 @@ COPY --from=builder /opt/hf /opt/hf
 COPY --from=builder /opt/sage/sage /opt/sage/sage
 COPY --from=builder /opt/sage/app /opt/sage/app
 COPY deploy/sage.config.container.yaml /opt/sage/deploy/sage.config.container.yaml
+# The stack-config JSON Schema that sage/config.py validates the loaded config
+# against at startup -- the sole docs/fs file the runtime reads, expected at
+# <repo-root>/docs/fs/sage/ (parents[1] of sage/config.py, i.e. /opt/sage here).
+COPY docs/fs/sage/sage_core_config.schema.json /opt/sage/docs/fs/sage/sage_core_config.schema.json
 
 RUN mkdir -p /var/lib/sage/vaults && chown -R sage:sage /var/lib/sage /opt/hf
 USER sage

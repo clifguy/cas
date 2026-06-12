@@ -33,28 +33,28 @@ cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "==> Building $image (version=$version, platform=${platform:-native})"
-docker build "${plat_arg[@]}" --build-arg SAGE_BUILD_VERSION="$version" -t "$image" "$repo_root"
+docker build ${plat_arg[@]+"${plat_arg[@]}"} --build-arg SAGE_BUILD_VERSION="$version" -t "$image" "$repo_root"
 
 echo "==> SMK-003: runs as non-root"
-uid="$(docker run --rm "${plat_arg[@]}" --entrypoint id "$image" -u)"
+uid="$(docker run --rm ${plat_arg[@]+"${plat_arg[@]}"} --entrypoint id "$image" -u)"
 [ "$uid" != "0" ] || { echo "FAIL: container runs as root (uid 0)"; exit 1; }
 echo "    uid=$uid (non-root) OK"
 
 echo "==> SMK-004: MLX absent from the image"
-docker run --rm "${plat_arg[@]}" --entrypoint python "$image" \
+docker run --rm ${plat_arg[@]+"${plat_arg[@]}"} --entrypoint python "$image" \
   -c "import importlib.util,sys; sys.exit(1 if importlib.util.find_spec('mlx') else 0)" \
   || { echo "FAIL: mlx is importable in the Linux image"; exit 1; }
 echo "    mlx not importable OK"
 
 echo "==> SMK-002: Nomic weights load offline"
-docker run --rm "${plat_arg[@]}" -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
+docker run --rm ${plat_arg[@]+"${plat_arg[@]}"} -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
   --entrypoint python "$image" \
   -c "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()" \
   || { echo "FAIL: embedder could not load baked weights offline"; exit 1; }
 echo "    offline embedder load OK"
 
 echo "==> SMK-001: boots, binds non-loopback, health green, version baked"
-docker run -d --name "$name" "${plat_arg[@]}" -p "$port:8000" "$image" >/dev/null
+docker run -d --name "$name" ${plat_arg[@]+"${plat_arg[@]}"} -p "$port:8000" "$image" >/dev/null
 body=""
 for _ in $(seq 1 60); do
   body="$(curl -fsS "http://127.0.0.1:$port/health" 2>/dev/null || true)"
