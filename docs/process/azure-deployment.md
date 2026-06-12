@@ -15,6 +15,12 @@ on every change, while the `what-if` and `deploy` jobs stay **dormant** —
 they are gated on the `AZURE_CLIENT_ID` repository variable and are skipped
 until it is set.
 
+The *deploy* identity bootstrapped below is distinct from the *runtime* auth
+identities. The Entra app registrations the cloud profile authenticates with —
+SAGE as an OAuth resource server and the CAS BFF as a confidential client — are
+a separate one-time bootstrap documented in
+[`entra-app-registrations.md`](entra-app-registrations.md).
+
 ## Deployment entry point
 
 Parameters live in `.bicepparam` files next to the orchestrator. The single
