@@ -37,6 +37,15 @@ param publisherEmail string
 @description('SKU of the API Management facade. Consumption is serverless and scale-to-zero.')
 param apimSku string = 'Consumption'
 
+@description('Object id of the Entra principal granted Postgres administrator. Supplied at deploy time; empty leaves the binding unset.')
+param postgresAadAdminObjectId string = ''
+
+@description('Display name of the Postgres Entra administrator principal.')
+param postgresAadAdminPrincipalName string = ''
+
+@description('Type of the Postgres Entra administrator principal: User, Group, or ServicePrincipal.')
+param postgresAadAdminPrincipalType string = 'Group'
+
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -75,6 +84,24 @@ module apim 'modules/apim.bicep' = {
   }
 }
 
+// The relational store deploys into the same resource group and composes
+// through the foundation's outputs: it integrates into the delegated Postgres
+// subnet and links its private DNS zone to the hosting VNet.
+module postgres 'modules/postgres.bicep' = {
+  name: 'postgres'
+  scope: rg
+  params: {
+    location: location
+    environmentName: environmentName
+    tags: tags
+    delegatedSubnetId: foundation.outputs.postgresSubnetId
+    vnetId: foundation.outputs.vnetId
+    aadAdminObjectId: postgresAadAdminObjectId
+    aadAdminPrincipalName: postgresAadAdminPrincipalName
+    aadAdminPrincipalType: postgresAadAdminPrincipalType
+  }
+}
+
 @description('Provisioned resource group name, consumed by module deployments.')
 output deployedResourceGroupName string = rg.name
 
@@ -86,3 +113,9 @@ output acrLoginServer string = foundation.outputs.acrLoginServer
 
 @description('Public gateway URL of the API Management facade.')
 output apimGatewayUrl string = apim.outputs.apimGatewayUrl
+
+@description('Fully qualified domain name of the Postgres Flexible Server.')
+output postgresServerFqdn string = postgres.outputs.postgresServerFqdn
+
+@description('Name of the database SAGE connects to.')
+output postgresDatabaseName string = postgres.outputs.postgresDatabaseName

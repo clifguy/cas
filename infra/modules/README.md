@@ -41,9 +41,14 @@ module foundation 'modules/foundation.bicep' = {
 }
 ```
 
-The foundation module exposes `acaEnvironmentId`, `acaEnvironmentDefaultDomain`,
-`acrLoginServer`, `acaInfraSubnetId`, and `postgresSubnetId` as outputs for
-later modules (a relational store, an API facade, …) to consume.
+The foundation module exposes `vnetId`, `acaEnvironmentId`,
+`acaEnvironmentDefaultDomain`, `acrLoginServer`, `acaInfraSubnetId`, and
+`postgresSubnetId` as outputs for later modules (a relational store, an API
+facade, …) to consume.
+
+The relational-store module (`postgres.bicep`) deploys into the delegated
+Postgres subnet and exposes `postgresServerFqdn`, `postgresDatabaseName`, and
+`postgresServerName` for the cloud profile configuration to consume.
 
 ## The API facade
 
