@@ -123,7 +123,6 @@ module keyvault 'modules/keyvault.bicep' = {
   scope: rg
   params: {
     location: location
-    environmentName: environmentName
     tags: tags
     sagePrincipalId: identity.outputs.sageIdentityPrincipalId
     bffPrincipalId: identity.outputs.bffIdentityPrincipalId

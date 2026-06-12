@@ -15,9 +15,6 @@
 @description('Azure region for the Key Vault.')
 param location string
 
-@description('Short environment name, e.g. prod. Used in resource naming.')
-param environmentName string
-
 @description('Tags applied to the Key Vault.')
 param tags object
 
