@@ -25,6 +25,18 @@ param tags object = {
   managedBy: 'bicep'
 }
 
+@description('Public hostname of the SAGE container app the APIM facade routes to.')
+param sageBackendHostname string
+
+@description('SAGE resource-server audience the facade JWT policy validates (api://<app-id>).')
+param sageAudience string
+
+@description('Publisher email for the API Management service (administrative contact).')
+param publisherEmail string
+
+@description('SKU of the API Management facade. Consumption is serverless and scale-to-zero.')
+param apimSku string = 'Consumption'
+
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
   location: location
@@ -45,6 +57,24 @@ module foundation 'modules/foundation.bicep' = {
   }
 }
 
+// The API Management facade: the public edge for SAGE's REST and MCP surfaces.
+// It validates Entra JWTs, serves the MCP OAuth discovery handshake, and keeps
+// the maintenance mount off the public edge. The backend hostname and audience
+// are resolved when the SAGE container app and Entra registration are concrete.
+module apim 'modules/apim.bicep' = {
+  name: 'apim'
+  scope: rg
+  params: {
+    location: location
+    environmentName: environmentName
+    tags: tags
+    sageBackendHostname: sageBackendHostname
+    sageAudience: sageAudience
+    publisherEmail: publisherEmail
+    apimSku: apimSku
+  }
+}
+
 @description('Provisioned resource group name, consumed by module deployments.')
 output deployedResourceGroupName string = rg.name
 
@@ -53,3 +83,6 @@ output acaEnvironmentId string = foundation.outputs.acaEnvironmentId
 
 @description('Login server host of the Azure Container Registry.')
 output acrLoginServer string = foundation.outputs.acrLoginServer
+
+@description('Public gateway URL of the API Management facade.')
+output apimGatewayUrl string = apim.outputs.apimGatewayUrl

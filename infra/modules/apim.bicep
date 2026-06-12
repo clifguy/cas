@@ -1,0 +1,170 @@
+// CAS cloud deployment — API Management facade module.
+//
+// Provisions the public edge for SAGE in the cloud deployment profile
+// (CAS-ADR-042): an API Management service fronting SAGE's REST and MCP
+// surfaces. The facade validates Entra-issued JWTs (one issuer, one audience,
+// uniform across REST and MCP), serves the MCP OAuth discovery handshake that
+// the bare container ingress cannot, and keeps the maintenance mount off the
+// public edge. The CAS BFF does not go through the facade — it uses the
+// container ingress directly.
+//
+// Resource-group scoped (the Bicep default): the orchestrator deploys it with
+// scope: rg. The backend hostname and the SAGE audience arrive as parameters,
+// resolved when the SAGE container app and the Entra registration are concrete;
+// the issuing tenant is derived from the deployment context. The inbound policy
+// is authored as versioned XML under infra/policies/ and loaded at compile time.
+
+@description('Azure region for the API Management service.')
+param location string
+
+@description('Short environment name, e.g. prod. Used in resource naming.')
+param environmentName string
+
+@description('Tags applied to the API Management service.')
+param tags object
+
+@description('Public hostname of the SAGE container app the facade routes to.')
+param sageBackendHostname string
+
+@description('SAGE resource-server audience the JWT policy validates (api://<app-id>).')
+param sageAudience string
+
+@description('Publisher email for the API Management service (administrative contact).')
+param publisherEmail string
+
+@description('Publisher organization name for the API Management service.')
+param publisherName string = 'CAS Operations'
+
+@description('SKU of the API Management service. Consumption is serverless and scale-to-zero.')
+@allowed([
+  'Consumption'
+  'Developer'
+  'BasicV2'
+  'StandardV2'
+])
+param apimSku string = 'Consumption'
+
+// The Consumption SKU is serverless and takes capacity 0; the classic and v2
+// SKUs take a unit count. One unit is enough for this single-edge facade.
+var apimCapacity = apimSku == 'Consumption' ? 0 : 1
+
+// API Management gateway hostnames are globally unique; derive a stable name
+// from the resource group id rather than risk a collision on a fixed name.
+var apimName = 'apim-${environmentName}-${uniqueString(resourceGroup().id)}'
+
+// The public edge. External (no VNet integration): it is the front door, and
+// the foundation's ACA environment already exposes public ingress.
+resource apimService 'Microsoft.ApiManagement/service@2023-05-01' = {
+  name: apimName
+  location: location
+  tags: tags
+  sku: {
+    name: apimSku
+    capacity: apimCapacity
+  }
+  properties: {
+    publisherEmail: publisherEmail
+    publisherName: publisherName
+    virtualNetworkType: 'None'
+  }
+}
+
+// Named values carry the environment-specific coordinates the versioned policy
+// XML references as {{...}} tokens. The tenant is derived from the deployment
+// context; the audience is supplied; the resource URL is the gateway's own
+// public address (the resource_metadata location advertised to MCP clients).
+resource entraTenantIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01' = {
+  parent: apimService
+  name: 'entra-tenant-id'
+  properties: {
+    displayName: 'entra-tenant-id'
+    value: subscription().tenantId
+    secret: false
+  }
+}
+
+resource sageAudienceNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01' = {
+  parent: apimService
+  name: 'sage-audience'
+  properties: {
+    displayName: 'sage-audience'
+    value: sageAudience
+    secret: false
+  }
+}
+
+resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01' = {
+  parent: apimService
+  name: 'sage-resource-url'
+  properties: {
+    displayName: 'sage-resource-url'
+    value: apimService.properties.gatewayUrl
+    secret: false
+  }
+}
+
+// The SAGE backend the facade routes to. The hostname is resolved at deploy
+// time; certificate chain and name are validated on the upstream call.
+resource sageBackend 'Microsoft.ApiManagement/service/backends@2023-05-01' = {
+  parent: apimService
+  name: 'sage-backend'
+  properties: {
+    title: 'SAGE'
+    protocol: 'http'
+    url: 'https://${sageBackendHostname}'
+    tls: {
+      validateCertificateChain: true
+      validateCertificateName: true
+    }
+  }
+}
+
+// The SAGE API at the gateway root. Authorization is the Entra JWT (no APIM
+// subscription key), so subscriptionRequired is false. A wildcard operation
+// forwards every method and path; the inbound policy routes forwarded requests
+// to the backend above (set-backend-service), gates access, serves discovery,
+// and denies the maintenance mount.
+resource sageApi 'Microsoft.ApiManagement/service/apis@2023-05-01' = {
+  parent: apimService
+  name: 'sage'
+  properties: {
+    displayName: 'SAGE'
+    path: ''
+    protocols: [
+      'https'
+    ]
+    subscriptionRequired: false
+  }
+}
+
+resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2023-05-01' = {
+  parent: sageApi
+  name: 'catch-all'
+  properties: {
+    displayName: 'Catch-all'
+    method: '*'
+    urlTemplate: '/*'
+    templateParameters: []
+  }
+}
+
+// The inbound JWT / discovery / admin-deny pipeline, authored as versioned XML.
+// The policy names the backend by id (set-backend-service), so it depends on
+// the backend existing first.
+resource sageApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01' = {
+  parent: sageApi
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-api-policy.xml')
+  }
+  dependsOn: [
+    sageBackend
+  ]
+}
+
+@description('Public gateway URL of the API Management facade.')
+output apimGatewayUrl string = apimService.properties.gatewayUrl
+
+@description('Name of the API Management service.')
+output apimServiceName string = apimService.name

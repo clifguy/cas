@@ -1,0 +1,69 @@
+<policies>
+    <inbound>
+        <base />
+        <!--
+            SAGE public-edge policy for the CAS cloud deployment profile
+            (CAS-ADR-042). One inbound pipeline, three branches:
+              1. Serve the MCP OAuth protected-resource-metadata document
+                 (unauthenticated discovery handshake).
+              2. Deny the maintenance mount so it never reaches the backend.
+              3. Validate the Entra JWT (single issuer, single audience,
+                 uniform across the REST and MCP surfaces) for everything else.
+            Environment coordinates arrive as APIM named values ({{...}}): the
+            tenant id, the SAGE audience, and the public resource URL. Branch
+            conditions use single-quoted attributes so the C# string literals
+            inside them keep their double quotes.
+        -->
+        <choose>
+            <when condition='@(context.Request.Url.Path.Contains("/.well-known/oauth-protected-resource"))'>
+                <return-response>
+                    <set-status code="200" reason="OK" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>{
+  "resource": "{{sage-resource-url}}",
+  "authorization_servers": ["https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0"],
+  "scopes_supported": ["Sage.Access"],
+  "bearer_methods_supported": ["header"]
+}</set-body>
+                </return-response>
+            </when>
+            <when condition='@(context.Request.Url.Path.Contains("/mcp_admin"))'>
+                <return-response>
+                    <set-status code="404" reason="Not Found" />
+                </return-response>
+            </when>
+            <otherwise>
+                <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized">
+                    <openid-config url="https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
+                    <audiences>
+                        <audience>{{sage-audience}}</audience>
+                    </audiences>
+                </validate-jwt>
+                <set-backend-service backend-id="sage-backend" />
+            </otherwise>
+        </choose>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+        <!--
+            On an authentication failure, advertise where the protected-resource
+            metadata lives so an MCP client can begin the OAuth handshake
+            (RFC 9728 / the MCP authorization profile).
+        -->
+        <choose>
+            <when condition="@(context.Response?.StatusCode == 401)">
+                <set-header name="WWW-Authenticate" exists-action="override">
+                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"</value>
+                </set-header>
+            </when>
+        </choose>
+    </on-error>
+</policies>
