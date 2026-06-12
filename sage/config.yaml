@@ -8,7 +8,7 @@
 # startup. Per-vault knobs (enabled, token-budget tuning) remain in the
 # vault config's `abstraction:` block.
 #
-# Schema: docs/fs/sage/sage_core_config.schema.json (v0.5).
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.6).
 
 # Deployment-profile marker (CAS-ADR-042). The single stack-scope selection
 # that co-binds the adapter-port implementations for one deployment target.

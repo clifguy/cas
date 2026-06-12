@@ -40,6 +40,14 @@ ABSTRACTION_SEAM = "abstraction_provider"
 # resource (the pool) and the embedded pair is one coherent fallback binding.
 STORAGE_SEAM = "storage_provisioner"
 
+# Seam name for the OAuth resource-server binding (CAS-ADR-042): the bearer
+# token validator that authorizes calls to the HTTP surfaces. A pass-through
+# validator where the deployment authenticates no one (the on-box default),
+# an issuer/audience-bound JWT validator where it does -- selected by the
+# auth block of the stack config, with the same validator enforcing the
+# policy on the REST and MCP surfaces so authorization is uniform.
+AUTH_SEAM = "auth_validator"
+
 # A binding factory assembles one seam's implementation from the stack config.
 BindingFactory = Callable[[SageCoreConfig], object]
 

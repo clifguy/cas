@@ -49,6 +49,11 @@ dependencies = [
     # abstraction SDK and the Starlette test client both use it); pinned
     # directly here because the BFF imports it as a first-class runtime client.
     "httpx>=0.27",
+    # OAuth resource-server token validation (CAS-ADR-042): RS256 JWT signature
+    # and claim verification against the issuer's published JWKS. Pure-Python
+    # with no Apple-Silicon constraint, so it stays in the base set; the
+    # [crypto] extra pulls `cryptography` for the asymmetric verification path.
+    "pyjwt[crypto]>=2.10",
 ]
 
 [project.optional-dependencies]

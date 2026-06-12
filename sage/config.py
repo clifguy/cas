@@ -375,6 +375,115 @@ class StackPostgresConfig(BaseModel):
     )
 
 
+class StackAuthConfig(BaseModel):
+    """Stack-wide OAuth resource-server configuration (CAS-ADR-042).
+
+    Binds the SAGE process as an OAuth resource server: it carries the
+    issuer and audience a bearer token is validated against and the
+    scope/role an accepted token must carry. Present and ``enabled`` only
+    where the deployment authenticates its callers; the on-box default
+    leaves it absent, so that deployment runs with no auth. A deployment
+    fronted by an external identity provider populates it. The delegated
+    user identity is carried by the caller's bearer token; the process
+    never authenticates as a service principal.
+
+    Non-secret directory coordinates only (tenant, audience, issuer); the
+    token-signing keys are fetched from the issuer's published JWKS
+    endpoint at runtime, never carried here.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch. When false (the default) the process "
+            "authenticates no one. When true it validates a bearer token on "
+            "every request to a protected surface against the issuer and "
+            "audience below."
+        ),
+    )
+    tenant_id: str | None = Field(
+        default=None,
+        description=(
+            "Identity-provider tenant identifier. Derives the default issuer "
+            "and JWKS endpoint when those are not set explicitly. Required "
+            "when 'enabled' is true and 'issuer'/'jwks_uri' are not both given."
+        ),
+    )
+    audience: str | None = Field(
+        default=None,
+        description=(
+            "Expected token audience -- the resource server's application ID "
+            "URI (for example 'api://<app-id>'). A token whose 'aud' claim "
+            "does not equal this value is rejected. Required when 'enabled' "
+            "is true."
+        ),
+    )
+    issuer: str | None = Field(
+        default=None,
+        description=(
+            "Expected token issuer. When null it is derived from 'tenant_id' "
+            "as 'https://login.microsoftonline.com/<tenant_id>/v2.0'. A token "
+            "whose 'iss' claim does not equal the resolved issuer is rejected."
+        ),
+    )
+    jwks_uri: str | None = Field(
+        default=None,
+        description=(
+            "Endpoint publishing the issuer's token-signing public keys. When "
+            "null it is derived from 'tenant_id' as "
+            "'https://login.microsoftonline.com/<tenant_id>/discovery/v2.0/keys'. "
+            "Signing keys are fetched and cached from here at runtime."
+        ),
+    )
+    required_scopes: list[str] = Field(
+        default_factory=lambda: ["Sage.Access"],
+        description=(
+            "Delegated scopes (the token's space-delimited 'scp' claim) of "
+            "which an accepted token must carry at least one. The delegated "
+            "scope is the authorization unit for every surface uniformly; a "
+            "token carrying neither a required scope nor a required role is "
+            "rejected as insufficiently authorized."
+        ),
+    )
+    required_roles: list[str] = Field(
+        default_factory=lambda: ["Sage.Reader"],
+        description=(
+            "Application roles (the token's 'roles' claim) of which an "
+            "accepted token may instead carry at least one -- the app-only "
+            "complement to 'required_scopes'. An empty list disables "
+            "role-based acceptance."
+        ),
+    )
+    resource_metadata_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional protected-resource-metadata URL advertised in the "
+            "'WWW-Authenticate' challenge so a client can discover how to "
+            "obtain a token. When null the challenge omits the pointer; the "
+            "metadata document itself is served by the edge facade, not by "
+            "this process."
+        ),
+    )
+
+    def resolved_issuer(self) -> str | None:
+        """Issuer to validate against: the explicit value, else derived from tenant."""
+        if self.issuer is not None:
+            return self.issuer
+        if self.tenant_id is not None:
+            return f"https://login.microsoftonline.com/{self.tenant_id}/v2.0"
+        return None
+
+    def resolved_jwks_uri(self) -> str | None:
+        """JWKS endpoint: the explicit value, else derived from tenant."""
+        if self.jwks_uri is not None:
+            return self.jwks_uri
+        if self.tenant_id is not None:
+            return f"https://login.microsoftonline.com/{self.tenant_id}/discovery/v2.0/keys"
+        return None
+
+
 class SageCoreConfig(BaseModel):
     """Root configuration for the SAGE Core API process (CAS-ADR-030).
 
@@ -440,6 +549,20 @@ class SageCoreConfig(BaseModel):
             "schema bootstrap; it is consumed by the live storage binding "
             "(when 'storage_backend' selects 'postgres'), the provisioning "
             "CLI, and the storage test harness."
+        ),
+    )
+    auth: StackAuthConfig | None = Field(
+        default=None,
+        description=(
+            "OAuth resource-server binding (CAS-ADR-042). Absent (the "
+            "default) installs a pass-through validator -- the on-box "
+            "deployment runs with no auth. Present and enabled, it binds the "
+            "process as an OAuth resource server that validates an "
+            "Entra-issued bearer token uniformly across the REST and MCP "
+            "surfaces against the configured issuer and audience. Non-secret "
+            "directory coordinates only; token-signing keys are fetched from "
+            "the issuer's published JWKS endpoint at runtime. Resolved "
+            "once at startup through the deployment profile's auth seam."
         ),
     )
 
