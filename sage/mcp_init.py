@@ -300,21 +300,51 @@ def set_stack_config(cfg: SageCoreConfig | None) -> None:
 
 _DEFAULT_STACK_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
+#: Environment variable that overrides the stack-config source path when the
+#: caller passes no explicit ``path``. A repo-less deployment (e.g. a container
+#: image) sets this to a Linux-safe stack config so the lifespan loads it
+#: instead of the packaged ``sage/config.yaml`` -- no edit to the committed
+#: file required.
+_STACK_CONFIG_PATH_ENV: str = "SAGE_CONFIG_PATH"
 
-def load_stack_config_or_default(path: Path = _DEFAULT_STACK_CONFIG_PATH) -> SageCoreConfig:
-    """Load `sage/config.yaml` if present, else return a default config.
 
-    Returns a default `SageCoreConfig` when the file is missing so test
-    fixtures that exercise the lifespan without writing the file (and rely
-    on `SAGE_TEST_STUB_PROVIDERS=1` to short-circuit the provider build)
-    keep working. The provider builder is the gate that fails loudly when
-    a real Qwen3 dispatch is requested without a model identifier.
+def load_stack_config_or_default(path: Path | None = None) -> SageCoreConfig:
+    """Load the stack config, resolving the source path by precedence.
+
+    Source precedence: an explicit ``path`` argument (test injection) -> the
+    ``SAGE_CONFIG_PATH`` environment variable (the repo-less / container
+    override seam) -> the packaged ``sage/config.yaml``
+    (:data:`_DEFAULT_STACK_CONFIG_PATH`).
+
+    A missing *default* file returns a default :class:`SageCoreConfig` so test
+    fixtures that exercise the lifespan without writing the file (and rely on
+    ``SAGE_TEST_STUB_PROVIDERS=1`` to short-circuit the provider build) keep
+    working. A missing file named by an *explicit override* (the ``path``
+    argument or ``SAGE_CONFIG_PATH``) fails loud with ``FileNotFoundError``
+    rather than silently degrading to defaults: a typo'd override must not
+    boot a deployment on the wrong configuration unnoticed. The provider
+    builder remains the gate that fails loudly when a real Qwen3 dispatch is
+    requested without a model identifier.
     """
     from sage.config import load_sage_core_config
 
-    if not path.exists():
+    if path is not None:
+        resolved, is_override = path, True
+    else:
+        env_value = os.environ.get(_STACK_CONFIG_PATH_ENV)
+        if env_value:
+            resolved, is_override = Path(env_value), True
+        else:
+            resolved, is_override = _DEFAULT_STACK_CONFIG_PATH, False
+
+    if not resolved.exists():
+        if is_override:
+            raise FileNotFoundError(
+                f"{_STACK_CONFIG_PATH_ENV} (or an explicit config path) points at "
+                f"{resolved}, which does not exist."
+            )
         return SageCoreConfig()
-    return load_sage_core_config(path)
+    return load_sage_core_config(resolved)
 
 
 def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> AbstractionProvider:

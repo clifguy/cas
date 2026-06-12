@@ -7,6 +7,8 @@ production providers (NomicEmbeddingProvider ~270 MB, Qwen3 ~16-20 GB).
 Test IDs follow the pattern DI-NNN (Dependency Injection).
 """
 
+import pytest
+
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -474,3 +476,82 @@ async def test_reload_vault_in_registry_closes_old_storage_handle(
         finally:
             new_services.close_timing()
             await new_services.close_storage()
+
+
+# ---------------------------------------------------------------------------
+# CFG-001..004: load_stack_config_or_default honors the SAGE_CONFIG_PATH env
+# override -- the seam a repo-less container uses to supply a Linux-safe stack
+# config without editing the committed sage/config.yaml.
+# ---------------------------------------------------------------------------
+
+
+def _write_stack_config(path, *, storage_backend: str, provider: str) -> None:
+    path.write_text(
+        f"storage_backend: {storage_backend}\nabstraction:\n  provider: {provider}\n",
+        encoding="utf-8",
+    )
+
+
+def test_cfg_001_env_var_redirects_config_load(tmp_path, monkeypatch):
+    """A set SAGE_CONFIG_PATH is loaded by the no-argument call.
+
+    Anti-coincidental-pass: the committed sage/config.yaml selects
+    postgres/local-mlx, so an ignored env var would surface those; asserting
+    embedded/stub means only an honored override passes.
+    """
+    from sage.mcp_init import load_stack_config_or_default
+
+    cfg_path = tmp_path / "container.yaml"
+    _write_stack_config(cfg_path, storage_backend="embedded", provider="stub")
+    monkeypatch.setenv("SAGE_CONFIG_PATH", str(cfg_path))
+
+    cfg = load_stack_config_or_default()
+
+    assert cfg.storage_backend == "embedded"
+    assert cfg.abstraction.provider == "stub"
+
+
+def test_cfg_002_explicit_path_arg_beats_env(tmp_path, monkeypatch):
+    """An explicit ``path`` argument wins over SAGE_CONFIG_PATH.
+
+    Anti-coincidental-pass: if the env shadowed the explicit arg, the result
+    would carry file A's values; asserting file B's guards the precedence.
+    """
+    from sage.mcp_init import load_stack_config_or_default
+
+    file_a = tmp_path / "a.yaml"
+    file_b = tmp_path / "b.yaml"
+    _write_stack_config(file_a, storage_backend="embedded", provider="stub")
+    _write_stack_config(file_b, storage_backend="postgres", provider="anthropic")
+    monkeypatch.setenv("SAGE_CONFIG_PATH", str(file_a))
+
+    cfg = load_stack_config_or_default(file_b)
+
+    assert cfg.storage_backend == "postgres"
+    assert cfg.abstraction.provider == "anthropic"
+
+
+def test_cfg_003_unset_env_falls_back_to_default_path(monkeypatch):
+    """With SAGE_CONFIG_PATH unset, the committed default config is loaded."""
+    from sage.config import load_sage_core_config
+    from sage.mcp_init import _DEFAULT_STACK_CONFIG_PATH, load_stack_config_or_default
+
+    monkeypatch.delenv("SAGE_CONFIG_PATH", raising=False)
+
+    assert load_stack_config_or_default() == load_sage_core_config(_DEFAULT_STACK_CONFIG_PATH)
+
+
+def test_cfg_004_env_pointing_at_missing_file_fails_loud(tmp_path, monkeypatch):
+    """A SAGE_CONFIG_PATH naming a nonexistent file raises rather than
+    silently degrading to defaults.
+
+    Anti-coincidental-pass: the missing-default-path branch returns a default
+    SageCoreConfig(); a typo'd explicit override must NOT take that branch, or
+    a misconfigured deploy would boot on the wrong config undetected.
+    """
+    from sage.mcp_init import load_stack_config_or_default
+
+    monkeypatch.setenv("SAGE_CONFIG_PATH", str(tmp_path / "does-not-exist.yaml"))
+
+    with pytest.raises(FileNotFoundError):
+        load_stack_config_or_default()

@@ -414,6 +414,17 @@ def create_app(
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)
 
+    # Operational liveness probe for container health checks. A direct app
+    # route (not a service-backed router) returning a constant, store-free
+    # envelope, so it answers 'process up' independent of vault/store
+    # readiness and answers before vaults finish loading. Kept out of the
+    # documented OpenAPI surface via include_in_schema=False; the conformance
+    # gate's _INFRA_PATHS allowlist covers the route.
+    async def _health() -> dict[str, str]:
+        return {"status": "ok", "version": RELEASE_VERSION}
+
+    app.add_api_route("/health", _health, methods=["GET"], include_in_schema=False)
+
     # Mount the partitioned MCP surfaces (SSE transport) for external
     # clients (e.g. Cowork). Per CAS-ADR-034 v7 the HTTP transport is
     # partitioned like the stdio servers: /mcp = ordinary, /mcp_admin =
