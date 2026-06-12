@@ -251,6 +251,20 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
         "set_editors",
     ): "Editor-model write control; forward-declared per SAGE Architecture Ref §4.3/§6.3.",
     ("sage_core", "open_document"): "HTTP-only UI affordance.",
+    # Backend-for-frontend interactive sign-in: browser-facing redirect and
+    # cookie flows that have no agent-facing MCP surface by design.
+    (
+        "cas_app",
+        "begin_login",
+    ): "Browser-interactive OIDC sign-in entry (redirect + cookie); no MCP tool by design.",
+    (
+        "cas_app",
+        "get_session",
+    ): "Cookie-scoped session-state read for the SPA; no MCP tool by design.",
+    (
+        "cas_app",
+        "end_session",
+    ): "Cookie-scoped sign-out; no MCP tool by design.",
     # ROOT Harness Orchestration API: no MCP surface yet. Each
     # operation must drain individually once the orchestrator MCP
     # tools land (/).

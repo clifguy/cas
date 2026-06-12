@@ -93,6 +93,19 @@ ROUTER_TREES: tuple[RouterTree, ...] = (
         cross_vault_routers=frozenset(),
         dependencies_module="app.backend.dependencies",
     ),
+    RouterTree(
+        name="cas_auth",
+        discovery_kind="module",
+        discovery_target="app.backend.auth.router",
+        # The interactive-sign-in surface resolves no vault: login, callback,
+        # session-info, and logout are cross-vault, so the vault-id check
+        # applies only to {vault_id} paths (of which there are none). At least
+        # one route depends on a get_*_service factory (get_oidc_service /
+        # get_session_service), satisfying service-as-load-bearer.
+        vault_scoped_routers=frozenset(),
+        cross_vault_routers=frozenset({"router"}),
+        dependencies_module="app.backend.auth.dependencies",
+    ),
 )
 
 _TREES_BY_NAME: dict[str, RouterTree] = {t.name: t for t in ROUTER_TREES}

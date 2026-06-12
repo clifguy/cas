@@ -18,6 +18,7 @@ from anyio import ClosedResourceError
 from fastapi import FastAPI
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.backend.auth.router import router as auth_router
 from app.backend.router import router as app_backend_router
 from sage.adapters.interfaces import ContentStore
 from sage.api.errors import register_exception_handlers
@@ -264,6 +265,46 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
     app.state.mcp_mounts = mounts
 
 
+async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
+    """Assemble the backend-for-frontend auth context onto ``app.state``.
+
+    Sets ``app.state.bff_auth`` to a ``BffAuthContext`` when the identity-
+    provider coordinates are present in the environment, else ``None``. When
+    configured, the externalized session store reuses the stack's Postgres
+    endpoint (its own schema), reached over the same libpq connection
+    composition the storage engine uses; the credential is read from the
+    environment, never from configuration.
+    """
+    from app.backend.auth.config import BffAuthContext, load_bff_auth_settings
+
+    settings = load_bff_auth_settings(dict(os.environ))
+    if settings is None:
+        app.state.bff_auth = None
+        return
+
+    from psycopg.conninfo import make_conninfo
+
+    from app.backend.auth.oidc import MsalOidcService
+    from app.backend.auth.session_store import PostgresSessionStore
+    from sage.storage.postgres.pool import PostgresConnectionParams, build_conn_kwargs
+
+    pg = stack_cfg.postgres
+    params = PostgresConnectionParams(
+        host=pg.host,
+        port=pg.port,
+        database=pg.database,
+        user=pg.user,
+        sslmode=pg.sslmode,
+    )
+    store = PostgresSessionStore(make_conninfo(**build_conn_kwargs(params)))
+    await store.open()
+    app.state.bff_auth = BffAuthContext(
+        settings=settings,
+        oidc=MsalOidcService(settings),
+        store=store,
+    )
+
+
 def create_app(
     vault_root: Path | None = None,
     config: VaultConfig | None = None,
@@ -327,6 +368,13 @@ def create_app(
         if content_store_factory is not None:
             init_overrides["content_store_factory"] = content_store_factory
 
+        # Backend-for-frontend auth, profile-gated on configuration presence: the
+        # interactive sign-in, the delegated downstream-token acquisition, and the
+        # externalized session store activate only when the identity-provider
+        # coordinates are supplied through the environment. When absent, the
+        # backend runs without auth and the on-box profile is unaffected.
+        await _initialize_bff_auth(app, stack_cfg)
+
         # Vaults that fail to load are logged-and-dropped below; collect them
         # here too so the end-of-startup banner can report the skipped set.
         skipped_vaults: list[tuple[str, str]] = []
@@ -383,6 +431,10 @@ def create_app(
             services.close_timing()
             await services.close_storage()
         app.state.vault_registry.clear()
+        bff_auth = getattr(app.state, "bff_auth", None)
+        if bff_auth is not None:
+            await bff_auth.store.close()
+        app.state.bff_auth = None
         set_stack_config(None)
 
     app = FastAPI(
@@ -413,6 +465,12 @@ def create_app(
 
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)
+
+    # Backend-for-frontend interactive sign-in. The routes are always
+    # registered; their behavior is gated at request time on whether auth is
+    # configured (app.state.bff_auth), so the on-box profile exposes the routes
+    # but answers auth_not_configured.
+    app.include_router(auth_router)
 
     # Operational liveness probe for container health checks. A direct app
     # route (not a service-backed router) returning a constant, store-free
