@@ -102,6 +102,33 @@ module postgres 'modules/postgres.bicep' = {
   }
 }
 
+// The application managed identities the container apps run as. Created before
+// the Key Vault module so the vault can grant them data-plane read; their ids
+// are also consumed by the relational-store and container-app modules.
+module identity 'modules/identity.bicep' = {
+  name: 'identity'
+  scope: rg
+  params: {
+    location: location
+    environmentName: environmentName
+    tags: tags
+  }
+}
+
+// The secrets vault and its RBAC access model. Composes through the orchestrator:
+// it consumes the identity module's principal ids rather than reaching across the
+// module boundary.
+module keyvault 'modules/keyvault.bicep' = {
+  name: 'keyvault'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    sagePrincipalId: identity.outputs.sageIdentityPrincipalId
+    bffPrincipalId: identity.outputs.bffIdentityPrincipalId
+  }
+}
+
 @description('Provisioned resource group name, consumed by module deployments.')
 output deployedResourceGroupName string = rg.name
 
@@ -119,3 +146,15 @@ output postgresServerFqdn string = postgres.outputs.postgresServerFqdn
 
 @description('Name of the database SAGE connects to.')
 output postgresDatabaseName string = postgres.outputs.postgresDatabaseName
+
+@description('Data-plane URI of the Key Vault, consumed by the cloud profile configuration.')
+output keyVaultUri string = keyvault.outputs.keyVaultUri
+
+@description('Name of the Key Vault.')
+output keyVaultName string = keyvault.outputs.keyVaultName
+
+@description('Client id of the SAGE managed identity (runtime token acquisition).')
+output sageIdentityClientId string = identity.outputs.sageIdentityClientId
+
+@description('Client id of the CAS BFF managed identity (runtime token acquisition).')
+output bffIdentityClientId string = identity.outputs.bffIdentityClientId
