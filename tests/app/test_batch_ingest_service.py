@@ -19,15 +19,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.backend.ingest_service import (
+from sage.models.enums import EdgeType, SourceType
+from sage.models.schemas import Document, IngestRequest, UnlinkResponse
+from sage.services.batch_inference import EdgePlan
+from sage.services.batch_ingest import (
     BatchIngestService,
     FileDescriptor,
     IngestSummary,
     ParsedMetadataInput,
 )
-from sage.models.enums import EdgeType, SourceType
-from sage.models.schemas import Document, IngestRequest, UnlinkResponse
-from sage.services.batch_inference import EdgePlan
 from sage.services.ingestion import IngestResult
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")

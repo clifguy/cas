@@ -1,8 +1,9 @@
-"""Application backend tools for MCP.
+"""Application-facing tools for MCP.
 
-Contains tools that depend on the CAS application backend (app.backend)
-rather than SAGE core services directly: directory scanning and batch
-ingestion.
+Registers the directory-scan and batch-ingest tools that support the
+CAS application surface. The orchestration and scan logic live in the
+SAGE substrate (``sage.services.scan``, ``sage.services.batch_ingest``);
+this module only adapts the dict-shaped MCP arguments to those services.
 """
 
 from collections.abc import Callable
@@ -74,7 +75,7 @@ def register_app_tools(
             max_depth: Max recursion depth (null = unlimited,
                 0 = scan only the named directory with no descent).
         """
-        from app.backend.scan import build_extension_map, scan_directory
+        from sage.services.scan import build_extension_map, scan_directory
 
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -201,7 +202,7 @@ def register_app_tools(
                 transitions.
         """
         try:
-            from app.backend.ingest_service import (
+            from sage.services.batch_ingest import (
                 BatchIngestService,
                 FileDescriptor,
                 ParsedMetadataInput,

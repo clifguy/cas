@@ -1,10 +1,24 @@
-"""POST /sage_vaults/{vault_id}/documents -- ingest (BH-018 through BH-026)."""
+"""POST /sage_vaults/{vault_id}/documents -- ingest (BH-018 through BH-026).
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+Also exposes ``POST /documents:batch``: the hosted-profile bulk-ingest
+surface that accepts uploaded file content (no shared filesystem) and
+runs the three-phase batch pipeline server-side, streaming SSE progress.
+"""
 
-from sage.api.dependencies import get_ingestion_service, get_vault_id
-from sage.models.schemas import ErrorResponse, IngestRequest, IngestResponse, VaultIdStr
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
+from sage.api.errors import SAGEError
+from sage.mcp_init import SAGEServices
+from sage.models.schemas import (
+    BatchIngestUploadMetadata,
+    ErrorResponse,
+    IngestRequest,
+    IngestResponse,
+    VaultIdStr,
+)
+from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
 from sage.services.ingestion import IngestionService
 
 router = APIRouter(tags=["Ingestion"])
@@ -76,4 +90,104 @@ async def ingest(
     return JSONResponse(
         status_code=201 if result.is_new else 200,
         content=response.model_dump(mode="json"),
+    )
+
+
+@router.post(
+    "/documents:batch",
+    responses={
+        200: {
+            "content": {"text/event-stream": {}},
+            "description": (
+                "SSE stream: one ``progress`` event per per-file state "
+                "transition (started + completed/failed), then one final "
+                "``summary`` event carrying the batch ingest counts. See "
+                "sage.models.schemas.ProgressEvent and SummaryEvent."
+            ),
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "`empty_file_list`: no files were uploaded.\n\n"
+                "`invalid_batch_metadata`: the `metadata` form field is not "
+                "valid JSON for the BatchIngestUploadMetadata schema, or its "
+                "`files` length does not match the number of uploaded file "
+                "parts."
+            ),
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def batch_ingest_documents(
+    files: list[UploadFile] | None = File(
+        default=None,
+        description="Uploaded source files to ingest, in the same order as `metadata.files`.",
+    ),
+    metadata: str = Form(
+        description=(
+            "JSON-encoded BatchIngestUploadMetadata: per-file source_type and "
+            "optional parsed_metadata, plus the batch infer_edges and "
+            "needs_review flags."
+        ),
+    ),
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    services: SAGEServices = Depends(get_vault_services),
+) -> StreamingResponse:
+    """Upload files and run the batch-ingest pipeline server-side, streaming SSE.
+
+    The hosted-profile counterpart to the in-process ``/app/ingest``
+    path: file content is delivered by upload (the BFF and SAGE share no
+    filesystem in the cloud), staged to a temporary directory under the
+    SAGE process with the original filename preserved (so the vault's
+    FilenameParser sees the right stem and provenance hashes the uploaded
+    bytes), then ingested through the same three-phase
+    ``BatchIngestService`` the co-located profile drives -- so both
+    profiles produce equivalent ingest summaries.
+
+    Pre-stream validation is load-bearing: an unknown vault (``get_vault_id``),
+    an empty upload, invalid ``metadata`` JSON, or a metadata/file-count
+    mismatch all raise BEFORE the ``StreamingResponse`` is constructed, so
+    the client receives an ``application/json`` error envelope rather than a
+    started 200 stream. Staged files are removed in a ``finally`` once the
+    stream is exhausted.
+    """
+    try:
+        envelope = BatchIngestUploadMetadata.model_validate_json(metadata)
+    except ValueError as exc:
+        raise SAGEError(
+            "invalid_batch_metadata",
+            f"`metadata` is not valid BatchIngestUploadMetadata JSON: {exc}",
+            400,
+        ) from exc
+
+    if not files:
+        raise SAGEError("empty_file_list", "No files selected for ingestion", 400)
+    if len(envelope.files) != len(files):
+        raise SAGEError(
+            "invalid_batch_metadata",
+            f"metadata.files length ({len(envelope.files)}) does not match "
+            f"the uploaded file count ({len(files)})",
+            400,
+        )
+
+    uploads = [
+        UploadedFile(
+            filename=upload.filename or f"upload_{index}",
+            content=await upload.read(),
+            source_type=meta.source_type,
+            parsed_metadata=meta.parsed_metadata,
+        )
+        for index, (upload, meta) in enumerate(zip(files, envelope.files))
+    ]
+    return StreamingResponse(
+        stream_uploaded_batch_ingest(
+            uploads,
+            services,
+            infer_edges=envelope.infer_edges,
+            needs_review=envelope.needs_review,
+        ),
+        media_type="text/event-stream",
     )

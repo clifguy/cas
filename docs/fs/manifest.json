@@ -93,7 +93,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.5",
+      "version": "0.6",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.38",
+  "substrate_version": "1.39",
   "revision_history": [
+    {
+      "version": "1.39",
+      "date": "2026-06-13",
+      "summary": "Add the cloud-profile bulk-ingest path: a SAGE Core upload endpoint that runs the batch pipeline server-side, and relocate the batch orchestrator into the substrate (T-0319, CAS-ADR-042/032/021). sage/sage_core_api.openapi.yaml bumped v0.5->v0.6: new POST /sage_vaults/{vault_id}/documents:batch (operationId batch_ingest_documents) accepts multipart/form-data (file parts + a JSON BatchIngestUploadMetadata envelope), stages each upload to a temp file under the SAGE process with its original filename preserved, runs the three-phase BatchIngestService server-side, and streams text/event-stream progress+summary; pre-stream validation (empty_file_list, invalid_batch_metadata, vault_not_found) resolves to application/json before the stream opens. Five new component schemas: BatchIngestFileMetadata + BatchIngestUploadMetadata (the request envelope; parsed_metadata is a free-form object as the MCP bulk_ingest_document tool already accepts) and the relocated SSE event models ProgressEvent/SummaryEvent/DocumentsCreated -- moved from app.backend.models to sage.models.schemas so the co-located /app/ingest path and the hosted endpoint emit byte-identical SSE, and re-exported from app.backend.models so the cas_app surface is unchanged. The operation is HTTP-only (no stdio MCP counterpart: the path-based bulk_ingest_document MCP tool serves the co-located case and multipart upload has no MCP transport) and is allowlisted in test_mcp_tool_conformance.HTTP_ONLY_OPERATIONS; no other allowlist additions. Code relocation (not in this spec but driving the schema change): BatchIngestService + scan_directory move from app/backend into sage/services/batch_ingest.py + sage/services/scan.py (fixing a backwards sage.app_tools->app.backend import), with a shared SSE generator in sage/services/batch_ingest_stream.py; BatchIngestService.run's needs_review is now a caller input (default True per CAS-ADR-021) so the substrate endpoint carries no consumer-shaped policy, and a new import-linter contract forbids sage.app_tools/sage.services from importing app. The hosted BFF reaches the endpoint through the existing reverse proxy (which attaches the delegated bearer); the standalone /app/scan and /app/ingest stay co-located-only (local_profile_only 501, message now points at the upload path), so cas_app_api.openapi.yaml is unchanged. Tests: B1-B8 in tests/sage/test_batch_ingest_endpoint.py (SSE shape, provenance from uploaded bytes, filename-preserving staging, per-file isolation, summary parity with the in-process orchestrator, pre-stream JSON validation, temp cleanup, hosted-path proxy end-to-end) and APP-009/010 in tests/app/test_bff_cloud_ingest.py (co-located-only ingest route + proxy session gate); the verbatim-description, YAML<->Pydantic parity, router-conformance, MCP-tool-conformance, and typed-alias gates pass."
+    },
     {
       "version": "1.38",
       "date": "2026-06-13",

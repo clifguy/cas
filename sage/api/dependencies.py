@@ -122,6 +122,20 @@ async def get_graph_ops_service(
     return _get_services(request, vault_id).graph_ops_service
 
 
+async def get_vault_services(
+    request: Request,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+) -> SAGEServices:
+    """Return the full SAGEServices bundle for a vault.
+
+    Used by multi-service orchestrations (e.g. the batch-ingest pipeline)
+    that compose several services -- ingestion, graph store, graph ops,
+    config -- in one operation rather than depending on a single
+    per-service factory.
+    """
+    return _get_services(request, vault_id)
+
+
 async def get_retrieval_service(
     request: Request,
     vault_id: VaultIdStr = Depends(get_vault_id),
