@@ -345,6 +345,62 @@ export interface IngestSummaryEvent {
   error_count: number;
 }
 
+// --- Batch ingest upload (SAGE documents:batch) ---
+//
+// Hand-mirrored from the SAGE Core API components in
+// docs/fs/sage/sage_core_api.openapi.yaml: BatchIngestFileMetadata,
+// BatchIngestUploadMetadata, DocumentsCreated, ProgressEvent, SummaryEvent.
+// Sent/consumed directly against POST /sage_vaults/{vault_id}/documents:batch,
+// the hosted-profile bulk-ingest surface where the browser uploads file content
+// (the server shares no filesystem with the client). Kept distinct from the
+// app-backend Ingest* shapes above so the two endpoints' contracts can evolve
+// independently; BatchSummaryEvent is a superset of IngestSummaryEvent
+// (edges_removed, errors, edge_warnings).
+
+export interface BatchIngestFileMetadata {
+  source_type: string;
+  parsed_metadata?: Record<string, unknown> | null;
+}
+
+export interface BatchIngestUploadMetadata {
+  files: BatchIngestFileMetadata[];
+  infer_edges?: boolean;
+  needs_review?: boolean;
+}
+
+export interface BatchDocumentsCreated {
+  new: number;
+  new_version: number;
+}
+
+export interface BatchProgressEvent {
+  event_type: 'progress';
+  file_index: number;
+  total_files: number;
+  filename: string;
+  stage: 'projection';
+  status: 'started' | 'completed' | 'failed';
+  document_id?: string;
+  error?: string;
+}
+
+export interface BatchSummaryEvent {
+  event_type: 'summary';
+  documents_created: BatchDocumentsCreated;
+  metadata_pending: number;
+  edges_created: Record<string, number>;
+  edges_staged: Record<string, number>;
+  edges_removed: number;
+  edges_dropped: number;
+  abstracts_generated: number;
+  abstracts_deferred: number;
+  error_count: number;
+  errors: Array<Record<string, unknown>>;
+  edge_warnings?: Array<Record<string, unknown>> | null;
+}
+
+export type BatchIngestEvent = BatchProgressEvent | BatchSummaryEvent;
+
 // --- Vault Config ---
 
 export interface VaultIdentityConfig {
