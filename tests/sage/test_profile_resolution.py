@@ -14,7 +14,7 @@ import pytest
 
 from sage import profiles
 from sage.adapters.stubs import StubAbstractionProvider
-from sage.config import SageCoreConfig, StackAbstractionConfig
+from sage.config import SageCoreConfig, StackAbstractionConfig, StackPostgresConfig
 from sage.mcp_init import (
     build_stack_abstraction_provider,
     resolve_stack_abstraction_provider,
@@ -231,3 +231,105 @@ def test_prf_009_cloud_profile_registers_all_three_seams():
     # auth=None on the stub config -> the pass-through validator (the same one
     # build_auth_validator returns when the auth block is absent).
     assert isinstance(resolved.binding(profiles.AUTH_SEAM), NoAuthValidator)
+
+
+def test_prf_010_cloud_profile_resolves_to_cloud_distinct_abstraction_and_storage(monkeypatch):
+    """Resolving the `cloud` profile *through the registry* assembles the
+    cloud-distinct abstraction and storage bindings (CAS-ADR-042) -- the hosted
+    Claude provider keyed from the managed secret store, and the Postgres
+    provisioner authenticating by managed-identity token with no env password.
+
+    Anti-coincidental-pass: PRF-009 also resolves the cloud profile, but under
+    the suite's SAGE_TEST_STUB_PROVIDERS / SAGE_TEST_STORAGE_BACKEND=embedded
+    overrides both the cloud and local abstraction/storage factories collapse to
+    the same stub/embedded result, so PRF-009 would stay green if a cloud seam
+    were mis-registered against a *local* factory. This test removes those
+    overrides and asserts the cloud-only signatures: `fetch_secret` is called
+    (the local anthropic binding reads its key from ANTHROPIC_API_KEY and never
+    imports the Key Vault module, so a recorded call is false on the local path
+    by construction) and the provisioner suppresses the env password. The CLD-*
+    tests prove the same signatures by calling `_cloud_*_binding` directly; this
+    proves the *registry* routes the cloud profile to them.
+    """
+    from sage.storage.postgres.pool import build_conn_kwargs
+    from sage.storage_binding import PostgresVaultStorageProvisioner
+
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
+    monkeypatch.setenv("SAGE_PG_PASSWORD", "envpw")
+    monkeypatch.setattr(
+        "sage.secrets.key_vault.resolve_vault_uri", lambda environ=None: "https://kv.example/"
+    )
+    fetched: list[str] = []
+
+    def _record_fetch(vault_uri, secret_name, **kw):
+        fetched.append(secret_name)
+        return "sk-from-vault"
+
+    monkeypatch.setattr("sage.secrets.key_vault.fetch_secret", _record_fetch)
+
+    captured: dict = {}
+
+    class _RecordingProvider:
+        def __init__(self, model_id, api_key=None):
+            captured["model_id"] = model_id
+            captured["api_key"] = api_key
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_anthropic.AnthropicAbstractionProvider", _RecordingProvider
+    )
+    # Avoid constructing a real azure credential; the connection class is never
+    # exercised in this structural test (mirrors CLD-005).
+    monkeypatch.setattr(
+        "sage.storage.postgres.managed_identity.get_postgres_credential", lambda: object()
+    )
+
+    cfg = SageCoreConfig(
+        profile="cloud",
+        abstraction=StackAbstractionConfig(provider="anthropic", model="claude-haiku-4-5"),
+        storage_backend="postgres",
+        postgres=StackPostgresConfig(host="db.example", user="svc", sslmode="require"),
+    )
+
+    resolved = profiles.resolve_profile(profiles.CLOUD_PROFILE, cfg)
+
+    # Abstraction seam -> hosted Claude provider keyed from Key Vault, not the env.
+    abstraction = resolved.binding(profiles.ABSTRACTION_SEAM)
+    assert isinstance(abstraction, _RecordingProvider)
+    assert captured["api_key"] == "sk-from-vault"
+    assert fetched == ["anthropic-api-key"]
+
+    # Storage seam -> Postgres provisioner on the managed-identity token path.
+    storage = resolved.binding(profiles.STORAGE_SEAM)
+    assert isinstance(storage, PostgresVaultStorageProvisioner)
+    assert storage._connection_class is not None
+    assert storage._read_env_password is False
+    kwargs = build_conn_kwargs(storage._connection_params(), storage._conn_environ)
+    assert "password" not in kwargs
+    assert kwargs["user"] == "svc"
+
+
+def test_prf_011_cloud_profile_auth_seam_resolves_to_entra_validator():
+    """Resolving the `cloud` profile *through the registry* with an enabled auth
+    block assembles the issuer/audience-bound Entra validator on the auth seam
+    (CAS-ADR-042) -- the inbound resource-server posture, not the pass-through
+    default.
+
+    Anti-coincidental-pass: CLD-007 proves `_cloud_auth_binding` delegates to
+    `build_auth_validator`; PRF-009 proves the auth seam is registered but, with
+    an absent auth block, resolves to the pass-through validator. This asserts
+    the *registry* routes the cloud auth seam to the Entra validator once the
+    auth block is enabled -- a binding mis-wired to a no-op factory would yield
+    NoAuthValidator and fail.
+    """
+    from sage.auth import EntraTokenValidator
+    from sage.config import StackAuthConfig
+
+    cfg = SageCoreConfig(
+        profile="cloud",
+        abstraction=StackAbstractionConfig(provider="stub", model=None),
+        auth=StackAuthConfig(enabled=True, tenant_id="tid", audience="api://sage"),
+    )
+
+    resolved = profiles.resolve_profile(profiles.CLOUD_PROFILE, cfg)
+    assert isinstance(resolved.binding(profiles.AUTH_SEAM), EntraTokenValidator)
