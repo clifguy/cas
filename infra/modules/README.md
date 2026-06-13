@@ -105,3 +105,35 @@ concern is the gateway hostname configuration in `apim.bicep` (above), since API
 (`baseDomain`) and the wildcard certificate it covers are published into AWS
 Route 53 by the operator per
 [`../../docs/process/custom-domains-dns.md`](../../docs/process/custom-domains-dns.md).
+
+## The container apps
+
+`container-apps.bicep` declares the two Azure Container Apps the profile runs —
+SAGE and the CAS BFF — into the foundation's ACA environment. Each app runs as
+its own user-assigned managed identity (from the identity module) and pulls its
+image from the registry by that identity: the module grants each identity
+`AcrPull` on the foundation's ACR (referenced existing by `acrName`) and binds
+the registry in the app's `registries` block, so no stored registry credential
+is used. Images are pinned to the immutable `{registry}/{repo}:{imageTag}` form
+(`imageTag` supplied at deploy time), never `latest`.
+
+Ingress mirrors the facade decision. SAGE takes external container ingress on
+port 8000; the module exposes its resulting `sageFqdn`, which the orchestrator
+feeds to `apim.bicep`'s `sageBackendHostname` so the facade backend resolves from
+a real value rather than a hand-substituted placeholder. The BFF takes external
+container ingress on port 8001 and attaches its custom domain through the
+environment certificate (`casCertificateId`) the custom-domains module produced.
+
+Cloud-profile configuration is a YAML file the module assembles from the hosting
+modules' outputs (profile, `storage_backend`, the abstraction provider/model, the
+`postgres` block, and the `auth` audience/tenant) and projects into each app as a
+mounted secret volume; `SAGE_CONFIG_PATH` points the runtime at it. The injected
+config keys stay a subset of
+[`../../docs/fs/sage/sage_core_config.schema.json`](../../docs/fs/sage/sage_core_config.schema.json)
+(a drift guard in `tests/infra/test_container_apps.py` enforces this). Only
+non-secret coordinates ride in the environment — `SAGE_KEY_VAULT_URI`, the
+managed-identity `AZURE_CLIENT_ID`, and the BFF's Entra/SAGE-upstream
+coordinates; the confidential credentials (the abstraction key, the Postgres
+token, the BFF client secret) resolve from Key Vault or the managed identity at
+runtime, never from the template. The module exposes `sageFqdn`, `bffFqdn`, and
+each app's resource id for the orchestrator to surface.

@@ -25,9 +25,6 @@ param tags object = {
   managedBy: 'bicep'
 }
 
-@description('Public hostname of the SAGE container app the APIM facade routes to.')
-param sageBackendHostname string
-
 @description('SAGE resource-server audience the facade JWT policy validates (api://<app-id>).')
 param sageAudience string
 
@@ -36,6 +33,15 @@ param publisherEmail string
 
 @description('SKU of the API Management facade. Consumption is serverless and scale-to-zero.')
 param apimSku string = 'Consumption'
+
+@description('Immutable container image tag both apps pin to ({version}-{short-sha}); supplied at deploy time, never `latest`.')
+param imageTag string
+
+@description('Application (client) id of the CAS BFF confidential client registration (supplied at deploy time).')
+param bffOidcClientId string
+
+@description('Claude model identifier the hosted abstraction provider generates abstracts with.')
+param abstractionModel string = 'claude-haiku-4-5'
 
 @description('Owned base domain the custom hostnames derive from (e.g. example.com). The wildcard certificate *.<base-domain> covers both the cas and sage hostnames.')
 param baseDomain string
@@ -88,7 +94,7 @@ module apim 'modules/apim.bicep' = {
     location: location
     environmentName: environmentName
     tags: tags
-    sageBackendHostname: sageBackendHostname
+    sageBackendHostname: containerApps.outputs.sageFqdn
     sageAudience: sageAudience
     publisherEmail: publisherEmail
     apimSku: apimSku
@@ -162,6 +168,41 @@ module customDomains 'modules/custom-domains.bicep' = {
   }
 }
 
+// The SAGE and CAS BFF container apps. Composes through every hosting-environment
+// module's outputs: it runs the images on the foundation's ACA environment,
+// attaches the identity module's managed identities and grants them AcrPull on
+// the foundation's registry, reads its cloud config from the Postgres and Key
+// Vault coordinates, and binds the BFF custom domain to the custom-domains
+// certificate. SAGE's resulting FQDN resolves the APIM facade backend above.
+module containerApps 'modules/container-apps.bicep' = {
+  name: 'container-apps'
+  scope: rg
+  params: {
+    location: location
+    environmentName: environmentName
+    tags: tags
+    acaEnvironmentId: foundation.outputs.acaEnvironmentId
+    acrLoginServer: foundation.outputs.acrLoginServer
+    acrName: foundation.outputs.acrName
+    imageTag: imageTag
+    sageIdentityId: identity.outputs.sageIdentityId
+    sageIdentityClientId: identity.outputs.sageIdentityClientId
+    sageIdentityPrincipalId: identity.outputs.sageIdentityPrincipalId
+    bffIdentityId: identity.outputs.bffIdentityId
+    bffIdentityClientId: identity.outputs.bffIdentityClientId
+    bffIdentityPrincipalId: identity.outputs.bffIdentityPrincipalId
+    keyVaultUri: keyvault.outputs.keyVaultUri
+    postgresServerFqdn: postgres.outputs.postgresServerFqdn
+    postgresDatabaseName: postgres.outputs.postgresDatabaseName
+    sageAudience: sageAudience
+    bffOidcClientId: bffOidcClientId
+    sageHostname: sageHostname
+    casHostname: casHostname
+    casCertificateId: customDomains.outputs.casCertificateId
+    abstractionModel: abstractionModel
+  }
+}
+
 @description('Provisioned resource group name, consumed by module deployments.')
 output deployedResourceGroupName string = rg.name
 
@@ -200,3 +241,6 @@ output sageCustomDomain string = sageHostname
 
 @description('Resource id of the ACA environment wildcard certificate, attached to the CAS BFF custom domain at deploy time.')
 output casCertificateId string = customDomains.outputs.casCertificateId
+
+@description('Deterministic FQDN of the SAGE container app — the value the APIM facade backend resolves from.')
+output sageContainerAppFqdn string = containerApps.outputs.sageFqdn

@@ -160,6 +160,9 @@ output acaEnvironmentDefaultDomain string = acaEnvironment.properties.defaultDom
 @description('Login server host of the Azure Container Registry.')
 output acrLoginServer string = registry.properties.loginServer
 
+@description('Name of the Azure Container Registry (referenced as an existing resource by the container-apps module to scope its AcrPull grants).')
+output acrName string = registry.name
+
 @description('Resource id of the ACA infrastructure subnet.')
 output acaInfraSubnetId string = vnet.properties.subnets[0].id
 
