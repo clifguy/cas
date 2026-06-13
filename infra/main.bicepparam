@@ -10,14 +10,21 @@ param environmentName = 'prod'
 param location = 'eastus2'
 param resourceGroupName = 'rg-cas-prod'
 
-// APIM facade coordinates. The backend hostname and the SAGE audience are
-// placeholders until the SAGE container app and the Entra registration are
-// concrete (resolved at deploy time); the operator substitutes the real values
-// then. Kept free of identity GUIDs so the deployment surface stays clean.
-param sageBackendHostname = 'sage.REPLACE-WITH-ACA-DEFAULT-DOMAIN'
+// APIM facade coordinates. The SAGE audience is a placeholder until the Entra
+// registration is concrete; the operator substitutes the real value at deploy
+// time. The facade backend hostname is no longer a parameter — it resolves from
+// the SAGE container app's FQDN. Kept free of identity GUIDs so the deployment
+// surface stays clean.
 param sageAudience = 'api://REPLACE-WITH-SAGE-APP-ID'
 param publisherEmail = 'ops@cas.invalid'
 param apimSku = 'Consumption'
+
+// Container-app deploy coordinates. The image tag is the immutable
+// {version}-{short-sha} the deploy pins (never `latest`); the BFF OIDC client id
+// is the confidential-client app registration id. Both are substituted at deploy
+// time and kept free of identity GUIDs here.
+param imageTag = 'REPLACE-WITH-IMAGE-TAG'
+param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
 
 // Owned base domain the cas/sage custom hostnames derive from. The operator
 // substitutes the real zone; the wildcard certificate *.<base-domain> (loaded
