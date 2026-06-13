@@ -151,6 +151,9 @@ output vnetId string = vnet.id
 @description('Resource id of the Azure Container Apps environment.')
 output acaEnvironmentId string = acaEnvironment.id
 
+@description('Name of the Azure Container Apps environment (referenced as an existing parent by environment-level child resources such as custom-domain certificates).')
+output acaEnvironmentName string = acaEnvironment.name
+
 @description('Default domain of the Azure Container Apps environment.')
 output acaEnvironmentDefaultDomain string = acaEnvironment.properties.defaultDomain
 

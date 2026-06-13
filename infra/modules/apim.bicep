@@ -44,6 +44,18 @@ param publisherName string = 'CAS Operations'
 ])
 param apimSku string = 'Consumption'
 
+@description('Custom domain hostname bound to the gateway (e.g. sage.<base-domain>), served with the owned wildcard certificate.')
+param sageCustomDomain string
+
+@description('Resource id of the user-assigned managed identity APIM uses to read the custom-domain certificate from Key Vault.')
+param sageIdentityId string
+
+@description('Client id of that managed identity — the Key Vault GET principal for the custom-domain certificate.')
+param sageIdentityClientId string
+
+@description('Versionless Key Vault secret URL of the wildcard certificate. Versionless so the binding follows certificate rotation.')
+param tlsCertSecretUri string
+
 // The Consumption SKU is serverless and takes capacity 0; the classic and v2
 // SKUs take a unit count. One unit is enough for this single-edge facade.
 var apimCapacity = apimSku == 'Consumption' ? 0 : 1
@@ -62,10 +74,34 @@ resource apimService 'Microsoft.ApiManagement/service@2023-05-01' = {
     name: apimSku
     capacity: apimCapacity
   }
+  // The user-assigned identity APIM authenticates to Key Vault with to read the
+  // custom-domain certificate. It reuses the SAGE identity (already granted Key
+  // Vault Certificate User on the vault); the vault has no firewall, so the
+  // user-assigned path is supported on the Consumption SKU.
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${sageIdentityId}': {}
+    }
+  }
   properties: {
     publisherEmail: publisherEmail
     publisherName: publisherName
     virtualNetworkType: 'None'
+    // The `sage` custom domain on the gateway endpoint — the only endpoint the
+    // Consumption SKU exposes — served with the owned wildcard certificate from
+    // Key Vault. keyVaultId is the versionless secret URL so the binding follows
+    // certificate rotation; the managed identity's client id authorizes the read.
+    hostnameConfigurations: [
+      {
+        type: 'Proxy'
+        hostName: sageCustomDomain
+        certificateSource: 'KeyVault'
+        keyVaultId: tlsCertSecretUri
+        identityClientId: sageIdentityClientId
+        defaultSslBinding: true
+      }
+    ]
   }
 }
 

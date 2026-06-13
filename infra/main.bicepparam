@@ -18,3 +18,9 @@ param sageBackendHostname = 'sage.REPLACE-WITH-ACA-DEFAULT-DOMAIN'
 param sageAudience = 'api://REPLACE-WITH-SAGE-APP-ID'
 param publisherEmail = 'ops@cas.invalid'
 param apimSku = 'Consumption'
+
+// Owned base domain the cas/sage custom hostnames derive from. The operator
+// substitutes the real zone; the wildcard certificate *.<base-domain> (loaded
+// in Key Vault as wildcard-tls) covers both hostnames. DNS lives in AWS Route
+// 53 and is published manually — see docs/process/custom-domains-dns.md.
+param baseDomain = 'REPLACE-WITH-OWNED-DOMAIN'
