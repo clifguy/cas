@@ -53,14 +53,16 @@ def test_prf_002_resolve_profile_unknown_value_raises_loud():
 
     Anti-coincidental-pass: a resolver that returned an empty `ResolvedProfile`
     for an unknown profile would pass a weaker test; this asserts it RAISES and
-    that the message is actionable (names `cloud` and lists the registered
-    profiles, which include `local`).
+    that the message is actionable (names the unknown profile and lists the
+    registered profiles, which include `local` and `cloud`). A never-registered
+    value (`nonexistent_profile`) stands in for the unknown case now that
+    `cloud` is a registered profile.
     """
     with pytest.raises(ValueError) as excinfo:
-        profiles.resolve_profile("cloud", _stub_stack_config())
+        profiles.resolve_profile("nonexistent_profile", _stub_stack_config())
 
     message = str(excinfo.value)
-    assert "cloud" in message
+    assert "nonexistent_profile" in message
     assert "local" in message
 
 
@@ -200,3 +202,32 @@ def test_prf_008_storage_resolver_honors_monkeypatched_factory(monkeypatch):
     )
 
     assert resolve_stack_storage_provisioner(_stub_stack_config()) is sentinel
+
+
+def test_prf_009_cloud_profile_registers_all_three_seams():
+    """Importing `sage.mcp_init` registers the cloud profile's abstraction,
+    storage, and auth bindings, and resolving the cloud profile assembles all
+    three (CAS-ADR-042).
+
+    Anti-coincidental-pass: dropping any one `register_binding(CLOUD_PROFILE, ...)`
+    line drops that seam, so `binding()` would raise KeyError -- this asserts seam
+    membership AND the resolved binding types. Under the suite's stub abstraction
+    config and the embedded storage override the assembled bindings are the stub
+    provider, an embedded provisioner, and a token validator: no Key Vault call
+    and no managed identity are exercised here (those have their own mocked
+    tests), so the registration is proven without any cloud credential.
+    """
+    from sage.auth import NoAuthValidator
+    from sage.storage_binding import VaultStorageProvisioner
+
+    assert profiles.CLOUD_PROFILE in profiles.registered_profiles()
+
+    resolved = profiles.resolve_profile(profiles.CLOUD_PROFILE, _stub_stack_config())
+    assert profiles.ABSTRACTION_SEAM in resolved.bindings
+    assert profiles.STORAGE_SEAM in resolved.bindings
+    assert profiles.AUTH_SEAM in resolved.bindings
+    assert isinstance(resolved.binding(profiles.ABSTRACTION_SEAM), StubAbstractionProvider)
+    assert isinstance(resolved.binding(profiles.STORAGE_SEAM), VaultStorageProvisioner)
+    # auth=None on the stub config -> the pass-through validator (the same one
+    # build_auth_validator returns when the auth block is absent).
+    assert isinstance(resolved.binding(profiles.AUTH_SEAM), NoAuthValidator)

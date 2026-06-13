@@ -22,6 +22,13 @@ The secret and certificate names above are fixed: they are the `anthropicSecretN
 and `tlsCertificateName` outputs of the Key Vault module, and downstream
 configuration builds Key Vault references from them. Use them verbatim.
 
+At runtime the SAGE container app finds the vault and identity through two
+non-secret environment coordinates the container app injects: `SAGE_KEY_VAULT_URI`
+(the vault's data-plane URI, the `keyVaultUri` deployment output) and
+`AZURE_CLIENT_ID` (the SAGE managed identity's client id, which selects the
+user-assigned identity the app authenticates with). Neither carries a secret
+value.
+
 ## Prerequisites
 
 - The infrastructure deployment has run and created the vault. Its name is the

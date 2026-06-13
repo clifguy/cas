@@ -1,11 +1,16 @@
-"""Durable-storage binding for the local deployment profile (CAS-ADR-042).
+"""Durable-storage binding for the SAGE deployment profiles (CAS-ADR-042).
 
 A deployment profile co-binds the adapter ports as one switch; this module
-carries the storage half of the local profile's bundle. The binding object is
+carries the storage half of that bundle for both profiles. The binding object is
 a *provisioner*: it opens a vault's graph and content stores together, because
 the two stores co-vary as one binding — the Postgres pair shares a per-vault
 connection pool, and the embedded SQLite/LanceDB pair is the one coherent
-fallback the stack config's ``storage_backend`` key can select instead.
+fallback the stack config's ``storage_backend`` key can select instead. The two
+profiles share the Postgres provisioner and differ only in how it authenticates:
+the local profile reads a password from the environment (or peer-authenticates a
+unix socket), the cloud profile injects a per-connection managed-identity Entra
+token (``managed_identity=True``) because its endpoint has password auth
+disabled.
 
 :func:`build_stack_storage_provisioner` is the dispatch between the two
 backends. Mirroring the abstraction provider's dispatch contract, a test
@@ -145,8 +150,21 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
     docs/process/postgres-local-runtime.md).
     """
 
-    def __init__(self, postgres_config: StackPostgresConfig) -> None:
+    def __init__(
+        self,
+        postgres_config: StackPostgresConfig,
+        *,
+        connection_class=None,
+        read_env_password: bool = True,
+    ) -> None:
         self.postgres_config = postgres_config
+        # The cloud (managed-identity) binding supplies a token-auth connection
+        # class and turns off the env password: the Entra-only endpoint rejects a
+        # password, and the token is injected per-connection by the connection
+        # class instead. The local binding leaves both at their defaults.
+        self._connection_class = connection_class
+        self._read_env_password = read_env_password
+        self._conn_environ = None if read_env_password else {}
 
     def _connection_params(self, search_path: str | None = None):
         from sage.storage.postgres.pool import PostgresConnectionParams
@@ -171,8 +189,9 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         from sage.storage.postgres.pool import build_conn_kwargs
         from sage.storage.postgres.schema import bootstrap_schema
 
-        conninfo = make_conninfo(**build_conn_kwargs(self._connection_params()))
-        async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
+        conninfo = make_conninfo(**build_conn_kwargs(self._connection_params(), self._conn_environ))
+        conn_class = self._connection_class or psycopg.AsyncConnection
+        async with await conn_class.connect(conninfo, autocommit=True) as conn:
             await bootstrap_schema(
                 conn, schema=vault_id, extensions=list(self.postgres_config.extensions)
             )
@@ -203,7 +222,11 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         from sage.storage.postgres.pool import create_pool
 
         await self._bootstrap(vault_id)
-        pool = create_pool(self._connection_params(search_path=f"{vault_id},public"))
+        pool = create_pool(
+            self._connection_params(search_path=f"{vault_id},public"),
+            connection_class=self._connection_class,
+            environ=self._conn_environ,
+        )
         await pool.open(wait=True, timeout=_POOL_OPEN_TIMEOUT_SECONDS)
         try:
             graph_store: GraphStore | None = None
@@ -223,7 +246,9 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         return VaultStorageHandle(graph_store=graph_store, content_store=content_store, pool=pool)
 
 
-def build_stack_storage_provisioner(stack_config: SageCoreConfig) -> VaultStorageProvisioner:
+def build_stack_storage_provisioner(
+    stack_config: SageCoreConfig, *, managed_identity: bool = False
+) -> VaultStorageProvisioner:
     """Construct the stack-wide storage provisioner (CAS-ADR-042).
 
     Dispatch contract:
@@ -236,6 +261,12 @@ def build_stack_storage_provisioner(stack_config: SageCoreConfig) -> VaultStorag
 
     An unrecognized env value fails loud: a typo'd override silently falling
     through to the configured backend would point a test run at live data.
+
+    ``managed_identity`` is the cloud profile's selector for the Postgres path:
+    when set (and the resolved backend is Postgres), the provisioner authenticates
+    with a per-connection managed-identity Entra token instead of an env password
+    -- the cloud endpoint has password auth disabled. The embedded override still
+    wins first, so the test suite never needs a managed identity.
     """
     backend = os.environ.get(STORAGE_BACKEND_ENV_VAR) or stack_config.storage_backend
     if backend not in _VALID_BACKENDS:
@@ -245,4 +276,16 @@ def build_stack_storage_provisioner(stack_config: SageCoreConfig) -> VaultStorag
         )
     if backend == "embedded":
         return EmbeddedVaultStorageProvisioner()
+    if managed_identity:
+        from sage.storage.postgres.managed_identity import (
+            get_postgres_credential,
+            make_token_auth_connection_class,
+        )
+
+        connection_class = make_token_auth_connection_class(get_postgres_credential())
+        return PostgresVaultStorageProvisioner(
+            stack_config.postgres,
+            connection_class=connection_class,
+            read_env_password=False,
+        )
     return PostgresVaultStorageProvisioner(stack_config.postgres)

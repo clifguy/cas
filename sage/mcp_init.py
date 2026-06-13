@@ -484,6 +484,92 @@ profiles.register_binding(
 )
 
 
+def _cloud_abstraction_binding(stack_config: SageCoreConfig) -> AbstractionProvider:
+    """Cloud-profile abstraction binding: hosted Claude with a Key-Vault key.
+
+    Same dispatch as the local binding -- the ``SAGE_TEST_STUB_PROVIDERS`` env
+    override stays topmost (the F-8 guard, so the suite never loads a real
+    provider or reaches the secret store), then the explicit ``stub`` opt-out --
+    except the hosted ``anthropic`` provider receives its API key from the
+    managed secret store via managed identity rather than from the environment.
+    The key is passed to the provider directly so it never transits the process
+    environment. The hosted target ships no local MLX runtime, so a non-hosted
+    provider fails closed with a clear error.
+    """
+    if os.environ.get("SAGE_TEST_STUB_PROVIDERS") == "1":
+        return StubAbstractionProvider()
+    abstraction = stack_config.abstraction
+    if abstraction.provider == "stub":
+        return StubAbstractionProvider()
+    if abstraction.provider == "anthropic":
+        if abstraction.model is None:
+            raise ValueError(
+                "sage_core_config.abstraction.model is required for the cloud "
+                "profile's hosted abstraction provider (CAS-ADR-030). Set the "
+                "Claude model identifier in the cloud stack config."
+            )
+        from sage.secrets.key_vault import (
+            ANTHROPIC_SECRET_NAME,
+            fetch_secret,
+            resolve_vault_uri,
+        )
+
+        api_key = fetch_secret(resolve_vault_uri(), ANTHROPIC_SECRET_NAME)
+        from sage.adapters.abstraction_anthropic import AnthropicAbstractionProvider
+
+        return AnthropicAbstractionProvider(model_id=abstraction.model, api_key=api_key)
+    raise ValueError(
+        "the cloud profile's abstraction binding supports the hosted "
+        f"'anthropic' provider (or 'stub'), not {abstraction.provider!r}: the "
+        "hosted target ships no local MLX runtime."
+    )
+
+
+def _cloud_storage_binding(stack_config: SageCoreConfig) -> VaultStorageProvisioner:
+    """Cloud-profile durable-storage binding: Postgres over managed-identity auth.
+
+    Delegates to ``build_stack_storage_provisioner`` (by module-global name, the
+    same late-binding reason as the local bindings) with ``managed_identity=True``
+    so the per-vault pool authenticates with a managed-identity Entra token: the
+    cloud endpoint is Entra-only, with password auth disabled.
+    """
+    return build_stack_storage_provisioner(stack_config, managed_identity=True)
+
+
+def _cloud_auth_binding(stack_config: SageCoreConfig) -> TokenValidator:
+    """Cloud-profile auth binding: the issuer/audience-bound JWT validator.
+
+    The cloud profile authenticates every caller with an Entra-issued bearer
+    token. The validator is the same one the local binding builds from the auth
+    block -- non-secret issuer/audience coordinates only, no secret material --
+    so this delegates to ``build_auth_validator`` by module-global name.
+    """
+    return build_auth_validator(stack_config.auth)
+
+
+# Register the cloud deployment profile's three bindings (CAS-ADR-042). The
+# cloud profile differs from the local profile only in where its secrets come
+# from: the abstraction key is read from the managed secret store and the
+# Postgres pool authenticates by managed-identity token, while the auth seam
+# reuses the same JWT validator. The roster lives in the SAGE Deployment Profile
+# Bindings steering document.
+profiles.register_binding(
+    profiles.CLOUD_PROFILE,
+    profiles.ABSTRACTION_SEAM,
+    _cloud_abstraction_binding,
+)
+profiles.register_binding(
+    profiles.CLOUD_PROFILE,
+    profiles.STORAGE_SEAM,
+    _cloud_storage_binding,
+)
+profiles.register_binding(
+    profiles.CLOUD_PROFILE,
+    profiles.AUTH_SEAM,
+    _cloud_auth_binding,
+)
+
+
 def resolve_stack_profile(stack_config: SageCoreConfig) -> profiles.ResolvedProfile:
     """Resolve the active deployment profile from the stack config.
 

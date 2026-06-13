@@ -42,24 +42,34 @@ it; map the platform's ingress target port to `8000`.
 ## Configure for a cloud deployment
 
 Override the baked config by pointing `SAGE_CONFIG_PATH` at a stack config that
-binds the cloud providers, and supply the secrets through the environment. The
-wiring of these values to platform resources (Key Vault, managed identity) is
-the deploy ticket's job; the image only needs them present at runtime.
+selects the cloud profile (`profile: cloud`) and binds the cloud providers. The
+cloud profile resolves its secrets — the hosted abstraction key and the Postgres
+credential — from Key Vault and the Entra-only Postgres endpoint via the
+container's managed identity, so **no secret value is passed through the
+environment**; the image only needs the vault URI and the managed-identity
+client id at runtime (`AZURE_CLIENT_ID` selects the user-assigned identity).
 
 ```sh
 docker run -p 8000:8000 \
   -e SAGE_CONFIG_PATH=/etc/sage/config.cloud.yaml \
-  -e ANTHROPIC_API_KEY=... \
-  -e SAGE_PG_PASSWORD=... \
+  -e SAGE_KEY_VAULT_URI=https://<vault>.vault.azure.net/ \
+  -e AZURE_CLIENT_ID=<sage-managed-identity-client-id> \
   -v /path/to/config.cloud.yaml:/etc/sage/config.cloud.yaml:ro \
   cas-sage
 ```
 
 A `SAGE_CONFIG_PATH` that names a missing file fails loud at startup (it does
 not silently fall back to defaults). The cloud `config.cloud.yaml` sets
-`storage_backend: postgres` (plus the `postgres` connection block, host/user/
-sslmode) and `abstraction.provider: anthropic` (plus a Claude model id). See the
-config schema at `docs/fs/sage/sage_core_config.schema.json`.
+`profile: cloud`, `storage_backend: postgres` (plus the `postgres` connection
+block, host/user/sslmode) and `abstraction.provider: anthropic` (plus a Claude
+model id). See the config schema at `docs/fs/sage/sage_core_config.schema.json`.
+A missing or unreadable secret fails closed with a clear error rather than
+booting a half-configured stack.
+
+> A `profile: local` container run takes the env-secret path instead —
+> `ANTHROPIC_API_KEY` and `SAGE_PG_PASSWORD` in the environment — the same as the
+> on-box developer setup. The managed-identity path above is specific to the
+> cloud profile.
 
 ## Runtime environment
 
@@ -68,8 +78,10 @@ config schema at `docs/fs/sage/sage_core_config.schema.json`.
 | `SAGE_BUILD_VERSION` | Baked release version reported by a `.git`-less image | build arg |
 | `SAGE_CONFIG_PATH` | Stack-config source (overrides the packaged default) | the baked smoke-minimal config |
 | `SAGE_VAULT_ROOT` | Vault discovery root | `/var/lib/sage/vaults` |
-| `ANTHROPIC_API_KEY` | Hosted abstraction provider key (cloud config) | unset |
-| `SAGE_PG_PASSWORD` | Postgres password for a TCP/hosted endpoint (cloud config) | unset |
+| `SAGE_KEY_VAULT_URI` | Key Vault data-plane URI the cloud profile reads secrets from | unset |
+| `AZURE_CLIENT_ID` | Client id of the managed identity the cloud profile authenticates with | unset |
+| `ANTHROPIC_API_KEY` | Hosted abstraction provider key — `local`-profile env path only | unset |
+| `SAGE_PG_PASSWORD` | Postgres password for a TCP endpoint — `local`-profile env path only | unset |
 | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | Force offline model loading (weights are baked) | `1` |
 
 ## Health check

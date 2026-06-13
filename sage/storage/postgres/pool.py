@@ -85,9 +85,13 @@ async def configure_connection(conn) -> None:
     await register_vector_async(conn)
 
 
-def _build_pool(conninfo: str, *, min_size: int, max_size: int):
+def _build_pool(conninfo: str, *, min_size: int, max_size: int, connection_class=None):
     from psycopg_pool import AsyncConnectionPool
 
+    # A custom ``connection_class`` is how the cloud binding injects a fresh
+    # managed-identity token as the password on every connection the pool opens;
+    # the default (psycopg's ``AsyncConnection``) is left in place otherwise.
+    extra = {} if connection_class is None else {"connection_class": connection_class}
     # open=False: an async pool is opened with ``await pool.open()`` (or an
     # ``async with`` block) by the caller; it cannot be opened in __init__.
     return AsyncConnectionPool(
@@ -96,22 +100,27 @@ def _build_pool(conninfo: str, *, min_size: int, max_size: int):
         max_size=max_size,
         configure=configure_connection,
         open=False,
+        **extra,
     )
 
 
-def create_pool(params: PostgresConnectionParams):
+def create_pool(params: PostgresConnectionParams, *, connection_class=None, environ=None):
     """Build (unopened) an ``AsyncConnectionPool`` from connection parameters.
 
     The configuration-driven factory the store adapters use. The returned pool
     is not yet open; the caller opens it with ``await pool.open()`` or an
-    ``async with`` block.
+    ``async with`` block. ``environ`` is forwarded to :func:`build_conn_kwargs`
+    (the cloud binding passes an empty mapping so no env password is composed
+    into the conninfo); ``connection_class`` is forwarded to the pool (the cloud
+    binding passes a token-auth connection class).
     """
     from psycopg.conninfo import make_conninfo
 
     return _build_pool(
-        make_conninfo(**build_conn_kwargs(params)),
+        make_conninfo(**build_conn_kwargs(params, environ)),
         min_size=params.min_pool_size,
         max_size=params.max_pool_size,
+        connection_class=connection_class,
     )
 
 

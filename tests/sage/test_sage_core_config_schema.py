@@ -115,7 +115,7 @@ def test_sch_s_004_stack_provider_field_shape():
 
 def test_sch_s_005_profile_field_shape():
     """Structural assertion: the schema declares a top-level `profile` as a
-    string enum whose sole value is `local`, defaulting to `local`
+    string enum of `local` and `cloud`, defaulting to `local`
     (deployment-profile marker, CAS-ADR-042).
 
     Catches drift in any single property — a missing `enum` makes SCH-S-006
@@ -125,26 +125,34 @@ def test_sch_s_005_profile_field_shape():
     schema = _stack_schema()
     profile = schema["properties"]["profile"]
     assert profile["type"] == "string"
-    assert profile["enum"] == ["local"]
+    assert profile["enum"] == ["local", "cloud"]
     assert profile["default"] == "local"
 
 
 def test_sch_s_006_unknown_profile_value_rejected():
-    """A stack config whose top-level `profile` is outside the enum fails
-    validation against the stack schema; the in-range `local` validates.
+    """Both registered profiles (`local`, `cloud`) validate against the schema
+    *and* SageCoreConfig; a value outside the enum is rejected by both gates.
 
-    Anti-coincidental-pass: the positive control (`profile: local`) must pass,
-    so the failure is attributable to the enum and not to some unrelated
-    constraint. A typo leaving `profile` a bare `"type": "string"` (no enum)
-    would silently accept `cloud`.
+    Anti-coincidental-pass: the positive controls must pass so the failure is
+    attributable to the enum and not to some unrelated constraint. A never-
+    registered value (`hybrid`) stands in for the unknown-profile case now that
+    `cloud` is valid; a typo leaving `profile` a bare `"type": "string"` (no
+    enum) would silently accept it.
     """
+    from pydantic import ValidationError
+
+    from sage.config import SageCoreConfig
+
     schema = _stack_schema()
 
-    # Positive control: the only value the resolver assembles today validates.
-    jsonschema.validate({"profile": "local"}, schema)
+    for good in ("local", "cloud"):
+        jsonschema.validate({"profile": good}, schema)
+        SageCoreConfig.model_validate({"profile": good})
 
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({"profile": "cloud"}, schema)
+        jsonschema.validate({"profile": "hybrid"}, schema)
+    with pytest.raises(ValidationError):
+        SageCoreConfig.model_validate({"profile": "hybrid"})
 
 
 def test_sch_s_007_profile_absent_passes_default_applied():
@@ -166,26 +174,27 @@ def test_sch_s_007_profile_absent_passes_default_applied():
 
 def test_sch_s_008_loader_fails_loud_on_unknown_profile(tmp_path):
     """`load_sage_core_config` (the startup loader) rejects an unknown profile
-    value with `jsonschema.ValidationError`; a `local` config loads and exposes
-    `profile == "local"`.
+    value with `jsonschema.ValidationError`; a `cloud` config loads and exposes
+    `profile == "cloud"`.
 
     Anti-coincidental-pass: assert specifically `jsonschema.ValidationError`.
     If the loader skipped `jsonschema.validate` and relied on Pydantic alone,
     an unknown profile would surface as a different error type (a Pydantic
     `ValidationError`), so this asserts the schema gate runs at startup — the
-    same path the running deployment takes.
+    same path the running deployment takes. A never-registered value (`hybrid`)
+    is the unknown-profile case now that `cloud` is a valid enum member.
     """
     from sage.config import load_sage_core_config
 
     bad = tmp_path / "bad_config.yaml"
-    bad.write_text("profile: cloud\nabstraction:\n  provider: stub\n  model: null\n")
+    bad.write_text("profile: hybrid\nabstraction:\n  provider: stub\n  model: null\n")
     with pytest.raises(jsonschema.ValidationError):
         load_sage_core_config(bad)
 
     good = tmp_path / "good_config.yaml"
-    good.write_text("profile: local\nabstraction:\n  provider: stub\n  model: null\n")
+    good.write_text("profile: cloud\nabstraction:\n  provider: stub\n  model: null\n")
     cfg = load_sage_core_config(good)
-    assert cfg.profile == "local"
+    assert cfg.profile == "cloud"
 
 
 # ---------------------------------------------------------------------------

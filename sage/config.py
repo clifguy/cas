@@ -492,18 +492,19 @@ class SageCoreConfig(BaseModel):
     SAGE process; per-vault configuration lives in `VaultConfig`.
     """
 
-    profile: Literal["local"] = Field(
+    profile: Literal["local", "cloud"] = Field(
         default="local",
         description=(
             "Deployment-profile marker (CAS-ADR-042). A deployment profile "
             "is the single stack-scope selection that co-binds the "
             "adapter-port implementations for one deployment target; the "
             "layer above the ports stays profile-invariant. The resolver "
-            "assembles 'local' (the on-box, single-process deployment whose "
-            "bindings match today's behavior) once at stack startup, and it "
-            "is the only profile available today. Additional profiles attach "
-            "their bindings by registration as the cloud adapters land, and "
-            "an unrecognized value fails loud at startup."
+            "assembles the profile's bindings once at stack startup: 'local' "
+            "(the on-box, single-process deployment whose bindings read their "
+            "secrets from the environment) or 'cloud' (the hosted, "
+            "containerized deployment whose bindings resolve their secrets from "
+            "the managed secret store via the workload's managed identity). An "
+            "unrecognized value fails loud at startup."
         ),
     )
     storage_backend: Literal["postgres", "embedded"] = Field(

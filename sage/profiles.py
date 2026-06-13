@@ -22,10 +22,15 @@ from dataclasses import dataclass
 
 from sage.config import SageCoreConfig
 
-# The on-box, single-process deployment target. The only profile the resolver
-# assembles today; additional targets (e.g. a hosted profile) register their
-# bindings as the cloud adapters land.
+# The on-box, single-process deployment target. Its bindings read their secrets
+# from the environment (the abstraction key, the Postgres password).
 LOCAL_PROFILE = "local"
+
+# The hosted, containerized deployment target. Its bindings resolve their secrets
+# from the managed secret store via the workload's managed identity -- no secret
+# value lives in the environment, the image, or the repository -- and the
+# Postgres endpoint authenticates by managed-identity Entra token.
+CLOUD_PROFILE = "cloud"
 
 # Seam name for the abstraction-provider binding -- the keystone seam
 # (CAS-ADR-042): the only hard environmental coupling, and therefore the

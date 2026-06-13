@@ -54,6 +54,16 @@ dependencies = [
     # with no Apple-Silicon constraint, so it stays in the base set; the
     # [crypto] extra pulls `cryptography` for the asymmetric verification path.
     "pyjwt[crypto]>=2.10",
+    # Managed-identity secret resolution for the cloud profile (CAS-ADR-042):
+    # azure-identity mints the workload's managed-identity tokens (Key Vault
+    # data-plane reads and the Postgres Entra access token), and
+    # azure-keyvault-secrets reads the hosted abstraction key from the vault at
+    # runtime so no secret lives in the environment, image, or repository.
+    # Microsoft first-party; cross-platform pure Python, so they stay in the
+    # base set like the other hosted-target SDKs. Imported lazily, so an on-box
+    # local-profile install never loads them.
+    "azure-identity>=1.19",
+    "azure-keyvault-secrets>=4.9",
 ]
 
 [project.optional-dependencies]
