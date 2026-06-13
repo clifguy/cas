@@ -23,9 +23,12 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _IMAGE = "cas-sage:pytest-smoke"
-#: An unmistakable baked stamp, distinct from any real release, so SMK-001
-#: proves the SAGE_BUILD_VERSION arg reached the runtime version.
-_VERSION = "9.9.9"
+#: Pre-built image supplied by CI (SAGE_TEST_IMAGE); when absent the fixture
+#: builds locally with the sentinel version below.
+_PREBUILT_IMAGE: str | None = os.environ.get("SAGE_TEST_IMAGE")
+#: Version baked into the image. CI sets SAGE_TEST_IMAGE_VERSION to the real
+#: release; local dev uses an unmistakable sentinel distinct from any release.
+_VERSION: str = os.environ.get("SAGE_TEST_IMAGE_VERSION") or "9.9.9"
 #: Production target arch. On Apple Silicon this builds under emulation; set
 #: SAGE_TEST_DOCKER_PLATFORM="" to build a native image instead.
 _PLATFORM = os.environ.get("SAGE_TEST_DOCKER_PLATFORM", "linux/amd64")
@@ -49,7 +52,9 @@ def _platform_args() -> list[str]:
 
 @pytest.fixture(scope="module")
 def image() -> str:
-    """Build the image once for the module (slow; gated)."""
+    """Return the image under test; build it with the sentinel version if not pre-built."""
+    if _PREBUILT_IMAGE:
+        return _PREBUILT_IMAGE
     subprocess.run(
         [
             "docker",
