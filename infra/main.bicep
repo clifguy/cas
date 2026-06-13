@@ -37,6 +37,9 @@ param publisherEmail string
 @description('SKU of the API Management facade. Consumption is serverless and scale-to-zero.')
 param apimSku string = 'Consumption'
 
+@description('Owned base domain the custom hostnames derive from (e.g. example.com). The wildcard certificate *.<base-domain> covers both the cas and sage hostnames.')
+param baseDomain string
+
 @description('Object id of the Entra principal granted Postgres administrator. Supplied at deploy time; empty leaves the binding unset.')
 param postgresAadAdminObjectId string = ''
 
@@ -45,6 +48,14 @@ param postgresAadAdminPrincipalName string = ''
 
 @description('Type of the Postgres Entra administrator principal: User, Group, or ServicePrincipal.')
 param postgresAadAdminPrincipalType string = 'Group'
+
+// Custom-domain hostnames derive from the owned base domain; the wildcard
+// certificate (*.${baseDomain}) covers both. The certificate's Key Vault secret
+// URL is built once from the vault module's outputs and shared by both bindings
+// — versionless, so each binding follows certificate rotation.
+var casHostname = 'cas.${baseDomain}'
+var sageHostname = 'sage.${baseDomain}'
+var tlsCertSecretUri = '${keyvault.outputs.keyVaultUri}secrets/${keyvault.outputs.tlsCertificateName}'
 
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: resourceGroupName
@@ -81,6 +92,10 @@ module apim 'modules/apim.bicep' = {
     sageAudience: sageAudience
     publisherEmail: publisherEmail
     apimSku: apimSku
+    sageCustomDomain: sageHostname
+    sageIdentityId: identity.outputs.sageIdentityId
+    sageIdentityClientId: identity.outputs.sageIdentityClientId
+    tlsCertSecretUri: tlsCertSecretUri
   }
 }
 
@@ -129,6 +144,24 @@ module keyvault 'modules/keyvault.bicep' = {
   }
 }
 
+// The custom-domain certificate binding: imports the owned wildcard certificate
+// into the ACA environment from Key Vault, by reference, for the CAS BFF
+// container app to attach to its custom domain at deploy time. The companion
+// `sage` hostname binding lives on the APIM facade above. Composes through the
+// foundation, identity, and Key Vault module outputs.
+module customDomains 'modules/custom-domains.bicep' = {
+  name: 'custom-domains'
+  scope: rg
+  params: {
+    location: location
+    tags: tags
+    acaEnvironmentName: foundation.outputs.acaEnvironmentName
+    tlsCertSecretUri: tlsCertSecretUri
+    tlsCertificateName: keyvault.outputs.tlsCertificateName
+    bffIdentityId: identity.outputs.bffIdentityId
+  }
+}
+
 @description('Provisioned resource group name, consumed by module deployments.')
 output deployedResourceGroupName string = rg.name
 
@@ -158,3 +191,12 @@ output sageIdentityClientId string = identity.outputs.sageIdentityClientId
 
 @description('Client id of the CAS BFF managed identity (runtime token acquisition).')
 output bffIdentityClientId string = identity.outputs.bffIdentityClientId
+
+@description('Custom domain hostname of the container-ingress-fronted CAS BFF (the operator publishes its Route 53 records at deploy time).')
+output casCustomDomain string = casHostname
+
+@description('Custom domain hostname of the APIM-fronted SAGE edge.')
+output sageCustomDomain string = sageHostname
+
+@description('Resource id of the ACA environment wildcard certificate, attached to the CAS BFF custom domain at deploy time.')
+output casCertificateId string = customDomains.outputs.casCertificateId

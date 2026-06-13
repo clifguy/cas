@@ -82,3 +82,26 @@ The issuing tenant is derived from the deployment context — no identity GUID i
 written into the module. The inbound policy is authored as versioned XML under
 [`../policies/`](../policies/) and loaded with `loadTextContent`; the
 environment-specific coordinates reach it as API Management named values.
+
+The facade also binds the `sage` custom domain on its gateway endpoint: a
+hostname configuration served with the owned wildcard certificate, referenced
+versionlessly from Key Vault and read via the SAGE user-assigned managed identity
+(attached to the service for this purpose). It takes `sageCustomDomain`,
+`sageIdentityId`, `sageIdentityClientId`, and the certificate's `tlsCertSecretUri`.
+
+## Custom domains and TLS
+
+`custom-domains.bicep` binds the owned wildcard certificate to the Azure
+Container Apps environment for the `cas` hostname: it references the environment
+as `existing` and imports the certificate from Key Vault by reference
+(`certificateKeyVaultProperties`), authenticated by the CAS BFF managed identity
+— no certificate material is committed. It takes the orchestrator's `location`
+and `tags` plus `acaEnvironmentName` (from the foundation), `tlsCertSecretUri`
+and `tlsCertificateName` (from the Key Vault module), and `bffIdentityId` (from
+the identity module), and exposes `casCertificateId` for the CAS BFF container
+app to attach to its custom domain at deploy time. The `sage` side of the same
+concern is the gateway hostname configuration in `apim.bicep` (above), since APIM
+— not the container ingress — is SAGE's public edge. The owned base domain
+(`baseDomain`) and the wildcard certificate it covers are published into AWS
+Route 53 by the operator per
+[`../../docs/process/custom-domains-dns.md`](../../docs/process/custom-domains-dns.md).

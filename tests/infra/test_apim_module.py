@@ -212,6 +212,69 @@ def test_apim_sku_is_parameterized() -> None:
     )
 
 
+def test_apim_binds_sage_custom_domain() -> None:
+    """The facade binds the ``sage`` custom domain on the gateway endpoint: a
+    hostnameConfigurations entry of type 'Proxy', hostName from the
+    ``sageCustomDomain`` parameter, with the certificate sourced from Key Vault.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+sageCustomDomain\s+string", text), (
+        "apim.bicep must take a `sageCustomDomain` string parameter"
+    )
+    assert "hostnameConfigurations" in text, (
+        "apim.bicep must declare hostnameConfigurations (the custom domain binding)"
+    )
+    assert re.search(r"type:\s*'Proxy'", text), (
+        "the hostname binding must be the gateway endpoint (type: 'Proxy')"
+    )
+    assert re.search(r"hostName:\s*sageCustomDomain", text), (
+        "the hostname binding must use the sageCustomDomain parameter"
+    )
+    assert re.search(r"certificateSource:\s*'KeyVault'", text), (
+        "the hostname binding must source its certificate from Key Vault"
+    )
+
+
+def test_apim_custom_domain_references_keyvault_cert() -> None:
+    """The hostname binding's certificate is a Key Vault secret URL from a
+    parameter — never a literal host, so it stays versionless and rotates.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+tlsCertSecretUri\s+string", text), (
+        "apim.bicep must take a `tlsCertSecretUri` string parameter"
+    )
+    assert re.search(r"keyVaultId:\s*tlsCertSecretUri", text), (
+        "the hostname binding's keyVaultId must come from the tlsCertSecretUri parameter"
+    )
+    assert not _hardcoded_https_hosts(text), (
+        f"the cert URL must be parameterized; hardcoded https host(s): "
+        f"{_hardcoded_https_hosts(text)}"
+    )
+
+
+def test_apim_assigns_user_assigned_identity() -> None:
+    """The service carries a user-assigned managed identity (so it can read the
+    certificate from Key Vault), keyed by the ``sageIdentityId`` parameter, and
+    the hostname binding names that identity's client id for the Key Vault GET.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+sageIdentityId\s+string", text), (
+        "apim.bicep must take a `sageIdentityId` string parameter"
+    )
+    assert re.search(r"param\s+sageIdentityClientId\s+string", text), (
+        "apim.bicep must take a `sageIdentityClientId` string parameter"
+    )
+    assert re.search(r"type:\s*'UserAssigned'", text), (
+        "the service must declare a UserAssigned managed identity"
+    )
+    assert "userAssignedIdentities" in text and "sageIdentityId" in text, (
+        "the userAssignedIdentities map must reference the sageIdentityId parameter"
+    )
+    assert re.search(r"identityClientId:\s*sageIdentityClientId", text), (
+        "the hostname binding must name the sageIdentityClientId for the Key Vault GET"
+    )
+
+
 def test_apim_loads_versioned_policy_xml() -> None:
     """APIM policies are authored as versioned XML under infra/ and loaded with
     loadTextContent — not embedded as inline Bicep string literals.
