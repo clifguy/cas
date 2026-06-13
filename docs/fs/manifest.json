@@ -27,7 +27,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.6",
+      "version": "0.7",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres default, embedded SQLite/LanceDB fallback), the Postgres storage-engine connection parameters (non-secret; password from the environment), and the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.37",
+  "substrate_version": "1.38",
   "revision_history": [
+    {
+      "version": "1.38",
+      "date": "2026-06-13",
+      "summary": "Register the `cloud` deployment profile and wire its secrets from the managed secret store via the workload's managed identity (T-0314, CAS-ADR-042). sage/sage_core_config.schema.json bumped v0.6->v0.7: the top-level `profile` enum widens from ['local'] to ['local','cloud'] and its description names the two targets -- 'local' reads its secrets from the environment, 'cloud' resolves them from the managed secret store via managed identity. Pydantic SageCoreConfig.profile in sage/config.py mirrors the Literal and description verbatim (Principle 8). No other schema field changes; the `postgres` block stays non-secret (the cloud endpoint is Entra-only, so there is no password to carry). The cloud bindings are app-side: new sage/secrets/key_vault.py reads the fixed `anthropic-api-key` secret from the vault named by $SAGE_KEY_VAULT_URI over a managed-identity credential (lazy azure SDK imports; fails closed naming the vault and secret); AnthropicAbstractionProvider in sage/adapters/abstraction_anthropic.py gains an optional api_key passed straight to the SDK so the key never transits the process environment (no api_key keeps the env path for the local profile). New sage/storage/postgres/managed_identity.py mints a fresh Microsoft Entra access token (scope https://ossrdbms-aad.database.windows.net/.default) on every connection via a token-auth AsyncConnection subclass; sage/storage/postgres/pool.py create_pool/_build_pool gain connection_class and environ parameters, and sage/storage_binding.py PostgresVaultStorageProvisioner gains connection_class/read_env_password so the cloud storage binding authenticates by token with no env password (build_stack_storage_provisioner grows a managed_identity flag; the embedded test override still wins first). sage/profiles.py gains CLOUD_PROFILE and sage/mcp_init.py registers the cloud abstraction/storage/auth bindings (auth reuses the local JWT validator). azure-identity + azure-keyvault-secrets join [project].dependencies (lazy-imported; relocked in uv.lock). docs/process/container-image.md's cloud-config contract is updated: the cloud profile reads SAGE_KEY_VAULT_URI + AZURE_CLIENT_ID and resolves secrets via managed identity rather than ANTHROPIC_API_KEY/SAGE_PG_PASSWORD env vars. Tests: KV-001..005 (vault-uri resolution + secret fetch + fail-closed), PGMI-001..003 (token-as-password injection, fresh token per connect, fail-closed), the cloud-binding suite (key fetched and passed not env-leaked, stub/embedded test overrides honored, token-auth storage suppresses the env password), ANTH-008 (explicit api_key passthrough), PRF cloud registration, and create_pool connection_class/environ threading; SCH-S-005/006/008 updated for the widened enum (a never-registered value now stands in for the unknown-profile controls)."
+    },
     {
       "version": "1.37",
       "date": "2026-06-10",

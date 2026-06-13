@@ -141,6 +141,26 @@ async def test_anth_005_api_key_not_passed_explicitly(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anth_008_explicit_api_key_passed_to_client(monkeypatch):
+    """An explicit api_key is handed to ``AsyncAnthropic(api_key=...)`` -- the
+    cloud profile's path, where the key is fetched from the managed secret store
+    and never placed in the environment.
+
+    Anti-coincidental-pass: the recorder captures the constructor kwargs; a
+    provider that ignored the explicit key (falling back to the env) would not
+    show ``api_key`` in the ctor kwargs. Complements ANTH-005, which pins the
+    no-key path to the env (no ``api_key`` kwarg).
+    """
+    recorder = _install_fake_anthropic(monkeypatch)
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-4-5", api_key="sk-explicit")
+
+    await provider.generate_abstract("text", max_tokens=100, doc_type=None)
+
+    assert len(recorder.ctor_kwargs) == 1
+    assert recorder.ctor_kwargs[0].get("api_key") == "sk-explicit"
+
+
+@pytest.mark.asyncio
 async def test_anth_006_client_constructed_lazily_and_reused(monkeypatch):
     """Constructing the provider does not create an SDK client; the client is
     created on the first generate_abstract and the same instance is reused on

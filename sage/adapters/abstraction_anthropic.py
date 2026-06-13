@@ -21,13 +21,18 @@ class AnthropicAbstractionProvider(AbstractionProvider):
     """Abstraction provider backed by a hosted Claude model.
 
     Construction stores configuration only; the SDK client is created on the
-    first ``generate_abstract`` call. The API key is read from the
-    environment by the SDK (``ANTHROPIC_API_KEY``) and never passed in or
-    stored here.
+    first ``generate_abstract`` call. With no ``api_key``, the SDK resolves it
+    from ``ANTHROPIC_API_KEY`` in the environment (the on-box path). The cloud
+    profile, which keeps no secret in the environment, fetches the key from its
+    managed secret store and passes it in explicitly.
     """
 
-    def __init__(self, model_id: str) -> None:
+    def __init__(self, model_id: str, api_key: str | None = None) -> None:
         self._model_id = model_id
+        # When None, the SDK resolves ANTHROPIC_API_KEY from the environment;
+        # when set (the cloud profile), the value is passed to the SDK directly
+        # so it never transits the process environment.
+        self._api_key = api_key
         # Deferred: created on first use by _ensure_client(). Holds one
         # AsyncAnthropic instance reused across calls.
         self._client = None
@@ -37,13 +42,17 @@ class AnthropicAbstractionProvider(AbstractionProvider):
 
         The ``anthropic`` import is deferred to call time (mirrors the local
         provider's lazy backend import) so the abstraction construction path
-        carries no hard import of the SDK. ``AsyncAnthropic()`` resolves the
-        API key from ``ANTHROPIC_API_KEY`` in the environment.
+        carries no hard import of the SDK. With no ``api_key`` the SDK resolves
+        ``ANTHROPIC_API_KEY`` from the environment; an explicit key is handed to
+        the SDK directly and never read from the environment.
         """
         if self._client is None:
             from anthropic import AsyncAnthropic
 
-            self._client = AsyncAnthropic()
+            if self._api_key is not None:
+                self._client = AsyncAnthropic(api_key=self._api_key)
+            else:
+                self._client = AsyncAnthropic()
         return self._client
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:

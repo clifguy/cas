@@ -113,6 +113,51 @@ def test_create_pool_returns_unopened_pool_with_vector_configure():
     assert pool._opened is False
 
 
+def test_create_pool_accepts_connection_class():
+    """create_pool forwards a custom connection_class to the pool (the cloud
+    binding's managed-identity token-auth hook); the default stays psycopg's
+    AsyncConnection.
+
+    Anti-coincidental-pass: the assertion introspects pool.connection_class, so a
+    create_pool that dropped the argument would leave the default and fail.
+    """
+    pytest.importorskip("psycopg")
+    pytest.importorskip("psycopg_pool")
+    import psycopg
+
+    class _Cls(psycopg.AsyncConnection):
+        pass
+
+    pool = create_pool(PostgresConnectionParams(host="db.invalid"), connection_class=_Cls)
+    assert pool.connection_class is _Cls
+
+    default_pool = create_pool(PostgresConnectionParams(host="db.invalid"))
+    assert default_pool.connection_class is psycopg.AsyncConnection
+
+
+def test_create_pool_environ_suppresses_env_password(monkeypatch):
+    """An explicit environ={} suppresses the env password in the composed
+    conninfo (the cloud path: managed-identity auth, no env password), while the
+    default environ still reads $SAGE_PG_PASSWORD.
+
+    Anti-coincidental-pass: SAGE_PG_PASSWORD is set in os.environ; the control
+    (default environ) shows it lands in the conninfo, so the environ={} case
+    proving its absence cannot pass by the variable simply being unset.
+    """
+    pytest.importorskip("psycopg")
+    pytest.importorskip("psycopg_pool")
+    from psycopg.conninfo import conninfo_to_dict
+
+    monkeypatch.setenv(PASSWORD_ENV_VAR, "envpw")
+    params = PostgresConnectionParams(host="db.example", user="svc")
+
+    cloud_pool = create_pool(params, environ={})
+    assert "password" not in conninfo_to_dict(cloud_pool.conninfo)
+
+    default_pool = create_pool(params)
+    assert conninfo_to_dict(default_pool.conninfo).get("password") == "envpw"
+
+
 # ---------------------------------------------------------------------------
 # PG-touching (skip without SAGE_TEST_PG_DSN)
 # ---------------------------------------------------------------------------
