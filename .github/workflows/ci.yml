@@ -119,6 +119,117 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  container:
+    # Container packaging path: build both images, run smoke tests (SMK/BSMK),
+    # and push tagged images to ACR on pushes to main. Together with the native
+    # `test` job above this forms the native/container profile matrix so a
+    # Dockerfile regression cannot merge silently.
+    # The ACR push step is dormant until the ACR_LOGIN_SERVER repository
+    # variable is set after infra deploy (same pattern as infra.yml's
+    # AZURE_CLIENT_ID guard).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+    permissions:
+      contents: read
+      id-token: write  # OIDC token for ACR push on main
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history + tags so git describe can compute the release version
+          # baked into the image as SAGE_BUILD_VERSION.
+          fetch-depth: 0
+
+      - name: Compute build version and image tag
+        id: ver
+        run: |
+          SAGE_BUILD_VERSION="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+          IMAGE_TAG="${SAGE_BUILD_VERSION}-${GITHUB_SHA:0:7}"
+          echo "sage_build_version=${SAGE_BUILD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build SAGE image
+        env:
+          SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
+            --cache-from "type=gha,scope=sage-image" \
+            --cache-to "type=gha,mode=max,scope=sage-image" \
+            --load \
+            -t cas-sage:ci \
+            .
+
+      - name: Build BFF image
+        env:
+          SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            -f Dockerfile.bff \
+            --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
+            --cache-from "type=gha,scope=bff-image" \
+            --cache-to "type=gha,mode=max,scope=bff-image" \
+            --load \
+            -t cas-bff:ci \
+            .
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Install test dependencies
+        run: uv sync --locked --extra test
+
+      - name: Run container smoke tests (SAGE + BFF)
+        env:
+          SAGE_TEST_DOCKER: "1"
+          SAGE_TEST_IMAGE: "cas-sage:ci"
+          SAGE_TEST_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          SAGE_TEST_BFF_IMAGE: "cas-bff:ci"
+          SAGE_TEST_BFF_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          # Native amd64 runner; no cross-platform emulation overhead.
+          SAGE_TEST_DOCKER_PLATFORM: ""
+        run: |
+          .venv/bin/pytest -v --tb=short tests/deploy/
+
+      - name: Log in to Azure (OIDC)
+        if: >
+          github.event_name == 'push'
+          && github.ref == 'refs/heads/main'
+          && vars.AZURE_CLIENT_ID != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push images to ACR
+        if: >
+          github.event_name == 'push'
+          && github.ref == 'refs/heads/main'
+          && vars.ACR_LOGIN_SERVER != ''
+        env:
+          ACR: ${{ vars.ACR_LOGIN_SERVER }}
+          IMAGE_TAG: ${{ steps.ver.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          az acr login --name "${ACR%.azurecr.io}"
+          docker tag cas-sage:ci "${ACR}/sage:${IMAGE_TAG}"
+          docker tag cas-sage:ci "${ACR}/sage:latest"
+          docker push "${ACR}/sage:${IMAGE_TAG}"
+          docker push "${ACR}/sage:latest"
+          docker tag cas-bff:ci "${ACR}/bff:${IMAGE_TAG}"
+          docker tag cas-bff:ci "${ACR}/bff:latest"
+          docker push "${ACR}/bff:${IMAGE_TAG}"
+          docker push "${ACR}/bff:latest"
+
   gitleaks:
     runs-on: ubuntu-latest
     timeout-minutes: 5
