@@ -124,9 +124,10 @@ jobs:
     # and push tagged images to ACR on pushes to main. Together with the native
     # `test` job above this forms the native/container profile matrix so a
     # Dockerfile regression cannot merge silently.
-    # The ACR push step is dormant until the ACR_LOGIN_SERVER repository
-    # variable is set after infra deploy (same pattern as infra.yml's
-    # AZURE_CLIENT_ID guard).
+    # The ACR push step is dormant until both the AZURE_CLIENT_ID and
+    # ACR_LOGIN_SERVER repository variables are set after infra deploy (same
+    # pattern as infra.yml's AZURE_CLIENT_ID guard); gating login and push on
+    # the same pair keeps `az acr login` from running without a prior OIDC login.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -137,14 +138,30 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # Full history + tags so git describe can compute the release version
-          # baked into the image as SAGE_BUILD_VERSION.
+          # Full history + tags so build_info's git describe can compute the
+          # release version baked into the image as SAGE_BUILD_VERSION.
           fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Install test dependencies
+        run: uv sync --locked --extra test
 
       - name: Compute build version and image tag
         id: ver
+        # Single-source the version from sage.build_info -- the same
+        # MAJOR.MINOR.PATCH (PATCH = commit distance since the last vMAJOR.MINOR.0
+        # tag) the dev box, the FastAPI/OpenAPI contract, and the conformance
+        # suite resolve. A bare `git describe --abbrev=0` reports only the tag
+        # name and would bake the tag floor into every image regardless of commit
+        # distance; reusing build_info keeps the baked stamp and the derived image
+        # tag honest. Requires the editable install above so `sage` imports.
         run: |
-          SAGE_BUILD_VERSION="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+          SAGE_BUILD_VERSION="$(.venv/bin/python -c 'from sage import build_info as b; print(b.RELEASE_VERSION)')"
           IMAGE_TAG="${SAGE_BUILD_VERSION}-${GITHUB_SHA:0:7}"
           echo "sage_build_version=${SAGE_BUILD_VERSION}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
@@ -178,15 +195,6 @@ jobs:
             -t cas-bff:ci \
             .
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-        with:
-          enable-cache: true
-          python-version: "3.14"
-
-      - name: Install test dependencies
-        run: uv sync --locked --extra test
-
       - name: Run container smoke tests (SAGE + BFF)
         env:
           SAGE_TEST_DOCKER: "1"
@@ -204,6 +212,7 @@ jobs:
           github.event_name == 'push'
           && github.ref == 'refs/heads/main'
           && vars.AZURE_CLIENT_ID != ''
+          && vars.ACR_LOGIN_SERVER != ''
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -214,6 +223,7 @@ jobs:
         if: >
           github.event_name == 'push'
           && github.ref == 'refs/heads/main'
+          && vars.AZURE_CLIENT_ID != ''
           && vars.ACR_LOGIN_SERVER != ''
         env:
           ACR: ${{ vars.ACR_LOGIN_SERVER }}

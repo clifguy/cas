@@ -136,6 +136,47 @@ run, and the first `az deployment sub create` provisions the resource group
 — exercising the full GitHub-OIDC → Entra workload-identity → `az deployment`
 chain end to end.
 
+## Container image push to ACR
+
+The [`CI`](../../.github/workflows/ci.yml) workflow's `container` job builds the
+SAGE and CAS BFF images and runs the container smoke tests on every push and
+pull request. Pushing the resulting tagged images to the Azure Container
+Registry created by the foundation module is **dormant** until both the
+`AZURE_CLIENT_ID` (set in the bootstrap above) and `ACR_LOGIN_SERVER`
+repository variables are set — the same dormant-until-configured pattern the
+`infra` workflow uses. Images are tagged `{version}-{short-sha}` (the version
+is `sage.build_info.RELEASE_VERSION`, so the registry tag matches the stamp the
+running container reports) plus a moving `latest`; pin deployments to the
+immutable `{version}-{short-sha}` tag, never `latest`.
+
+The registry login host is a Bicep output (`acrLoginServer`), so it exists only
+after the first deploy. Set the variable from that output once the registry is
+provisioned:
+
+```bash
+ACR_LOGIN_SERVER="$(az deployment sub show \
+  --name main \
+  --query properties.outputs.acrLoginServer.value -o tsv)"
+gh variable set ACR_LOGIN_SERVER --body "$ACR_LOGIN_SERVER"
+```
+
+### Push authorization
+
+The registry's admin user is disabled by design (see
+[`infra/modules/foundation.bicep`](../../infra/modules/foundation.bicep)), so
+the push authenticates via the OIDC deploy identity rather than a stored
+credential — `az acr login` exchanges the workload-identity token for a registry
+token. The subscription-scope `Contributor` role assigned in the bootstrap
+already grants data-plane push, so the push works as soon as the variable above
+is set. **If you later narrow that grant** — the bootstrap's §3 anticipates
+scoping it down once the resource group exists — re-grant push explicitly with
+the least-privilege `AcrPush` data role scoped to the registry:
+
+```bash
+ACR_ID="$(az acr show --name "${ACR_LOGIN_SERVER%%.*}" --query id -o tsv)"
+az role assignment create --assignee "$APP_ID" --role AcrPush --scope "$ACR_ID"
+```
+
 ## Adding an environment
 
 The scaffold models a single cloud environment. To add another:

@@ -11,7 +11,7 @@
 # Requires Docker. Exits non-zero on any failure.
 #
 # Usage: deploy/smoke.sh [VERSION]
-#   VERSION  MAJOR.MINOR.PATCH baked as SAGE_BUILD_VERSION (default: git describe).
+#   VERSION  MAJOR.MINOR.PATCH baked as SAGE_BUILD_VERSION (default: sage.build_info.RELEASE_VERSION).
 # Env:
 #   SMOKE_IMAGE     image tag (default: cas-sage:smoke)
 #   SMOKE_PLATFORM  docker --platform (default: linux/amd64; set empty for native)
@@ -19,8 +19,14 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${1:-$(git -C "$repo_root" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
-version="${version:-0.0.0}"
+# Single-source the baked version from build_info -- the same MAJOR.MINOR.PATCH
+# the dev box, CI, and the OpenAPI contract resolve (PATCH = commit distance
+# since the last vMAJOR.MINOR.0 tag), not a bare `git describe --abbrev=0` which
+# would report only the tag floor.
+version="${1:-$("$repo_root/.venv/bin/python" -c 'from sage import build_info as b; print(b.RELEASE_VERSION)' 2>/dev/null)}"
+# build_info yields "unknown" only without a v* tag or git checkout; fall back so
+# the smoke still bakes a usable stamp.
+case "$version" in ""|unknown) version="0.0.0" ;; esac
 image="${SMOKE_IMAGE:-cas-sage:smoke}"
 platform="${SMOKE_PLATFORM-linux/amd64}"
 port="${SMOKE_PORT:-18000}"

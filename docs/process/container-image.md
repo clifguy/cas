@@ -12,11 +12,14 @@ runtime loads them with no HuggingFace egress.
 ## Build
 
 The build is repo-less (`.git` is excluded), so the runtime version comes from
-a build arg — pass the real release version (`MAJOR.MINOR.PATCH`), which a
-pipeline derives on the host with `git describe`:
+a build arg — pass the real release version (`MAJOR.MINOR.PATCH`). Derive it on
+the host from `sage.build_info.RELEASE_VERSION`, the single source the running
+container, CI, and the OpenAPI contract all share (PATCH is the commit distance
+since the last `vMAJOR.MINOR.0` tag — a bare `git describe --abbrev=0` reports
+only the tag floor and bakes the wrong version):
 
 ```sh
-docker build --build-arg SAGE_BUILD_VERSION="$(git describe --tags --abbrev=0 | sed 's/^v//')" -t cas-sage .
+docker build --build-arg SAGE_BUILD_VERSION="$(.venv/bin/python -c 'from sage import build_info as b; print(b.RELEASE_VERSION)')" -t cas-sage .
 ```
 
 The image is architecture-agnostic at the Dockerfile level; the production
