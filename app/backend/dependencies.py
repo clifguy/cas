@@ -22,7 +22,7 @@ from fastapi import Request
 from app.backend.ingest_streaming_service import IngestStreamingService
 from app.backend.models import IngestRequest, ScanRequest
 from app.backend.scan_service import ScanService
-from sage.api.errors import VaultNotFoundError
+from sage.api.errors import SAGEError, VaultNotFoundError
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
@@ -32,9 +32,24 @@ def _get_services(request: Request, vault_id: str) -> SAGEServices:
     """Look up ``SAGEServices`` for a vault_id, raising
     ``VaultNotFoundError`` on miss. Mirrors
     ``sage.api.dependencies._get_services`` and is kept private to this
-    module per ``out of scope: changing the function itself``."""
+    module per ``out of scope: changing the function itself``.
 
-    registry: dict[str, SAGEServices] = request.app.state.vault_registry
+    When no vault registry is present -- the standalone deployment, where SAGE
+    runs as a separate process and is reached over HTTP -- directory scan and
+    bulk ingestion have no in-process pipeline to drive. They read and write a
+    local filesystem the standalone process does not share with SAGE, so the
+    factories report this as a co-located-profile capability (``501``) rather
+    than failing opaquely on the absent registry."""
+
+    registry: dict[str, SAGEServices] | None = getattr(request.app.state, "vault_registry", None)
+    if registry is None:
+        raise SAGEError(
+            "local_profile_only",
+            "Directory scan and bulk ingestion are a co-located-profile "
+            "capability; this standalone deployment reaches SAGE over HTTP and "
+            "does not host the local-filesystem ingest pipeline.",
+            501,
+        )
     if vault_id not in registry:
         raise VaultNotFoundError(vault_id)
     return registry[vault_id]
