@@ -97,6 +97,42 @@ export async function apiStream(
 }
 
 /**
+ * POST a multipart/form-data body returning a Server-Sent Events stream.
+ * The Content-Type header is deliberately omitted so the browser sets the
+ * multipart boundary itself; setting it by hand corrupts the boundary and the
+ * server fails to parse the parts. The caller reads the returned stream with
+ * readSSEStream.
+ */
+export async function apiUploadStream(
+  path: string,
+  formData: FormData,
+  signal?: AbortSignal,
+): Promise<ReadableStream<Uint8Array>> {
+  const response = await fetch(path, {
+    method: 'POST',
+    body: formData,
+    signal,
+  });
+  if (!response.ok) {
+    let errBody: { code?: string; message?: string; detail?: unknown } | undefined;
+    try {
+      errBody = await response.json();
+    } catch {
+      // non-JSON
+    }
+    throw new ApiError(
+      errBody?.code ?? `HTTP_${response.status}`,
+      errBody?.message ?? response.statusText,
+      errBody?.detail,
+    );
+  }
+  if (!response.body) {
+    throw new ApiError('NO_BODY', 'Response has no body stream');
+  }
+  return response.body;
+}
+
+/**
  * Parse an SSE stream, calling onEvent for each `data: {...}` line.
  * Returns when the stream ends.
  */
