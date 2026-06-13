@@ -157,6 +157,9 @@ fail_under = 89
 
 [tool.importlinter]
 root_packages = ["sage", "app"]
+# Graph the external cloud SDKs (azure, psycopg) so the deployment-profile
+# boundary contracts below can name them as forbidden modules (CAS-ADR-042).
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Services do not import from routers"
@@ -212,6 +215,58 @@ forbidden_modules = [
     "sage.mcp_init",
     "sage.mcp_server",
     "sage.vault_management",
+]
+
+[[tool.importlinter.contracts]]
+# CAS-ADR-042: the layer above the deployment-profile ports is profile-invariant,
+# and the binding factories are the sole owners of any environment-specific import.
+# The profile core (the generic profile mechanism) and the BFF server entry point
+# carry no cloud import at all, so this contract fences them statically: a cloud SDK
+# or cloud-binding module named directly in either would pass a Linux/local-profile
+# CI run and surface only on the next on-box restart. azure and psycopg are external
+# packages, graphed via the top-level include_external_packages. allow_indirect_imports
+# keeps the fence on imports written into these modules, not the indirect chains they
+# reach through the lazy bindings. psycopg is fenced here only because these modules
+# reach durable storage through the binding seam, never the driver directly; the
+# storage layer's own use of psycopg (local Postgres password auth) is a shared
+# dependency and is unaffected. The SAGE application factory (sage.app) is not listed:
+# it carries legitimate lazy, profile-guarded imports for the BFF session store's
+# managed-identity path that import-linter cannot distinguish from a module-scope
+# hoist, so its local-boot cloud-freeness is enforced at runtime by the deployment-
+# profile guardrail tests, and its azure use is fenced by the confinement contract below.
+name = "Profile core and server entry import no cloud dependency directly"
+type = "forbidden"
+source_modules = [
+    "sage.profiles",
+    "app.backend.asgi",
+]
+forbidden_modules = [
+    "azure",
+    "psycopg",
+    "sage.secrets.key_vault",
+    "sage.storage.postgres.managed_identity",
+]
+allow_indirect_imports = "true"
+
+[[tool.importlinter.contracts]]
+# CAS-ADR-042: the cloud SDKs stay confined to the two binding modules that own
+# them -- the Key Vault secret reader and the managed-identity Postgres auth path --
+# so an azure import hoisted into any new call site fails the build. The two owner
+# edges are the only legitimate importers of azure, so ignoring them severs every
+# remaining chain; psycopg is deliberately not forbidden here because it is a shared
+# dependency of both the local and cloud Postgres paths.
+name = "Azure SDKs are confined to the cloud binding modules"
+type = "forbidden"
+source_modules = [
+    "sage",
+    "app",
+]
+forbidden_modules = [
+    "azure",
+]
+ignore_imports = [
+    "sage.secrets.key_vault -> azure",
+    "sage.storage.postgres.managed_identity -> azure",
 ]
 
 [build-system]
