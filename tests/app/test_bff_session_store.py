@@ -5,6 +5,9 @@ only when ``SAGE_TEST_PG_DSN`` is set (mirroring the SAGE Postgres storage
 tests). The headline Postgres test is the cross-instance round-trip: a session
 written by one store instance is read by a *fresh* instance over the same DSN,
 which is what a revision shift or a scale-out reduces to.
+
+The managed-identity path (BFF-MI-001 through BFF-MI-003) is exercised via
+mocks so no real Postgres or Azure credential is required.
 """
 
 import os
@@ -146,3 +149,112 @@ class TestPostgresSessionStore:
         finally:
             await store.close()
             await _drop_schema(PG_DSN, schema)
+
+
+# ---------------------------------------------------------------------------
+# Managed-identity connection_class threading (BFF-MI-001 through BFF-MI-003)
+# ---------------------------------------------------------------------------
+
+_FAKE_CONNINFO = "host=test port=5432 dbname=testdb user=testuser"
+
+
+class TestManagedIdentityConnectionClass:
+    """Unit tests for connection_class threading in PostgresSessionStore.
+
+    No real Postgres or Azure credential required: the pool constructor and
+    psycopg connect are monkeypatched to sentinels that record which path was
+    taken without opening any network connection.
+    """
+
+    async def test_bff_mi_001_connection_class_forwarded_to_pool(self, monkeypatch):
+        """BFF-MI-001: connection_class is passed to AsyncConnectionPool when set.
+
+        AsyncConnectionPool is a deferred import inside open(), so it must be
+        patched on psycopg_pool, not on the session_store module.
+        """
+        import psycopg_pool
+
+        recorded: list[dict] = []
+
+        class _FakePool:
+            def __init__(self, conninfo, *, min_size, max_size, open, **kwargs):
+                recorded.append(kwargs)
+
+            async def open(self, *, wait, timeout):
+                pass
+
+        monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", _FakePool)
+
+        class _FakeClass:
+            pass
+
+        store = PostgresSessionStore(_FAKE_CONNINFO, connection_class=_FakeClass)
+        monkeypatch.setattr(store, "_bootstrap", _async_noop)
+        await store.open()
+
+        assert len(recorded) == 1
+        assert recorded[0].get("connection_class") is _FakeClass
+
+    async def test_bff_mi_002_no_connection_class_omits_kwarg(self, monkeypatch):
+        """BFF-MI-002: connection_class kwarg is absent when not supplied."""
+        import psycopg_pool
+
+        recorded: list[dict] = []
+
+        class _FakePool:
+            def __init__(self, conninfo, *, min_size, max_size, open, **kwargs):
+                recorded.append(kwargs)
+
+            async def open(self, *, wait, timeout):
+                pass
+
+        monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", _FakePool)
+
+        store = PostgresSessionStore(_FAKE_CONNINFO)
+        monkeypatch.setattr(store, "_bootstrap", _async_noop)
+        await store.open()
+
+        assert len(recorded) == 1
+        assert "connection_class" not in recorded[0]
+
+    async def test_bff_mi_003_bootstrap_uses_connection_class_when_set(self, monkeypatch):
+        """BFF-MI-003: _bootstrap dispatches to connection_class.connect when provided.
+
+        psycopg.AsyncConnection.connect is patched as a classmethod sentinel
+        (same technique as test_postgres_managed_identity.py) so no real
+        database is contacted. Raising immediately before the ``async with``
+        body is sufficient to distinguish which connect path was taken.
+        """
+        import psycopg
+
+        base_calls: list[str] = []
+        token_calls: list[str] = []
+
+        async def _fake_base_connect(cls, conninfo, **kwargs):
+            base_calls.append("base")
+            raise RuntimeError("base-connect-sentinel")
+
+        monkeypatch.setattr(psycopg.AsyncConnection, "connect", classmethod(_fake_base_connect))
+
+        class _FakeTokenClass:
+            @classmethod
+            async def connect(cls, conninfo, **kwargs):
+                token_calls.append("token")
+                raise RuntimeError("token-connect-sentinel")
+
+        # Cloud branch: connection_class is set → token class must be called.
+        cloud_store = PostgresSessionStore(_FAKE_CONNINFO, connection_class=_FakeTokenClass)
+        with pytest.raises(RuntimeError, match="token-connect-sentinel"):
+            await cloud_store._bootstrap()
+        assert token_calls == ["token"]
+        assert base_calls == []
+
+        # Local branch: no connection_class → base psycopg.AsyncConnection is called.
+        local_store = PostgresSessionStore(_FAKE_CONNINFO)
+        with pytest.raises(RuntimeError, match="base-connect-sentinel"):
+            await local_store._bootstrap()
+        assert base_calls == ["base"]
+
+
+async def _async_noop(*args, **kwargs):
+    return None

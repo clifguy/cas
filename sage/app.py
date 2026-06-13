@@ -277,8 +277,9 @@ async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
     provider coordinates are present in the environment, else ``None``. When
     configured, the externalized session store reuses the stack's Postgres
     endpoint (its own schema), reached over the same libpq connection
-    composition the storage engine uses; the credential is read from the
-    environment, never from configuration.
+    composition the storage engine uses. In the cloud profile the pool
+    authenticates via a managed-identity Entra token; in the local profile
+    the credential is read from the environment.
     """
     from app.backend.auth.config import BffAuthContext, load_bff_auth_settings
 
@@ -291,6 +292,7 @@ async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
 
     from app.backend.auth.oidc import MsalOidcService
     from app.backend.auth.session_store import PostgresSessionStore
+    from sage import profiles
     from sage.storage.postgres.pool import PostgresConnectionParams, build_conn_kwargs
 
     pg = stack_cfg.postgres
@@ -301,7 +303,22 @@ async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
         user=pg.user,
         sslmode=pg.sslmode,
     )
-    store = PostgresSessionStore(make_conninfo(**build_conn_kwargs(params)))
+
+    connection_class = None
+    conn_environ: dict[str, str] | None = None
+    if stack_cfg.profile == profiles.CLOUD_PROFILE:
+        from sage.storage.postgres.managed_identity import (
+            get_postgres_credential,
+            make_token_auth_connection_class,
+        )
+
+        connection_class = make_token_auth_connection_class(get_postgres_credential())
+        conn_environ = {}
+
+    store = PostgresSessionStore(
+        make_conninfo(**build_conn_kwargs(params, conn_environ)),
+        connection_class=connection_class,
+    )
     await store.open()
     app.state.bff_auth = BffAuthContext(
         settings=settings,

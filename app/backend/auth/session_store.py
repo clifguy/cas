@@ -141,12 +141,13 @@ class PostgresSessionStore(SessionStore):
     rather than fails on an already-provisioned database.
     """
 
-    def __init__(self, conninfo: str, *, schema: str = "cas_bff") -> None:
+    def __init__(self, conninfo: str, *, schema: str = "cas_bff", connection_class=None) -> None:
         from sage.storage.postgres.schema import validate_schema_name
 
         validate_schema_name(schema)
         self._conninfo = conninfo
         self._schema = schema
+        self._connection_class = connection_class
         self._pool: Any = None
 
     def _ddl(self) -> list[str]:
@@ -163,7 +164,8 @@ class PostgresSessionStore(SessionStore):
     async def _bootstrap(self) -> None:
         import psycopg
 
-        async with await psycopg.AsyncConnection.connect(self._conninfo, autocommit=True) as conn:
+        conn_class = self._connection_class or psycopg.AsyncConnection
+        async with await conn_class.connect(self._conninfo, autocommit=True) as conn:
             async with conn.transaction():
                 for stmt in self._ddl():
                     await conn.execute(stmt)
@@ -175,8 +177,11 @@ class PostgresSessionStore(SessionStore):
         await self._bootstrap()
         parsed = conninfo_to_dict(self._conninfo)
         parsed["options"] = f"-c search_path={self._schema},public"
+        extra = (
+            {} if self._connection_class is None else {"connection_class": self._connection_class}
+        )
         self._pool = AsyncConnectionPool(
-            make_conninfo(**parsed), min_size=1, max_size=4, open=False
+            make_conninfo(**parsed), min_size=1, max_size=4, open=False, **extra
         )
         await self._pool.open(wait=True, timeout=10)
 
