@@ -1,0 +1,102 @@
+# syntax=docker/dockerfile:1
+#
+# CAS backend-for-frontend (BFF) container image.
+#
+# Packages the standalone BFF process (`python -m app.backend`) for the cloud
+# profile: it serves the built SPA same-origin and reaches SAGE over HTTP. A
+# Node stage builds the SPA bundle; a Python runtime stage serves that bundle
+# alongside the BFF API. Non-root, minimized, health-checked. Unlike the SAGE
+# image it bakes no embedder weights -- the BFF constructs no embedder. The
+# build is repo-less, so the runtime version comes from the SAGE_BUILD_VERSION
+# build arg (see build_info).
+#
+# Build:  docker build -f Dockerfile.bff --build-arg SAGE_BUILD_VERSION=<MAJOR.MINOR.PATCH> -t cas-bff .
+# Run:    docker run -p 8001:8001 cas-bff          # boots on the baked smoke config
+# See docs/process/bff-container-image.md.
+
+ARG NODE_IMAGE=node:24-slim
+ARG PYTHON_IMAGE=python:3.14-slim
+
+# --------------------------------------------------------------------------
+# SPA builder: produce the static frontend bundle with Vite.
+# --------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS spa-builder
+
+WORKDIR /app
+
+# Dependency layer (cached unless the lock changes).
+COPY app/package.json app/package-lock.json ./
+RUN npm ci
+
+# Frontend source, then the production build (`tsc -b && vite build`) -> /app/dist.
+COPY app/ ./
+RUN npm run build
+
+# --------------------------------------------------------------------------
+# Python builder: resolve the locked runtime dependencies.
+# --------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS py-builder
+
+# uv drives the install from the committed lockfile (byte-identical to CI).
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /opt/bff
+
+# Dependency layer (cached unless the lock changes): base runtime deps only --
+# no test/mlx/dev/ocr extras. On Linux, torch resolves to the CPU wheel index
+# pinned in pyproject's [tool.uv.sources]. No embedder weights are pre-baked:
+# the BFF owns no vault registry and never constructs an embedder.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
+
+# Project source. The BFF imports the sage package (config, errors, the auth
+# substrate, the profile registry) and the application backend; the SPA bundle
+# is produced by the Node stage above, not resolved from Python source here.
+COPY sage/ ./sage/
+COPY app/backend/ ./app/backend/
+RUN uv sync --locked --no-dev
+
+# --------------------------------------------------------------------------
+# Runtime: non-root, minimized, serves the SPA and the BFF API, health check.
+# --------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS runtime
+
+RUN groupadd --system bff \
+    && useradd --system --gid bff --create-home --home-dir /home/bff bff
+
+# Baked at build time so a .git-less image reports its real version
+# (build_info resolves SAGE_BUILD_VERSION when no live git checkout is present).
+ARG SAGE_BUILD_VERSION
+ENV SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION} \
+    PATH=/opt/bff/.venv/bin:$PATH \
+    SAGE_CONFIG_PATH=/opt/bff/deploy/sage.config.container.yaml
+
+WORKDIR /opt/bff
+COPY --from=py-builder /opt/bff/.venv /opt/bff/.venv
+COPY --from=py-builder /opt/bff/sage /opt/bff/sage
+COPY --from=py-builder /opt/bff/app /opt/bff/app
+# The built SPA bundle, served same-origin from <app>/dist (app.backend.asgi).
+COPY --from=spa-builder /app/dist /opt/bff/app/dist
+COPY deploy/sage.config.container.yaml /opt/bff/deploy/sage.config.container.yaml
+# The stack-config JSON Schema that sage/config.py validates the loaded config
+# against at startup -- the sole docs/fs file the runtime reads, expected at
+# <repo-root>/docs/fs/sage/ (parents[1] of sage/config.py, i.e. /opt/bff here).
+COPY docs/fs/sage/sage_core_config.schema.json /opt/bff/docs/fs/sage/sage_core_config.schema.json
+
+RUN chown -R bff:bff /opt/bff/app/dist
+USER bff
+EXPOSE 8001
+
+# Liveness probe on the loopback interface inside the container. External
+# reachability requires the non-loopback bind in CMD below. No vaults load, so
+# the start period is short.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2).status == 200 else 1)"]
+
+# Bind a non-loopback interface so the platform ingress can reach the process.
+ENTRYPOINT ["python", "-m", "app.backend"]
+CMD ["--host", "0.0.0.0", "--port", "8001"]

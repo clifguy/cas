@@ -1,0 +1,50 @@
+# Build context for the CAS BFF image (Dockerfile.bff). A per-Dockerfile ignore
+# (BuildKit) so it diverges from the SAGE image's .dockerignore: the BFF image
+# NEEDS the SPA sources (app/src, app/public, app/index.html, the TS/Vite
+# config) that the SAGE image excludes, because its Node stage builds the
+# bundle.
+#
+# Excluding .git is load-bearing: with no git in the context the runtime version
+# comes from the SAGE_BUILD_VERSION build arg (see build_info), not live git.
+
+.git
+.gitignore
+.github
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+
+# Frontend toolchain output and tests -- rebuilt by `npm ci`/`vite build` or
+# unused by the image build. The SPA sources themselves are deliberately kept.
+app/node_modules
+app/dist
+app/dist-ssr
+app/e2e
+app/test-results
+app/playwright-report
+
+# Python tests, the orchestration package the BFF does not import, and process
+# scaffolding -- not needed to build or run the image, EXCEPT the one JSON
+# Schema sage/config.py validates the stack config against at startup. The
+# level-by-level re-include keeps the rest of docs/ out of the context.
+tests
+root_harness
+docs
+!docs/fs
+docs/fs/*
+!docs/fs/sage
+docs/fs/sage/*
+!docs/fs/sage/sage_core_config.schema.json
+*.md
+plan
+context-*.md
+
+# Local env / editor / OS noise.
+.env
+.env.*
+.vscode
+.idea
+.DS_Store
