@@ -20,7 +20,6 @@ import pytest
 from fastapi.responses import StreamingResponse
 
 from app.backend.exceptions import EmptyFileListError
-from app.backend.ingest_service import IngestSummary
 from app.backend.ingest_streaming_service import (
     IngestStreamingService,
     _summary_event_from,
@@ -31,6 +30,7 @@ from app.backend.models import (
     ParsedMetadata,
     SummaryEvent,
 )
+from sage.services.batch_ingest import IngestSummary
 
 
 def _stub_services() -> MagicMock:

@@ -36,18 +36,23 @@ def _get_services(request: Request, vault_id: str) -> SAGEServices:
 
     When no vault registry is present -- the standalone deployment, where SAGE
     runs as a separate process and is reached over HTTP -- directory scan and
-    bulk ingestion have no in-process pipeline to drive. They read and write a
+    path-based ingest have no in-process pipeline to drive. They walk and read a
     local filesystem the standalone process does not share with SAGE, so the
     factories report this as a co-located-profile capability (``501``) rather
-    than failing opaquely on the absent registry."""
+    than failing opaquely on the absent registry. Cloud bulk-ingest is delivered
+    by a different route: the SPA uploads file content to the SAGE batch-ingest
+    endpoint (reached through the reverse proxy), which runs the pipeline
+    server-side where the graph and content handles live (CAS-ADR-042)."""
 
     registry: dict[str, SAGEServices] | None = getattr(request.app.state, "vault_registry", None)
     if registry is None:
         raise SAGEError(
             "local_profile_only",
-            "Directory scan and bulk ingestion are a co-located-profile "
-            "capability; this standalone deployment reaches SAGE over HTTP and "
-            "does not host the local-filesystem ingest pipeline.",
+            "Directory scan and path-based bulk ingestion are a co-located-profile "
+            "capability: they walk a local filesystem this standalone deployment "
+            "does not share with SAGE. In the hosted profile, upload file content "
+            "to the SAGE batch-ingest endpoint (POST "
+            "/sage_vaults/{vault_id}/documents:batch) instead.",
             501,
         )
     if vault_id not in registry:

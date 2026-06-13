@@ -1,8 +1,15 @@
-"""Directory scan service (BE-017 through BE-021).
+"""Directory scan service: pre-ingest discovery over a filesystem tree.
 
 Walks a directory, matches files to adapters by extension, hashes each
 file, parses filenames, and checks hashes against a SAGE vault to
-determine new/modified/unchanged status.
+determine new/modified/unchanged status. Side-effect free with respect
+to the vault. Consumed by the MCP ``list_directory`` tool and the
+in-process ``/app/scan`` delivery path.
+
+This is intrinsically a co-located-filesystem capability: it stats,
+reads, and hashes files on local disk. Deployments that reach SAGE
+across a container boundary have no shared filesystem to walk, so the
+directory-walk discovery affordance is local-profile only.
 """
 
 from __future__ import annotations

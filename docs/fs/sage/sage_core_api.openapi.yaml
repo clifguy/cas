@@ -416,6 +416,96 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/documents:batch:
+    post:
+      operationId: batch_ingest_documents
+      summary: Upload files and run the batch-ingest pipeline server-side, streaming SSE progress.
+      description: >-
+        Hosted-profile bulk-ingest surface (CAS-ADR-042). Accepts uploaded
+        file content as multipart/form-data -- the BFF and SAGE share no
+        filesystem in the cloud profile, so content is delivered by upload
+        rather than by path -- stages each file under the SAGE process with
+        its original filename preserved, then runs the same three-phase batch
+        pipeline (plan_batch_edges, per-file ingest, resolve_and_execute) the
+        co-located profile drives in-process. Both profiles therefore produce
+        equivalent ingest summaries.
+
+
+        The `metadata` form field is a JSON-encoded BatchIngestUploadMetadata
+        whose `files` array aligns by position with the uploaded file parts.
+        `needs_review` and `infer_edges` are caller inputs (CAS-ADR-021): the
+        CAS bulk-ingest workflow sets needs_review=true so every document
+        lands in the metadata-review queue.
+
+
+        Response is `text/event-stream`: per-file state transitions surface as
+        `progress` events (status = started / completed / failed); a final
+        `summary` event carries the batch counts. The 400 and 404 error paths
+        resolve synchronously BEFORE the stream is opened and return an
+        application/json ErrorResponse envelope with no SSE events emitted.
+      tags: [Ingestion]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              description: >-
+                Multipart batch-ingest upload: the file parts plus a JSON
+                metadata envelope describing them.
+              required: [files, metadata]
+              properties:
+                files:
+                  type: array
+                  description: >-
+                    Uploaded source files to ingest, aligned by position with
+                    metadata.files.
+                  items:
+                    type: string
+                    format: binary
+                    description: One uploaded source file's binary content.
+                metadata:
+                  type: string
+                  description: >-
+                    JSON-encoded BatchIngestUploadMetadata: per-file
+                    source_type and optional parsed_metadata, plus the batch
+                    infer_edges and needs_review flags. See
+                    components.schemas.BatchIngestUploadMetadata.
+      responses:
+        "200":
+          description: >-
+            Server-Sent Event stream of per-file progress events and a final
+            summary event.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  SSE stream. Each event is a `data:` line with a JSON payload
+                  conforming to ProgressEvent or SummaryEvent. See
+                  components.schemas.ProgressEvent and
+                  components.schemas.SummaryEvent.
+        "400":
+          description: >-
+            `empty_file_list`: no files were uploaded.
+
+
+            `invalid_batch_metadata`: the `metadata` form field is not valid
+            JSON for the BatchIngestUploadMetadata schema, or its `files`
+            length does not match the number of uploaded file parts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/documents/{document_id}:
     get:
       operationId: get_document
@@ -6052,6 +6142,180 @@ components:
           description: >-
             T-0152: On a dry-run, the existing edge that would be
             deleted. Null on a real-run.
+
+    # -------------------------------------------------------------------------
+    # Batch ingest (upload + SSE)
+    # -------------------------------------------------------------------------
+
+    BatchIngestFileMetadata:
+      type: object
+      description: >-
+        Per-file source type and optional parsed metadata for a bulk upload.
+        Aligned by position with the multipart file parts: the Nth entry in
+        BatchIngestUploadMetadata.files describes the Nth uploaded file.
+      required: [source_type]
+      properties:
+        source_type:
+          type: string
+          description: >-
+            Source artifact format for this file (closed SourceType
+            vocabulary: markdown, docx, xlsx, pdf). Must be an adapter enabled
+            on the target vault.
+        parsed_metadata:
+          type: object
+          additionalProperties: true
+          description: >-
+            Optional caller-supplied parsed metadata for this file (keys:
+            title, date, project, codes, version, doc_type). When omitted, the
+            file stem seeds the title and the vault's FilenameParser fills the
+            remaining fields.
+
+    BatchIngestUploadMetadata:
+      type: object
+      description: >-
+        JSON metadata envelope accompanying multipart batch-ingest uploads.
+        Sent as the `metadata` form field alongside the `files` parts of a
+        multipart/form-data batch-ingest request.
+      required: [files]
+      properties:
+        infer_edges:
+          type: boolean
+          description: >-
+            When true, run two-phase edge inference across the batch after
+            ingestion (Tier 1 supersedes via version_chain; Tier 2 covers via
+            filename_code_match). When false, no edges are inferred.
+        needs_review:
+          type: boolean
+          description: >-
+            When true (default), every document in the batch lands with
+            metadata_confirmed=false in the metadata-review queue
+            (CAS-ADR-021). When false, caller-supplied metadata is committed
+            as authoritative.
+        files:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchIngestFileMetadata"
+          description: >-
+            Per-file descriptors aligned by position with the uploaded file
+            parts. Length must equal the number of uploaded files.
+
+    DocumentsCreated:
+      type: object
+      description: Nested counter for SummaryEvent.documents_created.
+      required: [new, new_version]
+      properties:
+        new:
+          type: integer
+          description: Documents newly inserted this batch.
+        new_version:
+          type: integer
+          description: Documents inserted as a new version of an existing chain.
+
+    ProgressEvent:
+      type: object
+      description: >-
+        SSE `progress` event payload. Emitted on file start, completion,
+        and error during the per-file ingestion phase.
+      required: [event_type, file_index, total_files, filename, stage, status]
+      properties:
+        event_type:
+          type: string
+          enum: [progress]
+          description: Discriminator for the SSE event payload variant; always 'progress'.
+        file_index:
+          type: integer
+          description: Zero-based index of this file in the batch.
+        total_files:
+          type: integer
+          description: Total file count in the batch.
+        filename:
+          type: string
+          description: Filename this progress event refers to.
+        stage:
+          type: string
+          enum: [projection]
+          description: Pipeline stage the event applies to.
+        status:
+          type: string
+          enum: [started, completed, failed]
+          description: Per-file processing status the event reports.
+        document_id:
+          type: string
+          description: Set when status="completed". Document ID assigned by SAGE.
+        error:
+          type: string
+          description: Set when status="failed". Caller-facing error message.
+
+    SummaryEvent:
+      type: object
+      description: >-
+        SSE `summary` event payload. Emitted once at the end of the
+        batch, after all per-file events. Mirrors the IngestSummary
+        dataclass returned to non-streaming callers (MCP tool).
+      required:
+        - event_type
+        - documents_created
+        - metadata_pending
+        - edges_created
+        - edges_staged
+        - edges_removed
+        - edges_dropped
+        - abstracts_generated
+        - abstracts_deferred
+        - error_count
+        - errors
+      properties:
+        event_type:
+          type: string
+          enum: [summary]
+          description: Discriminator for the SSE event payload variant; always 'summary'.
+        documents_created:
+          $ref: "#/components/schemas/DocumentsCreated"
+        metadata_pending:
+          type: integer
+          description: >-
+            Count of documents in this batch whose extracted metadata is
+            not yet confirmed.
+        edges_created:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Tier 1 edges created in production, keyed by edge type.
+        edges_staged:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Tier 2 edges inserted into staging_edges, keyed by edge type.
+        edges_removed:
+          type: integer
+          description: Pre-existing edges removed during this batch (e.g. supersession cleanup).
+        edges_dropped:
+          type: integer
+          description: Edges in the original plan that were dropped because their referenced files failed to ingest.
+        abstracts_generated:
+          type: integer
+          description: Number of documents for which a semantic abstract was generated during this batch.
+        abstracts_deferred:
+          type: integer
+          description: >-
+            Documents for which abstraction was skipped (empty projection
+            or abstraction disabled in vault config).
+        error_count:
+          type: integer
+          description: Total number of per-file errors recorded during the batch.
+        errors:
+          type: array
+          items:
+            type: object
+            description: Per-file error record (filename, error message).
+          description: Per-file error records for files that failed to ingest in this batch.
+        edge_warnings:
+          type: array
+          items:
+            type: object
+          description: >-
+            Optional edge-inference warnings (e.g. ambiguous version
+            chains). Present only when warnings were produced.
 
     # -------------------------------------------------------------------------
     # Error Response

@@ -156,13 +156,25 @@ exclude_also = [
 fail_under = 89
 
 [tool.importlinter]
-root_packages = ["sage"]
+root_packages = ["sage", "app"]
 
 [[tool.importlinter.contracts]]
 name = "Services do not import from routers"
 type = "forbidden"
 source_modules = ["sage.services"]
 forbidden_modules = ["sage.api.routers"]
+
+[[tool.importlinter.contracts]]
+# The directory-scan and batch-ingest orchestration is substrate-resident
+# (sage.services.scan, sage.services.batch_ingest). The MCP app-tool
+# surface and the SAGE service layer must source it from there, never by
+# reaching back into the app layer. sage.app composing the BFF routers at
+# the co-located-profile root is a separate, allowed dependency.
+name = "App-facing tools and services source orchestration from sage, not app"
+type = "forbidden"
+source_modules = ["sage.app_tools", "sage.services"]
+forbidden_modules = ["app"]
+allow_indirect_imports = "true"
 
 [[tool.importlinter.contracts]]
 name = "Routers do not import from storage directly"

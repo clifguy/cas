@@ -12,9 +12,9 @@ import inspect
 from app.backend.ingest_streaming_service import _to_file_descriptor
 from app.backend.models import IngestFileItem
 from app.backend.models import ParsedMetadata as ApiParsedMetadata
-from app.backend.scan import ScanResult
 from app.backend.scan_service import _scan_result_to_response
 from sage.services.filename_parser import ParsedMetadata
+from sage.services.scan import ScanResult
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -76,7 +76,7 @@ class TestImportHygiene:
 
     def test_cl_002_scan_no_os_import(self) -> None:
         """CL-002: scan module should not import os."""
-        mod = importlib.import_module("app.backend.scan")
+        mod = importlib.import_module("sage.services.scan")
         source = inspect.getsource(mod)
         import_lines = [
             line.strip()

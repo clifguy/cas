@@ -69,7 +69,6 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 
-from app.backend.ingest_service import BatchIngestService, FileDescriptor
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -79,6 +78,7 @@ from sage.config import VaultConfig, identifier_mention_pattern_warnings
 from sage.mcp_init import SAGEServices
 from sage.models.enums import EdgeType, RationaleKind, SourceType
 from sage.models.schemas import Document, IngestRequest, LinkRequest
+from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.identifier_mention_inference import (
     IDENTIFIER_MENTION_RATIONALE_PREFIX,
     infer_identifier_mentions_for_document,
@@ -1028,7 +1028,7 @@ async def test_t9_batch_ingest_service_does_not_import_identifier_mention():
     """
     from pathlib import Path
 
-    text = Path("app/backend/ingest_service.py").read_text(encoding="utf-8")
+    text = Path("sage/services/batch_ingest.py").read_text(encoding="utf-8")
     assert "plan_identifier_mentions_for_document" not in text, (
         "BatchIngestService must not reference the legacy planning function"
     )

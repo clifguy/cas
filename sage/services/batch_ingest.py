@@ -1,12 +1,23 @@
-"""Shared batch ingestion service (BIS-001 through BIS-019).
+"""Batch ingestion orchestrator: the three-phase bulk-ingest pipeline.
 
 Owns the three-phase pipeline:
   Phase 1: Pre-ingest edge plan construction
   Phase 2: Per-file sequential ingestion
   Phase 3: Post-ingest edge resolution and execution
 
-Callers (MCP tool, FastAPI router) provide delivery glue -- JSON
-serialization or SSE streaming -- via optional progress callbacks.
+This is substrate-level orchestration over the SAGE service bundle: it
+composes ``IngestionService.ingest`` with the batch edge-inference
+primitives in ``sage.services.batch_inference`` and is consumed by
+every bulk-ingest caller -- the MCP tool surface, the in-process
+FastAPI delivery path, and the upload+stream REST endpoint. Callers
+provide delivery glue (JSON serialization or SSE streaming) via
+optional progress callbacks; this module stays free of HTTP coupling.
+
+The ``needs_review`` confirmation-queue policy is a caller input, not a
+substrate constant: ``run`` defaults it to ``True`` so the CAS
+bulk-ingest workflow (CAS-ADR-021) keeps surfacing inferred values for
+human confirmation, but a caller that wants caller-authoritative
+metadata may pass ``needs_review=False``.
 """
 
 from __future__ import annotations
@@ -117,37 +128,33 @@ class BatchIngestService:
         files: list[FileDescriptor],
         vault_services: SAGEServices,
         infer_edges: bool = True,
+        needs_review: bool = True,
         on_file_start: OnFileStart | None = None,
         on_file_done: OnFileDone | None = None,
         on_file_error: OnFileError | None = None,
     ) -> IngestSummary:
         """Execute the three-phase batch ingestion pipeline.
 
-        Hard-coded ``needs_review=True`` (CAS-ADR-021):
-        Every per-file ``IngestRequest`` issued by this service sets
-        ``needs_review=True`` unconditionally, regardless of caller
-        intent. Every document this service ingests therefore lands
-        with ``metadata_confirmed=False`` and is added to the
-        metadata-review queue — the opposite of
-        ``IngestionService.ingest``'s caller-authoritative default.
-        This is intentional under CAS-ADR-021: the CAS bulk-ingest
-        workflow surfaces inferred values for human confirmation, so
-        it explicitly opts every document into the confirmation
-        queue. See the inline comment at the ``IngestRequest``
-        construction site for the line where the flip is stamped.
+        ``needs_review`` (defaults to ``True``, CAS-ADR-021):
+        Each per-file ``IngestRequest`` issued by this service sets
+        ``needs_review`` to the caller-supplied value. The default of
+        ``True`` lands every document with ``metadata_confirmed=False``
+        in the metadata-review queue — the opposite of
+        ``IngestionService.ingest``'s caller-authoritative default — so
+        the CAS bulk-ingest workflow surfaces inferred values for human
+        confirmation. A caller that wants caller-authoritative metadata
+        passes ``needs_review=False``. See the inline comment at the
+        ``IngestRequest`` construction site.
 
-        Filename parsing always runs (consequence of the above):
-        Because ``needs_review=True`` is hard-coded, the vault's
-        ``FilenameParser`` runs on every file regardless of the
-        contents of ``FileDescriptor.parsed_metadata``. It may
-        populate ``date``, ``project``, ``codes``, ``version``, and
-        ``doc_type`` from the filename when the caller omits those
-        keys — the exact fields the parser extracts are
-        vault-config-defined under
+        Filename parsing always runs when ``needs_review=True``:
+        Because ``needs_review`` opts the document into the
+        confirmation queue, the vault's ``FilenameParser`` runs on every
+        file regardless of the contents of
+        ``FileDescriptor.parsed_metadata``. It may populate ``date``,
+        ``project``, ``codes``, ``version``, and ``doc_type`` from the
+        filename when the caller omits those keys — the exact fields the
+        parser extracts are vault-config-defined under
         ``metadata_extraction.filename_extraction.segment_fields``.
-        Callers wanting a no-filename-parser ingest path must call
-        ``IngestionService.ingest`` directly with
-        ``needs_review=False``.
 
         Per-file failure isolation (CAS-ADR-029):
         The batch is NOT atomic. Per-file exceptions are caught into
@@ -186,6 +193,8 @@ class BatchIngestService:
             files: Neutral file descriptors to ingest.
             vault_services: SAGE service bundle for the target vault.
             infer_edges: When True, run two-phase edge inference.
+            needs_review: When True (default), every per-file ingest
+                opts into the metadata-review queue.
             on_file_start: Optional callback before each file.
             on_file_done: Optional callback after successful ingestion.
             on_file_error: Optional callback on per-file failure.
@@ -222,9 +231,9 @@ class BatchIngestService:
                     # CAS-ADR-021: SAGE's default is to commit caller-
                     # supplied metadata as authoritative. The CAS bulk-
                     # ingest workflow surfaces inferred values for human
-                    # confirmation, so it explicitly opts the document
-                    # into the metadata-review queue.
-                    needs_review=True,
+                    # confirmation, so it opts the document into the
+                    # metadata-review queue (needs_review defaults True).
+                    needs_review=needs_review,
                 )
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,
@@ -281,8 +290,8 @@ class BatchIngestService:
     ) -> EdgePlan:
         """Phase 1: build edge plan from file descriptors.
 
-        The app layer's job is the ``FileDescriptor`` -> ``InferenceItem``
-        adapter; the vault-querying and rule application moved to the
+        The caller's job is the ``FileDescriptor`` -> ``InferenceItem``
+        adapter; the vault-querying and rule application live in the
         SAGE substrate (``sage.services.batch_inference``).
         """
         scan_items: list[InferenceItem] = []

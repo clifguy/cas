@@ -7,25 +7,28 @@ the typed aliases declared in the *CAS Typed-Alias Boundary
 Conventions* steering document.
 
 Coverage today: the scan chain (``ScanRequest``, ``ScanResponse``,
-``ScanResultResponse``, ``ParsedMetadata``), the ingest request body
-(``IngestRequest``, ``IngestFileItem``), the SSE event payloads
-(``ProgressEvent``, ``SummaryEvent``, ``DocumentsCreated``), and the
-shared ``ErrorResponse`` envelope (re-exported from
-``sage.models.schemas`` so /scan and /ingest error responses match
-the YAML).
+``ScanResultResponse``, ``ParsedMetadata``) and the ingest request body
+(``IngestRequest``, ``IngestFileItem``) are defined here. The SSE event
+payloads (``ProgressEvent``, ``SummaryEvent``, ``DocumentsCreated``) and
+the shared ``ErrorResponse`` envelope are re-exported from
+``sage.models.schemas``: the bulk-ingest SSE shape is substrate-resident
+so the co-located and hosted profiles emit identical events, and /scan
+and /ingest error responses match the YAML.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from sage.models.schemas import (
     DocumentDateStr,
-    DocumentIdStr,
+    DocumentsCreated,
     ErrorResponse,
+    ProgressEvent,
     Sha256Str,
+    SummaryEvent,
     VaultIdStr,
 )
 
@@ -156,107 +159,6 @@ class IngestRequest(BaseModel):
             "supersedes) and filename_code_match (Tier 2 covers) edge "
             "inference. When false, edges are not inferred; ingestion is "
             "otherwise unchanged."
-        ),
-    )
-
-
-class DocumentsCreated(BaseModel):
-    """Nested counter for ``SummaryEvent.documents_created``."""
-
-    new: int = Field(description="Documents newly inserted this batch.")
-    new_version: int = Field(
-        description="Documents inserted as a new version of an existing chain.",
-    )
-
-
-class ProgressEvent(BaseModel):
-    """SSE ``progress`` event payload.
-
-    Emitted on file start, completion, and error during the per-file
-    ingestion phase.
-    """
-
-    event_type: Literal["progress"] = Field(
-        description="Discriminator for the SSE event payload variant; always 'progress'.",
-    )
-    file_index: int = Field(description="Zero-based index of this file in the batch.")
-    total_files: int = Field(description="Total file count in the batch.")
-    filename: str = Field(description="Filename this progress event refers to.")
-    stage: Literal["projection"] = Field(
-        description="Pipeline stage the event applies to.",
-    )
-    status: Literal["started", "completed", "failed"] = Field(
-        description="Per-file processing status the event reports.",
-    )
-    document_id: DocumentIdStr | None = Field(
-        default=None,
-        description='Set when status="completed". Document ID assigned by SAGE.',
-    )
-    error: str | None = Field(
-        default=None,
-        description='Set when status="failed". Caller-facing error message.',
-    )
-
-
-class SummaryEvent(BaseModel):
-    """SSE ``summary`` event payload.
-
-    Emitted once at the end of the batch, after all per-file events.
-    Mirrors the ``IngestSummary`` dataclass returned to non-streaming
-    callers (MCP tool).
-    """
-
-    event_type: Literal["summary"] = Field(
-        description="Discriminator for the SSE event payload variant; always 'summary'.",
-    )
-    documents_created: DocumentsCreated = Field(
-        description=(
-            "Document-creation counts for this batch, split by whether the "
-            "document opens a chain or extends one."
-        ),
-    )
-    metadata_pending: int = Field(
-        description=(
-            "Count of documents in this batch whose extracted metadata is not yet confirmed."
-        ),
-    )
-    edges_created: dict[str, int] = Field(
-        description="Tier 1 edges created in production, keyed by edge type.",
-    )
-    edges_staged: dict[str, int] = Field(
-        description="Tier 2 edges inserted into staging_edges, keyed by edge type.",
-    )
-    edges_removed: int = Field(
-        description="Pre-existing edges removed during this batch (e.g. supersession cleanup).",
-    )
-    edges_dropped: int = Field(
-        description=(
-            "Edges in the original plan that were dropped because their "
-            "referenced files failed to ingest."
-        ),
-    )
-    abstracts_generated: int = Field(
-        description=(
-            "Number of documents for which a semantic abstract was generated during this batch."
-        ),
-    )
-    abstracts_deferred: int = Field(
-        description=(
-            "Documents for which abstraction was skipped (empty projection "
-            "or abstraction disabled in vault config)."
-        ),
-    )
-    error_count: int = Field(
-        description="Total number of per-file errors recorded during the batch.",
-    )
-    errors: list[dict[str, Any]] = Field(
-        description="Per-file error records for files that failed to ingest in this batch.",
-    )
-    edge_warnings: list[dict[str, Any]] | None = Field(
-        default=None,
-        description=(
-            "Optional edge-inference warnings (e.g. ambiguous version "
-            "chains). Present only when warnings were produced."
         ),
     )
 

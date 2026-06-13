@@ -3883,6 +3883,164 @@ class ReabstractSummaryEvent(BaseModel):
     )
 
 
+class BatchIngestFileMetadata(BaseModel):
+    """Per-file source type and optional parsed metadata for a bulk upload.
+
+    Aligned by position with the multipart file parts: the Nth entry in
+    ``BatchIngestUploadMetadata.files`` describes the Nth uploaded file.
+    """
+
+    source_type: str = Field(
+        description=(
+            "Source artifact format for this file (closed SourceType "
+            "vocabulary: markdown, docx, xlsx, pdf). Must be an adapter "
+            "enabled on the target vault."
+        )
+    )
+    parsed_metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional caller-supplied parsed metadata for this file (keys: "
+            "title, date, project, codes, version, doc_type). When omitted, "
+            "the file stem seeds the title and the vault's FilenameParser "
+            "fills the remaining fields."
+        ),
+    )
+
+
+class BatchIngestUploadMetadata(BaseModel):
+    """JSON metadata envelope accompanying multipart batch-ingest uploads.
+
+    Sent as the ``metadata`` form field alongside the ``files`` parts of a
+    multipart/form-data batch-ingest request.
+    """
+
+    infer_edges: bool = Field(
+        default=True,
+        description=(
+            "When true, run two-phase edge inference across the batch after "
+            "ingestion (Tier 1 supersedes via version_chain; Tier 2 covers "
+            "via filename_code_match). When false, no edges are inferred."
+        ),
+    )
+    needs_review: bool = Field(
+        default=True,
+        description=(
+            "When true (default), every document in the batch lands with "
+            "metadata_confirmed=false in the metadata-review queue "
+            "(CAS-ADR-021). When false, caller-supplied metadata is committed "
+            "as authoritative."
+        ),
+    )
+    files: list[BatchIngestFileMetadata] = Field(
+        description=(
+            "Per-file descriptors aligned by position with the uploaded file "
+            "parts. Length must equal the number of uploaded files."
+        ),
+    )
+
+
+class DocumentsCreated(BaseModel):
+    """Nested counter for ``SummaryEvent.documents_created``."""
+
+    new: int = Field(description="Documents newly inserted this batch.")
+    new_version: int = Field(
+        description="Documents inserted as a new version of an existing chain.",
+    )
+
+
+class ProgressEvent(BaseModel):
+    """SSE ``progress`` event payload.
+
+    Emitted on file start, completion, and error during the per-file
+    ingestion phase.
+    """
+
+    event_type: Literal["progress"] = Field(
+        description="Discriminator for the SSE event payload variant; always 'progress'.",
+    )
+    file_index: int = Field(description="Zero-based index of this file in the batch.")
+    total_files: int = Field(description="Total file count in the batch.")
+    filename: str = Field(description="Filename this progress event refers to.")
+    stage: Literal["projection"] = Field(
+        description="Pipeline stage the event applies to.",
+    )
+    status: Literal["started", "completed", "failed"] = Field(
+        description="Per-file processing status the event reports.",
+    )
+    document_id: DocumentIdStr | None = Field(
+        default=None,
+        description='Set when status="completed". Document ID assigned by SAGE.',
+    )
+    error: str | None = Field(
+        default=None,
+        description='Set when status="failed". Caller-facing error message.',
+    )
+
+
+class SummaryEvent(BaseModel):
+    """SSE ``summary`` event payload.
+
+    Emitted once at the end of the batch, after all per-file events.
+    Mirrors the ``IngestSummary`` dataclass returned to non-streaming
+    callers (MCP tool).
+    """
+
+    event_type: Literal["summary"] = Field(
+        description="Discriminator for the SSE event payload variant; always 'summary'.",
+    )
+    documents_created: DocumentsCreated = Field(
+        description=(
+            "Document-creation counts for this batch, split by whether the "
+            "document opens a chain or extends one."
+        ),
+    )
+    metadata_pending: int = Field(
+        description=(
+            "Count of documents in this batch whose extracted metadata is not yet confirmed."
+        ),
+    )
+    edges_created: dict[str, int] = Field(
+        description="Tier 1 edges created in production, keyed by edge type.",
+    )
+    edges_staged: dict[str, int] = Field(
+        description="Tier 2 edges inserted into staging_edges, keyed by edge type.",
+    )
+    edges_removed: int = Field(
+        description="Pre-existing edges removed during this batch (e.g. supersession cleanup).",
+    )
+    edges_dropped: int = Field(
+        description=(
+            "Edges in the original plan that were dropped because their "
+            "referenced files failed to ingest."
+        ),
+    )
+    abstracts_generated: int = Field(
+        description=(
+            "Number of documents for which a semantic abstract was generated during this batch."
+        ),
+    )
+    abstracts_deferred: int = Field(
+        description=(
+            "Documents for which abstraction was skipped (empty projection "
+            "or abstraction disabled in vault config)."
+        ),
+    )
+    error_count: int = Field(
+        description="Total number of per-file errors recorded during the batch.",
+    )
+    errors: list[dict[str, Any]] = Field(
+        description="Per-file error records for files that failed to ingest in this batch.",
+    )
+    edge_warnings: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Optional edge-inference warnings (e.g. ambiguous version "
+            "chains). Present only when warnings were produced."
+        ),
+    )
+
+
 class EvalRetrievalResult(BaseModel):
     vault_id: VaultIdStr = Field(
         description="Identifier of the vault whose assertions were evaluated."

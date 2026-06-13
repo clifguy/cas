@@ -251,6 +251,16 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
         "set_editors",
     ): "Editor-model write control; forward-declared per SAGE Architecture Ref §4.3/§6.3.",
     ("sage_core", "open_document"): "HTTP-only UI affordance.",
+    (
+        "sage_core",
+        "batch_ingest_documents",
+    ): (
+        "Multipart upload + SSE batch-ingest endpoint for the hosted profile "
+        "(content delivered by upload across the BFF/SAGE container boundary). "
+        "Has no stdio MCP counterpart: the path-based bulk_ingest_document MCP "
+        "tool serves the co-located local-filesystem case, and multipart file "
+        "upload has no MCP-transport equivalent (CAS-ADR-042)."
+    ),
     # Backend-for-frontend interactive sign-in: browser-facing redirect and
     # cookie flows that have no agent-facing MCP surface by design.
     (

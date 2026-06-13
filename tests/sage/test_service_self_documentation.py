@@ -25,7 +25,7 @@ import inspect
 import re
 from typing import Any
 
-from app.backend.ingest_service import BatchIngestService
+from sage.services.batch_ingest import BatchIngestService
 from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
@@ -417,23 +417,26 @@ def test_metadata_update_metadata_docstring_documents_empty_call_confirmation_fl
 # ---------------------------------------------------------------------------
 
 
-def test_batch_ingest_run_docstring_documents_hard_coded_needs_review():
-    """``BatchIngestService.run`` must document the hard-coded ``needs_review`` flip.
+def test_batch_ingest_run_docstring_documents_needs_review_default():
+    """``BatchIngestService.run`` must document the ``needs_review`` default policy.
 
-    Requires ``hard-coded`` (case-insensitive) and ``needs_review`` in
-    the same paragraph.
+    ``needs_review`` is a caller input that defaults to ``True`` (the
+    CAS bulk-ingest confirmation-queue policy, CAS-ADR-021), not a
+    substrate constant. The disclosure must bind the flag to its
+    governing ADR: ``needs_review`` and ``CAS-ADR-021`` in the same
+    paragraph.
 
     Anti-coincidental-pass: dropping the section heading or the body
     naming the flag breaks the proximity assertion.
     """
     doc = _docstring(BatchIngestService.run)
     proximity_satisfied = any(
-        "hard-coded" in p.lower() and "needs_review" in p for p in _paragraphs(doc)
+        "needs_review" in p and "cas-adr-021" in p.lower() for p in _paragraphs(doc)
     )
     assert proximity_satisfied, (
-        "BatchIngestService.run docstring must document the hard-coded "
-        "``needs_review=True`` override — ``hard-coded`` and "
-        "``needs_review`` must co-locate in the same paragraph."
+        "BatchIngestService.run docstring must document the "
+        "``needs_review`` confirmation-queue default — ``needs_review`` "
+        "and ``CAS-ADR-021`` must co-locate in the same paragraph."
     )
 
 
