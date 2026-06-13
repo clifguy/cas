@@ -98,17 +98,31 @@ The two subjects, shown as placeholders, are:
 - `repo:<OWNER>/<REPO>:pull_request`
 - `repo:<OWNER>/<REPO>:environment:azure-prod`
 
-### 3. Assign a least-privilege role
+### 3. Assign the deployment roles
 
-The deploy identity needs to create the resource group and the resources
-within it. `Contributor` at the subscription scope is the least built-in
-role that can create a resource group; once the group exists you may narrow
-later deployments to a resource-group-scoped assignment.
+The deploy identity creates the resource group and the resources within it —
+**and** the role assignments those resources carry (the Key Vault module grants
+the SAGE and CAS BFF managed identities data-plane read on the vault, and the
+container-app module grants them `AcrPull`). Creating a resource needs
+`Contributor`; creating a role assignment needs
+`Microsoft.Authorization/roleAssignments/write`, which `Contributor` does **not**
+include. The deploy therefore needs both capabilities, or it fails with
+`AuthorizationFailed` on the first module that assigns a role.
+
+Grant `Contributor` **and** `User Access Administrator` at the subscription
+scope — the least-privilege built-in pair that can both create the resource
+group and assign roles within it (`Owner` is the single-role alternative, but
+broader than required). Once the group exists you may narrow later deployments
+to a resource-group-scoped assignment of the same pair.
 
 ```bash
 az role assignment create \
   --assignee "$APP_ID" \
   --role Contributor \
+  --scope "/subscriptions/${SUBSCRIPTION_ID}"
+az role assignment create \
+  --assignee "$APP_ID" \
+  --role "User Access Administrator" \
   --scope "/subscriptions/${SUBSCRIPTION_ID}"
 ```
 
