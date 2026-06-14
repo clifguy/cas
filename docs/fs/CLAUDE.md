@@ -7,7 +7,7 @@ Executable specifications for CAS: API contracts, configuration schemas, data mo
 - All schemas use JSON Schema draft 2020-12 (`$schema: "https://json-schema.org/draft/2020-12/schema"`).
 - API specifications use OpenAPI 3.1.0.
 - Schema files use `.schema.json` extension; API specs use `.openapi.yaml`.
-- The root configuration schema (`sage/vault_config.schema.json`) uses `$ref` to compose the five SAGE sub-schemas.
+- The root configuration schema (`sage/vault_config.schema.json`) uses `$ref` to compose the SAGE vault sub-schemas (enumerated in `manifest.json`).
 - `manifest.json` is the inventory. Update it whenever schemas are added, removed, or promoted.
 
 ## Validation
