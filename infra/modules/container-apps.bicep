@@ -64,6 +64,9 @@ param bffIdentityPrincipalId string
 @description('Data-plane URI of the Key Vault the cloud profile reads its secrets from.')
 param keyVaultUri string
 
+@description('Canonical Key Vault secret name the BFF confidential-client secret is loaded under (single-sourced by the keyvault module).')
+param bffClientSecretName string
+
 @description('Fully qualified domain name of the managed Postgres server.')
 param postgresServerFqdn string
 
@@ -104,7 +107,7 @@ var bffDbUser = last(split(bffIdentityId, '/'))
 // Versionless Key Vault secret URL of the BFF confidential-client secret. The
 // secret value is loaded out of band by the documented operator step; the BFF
 // reads it at runtime via its managed identity, so no secret is carried here.
-var bffClientSecretUri = '${keyVaultUri}secrets/bff-client-secret'
+var bffClientSecretUri = '${keyVaultUri}secrets/${bffClientSecretName}'
 
 // The mounted cloud config (CAS-ADR-042). Assembled from the hosting modules'
 // outputs as YAML and projected into each app as a file the runtime loads

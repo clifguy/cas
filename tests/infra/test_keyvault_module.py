@@ -198,6 +198,20 @@ def test_keyvault_outputs_vault_uri_and_name() -> None:
     )
 
 
+def test_keyvault_outputs_bff_client_secret_name() -> None:
+    """The module owns the BFF confidential-client secret name as an output, so the
+    container-apps consumer and the operator load step single-source it rather than
+    each spelling the literal (mirrors ``anthropicSecretName`` / ``tlsCertificateName``).
+    """
+    outputs = _output_lines(KEYVAULT.read_text(encoding="utf-8"))
+    matches = [(n, rhs) for n, rhs in outputs if "bff" in n.lower() and "secret" in n.lower()]
+    assert matches, f"missing the BFF client-secret-name output; have {[n for n, _ in outputs]}"
+    _name, rhs = matches[0]
+    assert rhs == "'bff-client-secret'", (
+        f"the BFF client-secret-name output must be the canonical 'bff-client-secret'; got {rhs}"
+    )
+
+
 def test_keyvault_outputs_contain_no_secrets() -> None:
     """No output exposes secret material (a listKeys/secretref expression) or a
     literal identity GUID — a local mirror of ``outputs-should-not-contain-secrets``.

@@ -273,6 +273,39 @@ def test_no_secret_value_materialized_inline() -> None:
     )
 
 
+def test_bff_client_secret_url_built_from_param() -> None:
+    """The BFF client-secret Key Vault URL is assembled from a ``bffClientSecretName``
+    parameter (single-sourced by the keyvault module), not a hardcoded literal name —
+    so the name the operator load step must match lives in exactly one place. The
+    ACA-internal secret ``name``/``secretRef`` may stay local literals; only the Key
+    Vault URL must be param-built.
+    """
+    text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+bffClientSecretName\s+string", text), (
+        "container-apps.bicep must take a `bffClientSecretName` string parameter"
+    )
+    uri = re.search(r"bffClientSecretUri\s*=\s*'([^']*)'", text)
+    assert uri, "expected a bffClientSecretUri assignment building the Key Vault URL"
+    rhs = uri.group(1)
+    assert "${bffClientSecretName}" in rhs, (
+        f"the BFF client-secret Key Vault URL must interpolate the param; got {rhs!r}"
+    )
+    assert "secrets/bff-client-secret" not in rhs, (
+        f"the BFF client-secret Key Vault URL must not hardcode the secret name; got {rhs!r}"
+    )
+
+
+def test_main_threads_bff_client_secret_name() -> None:
+    """The orchestrator threads the keyvault module's ``bffClientSecretName`` output
+    into the container-apps module, so the single source of the secret name flows
+    end-to-end.
+    """
+    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    assert re.search(r"bffClientSecretName:\s*keyvault\.outputs\.bffClientSecretName", text), (
+        "main.bicep must thread keyvault.outputs.bffClientSecretName into container-apps"
+    )
+
+
 def test_outputs_expose_sage_fqdn_and_no_secrets() -> None:
     """The module exposes SAGE's container-app FQDN (the value the APIM backend
     resolves from) and leaks no secret or literal identity GUID through an output.

@@ -60,8 +60,8 @@ id at deploy time.
 The Key Vault module (`keyvault.bicep`) provisions the secrets vault under Azure
 RBAC, granting the SAGE and CAS BFF identities read of the secrets and
 certificates they consume, and exposes `keyVaultUri`, `keyVaultName`, and the
-canonical `anthropicSecretName` / `tlsCertificateName`. Secret values and the
-wildcard TLS certificate are loaded out of band per
+canonical `anthropicSecretName` / `tlsCertificateName` / `bffClientSecretName`.
+Secret values and the wildcard TLS certificate are loaded out of band per
 [`../../docs/process/key-vault-secrets.md`](../../docs/process/key-vault-secrets.md);
 no secret material is committed.
 
