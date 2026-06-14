@@ -262,6 +262,12 @@ def _ocr_to_tempfile(source_path: Path) -> Path:
             f"binaries (brew install tesseract ghostscript)."
         ) from e
 
+    # The intermediate raster ocrmypdf writes inherits ``tempfile.tempdir``
+    # (``$TMPDIR``). On macOS, leptonica (via tesseract/ocrmypdf) cannot read an
+    # image whose path is rooted under ``/tmp``: it rewrites a leading ``/tmp``
+    # to the Darwin per-user temp dir and then fails to open the file. If
+    # ``$TMPDIR`` resolves under ``/tmp``, point ``tempfile.tempdir`` elsewhere
+    # before calling this; the adapter does not yet enforce it.
     out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     out.close()
     try:

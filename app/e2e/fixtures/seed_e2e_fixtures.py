@@ -1,6 +1,11 @@
 """Seed the cas vault with three tag-scoped fixture documents for the
 Playwright bulk-actions spec.
 
+WARNING — CI-ONLY: this writes to the real `cas` vault (it ingests and
+archives documents). Playwright's global-setup runs it against a throwaway
+`cas` vault provisioned on a fresh CI runner; do not run it against a
+working `cas` vault.
+
 Usage:
     python app/e2e/fixtures/seed_e2e_fixtures.py [--backend http://localhost:8000]
 
