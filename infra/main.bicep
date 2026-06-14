@@ -192,6 +192,7 @@ module containerApps 'modules/container-apps.bicep' = {
     bffIdentityClientId: identity.outputs.bffIdentityClientId
     bffIdentityPrincipalId: identity.outputs.bffIdentityPrincipalId
     keyVaultUri: keyvault.outputs.keyVaultUri
+    bffClientSecretName: keyvault.outputs.bffClientSecretName
     postgresServerFqdn: postgres.outputs.postgresServerFqdn
     postgresDatabaseName: postgres.outputs.postgresDatabaseName
     sageAudience: sageAudience

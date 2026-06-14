@@ -120,3 +120,6 @@ output anthropicSecretName string = 'anthropic-api-key'
 
 @description('Canonical certificate name the owned wildcard TLS certificate is loaded under.')
 output tlsCertificateName string = 'wildcard-tls'
+
+@description('Canonical secret name the BFF confidential-client secret is loaded under.')
+output bffClientSecretName string = 'bff-client-secret'
