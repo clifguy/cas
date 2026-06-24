@@ -19,6 +19,7 @@ import contextlib
 import hashlib
 import io
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -33,6 +34,11 @@ from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapt
 _DEFAULT_MAX_PAGES = 1000
 _OUTLINE_MAX_DEPTH = 10
 _TITLE_MAX_LINE_CHARS = 120
+
+# Path prefixes leptonica (via tesseract/ocrmypdf) cannot read on macOS: it
+# rewrites a leading ``/tmp`` in an image path to the Darwin per-user temp dir
+# and then fails to open the file.
+_TMP_PREFIXES = ("/tmp", "/private/tmp")  # noqa: S108 -- comparison target, not a write path
 
 
 _CID_PATTERN = re.compile(r"\(cid:(\d+)\)")
@@ -244,6 +250,49 @@ def _extract_from_path(
     return page_texts, outline_entries, info_title, actual_page_count, pages_extracted
 
 
+def _safe_ocr_tempdir() -> str | None:
+    """Return a non-``/tmp`` directory for OCR intermediates, or ``None``.
+
+    ``ocrmypdf`` builds the intermediate page raster under ``tempfile.tempdir``
+    and hands its path to tesseract. On macOS, leptonica cannot read an image
+    rooted under ``/tmp`` (see ``_TMP_PREFIXES``), so when the process temp dir
+    resolves under ``/tmp`` the raster must be routed elsewhere: ``$TMPDIR``
+    when it is itself off ``/tmp``, otherwise ``~/.cache``. Returns ``None``
+    (a no-op signal) when the temp dir is already safe.
+    """
+    if not tempfile.gettempdir().startswith(_TMP_PREFIXES):
+        return None
+    env_tmp = os.environ.get("TMPDIR") or ""
+    if env_tmp and not env_tmp.startswith(_TMP_PREFIXES):
+        base = env_tmp
+    else:
+        base = os.path.expanduser("~/.cache")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+@contextlib.contextmanager
+def _ocr_tempdir_off_tmp():
+    """Scope ``tempfile.tempdir`` off ``/tmp`` for an OCR call, or no-op.
+
+    A near no-op where the process temp dir already resolves off ``/tmp``
+    (``_safe_ocr_tempdir`` returns ``None``); otherwise point
+    ``tempfile.tempdir`` at the safe base for the duration of the call so the
+    intermediate raster ocrmypdf writes lands where leptonica can read it,
+    restoring the prior value afterward.
+    """
+    base = _safe_ocr_tempdir()
+    if base is None:
+        yield
+        return
+    saved = tempfile.tempdir
+    tempfile.tempdir = base
+    try:
+        yield
+    finally:
+        tempfile.tempdir = saved
+
+
 def _ocr_to_tempfile(source_path: Path) -> Path:
     """OCR ``source_path`` to a new tempfile and return the tempfile path.
 
@@ -252,6 +301,10 @@ def _ocr_to_tempfile(source_path: Path) -> Path:
     ocrmypdf runtime error unlinks the tempfile and re-raises as
     ValueError. The caller is responsible for unlinking the returned
     tempfile on success.
+
+    The output tempfile and the intermediate raster are routed off ``/tmp``
+    via ``_ocr_tempdir_off_tmp`` so OCR succeeds when ``$TMPDIR`` resolves
+    under ``/tmp`` (leptonica cannot read a ``/tmp``-rooted image on macOS).
     """
     try:
         import ocrmypdf
@@ -262,25 +315,20 @@ def _ocr_to_tempfile(source_path: Path) -> Path:
             f"binaries (brew install tesseract ghostscript)."
         ) from e
 
-    # The intermediate raster ocrmypdf writes inherits ``tempfile.tempdir``
-    # (``$TMPDIR``). On macOS, leptonica (via tesseract/ocrmypdf) cannot read an
-    # image whose path is rooted under ``/tmp``: it rewrites a leading ``/tmp``
-    # to the Darwin per-user temp dir and then fails to open the file. If
-    # ``$TMPDIR`` resolves under ``/tmp``, point ``tempfile.tempdir`` elsewhere
-    # before calling this; the adapter does not yet enforce it.
-    out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    out.close()
-    try:
-        ocrmypdf.ocr(
-            str(source_path),
-            out.name,
-            language="eng",
-            progress_bar=False,
-            quiet=True,
-        )
-    except Exception as e:
-        Path(out.name).unlink(missing_ok=True)
-        raise ValueError(f"OCR failed for {source_path}: {e}") from e
+    with _ocr_tempdir_off_tmp():
+        out = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        out.close()
+        try:
+            ocrmypdf.ocr(
+                str(source_path),
+                out.name,
+                language="eng",
+                progress_bar=False,
+                quiet=True,
+            )
+        except Exception as e:
+            Path(out.name).unlink(missing_ok=True)
+            raise ValueError(f"OCR failed for {source_path}: {e}") from e
     return Path(out.name)
 
 
