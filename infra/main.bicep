@@ -80,6 +80,7 @@ module foundation 'modules/foundation.bicep' = {
     location: location
     environmentName: environmentName
     tags: tags
+    bffIdentityId: identity.outputs.bffIdentityId
   }
 }
 

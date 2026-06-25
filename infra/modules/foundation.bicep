@@ -22,6 +22,9 @@ param environmentName string
 @description('Tags applied to every foundation resource.')
 param tags object
 
+@description('Resource id of the BFF user-assigned managed identity to register on the Container Apps environment, so environment-scoped resources (custom-domain certificates) can bind it at deploy time.')
+param bffIdentityId string
+
 @description('Address space of the hosting virtual network.')
 param vnetAddressPrefix string = '10.20.0.0/16'
 
@@ -109,6 +112,12 @@ resource acaEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: 'cae-${environmentName}'
   location: location
   tags: tags
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${bffIdentityId}': {}
+    }
+  }
   properties: {
     appLogsConfiguration: {
       destination: 'log-analytics'

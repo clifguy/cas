@@ -66,7 +66,7 @@ var apimName = 'apim-${environmentName}-${uniqueString(resourceGroup().id)}'
 
 // The public edge. External (no VNet integration): it is the front door, and
 // the foundation's ACA environment already exposes public ingress.
-resource apimService 'Microsoft.ApiManagement/service@2023-05-01' = {
+resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
   name: apimName
   location: location
   tags: tags
@@ -109,7 +109,7 @@ resource apimService 'Microsoft.ApiManagement/service@2023-05-01' = {
 // XML references as {{...}} tokens. The tenant is derived from the deployment
 // context; the audience is supplied; the resource URL is the gateway's own
 // public address (the resource_metadata location advertised to MCP clients).
-resource entraTenantIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01' = {
+resource entraTenantIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'entra-tenant-id'
   properties: {
@@ -119,7 +119,7 @@ resource entraTenantIdNamedValue 'Microsoft.ApiManagement/service/namedValues@20
   }
 }
 
-resource sageAudienceNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01' = {
+resource sageAudienceNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'sage-audience'
   properties: {
@@ -129,7 +129,7 @@ resource sageAudienceNamedValue 'Microsoft.ApiManagement/service/namedValues@202
   }
 }
 
-resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-05-01' = {
+resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'sage-resource-url'
   properties: {
@@ -141,7 +141,7 @@ resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@
 
 // The SAGE backend the facade routes to. The hostname is resolved at deploy
 // time; certificate chain and name are validated on the upstream call.
-resource sageBackend 'Microsoft.ApiManagement/service/backends@2023-05-01' = {
+resource sageBackend 'Microsoft.ApiManagement/service/backends@2022-08-01' = {
   parent: apimService
   name: 'sage-backend'
   properties: {
@@ -160,7 +160,7 @@ resource sageBackend 'Microsoft.ApiManagement/service/backends@2023-05-01' = {
 // forwards every method and path; the inbound policy routes forwarded requests
 // to the backend above (set-backend-service), gates access, serves discovery,
 // and denies the maintenance mount.
-resource sageApi 'Microsoft.ApiManagement/service/apis@2023-05-01' = {
+resource sageApi 'Microsoft.ApiManagement/service/apis@2022-08-01' = {
   parent: apimService
   name: 'sage'
   properties: {
@@ -173,7 +173,7 @@ resource sageApi 'Microsoft.ApiManagement/service/apis@2023-05-01' = {
   }
 }
 
-resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2023-05-01' = {
+resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
   parent: sageApi
   name: 'catch-all'
   properties: {
@@ -187,7 +187,7 @@ resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2023-0
 // The inbound JWT / discovery / admin-deny pipeline, authored as versioned XML.
 // The policy names the backend by id (set-backend-service), so it depends on
 // the backend existing first.
-resource sageApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-05-01' = {
+resource sageApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2022-08-01' = {
   parent: sageApi
   name: 'policy'
   properties: {

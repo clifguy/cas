@@ -40,6 +40,12 @@ _APIM_SERVICE_TYPE: Final[str] = "Microsoft.ApiManagement/service"
 _APIM_API_TYPE: Final[str] = "Microsoft.ApiManagement/service/apis"
 _APIM_BACKEND_TYPE: Final[str] = "Microsoft.ApiManagement/service/backends"
 
+# The stable API Management API version every resource must pin. A bare
+# 2023-05-01 exists only in its ``-preview`` form (the stable form raises BCP081
+# against the public type index); 2022-08-01 is the real stable version.
+_APIM_STABLE_API_VERSION: Final[str] = "2022-08-01"
+_APIM_NONEXISTENT_API_VERSION: Final[str] = "2023-05-01"
+
 # The maintenance mount that must never reach the public backend.
 _ADMIN_MOUNT: Final[str] = "/mcp_admin"
 
@@ -91,6 +97,16 @@ def _declares_resource_type(text: str, resource_type: str) -> bool:
     """
     pattern = re.compile(r"resource\s+\w+\s+'" + re.escape(resource_type) + r"@[0-9A-Za-z-]+'")
     return pattern.search(_strip_line_comments(text)) is not None
+
+
+def _apim_resource_api_versions(text: str) -> list[str]:
+    """Return the ``@<version>`` of every ``Microsoft.ApiManagement/...`` resource
+    declaration, in source order.
+
+    Reads the comment-stripped text so a commented-out declaration does not count.
+    """
+    pattern = re.compile(r"resource\s+\w+\s+'Microsoft\.ApiManagement/[^']*@([0-9A-Za-z-]+)'")
+    return pattern.findall(_strip_line_comments(text))
 
 
 def _output_lines(text: str) -> list[tuple[str, str]]:
@@ -176,6 +192,25 @@ def test_apim_declares_api_and_backend() -> None:
     )
     assert _declares_resource_type(text, _APIM_BACKEND_TYPE), (
         f"apim.bicep must declare a {_APIM_BACKEND_TYPE} resource (the SAGE backend)"
+    )
+
+
+def test_apim_resources_use_existing_stable_api_version() -> None:
+    """Every API Management resource pins the real stable API version. The
+    previously used @2023-05-01 has no stable form (only ``-preview``), so it
+    raises BCP081 and must appear nowhere in the module.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    versions = _apim_resource_api_versions(text)
+    assert versions, "expected at least one Microsoft.ApiManagement resource declaration"
+    offenders = sorted({v for v in versions if v != _APIM_STABLE_API_VERSION})
+    assert not offenders, (
+        f"every APIM resource must use @{_APIM_STABLE_API_VERSION}; "
+        f"found other version(s): {offenders}"
+    )
+    assert _APIM_NONEXISTENT_API_VERSION not in _strip_line_comments(text), (
+        f"the non-existent stable @{_APIM_NONEXISTENT_API_VERSION} must not appear "
+        "in apim.bicep (it raises BCP081)"
     )
 
 
@@ -421,6 +456,21 @@ def test_resource_type_detector_controls() -> None:
     commented = "// resource svc 'Microsoft.ApiManagement/service@2023-05-01' = {\n"
     assert _declares_resource_type(declared, _APIM_SERVICE_TYPE)
     assert not _declares_resource_type(commented, _APIM_SERVICE_TYPE)
+
+
+def test_apim_api_version_detector_controls() -> None:
+    """``_apim_resource_api_versions`` extracts only APIM resource versions, in
+    source order, and ignores non-APIM resources and commented declarations — so
+    the version gate cannot pass coincidentally on an empty or mis-scoped match.
+    """
+    sample = (
+        "resource a 'Microsoft.ApiManagement/service@2022-08-01' = {}\n"
+        "resource b 'Microsoft.ApiManagement/service/apis@2023-05-01' = {}\n"
+        "resource c 'Microsoft.Storage/storageAccounts@2023-01-01' = {}\n"
+    )
+    assert _apim_resource_api_versions(sample) == ["2022-08-01", "2023-05-01"]
+    commented = "// resource d 'Microsoft.ApiManagement/service@2022-08-01' = {}\n"
+    assert _apim_resource_api_versions(commented) == []
 
 
 def test_secret_output_detector_controls() -> None:
