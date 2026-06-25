@@ -115,6 +115,46 @@ def _output_secret_violations(text: str) -> list[tuple[str, str]]:
     return violations
 
 
+def _resource_block(text: str, symbol: str) -> str:
+    """Return the body of the ``resource <symbol> '...' = {`` declaration.
+
+    Slices from the resource keyword to the next top-level declaration
+    (``resource`` / ``module`` / ``output`` at column 0) or end of file, so an
+    assertion can be scoped to a single resource — an identity block on some
+    *other* resource must not satisfy a check meant for this one. Returns ``""``
+    when the symbol is not declared.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(rf"^resource\s+{re.escape(symbol)}\b", stripped, re.MULTILINE)
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|module|output)\b", rest, re.MULTILINE)
+    return rest if nxt is None else rest[: nxt.start()]
+
+
+def _module_block(text: str, module_rel_path: str) -> str:
+    """Return the body of the ``module <symbol> '<module_rel_path>' = {`` block.
+
+    The same top-level slice as :func:`_resource_block`, keyed by a module's
+    source path. Scopes a wiring assertion to a single module call: the
+    orchestrator passes one identity output to more than one module, so a bare
+    substring check would pass coincidentally against the wrong call. Returns
+    ``""`` when no module wires that path.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(
+        r"^module\s+\w+\s+'" + re.escape(module_rel_path) + r"'\s*=",
+        stripped,
+        re.MULTILINE,
+    )
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|module|output)\b", rest, re.MULTILINE)
+    return rest if nxt is None else rest[: nxt.start()]
+
+
 # ---------------------------------------------------------------------------
 # Structural / posture gates
 # ---------------------------------------------------------------------------
@@ -260,6 +300,43 @@ def test_main_bicep_wires_foundation_module() -> None:
     assert re.search(r"scope:\s*rg", text), "the foundation module must be scoped to rg"
 
 
+def test_foundation_aca_environment_registers_bff_identity() -> None:
+    """The ACA environment registers the BFF user-assigned identity, keyed by the
+    ``bffIdentityId`` parameter. Without this registration the environment is
+    created bare and the custom-domains certificate binding fails at deploy time
+    with ``ManagedEnvironmentIdentityNotExist``.
+    """
+    text = FOUNDATION.read_text(encoding="utf-8")
+    assert re.search(r"param\s+bffIdentityId\s+string", text), (
+        "foundation.bicep must take a `bffIdentityId` string parameter"
+    )
+    block = _resource_block(text, "acaEnvironment")
+    assert block, "could not locate the acaEnvironment resource block"
+    assert re.search(r"type:\s*'UserAssigned'", block), (
+        "the ACA environment must declare a UserAssigned managed identity"
+    )
+    assert "userAssignedIdentities" in block, (
+        "the ACA environment identity must set a userAssignedIdentities map"
+    )
+    assert "${bffIdentityId}" in block, (
+        "the userAssignedIdentities map must be keyed by the bffIdentityId parameter"
+    )
+
+
+def test_main_bicep_wires_bff_identity_into_foundation() -> None:
+    """The orchestrator feeds the BFF identity id from the identity module into
+    the foundation module — the wiring that registers the identity on the ACA
+    environment. Scoped to the foundation module block because main.bicep passes
+    the same output to the custom-domains module too, so a bare substring check
+    would pass coincidentally against the wrong call.
+    """
+    block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/foundation.bicep")
+    assert block, "could not locate the foundation module block in main.bicep"
+    assert re.search(r"bffIdentityId:\s*identity\.outputs\.bffIdentityId", block), (
+        "the foundation module must receive bffIdentityId from identity.outputs"
+    )
+
+
 @pytest.mark.skipif(
     shutil.which("bicep") is None and shutil.which("az") is None,
     reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
@@ -319,3 +396,45 @@ def test_comment_stripper_controls() -> None:
     assert "module foundation" not in _strip_line_comments(commented)
     live = "module foundation 'modules/foundation.bicep' = {"
     assert "module foundation" in _strip_line_comments(live)
+
+
+def test_resource_block_detector_controls() -> None:
+    """``_resource_block`` returns one resource's body and does not bleed into the
+    next; returns "" for an absent symbol.
+    """
+    sample = (
+        "resource a 'X@2024-01-01' = {\n"
+        "  identity: { type: 'UserAssigned' }\n"
+        "}\n"
+        "resource b 'Y@2024-01-01' = {\n"
+        "  name: 'sentinel'\n"
+        "}\n"
+    )
+    a_block = _resource_block(sample, "a")
+    assert "UserAssigned" in a_block, "the slice must contain resource a's own body"
+    assert "sentinel" not in a_block, "the slice must not bleed into resource b"
+    assert _resource_block(sample, "missing") == ""
+
+
+def test_module_block_detector_controls() -> None:
+    """``_module_block`` isolates one module call from another that shares a param
+    expression — the foundation-vs-custom-domains coincidence the wiring gate must
+    defeat; returns "" for an unwired path.
+    """
+    sample = (
+        "module foundation 'modules/foundation.bicep' = {\n"
+        "  params: {\n"
+        "    bffIdentityId: identity.outputs.bffIdentityId\n"
+        "  }\n"
+        "}\n"
+        "module customDomains 'modules/custom-domains.bicep' = {\n"
+        "  params: {\n"
+        "    bffIdentityId: identity.outputs.bffIdentityId\n"
+        "    sentinel: true\n"
+        "  }\n"
+        "}\n"
+    )
+    fb = _module_block(sample, "modules/foundation.bicep")
+    assert "bffIdentityId" in fb, "the slice must contain the foundation params"
+    assert "sentinel" not in fb, "the slice must not bleed into the custom-domains block"
+    assert _module_block(sample, "modules/missing.bicep") == ""
