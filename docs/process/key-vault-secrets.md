@@ -12,15 +12,18 @@ What the vault holds:
 
 - **`anthropic-api-key`** — the hosted abstraction provider's API key, read at
   runtime by the SAGE container app via its managed identity.
+- **`bff-client-secret`** — the BFF OIDC client secret (the Entra app
+  registration credential), read at runtime by the BFF container app via its
+  managed identity.
 - **`wildcard-tls`** — the owned wildcard TLS certificate, sourced by the
   custom-domain bindings.
 
 The database connection authenticates by **managed identity**, so there is no
 database password secret to load.
 
-The secret and certificate names above are fixed: they are the `anthropicSecretName`
-and `tlsCertificateName` outputs of the Key Vault module, and downstream
-configuration builds Key Vault references from them. Use them verbatim.
+The secret and certificate names above are fixed: they are the `anthropicSecretName`,
+`bffClientSecretName`, and `tlsCertificateName` outputs of the Key Vault module, and
+downstream configuration builds Key Vault references from them. Use them verbatim.
 
 At runtime the SAGE container app finds the vault and identity through two
 non-secret environment coordinates the container app injects: `SAGE_KEY_VAULT_URI`
@@ -61,6 +64,17 @@ unset ANTHROPIC_API_KEY
 Setting the same secret again adds a new version (the rotation path); the apps
 resolve the current version.
 
+## Load the BFF OIDC client secret
+
+Read the value from a secure source — do not paste it into shell history. The
+example reads it from an environment variable that is `unset` immediately after:
+
+```bash
+az keyvault secret set --vault-name "$KV" --name bff-client-secret \
+  --value "$BFF_CLIENT_SECRET"
+unset BFF_CLIENT_SECRET
+```
+
 ## Import the wildcard TLS certificate
 
 Import the owned wildcard certificate from a PFX/PKCS#12 bundle:
@@ -77,6 +91,8 @@ bindings pick up the current version.
 
 ```bash
 az keyvault secret show --vault-name "$KV" --name anthropic-api-key \
+  --query 'attributes.enabled' -o tsv   # -> true
+az keyvault secret show --vault-name "$KV" --name bff-client-secret \
   --query 'attributes.enabled' -o tsv   # -> true
 az keyvault certificate show --vault-name "$KV" --name wildcard-tls \
   --query 'id' -o tsv                   # -> the certificate id
