@@ -24,7 +24,7 @@ jobs:
     outputs:
       app: ${{ steps.f.outputs.app }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
         id: f
         with:
@@ -61,7 +61,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history + tags so setuptools-scm can compute the VCS-derived
           # version; a shallow checkout has no tags and falls to fallback_version.
@@ -136,7 +136,7 @@ jobs:
       contents: read
       id-token: write  # OIDC token for ACR push on main
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history + tags so build_info's git describe can compute the
           # release version baked into the image as SAGE_BUILD_VERSION.
@@ -166,7 +166,7 @@ jobs:
           echo "sage_build_version=${SAGE_BUILD_VERSION}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build SAGE image
         env:
@@ -213,7 +213,7 @@ jobs:
           && github.ref == 'refs/heads/main'
           && vars.AZURE_CLIENT_ID != ''
           && vars.ACR_LOGIN_SERVER != ''
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -244,7 +244,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -296,7 +296,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/ruff-action@v4.0.0
         with:
@@ -311,7 +311,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history + tags so setuptools-scm can compute the VCS-derived
           # version; a shallow checkout has no tags and falls to fallback_version.
@@ -345,7 +345,7 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
@@ -383,7 +383,7 @@ jobs:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history + tags so setuptools-scm can compute the VCS-derived
           # version; a shallow checkout has no tags and falls to fallback_version.

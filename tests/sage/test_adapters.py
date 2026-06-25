@@ -2669,41 +2669,6 @@ requires_ocr = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def ocr_tempdir_off_tmp():
-    """Run an OCR test with the process temp dir pointed off ``/tmp``.
-
-    On macOS, leptonica (invoked by tesseract under ocrmypdf) rewrites a
-    leading ``/tmp`` in image paths to the Darwin per-user temp directory, so
-    it cannot read the intermediate page raster ocrmypdf writes when
-    ``tempfile.gettempdir()`` resolves under ``/tmp`` (e.g. when ``TMPDIR``
-    points at a ``/tmp``-rooted path). Point ``tempfile.tempdir`` at a
-    non-``/tmp`` directory for the duration of the test so the OCR pre-pass can
-    run; pytest's ``tmp_path`` -- used only for the *input* PDF, which
-    ghostscript reads, not leptonica -- is deliberately left untouched. A near
-    no-op where the temp dir already resolves off ``/tmp``.
-    """
-    import os
-    import shutil
-    import tempfile
-
-    env_tmp = os.environ.get("TMPDIR") or ""
-    if env_tmp and not env_tmp.startswith(("/tmp", "/private/tmp")):
-        base = env_tmp
-    else:
-        base = os.path.expanduser("~/.cache")
-    os.makedirs(base, exist_ok=True)
-
-    work = tempfile.mkdtemp(prefix="cas-ocr-", dir=base)
-    saved = tempfile.tempdir
-    tempfile.tempdir = work
-    try:
-        yield work
-    finally:
-        tempfile.tempdir = saved
-        shutil.rmtree(work, ignore_errors=True)
-
-
 def _draw_paragraph_lines(c, lines: list[str], start_y: int = 750) -> None:
     """Draw lines of text on the current page, top-down."""
     y = start_y
@@ -3151,7 +3116,6 @@ class TestPdfAdapter:
 
     @requires_pdf_with_image
     @requires_ocr
-    @pytest.mark.usefixtures("ocr_tempdir_off_tmp")
     async def test_ad_088_scanned_pdf_produces_text_with_ocr_applied_tag(self, tmp_path):
         """AD-088: Scanned PDF gets inline OCR; projection has text and pdf:ocr_applied."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -3168,7 +3132,6 @@ class TestPdfAdapter:
 
     @requires_pdf_with_image
     @requires_ocr
-    @pytest.mark.usefixtures("ocr_tempdir_off_tmp")
     async def test_ad_089_adapter_tag_prefixes_declared(self, tmp_path):
         """AD-089: adapter_tag_prefixes declares ['pdf:'] for the OCR'd path too."""
         from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -3301,6 +3264,85 @@ class TestPdfAdapter:
         assert "pdf:ocr_no_text" in adapter_tags
         assert "pdf:ocr_applied" not in adapter_tags
         assert "pdf:scanned" not in adapter_tags
+
+    @pytest.mark.parametrize(
+        "tempdir, env_tmpdir, expected_kind",
+        [
+            ("/tmp", "/tmp/x", "cache"),  # (A) under /tmp, $TMPDIR under /tmp -> ~/.cache
+            ("/tmp", "/var/folders/safe", "env"),  # (B) under /tmp, $TMPDIR off /tmp -> $TMPDIR
+            ("/var/folders/zz", "/tmp/x", "none"),  # (C) already off /tmp -> no-op (None)
+        ],
+    )
+    async def test_ad_107_safe_ocr_tempdir_selection(
+        self, monkeypatch, tempdir, env_tmpdir, expected_kind
+    ):
+        """AD-107: _safe_ocr_tempdir picks a non-/tmp base only when the process
+        temp dir resolves under /tmp; otherwise it is a no-op."""
+        import os
+        import tempfile
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+
+        # Keep the selector hermetic: never touch the real filesystem.
+        monkeypatch.setattr(pdf_adapter_mod.os, "makedirs", lambda *a, **k: None)
+        monkeypatch.setattr(tempfile, "tempdir", tempdir, raising=False)
+        monkeypatch.setenv("TMPDIR", env_tmpdir)
+
+        result = pdf_adapter_mod._safe_ocr_tempdir()
+
+        if expected_kind == "cache":
+            assert result == os.path.expanduser("~/.cache")
+            assert not result.startswith(("/tmp", "/private/tmp"))
+        elif expected_kind == "env":
+            assert result == env_tmpdir
+            assert not result.startswith(("/tmp", "/private/tmp"))
+        else:
+            assert result is None
+
+    async def test_ad_108_ocr_intermediate_raster_routed_off_tmp(self, tmp_path, monkeypatch):
+        """AD-108: _ocr_to_tempfile routes the OCR intermediate raster and the
+        output tempfile off /tmp when the process temp dir resolves under /tmp
+        (leptonica cannot read a /tmp-rooted raster on macOS)."""
+        import sys
+        import tempfile
+        import types
+        from pathlib import Path
+
+        from sage.source_adapters import pdf_adapter as pdf_adapter_mod
+
+        # Force the failure precondition: process temp dir under /tmp.
+        monkeypatch.setattr(tempfile, "tempdir", "/tmp", raising=False)
+        monkeypatch.setenv("TMPDIR", "/tmp/cas-regress")
+
+        # Positive control: prove the precondition is real, so a pass below
+        # reflects the adapter's rerouting, not a coincidentally-safe env.
+        assert tempfile.gettempdir().startswith("/tmp")
+
+        # Fake ocrmypdf records the effective tempdir at the moment ocr() runs.
+        seen: dict[str, str] = {}
+        fake_ocrmypdf = types.ModuleType("ocrmypdf")
+
+        def _spy_ocr(input_path, output_path, *args, **kwargs):
+            seen["tempdir"] = tempfile.gettempdir()
+            Path(output_path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+        fake_ocrmypdf.ocr = _spy_ocr
+        monkeypatch.setitem(sys.modules, "ocrmypdf", fake_ocrmypdf)
+
+        src = tmp_path / "scanned.pdf"
+        src.write_bytes(b"%PDF-1.4 dummy")
+
+        out = pdf_adapter_mod._ocr_to_tempfile(src)
+        try:
+            assert "tempdir" in seen, "ocrmypdf.ocr must have been invoked"
+            assert not seen["tempdir"].startswith(("/tmp", "/private/tmp")), (
+                "OCR intermediates must be routed off /tmp"
+            )
+            assert not str(out).startswith(("/tmp", "/private/tmp")), (
+                "OCR output tempfile must be routed off /tmp"
+            )
+        finally:
+            out.unlink(missing_ok=True)
 
     # ── Section 8.6 — Failure modes ──────────────────────────────
 
