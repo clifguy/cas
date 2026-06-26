@@ -27,7 +27,10 @@ import pytest
 
 from sage.config import StackDocumentStoreConfig, VaultConfig
 from sage.vault_source_binding import DiscoveredVault, DocumentStoreVaultSourceStore
-from sage.vault_source_document_store import SharePointGraphClient
+from sage.vault_source_document_store import (
+    SharePointGraphClient,
+    build_sharepoint_graph_client,
+)
 
 _SITE = "contoso.sharepoint.com,site-guid,web-guid"
 _DRIVE = "b!drive-id"
@@ -464,6 +467,81 @@ def test_vsb_ds_013_client_requires_configured_site_and_drive():
     )
     with pytest.raises(RuntimeError, match="site_id"):
         client.list_vault_ids()
+
+
+class _StubToken:
+    token = "tok"
+
+
+class _StubCredential:
+    """Offline stand-in for ``DefaultAzureCredential``: mints a fixed token."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def get_token(self, *scopes, **kwargs) -> _StubToken:
+        return _StubToken()
+
+
+def _built_client(handler, monkeypatch) -> SharePointGraphClient:
+    """Build the client through the production builder, wiring its ``httpx.Client``
+    to a ``MockTransport`` and stubbing the managed-identity credential.
+
+    Exercises the builder's *own* client construction -- crucially its
+    ``follow_redirects`` setting -- rather than a client hand-built by the test, so
+    a builder that does not follow redirects is caught.
+    """
+    transport = httpx.MockTransport(handler)
+    real_client_cls = httpx.Client
+    monkeypatch.setattr("azure.identity.DefaultAzureCredential", _StubCredential)
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda *a, **kw: real_client_cls(*a, **{**kw, "transport": transport}),
+    )
+    config = StackDocumentStoreConfig(site_id=_SITE, drive_id=_DRIVE)
+    return build_sharepoint_graph_client(config)
+
+
+def test_vsb_ds_021_content_reads_follow_graph_302_redirect(monkeypatch):
+    """Graph's ``.../:/content`` endpoint answers a content GET with a 302 to a
+    short-lived download URL; the built client must follow it and return the body.
+
+    Reproduces the live cloud failure: a deployed SAGE *discovered* a seeded vault
+    (the children and metadata endpoints answer 200 JSON with no redirect) but every
+    content GET -- config and source bytes -- received the empty-bodied 302, whose
+    302 status clears both the ``== 404`` and ``>= 400`` guards, so the reads
+    returned ``b""`` and config loading parsed an empty document. The happy-path
+    mocked-Graph tests missed it because they answer the content endpoint with the
+    body directly, never a redirect.
+
+    Anti-coincidental-pass: the client is built through the production builder with
+    the redirect served by the transport, so a builder that does not enable
+    ``follow_redirects`` yields the empty 302 body and every assertion fails. Drives
+    all three content reads -- ``read_config_bytes``, ``read_source_bytes``, and the
+    streamed ``hash_source_bytes``.
+    """
+    body = b"vault:\n  id: vault_a\n  name: Vault A\n"
+    download_host = "download.sharepoint.example"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "graph.microsoft.com":
+            # The content endpoint redirects to a short-lived, pre-signed download
+            # URL on a different host -- exactly Graph's behavior.
+            return httpx.Response(
+                302, headers={"Location": f"https://{download_host}/blob?sig=abc"}
+            )
+        # The download URL serves the real bytes. httpx strips Authorization across
+        # the host hop, matching the pre-signed URL contract.
+        return httpx.Response(200, content=body)
+
+    client = _built_client(handler, monkeypatch)
+
+    assert client.read_config_bytes("vault_a") == body
+    assert client.read_source_bytes("vault_a", "imports/x.md") == body
+    assert client.hash_source_bytes("vault_a", "imports/x.md") == (
+        "sha256:" + hashlib.sha256(body).hexdigest()
+    )
 
 
 def test_vsb_ds_020_graph_client_builder_resolves_in_clean_interpreter():
