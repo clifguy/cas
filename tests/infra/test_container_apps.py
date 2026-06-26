@@ -243,6 +243,37 @@ def test_sage_injects_its_runtime_coordinates() -> None:
     assert "keyVaultUri" in text, "SAGE_KEY_VAULT_URI must be bound to the keyVaultUri param"
 
 
+def test_sage_config_selects_document_store_vault_source() -> None:
+    """The assembled SAGE cloud config selects the document-store vault-source
+    binding and carries the SharePoint coordinates threaded from the module params
+    (CAS-ADR-043), so a cloud vault's declaration is durable across a restart.
+
+    Anti-coincidental-pass: assert both the ``document_store`` selection *and* the
+    coordinate block bound to the params — a config that flipped the selector but
+    omitted the block (or vice versa) would leave the binding unconfigured.
+    """
+    keys = _config_keys(CONTAINER_APPS.read_text(encoding="utf-8"))
+    assert "document_store" in keys, "the SAGE config must carry a document_store block"
+    text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
+    assert re.search(r"'vault_source_backend:\s*document_store'", text), (
+        "the SAGE config must select vault_source_backend: document_store"
+    )
+    assert "${sharepointSiteId}" in text, "site_id must bind the sharepointSiteId param"
+    assert "${sharepointDriveId}" in text, "drive_id must bind the sharepointDriveId param"
+    assert "${vaultSourceRootPath}" in text, "root_path must bind the vaultSourceRootPath param"
+
+
+def test_main_threads_sharepoint_coordinates_into_container_apps() -> None:
+    """main.bicep wires the SharePoint coordinate params into the container-apps
+    module, so the single source of each coordinate flows end-to-end.
+    """
+    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    for param in ("sharepointSiteId", "sharepointDriveId", "vaultSourceRootPath"):
+        assert re.search(rf"{param}:\s*{param}", text), (
+            f"main.bicep must thread {param} into the container-apps module"
+        )
+
+
 def test_bff_injects_its_runtime_coordinates() -> None:
     """The BFF receives its Entra client coordinates and the SAGE upstream; its
     confidential client secret is a Key Vault reference, never an inline value.

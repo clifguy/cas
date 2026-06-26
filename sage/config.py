@@ -375,6 +375,57 @@ class StackPostgresConfig(BaseModel):
     )
 
 
+class StackDocumentStoreConfig(BaseModel):
+    """Coordinates for the cloud document-store vault-source binding (CAS-ADR-043).
+
+    Non-secret SharePoint / Microsoft Graph coordinates the document-store
+    binding addresses when ``vault_source_backend`` selects ``document_store``:
+    the single site that hosts the vault tree, the document library (drive)
+    within it, and the folder under that library the vault tree is rooted at.
+    Authentication is the workload's managed identity under an application
+    permission scoped to this one site (least privilege); no secret is carried
+    here. Consumed by the live vault-source binding and its Graph client.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    site_id: str | None = Field(
+        default=None,
+        description=(
+            "Microsoft Graph site identifier of the single SharePoint site "
+            "that hosts the vault tree. The application permission is scoped to "
+            "this one site (least privilege), never a tenant-wide grant. "
+            "Required when 'vault_source_backend' is 'document_store'."
+        ),
+    )
+    drive_id: str | None = Field(
+        default=None,
+        description=(
+            "Microsoft Graph drive identifier of the document library within "
+            "the site that holds the vault tree. Required when "
+            "'vault_source_backend' is 'document_store'."
+        ),
+    )
+    root_path: str = Field(
+        default="vaults",
+        description=(
+            "Folder path within the document library the vault tree is rooted "
+            "at; each vault's configuration declaration is persisted at "
+            "'<root_path>/<vault_id>/vault_config.yaml'. Empty selects the "
+            "library root."
+        ),
+    )
+    graph_scope: str = Field(
+        default="https://graph.microsoft.com/.default",
+        description=(
+            "OAuth scope the managed-identity credential requests when minting "
+            "the Microsoft Graph access token. The '.default' scope grants the "
+            "application permissions already consented for the workload's "
+            "identity."
+        ),
+    )
+
+
 class StackAuthConfig(BaseModel):
     """Stack-wide OAuth resource-server configuration (CAS-ADR-042).
 
@@ -567,6 +618,19 @@ class SageCoreConfig(BaseModel):
             "schema bootstrap; it is consumed by the live storage binding "
             "(when 'storage_backend' selects 'postgres'), the provisioning "
             "CLI, and the storage test harness."
+        ),
+    )
+    document_store: StackDocumentStoreConfig = Field(
+        default_factory=StackDocumentStoreConfig,
+        description=(
+            "Coordinates for the cloud document-store vault-source binding "
+            "(CAS-ADR-043). Consumed by the live vault-source binding when "
+            "'vault_source_backend' selects 'document_store': the SharePoint "
+            "site, document library, and root folder the vault tree is "
+            "persisted to, addressed over Microsoft Graph under the workload's "
+            "managed identity. Non-secret coordinates only; the binding "
+            "authenticates with the managed identity and carries no secret. "
+            "Ignored when the filesystem binding is selected."
         ),
     )
     auth: StackAuthConfig | None = Field(

@@ -80,12 +80,20 @@ booting a half-configured stack.
 |---|---|---|
 | `SAGE_BUILD_VERSION` | Baked release version reported by a `.git`-less image | build arg |
 | `SAGE_CONFIG_PATH` | Stack-config source (overrides the packaged default) | the baked smoke-minimal config |
-| `SAGE_VAULT_ROOT` | Vault discovery root | `/var/lib/sage/vaults` |
+| `SAGE_VAULT_ROOT` | Vault discovery root (filesystem binding only) | `/var/lib/sage/vaults` |
 | `SAGE_KEY_VAULT_URI` | Key Vault data-plane URI the cloud profile reads secrets from | unset |
 | `AZURE_CLIENT_ID` | Client id of the managed identity the cloud profile authenticates with | unset |
 | `ANTHROPIC_API_KEY` | Hosted abstraction provider key — `local`-profile env path only | unset |
 | `SAGE_PG_PASSWORD` | Postgres password for a TCP endpoint — `local`-profile env path only | unset |
 | `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | Force offline model loading (weights are baked) | `1` |
+
+> `SAGE_VAULT_ROOT` is the local vault tree the **filesystem** vault-source
+> binding discovers and writes (CAS-ADR-043). Under the cloud profile the
+> container filesystem is ephemeral, so the cloud config selects
+> `vault_source_backend: document_store`: each vault's configuration declaration
+> is persisted to a SharePoint document library over Microsoft Graph and survives
+> a restart, and the vault root is no longer the durable seam. See
+> `docs/process/sharepoint-vault-source.md`.
 
 ## Health check
 

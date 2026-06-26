@@ -94,6 +94,15 @@ param abstractionModel string = 'claude-haiku-4-5'
 @description('Tenant id that issues the tokens the cloud profile validates.')
 param tenantId string = subscription().tenantId
 
+@description('Microsoft Graph site id of the SharePoint site hosting the cloud vault tree (the document-store vault-source binding, CAS-ADR-043). Empty leaves the coordinate unset until the runbook resolves it.')
+param sharepointSiteId string = ''
+
+@description('Microsoft Graph drive id of the SharePoint document library holding the cloud vault tree (CAS-ADR-043).')
+param sharepointDriveId string = ''
+
+@description('Folder path within the SharePoint document library the vault tree is rooted at (CAS-ADR-043).')
+param vaultSourceRootPath string = 'vaults'
+
 // Built-in Azure role: AcrPull (data-plane image pull). A public, fixed
 // constant — not an identity coordinate.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d' // gitleaks:allow public role id
@@ -118,6 +127,12 @@ var bffClientSecretUri = '${keyVaultUri}secrets/${bffClientSecretName}'
 var sageConfigLines = [
   'profile: cloud'
   'storage_backend: postgres'
+  // CAS-ADR-043: the cloud profile persists each vault's configuration
+  // declaration to a SharePoint document library over Microsoft Graph, so a
+  // vault survives the stateless compute's restart. This removes the prior
+  // reliance on the ephemeral local vault root: the durable vault-source seam is
+  // now the document store, not the container filesystem.
+  'vault_source_backend: document_store'
   'abstraction:'
   '  provider: anthropic'
   '  model: ${abstractionModel}'
@@ -127,6 +142,10 @@ var sageConfigLines = [
   '  database: ${postgresDatabaseName}'
   '  user: ${sageDbUser}'
   '  sslmode: require'
+  'document_store:'
+  '  site_id: ${sharepointSiteId}'
+  '  drive_id: ${sharepointDriveId}'
+  '  root_path: ${vaultSourceRootPath}'
   'auth:'
   '  enabled: true'
   '  tenant_id: ${tenantId}'

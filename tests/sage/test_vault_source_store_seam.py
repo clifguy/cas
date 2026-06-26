@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.config import StackDocumentStoreConfig
 from sage.vault_source_binding import (
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
@@ -79,7 +80,7 @@ def test_vss_t3_document_store_stub_is_concrete():
     instantiation below would raise."""
     assert issubclass(DocumentStoreVaultSourceStore, VaultSourceStore)
     assert not inspect.isabstract(DocumentStoreVaultSourceStore)
-    DocumentStoreVaultSourceStore()  # must not raise
+    DocumentStoreVaultSourceStore(StackDocumentStoreConfig())  # must not raise
 
 
 @pytest.mark.parametrize("binding", _BINDINGS)

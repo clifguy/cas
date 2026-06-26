@@ -55,6 +55,15 @@ param postgresAadAdminPrincipalName string = ''
 @description('Type of the Postgres Entra administrator principal: User, Group, or ServicePrincipal.')
 param postgresAadAdminPrincipalType string = 'Group'
 
+@description('Microsoft Graph site id of the SharePoint site that hosts the cloud vault tree (the document-store vault-source binding, CAS-ADR-043). Supplied at deploy time; empty leaves the binding unconfigured (the runbook grants the site-scoped permission and resolves this id).')
+param sharepointSiteId string = ''
+
+@description('Microsoft Graph drive id of the SharePoint document library that holds the cloud vault tree (CAS-ADR-043). Supplied at deploy time alongside the site id.')
+param sharepointDriveId string = ''
+
+@description('Folder path within the SharePoint document library the vault tree is rooted at (CAS-ADR-043).')
+param vaultSourceRootPath string = 'vaults'
+
 // Custom-domain hostnames derive from the owned base domain; the wildcard
 // certificate (*.${baseDomain}) covers both. The certificate's Key Vault secret
 // URL is built once from the vault module's outputs and shared by both bindings
@@ -203,6 +212,9 @@ module containerApps 'modules/container-apps.bicep' = {
     casHostname: casHostname
     casCertificateId: customDomains.outputs.casCertificateId
     abstractionModel: abstractionModel
+    sharepointSiteId: sharepointSiteId
+    sharepointDriveId: sharepointDriveId
+    vaultSourceRootPath: vaultSourceRootPath
   }
 }
 

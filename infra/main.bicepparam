@@ -31,3 +31,12 @@ param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
 // in Key Vault as wildcard-tls) covers both hostnames. DNS lives in AWS Route
 // 53 and is published manually — see docs/process/custom-domains-dns.md.
 param baseDomain = 'REPLACE-WITH-OWNED-DOMAIN'
+
+// Document-store vault-source binding coordinates (CAS-ADR-043). The SharePoint
+// site and document-library drive ids that host the cloud vault tree; the
+// operator resolves them after granting the SAGE managed identity the
+// site-scoped Microsoft Graph permission — see
+// docs/process/sharepoint-vault-source.md. Left as placeholders until then; the
+// root path defaults to 'vaults'.
+param sharepointSiteId = 'REPLACE-WITH-SHAREPOINT-SITE-ID'
+param sharepointDriveId = 'REPLACE-WITH-SHAREPOINT-DRIVE-ID'
