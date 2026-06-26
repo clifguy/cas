@@ -85,9 +85,10 @@ module foundation 'modules/foundation.bicep' = {
 }
 
 // The API Management facade: the public edge for SAGE's REST and MCP surfaces.
-// It validates Entra JWTs, serves the MCP OAuth discovery handshake, and keeps
-// the maintenance mount off the public edge. The backend hostname and audience
-// are resolved when the SAGE container app and Entra registration are concrete.
+// It validates Entra JWTs uniformly across every surface (the maintenance mount
+// included) and serves the MCP OAuth discovery handshake. The backend hostname
+// and audience are resolved when the SAGE container app and Entra registration
+// are concrete.
 module apim 'modules/apim.bicep' = {
   name: 'apim'
   scope: rg

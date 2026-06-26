@@ -3,10 +3,10 @@
 // Provisions the public edge for SAGE in the cloud deployment profile
 // (CAS-ADR-042): an API Management service fronting SAGE's REST and MCP
 // surfaces. The facade validates Entra-issued JWTs (one issuer, one audience,
-// uniform across REST and MCP), serves the MCP OAuth discovery handshake that
-// the bare container ingress cannot, and keeps the maintenance mount off the
-// public edge. The CAS BFF does not go through the facade — it uses the
-// container ingress directly.
+// uniform across every surface — the REST API, the ordinary MCP mount, and the
+// maintenance mount alike) and serves the MCP OAuth discovery handshake that
+// the bare container ingress cannot. The CAS BFF does not go through the
+// facade — it uses the container ingress directly.
 //
 // Resource-group scoped (the Bicep default): the orchestrator deploys it with
 // scope: rg. The backend hostname and the SAGE audience arrive as parameters,
@@ -158,8 +158,8 @@ resource sageBackend 'Microsoft.ApiManagement/service/backends@2022-08-01' = {
 // The SAGE API at the gateway root. Authorization is the Entra JWT (no APIM
 // subscription key), so subscriptionRequired is false. A catch-all operation
 // per HTTP method forwards every method and path; the inbound policy routes
-// forwarded requests to the backend above (set-backend-service), gates access,
-// serves discovery, and denies the maintenance mount.
+// forwarded requests to the backend above (set-backend-service), gates access
+// uniformly across every surface, and serves discovery.
 resource sageApi 'Microsoft.ApiManagement/service/apis@2022-08-01' = {
   parent: apimService
   name: 'sage'
