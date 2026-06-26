@@ -1,0 +1,37 @@
+name: Dependabot triage
+
+# Surfaces actionable Dependabot alerts (a fix is published, advisory not on the
+# accepted-risk allowlist) as a single tracking issue. The built-in Actions
+# token cannot read the Dependabot alerts endpoint, so the read uses a
+# fine-grained PAT in the DEPENDABOT_ALERTS_TOKEN secret; the script skips
+# (exit 0) when that secret is absent, leaving this workflow dormant until it is
+# provisioned. Issue writes use the least-privilege GITHUB_TOKEN.
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"  # Mondays 08:00 UTC, after the weekly Dependabot run
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+      - run: uv sync --locked
+      - run: .venv/bin/python -m scripts.triage_dependabot_alerts
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_DEPENDABOT_TOKEN: ${{ secrets.DEPENDABOT_ALERTS_TOKEN }}
