@@ -308,7 +308,7 @@ export function IdentityEditor({
 
 // --- Document Types ---
 
-function DocTypesEditor({
+export function DocTypesEditor({
   docTypes, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { docTypes: DocTypeConfig[]; onSave: (data: DocTypeConfig[]) => void }) {
   const [draft, setDraft] = useState<DocTypeConfig[]>(docTypes);
@@ -377,7 +377,7 @@ function DocTypesEditor({
 
 // --- Lifecycle ---
 
-function LifecycleEditor({
+export function LifecycleEditor({
   lifecycle, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & {
   lifecycle: { base_states_required: boolean; states: LifecycleStateConfig[]; transitions: LifecycleTransitionConfig[] };
@@ -547,7 +547,7 @@ export function JsonEditor({
 
 // --- Abstraction ---
 
-function AbstractionEditor({
+export function AbstractionEditor({
   config, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { config: VaultAbstractionConfig; onSave: (data: VaultAbstractionConfig) => void }) {
   const [draft, setDraft] = useState<VaultAbstractionConfig>(config);

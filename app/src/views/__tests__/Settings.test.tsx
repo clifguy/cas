@@ -9,9 +9,22 @@ vi.mock('../../api/vaults', () => ({
   updateVaultConfig: vi.fn(),
 }));
 
-import Settings, { IdentityEditor, JsonEditor } from '../Settings';
+import Settings, {
+  IdentityEditor,
+  JsonEditor,
+  DocTypesEditor,
+  LifecycleEditor,
+  AbstractionEditor,
+} from '../Settings';
 import { getVaultConfig, updateVaultConfig } from '../../api/vaults';
-import type { VaultConfig, VaultIdentityConfig } from '../../api/types';
+import type {
+  VaultConfig,
+  VaultIdentityConfig,
+  DocTypeConfig,
+  LifecycleStateConfig,
+  LifecycleTransitionConfig,
+  VaultAbstractionConfig,
+} from '../../api/types';
 import type { VaultContext } from '../../App';
 
 function makeVaultConfig(overrides: Partial<VaultIdentityConfig> = {}): VaultConfig {
@@ -190,5 +203,117 @@ describe('Settings editors — draft resync when a fresh prop arrives', () => {
     );
     // Anti-stale guard: the superseded local edit must NOT linger.
     expect(textarea).not.toHaveValue('locally dirtied draft');
+  });
+
+  it('DocTypesEditor re-seeds the editable draft from a refetched doc-type set', async () => {
+    const user = userEvent.setup();
+    function DocTypesHarness({ docTypes }: { docTypes: DocTypeConfig[] }) {
+      const [editing, setEditing] = useState(false);
+      return (
+        <DocTypesEditor
+          docTypes={docTypes}
+          editing={editing}
+          onEdit={() => setEditing(true)}
+          onCancel={() => setEditing(false)}
+          onSave={() => setEditing(false)}
+          saving={false}
+        />
+      );
+    }
+
+    const original: DocTypeConfig[] = [{ value: 'stale_type', label: 'Stale', description: '' }];
+    const { rerender } = render(<DocTypesHarness docTypes={original} />);
+
+    // Enter edit mode: the controlled inputs render the draft.
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(screen.getByDisplayValue('stale_type')).toBeInTheDocument();
+
+    // The refetch delivers a different doc-type set while the editor stays mounted.
+    const refetched: DocTypeConfig[] = [{ value: 'fresh_type', label: 'Fresh', description: '' }];
+    rerender(<DocTypesHarness docTypes={refetched} />);
+
+    await waitFor(() => expect(screen.getByDisplayValue('fresh_type')).toBeInTheDocument());
+    // Anti-stale guard: the prior draft value must be gone.
+    expect(screen.queryByDisplayValue('stale_type')).not.toBeInTheDocument();
+  });
+
+  it('LifecycleEditor re-seeds both states and transitions from a refetched lifecycle', async () => {
+    const user = userEvent.setup();
+    type Lifecycle = {
+      base_states_required: boolean;
+      states: LifecycleStateConfig[];
+      transitions: LifecycleTransitionConfig[];
+    };
+    function LifecycleHarness({ lifecycle }: { lifecycle: Lifecycle }) {
+      const [editing, setEditing] = useState(false);
+      return (
+        <LifecycleEditor
+          lifecycle={lifecycle}
+          editing={editing}
+          onEdit={() => setEditing(true)}
+          onCancel={() => setEditing(false)}
+          onSave={() => setEditing(false)}
+          saving={false}
+        />
+      );
+    }
+
+    const original: Lifecycle = {
+      base_states_required: true,
+      states: [{ value: 'stale_state', label: 'Stale State' }],
+      transitions: [{ from_state: 'stale_from', action: 'stale_action', to_state: 'stale_to' }],
+    };
+    const { rerender } = render(<LifecycleHarness lifecycle={original} />);
+
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(screen.getByDisplayValue('stale_state')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('stale_action')).toBeInTheDocument();
+
+    const refetched: Lifecycle = {
+      base_states_required: true,
+      states: [{ value: 'fresh_state', label: 'Fresh State' }],
+      transitions: [{ from_state: 'fresh_from', action: 'fresh_action', to_state: 'fresh_to' }],
+    };
+    rerender(<LifecycleHarness lifecycle={refetched} />);
+
+    // Covers BOTH resync setters: setStates (states table) and setTransitions
+    // (transitions table). Removing either leaves its half stale.
+    await waitFor(() => expect(screen.getByDisplayValue('fresh_state')).toBeInTheDocument());
+    expect(screen.getByDisplayValue('fresh_action')).toBeInTheDocument();
+    expect(screen.queryByDisplayValue('stale_state')).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('stale_action')).not.toBeInTheDocument();
+  });
+
+  it('AbstractionEditor re-seeds the editable draft from a refetched config', async () => {
+    const user = userEvent.setup();
+    function AbstractionHarness({ config }: { config: VaultAbstractionConfig }) {
+      const [editing, setEditing] = useState(false);
+      return (
+        <AbstractionEditor
+          config={config}
+          editing={editing}
+          onEdit={() => setEditing(true)}
+          onCancel={() => setEditing(false)}
+          onSave={() => setEditing(false)}
+          saving={false}
+        />
+      );
+    }
+
+    const original: VaultAbstractionConfig = { enabled: false, max_abstract_tokens: 100 };
+    const { rerender } = render(<AbstractionHarness config={original} />);
+
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(screen.getByRole('spinbutton')).toHaveValue(100);
+    expect(screen.getByRole('checkbox')).not.toBeChecked();
+
+    // The refetch delivers a fresh config (both fields changed) while mounted.
+    const refetched: VaultAbstractionConfig = { enabled: true, max_abstract_tokens: 500 };
+    rerender(<AbstractionHarness config={refetched} />);
+
+    await waitFor(() => expect(screen.getByRole('spinbutton')).toHaveValue(500));
+    // Anti-stale guards across both fields.
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByRole('spinbutton')).not.toHaveValue(100);
   });
 });

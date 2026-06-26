@@ -344,7 +344,7 @@ export function MetadataReview({
 
 // -- Edge Review --
 
-function EdgeReview({ vaultId, edges }: { vaultId: string; edges: StagingEdge[] }) {
+export function EdgeReview({ vaultId, edges }: { vaultId: string; edges: StagingEdge[] }) {
   const [staging, setStaging] = useState(edges);
   const [edgeErrors, setEdgeErrors] = useState<Record<string, string>>({});
 

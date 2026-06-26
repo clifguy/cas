@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, Outlet } from 'react-router-dom';
-import Review, { MetadataReview } from '../Review';
+import Review, { MetadataReview, EdgeReview } from '../Review';
 import type { VaultContext } from '../../App';
 import type {
   Document,
@@ -320,5 +320,35 @@ describe('Review view: MetadataReview resyncs its queue on a fresh items prop', 
     await waitFor(() => expect(screen.getByText('Fresh Doc')).toBeInTheDocument());
     // Anti-stale guard: the prior queue contents must be gone.
     expect(screen.queryByText('Stale Doc')).not.toBeInTheDocument();
+  });
+});
+
+// EdgeReview seeds its `staging` list from the `edges` prop and re-seeds it when
+// a fresh `edges` object arrives. Like MetadataReview, the parent `loading` gate
+// remounts it on every refetch, so the resync is exercised here by rendering
+// EdgeReview directly and delivering a new prop via `rerender` while mounted.
+describe('Review view: EdgeReview resyncs its staging list on a fresh edges prop', () => {
+  function EdgeHarness({ edges }: { edges: StagingEdge[] }) {
+    return (
+      <MemoryRouter>
+        <EdgeReview vaultId="test_vault" edges={edges} />
+      </MemoryRouter>
+    );
+  }
+
+  // The source_id renders as link text, so it is the cleanest distinguishing handle.
+  function edgeWith(id: string, source_id: string): StagingEdge {
+    return { ...makeStagingEdge(id), source_id };
+  }
+
+  it('re-seeds the rendered list when a refetch delivers a different edge set', async () => {
+    const { rerender } = render(<EdgeHarness edges={[edgeWith('E1', 'StaleSource')]} />);
+    expect(screen.getByText('StaleSource')).toBeInTheDocument();
+
+    rerender(<EdgeHarness edges={[edgeWith('E2', 'FreshSource')]} />);
+
+    await waitFor(() => expect(screen.getByText('FreshSource')).toBeInTheDocument());
+    // Anti-stale guard: the prior staging contents must be gone.
+    expect(screen.queryByText('StaleSource')).not.toBeInTheDocument();
   });
 });
