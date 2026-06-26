@@ -19,8 +19,11 @@ The following CI jobs from [`.github/workflows/ci.yml`](../../.github/workflows/
 | `lint` | Ruff `check` and `format --check` over the repo. |
 | `lint-imports` | `import-linter` contract enforcement. |
 | `gitleaks` | Secret-scanning over the full commit history. |
+| `eslint` | Frontend eslint (`npm run lint` = `eslint . --max-warnings 0`) over `app/`. |
 
-These four names match the `jobs:` keys in `ci.yml` verbatim. If a job is renamed, this document and the corresponding ruleset definition must be updated together.
+These five names match the `jobs:` keys in `ci.yml` verbatim. If a job is renamed, this document and the corresponding ruleset definition must be updated together.
+
+Unlike the four Python jobs, `eslint` is **path-gated** on `app/**` (via the `paths-filter` job, like `vitest`/`playwright-e2e`): a pull request that touches no `app/` files skips the job, and GitHub counts a skipped required check as satisfied. The gate therefore blocks a merge only when the change can affect frontend lint, while remaining mandatory whenever `app/` is touched.
 
 ## Required reviews
 
@@ -60,7 +63,8 @@ The following is the live ruleset definition (captured via `gh api repos/<owner>
           { "context": "test",         "integration_id": 15368 },
           { "context": "lint",         "integration_id": 15368 },
           { "context": "lint-imports", "integration_id": 15368 },
-          { "context": "gitleaks",     "integration_id": 15368 }
+          { "context": "gitleaks",     "integration_id": 15368 },
+          { "context": "eslint",       "integration_id": 15368 }
         ]
       }
     },

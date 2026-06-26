@@ -17,17 +17,19 @@ export default function Dashboard() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    setLoading(true);
-    setError('');
-    getVaultStats(vaultId)
-      .then(data => {
+    async function load() {
+      setLoading(true);
+      setError('');
+      try {
+        const data = await getVaultStats(vaultId);
         setStats(data);
         setLoading(false);
-      })
-      .catch(err => {
-        setError(err.message ?? 'Failed to load stats');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load stats');
         setLoading(false);
-      });
+      }
+    }
+    load();
   }, [vaultId]);
 
   if (!vault) return <div>Vault not found.</div>;

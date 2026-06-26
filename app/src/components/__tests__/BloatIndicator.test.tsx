@@ -9,7 +9,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import BloatIndicator, { bloatState } from '../BloatIndicator';
+import BloatIndicator from '../BloatIndicator';
+import { bloatState } from '../../utils/bloat';
 
 describe('bloatState version-count boundaries (small fragments clean)', () => {
   it('returns ok below 20', () => {

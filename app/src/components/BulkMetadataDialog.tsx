@@ -40,11 +40,19 @@ export function BulkMetadataDialog({ vaultId, selectedIds, onResolved, onClose }
   const setEntries = tier3Set.filter((r) => r.key.trim() !== '');
   const unsetList = splitCSV(tier3Unset);
 
-  const tagsOverlap = useMemo(() => addList.filter((t) => removeList.includes(t)), [tagsAdd, tagsRemove]);
-  const tier3Overlap = useMemo(
-    () => setEntries.map((r) => r.key.trim()).filter((k) => unsetList.includes(k)),
-    [tier3Set, tier3Unset],
-  );
+  // Derive the source lists inside each memo so the dependency arrays stay
+  // exhaustive on the underlying state (the outer addList/removeList/etc. are
+  // fresh arrays each render and would defeat memoization if listed).
+  const tagsOverlap = useMemo(() => {
+    const adds = splitCSV(tagsAdd);
+    const removes = splitCSV(tagsRemove);
+    return adds.filter((t) => removes.includes(t));
+  }, [tagsAdd, tagsRemove]);
+  const tier3Overlap = useMemo(() => {
+    const keys = tier3Set.filter((r) => r.key.trim() !== '').map((r) => r.key.trim());
+    const unsets = splitCSV(tier3Unset);
+    return keys.filter((k) => unsets.includes(k));
+  }, [tier3Set, tier3Unset]);
 
   const hasAnyOp = addList.length > 0 || removeList.length > 0 || setEntries.length > 0 || unsetList.length > 0;
   const hasOverlap = tagsOverlap.length > 0 || tier3Overlap.length > 0;

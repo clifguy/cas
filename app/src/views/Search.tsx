@@ -6,6 +6,7 @@ import { discover } from '../api/discover';
 import { BulkActionBar } from '../components/BulkActionBar';
 import { BulkLifecycleDialog } from '../components/BulkLifecycleDialog';
 import { BulkMetadataDialog } from '../components/BulkMetadataDialog';
+import { formatDate } from '../utils/format';
 
 const PAGE_SIZE = 50;
 
@@ -48,13 +49,19 @@ export default function Search() {
   const [projectFilter, setProjectFilter] = useState(urlProject);
   const [showFilters, setShowFilters] = useState(false);
 
-  useEffect(() => {
+  // Re-seed the form buffers from the URL so back/forward restores inputs.
+  // Adjusting during render — guarded by the previous URL slice — avoids a
+  // setState-in-effect.
+  const formSyncKey = JSON.stringify([urlQuery, urlMode ?? 'hybrid', urlDocType, urlLifecycle, urlProject]);
+  const [syncedFormKey, setSyncedFormKey] = useState(formSyncKey);
+  if (formSyncKey !== syncedFormKey) {
+    setSyncedFormKey(formSyncKey);
     setQueryInput(urlQuery);
     setModeInput(urlMode ?? 'hybrid');
     setDocTypeFilter(urlDocType);
     setLifecycleFilter(urlLifecycle);
     setProjectFilter(urlProject);
-  }, [urlQuery, urlMode, urlDocType, urlLifecycle, urlProject]);
+  }
 
   // --- Result state ---
   const [results, setResults] = useState<DiscoverHit[]>([]);
@@ -67,16 +74,42 @@ export default function Search() {
   const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
   const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
 
+  // Filters derived from the URL, shared by the search effect and handlers.
+  function buildUrlFilters(): NonNullable<DiscoverRequest['filters']> {
+    const f: NonNullable<DiscoverRequest['filters']> = {};
+    if (urlDocType) f.doc_type = urlDocType;
+    if (urlLifecycle) f.lifecycle_status = urlLifecycle;
+    if (urlProject) f.project = urlProject;
+    if (urlTags.length) f.tags = urlTags;
+    return f;
+  }
+
   // --- Execute search whenever the URL changes ---
   const paramsKey = searchParams.toString();
+
+  // Selection is bound to the current filter result set; clear it whenever the
+  // URL (hence the rows under the user's fingers) changes. Resetting during
+  // render — guarded by the previous key — avoids a setState-in-effect.
+  const selectionResetKey = JSON.stringify([vaultId ?? '', paramsKey]);
+  const [syncedSelectionKey, setSyncedSelectionKey] = useState(selectionResetKey);
+  if (selectionResetKey !== syncedSelectionKey) {
+    setSyncedSelectionKey(selectionResetKey);
+    setSelectedIds(new Set());
+  }
+
   useEffect(() => {
     if (!vaultId) return;
-    // Selection is bound to the current filter result set; any URL change
-    // means the rows under the user's fingers may be different.
-    setSelectedIds(new Set());
     let cancelled = false;
 
-    async function run(req: DiscoverRequest) {
+    async function run(req: DiscoverRequest | null) {
+      if (!req) {
+        // No actionable URL state — clear to the empty landing view.
+        setResults([]);
+        setTotalAvailable(0);
+        setHasSearched(false);
+        setSearching(false);
+        return;
+      }
       setSearching(true);
       try {
         const resp = await discover(vaultId, req);
@@ -93,12 +126,13 @@ export default function Search() {
       if (!cancelled) setSearching(false);
     }
 
+    let req: DiscoverRequest | null = null;
     if (isDrillDown) {
       const filters: Record<string, string> = {};
       if (urlPipelineStatus) filters.pipeline_status = urlPipelineStatus;
       if (urlLifecycle) filters.lifecycle_status = urlLifecycle;
       if (urlDocType) filters.doc_type = urlDocType;
-      const req: DiscoverRequest = {
+      req = {
         mode: 'catalog',
         filters,
         limit: PAGE_SIZE,
@@ -108,10 +142,9 @@ export default function Search() {
         req.sort_by = urlSortBy;
         req.sort_order = urlSortOrder;
       }
-      run(req);
     } else if (urlMode === 'browse') {
       const filters = buildUrlFilters();
-      const req: DiscoverRequest = {
+      req = {
         mode: 'catalog',
         filters: Object.keys(filters).length > 0 ? filters : undefined,
         limit: PAGE_SIZE,
@@ -121,38 +154,23 @@ export default function Search() {
         req.sort_by = urlSortBy;
         req.sort_order = urlSortOrder;
       }
-      run(req);
     } else if (urlMode && urlQuery.trim()) {
       const filters = buildUrlFilters();
-      run({
+      req = {
         mode: urlMode === 'keyword' ? 'keyword' : 'semantic',
         query: urlQuery.trim(),
         filters: Object.keys(filters).length > 0 ? filters : undefined,
         use_hybrid: urlMode === 'hybrid',
         limit: 20,
-      });
-    } else {
-      // No actionable URL state — clear to the empty landing view.
-      setResults([]);
-      setTotalAvailable(0);
-      setHasSearched(false);
-      setSearching(false);
+      };
     }
+    run(req);
 
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramsKey, vaultId]);
-
-  function buildUrlFilters(): NonNullable<DiscoverRequest['filters']> {
-    const f: NonNullable<DiscoverRequest['filters']> = {};
-    if (urlDocType) f.doc_type = urlDocType;
-    if (urlLifecycle) f.lifecycle_status = urlLifecycle;
-    if (urlProject) f.project = urlProject;
-    if (urlTags.length) f.tags = urlTags;
-    return f;
-  }
 
   function handleSearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -626,20 +644,6 @@ function drillDownHeading(pipelineStatus: string, lifecycle: string, docType: st
   if (lifecycle) return `Lifecycle: ${lifecycle}`;
   if (docType) return `Doc Type: ${docType.replace(/_/g, ' ')}`;
   return '';
-}
-
-// Parse YYYY-MM-DD as local calendar components, never via `new Date(str)`.
-// `new Date('YYYY-MM-DD')` interprets the bare date as UTC midnight per the
-// ECMAScript spec; rendering that instant via `.toLocaleDateString()` shifts
-// the day for users in any zone west of UTC. Constructing the Date from
-// numeric Y/M/D arguments builds it in the local zone, so the rendered date
-// matches the authored calendar date in every timezone.
-export function formatDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return '-';
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
-  if (!m) return '-';
-  const [, y, mo, d] = m;
-  return new Date(Number(y), Number(mo) - 1, Number(d)).toLocaleDateString();
 }
 
 function truncateContent(text: string): string {

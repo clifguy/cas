@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, Outlet, useLocation } from 'react-router-dom';
@@ -107,7 +108,9 @@ function WrapperWithContext({ ctx }: { ctx: VaultContext }) {
 // Test assertions read the ref's value after user interactions settle.
 function LocationSpy({ locationRef }: { locationRef: { current: string } }) {
   const loc = useLocation();
-  locationRef.current = loc.search;
+  useEffect(() => {
+    locationRef.current = loc.search;
+  }, [loc.search, locationRef]);
   return null;
 }
 
