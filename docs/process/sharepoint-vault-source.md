@@ -38,6 +38,26 @@ the explicit per-site permission in step 3, scoped to the **single site** that
 hosts the vault tree. SAGE remains the sole writer of the vault tree (CAS-ADR-043);
 the grant confers write access to no other site and to no other identity.
 
+## Privilege required
+
+These are Microsoft Graph directory and SharePoint operations, distinct from the
+Azure RBAC the deploy identity holds (`azure-deployment.md`):
+
+- **The `Sites.Selected` app-role assignment (step 2) is itself the admin
+  consent** for that application permission — assigning the app role to the
+  identity's service principal *is* granting it. There is no separate
+  `az ad app permission admin-consent` call (that command consents delegated
+  scopes, as in `entra-app-registrations.md`). The POST to
+  `servicePrincipals/.../appRoleAssignments` therefore requires a directory role
+  that can consent to application permissions: **Privileged Role
+  Administrator**, **Application Administrator**, or **Global Administrator**.
+- **The per-site permission (step 3) and the seed upload (step 4)** require write
+  access to the target site — a **site owner / member** or a SharePoint
+  administrator role that confers it.
+
+Run these while that elevated access is in hand; the grant then persists with
+the managed identity and needs no standing elevation afterward.
+
 ## Prerequisites
 
 - The SAGE user-assigned managed identity exists (the identity module is
@@ -61,6 +81,25 @@ SITES_SELECTED_ROLE_ID="$(az ad sp show --id "$GRAPH_SP_ID" \
 ```
 
 ## Steps
+
+### 0. Create the SharePoint site and document library
+
+Create (or designate) the SharePoint site and the document library within it
+that will hold the vault tree, then record the coordinates the later steps
+consume:
+
+- Create a SharePoint site through the SharePoint admin center (or
+  `https://<tenant>.sharepoint.com` → *Create site*). Record its hostname
+  (`<tenant>.sharepoint.com`) and server-relative path (`/sites/<name>`) as
+  `SITE_HOSTNAME` and `SITE_PATH`.
+- In that site, create the **document library** that holds the vault tree (the
+  default *Documents* library is acceptable). Record its display name as
+  `LIBRARY_NAME`.
+
+The library is the root of the vault tree; each vault lives at
+`<vaultSourceRootPath>/<vault_id>/` within it (the `vaultSourceRootPath` default
+is `vaults`). No vault folders are created here by hand beyond the seed in
+step 4 — SAGE is the sole writer of the tree thereafter (CAS-ADR-043).
 
 ### 1. Resolve the SharePoint site and library coordinates
 
@@ -97,14 +136,48 @@ This is the step that actually confers access, and it confers it to exactly one
 site. Repeat steps 1 and 3 per site only if the deployment ever hosts vault trees
 on more than one site; the default is a single site.
 
-### 4. Deploy and verify
+### 4. Seed the test vault's configuration
 
-Deploy with the resolved coordinates, then confirm a cloud vault survives a
-restart: create a vault through the maintenance surface, restart (or roll) the
-SAGE container app, and confirm the vault is rediscovered at startup (it is read
-back from the document store, not the ephemeral local root). The SAGE config's
-`vault_source_backend: document_store` selection makes the document store the
-durable seam; the container filesystem's vault root is no longer relied upon.
+Provisioning a cloud vault is an act against the store (CAS-ADR-043): place a
+schema-valid `vault_config.yaml` directly into the library at
+`<vaultSourceRootPath>/<vault_id>/vault_config.yaml` by an authorized writer, so
+the sole-writer posture holds and the declaration is canonical on first
+discovery. The committed seed for the disposable `test` vault is
+[`deploy/test-vault/vault_config.yaml`](../../deploy/test-vault/vault_config.yaml);
+its schema validity is gated by `tests/sage/test_cloud_test_vault_seed_config.py`.
+
+```bash
+az rest --method PUT \
+  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/test/vault_config.yaml:/content" \
+  --headers "Content-Type=text/yaml" \
+  --body "@deploy/test-vault/vault_config.yaml"
+
+# Confirm it landed:
+az rest --method GET \
+  --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/test/vault_config.yaml" \
+  --query name -o tsv
+```
+
+The `:/path:/content` upload creates the intermediate `vaults/test/` folders
+implicitly. No source-hash or chain-head provenance attaches to the config
+declaration itself — provenance tracks ingested documents, not the vault config.
+(The path above assumes the default `vaults` root; adjust if `vaultSourceRootPath`
+is overridden.)
+
+### 5. Deploy and verify
+
+Deploy with the resolved coordinates (`sharepointSiteId = ${SITE_ID}`,
+`sharepointDriveId = ${DRIVE_ID}`) so the SAGE config selects
+`vault_source_backend: document_store`. At startup SAGE enumerates the library,
+finds `vaults/test/`, and loads its `vault_config.yaml` — the seeded vault is
+discovered with no local vault root involved. Confirm:
+
+- `admin_list_vaults` includes `test`, and `admin_get_vault_config` returns its
+  configuration.
+- Restart (or roll a new revision of) the SAGE container app and confirm `test`
+  is rediscovered — the live proof that the vault survives the stateless
+  compute's restart, read back from the document store rather than an ephemeral
+  local root.
 
 ## Rotation and teardown
 
