@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, Outlet } from 'react-router-dom';
-import Review from '../Review';
+import Review, { MetadataReview } from '../Review';
 import type { VaultContext } from '../../App';
 import type {
   Document,
@@ -282,5 +282,43 @@ describe('Review view: Confirm-One sends CAS-ADR-028 ops-object metadata (T-0127
     const body = lastUpdateMetadataBody();
     expect(body.tags).toEqual({ add: ['x', 'y'] });
     expect(Array.isArray(body.tags)).toBe(false);
+  });
+});
+
+// MetadataReview seeds its `queue` from the `items` prop and re-seeds it when a
+// fresh `items` object arrives. Existing tests cover the INITIAL seed; this
+// covers the RESYNC path. The parent `Review` flow cannot exercise it because
+// its `loading` gate unmounts MetadataReview on every refetch (a remount
+// re-seeds via the initial path, not the resync), so MetadataReview is rendered
+// directly with the refetched prop delivered via `rerender` while it stays
+// mounted.
+describe('Review view: MetadataReview resyncs its queue on a fresh items prop', () => {
+  function MetadataHarness({ items }: { items: PendingMetadata[] }) {
+    return (
+      <MemoryRouter>
+        <MetadataReview
+          vaultId="test_vault"
+          items={items}
+          selectedIds={new Set<string>()}
+          onToggleRow={() => {}}
+          onToggleAll={() => {}}
+        />
+      </MemoryRouter>
+    );
+  }
+
+  it('re-seeds the rendered queue when a refetch delivers a different pending set', async () => {
+    const { rerender } = render(
+      <MetadataHarness items={[makePending('D1', 'Stale Doc')]} />,
+    );
+    expect(screen.getByText('Stale Doc')).toBeInTheDocument();
+
+    // A refetch (e.g. after a vault switch or re-poll) delivers a different
+    // pending-metadata set while MetadataReview stays mounted.
+    rerender(<MetadataHarness items={[makePending('D2', 'Fresh Doc')]} />);
+
+    await waitFor(() => expect(screen.getByText('Fresh Doc')).toBeInTheDocument());
+    // Anti-stale guard: the prior queue contents must be gone.
+    expect(screen.queryByText('Stale Doc')).not.toBeInTheDocument();
   });
 });

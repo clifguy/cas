@@ -240,7 +240,7 @@ function EditControls({ editing, onEdit, onCancel, saving, onSave }: EditorProps
 
 // --- Identity ---
 
-function IdentityEditor({
+export function IdentityEditor({
   config, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { config: VaultIdentityConfig; onSave: (data: VaultIdentityConfig) => void }) {
   const [draft, setDraft] = useState<VaultIdentityConfig>(config);
@@ -494,7 +494,7 @@ function LifecycleEditor({
 
 // --- JSON editor for complex sections ---
 
-function JsonEditor({
+export function JsonEditor({
   label, data, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { label: string; data: Record<string, unknown>; onSave: (data: Record<string, unknown>) => void }) {
   const [text, setText] = useState(() => JSON.stringify(data, null, 2));
