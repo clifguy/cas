@@ -413,3 +413,83 @@ def test_sch_s_018_vault_source_backend_absent_passes_default_applied():
 
     cfg = SageCoreConfig.model_validate(instance)
     assert cfg.vault_source_backend == "filesystem"
+
+
+def test_sch_s_019_document_store_block_shape():
+    """The schema declares a top-level `document_store` object with
+    `additionalProperties: false` and the four coordinate properties the
+    document-store binding reads.
+
+    Catches drift in the block shape — a missing `additionalProperties: false`
+    would make SCH-S-020 incapable of detecting a stray/typo'd key, and a
+    dropped property would silently strip a coordinate the binding needs.
+    """
+    schema = _stack_schema()
+    block = schema["properties"]["document_store"]
+    assert block["type"] == "object"
+    assert block["additionalProperties"] is False
+    assert set(block["properties"]) == {"site_id", "drive_id", "root_path", "graph_scope"}
+
+
+def test_sch_s_020_document_store_unknown_property_rejected():
+    """A `document_store` block carrying an unknown property fails validation
+    against the JSON Schema *and* against SageCoreConfig; a block of only known
+    properties passes both gates.
+
+    Anti-coincidental-pass: the positive control (a fully-specified known block)
+    must pass so the failure is attributable to the unknown key, not to an
+    unrelated shape error. `additionalProperties: false` on the schema and
+    `extra="forbid"` on the model are the two single-source-of-truth points that
+    must agree.
+    """
+    from pydantic import ValidationError
+
+    from sage.config import SageCoreConfig
+
+    schema = _stack_schema()
+
+    good = {
+        "document_store": {
+            "site_id": "contoso.sharepoint.com,site-guid,web-guid",
+            "drive_id": "b!drive-id",
+            "root_path": "vaults",
+            "graph_scope": "https://graph.microsoft.com/.default",
+        }
+    }
+    jsonschema.validate(good, schema)
+    SageCoreConfig.model_validate(good)
+
+    bad = {"document_store": {"site_id": "s", "library_name": "Documents"}}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, schema)
+    with pytest.raises(ValidationError):
+        SageCoreConfig.model_validate(bad)
+
+
+def test_sch_s_021_document_store_absent_passes_defaults_applied():
+    """An instance with `document_store` absent validates against the schema,
+    and `SageCoreConfig.model_validate` applies the Pydantic defaults
+    (`root_path="vaults"`, the Graph `.default` scope, null site/drive ids).
+
+    Confirms the JSON Schema and the Pydantic model agree on the block's
+    defaults per CAS principle 1, so an instance that omits the block (every
+    filesystem-backed deployment) is valid and the document-store coordinates
+    default rather than fail.
+    """
+    schema = _stack_schema()
+    instance: dict = {}  # document_store deliberately absent
+    jsonschema.validate(instance, schema)
+
+    block = schema["properties"]["document_store"]["properties"]
+    assert block["root_path"]["default"] == "vaults"
+    assert block["graph_scope"]["default"] == "https://graph.microsoft.com/.default"
+    assert block["site_id"]["default"] is None
+    assert block["drive_id"]["default"] is None
+
+    from sage.config import SageCoreConfig
+
+    cfg = SageCoreConfig.model_validate(instance)
+    assert cfg.document_store.root_path == "vaults"
+    assert cfg.document_store.graph_scope == "https://graph.microsoft.com/.default"
+    assert cfg.document_store.site_id is None
+    assert cfg.document_store.drive_id is None

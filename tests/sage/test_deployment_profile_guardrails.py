@@ -47,6 +47,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CLOUD_OWNER_MODULES = (
     "sage.secrets.key_vault",
     "sage.storage.postgres.managed_identity",
+    "sage.vault_source_document_store",
 )
 CORE_SEAMS = (ABSTRACTION_SEAM, STORAGE_SEAM, VAULT_SOURCE_SEAM, AUTH_SEAM)
 
@@ -78,6 +79,7 @@ from sage.config import SageCoreConfig
 from sage.mcp_init import (
     resolve_stack_abstraction_provider,
     resolve_stack_storage_provisioner,
+    resolve_stack_vault_source_store,
 )
 
 # Resolving the cloud bindings imports their environment-specific modules, then
@@ -94,7 +96,10 @@ from sage.mcp_init import (
 #
 # storage_backend="postgres" is load-bearing: the embedded override short-circuits
 # the storage builder before the managed-identity branch, which would make this
-# positive control vacuous.
+# positive control vacuous. vault_source_backend="document_store" plays the same
+# role for the vault-source seam: the filesystem default would resolve a binding
+# that imports no cloud SDK, so the document-store backend must be selected for
+# this control to exercise the SharePoint/Graph adapter (CAS-ADR-043).
 try:
     resolve_stack_storage_provisioner(
         SageCoreConfig(profile="cloud", storage_backend="postgres")
@@ -114,6 +119,14 @@ except ImportError:
     raise
 except Exception:
     pass
+try:
+    resolve_stack_vault_source_store(
+        SageCoreConfig(profile="cloud", vault_source_backend="document_store")
+    )
+except ImportError:
+    raise
+except Exception:
+    pass
 """
 
 _SCAN_TAIL = """
@@ -121,7 +134,11 @@ import json as _json, sys as _sys
 _matched = sorted(
     _m for _m in _sys.modules
     if _m == "azure" or _m.startswith("azure.")
-    or _m in ("sage.secrets.key_vault", "sage.storage.postgres.managed_identity")
+    or _m in (
+        "sage.secrets.key_vault",
+        "sage.storage.postgres.managed_identity",
+        "sage.vault_source_document_store",
+    )
     or _m == "psycopg" or _m.startswith("psycopg.")
 )
 print(_json.dumps(_matched))

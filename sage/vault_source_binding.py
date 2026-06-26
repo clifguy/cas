@@ -40,7 +40,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-from sage.config import SageCoreConfig, VaultConfig
+from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +56,16 @@ VAULT_SOURCE_BACKEND_ENV_VAR = "SAGE_TEST_VAULT_SOURCE_BACKEND"
 
 _VALID_BACKENDS = ("filesystem", "document_store")
 
-_FOLLOW_UP = (
-    "the document-store vault-source binding (a tenant-native SharePoint "
-    "document library over Microsoft Graph) is not yet implemented; CAS-ADR-043 "
-    "establishes the port and the filesystem binding, and the concrete "
-    "document-store adapter lands in a follow-up. Select the filesystem binding "
-    "(vault_source_backend: filesystem) until then."
+# The document-store binding implements the config + discovery surface; its
+# source-byte retention/delivery half is the remaining slice and fails loud until
+# the SharePoint/Graph adapter for it lands (CAS-ADR-043). The message names
+# "document-store" so a deployment that reaches an unimplemented source-byte
+# method is told exactly which half is missing.
+_SOURCE_FOLLOW_UP = (
+    "the document-store vault-source binding implements the config + discovery "
+    "surface, but its source-byte retention/delivery half is not yet implemented; "
+    "CAS-ADR-043 routes it through the port and the concrete SharePoint/Graph "
+    "adapter for it lands in a follow-up."
 )
 
 
@@ -71,13 +75,18 @@ class DiscoveredVault:
 
     ``config_path`` is the filesystem locator under the filesystem binding and
     ``None`` for a binding with no filesystem path (the binding fetches the
-    config from the store itself). Discovery enumerates cheaply; the caller
-    loads each config under its own per-vault failure handling via
-    :meth:`VaultSourceStore.load_config`, preserving the lifespans' "skip a
-    malformed vault, keep the rest" behavior.
+    config from the store itself). ``vault_id`` is the binding-opaque identity a
+    pathless binding loads by: the document-store binding populates it during
+    discovery and ``load_config`` resolves the config from it, since there is no
+    path to thread. The filesystem binding populates it too (from the directory
+    name) for symmetry, though its ``load_config`` resolves from ``config_path``.
+    Discovery enumerates cheaply; the caller loads each config under its own
+    per-vault failure handling via :meth:`VaultSourceStore.load_config`,
+    preserving the lifespans' "skip a malformed vault, keep the rest" behavior.
     """
 
     config_path: Path | None
+    vault_id: str | None = None
 
 
 class VaultSourceStore(ABC):
@@ -348,7 +357,10 @@ class FilesystemVaultSourceStore(VaultSourceStore):
     def discover(self) -> list[DiscoveredVault]:
         from sage.vault_discovery import discover_vault_configs
 
-        return [DiscoveredVault(config_path=p) for p in discover_vault_configs(self._vault_root)]
+        return [
+            DiscoveredVault(config_path=p, vault_id=p.parent.name)
+            for p in discover_vault_configs(self._vault_root)
+        ]
 
     def load_config(self, discovered: DiscoveredVault) -> VaultConfig:
         from sage.config import load_vault_config
@@ -416,47 +428,98 @@ class FilesystemVaultSourceStore(VaultSourceStore):
 
 
 class DocumentStoreVaultSourceStore(VaultSourceStore):
-    """Stub for the cloud tenant document-store binding (CAS-ADR-043).
+    """The cloud document-store binding: a SharePoint library over Graph (CAS-ADR-043).
 
-    The port and the filesystem binding land in this slice; the concrete
-    SharePoint/Graph adapter -- managed-identity auth, atomic-write emulation
-    over the non-POSIX API, throttle/retry, enumeration -- is a follow-up. Every
-    method fails loud rather than silently no-opping, so a deployment that
-    selects this binding before the adapter exists is told exactly why. The
-    binding is registered for the cloud profile so the seam roster stays
-    complete; it is reached only when ``vault_source_backend`` is explicitly set
-    to ``document_store``.
+    Persists each vault's configuration declaration to a Microsoft 365 SharePoint
+    document library under the workload's managed identity, so a cloud vault's
+    config survives the stateless compute's restart. It has no filesystem path:
+    ``config_locator`` returns ``None``, discovery carries each vault's id rather
+    than a path, and ``load_config`` resolves the config from that id.
+
+    The Graph adapter (the Azure-SDK import and the raw REST calls) lives in
+    ``sage.vault_source_document_store`` and is reached only through this binding,
+    keeping this port module free of any Azure import. The client is injected for
+    tests; in the cloud profile the factory builds it eagerly so the managed
+    identity resolves at startup, and otherwise it is built lazily on first use.
     """
 
+    def __init__(
+        self,
+        config: StackDocumentStoreConfig,
+        *,
+        client: object | None = None,
+        managed_identity: bool = True,
+    ) -> None:
+        self._config = config
+        self._client = client
+        self._managed_identity = managed_identity
+
+    def _get_client(self) -> object:
+        if self._client is None:
+            from sage.vault_source_document_store import build_sharepoint_graph_client
+
+            self._client = build_sharepoint_graph_client(
+                self._config, managed_identity=self._managed_identity
+            )
+        return self._client
+
     def discover(self) -> list[DiscoveredVault]:
-        raise NotImplementedError(_FOLLOW_UP)
+        client = self._get_client()
+        return [
+            DiscoveredVault(config_path=None, vault_id=vault_id)
+            for vault_id in client.list_vault_ids()  # type: ignore[attr-defined]
+        ]
 
     def load_config(self, discovered: DiscoveredVault) -> VaultConfig:
-        raise NotImplementedError(_FOLLOW_UP)
+        if discovered.vault_id is None:
+            raise ValueError(
+                "the document-store vault-source binding requires a vault_id on the "
+                "discovered vault; got None."
+            )
+        client = self._get_client()
+        data = client.read_config_bytes(discovered.vault_id)  # type: ignore[attr-defined]
+        if data is None:
+            raise FileNotFoundError(
+                f"no vault configuration declaration for vault {discovered.vault_id!r} "
+                "in the document store."
+            )
+        import yaml
+
+        return VaultConfig.model_validate(yaml.safe_load(data))
 
     def config_locator(self, vault_id: str) -> Path | None:
-        raise NotImplementedError(_FOLLOW_UP)
+        return None
 
     def write_config(self, vault_id: str, config_dict: dict) -> None:
-        raise NotImplementedError(_FOLLOW_UP)
+        import yaml
+
+        # Serialize with the same yaml options as the filesystem binding so the
+        # stored declaration round-trips identically. Validation is the caller's
+        # responsibility under both bindings (the weakest-binding rule); the
+        # service layer validates before persisting.
+        text = yaml.safe_dump(config_dict, default_flow_style=False, sort_keys=False)
+        data = text.encode("utf-8")
+        client = self._get_client()
+        client.write_config_bytes(vault_id, data)  # type: ignore[attr-defined]
 
     def delete_config(self, vault_id: str) -> None:
-        raise NotImplementedError(_FOLLOW_UP)
+        client = self._get_client()
+        client.delete_config(vault_id)  # type: ignore[attr-defined]
 
     def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
-        raise NotImplementedError(_FOLLOW_UP)
+        raise NotImplementedError(_SOURCE_FOLLOW_UP)
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
-        raise NotImplementedError(_FOLLOW_UP)
+        raise NotImplementedError(_SOURCE_FOLLOW_UP)
 
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
-        raise NotImplementedError(_FOLLOW_UP)
+        raise NotImplementedError(_SOURCE_FOLLOW_UP)
 
     def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
-        raise NotImplementedError(_FOLLOW_UP)
+        raise NotImplementedError(_SOURCE_FOLLOW_UP)
 
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
-        raise NotImplementedError(_FOLLOW_UP)
+        raise NotImplementedError(_SOURCE_FOLLOW_UP)
 
 
 def build_stack_vault_source_store(
@@ -484,8 +547,10 @@ def build_stack_vault_source_store(
     pass the root they resolved from ``--vault-root`` / ``SAGE_VAULT_ROOT`` / the
     default; callers that pass nothing get ``default_vault_root()``. The
     document-store binding ignores it. ``managed_identity`` is the cloud
-    profile's selector, reserved for the document-store binding's managed-identity
-    auth; it is a no-op for the filesystem binding.
+    profile's selector: for the document-store binding it builds the Graph client
+    eagerly so the managed identity (and its Azure SDK) resolves at startup,
+    mirroring the storage binding's managed-identity path; it is a no-op for the
+    filesystem binding.
     """
     backend = os.environ.get(VAULT_SOURCE_BACKEND_ENV_VAR) or stack_config.vault_source_backend
     if backend not in _VALID_BACKENDS:
@@ -494,7 +559,18 @@ def build_stack_vault_source_store(
             f"{VAULT_SOURCE_BACKEND_ENV_VAR}); expected one of {_VALID_BACKENDS}."
         )
     if backend == "document_store":
-        return DocumentStoreVaultSourceStore()
+        client = None
+        if managed_identity:
+            from sage.vault_source_document_store import build_sharepoint_graph_client
+
+            client = build_sharepoint_graph_client(
+                stack_config.document_store, managed_identity=True
+            )
+        return DocumentStoreVaultSourceStore(
+            stack_config.document_store,
+            client=client,
+            managed_identity=managed_identity,
+        )
     from sage.vault_management import default_vault_root
 
     root = vault_root if vault_root is not None else default_vault_root()

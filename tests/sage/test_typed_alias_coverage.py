@@ -169,6 +169,12 @@ KNOWN_VIOLATIONS: Final[dict[tuple[str, str], str]] = {
     # GUID) is not a SAGE document id; the DocumentIdStr alias would impose
     # SAGE's id grammar on a foreign identifier. Plain str is correct.
     ("StackAuthConfig", "tenant_id"): "identity-provider tenant id, not a SAGE document id",
+    # The SharePoint site and document-library identifiers (CAS-ADR-043) are
+    # opaque Microsoft Graph identifiers, not SAGE document ids; the
+    # DocumentIdStr alias would impose SAGE's id grammar on a foreign
+    # identifier. Plain str is correct.
+    ("StackDocumentStoreConfig", "site_id"): "Microsoft Graph site id, not a SAGE document id",
+    ("StackDocumentStoreConfig", "drive_id"): "Microsoft Graph drive id, not a SAGE document id",
 }
 
 

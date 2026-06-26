@@ -254,16 +254,18 @@ forbidden_modules = [
     "psycopg",
     "sage.secrets.key_vault",
     "sage.storage.postgres.managed_identity",
+    "sage.vault_source_document_store",
 ]
 allow_indirect_imports = "true"
 
 [[tool.importlinter.contracts]]
-# CAS-ADR-042: the cloud SDKs stay confined to the two binding modules that own
-# them -- the Key Vault secret reader and the managed-identity Postgres auth path --
-# so an azure import hoisted into any new call site fails the build. The two owner
-# edges are the only legitimate importers of azure, so ignoring them severs every
-# remaining chain; psycopg is deliberately not forbidden here because it is a shared
-# dependency of both the local and cloud Postgres paths.
+# CAS-ADR-042/043: the cloud SDKs stay confined to the binding modules that own
+# them -- the Key Vault secret reader, the managed-identity Postgres auth path, and
+# the SharePoint/Graph document-store vault-source adapter -- so an azure import
+# hoisted into any new call site fails the build. These owner edges are the only
+# legitimate importers of azure, so ignoring them severs every remaining chain;
+# psycopg is deliberately not forbidden here because it is a shared dependency of
+# both the local and cloud Postgres paths.
 name = "Azure SDKs are confined to the cloud binding modules"
 type = "forbidden"
 source_modules = [
@@ -276,6 +278,7 @@ forbidden_modules = [
 ignore_imports = [
     "sage.secrets.key_vault -> azure",
     "sage.storage.postgres.managed_identity -> azure",
+    "sage.vault_source_document_store -> azure",
 ]
 
 [build-system]
