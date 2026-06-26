@@ -1,0 +1,15 @@
+# Accepted-risk Dependabot advisories.
+#
+# Advisories that have a published fix but are deliberately NOT flagged for
+# remediation by the triage workflow (e.g. the bump is intentionally deferred).
+# Each entry records the advisory id and the reason it is accepted.
+#
+# Advisories with no published fix need no entry here — the triage filter
+# excludes them automatically, so an unfixable low-severity advisory never
+# produces a standing tracking issue.
+#
+# Example:
+# accepted:
+#   - ghsa_id: GHSA-xxxx-xxxx-xxxx
+#     reason: fixable but the bump is deferred pending an upstream regression fix
+accepted: []
