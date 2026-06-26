@@ -162,7 +162,7 @@ const TIER1_SCALAR_FIELDS: ReadonlySet<string> = new Set([
 
 // -- Metadata Review --
 
-function MetadataReview({
+export function MetadataReview({
   vaultId,
   items,
   selectedIds,
