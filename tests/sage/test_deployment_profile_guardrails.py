@@ -78,10 +78,16 @@ from sage.mcp_init import (
 )
 
 # Resolving the cloud bindings imports their environment-specific modules, then
-# fails offline -- the storage path on the managed-identity credential (no managed
-# identity / no aiohttp), the abstraction path on the absent Key Vault URI. The
-# imports we are proving have already happened by the time each raises, so the
-# failures are tolerated and the scan below reports what was loaded.
+# fails offline -- the storage path on the managed-identity credential (no
+# reachable managed identity), the abstraction path on the absent Key Vault URI.
+# Those offline failures are expected and tolerated; the imports we are proving
+# have already happened by the time each raises, and the scan below reports what
+# was loaded. An ImportError is deliberately NOT tolerated: a cloud binding whose
+# transitive closure is incomplete (e.g. the async-transport peer the
+# managed-identity credential builds at construction) is a packaging defect, not
+# an offline condition, so it propagates and fails the probe here -- at the
+# boundary a cloud boot hits it -- rather than only on the next on-box cloud
+# restart (CAS-ADR-042).
 #
 # storage_backend="postgres" is load-bearing: the embedded override short-circuits
 # the storage builder before the managed-identity branch, which would make this
@@ -90,6 +96,8 @@ try:
     resolve_stack_storage_provisioner(
         SageCoreConfig(profile="cloud", storage_backend="postgres")
     )
+except ImportError:
+    raise
 except Exception:
     pass
 try:
@@ -99,6 +107,8 @@ try:
             abstraction={"provider": "anthropic", "model": "claude-haiku-4-5"},
         )
     )
+except ImportError:
+    raise
 except Exception:
     pass
 """
@@ -186,8 +196,13 @@ def test_cloud_profile_bindings_import_the_cloud_dependency_stack() -> None:
     vacuously -- but this control would fail, exposing the coincidence. It also
     proves the embedded-override guard: were the override to leak through, the cloud
     storage binding would return the embedded provisioner and import no Azure module,
-    failing the Azure assertion here. psycopg is not asserted: the storage path
-    raises on the managed-identity credential before its psycopg import is reached.
+    failing the Azure assertion here. Because the cloud boot snippet lets an
+    ImportError propagate (rather than swallowing every exception), this control
+    also fails if a cloud binding's transitive closure is incomplete: a missing
+    async-transport peer for the managed-identity credential surfaces here, at the
+    boundary a cloud boot hits it, instead of only on the next on-box cloud
+    restart. psycopg is not asserted: it is a shared driver for both the local and
+    cloud Postgres paths, so its presence is not a cloud-only marker.
     """
     matched = _run_boot_probe(_CLOUD_BOOT, storage_backend="postgres", stub_providers="0")
     assert any(_is_azure(m) for m in matched), (
@@ -199,6 +214,45 @@ def test_cloud_profile_bindings_import_the_cloud_dependency_stack() -> None:
             f"the cloud bindings did not import {owner} (got {matched}); the "
             "local-profile negative test's check for it cannot be trusted."
         )
+
+
+def test_cloud_async_transport_resolves_in_a_clean_interpreter() -> None:
+    """The async managed-identity credential constructs without an ImportError.
+
+    The cloud Postgres path authenticates with ``azure.identity.aio.
+    DefaultAzureCredential``, which builds an aiohttp-backed ``azure-core``
+    transport at construction. aiohttp is a peer the async ``azure-core`` extra
+    provides but that nothing else declares; an image whose locked closure omits
+    it raises ``ImportError`` the moment the credential is built, and the BFF --
+    which opens its Postgres session store at startup -- crash-loops before
+    serving traffic (CAS-ADR-042).
+
+    This asserts the closure the lockfile must guarantee is actually installed,
+    constructing the credential in a fresh interpreter so a sibling test's import
+    cannot mask an absence. It is the deterministic counterpart to the positive
+    control above, which proves the same closure at the binding-resolution
+    boundary; here we exercise the credential directly so the guard does not
+    depend on the cloud binding's offline failure timing.
+    """
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    pythonpath = str(REPO_ROOT) + (os.pathsep + existing_pythonpath if existing_pythonpath else "")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from azure.identity.aio import DefaultAzureCredential\nDefaultAzureCredential()\n",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": pythonpath},
+    )
+    assert result.returncode == 0, (
+        "constructing the async managed-identity credential raised in a clean "
+        "interpreter; the cloud async-transport closure is incomplete -- the "
+        "credential's azure-core transport peer is missing from the locked "
+        f"dependency set (CAS-ADR-042):\n--- stderr ---\n{result.stderr}"
+    )
 
 
 def test_every_core_seam_registers_both_local_and_cloud_bindings() -> None:

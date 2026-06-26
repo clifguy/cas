@@ -157,6 +157,15 @@ def test_bsmk_001_boots_health_green_version_baked(image: str) -> None:
         # (0.0.0.0) bind; the exact body proves health-green and the baked stamp.
         assert body is not None, "/health never became reachable on the published port"
         assert body == {"status": "ok", "version": _VERSION}
+        # A baked version of 0.0.0/unknown means build_info resolved no v* tag at
+        # image-build time and fell back to the setuptools-scm sentinel -- the mode
+        # a tagless out-of-repo build degrades to. Refuse it explicitly so a
+        # degraded stamp fails the gate instead of passing whenever the expected
+        # value is itself degraded (CAS-ADR-042).
+        assert body["version"] not in ("0.0.0", "unknown", ""), (
+            f"image reports a degraded baked version {body['version']!r}; build_info "
+            "found no v* tag at build time and baked the setuptools-scm fallback"
+        )
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 

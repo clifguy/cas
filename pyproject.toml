@@ -64,6 +64,15 @@ dependencies = [
     # local-profile install never loads them.
     "azure-identity>=1.19",
     "azure-keyvault-secrets>=4.9",
+    # Async HTTP transport for the cloud Postgres managed-identity credential
+    # (CAS-ADR-042). The cloud storage path authenticates with the asynchronous
+    # azure.identity.aio.DefaultAzureCredential, which builds an aiohttp-backed
+    # azure-core transport at construction; azure-core is otherwise pulled in only
+    # for its synchronous (requests) transport, so the async peer must be declared
+    # explicitly or a `uv sync --locked` image omits it and the credential raises
+    # ImportError on first use. The [aio] extra tracks whichever async transport
+    # azure-core requires.
+    "azure-core[aio]>=1.30",
 ]
 
 [project.optional-dependencies]
