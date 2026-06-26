@@ -45,13 +45,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sage.config import load_vault_config
 from sage.maintenance._internal import (
     _list_staging_edge_ids,
     _purge_one,
 )
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES
-from sage.vault_management import config_path_for_vault
 
 # Rebind point for tests that need to simulate SQLite failures.
 _sqlite_connect = sqlite3.connect
@@ -61,14 +59,20 @@ _TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_PI
 
 def _resolve_paths(vault_id: str) -> tuple[Path, Path, Path, Path] | None:
     """Return (vault_dir, sqlite_path, lancedb_dir, storage_root) or None."""
-    config_path = config_path_for_vault(vault_id)
-    if not config_path.exists():
+    # CAS-ADR-043: locate and load the vault declaration through the active
+    # profile's vault-source store rather than the filesystem directly.
+    from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+    from sage.vault_source_binding import DiscoveredVault
+
+    store = resolve_stack_vault_source_store(get_stack_config())
+    config_path = store.config_locator(vault_id)
+    if config_path is None or not config_path.exists():
         print(
             f"error: vault config not found for vault {vault_id!r}: {config_path}",
             file=sys.stderr,
         )
         return None
-    config = load_vault_config(config_path)
+    config = store.load_config(DiscoveredVault(config_path=config_path))
     brain_root = Path(config.vault.brain_root).expanduser()
     storage_root = Path(config.vault.storage_root).expanduser()
     return (

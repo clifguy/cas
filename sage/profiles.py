@@ -45,6 +45,14 @@ ABSTRACTION_SEAM = "abstraction_provider"
 # resource (the pool) and the embedded pair is one coherent fallback binding.
 STORAGE_SEAM = "storage_provisioner"
 
+# Seam name for the vault-source-store binding (CAS-ADR-043): the store that
+# persists the vault configuration declaration and the retained ingest source
+# files -- the durable seam CAS-ADR-042 left on the local filesystem. The
+# filesystem binding (today's behavior) or a tenant-native document-store
+# binding, selected by the stack config's ``vault_source_backend`` key, on the
+# same swappable-per-profile footing as the storage seam.
+VAULT_SOURCE_SEAM = "vault_source_store"
+
 # Seam name for the OAuth resource-server binding (CAS-ADR-042): the bearer
 # token validator that authorizes calls to the HTTP surfaces. A pass-through
 # validator where the deployment authenticates no one (the on-box default),

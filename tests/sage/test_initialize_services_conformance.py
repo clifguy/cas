@@ -344,8 +344,10 @@ async def _drive_vault_registry_create_vault(
     """Drive sage.services.vault_registry.VaultRegistryService.create_vault.
     Reachable via the FastAPI POST-create-vault endpoint and the MCP
     create_vault tool."""
-    # Redirect _VAULTS_ROOT so the config-yaml write lands inside tmp_path
-    # rather than polluting ~/sage_vaults.
+    # Redirect _VAULTS_ROOT so the config-yaml write create_vault now routes
+    # through the vault-source store (CAS-ADR-043, default_vault_root() falls
+    # back to _VAULTS_ROOT) lands inside tmp_path rather than polluting
+    # ~/sage_vaults.
     vaults_dir = tmp_path / "sage_vaults"
     vaults_dir.mkdir()
     monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", vaults_dir)

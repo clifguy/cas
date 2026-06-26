@@ -27,8 +27,8 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.7",
-      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres default, embedded SQLite/LanceDB fallback), the Postgres storage-engine connection parameters (non-secret; password from the environment), and the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers). The on-disk file is sage/config.yaml at the repo root.",
+      "version": "0.8",
+      "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider and model), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres default, embedded SQLite/LanceDB fallback), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), and the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
     {
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.39",
+  "substrate_version": "1.40",
   "revision_history": [
+    {
+      "version": "1.40",
+      "date": "2026-06-25",
+      "summary": "Extract the vault-source store as a swappable port and bind the filesystem store behind it; stub the cloud document-store binding (CAS-ADR-043). sage/sage_core_config.schema.json bumped v0.7->v0.8: a new top-level `vault_source_backend` string enum (['filesystem','document_store'], default 'filesystem') selects the binding that persists the vault configuration declaration and the retained ingest source files -- the durable seam CAS-ADR-042 left on the local filesystem -- on the same swappable-per-profile footing as `storage_backend`. Pydantic SageCoreConfig in sage/config.py gains the mirrored `vault_source_backend` Literal field (Principle 8, verbatim description). New sage/vault_source_binding.py holds the port (VaultSourceStore ABC: discover/load_config/config_locator/write_config/delete_config -- the config+discovery half of the seam; source-byte retention/delivery is the ADR's thin-then-extend follow-up that lands with the concrete adapter), the FilesystemVaultSourceStore binding (delegates to discover_vault_configs / load_vault_config / _write_config_yaml under one vault root), the DocumentStoreVaultSourceStore stub (every method raises NotImplementedError naming the follow-up), and build_stack_vault_source_store with an env-first dispatch (SAGE_TEST_VAULT_SOURCE_BACKEND overrides the config key, mirroring SAGE_TEST_STORAGE_BACKEND). sage/profiles.py gains VAULT_SOURCE_SEAM; sage/mcp_init.py registers the local and cloud bindings and adds resolve_stack_vault_source_store (which honors an injected vault_root for the transport lifespans, whose factory signature the profile seam cannot carry). The two transport lifespans (sage/mcp_server.py, sage/app.py) route discovery and config load through the store (config_path still threaded into initialize_services unchanged, so the closure-pair gate is untouched); create_vault (sage/services/vault_registry.py) and update_config (sage/services/vault_config.py) route the config write/rollback through the store, so provisioning becomes an act against the store. vault_management.default_vault_root() is the single root-resolution point (SAGE_VAULT_ROOT else the module-level _VAULTS_ROOT). Scope fence: the cloud document-store (SharePoint/Graph) adapter, the source-byte half of the port, and the infra managed-identity grant are deferred to a follow-up ticket, so a cloud vault does not yet survive restart and T-0329 stays open. Tests: SCH-S-016..018 (selector shape/enum/default agreement), VSB-001..006 in new tests/sage/test_vault_source_binding.py (config+env dispatch, filesystem discover/load, write/load/delete round-trip with atomicity, pathless-discovery fail-loud, document-store stub fail-loud), the deployment-profile guardrail gains VAULT_SOURCE_SEAM in CORE_SEAMS and resolves the store in the local-boot probe, and the initialize_services conformance create_vault driver retargets its root redirect. The verbatim-description gate passes with no allowlist additions."
+    },
     {
       "version": "1.39",
       "date": "2026-06-13",

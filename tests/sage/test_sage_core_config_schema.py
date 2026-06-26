@@ -343,3 +343,73 @@ def test_sch_s_015_storage_backend_absent_passes_default_applied():
 
     cfg = SageCoreConfig.model_validate(instance)
     assert cfg.storage_backend == "postgres"
+
+
+# ---------------------------------------------------------------------------
+# Vault-source-store selector (CAS-ADR-043). SCH-S-016..018.
+# ---------------------------------------------------------------------------
+
+
+def test_sch_s_016_vault_source_backend_field_shape():
+    """Structural assertion: the schema declares a top-level
+    `vault_source_backend` as a string enum of `filesystem` and
+    `document_store`, defaulting to `filesystem`.
+
+    Catches drift in any single property — a missing `enum` makes SCH-S-017
+    incapable of detecting an unknown value; a missing `default` makes
+    SCH-S-018's Pydantic default test depend on the Pydantic side alone.
+    """
+    schema = _stack_schema()
+    backend = schema["properties"]["vault_source_backend"]
+    assert backend["type"] == "string"
+    assert backend["enum"] == ["filesystem", "document_store"]
+    assert backend["default"] == "filesystem"
+
+
+def test_sch_s_017_unknown_vault_source_backend_rejected():
+    """A stack config whose `vault_source_backend` is outside the enum fails
+    validation against the JSON Schema *and* against SageCoreConfig; both
+    in-enum values pass both gates.
+
+    Anti-coincidental-pass: the positive controls must pass so the failure is
+    attributable to the enum. `sharepoint` is asserted to fail specifically —
+    the concrete cloud binding is selected as one coherent binding
+    (`document_store`), not by naming a particular document-store product, so a
+    product-name value passing would mean the selector leaked an implementation
+    detail into the contract.
+    """
+    from pydantic import ValidationError
+
+    from sage.config import SageCoreConfig
+
+    schema = _stack_schema()
+
+    for good in ("filesystem", "document_store"):
+        jsonschema.validate({"vault_source_backend": good}, schema)
+        SageCoreConfig.model_validate({"vault_source_backend": good})
+
+    for bad in ("sharepoint", "s3"):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({"vault_source_backend": bad}, schema)
+        with pytest.raises(ValidationError):
+            SageCoreConfig.model_validate({"vault_source_backend": bad})
+
+
+def test_sch_s_018_vault_source_backend_absent_passes_default_applied():
+    """An instance with `vault_source_backend` absent validates against the
+    schema, and `SageCoreConfig.model_validate` applies the Pydantic default of
+    `"filesystem"`.
+
+    Confirms the two single-source-of-truth points (JSON Schema and Pydantic
+    model) agree on the default per CAS principle 1: the vault-source store
+    binds the local filesystem unless the config selects the document store.
+    """
+    schema = _stack_schema()
+    instance: dict = {}  # vault_source_backend deliberately absent
+    jsonschema.validate(instance, schema)
+    assert schema["properties"]["vault_source_backend"]["default"] == "filesystem"
+
+    from sage.config import SageCoreConfig
+
+    cfg = SageCoreConfig.model_validate(instance)
+    assert cfg.vault_source_backend == "filesystem"

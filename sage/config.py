@@ -522,6 +522,23 @@ class SageCoreConfig(BaseModel):
             "operator migration tooling's job."
         ),
     )
+    vault_source_backend: Literal["filesystem", "document_store"] = Field(
+        default="filesystem",
+        description=(
+            "Vault-source-store binding selector (CAS-ADR-043). The "
+            "vault-source store persists the vault's configuration declaration "
+            "and the source files retained from each ingest -- the one durable "
+            "seam CAS-ADR-042 left on the local filesystem. 'filesystem' (the "
+            "default) binds it to the local vault tree under the vault root: "
+            "today's behavior, durable on the on-box target. 'document_store' "
+            "selects the tenant-native external binding for a stateless "
+            "deployment, where the local filesystem is ephemeral. The two "
+            "bindings are independently selectable from either deployment "
+            "profile (the co-variation test), so either environment can run "
+            "against either store. Like the storage backend, flipping the key "
+            "repoints the binding at restart and never moves data."
+        ),
+    )
     abstraction: StackAbstractionConfig = Field(
         default_factory=StackAbstractionConfig,
         description=(

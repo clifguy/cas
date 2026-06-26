@@ -31,6 +31,20 @@ _ALL_SECTIONS = _REQUIRED_SECTIONS + _OPTIONAL_SECTIONS
 _VAULTS_ROOT = Path("~/sage_vaults").expanduser()
 
 
+def default_vault_root() -> Path:
+    """Return the default vault root: ``$SAGE_VAULT_ROOT`` else ``_VAULTS_ROOT``.
+
+    The single resolution point the filesystem vault-source binding uses when a
+    caller injects no explicit root (CAS-ADR-043), mirroring the discovery root
+    the transport lifespans resolve from ``--vault-root`` / ``SAGE_VAULT_ROOT`` /
+    the ``~/sage_vaults`` default. The fallback is the module-level
+    ``_VAULTS_ROOT`` (not a fresh literal) so the same redirect point existing
+    callers and tests already use stays authoritative.
+    """
+    env = os.environ.get("SAGE_VAULT_ROOT")
+    return Path(env).expanduser() if env else _VAULTS_ROOT
+
+
 def _validate_config(config_dict: dict) -> VaultConfig:
     """Validate a config dict, raising VaultConfigValidationError on failure.
 

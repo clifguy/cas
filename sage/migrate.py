@@ -19,9 +19,8 @@ import logging
 import os
 from pathlib import Path
 
-from sage.config import VaultConfig, load_vault_config
+from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
-from sage.vault_discovery import discover_vault_configs
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +99,20 @@ async def _run(args: argparse.Namespace) -> int:
     # same one the serving binary will open (CAS-ADR-042): without it,
     # initialize_services would resolve the binding from the default stack
     # config instead of the deployed sage/config.yaml.
-    from sage.mcp_init import load_stack_config_or_default, set_stack_config
+    from sage.mcp_init import (
+        load_stack_config_or_default,
+        resolve_stack_vault_source_store,
+        set_stack_config,
+    )
 
-    set_stack_config(load_stack_config_or_default())
+    stack_cfg = load_stack_config_or_default()
+    set_stack_config(stack_cfg)
 
     vault_root = _resolve_vault_root(args)
-    discovered = discover_vault_configs(vault_root)
+    # CAS-ADR-043: discover and load configs through the active profile's
+    # vault-source store, the same seam the serving binary discovers through.
+    vault_source_store = resolve_stack_vault_source_store(stack_cfg, vault_root=vault_root)
+    discovered = vault_source_store.discover()
 
     if not discovered:
         logger.info("No vaults found under %s; nothing to migrate.", vault_root)
@@ -113,13 +120,13 @@ async def _run(args: argparse.Namespace) -> int:
 
     # Build (vault_id, config, config_path) triples in discovery order.
     candidates: list[tuple[str, VaultConfig, Path]] = []
-    for cp in discovered:
+    for dv in discovered:
         try:
-            cfg = load_vault_config(cp)
+            cfg = vault_source_store.load_config(dv)
         except Exception as exc:
-            logger.error("Failed to read %s: %s", cp, exc)
+            logger.error("Failed to read %s: %s", dv.config_path, exc)
             return 1
-        candidates.append((cfg.vault.id, cfg, cp))
+        candidates.append((cfg.vault.id, cfg, dv.config_path))
 
     requested: set[str] | None = set(args.vault) if args.vault is not None else None
     if requested is not None:
