@@ -52,12 +52,12 @@ from sage._tool_rename_mapping import REMOVED_TOOLS, RENAME_MAPPING
 from sage.api.errors import _TYPED_ALIAS_CODES, SAGEError, translate_validation_error
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
-from sage.config import load_vault_config
 from sage.mcp_init import (
     SAGEServices,
     initialize_services,
     load_stack_config_or_default,
     resolve_stack_abstraction_provider,
+    resolve_stack_vault_source_store,
     set_stack_config,
 )
 from sage.sage_api_tools import register_sage_tools
@@ -173,8 +173,6 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
     standalone = _vault_root is not None
 
     if standalone:
-        from sage.vault_discovery import discover_vault_configs
-
         # CAS-ADR-042: resolve the active deployment profile once at process
         # startup and share its abstraction binding across every vault that
         # doesn't opt out via vault.abstraction.enabled = False. For the local
@@ -183,12 +181,19 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
         set_stack_config(stack_cfg)
         stack_abstraction_provider = resolve_stack_abstraction_provider(stack_cfg)
 
-        for config_path in discover_vault_configs(_vault_root):
+        # CAS-ADR-043: vault discovery and config load go through the active
+        # profile's vault-source store. The filesystem binding (the on-box
+        # default) discovers vaults under the resolved root and yields each
+        # config's filesystem path, threaded into initialize_services unchanged;
+        # a malformed vault is skipped per-vault, the rest still load.
+        vault_source_store = resolve_stack_vault_source_store(stack_cfg, vault_root=_vault_root)
+
+        for discovered in vault_source_store.discover():
             try:
-                config = load_vault_config(config_path)
+                config = vault_source_store.load_config(discovered)
                 services = await initialize_services(
                     config,
-                    config_path=config_path,
+                    config_path=discovered.config_path,
                     abstraction_provider=stack_abstraction_provider,
                     registry_service=_vault_registry_service,
                 )
@@ -197,7 +202,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
                 import logging
 
                 logging.getLogger(__name__).error(
-                    "Skipping vault at %s: failed to load (%s)", config_path, exc
+                    "Skipping vault at %s: failed to load (%s)", discovered.config_path, exc
                 )
 
         # Re-derive abstraction work left pending by a prior crash or a stopped

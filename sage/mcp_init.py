@@ -51,6 +51,10 @@ from sage.storage_binding import (
     VaultStorageProvisioner,
     build_stack_storage_provisioner,
 )
+from sage.vault_source_binding import (
+    VaultSourceStore,
+    build_stack_vault_source_store,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -460,6 +464,32 @@ profiles.register_binding(
 )
 
 
+def _local_vault_source_binding(stack_config: SageCoreConfig) -> VaultSourceStore:
+    """Late-binding factory for the local profile's vault-source seam.
+
+    Delegates to ``build_stack_vault_source_store`` by module-global name (the
+    same late-binding reason as ``_local_storage_binding``: a test that
+    monkeypatches the builder must be honored through the resolver path). With
+    no explicit root the builder defaults to ``default_vault_root()`` -- the
+    on-box ``~/sage_vaults`` (or ``$SAGE_VAULT_ROOT``); the transport lifespans
+    inject the root they already resolved (CAS-ADR-043).
+    """
+    return build_stack_vault_source_store(stack_config)
+
+
+# Register the vault-source-store binding for the local deployment profile
+# (CAS-ADR-043). The binding is the backend dispatch in
+# sage.vault_source_binding: the filesystem store under the vault root by
+# default, with the tenant document store selectable as the cloud-oriented
+# alternative. A future profile attaches its own binding by registering a
+# different factory here.
+profiles.register_binding(
+    profiles.LOCAL_PROFILE,
+    profiles.VAULT_SOURCE_SEAM,
+    _local_vault_source_binding,
+)
+
+
 def _local_auth_binding(stack_config: SageCoreConfig) -> TokenValidator:
     """Late-binding factory for the local profile's auth seam.
 
@@ -536,6 +566,21 @@ def _cloud_storage_binding(stack_config: SageCoreConfig) -> VaultStorageProvisio
     return build_stack_storage_provisioner(stack_config, managed_identity=True)
 
 
+def _cloud_vault_source_binding(stack_config: SageCoreConfig) -> VaultSourceStore:
+    """Cloud-profile vault-source binding: the document store under managed identity.
+
+    Delegates to ``build_stack_vault_source_store`` (by module-global name, the
+    same late-binding reason as the local bindings) with
+    ``managed_identity=True`` so the document-store binding authenticates with
+    the workload's managed identity. The backend dispatch still honors the
+    config: a cloud stack that has not yet flipped ``vault_source_backend`` to
+    ``document_store`` resolves the filesystem binding and keeps booting, so this
+    registration does not by itself force the (stubbed) document store on a cloud
+    deployment (CAS-ADR-043).
+    """
+    return build_stack_vault_source_store(stack_config, managed_identity=True)
+
+
 def _cloud_auth_binding(stack_config: SageCoreConfig) -> TokenValidator:
     """Cloud-profile auth binding: the issuer/audience-bound JWT validator.
 
@@ -562,6 +607,11 @@ profiles.register_binding(
     profiles.CLOUD_PROFILE,
     profiles.STORAGE_SEAM,
     _cloud_storage_binding,
+)
+profiles.register_binding(
+    profiles.CLOUD_PROFILE,
+    profiles.VAULT_SOURCE_SEAM,
+    _cloud_vault_source_binding,
 )
 profiles.register_binding(
     profiles.CLOUD_PROFILE,
@@ -605,6 +655,30 @@ def resolve_stack_storage_provisioner(stack_config: SageCoreConfig) -> VaultStor
     """
     resolved = resolve_stack_profile(stack_config)
     return cast(VaultStorageProvisioner, resolved.binding(profiles.STORAGE_SEAM))
+
+
+def resolve_stack_vault_source_store(
+    stack_config: SageCoreConfig, *, vault_root: Path | None = None
+) -> VaultSourceStore:
+    """Resolve the vault-source store for the active deployment profile (CAS-ADR-043).
+
+    Thin typed accessor over ``resolve_stack_profile``, mirroring
+    ``resolve_stack_storage_provisioner`` -- with one addition the storage seam
+    does not need: a ``vault_root`` the transport lifespans inject. Vault
+    discovery is a stack-level operation that runs before any per-vault call, and
+    the filesystem root the lifespans resolved (from ``--vault-root`` /
+    ``SAGE_VAULT_ROOT`` / the default) is a filesystem-binding-specific input the
+    profile seam's ``(SageCoreConfig) -> binding`` factory signature cannot
+    carry. When a root is injected, the binding is built directly so the
+    explicitly-resolved root is honored (the filesystem path the lifespans take);
+    the backend is still chosen by the config/env dispatch. When no root is
+    injected (the create-vault / update-config write paths), the binding resolves
+    through the profile seam with the default root.
+    """
+    if vault_root is not None:
+        return build_stack_vault_source_store(stack_config, vault_root=vault_root)
+    resolved = resolve_stack_profile(stack_config)
+    return cast(VaultSourceStore, resolved.binding(profiles.VAULT_SOURCE_SEAM))
 
 
 def resolve_stack_auth_validator(stack_config: SageCoreConfig) -> TokenValidator:

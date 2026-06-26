@@ -40,7 +40,6 @@ from sage.vault_management import (
     _atomic_write_bytes,
     _check_destructive_changes,
     _validate_config,
-    _write_config_yaml,
     config_path_for_vault,
 )
 
@@ -233,15 +232,22 @@ class VaultConfigService:
         if warnings and not force:
             raise DestructiveConfigChangeError(warnings)
 
-        config_path = config_path_for_vault(vault_id)
+        # CAS-ADR-043: persist the merged configuration through the active
+        # profile's vault-source store so the write is binding-agnostic.
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        config_path = vault_source_store.config_locator(vault_id)
         # Snapshot the pre-write bytes so a reload failure below can
         # restore the on-disk yaml byte-for-byte. Snapshotting bytes
         # (rather than re-serializing the model) preserves the shape of
         # the original yaml even when caller body sections differ in
         # field-completeness from a model_dump round-trip.
-        old_yaml_bytes = config_path.read_bytes() if config_path.exists() else None
+        old_yaml_bytes = (
+            config_path.read_bytes() if config_path is not None and config_path.exists() else None
+        )
 
-        _write_config_yaml(config_path, merged)
+        vault_source_store.write_config(vault_id, merged)
 
         try:
             await self._registry_service.reload(vault_id, new_config)
@@ -253,10 +259,10 @@ class VaultConfigService:
             # failures are logged and swallowed so they cannot mask the
             # cause.
             try:
-                if old_yaml_bytes is not None:
+                if old_yaml_bytes is not None and config_path is not None:
                     _atomic_write_bytes(config_path, old_yaml_bytes)
                 else:
-                    config_path.unlink(missing_ok=True)
+                    vault_source_store.delete_config(vault_id)
             except BaseException:
                 logger.exception(
                     "rollback of vault_config.yaml failed after reload "

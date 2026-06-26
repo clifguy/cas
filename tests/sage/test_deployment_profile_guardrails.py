@@ -35,6 +35,7 @@ from sage.profiles import (
     CLOUD_PROFILE,
     LOCAL_PROFILE,
     STORAGE_SEAM,
+    VAULT_SOURCE_SEAM,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +48,7 @@ CLOUD_OWNER_MODULES = (
     "sage.secrets.key_vault",
     "sage.storage.postgres.managed_identity",
 )
-CORE_SEAMS = (ABSTRACTION_SEAM, STORAGE_SEAM, AUTH_SEAM)
+CORE_SEAMS = (ABSTRACTION_SEAM, STORAGE_SEAM, VAULT_SOURCE_SEAM, AUTH_SEAM)
 
 # Boot snippets executed in a clean interpreter. Each is paired with _SCAN_TAIL,
 # which prints -- as the last stdout line -- a JSON list of the cloud-relevant
@@ -61,12 +62,14 @@ from sage.mcp_init import (
     resolve_stack_abstraction_provider,
     resolve_stack_auth_validator,
     resolve_stack_storage_provisioner,
+    resolve_stack_vault_source_store,
 )
 
 cfg = SageCoreConfig(profile="local", storage_backend="{backend}")
 create_app(stack_config=cfg)             # build the application factory
-resolve_stack_abstraction_provider(cfg)  # resolve all three local-profile seams
+resolve_stack_abstraction_provider(cfg)  # resolve all four local-profile seams
 resolve_stack_storage_provisioner(cfg)
+resolve_stack_vault_source_store(cfg)
 resolve_stack_auth_validator(cfg)
 """
 

@@ -8,7 +8,7 @@
 # startup. Per-vault knobs (enabled, token-budget tuning) remain in the
 # vault config's `abstraction:` block.
 #
-# Schema: docs/fs/sage/sage_core_config.schema.json (v0.6).
+# Schema: docs/fs/sage/sage_core_config.schema.json (v0.8).
 
 # Deployment-profile marker (CAS-ADR-042). The single stack-scope selection
 # that co-binds the adapter-port implementations for one deployment target.
@@ -28,6 +28,15 @@ profile: local
 # Postgres binding), and copying state between backends is the operator
 # migration tooling's job. See docs/process/postgres-local-runtime.md.
 storage_backend: postgres
+
+# Vault-source-store binding selector (CAS-ADR-043). `filesystem` persists each
+# vault's configuration declaration and retained ingest source files under the
+# vault root on local disk -- the on-box default, durable here. `document_store`
+# selects the tenant-native external binding for a stateless deployment where the
+# local filesystem is ephemeral. Independently selectable from either profile;
+# like `storage_backend`, flipping it repoints the binding at restart and never
+# moves data.
+vault_source_backend: filesystem
 
 abstraction:
   # Dispatch key. `local-mlx` loads the local MLX provider (Qwen3) with the

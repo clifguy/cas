@@ -29,8 +29,6 @@ from sage.models.schemas import (
 from sage.vault_management import (
     _atomic_write_bytes,
     _validate_config,
-    _write_config_yaml,
-    config_path_for_vault,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,8 +149,22 @@ class VaultRegistryService:
         if vault_id in self._registry:
             raise VaultAlreadyExistsError(vault_id)
 
-        config_path = config_path_for_vault(vault_id)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        # CAS-ADR-042/043: thread the active deployment profile's abstraction
+        # binding through (local profile -> the stack-built provider,
+        # CAS-ADR-030), and persist the configuration declaration through the
+        # profile's vault-source store so provisioning is an act against the
+        # store rather than a hard-coded filesystem write.
+        from sage.mcp_init import (
+            get_stack_config,
+            resolve_stack_abstraction_provider,
+            resolve_stack_vault_source_store,
+        )
+
+        stack_config = get_stack_config()
+        stack_provider = resolve_stack_abstraction_provider(stack_config)
+        vault_source_store = resolve_stack_vault_source_store(stack_config)
+
+        config_path = vault_source_store.config_locator(vault_id)
         Path(config.vault.storage_root).expanduser().mkdir(parents=True, exist_ok=True)
         Path(config.vault.brain_root).expanduser().mkdir(parents=True, exist_ok=True)
 
@@ -160,15 +172,10 @@ class VaultRegistryService:
         # path runs only for a vault_id absent from the registry) so a
         # failure below can restore the on-disk state without leaving an
         # orphan yaml in place.
-        old_yaml_bytes = config_path.read_bytes() if config_path.exists() else None
-        _write_config_yaml(config_path, body.config)
-
-        # CAS-ADR-042: thread the active deployment profile's abstraction
-        # binding through. For the local profile this is the stack-built
-        # provider (CAS-ADR-030).
-        from sage.mcp_init import get_stack_config, resolve_stack_abstraction_provider
-
-        stack_provider = resolve_stack_abstraction_provider(get_stack_config())
+        old_yaml_bytes = (
+            config_path.read_bytes() if config_path is not None and config_path.exists() else None
+        )
+        vault_source_store.write_config(vault_id, body.config)
 
         try:
             services = await self._initialize_services(
@@ -202,8 +209,8 @@ class VaultRegistryService:
                     )
             try:
                 if old_yaml_bytes is None:
-                    config_path.unlink(missing_ok=True)
-                else:
+                    vault_source_store.delete_config(vault_id)
+                elif config_path is not None:
                     _atomic_write_bytes(config_path, old_yaml_bytes)
             except BaseException:
                 logger.exception(

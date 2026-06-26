@@ -26,7 +26,6 @@ from sage.api.errors import (
     SAGEError,
     translate_validation_error,
 )
-from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, reload_vault_in_registry
 from sage.models.enums import RetrievalMode, SourceType
 from sage.models.legacy_form import detect_legacy_form
@@ -2380,7 +2379,14 @@ def register_sage_tools(
             old_services = get_vault(vault_id)
             config_path = old_services.config_path
             if config_path is not None:
-                config = load_vault_config(config_path)
+                # CAS-ADR-043: re-read the declaration through the active
+                # profile's vault-source store rather than the filesystem
+                # directly, so a non-filesystem binding re-reads from its store.
+                from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+                from sage.vault_source_binding import DiscoveredVault
+
+                store = resolve_stack_vault_source_store(get_stack_config())
+                config = store.load_config(DiscoveredVault(config_path=config_path))
             else:
                 config = old_services.config
 

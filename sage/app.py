@@ -39,7 +39,7 @@ from sage.api.routers import (
 )
 from sage.auth import AuthMiddleware
 from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
-from sage.config import SageCoreConfig, VaultConfig, load_vault_config
+from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_init import (
     initialize_services,
     load_stack_config_or_default,
@@ -380,10 +380,10 @@ def create_app(
         # both the REST API and MCP SSE transport share the same services.
         from sage.mcp_init import (
             resolve_stack_abstraction_provider,
+            resolve_stack_vault_source_store,
             set_stack_config,
         )
         from sage.mcp_server import _vaults
-        from sage.vault_discovery import discover_vault_configs
 
         app.state.vault_registry = _vaults
         # Construct the registry service against the aliased dict so per-vault
@@ -414,13 +414,24 @@ def create_app(
         skipped_vaults: list[tuple[str, str]] = []
 
         if vault_root is not None:
-            for cp in discover_vault_configs(vault_root):
+            # CAS-ADR-043: discovery and config load go through the active
+            # profile's vault-source store. The filesystem binding yields each
+            # config's filesystem path, threaded into initialize_services
+            # unchanged; a malformed vault is logged-and-dropped per-vault.
+            vault_source_store = resolve_stack_vault_source_store(stack_cfg, vault_root=vault_root)
+            for discovered in vault_source_store.discover():
                 try:
-                    vc = load_vault_config(cp)
-                    await _initialize_vault(app, vc, config_path=cp, **init_overrides)
+                    vc = vault_source_store.load_config(discovered)
+                    await _initialize_vault(
+                        app, vc, config_path=discovered.config_path, **init_overrides
+                    )
                 except Exception as exc:
-                    logger.error("Skipping vault at %s: failed to load (%s)", cp, exc)
-                    skipped_vaults.append((str(cp), f"{type(exc).__name__}: {exc}"))
+                    logger.error(
+                        "Skipping vault at %s: failed to load (%s)", discovered.config_path, exc
+                    )
+                    skipped_vaults.append(
+                        (str(discovered.config_path), f"{type(exc).__name__}: {exc}")
+                    )
         elif configs is not None:
             for vc in configs:
                 await _initialize_vault(app, vc, **init_overrides)
