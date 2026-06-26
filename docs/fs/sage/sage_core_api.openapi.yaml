@@ -31,7 +31,7 @@ openapi: "3.1.0"
 
 info:
   title: SAGE Core API
-  version: "1.0"
+  version: "2.0"
   description: >-
     Protocol-neutral Core API for SAGE (Salience-Aware Graph Engine). Exposes
     discovery, ingestion, lifecycle management, graph operations, and access
