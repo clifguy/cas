@@ -36,7 +36,7 @@ import pytest
 
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
-from sage.services.ingestion import _strip_ui_invisibility
+from sage.vault_source_binding import _strip_ui_invisibility
 
 # ---------------------------------------------------------------------------
 # macOS-only tests gate

@@ -8,7 +8,6 @@ three-layer service + router + MCP-tool shape.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import shutil
 import sqlite3
@@ -58,6 +57,7 @@ ReabstractEvent = ReabstractProgressEvent | ReabstractSummaryEvent
 if TYPE_CHECKING:
     from sage.services.ingestion import IngestionService
     from sage.services.vault_registry import VaultRegistryService
+    from sage.vault_source_binding import VaultSourceStore
 
 
 # Poll interval for the post-dispatch wait-for-terminal loop. Hardcoded
@@ -278,9 +278,15 @@ class MaintenanceService:
         all_docs = await self._graph_store.list_all_documents()
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
 
+        # Audit through the active profile's vault-source store so the integrity
+        # check is binding-agnostic (CAS-ADR-043).
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        store = resolve_stack_vault_source_store(get_stack_config())
+
         entries: list[SourceFileIntegrityEntry] = []
         for doc in all_docs:
-            entry = self._check_document_source_file(doc, storage_root, check_hashes)
+            entry = self._check_document_source_file(doc, storage_root, check_hashes, store)
             if entry is not None:
                 entries.append(entry)
 
@@ -303,37 +309,28 @@ class MaintenanceService:
         doc: Document,
         storage_root: Path,
         check_hashes: bool,
+        store: VaultSourceStore,
     ) -> SourceFileIntegrityEntry | None:
         """Return an integrity entry for ``doc`` if its source file is
         missing or hash-mismatched, else None.
 
-        Existence is the ``content_file_missing`` predicate used by
-        ``get_document`` (a bare ``Path.exists()``); when ``check_hashes``
-        is set, a present file is additionally hashed and compared against
-        the recorded ``source_content_hash``. A missing file is always
+        Existence and hashing are resolved through the vault-source store
+        (CAS-ADR-043), the same store ``get_document`` delivers through, so
+        the audit observes exactly what delivery would. When ``check_hashes``
+        is set, a present source is additionally hashed and compared against
+        the recorded ``source_content_hash``. A missing source is always
         classified ``missing`` regardless of ``check_hashes`` (it is never
         a hash error).
         """
-        file_path = storage_root / doc.source_path
-        if not file_path.exists():
+        if not store.source_exists(self._vault_id, storage_root, doc.source_path):
             return self._integrity_entry(doc, "missing", observed=None)
 
         if check_hashes:
-            observed = self._hash_file(file_path)
+            observed = store.hash_source(self._vault_id, storage_root, doc.source_path)
             if observed != doc.source_content_hash:
                 return self._integrity_entry(doc, "hash_mismatch", observed=observed)
 
         return None
-
-    @staticmethod
-    def _hash_file(path: Path) -> str:
-        """SHA-256 of a file in the canonical ``sha256:<hex>`` form,
-        read in chunks so a large source file does not load whole."""
-        digest = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                digest.update(chunk)
-        return f"sha256:{digest.hexdigest()}"
 
     @staticmethod
     def _integrity_entry(

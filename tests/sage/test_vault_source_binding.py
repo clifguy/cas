@@ -13,6 +13,7 @@ Test IDs follow VSB-NNN (Vault-Source Binding).
 """
 
 import copy
+from pathlib import Path
 
 import pytest
 import yaml
@@ -171,12 +172,19 @@ def test_vsb_006_document_store_stub_fails_loud():
     unrelated reason would not pass.
     """
     store = DocumentStoreVaultSourceStore()
+    root = Path("/vault_root")
     for call in (
         lambda: store.discover(),
         lambda: store.load_config(DiscoveredVault(config_path=None)),
         lambda: store.config_locator("v"),
         lambda: store.write_config("v", {}),
         lambda: store.delete_config("v"),
+        # Source-byte half: every method fails loud until the cloud adapter lands.
+        lambda: store.retain_source("v", root, root / "x.md"),
+        lambda: store.source_exists("v", root, "imports/x.md"),
+        lambda: store.source_size("v", root, "imports/x.md"),
+        lambda: store.read_source("v", root, "imports/x.md"),
+        lambda: store.hash_source("v", root, "imports/x.md"),
     ):
         with pytest.raises(NotImplementedError, match="document-store"):
             call()
