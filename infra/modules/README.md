@@ -68,11 +68,13 @@ no secret material is committed.
 ## The API facade
 
 `apim.bicep` provisions the public edge for SAGE (its REST and MCP surfaces):
-an API Management service whose inbound policy validates Entra-issued JWTs,
-serves the MCP OAuth discovery handshake (`/.well-known/oauth-protected-resource`
-plus the `WWW-Authenticate` challenge), and denies the maintenance mount so it
-never reaches the backend. The CAS BFF does not go through the facade — it uses
-the container ingress directly.
+an API Management service whose inbound policy validates Entra-issued JWTs
+uniformly across every surface — the REST API, the ordinary MCP mount, and the
+maintenance mount alike — and serves the MCP OAuth discovery handshake
+(`/.well-known/oauth-protected-resource` plus the `WWW-Authenticate` challenge).
+Authentication and authorization are the sole admin control; no surface is
+denied at the edge. The CAS BFF does not go through the facade — it uses the
+container ingress directly.
 
 The module takes the orchestrator's `location`, `environmentName`, and `tags`,
 plus `sageBackendHostname` (the SAGE container app the facade routes to),

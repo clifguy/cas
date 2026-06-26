@@ -4,9 +4,9 @@ Locks the shape of ``infra/modules/apim.bicep`` and its versioned policy XML
 under ``infra/policies/`` — the public edge for SAGE in the CAS cloud
 deployment profile (CAS-ADR-042). The API Management service fronts SAGE's
 REST and MCP surfaces: it validates Entra-issued JWTs, serves the MCP OAuth
-discovery handshake the bare container ingress cannot, and keeps the
-maintenance mount off the public edge. These checks keep that contract intact
-as the module evolves.
+discovery handshake the bare container ingress cannot, and validates that JWT
+uniformly across every surface — the maintenance mount included. These checks
+keep that contract intact as the module evolves.
 
 The checks read the tracked Bicep and policy text only — they need no Azure or
 Bicep tooling, so they run in the ordinary Python test job. The authoritative
@@ -46,7 +46,8 @@ _APIM_BACKEND_TYPE: Final[str] = "Microsoft.ApiManagement/service/backends"
 _APIM_STABLE_API_VERSION: Final[str] = "2022-08-01"
 _APIM_NONEXISTENT_API_VERSION: Final[str] = "2023-05-01"
 
-# The maintenance mount that must never reach the public backend.
+# The maintenance mount. It routes through the facade under the same JWT
+# validation as the ordinary surface — the policy must not single it out.
 _ADMIN_MOUNT: Final[str] = "/mcp_admin"
 
 # The catch-all forwarding contract. APIM does not honor a literal ``*`` HTTP
@@ -149,6 +150,17 @@ def _hardcoded_https_hosts(text: str) -> list[str]:
     is clean; a concrete host is a hardcoded-endpoint smell.
     """
     return re.findall(r"https://(?!\$\{)[^'\"\s]+", _strip_line_comments(text))
+
+
+def _policy_special_cases_path(policy: str, path: str) -> bool:
+    """True iff a ``<when>`` branch condition singles out ``path``.
+
+    A path is special-cased when it is intercepted by its own ``<when>`` branch
+    before reaching the ``<otherwise>`` (JWT-validate + route-to-backend) branch
+    — the shape of the removed maintenance-mount deny. A path handled uniformly
+    by ``<otherwise>`` does not appear in any branch condition.
+    """
+    return bool(re.search(r"<when[^>]*condition=[^>]*" + re.escape(path), policy))
 
 
 def _policy_text() -> str:
@@ -453,22 +465,29 @@ def test_apim_policy_serves_oauth_discovery() -> None:
     )
 
 
-def test_apim_policy_excludes_admin_mount() -> None:
-    """The maintenance mount /mcp_admin is denied at the edge (not routed to the
-    backend) — the highest-severity regression this gate guards.
+def test_apim_policy_routes_admin_mount_through_jwt() -> None:
+    """The maintenance mount /mcp_admin routes through the facade under the same
+    JWT validation as the ordinary surface — it is no longer denied at the edge.
+
+    Authorization is uniform across surfaces: the policy must not intercept the
+    admin mount with its own branch; it flows down the ``<otherwise>`` branch
+    that validates the JWT and routes to the backend, like every other path.
     """
     policy = _policy_text()
-    assert _ADMIN_MOUNT in policy, (
-        f"the policy must explicitly handle {_ADMIN_MOUNT} (deny / not-found)"
+    assert not _policy_special_cases_path(policy, _ADMIN_MOUNT), (
+        f"the policy must not single out {_ADMIN_MOUNT} in a <when> branch; it "
+        "routes uniformly through the JWT-validating <otherwise> branch"
     )
-    assert re.search(r"set-status\s+code=\"(?:403|404)\"", policy), (
-        f"{_ADMIN_MOUNT} must be denied with a 403/404 return-response"
+    assert re.search(r"set-backend-service\s+backend-id=\"sage-backend\"", policy), (
+        "the <otherwise> branch must route forwarded requests to the sage-backend "
+        f"(the path {_ADMIN_MOUNT} now flows down)"
     )
-    # The module must not declare an operation/API path that routes the admin
-    # mount to the backend.
+    # Routing stays via the existing catch-all operation + policy: the module
+    # must not declare a per-path operation for the admin mount.
     module_text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
     assert _ADMIN_MOUNT not in module_text, (
-        f"apim.bicep must not route {_ADMIN_MOUNT} (it is denied in policy, not exposed)"
+        f"apim.bicep must not declare a per-path operation for {_ADMIN_MOUNT}; it "
+        "routes via the catch-all operation and the inbound policy"
     )
 
 
@@ -599,6 +618,32 @@ def test_loaded_policy_paths_detector_controls() -> None:
     assert _loaded_policy_paths(real) == ["../policies/sage-api-policy.xml"]
     assert _loaded_policy_paths(commented) == []
     assert _loaded_policy_paths(non_xml) == []
+
+
+def test_policy_special_case_detector_controls() -> None:
+    """``_policy_special_cases_path`` fires on a branch that singles out a path,
+    and passes a policy that handles it only via ``<otherwise>``.
+    """
+    denied = (
+        "<choose>"
+        "<when condition='@(context.Request.Url.Path.Contains(\"/mcp_admin\"))'>"
+        '<return-response><set-status code="404" /></return-response></when>'
+        '<otherwise><set-backend-service backend-id="sage-backend" /></otherwise>'
+        "</choose>"
+    )
+    uniform = (
+        "<choose>"
+        "<when condition='@(context.Request.Url.Path.Contains(\"/.well-known\"))'>"
+        '<return-response><set-status code="200" /></return-response></when>'
+        '<otherwise><set-backend-service backend-id="sage-backend" /></otherwise>'
+        "</choose>"
+    )
+    assert _policy_special_cases_path(denied, _ADMIN_MOUNT), (
+        "detector failed to flag a <when> branch singling out the admin mount"
+    )
+    assert not _policy_special_cases_path(uniform, _ADMIN_MOUNT), (
+        "detector false-positived on a policy that routes the admin mount via <otherwise>"
+    )
 
 
 def test_hardcoded_https_host_detector_controls() -> None:

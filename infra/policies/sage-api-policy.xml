@@ -3,12 +3,14 @@
         <base />
         <!--
             SAGE public-edge policy for the CAS cloud deployment profile
-            (CAS-ADR-042). One inbound pipeline, three branches:
+            (CAS-ADR-042). One inbound pipeline, two branches:
               1. Serve the MCP OAuth protected-resource-metadata document
                  (unauthenticated discovery handshake).
-              2. Deny the maintenance mount so it never reaches the backend.
-              3. Validate the Entra JWT (single issuer, single audience,
-                 uniform across the REST and MCP surfaces) for everything else.
+              2. Validate the Entra JWT (single issuer, single audience,
+                 uniform across every surface — the REST API, the ordinary MCP
+                 mount, and the maintenance mount alike) for everything else.
+            Authentication and authorization are the sole admin control; no
+            surface is denied at the edge.
             Environment coordinates arrive as APIM named values ({{...}}): the
             tenant id, the SAGE audience, and the public resource URL. Branch
             conditions use single-quoted attributes so the C# string literals
@@ -27,11 +29,6 @@
   "scopes_supported": ["Sage.Access"],
   "bearer_methods_supported": ["header"]
 }</set-body>
-                </return-response>
-            </when>
-            <when condition='@(context.Request.Url.Path.Contains("/mcp_admin"))'>
-                <return-response>
-                    <set-status code="404" reason="Not Found" />
                 </return-response>
             </when>
             <otherwise>
