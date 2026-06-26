@@ -22,9 +22,14 @@ export default function Review() {
   const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
   const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
 
-  useEffect(() => {
+  // Clear the selection when the active tab changes — the rows under the
+  // user's fingers differ between tabs. Resetting during render (guarded by
+  // the previous tab) avoids a setState-in-effect.
+  const [syncedTab, setSyncedTab] = useState(activeTab);
+  if (activeTab !== syncedTab) {
+    setSyncedTab(activeTab);
     setSelectedIds(new Set());
-  }, [activeTab]);
+  }
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -43,7 +48,12 @@ export default function Review() {
     setLoading(false);
   }, [vaultId]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    async function run() {
+      await fetchData();
+    }
+    run();
+  }, [fetchData]);
 
   function toggleRow(id: string) {
     setSelectedIds((prev) => {
@@ -169,7 +179,12 @@ function MetadataReview({
   const [edits, setEdits] = useState<Record<string, Record<string, string>>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => { setQueue(items); }, [items]);
+  // Re-seed the working queue when a fresh prop arrives (render-phase resync).
+  const [syncedItems, setSyncedItems] = useState(items);
+  if (items !== syncedItems) {
+    setSyncedItems(items);
+    setQueue(items);
+  }
 
   function setFieldEdit(docId: string, field: string, value: string) {
     setEdits(prev => ({
@@ -333,7 +348,12 @@ function EdgeReview({ vaultId, edges }: { vaultId: string; edges: StagingEdge[] 
   const [staging, setStaging] = useState(edges);
   const [edgeErrors, setEdgeErrors] = useState<Record<string, string>>({});
 
-  useEffect(() => { setStaging(edges); }, [edges]);
+  // Re-seed the working list when a fresh prop arrives (render-phase resync).
+  const [syncedEdges, setSyncedEdges] = useState(edges);
+  if (edges !== syncedEdges) {
+    setSyncedEdges(edges);
+    setStaging(edges);
+  }
 
   if (staging.length === 0) {
     return <div style={{ color: '#666' }}>No edges pending review.</div>;

@@ -75,16 +75,21 @@ function ReabstractOperation({ vaultId }: { vaultId: string }) {
 
   // Initial fetch on mount + whenever the active vault changes.
   useEffect(() => {
-    refreshCount();
+    async function run() {
+      await refreshCount();
+    }
+    run();
   }, [refreshCount]);
 
   // Refresh count when the operation completes. Decoupled from the
   // success handler so the same refresh applies whether the summary
   // arrives via the SSE summary event or via a stream-end fallback.
   useEffect(() => {
-    if (phase === 'done') {
-      refreshCount();
+    if (phase !== 'done') return;
+    async function run() {
+      await refreshCount();
     }
+    run();
   }, [phase, refreshCount]);
 
   // Abort an in-flight stream on unmount (prevents setState-after-unmount).

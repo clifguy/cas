@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickEdgeEndpoint } from '../GraphExplorer';
+import { pickEdgeEndpoint } from '../../utils/graph';
 
 /**
  * Tests for the edge-click traversal helper.

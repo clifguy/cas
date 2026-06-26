@@ -51,7 +51,12 @@ export default function Settings() {
       .catch(err => { setError(err.message ?? 'Failed to load config'); setLoading(false); });
   }, [vaultId]);
 
-  useEffect(() => { fetchConfig(); }, [fetchConfig]);
+  useEffect(() => {
+    async function run() {
+      await fetchConfig();
+    }
+    run();
+  }, [fetchConfig]);
 
   const handleSave = async (sectionKey: string, sectionData: unknown) => {
     setSaving(true);
@@ -239,7 +244,14 @@ function IdentityEditor({
   config, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { config: VaultIdentityConfig; onSave: (data: VaultIdentityConfig) => void }) {
   const [draft, setDraft] = useState<VaultIdentityConfig>(config);
-  useEffect(() => { setDraft(config); }, [config]);
+  // Re-seed the editable draft when a fresh config arrives (e.g. after a save
+  // refetch). Adjusting state during render — guarded by the previous prop —
+  // is React's prescribed alternative to a setState-in-effect resync.
+  const [syncedConfig, setSyncedConfig] = useState(config);
+  if (config !== syncedConfig) {
+    setSyncedConfig(config);
+    setDraft(config);
+  }
 
   const update = (field: keyof VaultIdentityConfig, value: string | null) => {
     setDraft(prev => ({ ...prev, [field]: value }));
@@ -300,7 +312,12 @@ function DocTypesEditor({
   docTypes, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { docTypes: DocTypeConfig[]; onSave: (data: DocTypeConfig[]) => void }) {
   const [draft, setDraft] = useState<DocTypeConfig[]>(docTypes);
-  useEffect(() => { setDraft(docTypes); }, [docTypes]);
+  // Re-seed the editable draft when a fresh prop arrives (render-phase resync).
+  const [syncedDocTypes, setSyncedDocTypes] = useState(docTypes);
+  if (docTypes !== syncedDocTypes) {
+    setSyncedDocTypes(docTypes);
+    setDraft(docTypes);
+  }
 
   const updateRow = (idx: number, field: keyof DocTypeConfig, value: string) => {
     setDraft(prev => prev.map((row, i) => i === idx ? { ...row, [field]: value } : row));
@@ -368,7 +385,13 @@ function LifecycleEditor({
 }) {
   const [states, setStates] = useState(lifecycle.states);
   const [transitions, setTransitions] = useState(lifecycle.transitions);
-  useEffect(() => { setStates(lifecycle.states); setTransitions(lifecycle.transitions); }, [lifecycle]);
+  // Re-seed the editable drafts when a fresh prop arrives (render-phase resync).
+  const [syncedLifecycle, setSyncedLifecycle] = useState(lifecycle);
+  if (lifecycle !== syncedLifecycle) {
+    setSyncedLifecycle(lifecycle);
+    setStates(lifecycle.states);
+    setTransitions(lifecycle.transitions);
+  }
 
   const updateState = (idx: number, field: string, value: string | boolean) => {
     setStates(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
@@ -474,13 +497,15 @@ function LifecycleEditor({
 function JsonEditor({
   label, data, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { label: string; data: Record<string, unknown>; onSave: (data: Record<string, unknown>) => void }) {
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => JSON.stringify(data, null, 2));
   const [parseError, setParseError] = useState('');
-
-  useEffect(() => {
+  // Re-seed the editor text when a fresh prop arrives (render-phase resync).
+  const [syncedData, setSyncedData] = useState(data);
+  if (data !== syncedData) {
+    setSyncedData(data);
     setText(JSON.stringify(data, null, 2));
     setParseError('');
-  }, [data]);
+  }
 
   const handleSave = () => {
     try {
@@ -526,7 +551,12 @@ function AbstractionEditor({
   config, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & { config: VaultAbstractionConfig; onSave: (data: VaultAbstractionConfig) => void }) {
   const [draft, setDraft] = useState<VaultAbstractionConfig>(config);
-  useEffect(() => { setDraft(config); }, [config]);
+  // Re-seed the editable draft when a fresh prop arrives (render-phase resync).
+  const [syncedConfig, setSyncedConfig] = useState(config);
+  if (config !== syncedConfig) {
+    setSyncedConfig(config);
+    setDraft(config);
+  }
 
   return (
     <div>

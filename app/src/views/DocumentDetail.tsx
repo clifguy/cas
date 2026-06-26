@@ -80,15 +80,15 @@ export default function DocumentDetail() {
   }
 
   useEffect(() => {
-    if (!id) return;
-    setLoading(true);
-    setError('');
-
-    Promise.all([
-      getDocument(vaultId, id),
-      traverse(vaultId, { start_id: id, direction: 'both', depth: 1 }),
-    ])
-      .then(([document, traverseResp]) => {
+    async function load() {
+      if (!id) return;
+      setLoading(true);
+      setError('');
+      try {
+        const [document, traverseResp] = await Promise.all([
+          getDocument(vaultId, id),
+          traverse(vaultId, { start_id: id, direction: 'both', depth: 1 }),
+        ]);
         setDoc(document);
         const edgeList = traverseResp.nodes.map(n => n.edge);
         setEdges(edgeList);
@@ -99,11 +99,12 @@ export default function DocumentDetail() {
         }
         setNeighborTitles(titles);
         setLoading(false);
-      })
-      .catch(err => {
-        setError(err.message ?? 'Failed to load document');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load document');
         setLoading(false);
-      });
+      }
+    }
+    load();
   }, [vaultId, id]);
 
   if (loading) return <div>Loading document...</div>;

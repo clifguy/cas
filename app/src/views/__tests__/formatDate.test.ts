@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatDate } from '../Search';
+import { formatDate } from '../../utils/format';
 
 /**
  * Unit tests for the calendar-date formatter.

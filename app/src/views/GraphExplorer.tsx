@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useOutletContext } from 'react-router-dom';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
@@ -6,6 +6,7 @@ import type { VaultContext } from '../App';
 import type { DocumentSummary, TraversalNode, ResolutionPathEntry } from '../api/types';
 import { traverse } from '../api/graph';
 import { getDocument as fetchDocument } from '../api/documents';
+import { pickEdgeEndpoint } from '../utils/graph';
 
 // Shape mapping for doc_type
 const docTypeShapes: Record<string, string> = {
@@ -41,18 +42,6 @@ const lifecycleOpacity: Record<string, number> = {
   archived: 0.3,
 };
 
-// Decide which endpoint becomes the new center when the user clicks an edge.
-// If the edge touches the current center, return the opposite endpoint.
-// Otherwise default to the target, preserving the arrow direction as a cue.
-export function pickEdgeEndpoint(
-  edge: { from: string; to: string },
-  currentCenterId: string | undefined,
-): string {
-  if (edge.from === currentCenterId) return edge.to;
-  if (edge.to === currentCenterId) return edge.from;
-  return edge.to;
-}
-
 export default function GraphExplorer() {
   const { id } = useParams<{ id: string }>();
   const { vaultId, vault } = useOutletContext<VaultContext>();
@@ -67,18 +56,18 @@ export default function GraphExplorer() {
     for (const t of Object.keys(edgeStyles)) filters[t] = true;
     return filters;
   });
-  const [lifecycleFilters, setLifecycleFilters] = useState<Record<string, boolean>>({});
-
-  // Sync lifecycle filters when vault loads (initializer runs before vault is available)
-  useEffect(() => {
-    if (!vault) return;
-    setLifecycleFilters(prev => {
-      if (Object.keys(prev).length > 0) return prev;
-      const filters: Record<string, boolean> = {};
-      for (const s of vault.lifecycle_states) filters[s.value] = true;
-      return filters;
-    });
-  }, [vault]);
+  const [lifecycleFilterOverrides, setLifecycleFilterOverrides] =
+    useState<Record<string, boolean> | null>(null);
+  // Default every lifecycle state to visible once the vault is known; a user
+  // toggle is captured as an explicit override map. Deriving the effective
+  // filter set during render avoids a setState-in-effect sync — the useState
+  // initializer can't see the vault, which arrives via outlet context.
+  const lifecycleFilters = useMemo<Record<string, boolean>>(() => {
+    if (lifecycleFilterOverrides) return lifecycleFilterOverrides;
+    const filters: Record<string, boolean> = {};
+    if (vault) for (const s of vault.lifecycle_states) filters[s.value] = true;
+    return filters;
+  }, [lifecycleFilterOverrides, vault]);
   const [selectedNode, setSelectedNode] = useState<DocumentSummary | null>(null);
   const [centerNodeId, setCenterNodeId] = useState(id);
   const [traversalData, setTraversalData] = useState<TraversalNode[]>([]);
@@ -90,14 +79,14 @@ export default function GraphExplorer() {
 
   // Fetch traversal data from API
   useEffect(() => {
-    if (!centerNodeId) return;
-    setLoading(true);
-
-    Promise.all([
-      traverse(vaultId, { start_id: centerNodeId, direction: 'both', depth, debug: debugMode }),
-      fetchDocument(vaultId, centerNodeId),
-    ])
-      .then(([resp, doc]) => {
+    async function load() {
+      if (!centerNodeId) return;
+      setLoading(true);
+      try {
+        const [resp, doc] = await Promise.all([
+          traverse(vaultId, { start_id: centerNodeId, direction: 'both', depth, debug: debugMode }),
+          fetchDocument(vaultId, centerNodeId),
+        ]);
         setTraversalData(resp.nodes);
         setResolutionPath(resp.resolution_path ?? []);
         setCenterDoc({
@@ -114,12 +103,13 @@ export default function GraphExplorer() {
           source_modified_at: doc.source_modified_at,
         });
         setLoading(false);
-      })
-      .catch(() => {
+      } catch {
         setTraversalData([]);
         setResolutionPath([]);
         setLoading(false);
-      });
+      }
+    }
+    load();
   }, [vaultId, centerNodeId, depth, debugMode]);
 
   // Build and render vis-network from traversal data
@@ -282,7 +272,7 @@ export default function GraphExplorer() {
           <div style={{ display: 'flex', gap: 6 }}>
             {vault.lifecycle_states.map(ls => (
               <label key={ls.value} style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 2 }}>
-                <input type="checkbox" checked={lifecycleFilters[ls.value]} onChange={e => setLifecycleFilters({ ...lifecycleFilters, [ls.value]: e.target.checked })} />
+                <input type="checkbox" checked={lifecycleFilters[ls.value]} onChange={e => setLifecycleFilterOverrides({ ...lifecycleFilters, [ls.value]: e.target.checked })} />
                 {ls.label}
               </label>
             ))}

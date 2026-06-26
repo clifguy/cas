@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, Outlet, useLocation } from 'react-router-dom';
@@ -87,7 +88,9 @@ const emptyDiscover: DiscoverResponse = {
 // Location spy
 function LocationSpy({ locationRef }: { locationRef: { current: string } }) {
   const loc = useLocation();
-  locationRef.current = `${loc.pathname}${loc.search}`;
+  useEffect(() => {
+    locationRef.current = `${loc.pathname}${loc.search}`;
+  }, [loc.pathname, loc.search, locationRef]);
   return null;
 }
 

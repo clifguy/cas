@@ -17,6 +17,7 @@ export default async function globalSetup(): Promise<void> {
     throw new Error(
       `e2e seed failed (run \`${venvPython} ${seed}\` manually to debug). ` +
         `Underlying error: ${(err as Error).message}`,
+      { cause: err },
     );
   }
 }
