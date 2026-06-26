@@ -277,10 +277,14 @@ def build_sharepoint_graph_client(
     def token_provider() -> str:
         return credential.get_token(scope).token
 
+    # follow_redirects is required, not cosmetic: Graph answers a content GET on a
+    # '.../:/content' endpoint with a 302 to a short-lived download URL, so a client
+    # that did not follow redirects would read the empty-bodied 302 for every config
+    # and source download.
     return SharePointGraphClient(
         site_id=config.site_id,
         drive_id=config.drive_id,
         root_path=config.root_path,
         token_provider=token_provider,
-        http_client=httpx.Client(timeout=30.0),
+        http_client=httpx.Client(timeout=30.0, follow_redirects=True),
     )
