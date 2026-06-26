@@ -56,18 +56,6 @@ VAULT_SOURCE_BACKEND_ENV_VAR = "SAGE_TEST_VAULT_SOURCE_BACKEND"
 
 _VALID_BACKENDS = ("filesystem", "document_store")
 
-# The document-store binding implements the config + discovery surface; its
-# source-byte retention/delivery half is the remaining slice and fails loud until
-# the SharePoint/Graph adapter for it lands (CAS-ADR-043). The message names
-# "document-store" so a deployment that reaches an unimplemented source-byte
-# method is told exactly which half is missing.
-_SOURCE_FOLLOW_UP = (
-    "the document-store vault-source binding implements the config + discovery "
-    "surface, but its source-byte retention/delivery half is not yet implemented; "
-    "CAS-ADR-043 routes it through the port and the concrete SharePoint/Graph "
-    "adapter for it lands in a follow-up."
-)
-
 
 @dataclass(frozen=True)
 class DiscoveredVault:
@@ -507,19 +495,45 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         client.delete_config(vault_id)  # type: ignore[attr-defined]
 
     def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
-        raise NotImplementedError(_SOURCE_FOLLOW_UP)
+        # Every retain uploads to the document store: under this binding the
+        # local tree is ephemeral, so the filesystem binding's "already-internal,
+        # no copy" optimization is meaningless here. ``storage_root`` is unused --
+        # the source is addressed by vault id and vault-relative path, mirroring
+        # how the config surface ignores the filesystem locator. UI-invisibility
+        # stripping is a macOS-filesystem concern; a Graph upload of raw bytes
+        # carries no xattr/chflag, so there is nothing to strip.
+        data = source_path.read_bytes()
+        content_hash = hashlib.sha256(data).hexdigest()[:8]
+        client = self._get_client()
+        rel = f"imports/{source_path.name}"
+        if client.source_item(vault_id, rel) is not None:  # type: ignore[attr-defined]
+            existing_hash = hashlib.sha256(
+                client.read_source_bytes(vault_id, rel)  # type: ignore[attr-defined]
+            ).hexdigest()[:8]
+            if existing_hash == content_hash:
+                # Identical content already retained -- reuse the existing path.
+                return rel
+            # Different content under the same name: disambiguate with the hash.
+            rel = f"imports/{source_path.stem}_{content_hash}{source_path.suffix}"
+        client.upload_source(vault_id, rel, data)  # type: ignore[attr-defined]
+        return rel
 
     def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
-        raise NotImplementedError(_SOURCE_FOLLOW_UP)
+        return self._get_client().source_item(vault_id, source_path) is not None  # type: ignore[attr-defined]
 
     def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
-        raise NotImplementedError(_SOURCE_FOLLOW_UP)
+        item = self._get_client().source_item(vault_id, source_path)  # type: ignore[attr-defined]
+        if item is None:
+            raise FileNotFoundError(
+                f"no retained source {source_path!r} for vault {vault_id!r} in the document store."
+            )
+        return int(item["size"])
 
     def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
-        raise NotImplementedError(_SOURCE_FOLLOW_UP)
+        return self._get_client().read_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
 
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
-        raise NotImplementedError(_SOURCE_FOLLOW_UP)
+        return self._get_client().hash_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
 
 
 def build_stack_vault_source_store(

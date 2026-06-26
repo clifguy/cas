@@ -10,7 +10,11 @@ document at a time (BH-026, BH-068).
 """
 
 import asyncio
+import contextlib
 import logging
+import shutil
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -573,7 +577,8 @@ class IngestionService:
         # for adapter behavior across all ingests; the request override is a
         # per-call escape hatch.
         merged_config = self._merge_adapter_config(request.source_type, request.config)
-        projection = await adapter.project(storage_root / vault_relative, merged_config)
+        with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
+            projection = await adapter.project(project_path, merged_config)
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
         # opts in to review (CAS-ADR-021). Default ingests are caller-
@@ -1258,9 +1263,9 @@ class IngestionService:
         if doc.source_path is None:
             raise SourceFileNotFoundError("(none)")
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-        source_path = storage_root / doc.source_path
-        if not source_path.exists():
-            raise SourceFileNotFoundError(doc.source_path)
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
 
         existing = self._try_claim(document_id, "recompute")
         if existing is not None:
@@ -1269,11 +1274,16 @@ class IngestionService:
         # Stage 1 (projection) runs synchronously so adapter / source errors
         # surface in the caller's response envelope rather than as a FAILED
         # stamp on the document. Drop the claim on synchronous failure so the
-        # operator can retry without restarting the service.
+        # operator can retry without restarting the service. The source is read
+        # through the active vault-source binding so re-projection works under a
+        # non-filesystem store after a restart (CAS-ADR-043).
         start_time = datetime.now(timezone.utc)
         try:
             merged_config = self._merge_adapter_config(doc.source_type, None)
-            projection = await adapter.project(source_path, merged_config)
+            with self._project_source(
+                vault_source_store, storage_root, doc.source_path
+            ) as project_path:
+                projection = await adapter.project(project_path, merged_config)
             await self._store.update_document(
                 document_id,
                 {
@@ -1320,11 +1330,14 @@ class IngestionService:
         if doc.source_path is None:
             raise SourceFileNotFoundError("(none)")
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-        source_path = storage_root / doc.source_path
-        if not source_path.exists():
-            raise SourceFileNotFoundError(doc.source_path)
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
         merged_config = self._merge_adapter_config(doc.source_type, None)
-        projection = await adapter.project(source_path, merged_config)
+        with self._project_source(
+            vault_source_store, storage_root, doc.source_path
+        ) as project_path:
+            projection = await adapter.project(project_path, merged_config)
         now = datetime.now(timezone.utc)
         await self._store.update_document(
             document_id,
@@ -1337,6 +1350,35 @@ class IngestionService:
         )
         await self._content_store.remove_document(document_id)
         return projection
+
+    @contextlib.contextmanager
+    def _project_source(self, store, storage_root: Path, source_path: str) -> Iterator[Path]:
+        """Yield a local filesystem path to project a retained source from.
+
+        A retained source the active binding keeps on the local tree (the
+        filesystem binding, or a same-request local copy) is projected in place.
+        Under a non-filesystem binding -- where no local copy survives a restart
+        -- the bytes are pulled back through the vault-source port and staged to a
+        temporary file carrying the source's original basename, so the adapter's
+        filename-derived title and tier3 extraction are unchanged. Routing
+        projection through the port keeps projection and chunk repair working
+        under the document-store binding (CAS-ADR-043).
+        """
+        local = storage_root / source_path
+        if local.exists():
+            yield local
+            return
+        vault_id = self._config.vault.id
+        if not store.source_exists(vault_id, storage_root, source_path):
+            raise SourceFileNotFoundError(source_path)
+        data = store.read_source(vault_id, storage_root, source_path)
+        staging = Path(tempfile.mkdtemp(prefix="sage-project-"))
+        try:
+            staged = staging / Path(source_path).name
+            staged.write_bytes(data)
+            yield staged
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     @staticmethod
     def _resolve_doc_type_for_tier3(

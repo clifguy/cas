@@ -16,9 +16,11 @@ Store).
 """
 
 import copy
+import hashlib
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import httpx
 import pytest
@@ -37,12 +39,20 @@ _DRIVE = "b!drive-id"
 
 
 class _FakeGraphClient:
-    """In-memory stand-in for SharePointGraphClient: vault_id -> config bytes."""
+    """In-memory stand-in for SharePointGraphClient: config bytes per vault_id
+    and retained source bytes per vault-relative path."""
 
     def __init__(self) -> None:
         self.store: dict[str, bytes] = {}
         self.uploads = 0
         self.deletes = 0
+        # Source-byte half: vault-relative path -> bytes, with op counters so a
+        # test can prove a cheap stat did not pull content and a reuse did not
+        # re-upload.
+        self.sources: dict[str, bytes] = {}
+        self.source_uploads = 0
+        self.source_reads = 0
+        self.source_stats = 0
 
     def list_vault_ids(self) -> list[str]:
         return sorted(self.store)
@@ -57,6 +67,26 @@ class _FakeGraphClient:
     def delete_config(self, vault_id: str) -> None:
         self.deletes += 1
         self.store.pop(vault_id, None)
+
+    # -- source-byte half --------------------------------------------------
+
+    def source_item(self, vault_id: str, source_path: str) -> dict | None:
+        self.source_stats += 1
+        data = self.sources.get(source_path)
+        if data is None:
+            return None
+        return {"name": source_path.rsplit("/", 1)[-1], "size": len(data)}
+
+    def read_source_bytes(self, vault_id: str, source_path: str) -> bytes:
+        self.source_reads += 1
+        return self.sources[source_path]
+
+    def upload_source(self, vault_id: str, source_path: str, data: bytes) -> None:
+        self.source_uploads += 1
+        self.sources[source_path] = data
+
+    def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
+        return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()
 
 
 def _binding(fake: _FakeGraphClient) -> DocumentStoreVaultSourceStore:
@@ -147,6 +177,122 @@ def test_vsb_ds_004b_load_config_missing_item_fails_loud():
     store = _binding(_FakeGraphClient())
     with pytest.raises(FileNotFoundError, match="ghost"):
         store.load_config(DiscoveredVault(config_path=None, vault_id="ghost"))
+
+
+# --------------------------------------------------------------------------
+# Binding source-byte tests, against the in-memory fake Graph client
+# --------------------------------------------------------------------------
+
+
+def test_vsb_ds_030_retain_external_uploads_and_returns_vault_relative(tmp_path):
+    """``retain_source`` uploads an external file's bytes to ``imports/<name>``
+    and returns that vault-relative path.
+
+    Anti-coincidental-pass: assert exactly one upload occurred *and* the stored
+    bytes match — a stub returning the path without uploading, or uploading
+    elsewhere, would fail.
+    """
+    fake = _FakeGraphClient()
+    store = _binding(fake)
+    external = tmp_path / "report.md"
+    external.write_bytes(b"# Report\n\nbody")
+
+    rel = store.retain_source("v", tmp_path, external)
+
+    assert rel == "imports/report.md"
+    assert fake.source_uploads == 1
+    assert fake.sources["imports/report.md"] == b"# Report\n\nbody"
+
+
+def test_vsb_ds_031_retain_collision_identical_content_reuses(tmp_path):
+    """A name collision whose content is identical reuses the existing path and
+    does not re-upload.
+
+    Boundary: dedup. Anti-coincidental-pass: assert the upload counter stays at
+    zero — a binding that always re-uploaded would still return the right path
+    but bump the counter.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/x.md"] = b"same-bytes"
+    store = _binding(fake)
+    external = tmp_path / "x.md"
+    external.write_bytes(b"same-bytes")
+
+    rel = store.retain_source("v", tmp_path, external)
+
+    assert rel == "imports/x.md"
+    assert fake.source_uploads == 0  # reused, no upload
+
+
+def test_vsb_ds_032_retain_collision_different_content_suffixes(tmp_path):
+    """A name collision whose content differs uploads under a content-hash
+    suffix and leaves the original untouched.
+
+    Boundary: disambiguation. Anti-coincidental-pass: assert the returned path
+    carries the 8-char hash suffix, the new bytes land there, and the original
+    path's bytes are unchanged.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/x.md"] = b"original"
+    store = _binding(fake)
+    external = tmp_path / "x.md"
+    external.write_bytes(b"different")
+
+    rel = store.retain_source("v", tmp_path, external)
+
+    expected_suffix = hashlib.sha256(b"different").hexdigest()[:8]
+    assert rel == f"imports/x_{expected_suffix}.md"
+    assert fake.sources[rel] == b"different"
+    assert fake.sources["imports/x.md"] == b"original"  # original untouched
+
+
+def test_vsb_ds_033_source_exists_true_and_false():
+    """``source_exists`` reports a retained source present and an absent one
+    absent."""
+    fake = _FakeGraphClient()
+    fake.sources["imports/here.md"] = b"x"
+    store = _binding(fake)
+
+    assert store.source_exists("v", Path("/unused"), "imports/here.md") is True
+    assert store.source_exists("v", Path("/unused"), "imports/gone.md") is False
+
+
+def test_vsb_ds_034_source_size_is_a_cheap_stat():
+    """``source_size`` returns the byte length via item metadata without pulling
+    the content.
+
+    Anti-coincidental-pass: assert no content read occurred — an implementation
+    that downloaded the file to measure it would inflate ``source_reads``.
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/s.md"] = b"abcde"
+    store = _binding(fake)
+
+    assert store.source_size("v", Path("/unused"), "imports/s.md") == 5
+    assert fake.source_reads == 0  # metadata only, no content download
+
+
+def test_vsb_ds_035_read_source_round_trips_bytes():
+    """``read_source`` returns the exact retained bytes, binary-safe."""
+    fake = _FakeGraphClient()
+    payload = b"\x00\x01binary\xffpayload"
+    fake.sources["imports/b.bin"] = payload
+    store = _binding(fake)
+
+    assert store.read_source("v", Path("/unused"), "imports/b.bin") == payload
+
+
+def test_vsb_ds_036_hash_source_canonical_form():
+    """``hash_source`` returns the canonical ``sha256:<hex>`` of the retained
+    bytes."""
+    fake = _FakeGraphClient()
+    payload = b"hash me"
+    fake.sources["imports/h.md"] = payload
+    store = _binding(fake)
+
+    assert store.hash_source("v", Path("/unused"), "imports/h.md") == (
+        "sha256:" + hashlib.sha256(payload).hexdigest()
+    )
 
 
 # --------------------------------------------------------------------------
@@ -346,3 +492,113 @@ def test_vsb_ds_020_graph_client_builder_resolves_in_clean_interpreter():
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "OK" in result.stdout
+
+
+# --------------------------------------------------------------------------
+# Graph client source-byte tests, against httpx.MockTransport
+# --------------------------------------------------------------------------
+
+
+def test_vsb_ds_040_source_ops_hit_scoped_content_and_item_urls():
+    """``upload_source`` / ``read_source_bytes`` / ``source_item`` address the
+    site/drive-scoped content and item endpoints under a bearer token.
+
+    Anti-coincidental-pass: assert the PUT and content GET end at
+    ``imports/x.md:/content`` and the stat GET ends at the bare item path (no
+    ``:/content``), every request is site/drive-scoped and bearer-authenticated,
+    and no tenant-wide path leaks.
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        url = str(request.url)
+        if request.method == "PUT":
+            return httpx.Response(201, json={})
+        if request.method == "GET" and url.endswith(":/content"):
+            return httpx.Response(200, content=b"SRC")
+        if request.method == "GET":
+            return httpx.Response(200, json={"name": "x.md", "size": 3})
+        return httpx.Response(500, text="unexpected")
+
+    client = _client(handler)
+    client.upload_source("vault_a", "imports/x.md", b"SRC")
+    assert client.read_source_bytes("vault_a", "imports/x.md") == b"SRC"
+    assert client.source_item("vault_a", "imports/x.md") == {"name": "x.md", "size": 3}
+
+    scope = f"/sites/{_SITE}/drives/{_DRIVE}/root"
+    for r in seen:
+        assert r.headers["authorization"] == "Bearer tok"
+        assert scope in str(r.url)
+        assert str(r.url).split("/drives/")[0].endswith(f"/sites/{_SITE}")
+
+    put = next(r for r in seen if r.method == "PUT")
+    assert str(put.url).endswith("/vaults/vault_a/imports/x.md:/content")
+    content_get = next(r for r in seen if r.method == "GET" and str(r.url).endswith(":/content"))
+    assert str(content_get.url).endswith("/vaults/vault_a/imports/x.md:/content")
+    stat_get = next(r for r in seen if r.method == "GET" and not str(r.url).endswith(":/content"))
+    assert str(stat_get.url).endswith("/vaults/vault_a/imports/x.md")
+
+
+def test_vsb_ds_041_source_ops_fail_closed_and_404_tolerant():
+    """A Graph 4xx/5xx on a source op fails closed as ``RuntimeError``; a 404 on
+    ``source_item`` is the absent case (``None``).
+
+    Anti-coincidental-pass: assert the raise on 403/500 *and* the distinct 404
+    handling — a client that swallowed errors would pass a naive happy path.
+    """
+    denied = _client(lambda r: httpx.Response(403, text="denied"))
+    with pytest.raises(RuntimeError, match="403"):
+        denied.read_source_bytes("v", "imports/x.md")
+
+    absent = _client(lambda r: httpx.Response(404))
+    assert absent.source_item("v", "imports/x.md") is None
+
+    broken = _client(lambda r: httpx.Response(500, text="boom"))
+    with pytest.raises(RuntimeError, match="500"):
+        broken.upload_source("v", "imports/x.md", b"data")
+
+
+def test_vsb_ds_042_source_read_retries_once_on_throttle():
+    """A single 429 on a source read is retried once and then succeeds.
+
+    Anti-coincidental-pass: assert exactly two attempts (one retry, not zero and
+    not infinite).
+    """
+    calls = {"n": 0}
+
+    def transient(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return httpx.Response(200, content=b"SRC")
+
+    client = _client(transient)
+    assert client.read_source_bytes("v", "imports/x.md") == b"SRC"
+    assert calls["n"] == 2
+
+
+def test_vsb_ds_043_hash_source_streams_multi_chunk_body():
+    """``hash_source_bytes`` streams the content and returns the canonical
+    ``sha256:<hex>`` over a body larger than one read chunk.
+
+    Anti-coincidental-pass: drive a multi-chunk body and assert the streaming GET
+    path was taken (spy on ``_http.stream``) and the digest matches — an
+    implementation that loaded the whole body via ``read_source_bytes`` would not
+    exercise ``stream``.
+    """
+    body = b"abcdefgh" * 40000  # 320 KB: spans several 64 KiB read chunks
+
+    client = _client(lambda r: httpx.Response(200, content=body))
+    streamed: list[tuple] = []
+    real_stream = client._http.stream
+
+    def spy(*args, **kwargs):
+        streamed.append((args, kwargs))
+        return real_stream(*args, **kwargs)
+
+    client._http.stream = spy
+
+    digest = client.hash_source_bytes("v", "imports/big.bin")
+    assert digest == "sha256:" + hashlib.sha256(body).hexdigest()
+    assert streamed, "hash_source_bytes did not use the streaming GET path"

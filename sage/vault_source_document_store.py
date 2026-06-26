@@ -24,6 +24,7 @@ local-profile process that never selects the document store never loads it.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 
@@ -43,6 +44,10 @@ _RETRY_STATUSES = frozenset({429, 503})
 # The fixed name of every vault's configuration declaration within its folder,
 # identical to the filesystem binding's on-disk name.
 _CONFIG_FILENAME = "vault_config.yaml"
+
+# Read size for streamed source hashing, so a large source is never loaded whole
+# into memory to compute its digest. Matches the filesystem binding's chunk size.
+_HASH_CHUNK_BYTES = 65536
 
 
 class SharePointGraphClient:
@@ -172,6 +177,76 @@ class SharePointGraphClient:
             return
         if resp.status_code >= 400:
             self._fail(resp, "delete config", f"{vault_id}/{_CONFIG_FILENAME}")
+
+    # -- source-byte operations --------------------------------------------
+    #
+    # A retained source lives at ``<root>/<vault_id>/<vault-relative path>`` in
+    # the same site/drive; the vault-relative path (e.g. ``imports/x.md``) is
+    # split into Graph path segments. A direct create-or-replace upload and a
+    # streamed read mirror the config surface's mechanics.
+
+    def source_item(self, vault_id: str, source_path: str) -> dict | None:
+        """Return a retained source's item metadata, or ``None`` when absent.
+
+        A metadata read, not a content download, so ``source_exists`` and
+        ``source_size`` resolve without pulling the bytes.
+        """
+        resp = self._request("GET", self._item_url(vault_id, *source_path.split("/")))
+        if resp.status_code == 404:
+            return None
+        if resp.status_code >= 400:
+            self._fail(resp, "stat source", f"{vault_id}/{source_path}")
+        return resp.json()
+
+    def read_source_bytes(self, vault_id: str, source_path: str) -> bytes:
+        """Return a retained source's bytes (a content download)."""
+        resp = self._request("GET", self._content_url(vault_id, *source_path.split("/")))
+        if resp.status_code >= 400:
+            self._fail(resp, "read source", f"{vault_id}/{source_path}")
+        return resp.content
+
+    def upload_source(self, vault_id: str, source_path: str, data: bytes) -> None:
+        """Create or replace a retained source's bytes (a direct upload).
+
+        The Graph item is replaced atomically server-side, so no temp-and-rename
+        emulation is needed (SAGE is the sole writer). Large-source chunked upload
+        sessions are deferred (CAS-ADR-043's thin-then-extended mechanics).
+        """
+        resp = self._request(
+            "PUT",
+            self._content_url(vault_id, *source_path.split("/")),
+            content=data,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        if resp.status_code >= 400:
+            self._fail(resp, "write source", f"{vault_id}/{source_path}")
+
+    def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
+        """Stream a retained source and return its canonical ``sha256:<hex>``.
+
+        Streams the content so a large source is never loaded whole into memory
+        to compute its digest, mirroring the filesystem binding's chunked hash.
+        Carries the same single throttle/transient retry as the other ops.
+        """
+        url = self._content_url(vault_id, *source_path.split("/"))
+        target = f"{vault_id}/{source_path}"
+        for attempt in range(2):
+            headers = {"Authorization": f"Bearer {self._token_provider()}"}
+            with self._http.stream("GET", url, headers=headers) as resp:
+                if resp.status_code in _RETRY_STATUSES and attempt == 0:
+                    retry_after = resp.headers.get("Retry-After")
+                    self._sleep(float(retry_after) if retry_after else 0.0)
+                    continue
+                if resp.status_code >= 400:
+                    resp.read()
+                    self._fail(resp, "hash source", target)
+                digest = hashlib.sha256()
+                for chunk in resp.iter_bytes(_HASH_CHUNK_BYTES):
+                    digest.update(chunk)
+                return f"sha256:{digest.hexdigest()}"
+        # ``range(2)`` is non-empty, so the loop always returns on the second
+        # attempt; this line is unreachable and only satisfies the type checker.
+        raise RuntimeError("vault-source Graph hash retry loop produced no response")
 
 
 def build_sharepoint_graph_client(

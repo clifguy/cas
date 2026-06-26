@@ -14,12 +14,11 @@ Test IDs follow VSB-NNN (Vault-Source Binding).
 """
 
 import copy
-from pathlib import Path
 
 import pytest
 import yaml
 
-from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
+from sage.config import SageCoreConfig, VaultConfig
 from sage.vault_source_binding import (
     VAULT_SOURCE_BACKEND_ENV_VAR,
     DiscoveredVault,
@@ -162,28 +161,3 @@ def test_vsb_005_filesystem_store_rejects_pathless_discovered_vault(tmp_path):
     store = FilesystemVaultSourceStore(tmp_path)
     with pytest.raises(ValueError, match="config_path"):
         store.load_config(DiscoveredVault(config_path=None))
-
-
-def test_vsb_006_document_store_source_byte_half_fails_loud():
-    """The document-store binding's source-byte retention/delivery methods raise
-    ``NotImplementedError`` naming the document-store half not yet implemented.
-
-    The config + discovery surface is implemented and exercised in
-    ``test_vault_source_document_store.py``; only the source-byte half remains a
-    stub. Anti-coincidental-pass: assert the message names ``document-store`` (not
-    merely that *some* ``NotImplementedError`` is raised), so a stub that failed
-    for an unrelated reason would not pass. The config-half methods are
-    deliberately not asserted here — they are implemented now, so asserting they
-    raise would be a regression masked as a stub check.
-    """
-    store = DocumentStoreVaultSourceStore(StackDocumentStoreConfig())
-    root = Path("/vault_root")
-    for call in (
-        lambda: store.retain_source("v", root, root / "x.md"),
-        lambda: store.source_exists("v", root, "imports/x.md"),
-        lambda: store.source_size("v", root, "imports/x.md"),
-        lambda: store.read_source("v", root, "imports/x.md"),
-        lambda: store.hash_source("v", root, "imports/x.md"),
-    ):
-        with pytest.raises(NotImplementedError, match="document-store"):
-            call()

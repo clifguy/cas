@@ -209,3 +209,109 @@ async def test_vsbb_017_audit_missing_via_port(
 
     assert report.summary["missing"] == 1
     assert any(e.integrity_status == "missing" for e in report.entries)
+
+
+# --------------------------------------------------------------------------- #
+# VSBB-018 / 019 / 020 / 021: projection & repair route through the port
+# --------------------------------------------------------------------------- #
+
+
+class _SentinelProjectStore(FilesystemVaultSourceStore):
+    """Reports every source present and yields sentinel markdown the local file
+    could never produce, so a projection reflecting the sentinel proves the read
+    routed through ``read_source``. ``retain_source`` deliberately materializes no
+    local copy, forcing the post-retain projection down the port path."""
+
+    SENTINEL_TITLE = "PROJECT-SENTINEL"
+    SENTINEL_BYTES = b"# PROJECT-SENTINEL\n\nRouted through the port.\n"
+    RETAINED = "imports/sentinel.md"
+
+    def retain_source(self, vault_id, storage_root, source_path):
+        return self.RETAINED
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return True
+
+    def read_source(self, vault_id, storage_root, source_path):
+        return self.SENTINEL_BYTES
+
+
+class _RaisingReadStore(FilesystemVaultSourceStore):
+    """``read_source`` raises: proves the local-copy fast path never calls the
+    port when a local source file is present."""
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return True
+
+    def read_source(self, vault_id, storage_root, source_path):
+        raise AssertionError("read_source must not be called when a local copy exists")
+
+
+async def test_vsbb_018_ingest_projection_via_port(
+    ingestion_service, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """The ingest-time projection reads through ``read_source`` when no local copy
+    exists: the document's title is the sentinel markdown's heading, not the
+    external file's. Anti-coincidental: the store materializes no local file, so a
+    direct ``adapter.project(storage_root / vault_relative)`` would hit a missing
+    path and fail."""
+    _patch_store(monkeypatch, _SentinelProjectStore(_UNUSED_ROOT))
+    external = tmp_path / "external.md"
+    external.write_text("# External Heading\n\nlocal body")
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source=str(external), source_type=SourceType.MARKDOWN)
+    )
+
+    assert result.document.title == _SentinelProjectStore.SENTINEL_TITLE
+
+
+async def test_vsbb_019_recompute_projection_via_port(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """``recompute_pipeline`` re-projects through the port after the local source
+    copy is gone (the post-restart cloud condition). Anti-coincidental: with the
+    local file deleted, the pre-port code raised ``SourceFileNotFoundError``;
+    routing through ``read_source`` lets the re-projection succeed."""
+    doc = await _ingest_internal(ingestion_service, tmp_vault_dir, "reports/r.md", "# Real\n\nX.")
+    (tmp_vault_dir / "sources" / doc.source_path).unlink()
+
+    _patch_store(monkeypatch, _SentinelProjectStore(_UNUSED_ROOT))
+    result = await ingestion_service.recompute_pipeline(doc.id)
+
+    assert result["status"] == "recompute_pipeline_started"
+
+
+async def test_vsbb_020_reproject_from_source_via_port(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """``_reproject_from_source`` re-projects through the port after the local
+    copy is gone, returning a projection built from the sentinel bytes.
+    Anti-coincidental: the returned projection's title is the sentinel heading,
+    which only ``read_source`` could supply once the local file is deleted."""
+    doc = await _ingest_internal(ingestion_service, tmp_vault_dir, "reports/p.md", "# Real\n\nX.")
+    (tmp_vault_dir / "sources" / doc.source_path).unlink()
+
+    _patch_store(monkeypatch, _SentinelProjectStore(_UNUSED_ROOT))
+    projection = await ingestion_service._reproject_from_source(doc.id)
+
+    assert projection.title == _SentinelProjectStore.SENTINEL_TITLE
+
+
+async def test_vsbb_021_local_copy_short_circuits_the_port(
+    ingestion_service, tmp_vault_dir, monkeypatch
+):
+    """When a local source copy is present, projection reads it directly and never
+    calls the port. Anti-coincidental: the store's ``read_source`` raises, so a
+    re-projection that always staged through the port would surface that error;
+    success proves the ``exists()`` short-circuit holds (and the filesystem
+    binding's direct read is not regressed)."""
+    doc = await _ingest_internal(
+        ingestion_service, tmp_vault_dir, "reports/keep.md", "# Keep\n\nX."
+    )
+    assert (tmp_vault_dir / "sources" / doc.source_path).exists()
+
+    _patch_store(monkeypatch, _RaisingReadStore(_UNUSED_ROOT))
+    projection = await ingestion_service._reproject_from_source(doc.id)
+
+    assert projection.title == "Keep"
