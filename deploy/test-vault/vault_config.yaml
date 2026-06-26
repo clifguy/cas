@@ -1,0 +1,76 @@
+# Cloud test-vault seed — the bootstrap vault_config.yaml for the cloud profile.
+#
+# Under the cloud profile a vault's configuration declaration lives in a
+# SharePoint document library, not on the container filesystem (CAS-ADR-043).
+# The first cloud vault cannot be created through SAGE's maintenance surface
+# (that needs a running SAGE already pointed at a configured library), so this
+# file is seeded directly into the library at
+# <vaultSourceRootPath>/test/vault_config.yaml by an authorized writer; a
+# deployed SAGE discovers and loads it at startup. See
+# docs/process/sharepoint-vault-source.md.
+#
+# This is a disposable validation vault. storage_root and brain_root are
+# required by the vault-config schema but inert under the cloud bindings (source
+# bytes live in the document store, graph and content state in Postgres); they
+# are set to container-writable paths so the per-vault init that materializes
+# them succeeds. Abstraction is disabled so the storage-path validation does not
+# depend on the abstraction model.
+vault:
+  id: test
+  name: Cloud validation vault
+  owner: cas
+  storage_root: /var/lib/sage/vaults/test/sources
+  brain_root: /var/lib/sage/vaults/test/brain
+  visibility: personal
+document_types:
+  doc_types:
+    - value: document
+      label: Document
+      description: Catch-all document type.
+      source_types:
+        - markdown
+lifecycle:
+  base_states_required: true
+  states:
+    - value: active
+      label: Active
+    - value: completed
+      label: Completed
+    - value: archived
+      label: Archived
+      is_terminal: true
+  transitions:
+    - from_state: (new)
+      action: ingest
+      to_state: active
+    - from_state: active
+      action: supersede
+      to_state: archived
+      creates_edge: supersedes
+    - from_state: active
+      action: complete
+      to_state: completed
+    - from_state: active
+      action: archive
+      to_state: archived
+    - from_state: completed
+      action: archive
+      to_state: archived
+    - from_state: archived
+      action: reactivate
+      to_state: active
+source_adapters:
+  adapters:
+    - source_type: markdown
+      enabled: true
+metadata_extraction:
+  filename_extraction:
+    separator: _
+edge_inference:
+  tier_assignments:
+    - edge_type: supersedes
+      tier: 1
+      inference_rules:
+        - method: version_chain
+abstraction:
+  enabled: false
