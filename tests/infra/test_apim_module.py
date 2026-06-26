@@ -49,6 +49,15 @@ _APIM_NONEXISTENT_API_VERSION: Final[str] = "2023-05-01"
 # The maintenance mount that must never reach the public backend.
 _ADMIN_MOUNT: Final[str] = "/mcp_admin"
 
+# The catch-all forwarding contract. APIM does not honor a literal ``*`` HTTP
+# method via ARM/Bicep — such an operation deploys and shows in the portal but
+# never matches a request, so the gateway answers its generic 404. The working
+# pattern is one operation per explicit method, each with the ``/{*path}``
+# wildcard template (and a declared ``path`` parameter). These are the verbs
+# the facade must route; HEAD/OPTIONS may also be declared but are not required.
+_EXPECTED_HTTP_METHODS: Final[tuple[str, ...]] = ("GET", "POST", "PUT", "PATCH", "DELETE")
+_CATCH_ALL_URL_TEMPLATE: Final[str] = "/{*path}"
+
 # The Entra authority host belongs in the versioned policy XML (loaded via
 # loadTextContent, which the Bicep linter does not introspect), never in a
 # ``.bicep`` — keeping the module clean against ``no-hardcoded-env-urls``.
@@ -155,6 +164,49 @@ def _policy_text() -> str:
     return "\n".join(parts)
 
 
+def _uses_literal_wildcard_method(text: str) -> bool:
+    """True iff a ``method: '*'`` literal appears (the broken catch-all form).
+
+    A loop variable (``method: method``) or an explicit verb (``method: 'GET'``)
+    is the working form and must not trip this.
+    """
+    return "method: '*'" in _strip_line_comments(text)
+
+
+def _catch_all_url_templates(text: str) -> list[str]:
+    """Return every ``urlTemplate: '<value>'`` value, in source order.
+
+    Reads the comment-stripped text so a commented-out operation does not count.
+    Distinguishes the broken ``/*`` from the working ``/{*path}``.
+    """
+    pattern = re.compile(r"urlTemplate:\s*'([^']*)'")
+    return pattern.findall(_strip_line_comments(text))
+
+
+def _declares_path_wildcard_param(text: str) -> bool:
+    """True iff a template parameter named ``path`` is declared.
+
+    The ``/{*path}`` wildcard template requires the matching ``path`` parameter;
+    an empty ``templateParameters: []`` is the broken form.
+    """
+    return re.search(r"name:\s*'path'", _strip_line_comments(text)) is not None
+
+
+def _operation_method_values(text: str) -> set[str]:
+    """Return the HTTP method literals the catch-all operations route.
+
+    Reads the ``[...]`` array assigned to a ``var`` whose name contains
+    ``method`` (the per-method loop source), falling back to bare ``method:``
+    literals if the loop form is not used. Comment-stripped so a commented
+    declaration does not count.
+    """
+    stripped = _strip_line_comments(text)
+    array = re.search(r"var\s+\w*[Mm]ethod\w*\s*=\s*\[([^\]]*)\]", stripped)
+    if array:
+        return set(re.findall(r"'([A-Za-z]+)'", array.group(1)))
+    return set(re.findall(r"method:\s*'([A-Za-z]+)'", stripped))
+
+
 # ---------------------------------------------------------------------------
 # Structural / posture gates
 # ---------------------------------------------------------------------------
@@ -192,6 +244,49 @@ def test_apim_declares_api_and_backend() -> None:
     )
     assert _declares_resource_type(text, _APIM_BACKEND_TYPE), (
         f"apim.bicep must declare a {_APIM_BACKEND_TYPE} resource (the SAGE backend)"
+    )
+
+
+def test_apim_catch_all_avoids_wildcard_method() -> None:
+    """The catch-all must not use a literal ``method: '*'``. APIM does not honor a
+    wildcard method via ARM — the operation deploys but never matches a request,
+    so every path 404s at the gateway. Each verb must be declared explicitly.
+    """
+    text = APIM.read_text(encoding="utf-8")
+    assert not _uses_literal_wildcard_method(text), (
+        "apim.bicep must not declare a wildcard `method: '*'` operation; "
+        "APIM never matches it and the gateway 404s every path"
+    )
+
+
+def test_apim_catch_all_uses_path_wildcard_template() -> None:
+    """The catch-all operations forward every path via the ``/{*path}`` wildcard
+    template — never the non-matching ``/*``.
+    """
+    templates = _catch_all_url_templates(APIM.read_text(encoding="utf-8"))
+    assert templates, "apim.bicep must declare at least one catch-all operation urlTemplate"
+    assert all(t == _CATCH_ALL_URL_TEMPLATE for t in templates), (
+        f"every catch-all urlTemplate must be '{_CATCH_ALL_URL_TEMPLATE}'; found: {templates}"
+    )
+    assert "/*" not in templates, "the non-matching '/*' template must not appear"
+
+
+def test_apim_catch_all_declares_path_parameter() -> None:
+    """The ``/{*path}`` template requires its matching ``path`` template parameter;
+    without it the operation fails ARM validation and does not route.
+    """
+    assert _declares_path_wildcard_param(APIM.read_text(encoding="utf-8")), (
+        "apim.bicep must declare a templateParameters entry named 'path' for the /{*path} wildcard"
+    )
+
+
+def test_apim_catch_all_covers_rest_methods() -> None:
+    """The catch-all routes every HTTP verb SAGE's REST and MCP surfaces use."""
+    methods = _operation_method_values(APIM.read_text(encoding="utf-8"))
+    missing = sorted(set(_EXPECTED_HTTP_METHODS) - methods)
+    assert not missing, (
+        f"the catch-all must route every required method; missing: {missing} "
+        f"(found: {sorted(methods)})"
     )
 
 
@@ -512,3 +607,41 @@ def test_hardcoded_https_host_detector_controls() -> None:
     interpolated = "url: 'https://${sageBackendHostname}'\n"
     assert _hardcoded_https_hosts(literal) == ["https://sage.example.com"]
     assert _hardcoded_https_hosts(interpolated) == []
+
+
+def test_wildcard_method_detector_controls() -> None:
+    """``_uses_literal_wildcard_method`` fires on the broken ``*`` literal, clears
+    on a loop variable and on an explicit verb.
+    """
+    assert _uses_literal_wildcard_method("method: '*'")
+    assert not _uses_literal_wildcard_method("method: method")
+    assert not _uses_literal_wildcard_method("method: 'GET'")
+
+
+def test_catch_all_template_detector_controls() -> None:
+    """``_catch_all_url_templates`` distinguishes the working ``/{*path}`` from the
+    broken ``/*`` and ignores commented declarations.
+    """
+    assert _catch_all_url_templates("urlTemplate: '/{*path}'") == ["/{*path}"]
+    assert _catch_all_url_templates("urlTemplate: '/*'") == ["/*"]
+    assert _catch_all_url_templates("// urlTemplate: '/{*path}'") == []
+
+
+def test_path_param_detector_controls() -> None:
+    """``_declares_path_wildcard_param`` fires on a ``name: 'path'`` parameter,
+    clears on an empty parameter list.
+    """
+    declared = "templateParameters: [\n  {\n    name: 'path'\n    type: 'string'\n  }\n]"
+    assert _declares_path_wildcard_param(declared)
+    assert not _declares_path_wildcard_param("templateParameters: []")
+
+
+def test_operation_method_values_detector_controls() -> None:
+    """``_operation_method_values`` reads the per-method loop array, falls back to
+    bare method literals, and ignores comments.
+    """
+    loop = "var sageHttpMethods = ['GET', 'POST', 'DELETE']\n"
+    assert _operation_method_values(loop) == {"GET", "POST", "DELETE"}
+    bare = "method: 'GET'\nmethod: 'POST'\n"
+    assert _operation_method_values(bare) == {"GET", "POST"}
+    assert _operation_method_values("// var sageHttpMethods = ['GET']\n") == set()

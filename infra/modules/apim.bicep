@@ -156,10 +156,10 @@ resource sageBackend 'Microsoft.ApiManagement/service/backends@2022-08-01' = {
 }
 
 // The SAGE API at the gateway root. Authorization is the Entra JWT (no APIM
-// subscription key), so subscriptionRequired is false. A wildcard operation
-// forwards every method and path; the inbound policy routes forwarded requests
-// to the backend above (set-backend-service), gates access, serves discovery,
-// and denies the maintenance mount.
+// subscription key), so subscriptionRequired is false. A catch-all operation
+// per HTTP method forwards every method and path; the inbound policy routes
+// forwarded requests to the backend above (set-backend-service), gates access,
+// serves discovery, and denies the maintenance mount.
 resource sageApi 'Microsoft.ApiManagement/service/apis@2022-08-01' = {
   parent: apimService
   name: 'sage'
@@ -173,16 +173,34 @@ resource sageApi 'Microsoft.ApiManagement/service/apis@2022-08-01' = {
   }
 }
 
-resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
-  parent: sageApi
-  name: 'catch-all'
-  properties: {
-    displayName: 'Catch-all'
-    method: '*'
-    urlTemplate: '/*'
-    templateParameters: []
+// APIM does not honor a wildcard ('*') HTTP method on an operation declared
+// through ARM — the operation deploys and shows in the portal, but no incoming
+// request ever matches it, so the gateway answers its generic 404 on every
+// path. The working catch-all is one operation per explicit method, each with
+// the '/{*path}' wildcard template and its declared 'path' parameter. The set
+// covers SAGE's REST verbs and the MCP Streamable-HTTP transport (POST, GET for
+// the SSE stream, DELETE for session teardown); HEAD and OPTIONS cover probes
+// and preflight.
+var sageHttpMethods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']
+
+resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = [
+  for method in sageHttpMethods: {
+    parent: sageApi
+    name: 'catch-all-${toLower(method)}'
+    properties: {
+      displayName: 'Catch-all ${method}'
+      method: method
+      urlTemplate: '/{*path}'
+      templateParameters: [
+        {
+          name: 'path'
+          type: 'string'
+          required: true
+        }
+      ]
+    }
   }
-}
+]
 
 // The inbound JWT / discovery / admin-deny pipeline, authored as versioned XML.
 // The policy names the backend by id (set-backend-service), so it depends on
