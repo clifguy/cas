@@ -184,9 +184,10 @@ def test_graph_builder_collects_known_edge(
 ) -> None:
     """Anti-coincidental-pass guard.
 
-    sage.mcp_server is known to import from sage.config (see top-of-file
-    imports in sage/mcp_server.py). If the graph builder ever silently
-    returns empty edge sets, the breach tests would pass vacuously. This
-    assertion fails loudly in that case.
+    sage.mcp_server is known to import from sage.mcp_init (see top-of-file
+    imports in sage/mcp_server.py) — a structural dependency: the server
+    cannot register services or resolve the deployment profile without it.
+    If the graph builder ever silently returns empty edge sets, the breach
+    tests would pass vacuously. This assertion fails loudly in that case.
     """
-    assert "sage.config" in import_graph.get("sage.mcp_server", set())
+    assert "sage.mcp_init" in import_graph.get("sage.mcp_server", set())
