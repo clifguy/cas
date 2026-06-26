@@ -28,12 +28,25 @@ imports it back.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import hashlib
+import logging
 import os
+import shutil
+import stat
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
 from sage.config import SageCoreConfig, VaultConfig
+
+logger = logging.getLogger(__name__)
+
+# Read size for streamed source hashing, so a large source file is never
+# loaded whole into memory to compute its digest.
+_HASH_CHUNK_BYTES = 65536
 
 # Environment override for the vault-source-backend dispatch, consulted before
 # the stack config's ``vault_source_backend`` key. Mirrors
@@ -101,6 +114,224 @@ class VaultSourceStore(ABC):
     def delete_config(self, vault_id: str) -> None:
         """Remove a vault's configuration declaration if present (idempotent)."""
 
+    # -- Source-byte half ---------------------------------------------------
+    #
+    # The store also owns the source files retained from each ingest. These
+    # operations are binding-invariant: retention on ingest, and read-back for
+    # delivery and integrity audit. ``storage_root`` is the per-vault source
+    # root (a filesystem locator under the filesystem binding); ``vault_id``
+    # identifies the vault for a binding that addresses sources by vault rather
+    # than by path. A binding uses whichever of the two its addressing model
+    # needs and ignores the other, mirroring how the dispatch contract treats
+    # ``vault_root`` and ``managed_identity``.
+
+    @abstractmethod
+    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        """Retain an ingest source on the store; return its vault-relative path.
+
+        A source already inside the store is retained in place and its
+        vault-relative path returned unchanged. An external source is copied in
+        (under ``imports/`` on the filesystem binding); on a name collision the
+        identical-content copy is reused, and differing content is disambiguated
+        with a content-hash suffix. UI-layer invisibility markers are stripped
+        from the retained copy (CAS-ADR-016).
+        """
+
+    @abstractmethod
+    def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        """Whether a retained source is present on the store."""
+
+    @abstractmethod
+    def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
+        """Byte size of a retained source, read cheaply (without loading it)."""
+
+    @abstractmethod
+    def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
+        """Read back a retained source's bytes."""
+
+    @abstractmethod
+    def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
+        """SHA-256 of a retained source in canonical ``sha256:<hex>`` form."""
+
+
+# ---------------------------------------------------------------------------
+# UI-layer metadata normalization (CAS-ADR-016)
+# ---------------------------------------------------------------------------
+#
+# Agents often flag their working temp files invisible on macOS (BSD
+# UF_HIDDEN chflag, or com.apple.FinderInfo invisible bit). When the
+# filesystem binding copies such a file into the vault via shutil.copy2, the
+# BSD chflag propagates to the canonical copy, hiding it from Finder. The
+# invisible bit encodes source-artifact semantics ("this is scratch"), not
+# canonical-artifact semantics -- the vault is the state substrate and its
+# files must remain user-auditable.
+#
+# Empirical behavior on macOS + CPython 3.12/3.14:
+# * shutil.copy2 DOES propagate UF_HIDDEN (via os.chflags in copystat).
+# * shutil.copy2 does NOT propagate com.apple.FinderInfo xattr on macOS
+# (Python stdlib has no xattr API there; _copyxattr is a no-op).
+#
+# Clearing the xattr is therefore defensive: guards against future Python
+# versions that add macOS xattr support, alternative copy mechanisms, or
+# filesystem operations that propagate FinderInfo.
+#
+# macOS lacks a Python stdlib xattr API, so we call libc's getxattr /
+# setxattr / removexattr via ctypes. No third-party dependency.
+
+
+_XATTR_NOFOLLOW = 0x0001
+_FINDER_INFO_NAME = b"com.apple.FinderInfo"
+_FINDER_INFO_LEN = 32
+_FINDER_INVISIBLE_MASK = 0x40  # bit 0x40 in byte 8 of FinderInfo
+
+
+def _macos_libc() -> ctypes.CDLL | None:
+    """Load libc on macOS and declare signatures for xattr functions.
+
+    Returns None on non-macOS platforms so callers can treat absence as
+    "nothing to sanitize."
+    """
+    if sys.platform != "darwin":
+        return None
+    lib_path = ctypes.util.find_library("c")
+    if lib_path is None:
+        return None
+    libc = ctypes.CDLL(lib_path, use_errno=True)
+
+    # ssize_t getxattr(const char *path, const char *name,
+    # void *value, size_t size,
+    # u_int32_t position, int options);
+    libc.getxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    libc.getxattr.restype = ctypes.c_ssize_t
+
+    # int setxattr(const char *path, const char *name,
+    # void *value, size_t size,
+    # u_int32_t position, int options);
+    libc.setxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    libc.setxattr.restype = ctypes.c_int
+
+    # int removexattr(const char *path, const char *name, int options);
+    libc.removexattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_int,
+    ]
+    libc.removexattr.restype = ctypes.c_int
+
+    return libc
+
+
+# Cached at module load. None on non-macOS.
+_LIBC = _macos_libc()
+
+
+def _read_finder_info(path: Path) -> bytes | None:
+    """Return com.apple.FinderInfo payload, or None if absent / unavailable."""
+    if _LIBC is None:
+        return None
+    buf = (ctypes.c_ubyte * _FINDER_INFO_LEN)()
+    rc = _LIBC.getxattr(
+        str(path).encode("utf-8"),
+        _FINDER_INFO_NAME,
+        buf,
+        _FINDER_INFO_LEN,
+        0,
+        _XATTR_NOFOLLOW,
+    )
+    if rc < 0:
+        return None
+    return bytes(buf)[:rc]
+
+
+def _write_finder_info(path: Path, data: bytes) -> bool:
+    """Write com.apple.FinderInfo; returns True on success."""
+    if _LIBC is None:
+        return False
+    buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
+    rc = _LIBC.setxattr(
+        str(path).encode("utf-8"),
+        _FINDER_INFO_NAME,
+        buf,
+        len(data),
+        0,
+        _XATTR_NOFOLLOW,
+    )
+    return rc == 0
+
+
+def _remove_finder_info(path: Path) -> bool:
+    """Remove com.apple.FinderInfo; returns True on success or absent."""
+    if _LIBC is None:
+        return False
+    rc = _LIBC.removexattr(
+        str(path).encode("utf-8"),
+        _FINDER_INFO_NAME,
+        _XATTR_NOFOLLOW,
+    )
+    return rc == 0
+
+
+def _strip_ui_invisibility(path: Path) -> None:
+    """Clear macOS UI-invisibility markers from a file.
+
+    On macOS: clears the BSD UF_HIDDEN chflag and clears bit 0x40 in
+    byte 8 of com.apple.FinderInfo (kIsInvisible). Preserves all other
+    bytes of the xattr (type/creator codes, color labels, stationery
+    flag, etc.).
+
+    On non-macOS platforms: no-op.
+
+    Errors are swallowed: UI-layer sanitization is best-effort and must
+    not fail an ingest. Logged at debug level for diagnosis.
+    """
+    if sys.platform != "darwin":
+        return
+
+    # 1. BSD UF_HIDDEN chflag.
+    try:
+        st = os.lstat(str(path))
+        flags = getattr(st, "st_flags", 0)
+        if flags & stat.UF_HIDDEN:
+            os.chflags(str(path), flags & ~stat.UF_HIDDEN)
+    except (OSError, AttributeError) as exc:
+        logger.debug("UF_HIDDEN sanitization failed for %s: %s", path, exc)
+
+    # 2. com.apple.FinderInfo invisible bit.
+    try:
+        info = _read_finder_info(path)
+        if info is None or len(info) < 9:
+            return
+        if not (info[8] & _FINDER_INVISIBLE_MASK):
+            return  # bit not set; nothing to do
+        new_info = bytearray(info)
+        new_info[8] &= ~_FINDER_INVISIBLE_MASK
+        # Pad / truncate to canonical 32 bytes for Finder compatibility.
+        if len(new_info) < _FINDER_INFO_LEN:
+            new_info.extend(b"\x00" * (_FINDER_INFO_LEN - len(new_info)))
+        elif len(new_info) > _FINDER_INFO_LEN:
+            new_info = new_info[:_FINDER_INFO_LEN]
+        # If every byte is zero after clearing, remove the xattr entirely.
+        if all(b == 0 for b in new_info):
+            _remove_finder_info(path)
+        else:
+            _write_finder_info(path, bytes(new_info))
+    except Exception as exc:  # noqa: BLE001 -- best-effort sanitization
+        logger.debug("FinderInfo sanitization failed for %s: %s", path, exc)
+
 
 class FilesystemVaultSourceStore(VaultSourceStore):
     """The filesystem binding: the local vault tree under a single vault root.
@@ -140,6 +371,49 @@ class FilesystemVaultSourceStore(VaultSourceStore):
     def delete_config(self, vault_id: str) -> None:
         self.config_locator(vault_id).unlink(missing_ok=True)
 
+    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        # A source already under the vault root is internal: return its
+        # vault-relative path with no copy.
+        try:
+            return str(source_path.relative_to(storage_root))
+        except ValueError:
+            pass  # external file -- fall through to import
+
+        imports_dir = storage_root / "imports"
+        imports_dir.mkdir(parents=True, exist_ok=True)
+
+        dest = imports_dir / source_path.name
+        if dest.exists():
+            content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()[:8]
+            existing_hash = hashlib.sha256(dest.read_bytes()).hexdigest()[:8]
+            if content_hash == existing_hash:
+                # Identical content already imported -- reuse existing path.
+                return str(dest.relative_to(storage_root))
+            # Different content: disambiguate with the 8-char content hash.
+            dest = imports_dir / f"{source_path.stem}_{content_hash}{source_path.suffix}"
+
+        shutil.copy2(source_path, dest)
+        # Strip UI-layer invisibility markers that shutil.copy2 may have
+        # propagated from an agent's temp source (CAS-ADR-016).
+        _strip_ui_invisibility(dest)
+        return str(dest.relative_to(storage_root))
+
+    def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        return (storage_root / source_path).exists()
+
+    def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
+        return (storage_root / source_path).stat().st_size
+
+    def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
+        return (storage_root / source_path).read_bytes()
+
+    def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
+        digest = hashlib.sha256()
+        with (storage_root / source_path).open("rb") as f:
+            for chunk in iter(lambda: f.read(_HASH_CHUNK_BYTES), b""):
+                digest.update(chunk)
+        return f"sha256:{digest.hexdigest()}"
+
 
 class DocumentStoreVaultSourceStore(VaultSourceStore):
     """Stub for the cloud tenant document-store binding (CAS-ADR-043).
@@ -167,6 +441,21 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         raise NotImplementedError(_FOLLOW_UP)
 
     def delete_config(self, vault_id: str) -> None:
+        raise NotImplementedError(_FOLLOW_UP)
+
+    def retain_source(self, vault_id: str, storage_root: Path, source_path: Path) -> str:
+        raise NotImplementedError(_FOLLOW_UP)
+
+    def source_exists(self, vault_id: str, storage_root: Path, source_path: str) -> bool:
+        raise NotImplementedError(_FOLLOW_UP)
+
+    def source_size(self, vault_id: str, storage_root: Path, source_path: str) -> int:
+        raise NotImplementedError(_FOLLOW_UP)
+
+    def read_source(self, vault_id: str, storage_root: Path, source_path: str) -> bytes:
+        raise NotImplementedError(_FOLLOW_UP)
+
+    def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         raise NotImplementedError(_FOLLOW_UP)
 
 

@@ -10,14 +10,7 @@ document at a time (BH-026, BH-068).
 """
 
 import asyncio
-import ctypes
-import ctypes.util
-import hashlib
 import logging
-import os
-import shutil
-import stat
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,185 +59,6 @@ from sage.storage.locks import DocumentLockManager
 from sage.storage.migrations import Tier3UniqueViolation
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# UI-layer metadata normalization (CAS-ADR-016)
-# ---------------------------------------------------------------------------
-#
-# Agents often flag their working temp files invisible on macOS (BSD
-# UF_HIDDEN chflag, or com.apple.FinderInfo invisible bit). When SAGE
-# copies such a file into the vault via shutil.copy2, the BSD chflag
-# propagates to the canonical copy, hiding it from Finder. The invisible
-# bit encodes source-artifact semantics ("this is scratch"), not
-# canonical-artifact semantics -- the vault is the state substrate and
-# its files must remain user-auditable.
-#
-# Empirical behavior on macOS + CPython 3.12/3.14:
-# * shutil.copy2 DOES propagate UF_HIDDEN (via os.chflags in copystat).
-# * shutil.copy2 does NOT propagate com.apple.FinderInfo xattr on macOS
-# (Python stdlib has no xattr API there; _copyxattr is a no-op).
-#
-# Clearing the xattr is therefore defensive: guards against future Python
-# versions that add macOS xattr support, alternative copy mechanisms, or
-# filesystem operations that propagate FinderInfo.
-#
-# macOS lacks a Python stdlib xattr API, so we call libc's getxattr /
-# setxattr / removexattr via ctypes. No third-party dependency.
-
-
-_XATTR_NOFOLLOW = 0x0001
-_FINDER_INFO_NAME = b"com.apple.FinderInfo"
-_FINDER_INFO_LEN = 32
-_FINDER_INVISIBLE_MASK = 0x40  # bit 0x40 in byte 8 of FinderInfo
-
-
-def _macos_libc() -> ctypes.CDLL | None:
-    """Load libc on macOS and declare signatures for xattr functions.
-
-    Returns None on non-macOS platforms so callers can treat absence as
-    "nothing to sanitize."
-    """
-    if sys.platform != "darwin":
-        return None
-    lib_path = ctypes.util.find_library("c")
-    if lib_path is None:
-        return None
-    libc = ctypes.CDLL(lib_path, use_errno=True)
-
-    # ssize_t getxattr(const char *path, const char *name,
-    # void *value, size_t size,
-    # u_int32_t position, int options);
-    libc.getxattr.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_uint32,
-        ctypes.c_int,
-    ]
-    libc.getxattr.restype = ctypes.c_ssize_t
-
-    # int setxattr(const char *path, const char *name,
-    # void *value, size_t size,
-    # u_int32_t position, int options);
-    libc.setxattr.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_void_p,
-        ctypes.c_size_t,
-        ctypes.c_uint32,
-        ctypes.c_int,
-    ]
-    libc.setxattr.restype = ctypes.c_int
-
-    # int removexattr(const char *path, const char *name, int options);
-    libc.removexattr.argtypes = [
-        ctypes.c_char_p,
-        ctypes.c_char_p,
-        ctypes.c_int,
-    ]
-    libc.removexattr.restype = ctypes.c_int
-
-    return libc
-
-
-# Cached at module load. None on non-macOS.
-_LIBC = _macos_libc()
-
-
-def _read_finder_info(path: Path) -> bytes | None:
-    """Return com.apple.FinderInfo payload, or None if absent / unavailable."""
-    if _LIBC is None:
-        return None
-    buf = (ctypes.c_ubyte * _FINDER_INFO_LEN)()
-    rc = _LIBC.getxattr(
-        str(path).encode("utf-8"),
-        _FINDER_INFO_NAME,
-        buf,
-        _FINDER_INFO_LEN,
-        0,
-        _XATTR_NOFOLLOW,
-    )
-    if rc < 0:
-        return None
-    return bytes(buf)[:rc]
-
-
-def _write_finder_info(path: Path, data: bytes) -> bool:
-    """Write com.apple.FinderInfo; returns True on success."""
-    if _LIBC is None:
-        return False
-    buf = (ctypes.c_ubyte * len(data)).from_buffer_copy(data)
-    rc = _LIBC.setxattr(
-        str(path).encode("utf-8"),
-        _FINDER_INFO_NAME,
-        buf,
-        len(data),
-        0,
-        _XATTR_NOFOLLOW,
-    )
-    return rc == 0
-
-
-def _remove_finder_info(path: Path) -> bool:
-    """Remove com.apple.FinderInfo; returns True on success or absent."""
-    if _LIBC is None:
-        return False
-    rc = _LIBC.removexattr(
-        str(path).encode("utf-8"),
-        _FINDER_INFO_NAME,
-        _XATTR_NOFOLLOW,
-    )
-    return rc == 0
-
-
-def _strip_ui_invisibility(path: Path) -> None:
-    """Clear macOS UI-invisibility markers from a file.
-
-    On macOS: clears the BSD UF_HIDDEN chflag and clears bit 0x40 in
-    byte 8 of com.apple.FinderInfo (kIsInvisible). Preserves all other
-    bytes of the xattr (type/creator codes, color labels, stationery
-    flag, etc.).
-
-    On non-macOS platforms: no-op.
-
-    Errors are swallowed: UI-layer sanitization is best-effort and must
-    not fail an ingest. Logged at debug level for diagnosis.
-    """
-    if sys.platform != "darwin":
-        return
-
-    # 1. BSD UF_HIDDEN chflag.
-    try:
-        st = os.lstat(str(path))
-        flags = getattr(st, "st_flags", 0)
-        if flags & stat.UF_HIDDEN:
-            os.chflags(str(path), flags & ~stat.UF_HIDDEN)
-    except (OSError, AttributeError) as exc:
-        logger.debug("UF_HIDDEN sanitization failed for %s: %s", path, exc)
-
-    # 2. com.apple.FinderInfo invisible bit.
-    try:
-        info = _read_finder_info(path)
-        if info is None or len(info) < 9:
-            return
-        if not (info[8] & _FINDER_INVISIBLE_MASK):
-            return  # bit not set; nothing to do
-        new_info = bytearray(info)
-        new_info[8] &= ~_FINDER_INVISIBLE_MASK
-        # Pad / truncate to canonical 32 bytes for Finder compatibility.
-        if len(new_info) < _FINDER_INFO_LEN:
-            new_info.extend(b"\x00" * (_FINDER_INFO_LEN - len(new_info)))
-        elif len(new_info) > _FINDER_INFO_LEN:
-            new_info = new_info[:_FINDER_INFO_LEN]
-        # If every byte is zero after clearing, remove the xattr entirely.
-        if all(b == 0 for b in new_info):
-            _remove_finder_info(path)
-        else:
-            _write_finder_info(path, bytes(new_info))
-    except Exception as exc:  # noqa: BLE001 -- best-effort sanitization
-        logger.debug("FinderInfo sanitization failed for %s: %s", path, exc)
 
 
 @dataclass
@@ -610,45 +424,6 @@ class IngestionService:
             return dict(vault_config)
         return _deep_merge_dicts(vault_config, request_config)
 
-    def _ensure_vault_local(self, source_path: Path, storage_root: Path) -> str:
-        """Return a vault-relative path to the source file, copying it
-        into ``{storage_root}/imports/`` if it lives outside the vault.
-
-        Internal files (already under *storage_root*) are returned as-is
-        with a normalized relative path. External files are copied
-        verbatim; on filename collision a content-hash suffix is appended.
-
-        Returns:
-            Vault-relative path string (e.g. ``reports/doc.md`` or
-            ``imports/doc_a1b2c3d4.md``).
-        """
-        try:
-            relative = source_path.relative_to(storage_root)
-            return str(relative)
-        except ValueError:
-            pass  # external file -- fall through to import
-
-        imports_dir = storage_root / "imports"
-        imports_dir.mkdir(parents=True, exist_ok=True)
-
-        dest = imports_dir / source_path.name
-        if dest.exists():
-            content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()[:8]
-            existing_hash = hashlib.sha256(dest.read_bytes()).hexdigest()[:8]
-            if content_hash == existing_hash:
-                # Identical content already imported -- reuse existing path
-                return str(dest.relative_to(storage_root))
-            # Different content: disambiguate with 8-char content hash
-            stem = source_path.stem
-            suffix = source_path.suffix
-            dest = imports_dir / f"{stem}_{content_hash}{suffix}"
-
-        shutil.copy2(source_path, dest)
-        # Strip UI-layer invisibility markers that shutil.copy2 may have
-        # propagated from an agent's temp source (CAS-ADR-016).
-        _strip_ui_invisibility(dest)
-        return str(dest.relative_to(storage_root))
-
     async def ingest(
         self,
         request: IngestRequest,
@@ -781,9 +556,16 @@ class IngestionService:
         if not source_path.exists():
             raise SourceFileNotFoundError(request.source)
 
-        # Import external files into the vault (BH-053 through BH-057)
+        # Import external files into the vault (BH-053 through BH-057),
+        # retaining the source on the active profile's vault-source store so
+        # the copy is binding-agnostic (CAS-ADR-043).
         source_path = source_path.resolve()
-        vault_relative = self._ensure_vault_local(source_path, storage_root)
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        vault_relative = vault_source_store.retain_source(
+            self._config.vault.id, storage_root, source_path
+        )
 
         # Stage 1: Projection (synchronous). Merge vault-level adapter config
         # with the per-request config; per-request keys override vault keys

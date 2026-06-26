@@ -28,6 +28,7 @@ from sage.config import VaultConfig
 from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES
 from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse, ReadMeta
 from sage.services.read_diagnostics import build_not_found_detail
+from sage.vault_source_binding import VaultSourceStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
 
@@ -42,32 +43,43 @@ def _max_inline_content_bytes() -> int:
 def _attach_inline_content(
     response: DocumentWithContent,
     doc: Document,
+    vault_id: str,
     storage_root: Path,
+    store: VaultSourceStore,
 ) -> None:
     """Populate `content` (base64) and `content_size` from the vault file.
 
+    Reads the retained source through the vault-source store so delivery is
+    binding-agnostic (CAS-ADR-043). The size is checked before the bytes are
+    read, so an oversize source is rejected without loading it.
+
     Raises ContentFileMissingError or ContentTooLargeError on failure.
     """
-    file_path = storage_root / doc.source_path
-    if not file_path.exists():
+    if not store.source_exists(vault_id, storage_root, doc.source_path):
         raise ContentFileMissingError(doc.id, doc.source_path)
 
-    size = file_path.stat().st_size
+    size = store.source_size(vault_id, storage_root, doc.source_path)
     ceiling = _max_inline_content_bytes()
     if size > ceiling:
         raise ContentTooLargeError(doc.id, size, ceiling)
 
-    response.content = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    data = store.read_source(vault_id, storage_root, doc.source_path)
+    response.content = base64.b64encode(data).decode("ascii")
     response.content_size = size
 
 
 def _deliver_to_path(
     response: DocumentWithContent,
     doc: Document,
+    vault_id: str,
     storage_root: Path,
     write_to_path: str,
+    store: VaultSourceStore,
 ) -> None:
     """Copy the vault file to `write_to_path` and populate delivery fields.
+
+    Reads the retained source through the vault-source store (CAS-ADR-043)
+    and writes the bytes to the caller-specified local path.
 
     Raises WritePathInvalidError, WritePathExistsError, or
     ContentFileMissingError on failure.
@@ -87,11 +99,10 @@ def _deliver_to_path(
     if not os.access(parent, os.W_OK):
         raise WritePathInvalidError(write_to_path, f"parent directory is not writable: {parent}")
 
-    source_file = storage_root / doc.source_path
-    if not source_file.exists():
+    if not store.source_exists(vault_id, storage_root, doc.source_path):
         raise ContentFileMissingError(doc.id, doc.source_path)
 
-    data = source_file.read_bytes()
+    data = store.read_source(vault_id, storage_root, doc.source_path)
     target.write_bytes(data)
 
     response.written_to = str(target)
@@ -164,10 +175,17 @@ class DocumentsService:
         response = DocumentWithContent(**doc.model_dump())
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
 
-        if include_content:
-            _attach_inline_content(response, doc, storage_root)
-        elif write_to_path:
-            _deliver_to_path(response, doc, storage_root, write_to_path)
+        if include_content or write_to_path:
+            # Deliver the retained source through the active profile's
+            # vault-source store so delivery is binding-agnostic (CAS-ADR-043).
+            from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+            store = resolve_stack_vault_source_store(get_stack_config())
+            vault_id = self._config.vault.id
+            if include_content:
+                _attach_inline_content(response, doc, vault_id, storage_root, store)
+            else:
+                _deliver_to_path(response, doc, vault_id, storage_root, write_to_path, store)
 
         # Self-describing read markers (CAS-ADR-039). The content body is the
         # inlined bytes; write-to-path delivery and the default request both
