@@ -35,6 +35,17 @@ resource bffIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-3
   tags: tags
 }
 
+// Dedicated bootstrap identity for the relational store: the relational-store
+// module sets it as the server's Entra administrator, and the in-VNet bootstrap
+// job runs as it to enrol the application managed-identity roles and pre-create
+// the extensions. Least standing privilege — it administers nothing else, so the
+// running application identities never hold a server-administration role.
+resource bootstrapIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-pg-bootstrap-${environmentName}'
+  location: location
+  tags: tags
+}
+
 @description('Resource id of the SAGE managed identity (container apps attach this).')
 output sageIdentityId string = sageIdentity.id
 
@@ -52,3 +63,15 @@ output bffIdentityPrincipalId string = bffIdentity.properties.principalId
 
 @description('Client id of the CAS BFF managed identity (runtime token acquisition).')
 output bffIdentityClientId string = bffIdentity.properties.clientId
+
+@description('Resource id of the Postgres bootstrap managed identity (the bootstrap job attaches this).')
+output bootstrapIdentityId string = bootstrapIdentity.id
+
+@description('Principal id of the Postgres bootstrap managed identity (set as the server Entra administrator; granted AcrPull).')
+output bootstrapIdentityPrincipalId string = bootstrapIdentity.properties.principalId
+
+@description('Client id of the Postgres bootstrap managed identity (selects it for DefaultAzureCredential in the bootstrap job).')
+output bootstrapIdentityClientId string = bootstrapIdentity.properties.clientId
+
+@description('Name of the Postgres bootstrap managed identity (the database user the bootstrap job connects as, and the Entra admin display name).')
+output bootstrapIdentityName string = bootstrapIdentity.name

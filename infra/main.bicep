@@ -118,7 +118,10 @@ module apim 'modules/apim.bicep' = {
 
 // The relational store deploys into the same resource group and composes
 // through the foundation's outputs: it integrates into the delegated Postgres
-// subnet and links its private DNS zone to the hosting VNet.
+// subnet and links its private DNS zone to the hosting VNet. By default its
+// Entra administrator is the dedicated bootstrap identity (so the bootstrap job's
+// token can administer the database, fully reproducibly with no deploy-time GUID);
+// an operator-supplied `postgresAadAdminObjectId` overrides it when set.
 module postgres 'modules/postgres.bicep' = {
   name: 'postgres'
   scope: rg
@@ -128,9 +131,15 @@ module postgres 'modules/postgres.bicep' = {
     tags: tags
     delegatedSubnetId: foundation.outputs.postgresSubnetId
     vnetId: foundation.outputs.vnetId
-    aadAdminObjectId: postgresAadAdminObjectId
-    aadAdminPrincipalName: postgresAadAdminPrincipalName
-    aadAdminPrincipalType: postgresAadAdminPrincipalType
+    aadAdminObjectId: empty(postgresAadAdminObjectId)
+      ? identity.outputs.bootstrapIdentityPrincipalId
+      : postgresAadAdminObjectId
+    aadAdminPrincipalName: empty(postgresAadAdminObjectId)
+      ? identity.outputs.bootstrapIdentityName
+      : postgresAadAdminPrincipalName
+    aadAdminPrincipalType: empty(postgresAadAdminObjectId)
+      ? 'ServicePrincipal'
+      : postgresAadAdminPrincipalType
   }
 }
 
@@ -215,6 +224,35 @@ module containerApps 'modules/container-apps.bicep' = {
     sharepointSiteId: sharepointSiteId
     sharepointDriveId: sharepointDriveId
     vaultSourceRootPath: vaultSourceRootPath
+  }
+}
+
+// The in-VNet Postgres bootstrap job: an idempotent Container Apps Job that
+// creates the application managed-identity database roles and pre-creates the
+// extensions, from inside the VNet (the server has no public endpoint). It runs
+// as the bootstrap identity — the server's Entra administrator (wired above) —
+// and reuses the SAGE image. Composes through the foundation (ACA environment,
+// registry), identity (bootstrap + application identities), and relational-store
+// (server FQDN, database) module outputs.
+module postgresBootstrap 'modules/postgres-bootstrap.bicep' = {
+  name: 'postgres-bootstrap'
+  scope: rg
+  params: {
+    location: location
+    environmentName: environmentName
+    tags: tags
+    acaEnvironmentId: foundation.outputs.acaEnvironmentId
+    acrLoginServer: foundation.outputs.acrLoginServer
+    acrName: foundation.outputs.acrName
+    imageTag: imageTag
+    bootstrapIdentityId: identity.outputs.bootstrapIdentityId
+    bootstrapIdentityClientId: identity.outputs.bootstrapIdentityClientId
+    bootstrapIdentityPrincipalId: identity.outputs.bootstrapIdentityPrincipalId
+    bootstrapIdentityName: identity.outputs.bootstrapIdentityName
+    postgresServerFqdn: postgres.outputs.postgresServerFqdn
+    postgresDatabaseName: postgres.outputs.postgresDatabaseName
+    sageIdentityId: identity.outputs.sageIdentityId
+    bffIdentityId: identity.outputs.bffIdentityId
   }
 }
 

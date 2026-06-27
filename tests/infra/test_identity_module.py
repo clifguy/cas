@@ -77,14 +77,27 @@ def test_identity_module_exists() -> None:
     assert IDENTITY.is_file(), "infra/modules/identity.bicep missing"
 
 
-def test_identity_declares_two_user_assigned_identities() -> None:
-    """Exactly two user-assigned identities are declared — the SAGE one and the
-    CAS BFF one. Neither may be silently dropped; downstream modules grant and
-    attach both.
+def test_identity_declares_application_and_bootstrap_identities() -> None:
+    """Three user-assigned identities are declared — the two application identities
+    (SAGE, CAS BFF) and the dedicated Postgres bootstrap identity. The application
+    identities back the running apps; the bootstrap identity is the one the
+    relational-store module sets as the server's Entra administrator and the
+    in-VNet bootstrap job runs as. None may be silently dropped; downstream modules
+    grant and attach each.
     """
-    count = _count_resource_type(IDENTITY.read_text(encoding="utf-8"), _UAMI_TYPE)
-    assert count == 2, (
-        f"identity.bicep must declare exactly two {_UAMI_TYPE} resources; found {count}"
+    text = IDENTITY.read_text(encoding="utf-8")
+    count = _count_resource_type(text, _UAMI_TYPE)
+    assert count == 3, (
+        f"identity.bicep must declare exactly three {_UAMI_TYPE} resources "
+        f"(SAGE, CAS BFF, Postgres bootstrap); found {count}"
+    )
+    stripped = _strip_line_comments(text)
+    assert "'id-sage-${environmentName}'" in stripped, "the SAGE app identity must be declared"
+    assert "'id-cas-bff-${environmentName}'" in stripped, (
+        "the CAS BFF application identity must be declared"
+    )
+    assert "'id-pg-bootstrap-${environmentName}'" in stripped, (
+        "the Postgres bootstrap identity must be declared"
     )
 
 
@@ -99,6 +112,26 @@ def test_identity_exposes_principal_and_id_outputs() -> None:
     assert len(principal) >= 2, f"expected >=2 principalId outputs (SAGE + BFF); have {names}"
     assert len(client) >= 2, f"expected >=2 clientId outputs (SAGE + BFF); have {names}"
     assert len(resource_id) >= 2, f"expected >=2 identity resource-id outputs; have {names}"
+
+
+def test_identity_exposes_bootstrap_outputs() -> None:
+    """The bootstrap identity exposes the resource id, principal id, client id, and
+    name the Postgres admin binding and the in-VNet bootstrap job compose against.
+    """
+    names = [n.lower() for n, _ in _output_lines(IDENTITY.read_text(encoding="utf-8"))]
+    bootstrap = [n for n in names if "bootstrap" in n]
+    assert any(n.endswith("identityid") for n in bootstrap), (
+        f"missing bootstrap identity resource-id output; have {names}"
+    )
+    assert any("principalid" in n for n in bootstrap), (
+        f"missing bootstrap principalId output; have {names}"
+    )
+    assert any("clientid" in n for n in bootstrap), (
+        f"missing bootstrap clientId output; have {names}"
+    )
+    assert any(n.endswith("name") for n in bootstrap), (
+        f"missing bootstrap name output; have {names}"
+    )
 
 
 def test_identity_parameterizes_location() -> None:
