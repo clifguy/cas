@@ -104,8 +104,8 @@ the identity module), and exposes `casCertificateId` for the CAS BFF container
 app to attach to its custom domain at deploy time. The `sage` side of the same
 concern is the gateway hostname configuration in `apim.bicep` (above), since APIM
 — not the container ingress — is SAGE's public edge. The owned base domain
-(`baseDomain`) and the wildcard certificate it covers are published into AWS
-Route 53 by the operator per
+(`baseDomain`) and the wildcard certificate it covers are published into the
+operator's DNS provider per
 [`../../docs/process/custom-domains-dns.md`](../../docs/process/custom-domains-dns.md).
 
 ## The container apps

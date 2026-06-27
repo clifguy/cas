@@ -6,8 +6,8 @@
 // committed PFX material — so the no-stored-secret posture of the deploy path
 // holds. Once bound here, a container app in the environment (the CAS BFF)
 // attaches the certificate to its custom domain through its ingress
-// configuration at deploy time; that container-app binding and the AWS Route 53
-// record publication are the deploy step (see docs/process/custom-domains-dns.md).
+// configuration at deploy time; that container-app binding and the DNS record
+// publication are the deploy step (see docs/process/custom-domains-dns.md).
 //
 // The companion `sage` custom domain is bound on the API Management facade in
 // apim.bicep (a service hostname configuration), since APIM — not the container

@@ -28,8 +28,8 @@ param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
 
 // Owned base domain the cas/sage custom hostnames derive from. The operator
 // substitutes the real zone; the wildcard certificate *.<base-domain> (loaded
-// in Key Vault as wildcard-tls) covers both hostnames. DNS lives in AWS Route
-// 53 and is published manually — see docs/process/custom-domains-dns.md.
+// in Key Vault as wildcard-tls) covers both hostnames. DNS is published
+// manually by the operator — see docs/process/custom-domains-dns.md.
 param baseDomain = 'REPLACE-WITH-OWNED-DOMAIN'
 
 // Document-store vault-source binding coordinates (CAS-ADR-043). The SharePoint
