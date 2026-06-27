@@ -1,0 +1,637 @@
+"""Structural, inventory, and behavioral gate for ``deploy/cloud-preflight.sh``.
+
+The cloud preflight is a *post-deploy* probe: it hits a live deployed tenant's
+public HTTPS endpoints plus an operator-supplied bearer token and verifies every
+layer independently, emitting a single pass/fail matrix where each check carries
+an anti-coincidental control (a negative/expected-failure result is credited only
+when a paired positive control proves the edge is genuinely live). It reports; it
+never mutates. It is distinct from ``deploy/smoke.sh`` / ``bff-smoke.sh``, which
+build+boot a container image locally.
+
+There is no live tenant in CI, so the gate here is two layers, both always-on
+with no Docker and no deployed environment:
+
+* **Structural / inventory** -- read the script text and enumerate its check
+  registry via ``--dry-run`` (the runtime-wiring inventory a source comment
+  cannot fake). Mirrors the ``tests/infra/`` text-assertion idiom.
+* **Behavioral** -- stand up a local stub HTTP server plus stub resolver/TLS
+  commands, point the script's parameterized endpoints at them, and assert the
+  matrix verdicts. The load-bearing scenarios are *blanket-404* (a dead edge
+  must not coincidentally pass) and *one-failure-does-not-mask-others* (the
+  independence guarantee). These prove the control logic is correct, not merely
+  present.
+"""
+
+from __future__ import annotations
+
+import http.server
+import os
+import re
+import shutil
+import socket
+import subprocess
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Final
+
+import pytest
+
+_REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
+_SCRIPT: Final[Path] = _REPO_ROOT / "deploy" / "cloud-preflight.sh"
+
+_BASH: Final[str | None] = shutil.which("bash")
+_CURL: Final[str | None] = shutil.which("curl")
+
+#: A subscription / tenant / client id is a GUID; none may be baked into the
+#: harness -- they arrive as parameters. Same detector the infra gate uses.
+_GUID_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\b"
+)
+
+#: The full check registry the harness must expose (one row per deployment
+#: layer). The ``--dry-run`` enumeration must report exactly this set.
+_EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
+    {
+        "edge_discovery",
+        "edge_mcp_unauth",
+        "edge_authn_backend",
+        "liveness",
+        "vault_load",
+        "retrieval_pg",
+        "kv_wildcard_tls",
+        "kv_anthropic",
+        "bff_liveness",
+        "bff_auth_configured",
+        "dns_sage_cname",
+        "dns_cas_cname",
+        "dns_asuid_txt",
+        "sharepoint_discovery",
+    }
+)
+
+
+# --------------------------------------------------------------------------- #
+# Helpers                                                                      #
+# --------------------------------------------------------------------------- #
+def _script_text() -> str:
+    return _SCRIPT.read_text(encoding="utf-8")
+
+
+def _git_owner() -> str | None:
+    """Repository owner from the origin remote, or ``None`` -- resolved at
+    runtime so this durable test carries no personal-identity literal.
+    """
+    try:
+        url = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    match = re.search(r"[:/]([^/]+)/[^/]+?(?:\.git)?$", url)
+    return match.group(1) if match else None
+
+
+def _run(env: dict[str, str], *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    """Run the harness under ``bash`` with an isolated environment.
+
+    Only ``PATH``/``HOME`` are inherited so a real ``SAGE_*``/``AUTH_TOKEN`` in
+    the developer's shell cannot leak into a behavioral scenario.
+    """
+    base = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+    base.update(env)
+    return subprocess.run(
+        [_BASH or "bash", str(_SCRIPT), *args],
+        capture_output=True,
+        text=True,
+        env=base,
+        timeout=timeout,
+    )
+
+
+def _verdicts(stdout: str) -> dict[str, str]:
+    """Parse the pass/fail matrix into ``{check_id: PASS|FAIL|SKIP}``."""
+    out: dict[str, str] = {}
+    for line in stdout.splitlines():
+        m = re.match(r"^\s*(PASS|FAIL|SKIP)\s+(\w+)\b", line)
+        if m:
+            out[m.group(2)] = m.group(1)
+    return out
+
+
+def _dry_run_rows(stdout: str) -> dict[str, tuple[str, str]]:
+    """Parse ``CHECK <id> | prediction: <p> | control: <c>`` lines."""
+    out: dict[str, tuple[str, str]] = {}
+    for line in stdout.splitlines():
+        m = re.match(r"^CHECK\s+(\w+)\s*\|\s*prediction:\s*(.+?)\s*\|\s*control:\s*(.+?)\s*$", line)
+        if m:
+            out[m.group(1)] = (m.group(2), m.group(3))
+    return out
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+#: A responder maps (method, path, body) -> (status, body_text, headers).
+Responder = Callable[[str, str, bytes], "tuple[int, str, dict[str, str]]"]
+
+
+@contextmanager
+def serve(responder: Responder) -> Iterator[str]:
+    """Run a threaded stub HTTP server; yield its ``http://127.0.0.1:<port>``."""
+    port = _free_port()
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def _dispatch(self, method: str) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else b""
+            status, text, headers = responder(method, self.path, body)
+            payload = text.encode("utf-8")
+            self.send_response(status)
+            for key, value in headers.items():
+                self.send_header(key, value)
+            if "Content-Type" not in headers:
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+            self._dispatch("GET")
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._dispatch("POST")
+
+        def log_message(self, *_args: object) -> None:  # silence the stub
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _write_stub_cmd(tmp_path: Path, name: str, body: str) -> str:
+    """Write an executable bash stub command and return its path."""
+    path = tmp_path / name
+    path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+def _base_env(stub_url: str, **overrides: str) -> dict[str, str]:
+    """A minimal HTTP-layer environment pointed at a stub server."""
+    env = {
+        "SAGE_FQDN": "sage.test.invalid",
+        "CAS_FQDN": "cas.test.invalid",
+        "BASE_DOMAIN": "test.invalid",
+        "AUTH_TOKEN": "test-token",
+        "SAGE_BASE_URL": stub_url,
+        "CAS_BASE_URL": stub_url,
+        "PREFLIGHT_EXPECTED_VAULTS": "cas",
+        "PREFLIGHT_VAULT_SOURCE": "document_store",
+    }
+    env.update(overrides)
+    return env
+
+
+_NEEDS_BASH = pytest.mark.skipif(_BASH is None, reason="bash not on PATH")
+_NEEDS_RUNTIME = pytest.mark.skipif(
+    _BASH is None or _CURL is None, reason="behavioral gate needs bash + curl on PATH"
+)
+
+
+# --------------------------------------------------------------------------- #
+# A. Detector control-tests (prove the gates themselves can fail)             #
+# --------------------------------------------------------------------------- #
+def test_guid_detector_fires() -> None:
+    """The no-hardcoded-identity scan is only meaningful if its detector fires."""
+    assert _GUID_RE.search("00000000-1111-2222-3333-444444444444")
+    assert not _GUID_RE.search("api://sage.example  not-a-guid  1234")
+
+
+# --------------------------------------------------------------------------- #
+# B. Structural gate (read the script text -- no external dependencies)       #
+# --------------------------------------------------------------------------- #
+def test_exists_and_executable() -> None:
+    assert _SCRIPT.is_file(), "deploy/cloud-preflight.sh is missing"
+    assert os.access(_SCRIPT, os.X_OK), "deploy/cloud-preflight.sh is not executable (chmod +x)"
+
+
+def test_shebang_and_strict_mode() -> None:
+    text = _script_text()
+    assert text.startswith("#!/usr/bin/env bash"), "missing bash shebang"
+    assert "set -euo pipefail" in text, "missing strict mode (set -euo pipefail)"
+
+
+@_NEEDS_BASH
+def test_bash_syntax_valid() -> None:
+    proc = subprocess.run([_BASH or "bash", "-n", str(_SCRIPT)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"bash -n reported a syntax error:\n{proc.stderr}"
+
+
+def test_no_hardcoded_identity() -> None:
+    """No tenant GUID, repo owner, or unfilled placeholder is baked in; the
+    harness is driven by parameters. Azure-platform suffixes
+    (``azure-api.net``/``azurecontainerapps.io``) are constants the script
+    *compares against* and are allowed.
+    """
+    text = _script_text()
+    assert not _GUID_RE.search(text), "hardcoded GUID; pass it as a parameter"
+    assert "REPLACE-WITH" not in text, "an unfilled deploy placeholder leaked into the harness"
+    owner = _git_owner()
+    if owner:
+        assert owner.lower() not in text.lower(), "hardcoded repository owner; keep identity out"
+    # Positive: endpoints are env-driven, not literal.
+    assert "SAGE_FQDN" in text and "AUTH_TOKEN" in text, "endpoints/token must be parameterized"
+
+
+def test_reports_not_fixes() -> None:
+    """A verification artifact, never a deploy step: no infra mutation and no
+    SAGE write call. The read-only ``discover`` POST is allowed.
+    """
+    text = _script_text()
+    assert not re.search(r"\baz\s+\S+\s+(?:create|update|delete|deploy|set|add|remove)\b", text), (
+        "mutating `az` subcommand; the preflight reports, it does not fix"
+    )
+    assert not re.search(r"-X\s*(?:PUT|DELETE|PATCH)\b", text), "a mutating HTTP verb leaked in"
+    assert ":batch" not in text and "/documents" not in text, "a SAGE write endpoint leaked in"
+
+
+def test_independence_aggregation_pattern() -> None:
+    """The 'one failure does not mask others' guarantee is structural: every
+    check is dispatched through a single ``run_check`` seam and the exit code is
+    computed from an aggregated flag, not from the last check's status.
+    """
+    text = _script_text()
+    assert "set -euo pipefail" in text
+    assert "run_check" in text, "no single run_check dispatch seam"
+    assert re.search(r"if\s*!\s*run_check", text), "checks are not dispatched via `if ! run_check`"
+    assert re.search(r"exit\s+\"?\$\{?(?:fail|failures|exit_code|rc|status)", text), (
+        "exit code is not computed from an aggregated failure flag"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# C. Inventory gate (--dry-run enumeration -- runtime wiring, not text)       #
+# --------------------------------------------------------------------------- #
+@_NEEDS_BASH
+def test_all_checks_registered() -> None:
+    proc = _run({}, "--dry-run")
+    assert proc.returncode == 0, f"--dry-run failed:\n{proc.stderr}"
+    rows = _dry_run_rows(proc.stdout)
+    assert set(rows) == set(_EXPECTED_CHECKS), (
+        f"registry drift: extra={set(rows) - _EXPECTED_CHECKS}, "
+        f"missing={_EXPECTED_CHECKS - set(rows)}"
+    )
+
+
+@_NEEDS_BASH
+def test_every_check_has_prediction_and_control() -> None:
+    """Every registered check carries a non-empty prediction AND control --
+    proving the anti-coincidental wiring at runtime, not by a source comment.
+    """
+    proc = _run({}, "--dry-run")
+    rows = _dry_run_rows(proc.stdout)
+    assert rows, "no enumerable checks"
+    for check_id, (prediction, control) in rows.items():
+        assert prediction.strip(), f"{check_id}: empty prediction"
+        assert control.strip(), f"{check_id}: missing anti-coincidental control"
+
+
+@_NEEDS_BASH
+def test_required_inputs_enforced() -> None:
+    """With no endpoint/token the harness fails fast with usage and makes no
+    network call (it never reaches a check).
+    """
+    proc = _run({})  # empty env: no SAGE_FQDN / BASE_DOMAIN / AUTH_TOKEN
+    assert proc.returncode != 0, "missing required inputs must fail fast"
+    combined = (proc.stdout + proc.stderr).lower()
+    assert "usage" in combined or "required" in combined, "no usage/required-input message"
+    assert "AUTH_TOKEN" in (proc.stdout + proc.stderr), "usage must name the required token"
+    assert not _verdicts(proc.stdout), "no check should run before required inputs are validated"
+
+
+# --------------------------------------------------------------------------- #
+# D. Behavioral gate (stub server + the real script)                          #
+# --------------------------------------------------------------------------- #
+_DISCOVERY_BODY = (
+    '{"resource":"https://sage.test.invalid","authorization_servers":'
+    '["https://login.microsoftonline.com/t/v2.0"],"scopes_supported":["Sage.Access"]}'
+)
+_VAULTS_BODY = '[{"id":"cas","name":"CAS"},{"id":"test","name":"Test"}]'
+_HEALTH_BODY = '{"status":"ok","version":"2.0.0"}'
+_DISCOVER_OK = '{"mode":"catalog","results":[{"document":{"id":"d1"}}],"total_available":5}'
+_LOGIN_BODY = (
+    '{"authorization_url":"https://login.microsoftonline.com/t/oauth2/v2.0/authorize'
+    "?client_id=abc&redirect_uri=https%3A%2F%2Fcas.test.invalid%2Fapp%2Fauth%2Fcallback"
+    '&response_type=code&scope=openid","state":"xyz"}'
+)
+_HTTP_CHECKS = "edge_discovery,edge_mcp_unauth,edge_authn_backend,liveness,vault_load,retrieval_pg"
+
+
+def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+    """An all-layers-healthy stub for the SAGE + BFF HTTP surface."""
+    p = path.split("?", 1)[0]
+    if p == "/.well-known/oauth-protected-resource":
+        return 200, _DISCOVERY_BODY, {}
+    if p == "/mcp" or p == "/mcp_admin":
+        return 401, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
+    if p == "/health":
+        return 200, _HEALTH_BODY, {}
+    if p == "/sage_vaults":
+        return 200, _VAULTS_BODY, {}
+    if p.endswith("/discover"):
+        if b"deterministic" in body:
+            return 400, '{"error":"missing_field","detail":"document_id required"}', {}
+        return 200, _DISCOVER_OK, {}
+    if p == "/app/auth/login":
+        return 200, _LOGIN_BODY, {}
+    if p == "/app/auth/me":
+        return 200, '{"authenticated":false,"user":null}', {}
+    return 404, '{"error":"not_found"}', {}
+
+
+@_NEEDS_RUNTIME
+def test_all_green_passes() -> None:
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=_HTTP_CHECKS))
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode == 0, f"healthy tenant must pass:\n{proc.stdout}\n{proc.stderr}"
+    assert all(v == "PASS" for v in verdicts.values()), verdicts
+    assert set(verdicts) == set(_HTTP_CHECKS.split(",")), verdicts
+
+
+@_NEEDS_RUNTIME
+def test_blanket_404_fails_edge() -> None:
+    """THE anti-coincidental test: when every path 404s, the bare /mcp '401'
+    look must NOT be credited -- its discovery-200 control failed.
+    """
+
+    def blanket(_m: str, _p: str, _b: bytes) -> tuple[int, str, dict[str, str]]:
+        return 404, '{"error":"not_found"}', {}
+
+    with serve(blanket) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_discovery,edge_mcp_unauth"))
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, "a dead edge must fail the run"
+    assert verdicts.get("edge_discovery") == "FAIL", verdicts
+    assert verdicts.get("edge_mcp_unauth") == "FAIL", (
+        "a 404 (not 401) with a failed discovery control must not pass as auth-gating"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_discovery_broken_but_mcp_401_fails_edge() -> None:
+    """THE discriminating anti-coincidental test: /mcp answers 401 (the
+    'as-predicted' look) while the discovery doc is broken (404). A naive check
+    that credits the bare 401 would PASS on a dead edge; the discovery-200
+    control must reject it.
+    """
+
+    def discovery_broken(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            return 404, '{"error":"not_found"}', {}
+        if p == "/mcp":
+            return 401, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
+        return _green(method, path, body)
+
+    with serve(discovery_broken) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_discovery,edge_mcp_unauth"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_discovery") == "FAIL", verdicts
+    assert verdicts.get("edge_mcp_unauth") == "FAIL", (
+        "a 401 must NOT be credited when the discovery-200 control failed -- "
+        f"this is the blanket-edge coincidental-pass trap: {verdicts}"
+    )
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_open_fails_edge() -> None:
+    """Discovery live but /mcp answers 200 (auth not enforced) -> edge FAIL."""
+
+    def mcp_open(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/mcp":
+            return 200, '{"oops":"unauthenticated reached backend"}', {}
+        return _green(method, path, body)
+
+    with serve(mcp_open) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_discovery,edge_mcp_unauth"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_discovery") == "PASS", verdicts
+    assert verdicts.get("edge_mcp_unauth") == "FAIL", "an open /mcp must fail the auth-gating check"
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_one_failure_does_not_mask_others() -> None:
+    """Independence: a check that fails in the MIDDLE of the run must not abort
+    it -- the checks ordered after the failure still run and report. (A naive
+    ``set -e``-abort-on-first-failure would drop everything after ``liveness``.)
+    """
+
+    def health_down(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return 500, '{"error":"unavailable"}', {}
+        return _green(method, path, body)
+
+    with serve(health_down) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=_HTTP_CHECKS))
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0
+    assert verdicts.get("liveness") == "FAIL", verdicts
+    # Every selected check produced a verdict -- the mid-run failure masked none.
+    assert set(verdicts) == set(_HTTP_CHECKS.split(",")), f"a check was masked: {verdicts}"
+    # The checks ordered AFTER the failing one still ran and passed.
+    for check in ("edge_discovery", "vault_load", "retrieval_pg"):
+        assert verdicts.get(check) == "PASS", f"{check} should be unaffected: {verdicts}"
+
+
+@_NEEDS_RUNTIME
+def test_retrieval_pg_fails_on_postgres_down() -> None:
+    """A Postgres-down /discover 500 fails retrieval_pg specifically."""
+
+    def pg_down(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/discover"):
+            return 500, '{"error":"storage_unavailable"}', {}
+        return _green(method, path, body)
+
+    with serve(pg_down) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="vault_load,retrieval_pg"))
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0
+    assert verdicts.get("vault_load") == "PASS", verdicts
+    assert verdicts.get("retrieval_pg") == "FAIL", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_kv_anthropic_skips_when_vault_load_fails() -> None:
+    """/health green but /sage_vaults empty == startup aborted: vault_load FAILs,
+    and its downstream qualifiers SKIP (not FAIL) so one root cause does not
+    over-paint the matrix.
+    """
+
+    def empty_vaults(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/sage_vaults":
+            return 200, "[]", {}
+        return _green(method, path, body)
+
+    checks = "liveness,vault_load,kv_anthropic,sharepoint_discovery"
+    with serve(empty_vaults) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=checks))
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, "an empty registry must fail the run via vault_load"
+    assert verdicts.get("liveness") == "PASS", verdicts
+    assert verdicts.get("vault_load") == "FAIL", verdicts
+    assert verdicts.get("kv_anthropic") == "SKIP", "anthropic-key rides vault load, not /health"
+    assert verdicts.get("sharepoint_discovery") == "SKIP", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_dns_wrong_target_fails(tmp_path: Path) -> None:
+    """A CNAME that resolves to a parked/wrong target fails, even though it
+    'resolves' -- the expected-suffix control catches it.
+    """
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        'echo "parked.example.com."\n',  # every query -> wrong target
+    )
+    env = _base_env(
+        "http://127.0.0.1:1",  # unused: only DNS checks selected
+        PREFLIGHT_CHECKS="dns_sage_cname,dns_cas_cname",
+        PREFLIGHT_RESOLVE_CMD=resolver,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0
+    assert verdicts.get("dns_sage_cname") == "FAIL", verdicts
+    assert verdicts.get("dns_cas_cname") == "FAIL", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_dns_wildcard_negative_control_fails(tmp_path: Path) -> None:
+    """A wildcard resolver that answers the expected target for *every* name --
+    including the deliberately-bogus control name -- must FAIL: the success is
+    canned, not a real record.
+    """
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        # Echo the expected Azure suffix for ANY name, bogus control included.
+        'echo "cas-edge.azure-api.net."\n',
+    )
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="dns_sage_cname",
+        PREFLIGHT_RESOLVE_CMD=resolver,
+        EXPECTED_SAGE_CNAME_SUFFIX="azure-api.net",
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("dns_sage_cname") == "FAIL", (
+        "a resolver that answers the bogus control name is wildcarding; the "
+        f"expected-target match must not be credited: {verdicts}"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_dns_resolves_to_expected_passes(tmp_path: Path) -> None:
+    """Sanity: the real name resolves to the expected suffix and the bogus
+    control name resolves to nothing -> PASS.
+    """
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        # $1 = name, $2 = type. The bogus control label resolves to NXDOMAIN
+        # (empty); the real name resolves to the expected Azure suffix.
+        'case "$1" in\n'
+        "  *nxdomain-control*) exit 0 ;;\n"
+        '  *) echo "cas-edge.azure-api.net." ;;\n'
+        "esac\n",
+    )
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="dns_sage_cname",
+        PREFLIGHT_RESOLVE_CMD=resolver,
+        EXPECTED_SAGE_CNAME_SUFFIX="azure-api.net",
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("dns_sage_cname") == "PASS", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_tls_wrong_subject_fails(tmp_path: Path) -> None:
+    """A handshake that succeeds behind a cert whose SAN does not cover
+    ``*.<base-domain>`` must FAIL -- 'handshake worked' is not enough.
+    """
+    tls = _write_stub_cmd(tmp_path, "tlsprobe", 'echo "DNS:*.wrong.example.com"\n')
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="kv_wildcard_tls",
+        PREFLIGHT_TLS_PROBE_CMD=tls,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0
+    assert verdicts.get("kv_wildcard_tls") == "FAIL", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_tls_matching_subject_passes(tmp_path: Path) -> None:
+    tls = _write_stub_cmd(tmp_path, "tlsprobe", 'echo "DNS:*.test.invalid"\n')
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="kv_wildcard_tls",
+        PREFLIGHT_TLS_PROBE_CMD=tls,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("kv_wildcard_tls") == "PASS", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_bff_auth_configured_passes() -> None:
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="bff_liveness,bff_auth_configured"))
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("bff_liveness") == "PASS", verdicts
+    assert verdicts.get("bff_auth_configured") == "PASS", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_bff_auth_unconfigured_fails() -> None:
+    """If /app/auth/me reports auth_not_configured (503), the BFF is up but its
+    OIDC config did not resolve -> bff_auth_configured FAILs.
+    """
+
+    def unconfigured(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/app/auth/me":
+            return 503, '{"error":"auth_not_configured"}', {}
+        if p == "/app/auth/login":
+            return 503, '{"error":"auth_not_configured"}', {}
+        return _green(method, path, body)
+
+    with serve(unconfigured) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="bff_liveness,bff_auth_configured"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("bff_liveness") == "PASS", "the BFF process is still up"
+    assert verdicts.get("bff_auth_configured") == "FAIL", verdicts
+    assert proc.returncode != 0
