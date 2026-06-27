@@ -123,10 +123,23 @@ def test_bicepparam_wires_to_main() -> None:
     assert "location" in text, "main.bicepparam must set location"
 
 
+def test_main_bicep_exports_orchestration_outputs() -> None:
+    """The orchestrator exposes the bootstrap-job and container-app names the CI
+    deploy pipeline resolves to start the in-VNet Postgres bootstrap job and
+    converge the app tier — read from the deployment contract, not reconstructed
+    from a hardcoded resource-naming convention in the workflow.
+    """
+    text = MAIN_BICEP.read_text(encoding="utf-8")
+    for output_name in ("bootstrapJobName", "sageContainerAppName", "bffContainerAppName"):
+        assert re.search(rf"output\s+{output_name}\s+string\s*=", text), (
+            f"main.bicep must export {output_name} for the CI deploy orchestration"
+        )
+
+
 def test_infra_workflow_oidc_posture() -> None:
     """The deploy workflow uses GitHub OIDC (no stored secret), gates the PR
-    run on ``infra/**`` changes, binds the approval environment, and ships
-    its Azure jobs dormant until the deploy-identity variable is set.
+    run on ``infra/**`` changes, binds the dispatch-selected tenant Environment
+    as its approval gate, and reads its deploy identity from a GitHub variable.
     """
     raw = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(raw)
@@ -146,13 +159,22 @@ def test_infra_workflow_oidc_posture() -> None:
         "pull_request trigger must be path-filtered to infra/**"
     )
 
+    # The deploy is per-tenant: an operator triggers it and selects the tenant's
+    # Environment by a workflow_dispatch input, and the apply job binds that
+    # selected environment as the approval gate — never a hardcoded tenant.
+    dispatch = _on_block(workflow).get("workflow_dispatch") or {}
+    assert "environment" in (dispatch.get("inputs") or {}), (
+        "workflow_dispatch must declare the tenant `environment` input"
+    )
     jobs = workflow.get("jobs") or {}
-    assert any(_job_environment(job) == "azure-prod" for job in jobs.values()), (
-        "a job must bind the azure-prod environment (the approval gate)"
+    bound = [e for e in (_job_environment(job) for job in jobs.values()) if e]
+    assert bound, "a job must bind a GitHub Environment (the approval gate)"
+    assert any("inputs.environment" in e for e in bound), (
+        "the apply job must bind the dispatch-selected tenant environment, not a literal"
     )
 
     assert "vars.AZURE_CLIENT_ID" in raw, (
-        "Azure-touching jobs must be gated on the AZURE_CLIENT_ID repo variable"
+        "Azure-touching jobs must be gated on the AZURE_CLIENT_ID variable"
     )
 
 

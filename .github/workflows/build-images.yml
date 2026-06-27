@@ -1,0 +1,152 @@
+name: build-images
+
+# Reusable container-image build. Builds the SAGE and CAS BFF images, runs the
+# container smoke tests (SMK/BSMK), and — when called with push enabled and the
+# target registry configured — pushes the immutable {version}-{short-sha} tag to
+# that tenant's Azure Container Registry. The CI workflow calls it with push off
+# (build + smoke as the regression gate); the deploy pipeline calls it with push
+# on and the tenant's Environment, so the artifact it provisions is built from
+# the committed commit. Authoring the build once here keeps the two callers from
+# drifting.
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Push the built images to the tenant's registry.
+        type: boolean
+        default: false
+      environment:
+        description: GitHub Environment whose registry + deploy identity the push uses.
+        type: string
+        default: ''
+    outputs:
+      image_tag:
+        description: Immutable {version}-{short-sha} tag the deploy pins the containers to.
+        value: ${{ jobs.build.outputs.image_tag }}
+      sage_build_version:
+        description: The MAJOR.MINOR.PATCH version baked into the images.
+        value: ${{ jobs.build.outputs.sage_build_version }}
+
+# OIDC: the push authenticates with the tenant's Entra workload identity
+# federated to this repository's GitHub OIDC token. No client secret is stored.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Bind the tenant's Environment only when pushing, so the env-scoped registry
+    # and deploy-identity variables resolve; the build-only (CI) call binds none.
+    environment: ${{ inputs.push && inputs.environment || '' }}
+    env:
+      PYTHONUNBUFFERED: "1"
+    outputs:
+      image_tag: ${{ steps.ver.outputs.image_tag }}
+      sage_build_version: ${{ steps.ver.outputs.sage_build_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history + tags so build_info's git describe can compute the
+          # release version baked into the image as SAGE_BUILD_VERSION.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Install test dependencies
+        run: uv sync --locked --extra test
+
+      - name: Compute build version and image tag
+        id: ver
+        # Single-source the version from sage.build_info -- the same
+        # MAJOR.MINOR.PATCH (PATCH = commit distance since the last vMAJOR.MINOR.0
+        # tag) the dev box, the FastAPI/OpenAPI contract, and the conformance
+        # suite resolve. A bare `git describe --abbrev=0` reports only the tag
+        # name and would bake the tag floor into every image regardless of commit
+        # distance; reusing build_info keeps the baked stamp and the derived image
+        # tag honest. Requires the editable install above so `sage` imports.
+        run: |
+          SAGE_BUILD_VERSION="$(.venv/bin/python -c 'from sage import build_info as b; print(b.RELEASE_VERSION)')"
+          IMAGE_TAG="${SAGE_BUILD_VERSION}-${GITHUB_SHA:0:7}"
+          echo "sage_build_version=${SAGE_BUILD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build SAGE image
+        env:
+          SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
+            --cache-from "type=gha,scope=sage-image" \
+            --cache-to "type=gha,mode=max,scope=sage-image" \
+            --load \
+            -t cas-sage:ci \
+            .
+
+      - name: Build BFF image
+        env:
+          SAGE_BUILD_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            -f Dockerfile.bff \
+            --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}" \
+            --cache-from "type=gha,scope=bff-image" \
+            --cache-to "type=gha,mode=max,scope=bff-image" \
+            --load \
+            -t cas-bff:ci \
+            .
+
+      - name: Run container smoke tests (SAGE + BFF)
+        env:
+          SAGE_TEST_DOCKER: "1"
+          SAGE_TEST_IMAGE: "cas-sage:ci"
+          SAGE_TEST_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          SAGE_TEST_BFF_IMAGE: "cas-bff:ci"
+          SAGE_TEST_BFF_IMAGE_VERSION: ${{ steps.ver.outputs.sage_build_version }}
+          # Native amd64 runner; no cross-platform emulation overhead.
+          SAGE_TEST_DOCKER_PLATFORM: ""
+        run: |
+          .venv/bin/pytest -v --tb=short tests/deploy/
+
+      - name: Log in to Azure (OIDC)
+        # The push targets the tenant's own registry and authenticates with that
+        # Environment's federated deploy identity; it stays dormant until both the
+        # AZURE_CLIENT_ID and ACR_LOGIN_SERVER variables are configured.
+        if: >
+          inputs.push
+          && vars.AZURE_CLIENT_ID != ''
+          && vars.ACR_LOGIN_SERVER != ''
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push images to ACR
+        if: >
+          inputs.push
+          && vars.AZURE_CLIENT_ID != ''
+          && vars.ACR_LOGIN_SERVER != ''
+        env:
+          ACR: ${{ vars.ACR_LOGIN_SERVER }}
+          IMAGE_TAG: ${{ steps.ver.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          az acr login --name "${ACR%.azurecr.io}"
+          docker tag cas-sage:ci "${ACR}/sage:${IMAGE_TAG}"
+          docker tag cas-sage:ci "${ACR}/sage:latest"
+          docker push "${ACR}/sage:${IMAGE_TAG}"
+          docker push "${ACR}/sage:latest"
+          docker tag cas-bff:ci "${ACR}/bff:${IMAGE_TAG}"
+          docker tag cas-bff:ci "${ACR}/bff:latest"
+          docker push "${ACR}/bff:${IMAGE_TAG}"
+          docker push "${ACR}/bff:latest"

@@ -297,3 +297,12 @@ output casCertificateId string = customDomains.outputs.casCertificateId
 
 @description('Deterministic FQDN of the SAGE container app — the value the APIM facade backend resolves from.')
 output sageContainerAppFqdn string = containerApps.outputs.sageFqdn
+
+@description('Name of the in-VNet Postgres bootstrap job — the deploy pipeline starts it after the apply to create the application managed-identity database roles and pre-create the extensions.')
+output bootstrapJobName string = postgresBootstrap.outputs.bootstrapJobName
+
+@description('Name of the SAGE container app — the deploy pipeline restarts it to converge the app tier after the bootstrap job runs.')
+output sageContainerAppName string = containerApps.outputs.sageContainerAppName
+
+@description('Name of the CAS BFF container app — the deploy pipeline restarts it to converge the app tier after the bootstrap job runs.')
+output bffContainerAppName string = containerApps.outputs.bffContainerAppName

@@ -402,8 +402,14 @@ output sageFqdn string = sageApp.properties.configuration.ingress.fqdn
 @description('Resource id of the SAGE container app.')
 output sageContainerAppId string = sageApp.id
 
+@description('Name of the SAGE container app — the deploy pipeline restarts it by name to converge the app tier after the bootstrap job runs.')
+output sageContainerAppName string = sageApp.name
+
 @description('Deterministic FQDN of the CAS BFF container app (its Route 53 records publish at deploy time).')
 output bffFqdn string = bffApp.properties.configuration.ingress.fqdn
 
 @description('Resource id of the CAS BFF container app.')
 output bffContainerAppId string = bffApp.id
+
+@description('Name of the CAS BFF container app — the deploy pipeline restarts it by name to converge the app tier after the bootstrap job runs.')
+output bffContainerAppName string = bffApp.name
