@@ -1,0 +1,73 @@
+using './main.bicep'
+
+// =====================================================================
+// Per-tenant parameter template — the full deployment parameter set.
+//
+// Bringing up a new operator-controlled tenant is authoring a parameter
+// set, not editing the stack (CAS Cloud Deployment Discipline, Principle 2).
+// Copy this file to main.<tenant>.bicepparam, replace every REPLACE-WITH-*
+// placeholder with that tenant's value, and select it in the deploy.
+//
+// Values supplied OUT OF BAND (not parameters in this file):
+//   - Subscription id and tenant id — provided at deploy time through the
+//     deploy identity's GitHub OIDC federation (the AZURE_SUBSCRIPTION_ID /
+//     AZURE_TENANT_ID deployment context), never written here.
+//   - Secrets and the wildcard TLS certificate — loaded into Key Vault by
+//     deploy/bootstrap/load-key-vault-secrets.sh, never committed.
+//   - sageAudience and bffOidcClientId — emitted by
+//     deploy/bootstrap/entra-app-registrations.sh after it creates the two
+//     Entra app registrations; paste the emitted values below.
+//   - sharepointSiteId and sharepointDriveId — emitted by
+//     deploy/bootstrap/seed-vault-source.sh after it resolves the document
+//     library (CAS-ADR-043); paste the emitted values below.
+//
+// Identity GUIDs and secrets stay out of the repository (code-surface
+// discipline); this template carries only placeholders.
+// =====================================================================
+
+// --- Deployment coordinates ------------------------------------------
+// environmentName and location are illustrative; set them per tenant.
+param environmentName = 'prod'
+param location = 'eastus2'
+param resourceGroupName = 'REPLACE-WITH-RESOURCE-GROUP'
+// tags defaults to { project: 'CAS', environment: <environmentName>,
+// managedBy: 'bicep' }; override only to add tenant-specific tags.
+
+// --- APIM facade -----------------------------------------------------
+// sageAudience is the SAGE resource-server audience (api://<app-id>),
+// emitted by the Entra bootstrap script. publisherEmail is the APIM
+// administrative contact. apimSku defaults to 'Consumption' (serverless).
+param sageAudience = 'api://REPLACE-WITH-SAGE-APP-ID'
+param publisherEmail = 'REPLACE-WITH-OPS-EMAIL'
+
+// --- Container apps --------------------------------------------------
+// imageTag is the immutable {version}-{short-sha} the deploy pins (never
+// `latest`). bffOidcClientId is the CAS BFF confidential-client app id,
+// emitted by the Entra bootstrap script. abstractionModel defaults to the
+// committed hosted Claude model id; override only to pin a different model.
+param imageTag = 'REPLACE-WITH-IMAGE-TAG'
+param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
+
+// --- Custom domains --------------------------------------------------
+// baseDomain is the owned zone the cas/sage hostnames derive from; the
+// wildcard certificate *.<baseDomain> (loaded as wildcard-tls) covers both.
+// DNS is published manually and provider-agnostically — the exact records
+// are emitted by deploy/bootstrap/emit-dns-records.sh.
+param baseDomain = 'REPLACE-WITH-OWNED-DOMAIN'
+
+// --- Postgres Entra administrator ------------------------------------
+// The Entra principal granted Postgres administrator (the in-VNet bootstrap
+// job runs as this principal). postgresAadAdminPrincipalType defaults to
+// 'Group'; set it to User or ServicePrincipal if the principal is not a group.
+param postgresAadAdminObjectId = 'REPLACE-WITH-ADMIN-OBJECT-ID'
+param postgresAadAdminPrincipalName = 'REPLACE-WITH-ADMIN-PRINCIPAL-NAME'
+param postgresAadAdminPrincipalType = 'Group'
+
+// --- Document-store vault source (CAS-ADR-043) -----------------------
+// The SharePoint site and document-library drive ids that host the cloud
+// vault tree, emitted by the vault-seed bootstrap script after it grants the
+// site-scoped permission. vaultSourceRootPath defaults to 'vaults'.
+param sharepointSiteId = 'REPLACE-WITH-SHAREPOINT-SITE-ID'
+param sharepointDriveId = 'REPLACE-WITH-SHAREPOINT-DRIVE-ID'
+// vaultSourceRootPath defaults to 'vaults'; override only if the vault tree
+// is rooted at a different library folder.

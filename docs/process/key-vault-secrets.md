@@ -8,6 +8,8 @@ documented here. This mirrors the no-stored-credential posture of the deploy
 identity (see `azure-deployment.md`) and the app registrations (see
 `entra-app-registrations.md`).
 
+**Codified as [`deploy/bootstrap/load-key-vault-secrets.sh`](../../deploy/bootstrap/load-key-vault-secrets.sh).** That script is the executable substance of this procedure (CAS Cloud Deployment Discipline, Principle 3); this runbook documents it.
+
 What the vault holds:
 
 - **`anthropic-api-key`** — the hosted abstraction provider's API key, read at

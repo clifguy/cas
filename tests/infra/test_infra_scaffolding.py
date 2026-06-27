@@ -27,6 +27,7 @@ REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 INFRA_DIR: Final[Path] = REPO_ROOT / "infra"
 MAIN_BICEP: Final[Path] = INFRA_DIR / "main.bicep"
 MAIN_BICEPPARAM: Final[Path] = INFRA_DIR / "main.bicepparam"
+MAIN_BICEPPARAM_EXAMPLE: Final[Path] = INFRA_DIR / "main.bicepparam.example"
 MODULES_DIR: Final[Path] = INFRA_DIR / "modules"
 WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "infra.yml"
 RUNBOOK: Final[Path] = REPO_ROOT / "docs" / "process" / "azure-deployment.md"
@@ -38,7 +39,13 @@ _GUID_RE: Final[re.Pattern[str]] = re.compile(
     r"\b[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\b"
 )
 
-_SURFACES: Final[tuple[Path, ...]] = (MAIN_BICEP, MAIN_BICEPPARAM, WORKFLOW, RUNBOOK)
+_SURFACES: Final[tuple[Path, ...]] = (
+    MAIN_BICEP,
+    MAIN_BICEPPARAM,
+    MAIN_BICEPPARAM_EXAMPLE,
+    WORKFLOW,
+    RUNBOOK,
+)
 
 
 def _on_block(workflow: dict) -> dict:
