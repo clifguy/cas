@@ -286,7 +286,7 @@ output sageIdentityClientId string = identity.outputs.sageIdentityClientId
 @description('Client id of the CAS BFF managed identity (runtime token acquisition).')
 output bffIdentityClientId string = identity.outputs.bffIdentityClientId
 
-@description('Custom domain hostname of the container-ingress-fronted CAS BFF (the operator publishes its Route 53 records at deploy time).')
+@description('Custom domain hostname of the container-ingress-fronted CAS BFF (the operator publishes its DNS records at deploy time).')
 output casCustomDomain string = casHostname
 
 @description('Custom domain hostname of the APIM-fronted SAGE edge.')
