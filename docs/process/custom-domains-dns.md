@@ -22,6 +22,8 @@ registrations ([`entra-app-registrations.md`](entra-app-registrations.md)) and
 the Key Vault secrets ([`key-vault-secrets.md`](key-vault-secrets.md)) are
 operator bootstraps that live in the repo as procedures, not as Azure resources.
 
+**Codified as [`deploy/bootstrap/emit-dns-records.sh`](../../deploy/bootstrap/emit-dns-records.sh).** That script computes and emits the records below (CAS Cloud Deployment Discipline, Principle 3); this runbook documents them. The script is provider-agnostic — it only prints records; publishing them in the zone is the manual step.
+
 ## Chosen approach: manual Route 53 records, certificate by Key Vault reference
 
 The records are published by hand (or by the operator's own Route 53 tooling)

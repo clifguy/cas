@@ -1,0 +1,294 @@
+"""Structural and idempotency gate for the per-tenant bootstrap scripts.
+
+Locks the shape of ``deploy/bootstrap/*.sh`` — the idempotent operator scripts
+that codify the one-time per-tenant cloud bring-up that is not expressible as
+subscription Bicep: the Entra app registrations and admin consent, the Key
+Vault secret and certificate load, the document-store vault seed (CAS-ADR-043),
+and the provider-agnostic DNS record emission. The cloud deployment profile
+these scripts bring up is recorded in CAS-ADR-042.
+
+The scripts replace hand-run runbook procedures with executable code that
+converges on re-run. These checks read the tracked scripts only — no Azure
+tooling and no live tenant — so they run in the ordinary Python test job. They
+assert the scripts carry the right verbs and idempotency guards; executing them
+against a tenant is out of scope for CI, exactly as the runbook gate
+``tests/infra/test_entra_registrations.py`` is.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Final
+
+import pytest
+
+REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
+BOOTSTRAP_DIR: Final[Path] = REPO_ROOT / "deploy" / "bootstrap"
+ENTRA: Final[Path] = BOOTSTRAP_DIR / "entra-app-registrations.sh"
+KEY_VAULT: Final[Path] = BOOTSTRAP_DIR / "load-key-vault-secrets.sh"
+VAULT_SEED: Final[Path] = BOOTSTRAP_DIR / "seed-vault-source.sh"
+DNS: Final[Path] = BOOTSTRAP_DIR / "emit-dns-records.sh"
+SCRIPTS: Final[tuple[Path, ...]] = (ENTRA, KEY_VAULT, VAULT_SEED, DNS)
+
+PROCESS_DIR: Final[Path] = REPO_ROOT / "docs" / "process"
+STAGES_DOC: Final[Path] = PROCESS_DIR / "cloud-deploy-stages.md"
+
+# Each runbook documents a step whose executable substance is its codified
+# script (Cloud Deployment Discipline, Principle 3).
+_RUNBOOK_TO_SCRIPT: Final[dict[str, str]] = {
+    "entra-app-registrations.md": "entra-app-registrations.sh",
+    "key-vault-secrets.md": "load-key-vault-secrets.sh",
+    "sharepoint-vault-source.md": "seed-vault-source.sh",
+    "custom-domains-dns.md": "emit-dns-records.sh",
+}
+
+_GUID_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\b"
+)
+
+# DNS-provider API surfaces the emitter must never call — it computes records
+# and the operator publishes them in whatever provider the tenant uses.
+_DNS_PROVIDER_TOKENS: Final[tuple[str, ...]] = (
+    r"route\s*53",
+    r"\baws\b",
+    r"az network dns",
+    r"\bcloudflare\b",
+    r"resolve-dnsname",
+    r"gcloud dns",
+)
+
+
+def _git_owner() -> str | None:
+    """Derive the repository owner from the origin remote, or ``None``."""
+    try:
+        url = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    match = re.search(r"[:/]([^/]+)/[^/]+?(?:\.git)?$", url)
+    return match.group(1) if match else None
+
+
+def _text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def test_all_four_scripts_exist_and_are_executable() -> None:
+    """The bootstrap surface every later orchestration step assumes."""
+    for script in SCRIPTS:
+        assert script.is_file(), f"{script.relative_to(REPO_ROOT)} missing"
+        assert os.access(script, os.X_OK), f"{script.name} is not executable (chmod +x)"
+
+
+def test_scripts_have_strict_bash_preamble() -> None:
+    """Each script is bash with strict-mode error handling, so a failed ``az``
+    call aborts rather than silently continuing.
+    """
+    for script in SCRIPTS:
+        text = _text(script)
+        assert text.startswith("#!/usr/bin/env bash"), (
+            f"{script.name} must start with #!/usr/bin/env bash"
+        )
+        assert "set -euo pipefail" in text, f"{script.name} must `set -euo pipefail`"
+
+
+def test_scripts_parse_under_bash_n() -> None:
+    """Every script parses without executing — catches syntax breakage."""
+    bash = shutil.which("bash")
+    assert bash, "bash not found (required to validate the bootstrap scripts)"
+    for script in SCRIPTS:
+        proc = subprocess.run([bash, "-n", str(script)], capture_output=True, text=True)
+        assert proc.returncode == 0, f"{script.name} fails bash -n:\n{proc.stderr}"
+
+
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck absent")
+def test_scripts_lint_clean() -> None:
+    """Deeper static safety when shellcheck is available."""
+    for script in SCRIPTS:
+        proc = subprocess.run(["shellcheck", str(script)], capture_output=True, text=True)
+        assert proc.returncode == 0, f"{script.name} shellcheck findings:\n{proc.stdout}"
+
+
+def test_scripts_have_no_hardcoded_identity_or_secret() -> None:
+    """No GUID, personal path, or repository-owner literal lives in any script —
+    identity is resolved at run time and secrets arrive through the environment.
+    """
+    owner = _git_owner()
+    for script in SCRIPTS:
+        text = _text(script)
+        assert not _GUID_RE.search(text), f"{script.name} hardcodes a GUID; resolve it at run time"
+        assert "/Users/" not in text, f"{script.name} hardcodes a personal path"
+        if owner:
+            assert owner.lower() not in text.lower(), (
+                f"{script.name} hardcodes the repository owner"
+            )
+
+
+def test_entra_script_is_idempotent_lookup_then_create() -> None:
+    """The Entra script looks up an existing registration before creating one
+    and guards the create with an emptiness test, so a re-run reconciles rather
+    than duplicating, and it grants admin consent.
+    """
+    text = _text(ENTRA)
+    assert "az ad app list" in text, "entra script must look up existing registrations first"
+    assert "az ad app create" in text, "entra script must create the registrations"
+    assert text.index("az ad app list") < text.index("az ad app create"), (
+        "entra script must look up before creating (idempotent guard)"
+    )
+    assert re.search(r"if\s+\[\s+-z\s+", text), (
+        "entra script must guard the create with an emptiness test (lookup-then-create)"
+    )
+    assert "az ad app permission admin-consent" in text, "entra script must grant admin consent"
+
+
+def test_entra_script_emits_parameter_coordinates() -> None:
+    """The Entra script emits the ``sageAudience`` and ``bffOidcClientId`` it
+    produced, so the operator feeds them straight into the parameter set instead
+    of hand-copying GUIDs.
+    """
+    # Anchor on the emit statements, not prose: a header comment that *mentions*
+    # the coordinates must not let a script that never emits them pass.
+    echoed = "\n".join(
+        line.strip() for line in _text(ENTRA).splitlines() if line.lstrip().startswith("echo")
+    )
+    assert "sageAudience" in echoed and "api://" in echoed, (
+        "entra script must echo the sageAudience coordinate (api://<app-id>)"
+    )
+    assert "bffOidcClientId" in echoed, "entra script must echo the bffOidcClientId coordinate"
+
+
+def test_kv_secrets_script_reads_secrets_from_env_not_args() -> None:
+    """Every secret and certificate password the Key Vault loader passes is an
+    environment-variable expansion, never a literal, and the variables are
+    ``unset`` after use.
+    """
+    text = _text(KEY_VAULT)
+    expansions = list(re.finditer(r"--(?:value|password)\s+(\S+)", text))
+    assert expansions, "load script must pass secret material via --value/--password"
+    for match in expansions:
+        token = match.group(1)
+        assert token.startswith('"$') or token.startswith("$"), (
+            f"secret material must be an env-var expansion, not a literal: {token!r}"
+        )
+    # Anchor on the unset statements, not the prose that describes them.
+    unset_stmts = [line for line in text.splitlines() if line.lstrip().startswith("unset ")]
+    assert unset_stmts, "secret env vars must be unset after use"
+
+
+def test_kv_secrets_script_loads_the_three_artifacts() -> None:
+    """The loader sets the two secrets and imports the wildcard certificate,
+    under the fixed names the Key Vault module's outputs pin.
+    """
+    text = _text(KEY_VAULT)
+    assert "anthropic-api-key" in text, "loader must set anthropic-api-key"
+    assert "bff-client-secret" in text, "loader must set bff-client-secret"
+    assert "wildcard-tls" in text, "loader must import the wildcard-tls certificate"
+    assert "keyvault certificate import" in text, "loader must use certificate import"
+    assert text.count("keyvault secret set") >= 2, "loader must set both secrets"
+
+
+def test_vault_seed_script_grants_and_seeds() -> None:
+    """The vault-seed script grants the site-scoped Microsoft Graph permission
+    and seeds the committed test-vault config into the document library, with no
+    site/drive GUID baked in (CAS-ADR-043).
+    """
+    text = _text(VAULT_SEED)
+    assert "Sites.Selected" in text, "seed script must assign the Sites.Selected app role"
+    assert "appRoleAssignments" in text, "seed script must POST the app-role assignment"
+    assert "/permissions" in text, "seed script must grant the per-site write permission"
+    # Anchor the seed upload on its command lines, not the prose that describes
+    # it: a comment mentioning the config path or :/content must not pass alone.
+    body_lines = [line for line in text.splitlines() if "--body" in line]
+    uri_lines = [line for line in text.splitlines() if "--uri" in line]
+    assert any("deploy/test-vault/vault_config.yaml" in line for line in body_lines), (
+        "seed script must PUT the committed test-vault config as the request body"
+    )
+    assert any(":/content" in line for line in uri_lines), (
+        "seed upload uri must target :/content (create-or-replace)"
+    )
+    assert not _GUID_RE.search(text), "seed script hardcodes a GUID; resolve site/drive at run time"
+
+
+def test_vault_seed_script_is_idempotent() -> None:
+    """The seed upload is create-or-replace and the script tolerates a
+    pre-existing grant, so a re-run converges.
+    """
+    text = _text(VAULT_SEED)
+    uri_lines = [line for line in text.splitlines() if "--uri" in line]
+    assert any(":/content" in line for line in uri_lines), (
+        "seed upload must be the create-or-replace :/content PUT"
+    )
+    assert "|| true" in text, "seed script must tolerate an already-present grant on re-run"
+
+
+def test_dns_script_emits_all_three_records() -> None:
+    """The DNS emitter prints the two CNAMEs and the domain-verification TXT —
+    dropping the ``asuid`` TXT would silently break ownership proof.
+    """
+    # Anchor on the echo statements that actually emit records, not the header
+    # comment that describes them.
+    echoed = "\n".join(
+        line.strip().lower() for line in _text(DNS).splitlines() if line.lstrip().startswith("echo")
+    )
+    assert "cname" in echoed, "DNS script must echo CNAME records"
+    assert "txt" in echoed, "DNS script must echo the verification TXT record"
+    assert "asuid" in echoed, "DNS script must echo the asuid domain-ownership TXT"
+
+
+def test_dns_script_is_provider_agnostic() -> None:
+    """The emitter calls no DNS-provider API: it computes records for the
+    operator to publish in whatever provider the tenant uses.
+    """
+    lowered = _text(DNS).lower()
+    for token in _DNS_PROVIDER_TOKENS:
+        assert not re.search(token, lowered), (
+            f"DNS script must not call a DNS-provider API (matched {token!r})"
+        )
+
+
+def test_dns_script_resolves_coordinates_at_runtime() -> None:
+    """Hostnames come from deployment outputs, not literals — so the emitter
+    carries no tenant FQDN or GUID of its own.
+    """
+    text = _text(DNS)
+    assert ("az deployment sub show" in text) or ("az containerapp show" in text), (
+        "DNS script must resolve hosts from deployment outputs"
+    )
+    assert not _GUID_RE.search(text), "DNS script hardcodes a GUID"
+
+
+def test_staged_ordering_doc_sequences_the_bringup() -> None:
+    """The staged-ordering doc references the four scripts in bring-up order and
+    names the terminal preflight stage — making the staged ordering explicit
+    rather than discovered by repeated re-runs.
+    """
+    assert STAGES_DOC.is_file(), "docs/process/cloud-deploy-stages.md missing"
+    text = STAGES_DOC.read_text(encoding="utf-8")
+    refs = []
+    for script in (ENTRA, KEY_VAULT, VAULT_SEED, DNS):
+        rel = f"deploy/bootstrap/{script.name}"
+        assert rel in text, f"staged-ordering doc must reference {rel}"
+        refs.append(text.index(rel))
+    assert refs == sorted(refs), (
+        "scripts must appear in bring-up stage order: entra, key-vault, vault-seed, dns"
+    )
+    assert "preflight" in text.lower(), "staged-ordering doc must name the preflight stage"
+
+
+def test_runbooks_point_to_their_scripts() -> None:
+    """Each runbook points to its codified script — the script is the executable
+    substance, the runbook documents it (Cloud Deployment Discipline, Principle 3).
+    """
+    for runbook, script in _RUNBOOK_TO_SCRIPT.items():
+        text = (PROCESS_DIR / runbook).read_text(encoding="utf-8")
+        assert f"deploy/bootstrap/{script}" in text, (
+            f"{runbook} must point to its codified script deploy/bootstrap/{script}"
+        )

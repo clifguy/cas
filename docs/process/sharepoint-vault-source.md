@@ -16,6 +16,8 @@ non-secret coordinates (`sharepointSiteId`, `sharepointDriveId`,
 `vaultSourceRootPath`), threaded into the SAGE cloud config by the container-apps
 module.
 
+**Codified as [`deploy/bootstrap/seed-vault-source.sh`](../../deploy/bootstrap/seed-vault-source.sh).** That script is the executable substance of this procedure (CAS Cloud Deployment Discipline, Principle 3); this runbook documents it.
+
 ## Why a runbook, not Bicep
 
 The Microsoft Graph application-permission grant — the `Sites.Selected`

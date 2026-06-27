@@ -24,6 +24,8 @@ registrations matter only to the `cloud` profile.
 > so a re-run reconciles rather than duplicates. They physically exist only after
 > this procedure is run; the repo artifact is the procedure itself.
 
+**Codified as [`deploy/bootstrap/entra-app-registrations.sh`](../../deploy/bootstrap/entra-app-registrations.sh).** That script is the executable substance of this procedure (CAS Cloud Deployment Discipline, Principle 3); this runbook documents it.
+
 ## Chosen approach: scripted `az`/Microsoft Graph, not Bicep
 
 These registrations are provisioned by the scripted **`az ad`/`az rest`
