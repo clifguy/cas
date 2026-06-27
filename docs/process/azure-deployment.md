@@ -191,6 +191,42 @@ ACR_ID="$(az acr show --name "${ACR_LOGIN_SERVER%%.*}" --query id -o tsv)"
 az role assignment create --assignee "$APP_ID" --role AcrPush --scope "$ACR_ID"
 ```
 
+## Post-deploy preflight gate
+
+Every deploy is gated by an automated preflight (CAS-ADR-042): after the stack
+is applied, [`deploy/cloud-preflight.sh`](../../deploy/cloud-preflight.sh) probes
+the live tenant and checks **every layer independently** — edge routing
+(unauthenticated OAuth discovery `200`, unauthenticated `/mcp` `401`, an
+authenticated request reaching the backend), SAGE liveness and vault-load count,
+Postgres-backed retrieval, Key Vault secret resolution, provider-agnostic DNS
+resolution, and SharePoint vault-source reachability — emitting a single
+pass/fail matrix that names every failing layer. Each check carries an
+anti-coincidental control (a `401`, for instance, is credited only when the
+discovery-`200` control proves the edge is genuinely live, not a blanket edge
+failure that makes everything look "as predicted"). It **reports; it never
+fixes** — a verification artifact, not a deploy step.
+
+The harness is tenant-parameterized — no environment-specific value is baked in.
+Supply the tenant's public host and an operator-obtained bearer token by
+environment; the probe never mints a token of its own:
+
+```bash
+AUTH_TOKEN="$(az account get-access-token \
+  --resource "$SAGE_AUDIENCE" --query accessToken -o tsv)" \
+  BASE_DOMAIN=example.org \
+  PREFLIGHT_EXPECTED_VAULTS=cas \
+  PREFLIGHT_VAULT_SOURCE=document_store \
+  deploy/cloud-preflight.sh
+```
+
+`SAGE_FQDN`/`CAS_FQDN` default to `sage.<BASE_DOMAIN>`/`cas.<BASE_DOMAIN>`; the
+DNS verification record and Key Vault wildcard certificate are checked against
+`BASE_DOMAIN`. Run `deploy/cloud-preflight.sh --dry-run` to print the full check
+inventory (each check's prediction and its anti-coincidental control) without
+touching the network; the script header documents every parameter and seam. A
+non-zero exit means at least one layer failed — read the matrix, fix the layer,
+redeploy, and re-run.
+
 ## Adding an environment
 
 The scaffold models a single cloud environment. To add another:
@@ -200,3 +236,6 @@ The scaffold models a single cloud environment. To add another:
 2. Add a matching GitHub environment and a federated credential whose
    subject is `repo:<OWNER>/<REPO>:environment:<env>`.
 3. Extend the workflow to select the new `.bicepparam` for that environment.
+4. After the first deploy, run the [post-deploy preflight
+   gate](#post-deploy-preflight-gate) against the new tenant and confirm every
+   layer passes before treating the environment as live.
