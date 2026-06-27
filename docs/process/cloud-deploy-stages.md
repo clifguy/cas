@@ -15,6 +15,15 @@ ordering it encodes. Authority: CAS-ADR-042 (deployment profiles), CAS-ADR-043
 document. Per that discipline, operational provisioning is idempotent code, and
 every stage below re-runs without corruption.
 
+**What CI runs versus the manual floor.** A single operator-triggered dispatch of
+the `infra` workflow (see [`azure-deployment.md`](azure-deployment.md)) carries
+out **Stage 1 (provision + bootstrap job), Stage 3 (converge), and Stage 5
+(preflight)** end to end for the selected tenant. **Stages 0, 2, and 4** — the
+Entra registrations, the secret/vault-source seed, and the DNS publication —
+remain the irreducible manual floor: they need directory rights or a tenant DNS
+provider, so an operator runs them and folds the coordinates they emit into the
+tenant's Environment variables.
+
 ## Why ordering is explicit
 
 The dependency edges that force the sequence:
@@ -49,11 +58,13 @@ emitted coordinates and the remaining tenant values.
 ### Stage 1 — Infrastructure deployment
 
 `az deployment sub create` against `infra/main.bicep` with the tenant parameter
-set. This provisions the resource group, network, identities, Key Vault,
-Postgres, APIM, the container apps, and the custom-domain certificate binding.
-The in-VNet Postgres role/schema bootstrap runs as part of this deployment (it is
-data-plane SQL that cannot be declared as ARM). The deployment is idempotent;
-re-running reconciles.
+set (supplied inline by CI from the Environment's variables). This provisions the
+resource group, network, identities, Key Vault, Postgres, APIM, the container
+apps, and the custom-domain certificate binding. The in-VNet Postgres role/schema
+bootstrap is data-plane SQL that cannot be declared as ARM, so the deployment
+declares it as an idempotent Container Apps job and CI **starts that job and waits
+for it** as part of this stage. The deployment is idempotent; re-running
+reconciles.
 
 ### Stage 2 — Post-deploy seed (secrets and vault source)
 
@@ -71,10 +82,11 @@ and redeploy Stage 1 so the SAGE config binds the document-store vault source.
 
 ### Stage 3 — Convergence
 
-Roll (or restart) the container apps so they pick up the loaded secrets and
-self-bootstrap their database schema over their managed-identity connections. The
-apps fail closed with a clear error if a required secret is missing, so an
-unseeded vault surfaces immediately rather than degrading silently.
+CI restarts each container app's active revision so they pick up the loaded
+secrets and self-bootstrap their database schema over their managed-identity
+connections — now possible because Stage 1 created their database roles. The apps
+fail closed with a clear error if a required secret is missing, so an unseeded
+vault surfaces immediately rather than degrading silently.
 
 ### Stage 4 — DNS publication (provider-agnostic, manual)
 
@@ -90,11 +102,12 @@ container ingress serves `cas`, each over the wildcard certificate.
 
 ### Stage 5 — Preflight
 
-A single preflight probe checks every layer — edge routing, authentication,
-storage, secrets, vault load, source store — and reports all failures at once,
-each paired with an anti-coincidental control. Serial discovery of one broken
-layer per redeploy is the failure mode the staged ordering and the preflight
-exist to kill.
+CI runs a single preflight probe (`deploy/cloud-preflight.sh`) that checks every
+layer — edge routing, authentication, storage, secrets, vault load, source
+store — and reports all failures at once, each paired with an anti-coincidental
+control; a non-zero exit fails the deploy. Serial discovery of one broken layer
+per redeploy is the failure mode the staged ordering and the preflight exist to
+kill.
 
 ## Re-running
 

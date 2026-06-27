@@ -354,6 +354,21 @@ def test_outputs_expose_sage_fqdn_and_no_secrets() -> None:
         assert not _GUID_RE.search(rhs), f"output {name} exposes a literal GUID: {rhs}"
 
 
+def test_module_exports_container_app_names() -> None:
+    """The module exposes both container-app resource names so the deploy pipeline
+    can converge (restart) each app by name after the in-VNet bootstrap job runs.
+    """
+    outputs = dict(_output_lines(CONTAINER_APPS.read_text(encoding="utf-8")))
+    assert "sageContainerAppName" in outputs, "module must output sageContainerAppName"
+    assert "bffContainerAppName" in outputs, "module must output bffContainerAppName"
+    assert outputs["sageContainerAppName"] == "sageApp.name", (
+        f"sageContainerAppName must be the SAGE app name; got {outputs['sageContainerAppName']!r}"
+    )
+    assert outputs["bffContainerAppName"] == "bffApp.name", (
+        f"bffContainerAppName must be the BFF app name; got {outputs['bffContainerAppName']!r}"
+    )
+
+
 def test_no_hardcoded_identity_guid() -> None:
     """No subscription/tenant/principal GUID is baked into the module — identity
     coordinates arrive as parameters. The only literal GUID allowed is the public

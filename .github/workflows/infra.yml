@@ -1,34 +1,52 @@
 name: infra
 
+# The authoritative cloud deploy path (CAS-ADR-042; the CAS Cloud Deployment
+# Discipline). Deploys run from committed code through CI. A deploy is
+# operator-triggered and parameterized per tenant via GitHub Environments: the
+# operator dispatches the workflow and selects the tenant's Environment, which
+# carries that tenant's federated deploy identity and its parameter set. The
+# deploy job then orchestrates the full staged bring-up end to end — build/push,
+# a what-if gate, the Bicep apply, the in-VNet Postgres bootstrap job, app-tier
+# convergence, and the post-deploy preflight — so multi-pass convergence is
+# handled by CI rather than by an operator re-running deploys.
 on:
   pull_request:
     paths:
       - 'infra/**'
       - '.github/workflows/infra.yml'
+      - '.github/workflows/build-images.yml'
   push:
     branches: [main]
     paths:
       - 'infra/**'
       - '.github/workflows/infra.yml'
+      - '.github/workflows/build-images.yml'
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Tenant GitHub Environment to deploy (carries its deploy identity + parameter set).
+        type: environment
+        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Serialize deploys to the same tenant; let different tenants run in parallel.
+  # Never cancel an in-flight deploy.
+  group: ${{ github.workflow }}-${{ inputs.environment || github.ref }}
+  cancel-in-progress: false
 
-# OIDC: the deploy identity is a Microsoft Entra workload identity federated
-# to this repository's GitHub OIDC token. No client secret is stored. The
-# id-token write permission lets the workflow request that token.
+# OIDC: the deploy identity is a Microsoft Entra workload identity federated to
+# this repository's GitHub OIDC token. No client secret is stored. The id-token
+# write permission lets the workflow request that token.
 permissions:
   contents: read
   id-token: write
 
 jobs:
   validate:
-    # Compile + lint the Bicep. Needs no Azure credentials, so it runs on
-    # every infra change and is the authoritative compile gate (bicepconfig
-    # rules at error level fail the build). az is preinstalled on the runner;
-    # `az bicep build` installs the Bicep CLI on first use.
+    # Compile + lint the Bicep. Needs no Azure credentials, so it runs on every
+    # infra change and is the authoritative compile gate (bicepconfig rules at
+    # error level fail the build). az is preinstalled on the runner; `az bicep
+    # build` installs the Bicep CLI on first use.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -36,48 +54,149 @@ jobs:
       - name: Build and lint Bicep
         run: az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/main.json"
 
-  what-if:
-    # Preview the deployment on pull requests. Dormant until the federated
-    # deploy identity is configured (the AZURE_CLIENT_ID repository
-    # variable); see docs/process/azure-deployment.md for the one-time
-    # bootstrap. Identity coordinates are repository variables, not secrets.
+  build:
+    # Build both images from the committed commit and push the immutable
+    # {version}-{short-sha} tag to the selected tenant's registry, via the shared
+    # reusable build workflow (single source of the build that the CI gate also
+    # uses). Only on an operator-triggered deploy; the push is itself dormant
+    # until the tenant's registry coordinate is configured.
     needs: validate
-    if: github.event_name == 'pull_request' && vars.AZURE_CLIENT_ID != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: azure/login@v3
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Deployment what-if
-        run: |
-          az deployment sub what-if \
-            --location eastus2 \
-            --template-file infra/main.bicep \
-            --parameters infra/main.bicepparam
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/build-images.yml
+    with:
+      push: true
+      environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
 
   deploy:
-    # Apply the deployment. Gated behind the azure-prod environment (manual
-    # approval / required reviewer) and dormant until the deploy identity is
-    # configured. Runs on pushes to main and manual dispatch, never on a PR.
-    needs: validate
-    if: github.event_name != 'pull_request' && vars.AZURE_CLIENT_ID != ''
+    # Apply the deployment and converge the tenant. Bound to the dispatch-selected
+    # tenant Environment (its required reviewer is the approval gate; its
+    # environment-scoped variables carry the deploy identity and the parameter
+    # set). Dormant until the deploy identity is configured. Never runs on a PR.
+    needs: [validate, build]
+    if: github.event_name == 'workflow_dispatch' && vars.AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: azure-prod
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+    env:
+      # The tenant's parameter set — every coordinate is an environment-scoped
+      # GitHub variable supplied at deploy time, never committed to the repo.
+      ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}
+      LOCATION: ${{ vars.LOCATION }}
+      RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+      SAGE_AUDIENCE: ${{ vars.SAGE_AUDIENCE }}
+      PUBLISHER_EMAIL: ${{ vars.PUBLISHER_EMAIL }}
+      BFF_OIDC_CLIENT_ID: ${{ vars.BFF_OIDC_CLIENT_ID }}
+      BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+      POSTGRES_AAD_ADMIN_OBJECT_ID: ${{ vars.POSTGRES_AAD_ADMIN_OBJECT_ID }}
+      POSTGRES_AAD_ADMIN_PRINCIPAL_NAME: ${{ vars.POSTGRES_AAD_ADMIN_PRINCIPAL_NAME }}
+      SHAREPOINT_SITE_ID: ${{ vars.SHAREPOINT_SITE_ID }}
+      SHAREPOINT_DRIVE_ID: ${{ vars.SHAREPOINT_DRIVE_ID }}
+      PREFLIGHT_EXPECTED_VAULTS: ${{ vars.PREFLIGHT_EXPECTED_VAULTS }}
+      PREFLIGHT_VAULT_SOURCE: ${{ vars.PREFLIGHT_VAULT_SOURCE }}
+      IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v7
+
       - uses: azure/login@v3
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Deploy
+
+      - name: What-if gate (preview; blocks on a Bicep error)
+        # A malformed template fails what-if non-zero, so this gates the apply.
+        run: |
+          az deployment sub what-if \
+            --location "$LOCATION" \
+            --template-file infra/main.bicep \
+            --parameters \
+              environmentName="$ENVIRONMENT_NAME" \
+              location="$LOCATION" \
+              resourceGroupName="$RESOURCE_GROUP_NAME" \
+              sageAudience="$SAGE_AUDIENCE" \
+              publisherEmail="$PUBLISHER_EMAIL" \
+              imageTag="$IMAGE_TAG" \
+              bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
+              baseDomain="$BASE_DOMAIN" \
+              postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
+              postgresAadAdminPrincipalName="$POSTGRES_AAD_ADMIN_PRINCIPAL_NAME" \
+              sharepointSiteId="$SHAREPOINT_SITE_ID" \
+              sharepointDriveId="$SHAREPOINT_DRIVE_ID"
+
+      - name: Deploy (Bicep apply)
         run: |
           az deployment sub create \
-            --location eastus2 \
+            --name "$ENVIRONMENT_NAME" \
+            --location "$LOCATION" \
             --template-file infra/main.bicep \
-            --parameters infra/main.bicepparam
+            --parameters \
+              environmentName="$ENVIRONMENT_NAME" \
+              location="$LOCATION" \
+              resourceGroupName="$RESOURCE_GROUP_NAME" \
+              sageAudience="$SAGE_AUDIENCE" \
+              publisherEmail="$PUBLISHER_EMAIL" \
+              imageTag="$IMAGE_TAG" \
+              bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
+              baseDomain="$BASE_DOMAIN" \
+              postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
+              postgresAadAdminPrincipalName="$POSTGRES_AAD_ADMIN_PRINCIPAL_NAME" \
+              sharepointSiteId="$SHAREPOINT_SITE_ID" \
+              sharepointDriveId="$SHAREPOINT_DRIVE_ID"
+
+      - name: Run the in-VNet Postgres bootstrap job
+        # The bootstrap job creates the application managed-identity database roles
+        # and pre-creates the extensions from inside the VNet (the server has no
+        # public endpoint). It must complete before the apps can connect, so start
+        # it and wait. Idempotent: a re-run reconciles.
+        run: |
+          set -euo pipefail
+          BOOTSTRAP_JOB="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
+            --query properties.outputs.bootstrapJobName.value -o tsv)"
+          EXECUTION="$(az containerapp job start \
+            --name "$BOOTSTRAP_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+            --query name -o tsv)"
+          echo "Started bootstrap job execution: $EXECUTION"
+          for _ in $(seq 1 60); do
+            STATUS="$(az containerapp job execution show \
+              --name "$BOOTSTRAP_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
+              --job-execution-name "$EXECUTION" --query properties.status -o tsv)"
+            echo "bootstrap job status: $STATUS"
+            case "$STATUS" in
+              Succeeded) break ;;
+              Failed|Degraded|Stopped) echo "bootstrap job did not succeed: $STATUS"; exit 1 ;;
+            esac
+            sleep 10
+          done
+
+      - name: Converge the app tier
+        # Restart each app's active revision so it re-runs schema self-bootstrap now
+        # that its database role exists and pulls the just-deployed image + secrets.
+        run: |
+          set -euo pipefail
+          SAGE_APP="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
+            --query properties.outputs.sageContainerAppName.value -o tsv)"
+          BFF_APP="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
+            --query properties.outputs.bffContainerAppName.value -o tsv)"
+          for app in "$SAGE_APP" "$BFF_APP"; do
+            ACTIVE="$(az containerapp revision list \
+              --name "$app" --resource-group "$RESOURCE_GROUP_NAME" \
+              --query "[?properties.active].name | [0]" -o tsv)"
+            az containerapp revision restart \
+              --name "$app" --resource-group "$RESOURCE_GROUP_NAME" --revision "$ACTIVE"
+          done
+
+      - name: Post-deploy preflight gate
+        # A single probe checks every layer independently and fails the deploy if
+        # any layer is down. The bearer token is minted out of band here from the
+        # deploy identity; the probe never mints its own.
+        run: |
+          set -euo pipefail
+          AUTH_TOKEN="$(az account get-access-token \
+            --resource "$SAGE_AUDIENCE" --query accessToken -o tsv)" \
+            BASE_DOMAIN="$BASE_DOMAIN" \
+            PREFLIGHT_EXPECTED_VAULTS="$PREFLIGHT_EXPECTED_VAULTS" \
+            PREFLIGHT_VAULT_SOURCE="$PREFLIGHT_VAULT_SOURCE" \
+            deploy/cloud-preflight.sh

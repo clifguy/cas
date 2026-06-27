@@ -2,18 +2,19 @@
 
 The CAS cloud deployment profile (CAS-ADR-042) is provisioned with Bicep
 under [`infra/`](../../infra/) and deployed by the
-[`infra`](../../.github/workflows/infra.yml) GitHub Actions workflow. This
-runbook is the deployment entry point: the `az deployment` invocation and
-parameter conventions, plus the one-time identity bootstrap the workflow
-depends on.
+[`infra`](../../.github/workflows/infra.yml) GitHub Actions workflow. Deploys
+run from committed code through CI: an operator triggers the workflow and selects
+the target tenant, and the run carries out the full staged bring-up. This runbook
+is the deployment entry point and the one-time per-tenant setup the workflow
+depends on. The staged ordering the run encodes is in
+[`cloud-deploy-stages.md`](cloud-deploy-stages.md).
 
 The orchestrator [`infra/main.bicep`](../../infra/main.bicep) targets the
-**subscription** scope: it creates the resource group and (as modules land)
-deploys each hosting-environment module into it. Until the deploy identity
-is bootstrapped, the workflow's `validate` job (Bicep compile + lint) runs
-on every change, while the `what-if` and `deploy` jobs stay **dormant** —
-they are gated on the `AZURE_CLIENT_ID` repository variable and are skipped
-until it is set.
+**subscription** scope: it creates the resource group and deploys each
+hosting-environment module into it. The workflow's `validate` job (Bicep compile
++ lint) runs on every change; the `build` and `deploy` jobs run only on an
+operator-triggered dispatch and stay **dormant** until the selected tenant's
+deploy identity is configured (they are gated on its `AZURE_CLIENT_ID` variable).
 
 The *deploy* identity bootstrapped below is distinct from the *runtime* auth
 identities. The Entra app registrations the cloud profile authenticates with —
@@ -21,82 +22,96 @@ SAGE as an OAuth resource server and the CAS BFF as a confidential client — ar
 a separate one-time bootstrap documented in
 [`entra-app-registrations.md`](entra-app-registrations.md).
 
+## Per-tenant parameterization
+
+One tenant = one parameter set (the CAS Cloud Deployment Discipline). Everything
+tenant-specific — the tenant and subscription identifiers, the deploy-identity
+client id, the resource group, region, domain, audiences, object ids, and
+document-library coordinates — is **configuration carried by the tenant's GitHub
+Environment**, never code. Identity GUIDs and secrets stay out of the repository
+and are supplied at deploy time. [`infra/main.bicepparam.example`](../../infra/main.bicepparam.example)
+documents the full parameter surface; the deploy supplies each value from an
+environment-scoped variable. Adding a tenant is authoring an Environment and its
+variable set, not editing the stack.
+
 ## Deployment entry point
 
-Parameters live in `.bicepparam` files next to the orchestrator. The single
-environment today is [`infra/main.bicepparam`](../../infra/main.bicepparam);
-a second environment is a copy named `main.<env>.bicepparam` selected by the
-workflow.
+The authoritative deploy is **operator-triggered, per tenant, from committed
+code**. From the repository's **Actions → infra → Run workflow**, select the
+tenant's GitHub Environment and run it. The pipeline then, in order: builds and
+pushes that tenant's images (version baked), runs a what-if gate, applies the
+Bicep, starts and waits on the in-VNet Postgres bootstrap job, converges the app
+tier, and runs the post-deploy preflight. Re-triggering is the convergence
+vehicle — every stage is idempotent — so a multi-pass bring-up is re-running the
+workflow, not hand-running deploys.
 
-Subscription-scope deployments require a `--location` (it records the
-deployment metadata; the resource group's own region is the `location`
-parameter). Keep the `--location` flag in step with the `location` set in
-the `.bicepparam`.
+The PR and push-to-`main` runs are **validate-only** (`az bicep build`); the
+apply happens only on dispatch, gated behind the selected Environment's required
+reviewer.
+
+The break-glass fallback — a manual apply from a clean checkout, not a
+hand-patched working copy — runs the same template directly, passing the same
+parameters inline from the tenant's values:
 
 ```bash
-# Preview (no changes applied):
-az deployment sub what-if \
-  --location eastus2 \
-  --template-file infra/main.bicep \
-  --parameters infra/main.bicepparam
-
-# Apply:
 az deployment sub create \
-  --location eastus2 \
+  --name "$ENVIRONMENT_NAME" \
+  --location "$LOCATION" \
   --template-file infra/main.bicep \
-  --parameters infra/main.bicepparam
+  --parameters \
+    environmentName="$ENVIRONMENT_NAME" \
+    location="$LOCATION" \
+    resourceGroupName="$RESOURCE_GROUP_NAME" \
+    sageAudience="$SAGE_AUDIENCE" \
+    publisherEmail="$PUBLISHER_EMAIL" \
+    imageTag="$IMAGE_TAG" \
+    bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
+    baseDomain="$BASE_DOMAIN"
 ```
 
-The workflow runs `what-if` on pull requests and `create` on pushes to
-`main` (and manual dispatch), the apply gated behind the `azure-prod`
-environment's required reviewer.
+Subscription-scope deployments require a `--location` (it records the deployment
+metadata; the resource group's own region is the `location` parameter). Keep the
+`--location` flag in step with the `location` value.
 
-## One-time identity bootstrap
+## Per-tenant setup (one-time)
 
-The CI deploy identity is a Microsoft Entra workload identity federated to
-this repository's GitHub OIDC token — there is **no stored client secret**.
-The identity cannot be created by the very pipeline that needs it, so this
-bootstrap is run once, by hand, in your Azure tenant. Resolve the repository
-slug dynamically rather than hardcoding it:
+Run once per tenant by an operator with directory rights, before that tenant's
+first deploy. Resolve the repository slug dynamically rather than hardcoding it,
+and pick the Environment name you will deploy under:
 
 ```bash
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"   # <OWNER>/<REPO>
+ENVIRONMENT="<env>"             # the tenant's GitHub Environment name
 SUBSCRIPTION_ID="<SUBSCRIPTION_ID>"
 ```
 
 ### 1. Create the Entra application
 
+The CI deploy identity is a Microsoft Entra workload identity federated to this
+repository's GitHub OIDC token — there is **no stored client secret**. It cannot
+be created by the pipeline that needs it, so create it once by hand in the
+tenant's directory:
+
 ```bash
-APP_ID="$(az ad app create --display-name cas-deploy --query appId -o tsv)"
+APP_ID="$(az ad app create --display-name "cas-deploy-${ENVIRONMENT}" --query appId -o tsv)"
 az ad sp create --id "$APP_ID"
 ```
 
-### 2. Add the federated credentials
+### 2. Add the federated credential
 
-Two subjects: one for the pull-request `what-if`, one for the
-environment-gated deploy. Both are templated to the resolved slug — never a
-literal owner/repo pair.
+One subject, for the environment-gated deploy, templated to the resolved slug and
+the Environment name — never a literal owner/repo pair:
 
 ```bash
 az ad app federated-credential create --id "$APP_ID" --parameters "{
-  \"name\": \"github-pull-request\",
+  \"name\": \"github-environment-${ENVIRONMENT}\",
   \"issuer\": \"https://token.actions.githubusercontent.com\",
-  \"subject\": \"repo:${REPO}:pull_request\",
-  \"audiences\": [\"api://AzureADTokenExchange\"]
-}"
-
-az ad app federated-credential create --id "$APP_ID" --parameters "{
-  \"name\": \"github-environment-azure-prod\",
-  \"issuer\": \"https://token.actions.githubusercontent.com\",
-  \"subject\": \"repo:${REPO}:environment:azure-prod\",
+  \"subject\": \"repo:${REPO}:environment:${ENVIRONMENT}\",
   \"audiences\": [\"api://AzureADTokenExchange\"]
 }"
 ```
 
-The two subjects, shown as placeholders, are:
-
-- `repo:<OWNER>/<REPO>:pull_request`
-- `repo:<OWNER>/<REPO>:environment:azure-prod`
+The subject, shown as a placeholder, is `repo:<OWNER>/<REPO>:environment:<env>`.
 
 ### 3. Assign the deployment roles
 
@@ -126,52 +141,75 @@ az role assignment create \
   --scope "/subscriptions/${SUBSCRIPTION_ID}"
 ```
 
-### 4. Set the repository variables
+### 4. Create the Environment and set its variables
 
-These are repository **variables**, not secrets — they are non-sensitive
-identifiers, and the workflow's dormant-job gate reads `AZURE_CLIENT_ID`.
+In the repository's **Settings → Environments**, create an environment named
+`${ENVIRONMENT}` and add yourself as a required reviewer; the `deploy` job binds
+this environment, so every apply waits for your approval, and its name must match
+the federated subject from step 2.
+
+Then set the tenant's parameter set as **environment-scoped variables** (not
+secrets — these are non-sensitive identifiers — and not repository-wide, so each
+tenant's set is isolated). The deploy identity and the Bicep parameters all live
+here:
 
 ```bash
 TENANT_ID="$(az account show --query tenantId -o tsv)"
-gh variable set AZURE_CLIENT_ID --body "$APP_ID"
-gh variable set AZURE_TENANT_ID --body "$TENANT_ID"
-gh variable set AZURE_SUBSCRIPTION_ID --body "$SUBSCRIPTION_ID"
+gh variable set AZURE_CLIENT_ID       --env "$ENVIRONMENT" --body "$APP_ID"
+gh variable set AZURE_TENANT_ID       --env "$ENVIRONMENT" --body "$TENANT_ID"
+gh variable set AZURE_SUBSCRIPTION_ID --env "$ENVIRONMENT" --body "$SUBSCRIPTION_ID"
+
+# Bicep parameter set (one value per tenant coordinate):
+gh variable set ENVIRONMENT_NAME      --env "$ENVIRONMENT" --body "<environmentName>"
+gh variable set LOCATION              --env "$ENVIRONMENT" --body "<region>"
+gh variable set RESOURCE_GROUP_NAME   --env "$ENVIRONMENT" --body "<resourceGroupName>"
+gh variable set SAGE_AUDIENCE         --env "$ENVIRONMENT" --body "<api://sage-app-id>"
+gh variable set PUBLISHER_EMAIL       --env "$ENVIRONMENT" --body "<ops@example.org>"
+gh variable set BFF_OIDC_CLIENT_ID    --env "$ENVIRONMENT" --body "<bff-client-id>"
+gh variable set BASE_DOMAIN           --env "$ENVIRONMENT" --body "<example.org>"
+# Optional coordinates (set once the bootstrap scripts emit them):
+gh variable set POSTGRES_AAD_ADMIN_OBJECT_ID      --env "$ENVIRONMENT" --body "<object-id>"
+gh variable set POSTGRES_AAD_ADMIN_PRINCIPAL_NAME --env "$ENVIRONMENT" --body "<principal-name>"
+gh variable set SHAREPOINT_SITE_ID    --env "$ENVIRONMENT" --body "<site-id>"
+gh variable set SHAREPOINT_DRIVE_ID   --env "$ENVIRONMENT" --body "<drive-id>"
+# Preflight expectations:
+gh variable set PREFLIGHT_EXPECTED_VAULTS --env "$ENVIRONMENT" --body "cas"
+gh variable set PREFLIGHT_VAULT_SOURCE    --env "$ENVIRONMENT" --body "document_store"
 ```
 
-### 5. Create the approval environment
+Once the deploy identity variables are in place the `build` and `deploy` jobs
+activate on the next dispatch, and the first run provisions the resource group —
+exercising the full GitHub-OIDC → Entra workload-identity → `az deployment` chain
+end to end.
 
-In the repository's **Settings → Environments**, create an environment named
-`azure-prod` and add yourself as a required reviewer. The `deploy` job binds
-this environment, so every apply waits for your approval. The environment's
-name must match the federated subject from step 2.
+## Container images and the ACR push
 
-Once these are in place the `what-if` and `deploy` jobs activate on the next
-run, and the first `az deployment sub create` provisions the resource group
-— exercising the full GitHub-OIDC → Entra workload-identity → `az deployment`
-chain end to end.
+The [`CI`](../../.github/workflows/ci.yml) workflow builds the SAGE and CAS BFF
+images and runs the container smoke tests on every push and pull request, via the
+shared reusable [`build-images`](../../.github/workflows/build-images.yml)
+workflow with the push **disabled** — CI is the regression gate, not a publisher.
+The push to a registry happens in the deploy pipeline, because each tenant has
+its own Azure Container Registry: the `infra` workflow's `build` job calls the
+same reusable workflow with the push **enabled** and the tenant's Environment, so
+the artifact it provisions is built from the committed commit and lands in that
+tenant's registry.
 
-## Container image push to ACR
+Images are tagged `{version}-{short-sha}` (the version is
+`sage.build_info.RELEASE_VERSION`, so the registry tag matches the stamp the
+running container reports) plus a moving `latest`; deployments pin the immutable
+`{version}-{short-sha}` tag, never `latest`.
 
-The [`CI`](../../.github/workflows/ci.yml) workflow's `container` job builds the
-SAGE and CAS BFF images and runs the container smoke tests on every push and
-pull request. Pushing the resulting tagged images to the Azure Container
-Registry created by the foundation module is **dormant** until both the
-`AZURE_CLIENT_ID` (set in the bootstrap above) and `ACR_LOGIN_SERVER`
-repository variables are set — the same dormant-until-configured pattern the
-`infra` workflow uses. Images are tagged `{version}-{short-sha}` (the version
-is `sage.build_info.RELEASE_VERSION`, so the registry tag matches the stamp the
-running container reports) plus a moving `latest`; pin deployments to the
-immutable `{version}-{short-sha}` tag, never `latest`.
-
-The registry login host is a Bicep output (`acrLoginServer`), so it exists only
-after the first deploy. Set the variable from that output once the registry is
-provisioned:
+The push is dormant until the tenant's `AZURE_CLIENT_ID` and `ACR_LOGIN_SERVER`
+variables are set. The registry login host is a Bicep output (`acrLoginServer`),
+so it exists only after the first deploy. On a brand-new tenant the first
+dispatch provisions the registry with the push dormant; set the variable from the
+output and re-trigger (idempotent) to push and converge:
 
 ```bash
 ACR_LOGIN_SERVER="$(az deployment sub show \
-  --name main \
+  --name "$ENVIRONMENT_NAME" \
   --query properties.outputs.acrLoginServer.value -o tsv)"
-gh variable set ACR_LOGIN_SERVER --body "$ACR_LOGIN_SERVER"
+gh variable set ACR_LOGIN_SERVER --env "$ENVIRONMENT" --body "$ACR_LOGIN_SERVER"
 ```
 
 ### Push authorization
@@ -206,9 +244,11 @@ discovery-`200` control proves the edge is genuinely live, not a blanket edge
 failure that makes everything look "as predicted"). It **reports; it never
 fixes** — a verification artifact, not a deploy step.
 
-The harness is tenant-parameterized — no environment-specific value is baked in.
-Supply the tenant's public host and an operator-obtained bearer token by
-environment; the probe never mints a token of its own:
+The deploy pipeline runs it as the final stage, minting the bearer token from the
+deploy identity. The harness is tenant-parameterized — no environment-specific
+value is baked in. To run it by hand, supply the tenant's public host and an
+operator-obtained bearer token by environment; the probe never mints a token of
+its own:
 
 ```bash
 AUTH_TOKEN="$(az account get-access-token \
@@ -227,15 +267,20 @@ touching the network; the script header documents every parameter and seam. A
 non-zero exit means at least one layer failed — read the matrix, fix the layer,
 redeploy, and re-run.
 
-## Adding an environment
+## Adding a tenant
 
-The scaffold models a single cloud environment. To add another:
+Adding a tenant is configuration, not a code change: there is no per-tenant file
+in the repository and no workflow edit.
 
-1. Copy `infra/main.bicepparam` to `infra/main.<env>.bicepparam` and set its
-   `environmentName` / `resourceGroupName` / `location`.
-2. Add a matching GitHub environment and a federated credential whose
-   subject is `repo:<OWNER>/<REPO>:environment:<env>`.
-3. Extend the workflow to select the new `.bicepparam` for that environment.
-4. After the first deploy, run the [post-deploy preflight
-   gate](#post-deploy-preflight-gate) against the new tenant and confirm every
-   layer passes before treating the environment as live.
+1. Run the [per-tenant setup](#per-tenant-setup-one-time) for the new tenant —
+   create its deploy identity and federated credential, assign the roles, and
+   create its GitHub Environment with its variable set.
+2. Dispatch the `infra` workflow against the new Environment. The first run may
+   leave the image push dormant (the registry does not exist yet); set
+   `ACR_LOGIN_SERVER` from the deploy output and re-trigger.
+3. Run the bootstrap scripts ([`cloud-deploy-stages.md`](cloud-deploy-stages.md)
+   Stages 0/2/4) for the manual floor — Entra registrations, secret/vault-source
+   seed, and DNS publication — folding their emitted coordinates into the
+   Environment's variables.
+4. Confirm the [post-deploy preflight gate](#post-deploy-preflight-gate) reports
+   every layer green before treating the tenant as live.
