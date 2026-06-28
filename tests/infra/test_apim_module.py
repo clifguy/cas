@@ -59,6 +59,19 @@ _ADMIN_MOUNT: Final[str] = "/mcp_admin"
 _EXPECTED_HTTP_METHODS: Final[tuple[str, ...]] = ("GET", "POST", "PUT", "PATCH", "DELETE")
 _CATCH_ALL_URL_TEMPLATE: Final[str] = "/{*path}"
 
+# The two paths served by their own dedicated GET operation (round-trip-safe:
+# no inline path-string literal in a <when condition> for the IaC pipeline to
+# double-encode). Discovery returns a canned metadata doc; /health is an
+# unauthenticated backend passthrough so the liveness probe reaches the process.
+_DISCOVERY_PATH: Final[str] = "/.well-known/oauth-protected-resource"
+_HEALTH_PATH: Final[str] = "/health"
+
+# Policy XML files under infra/policies/: the API-level policy plus the two
+# operation-scoped policies the dedicated operations load.
+API_POLICY: Final[Path] = POLICIES_DIR / "sage-api-policy.xml"
+DISCOVERY_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-discovery-operation-policy.xml"
+HEALTH_OP_POLICY: Final[Path] = POLICIES_DIR / "sage-health-operation-policy.xml"
+
 # The Entra authority host belongs in the versioned policy XML (loaded via
 # loadTextContent, which the Bicep linter does not introspect), never in a
 # ``.bicep`` — keeping the module clean against ``no-hardcoded-env-urls``.
@@ -249,6 +262,36 @@ def _operation_method_values(text: str) -> set[str]:
     return set(re.findall(r"method:\s*'([A-Za-z]+)'", stripped))
 
 
+def _inbound_section(xml: str) -> str:
+    """Return the *live* text inside the first ``<inbound>...</inbound>`` block.
+
+    XML comments are stripped first, so an explanatory comment that names a
+    forbidden token (``<when>``, ``validate-jwt``, ``<base/>``) does not trip a
+    gate that scans this section — the gate asserts on live policy, not prose.
+    Scoped to ``<inbound>`` so the ``<on-error>`` block (which legitimately
+    carries a round-trip-safe ``== 401`` ``<when>``) is excluded.
+    """
+    match = re.search(r"<inbound>(.*?)</inbound>", _strip_xml_comments(xml), re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def _declares_literal_get_operation(text: str, url_template: str) -> bool:
+    """True iff a dedicated ``method: 'GET'`` operation with ``urlTemplate:
+    '<url_template>'`` is declared (the two co-occurring within one ``{...}``
+    properties block, order-independent), after stripping line comments.
+
+    The catch-all loop uses ``method: method`` (a variable), so a *literal*
+    ``method: 'GET'`` is unique to a hand-declared operation. The bounded
+    ``[^{}]*?`` keeps the match inside a single operation's properties block,
+    so a GET on one operation cannot pair with a urlTemplate on another.
+    """
+    stripped = _strip_line_comments(text)
+    esc = re.escape(url_template)
+    forward = re.search(r"method:\s*'GET'[^{}]*?urlTemplate:\s*'" + esc + r"'", stripped)
+    backward = re.search(r"urlTemplate:\s*'" + esc + r"'[^{}]*?method:\s*'GET'", stripped)
+    return bool(forward or backward)
+
+
 # ---------------------------------------------------------------------------
 # Structural / posture gates
 # ---------------------------------------------------------------------------
@@ -302,13 +345,15 @@ def test_apim_catch_all_avoids_wildcard_method() -> None:
 
 
 def test_apim_catch_all_uses_path_wildcard_template() -> None:
-    """The catch-all operations forward every path via the ``/{*path}`` wildcard
-    template — never the non-matching ``/*``.
+    """The catch-all operations forward every unmatched path via the ``/{*path}``
+    wildcard template — never the non-matching ``/*``. Dedicated operations
+    (discovery, /health) legitimately carry their own literal templates, so the
+    wildcard must be *present* and ``/*`` *absent* — not the only template.
     """
     templates = _catch_all_url_templates(APIM.read_text(encoding="utf-8"))
-    assert templates, "apim.bicep must declare at least one catch-all operation urlTemplate"
-    assert all(t == _CATCH_ALL_URL_TEMPLATE for t in templates), (
-        f"every catch-all urlTemplate must be '{_CATCH_ALL_URL_TEMPLATE}'; found: {templates}"
+    assert _CATCH_ALL_URL_TEMPLATE in templates, (
+        f"apim.bicep must declare the catch-all '{_CATCH_ALL_URL_TEMPLATE}' template; "
+        f"found: {templates}"
     )
     assert "/*" not in templates, "the non-matching '/*' template must not appear"
 
@@ -512,17 +557,110 @@ def test_apim_policy_has_no_fragile_single_quoted_attribute() -> None:
     )
 
 
-def test_apim_policy_discovery_condition_uses_entity_escaped_quotes() -> None:
-    """The discovery ``<when>`` condition matches the protected-resource path with
-    ``&quot;``-escaped string delimiters inside a double-quoted attribute — the
-    round-trip-safe encoding of the C# string literal (APIM policy expressions are
-    C#, where string literals require double quotes).
+def test_apim_declares_discovery_operation() -> None:
+    """The OAuth discovery doc is served by its own explicit GET operation
+    (``/.well-known/oauth-protected-resource``), not by a path-string ``<when>``
+    condition in the API-level policy — the inline quoted literal the
+    loadTextContent -> ARM -> APIM round-trip double-encodes. APIM routes the
+    literal path to this operation ahead of the ``/{*path}`` catch-all.
     """
-    policy = _policy_text()
-    assert "Contains(&quot;/.well-known/oauth-protected-resource&quot;)" in policy, (
-        "the discovery condition must wrap the path in &quot; entities — "
-        "Contains(&quot;/.well-known/oauth-protected-resource&quot;) — so the C# "
-        "string literal survives the loadTextContent -> ARM -> APIM round-trip"
+    assert _declares_literal_get_operation(APIM.read_text(encoding="utf-8"), _DISCOVERY_PATH), (
+        f"apim.bicep must declare a dedicated GET operation with urlTemplate '{_DISCOVERY_PATH}'"
+    )
+
+
+def test_apim_declares_health_operation() -> None:
+    """``/health`` is served by its own explicit GET operation routed to the
+    backend unauthenticated, so the post-deploy ``liveness`` preflight — which
+    reaches /health through the APIM edge (``sage.<domain>`` CNAMEs to the
+    gateway) — gets 200 without a token, mirroring SAGE's own /health auth-exemption.
+    """
+    assert _declares_literal_get_operation(APIM.read_text(encoding="utf-8"), _HEALTH_PATH), (
+        f"apim.bicep must declare a dedicated GET operation with urlTemplate '{_HEALTH_PATH}'"
+    )
+
+
+def test_apim_discovery_operation_policy_serves_doc_unauthenticated() -> None:
+    """The discovery operation's policy returns the protected-resource-metadata
+    document directly (return-response) and does NOT validate the JWT, so the
+    handshake doc is reachable unauthenticated. The operation inbound must carry
+    no ``<base/>`` — that would inherit the API-level validate-jwt and 401 the doc.
+    """
+    xml = DISCOVERY_OP_POLICY.read_text(encoding="utf-8")
+    inbound = _inbound_section(xml)
+    assert "<return-response" in inbound, "discovery operation must serve a return-response"
+    assert "authorization_servers" in xml and "scopes_supported" in xml, (
+        "the resource-metadata document must carry authorization_servers and scopes_supported"
+    )
+    assert "{{sage-resource-url}}" in xml and "{{entra-tenant-id}}" in xml, (
+        "the metadata document must interpolate the sage-resource-url and "
+        "entra-tenant-id named values"
+    )
+    assert "validate-jwt" not in inbound, (
+        "the discovery operation must not validate the JWT (the doc is unauthenticated)"
+    )
+    assert "<base" not in inbound, (
+        "the discovery operation inbound must not call <base/> — that would inherit the "
+        "API-level validate-jwt and 401 the unauthenticated discovery doc"
+    )
+
+
+def test_apim_health_operation_policy_routes_to_backend_unauthenticated() -> None:
+    """The /health operation routes to the SAGE backend unauthenticated (no JWT),
+    mirroring SAGE's own /health auth-exemption. It is a real backend passthrough,
+    not a canned return-response — so ``liveness`` proves the SAGE process is up,
+    not merely that APIM is up.
+    """
+    xml = HEALTH_OP_POLICY.read_text(encoding="utf-8")
+    inbound = _inbound_section(xml)
+    assert re.search(r"set-backend-service\s+backend-id=\"sage-backend\"", inbound), (
+        "the /health operation inbound must route to the sage-backend"
+    )
+    assert "validate-jwt" not in inbound, "the /health operation must not validate the JWT"
+    assert "<base" not in inbound, (
+        "the /health operation inbound must not call <base/> — that would inherit the "
+        "API-level validate-jwt and 401 the liveness probe"
+    )
+    assert "return-response" not in inbound, (
+        "/health must be a real backend passthrough, not a canned edge 200 — "
+        "liveness must reach the SAGE process, not stop at APIM"
+    )
+
+
+def test_apim_api_policy_inbound_has_no_path_string_condition() -> None:
+    """The API-level inbound policy no longer routes on a path-string ``<when>``
+    condition — the inline quoted literal the loadTextContent -> ARM -> APIM
+    round-trip double-encodes (``&quot;`` -> ``&amp;quot;``). Discovery and /health
+    moved to dedicated operations; the inbound is now validate-jwt + route-to-backend.
+    The only surviving ``<when>`` is the on-error ``== 401`` challenge (no string
+    literal, round-trip-safe), which lives outside ``<inbound>``.
+    """
+    inbound = _inbound_section(API_POLICY.read_text(encoding="utf-8"))
+    assert "<when" not in inbound, (
+        "the API-level inbound must contain no <when> path condition; route discovery "
+        "and /health via dedicated operations instead"
+    )
+    assert "Contains(" not in inbound, (
+        "the API-level inbound must contain no path-string Contains(...) literal "
+        "(the round-trip-fragile form this design replaces)"
+    )
+
+
+def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
+    """Both dedicated operation policies are loaded from versioned XML under
+    infra/policies/ via loadTextContent — the same discipline as the API-level
+    policy, extended to operation scope.
+    """
+    loaded_names = {Path(p).name for p in _loaded_policy_paths(APIM.read_text(encoding="utf-8"))}
+    assert DISCOVERY_OP_POLICY.name in loaded_names, (
+        f"apim.bicep must loadTextContent the discovery operation policy "
+        f"'{DISCOVERY_OP_POLICY.name}'"
+    )
+    assert HEALTH_OP_POLICY.name in loaded_names, (
+        f"apim.bicep must loadTextContent the /health operation policy '{HEALTH_OP_POLICY.name}'"
+    )
+    assert DISCOVERY_OP_POLICY.is_file() and HEALTH_OP_POLICY.is_file(), (
+        "both operation policy XML files must exist under infra/policies/"
     )
 
 
@@ -774,3 +912,60 @@ def test_operation_method_values_detector_controls() -> None:
     bare = "method: 'GET'\nmethod: 'POST'\n"
     assert _operation_method_values(bare) == {"GET", "POST"}
     assert _operation_method_values("// var sageHttpMethods = ['GET']\n") == set()
+
+
+def test_inbound_section_detector_controls() -> None:
+    """``_inbound_section`` returns the inbound body, distinguishes a ``<base/>``-
+    bearing inbound from one without, and excludes the ``<on-error>`` block (whose
+    legitimate ``== 401`` ``<when>`` must not be mistaken for an inbound condition).
+    """
+    with_base = (
+        "<policies><inbound><base /><validate-jwt /></inbound>"
+        '<on-error><choose><when condition="@(... == 401)" /></choose></on-error></policies>'
+    )
+    without_base = (
+        "<policies><inbound><return-response /></inbound><on-error><base /></on-error></policies>"
+    )
+    assert "<base" in _inbound_section(with_base)
+    assert "validate-jwt" in _inbound_section(with_base)
+    assert "<base" not in _inbound_section(without_base)
+    # The on-error block (and its <when>) is excluded from the inbound section.
+    assert "when" not in _inbound_section(with_base)
+    assert "on-error" not in _inbound_section(without_base)
+    assert _inbound_section("<policies></policies>") == ""
+    # A comment naming a forbidden token does not leak into the live section —
+    # so a gate scanning the inbound cannot be fooled (or tripped) by prose.
+    commented = (
+        "<policies><inbound><!-- no <when> condition here; never validate-jwt -->"
+        '<set-backend-service backend-id="sage-backend" /></inbound></policies>'
+    )
+    assert "<when" not in _inbound_section(commented)
+    assert "validate-jwt" not in _inbound_section(commented)
+    assert "set-backend-service" in _inbound_section(commented)
+
+
+def test_literal_get_operation_detector_controls() -> None:
+    """``_declares_literal_get_operation`` fires on a dedicated ``method: 'GET'``
+    operation carrying the target urlTemplate, clears on the ``method: method``
+    loop form (the catch-all, not a literal GET), and clears on a commented
+    declaration — so the operation gate cannot pass on a stray or scaffolded match.
+    """
+    dedicated = (
+        "resource op 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {\n"
+        "  properties: {\n"
+        "    method: 'GET'\n"
+        "    urlTemplate: '/health'\n"
+        "  }\n"
+        "}\n"
+    )
+    loop_form = "    method: method\n    urlTemplate: '/health'\n"
+    commented = "// method: 'GET'\n// urlTemplate: '/health'\n"
+    assert _declares_literal_get_operation(dedicated, "/health")
+    assert not _declares_literal_get_operation(loop_form, "/health")
+    assert not _declares_literal_get_operation(commented, "/health")
+    # A GET on one operation must not pair with a urlTemplate on a *different* one.
+    cross = (
+        "properties: {\n  method: 'GET'\n  urlTemplate: '/{*path}'\n}\n"
+        "properties: {\n  method: method\n  urlTemplate: '/health'\n}\n"
+    )
+    assert not _declares_literal_get_operation(cross, "/health")

@@ -1,0 +1,26 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET /health (CAS-ADR-042). The SAGE
+            container's liveness probe is store-free and exempt from auth at the
+            app layer (so an orchestrator can poll it without a token); the edge
+            mirrors that exemption.
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so the probe reaches the
+            backend without a token. This is a real backend passthrough, not a
+            canned return-response, so the post-deploy 'liveness' preflight proves
+            the SAGE process is up — not merely that APIM is up.
+        -->
+        <set-backend-service backend-id="sage-backend" />
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>
