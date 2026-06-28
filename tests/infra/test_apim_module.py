@@ -176,6 +176,36 @@ def _policy_text() -> str:
     return "\n".join(parts)
 
 
+def _strip_xml_comments(text: str) -> str:
+    """Return ``text`` with XML ``<!-- ... -->`` comments removed.
+
+    The fragility gate scans live policy attributes only; an explanatory comment
+    that *names* the discouraged single-quoted encoding (the inbound policy's own
+    comment does) must not trip it.
+    """
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+
+# A single-quote-delimited attribute whose value carries a literal inner double
+# quote — ``name='...".."...'``. This is the encoding that does not survive the
+# loadTextContent -> ARM -> APIM round-trip: APIM normalizes the attribute
+# delimiters to double quotes and the now-unescaped inner quotes corrupt the
+# value. The robust form is a double-quoted attribute with the inner quotes
+# escaped as ``&quot;``.
+_FRAGILE_SINGLE_QUOTED_ATTR_RE: Final[re.Pattern[str]] = re.compile(
+    r"[\w:.-]+\s*=\s*'([^']*\"[^']*)'"
+)
+
+
+def _fragile_single_quoted_attrs(policy: str) -> list[str]:
+    """Return every single-quoted attribute value carrying a literal inner double
+    quote, after stripping XML comments.
+
+    The match values are the round-trip-fragile encodings the gate forbids.
+    """
+    return _FRAGILE_SINGLE_QUOTED_ATTR_RE.findall(_strip_xml_comments(policy))
+
+
 def _uses_literal_wildcard_method(text: str) -> bool:
     """True iff a ``method: '*'`` literal appears (the broken catch-all form).
 
@@ -465,6 +495,37 @@ def test_apim_policy_serves_oauth_discovery() -> None:
     )
 
 
+def test_apim_policy_has_no_fragile_single_quoted_attribute() -> None:
+    """No policy attribute uses single-quote delimiters around a literal inner
+    double quote — the encoding the loadTextContent -> ARM -> APIM round-trip
+    corrupts. That corruption silently broke the discovery-doc exemption: the
+    ``Contains(...)`` argument no longer matched any path, so every request —
+    including the unauthenticated discovery doc and ``/health`` — fell through to
+    ``validate-jwt`` and 401'd. The robust encoding is a double-quoted attribute
+    with the inner string delimiters escaped as ``&quot;``.
+    """
+    offenders = _fragile_single_quoted_attrs(_policy_text())
+    assert not offenders, (
+        "policy attributes must not use single-quote delimiters around a literal "
+        "inner double quote (the IaC round-trip corrupts them); re-encode as a "
+        f"double-quoted attribute with &quot;-escaped inner quotes. Offenders: {offenders}"
+    )
+
+
+def test_apim_policy_discovery_condition_uses_entity_escaped_quotes() -> None:
+    """The discovery ``<when>`` condition matches the protected-resource path with
+    ``&quot;``-escaped string delimiters inside a double-quoted attribute — the
+    round-trip-safe encoding of the C# string literal (APIM policy expressions are
+    C#, where string literals require double quotes).
+    """
+    policy = _policy_text()
+    assert "Contains(&quot;/.well-known/oauth-protected-resource&quot;)" in policy, (
+        "the discovery condition must wrap the path in &quot; entities — "
+        "Contains(&quot;/.well-known/oauth-protected-resource&quot;) — so the C# "
+        "string literal survives the loadTextContent -> ARM -> APIM round-trip"
+    )
+
+
 def test_apim_policy_routes_admin_mount_through_jwt() -> None:
     """The maintenance mount /mcp_admin routes through the facade under the same
     JWT validation as the ordinary surface — it is no longer denied at the edge.
@@ -644,6 +705,29 @@ def test_policy_special_case_detector_controls() -> None:
     assert not _policy_special_cases_path(uniform, _ADMIN_MOUNT), (
         "detector false-positived on a policy that routes the admin mount via <otherwise>"
     )
+
+
+def test_fragile_single_quoted_attr_detector_controls() -> None:
+    """``_fragile_single_quoted_attrs`` fires on the round-trip-fragile
+    single-quoted-inner-double-quote form, clears on the ``&quot;``-escaped
+    double-quoted form, clears on a single-quoted attribute with no inner double
+    quote, and does not scan inside XML comments — so the fragility gate cannot
+    pass coincidentally on a regex that matches nothing.
+    """
+    fragile = "<when condition='@(context.Request.Url.Path.Contains(\"/x\"))'>"
+    fixed = '<when condition="@(context.Request.Url.Path.Contains(&quot;/x&quot;))">'
+    plain = "<param name='path' />"
+    commented = "<!-- <when condition='@(Contains(\"/x\"))'> -->"
+    assert _fragile_single_quoted_attrs(fragile), (
+        "detector failed to flag the fragile single-quoted inner-double-quote attribute"
+    )
+    assert not _fragile_single_quoted_attrs(fixed), (
+        "detector false-positived on the &quot;-escaped double-quoted form"
+    )
+    assert not _fragile_single_quoted_attrs(plain), (
+        "detector false-positived on a single-quoted attribute with no inner double quote"
+    )
+    assert not _fragile_single_quoted_attrs(commented), "detector must not scan inside XML comments"
 
 
 def test_hardcoded_https_host_detector_controls() -> None:

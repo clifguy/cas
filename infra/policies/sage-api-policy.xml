@@ -12,12 +12,18 @@
             Authentication and authorization are the sole admin control; no
             surface is denied at the edge.
             Environment coordinates arrive as APIM named values ({{...}}): the
-            tenant id, the SAGE audience, and the public resource URL. Branch
-            conditions use single-quoted attributes so the C# string literals
-            inside them keep their double quotes.
+            tenant id, the SAGE audience, and the public resource URL. A branch
+            condition is a C# expression whose string literals require double
+            quotes; those inner quotes are escaped as &quot; inside a
+            double-quoted attribute. That encoding is unambiguous XML and
+            survives the loadTextContent -> ARM -> APIM round-trip intact. A
+            single-quoted attribute with literal inner double quotes does not:
+            APIM normalizes the delimiters to double quotes and the unescaped
+            inner quotes corrupt the expression, so the condition matches no
+            path and every request falls through to validate-jwt.
         -->
         <choose>
-            <when condition='@(context.Request.Url.Path.Contains("/.well-known/oauth-protected-resource"))'>
+            <when condition="@(context.Request.Url.Path.Contains(&quot;/.well-known/oauth-protected-resource&quot;))">
                 <return-response>
                     <set-status code="200" reason="OK" />
                     <set-header name="Content-Type" exists-action="override">
