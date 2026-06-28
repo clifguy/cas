@@ -231,6 +231,30 @@ def test_bff_ingress_binds_custom_domain() -> None:
     assert "casHostname" in text, "BFF custom domain must bind the cas hostname"
 
 
+def test_apps_pin_a_warm_minimum_replica() -> None:
+    """Both container apps pin a warm minimum replica via a parameterized
+    ``scale.minReplicas``, so the post-deploy preflight never probes a
+    scaled-to-zero (cold-start) replica — ACA treats an unset ``minReplicas`` as 0.
+
+    Anti-coincidental-pass: assert the ``minReplicas`` param defaults to a warm
+    value (>=1) *and* that each app's scale block binds that param. A scale block
+    bound to a param defaulting to 0, a hardcoded literal, or only one of the two
+    apps pinned would each reopen the cold window this guards against.
+    """
+    text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
+    default = re.search(r"param\s+minReplicas\s+int\s*=\s*(\d+)", text)
+    assert default, "the module must declare `param minReplicas int = <default>`"
+    assert int(default.group(1)) >= 1, (
+        f"minReplicas must default to a warm replica (>=1), not {default.group(1)}"
+    )
+    assert len(re.findall(r"scale:\s*\{", text)) == 2, (
+        "both apps (SAGE + BFF) must declare a scale block in their template"
+    )
+    assert len(re.findall(r"minReplicas:\s*minReplicas", text)) == 2, (
+        "both scale blocks must bind minReplicas to the module param, not a literal"
+    )
+
+
 def test_sage_injects_its_runtime_coordinates() -> None:
     """SAGE receives its config-path, Key Vault URI, and managed-identity client id;
     the schema-keyed coordinates (profile, Postgres, audience) ride in the mounted

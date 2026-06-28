@@ -126,6 +126,11 @@ a real value rather than a hand-substituted placeholder. The BFF takes external
 container ingress on port 8001 and attaches its custom domain through the
 environment certificate (`casCertificateId`) the custom-domains module produced.
 
+Each app pins a warm minimum replica (`scale.minReplicas`, the `minReplicas`
+parameter, default 1) — Azure Container Apps treats an unset value as 0, which
+would idle the app at zero replicas and let the post-deploy preflight probe a
+cold-starting (briefly unavailable) replica.
+
 Cloud-profile configuration is a YAML file the module assembles from the hosting
 modules' outputs (profile, `storage_backend`, the abstraction provider/model, the
 `postgres` block, and the `auth` audience/tenant) and projects into each app as a
