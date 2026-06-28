@@ -202,3 +202,33 @@ def test_deploy_gate_not_keyed_on_environment_scoped_var() -> None:
         "deploy job `if` must not reference an environment-scoped var (invisible at "
         f"job-level if); gate via the dispatch event + environment binding. Got: {condition!r}"
     )
+
+
+def test_preflight_mints_v2_scoped_token() -> None:
+    """The post-deploy preflight mints its bearer via the v2 *scope* endpoint
+    (``--scope <audience>/.default``), never the v1 ``--resource`` endpoint.
+
+    ``--resource`` always returns a token whose issuer is ``sts.windows.net``
+    (``ver=1.0``); the APIM ``validate-jwt`` policy and the SAGE backend both
+    expect a ``…/v2.0`` issuer, so a v1 token is rejected with 401 at the edge
+    before the request ever reaches the backend. ``--resource`` also ignores the
+    resource app's ``requestedAccessTokenVersion``, so only moving the mint to the
+    ``/.default`` scope endpoint actually yields a v2 token.
+    """
+    runs = _job_run_text(_deploy_job(_load()))
+    # The mint command spans shell line-continuations; collapse them so the flag
+    # and its audience read as one logical command line, then isolate the mint
+    # invocation. Anchoring on the command itself — not the whole-job text — keeps
+    # a paraphrasing comment from satisfying the gate.
+    collapsed = re.sub(r"\s+", " ", runs.replace("\\\n", " "))
+    match = re.search(r"az account get-access-token.*?\)", collapsed)
+    assert match is not None, "preflight must mint a bearer token for the SAGE audience"
+    mint = match.group(0)
+    assert '--scope "$SAGE_AUDIENCE/.default"' in mint, (
+        "preflight must mint via the v2 scope endpoint (--scope <audience>/.default), "
+        f"whose issuer matches APIM and the SAGE backend; got: {mint!r}"
+    )
+    assert "--resource" not in mint, (
+        "preflight must not mint via --resource (the v1 token endpoint; it ignores the "
+        "resource app's requestedAccessTokenVersion and always returns iss=sts.windows.net)"
+    )

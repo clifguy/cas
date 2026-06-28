@@ -252,7 +252,7 @@ its own:
 
 ```bash
 AUTH_TOKEN="$(az account get-access-token \
-  --resource "$SAGE_AUDIENCE" --query accessToken -o tsv)" \
+  --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
   BASE_DOMAIN=example.org \
   PREFLIGHT_EXPECTED_VAULTS=cas \
   PREFLIGHT_VAULT_SOURCE=document_store \

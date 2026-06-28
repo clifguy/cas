@@ -76,7 +76,8 @@ az ad app update --id "$SAGE_APP_ID" --identifier-uris "api://${SAGE_APP_ID}"
 az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
 ```
 
-Expose the delegated scope and the app role. Both `oauth2PermissionScopes` and
+Expose the delegated scope and the app role, and pin the resource's access-token
+version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and
 `appRoles` are set in one Graph `PATCH`; generate the ids once and keep them so
 re-runs are stable.
 
@@ -90,6 +91,7 @@ az rest --method PATCH \
   --headers 'Content-Type=application/json' \
   --body "{
     \"api\": {
+      \"requestedAccessTokenVersion\": 2,
       \"oauth2PermissionScopes\": [{
         \"id\": \"${ACCESS_SCOPE_ID}\",
         \"value\": \"Sage.Access\",
@@ -114,6 +116,15 @@ The single `Sage.Access` delegated scope (and the `Sage.Reader` app role) is the
 authorization unit for **both** the REST surface and the MCP surface — SAGE does
 not mint a separate scope per surface. Surface-specific authorization is enforced
 in SAGE's token-validation layer, not by separate registrations here.
+
+`requestedAccessTokenVersion: 2` pins the resource to **v2** access tokens. A
+token minted for this audience via the `/.default` scope endpoint — which the
+deploy preflight probe and the BFF on-behalf-of exchange both use — then carries
+the tenant's v2.0 issuer, the issuer the APIM `validate-jwt` policy and the SAGE
+backend validate against. The v1 `--resource` endpoint ignores this setting and
+returns an `sts.windows.net` (v1) issuer, so it must not be used to reach SAGE.
+Leaving the setting unset regresses a re-provisioned tenant to v1 tokens and a
+401 at the edge.
 
 ## 2. CAS BFF confidential-client registration
 
