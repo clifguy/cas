@@ -186,3 +186,19 @@ def test_oidc_posture_preserved() -> None:
         assert forbidden not in lowered, (
             f"deploy identity must be OIDC-federated, not a stored secret ({forbidden!r})"
         )
+
+
+def test_deploy_gate_not_keyed_on_environment_scoped_var() -> None:
+    """The deploy job's job-level ``if`` must not gate on an environment-scoped
+    variable. GitHub does not expose environment variables to a job-level ``if``
+    (only repository/org vars), so gating the apply on ``vars.AZURE_CLIENT_ID`` —
+    which is environment-scoped in the per-tenant model — evaluates empty and
+    skips the deploy forever. The apply is gated by the dispatch event plus the
+    environment binding and the ``azure/login`` step instead.
+    """
+    deploy = _deploy_job(_load())
+    condition = str(deploy.get("if") or "")
+    assert "vars." not in condition, (
+        "deploy job `if` must not reference an environment-scoped var (invisible at "
+        f"job-level if); gate via the dispatch event + environment binding. Got: {condition!r}"
+    )
