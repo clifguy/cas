@@ -11,15 +11,21 @@ embedding column; ``pgstattuple``, untrusted, for bloat measurement). Both are
 data-plane SQL that must run *as the server's Entra administrator*.
 
 This module is that bootstrap. Run once per environment from inside the VNet (the
-server has no public endpoint) as the administrator identity, it pre-creates the
-extensions and enrols each workload identity as a least-privilege role granted
-only ``CONNECT, CREATE ON DATABASE`` -- enough for the workload to create and own
-its own schema(s) at startup, never the broad ``azure_pg_admin`` role. It does
-not create application tables: each workload self-bootstraps its own owned schema
-(SAGE one per vault, the BFF its session schema), so admin-owned tables would
-break that ownership. Pre-creating the extensions as admin is what lets those
-self-bootstraps' ``CREATE EXTENSION IF NOT EXISTS`` calls succeed as
-privilege-free no-ops.
+server has no public endpoint) as the administrator identity, it enrols each
+workload identity as a least-privilege role granted only ``CONNECT, CREATE ON
+DATABASE`` -- enough for the workload to create and own its own schema(s) at
+startup, never the broad ``azure_pg_admin`` role -- and pre-creates the
+extensions. It does not create application tables: each workload self-bootstraps
+its own owned schema (SAGE one per vault, the BFF its session schema), so
+admin-owned tables would break that ownership. Pre-creating the extensions as
+admin is what lets those self-bootstraps' ``CREATE EXTENSION IF NOT EXISTS``
+calls succeed as privilege-free no-ops.
+
+The work spans two admin connections, because the SQL is not all addressable from
+one database. The ``pgaadauth_*`` administration functions exist only in the
+Flexible Server's built-in ``postgres`` maintenance database, so principal
+creation and the database-scoped grant run there; extensions are per-database
+objects, so they are created on a connection to the application database itself.
 
 Re-running converges: every extension create is ``IF NOT EXISTS``, every grant is
 re-grantable, and role creation is guarded by an existence check so it is never
@@ -34,6 +40,7 @@ import asyncio
 import os
 import re
 import sys
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Final
 
@@ -42,6 +49,12 @@ from sage.storage.postgres.schema import (
     validate_extension,
     validate_schema_name,
 )
+
+# The ``pgaadauth_*`` administration functions live only in the Flexible Server's
+# built-in ``postgres`` maintenance database, so principal creation and the
+# database-scoped grant must run against it -- not the application database, where
+# those functions do not exist. The name is a fixed Azure built-in.
+MAINTENANCE_DATABASE: Final[str] = "postgres"
 
 # Managed-identity role names are Azure user-assigned-identity names: lowercase
 # letters, digits, and hyphens, starting with a letter (e.g. ``id-sage-prod``).
@@ -133,24 +146,34 @@ async def ensure_principal(conn, role: str) -> bool:
 
 
 async def bootstrap_cloud_postgres(
-    conn,
+    connect,
     *,
     database: str,
     app_roles: tuple[str, ...] | list[str],
     extensions: tuple[str, ...] | list[str] = DEFAULT_EXTENSIONS,
+    maintenance_database: str = MAINTENANCE_DATABASE,
 ) -> None:
-    """Run the full admin bootstrap on an open (autocommit) admin connection.
+    """Run the full admin bootstrap across the maintenance and application databases.
 
-    Pre-creates the extensions, then for each workload identity ensures its
-    database role exists and grants it the least-privilege CONNECT + CREATE on the
-    database. Idempotent throughout: safe to re-run against an already-bootstrapped
-    server.
+    ``connect(database)`` is a factory returning an async context manager that
+    yields an open (autocommit) admin connection to that database. The bootstrap
+    opens two: principal creation and the least-privilege CONNECT + CREATE grant run
+    on the ``postgres`` maintenance database (where the ``pgaadauth_*`` functions
+    live); the extensions are pre-created on the application database (extensions are
+    per-database objects). Idempotent throughout: safe to re-run against an
+    already-bootstrapped server.
     """
-    for statement in extension_statements(extensions):
-        await conn.execute(statement)
-    for role in app_roles:
-        await ensure_principal(conn, role)
-        await conn.execute(grant_statement(database, role))
+    # Principal creation and the database-scoped grant: against the maintenance
+    # database, the only place the ``pgaadauth_*`` functions exist.
+    async with connect(maintenance_database) as admin_conn:
+        for role in app_roles:
+            await ensure_principal(admin_conn, role)
+            await admin_conn.execute(grant_statement(database, role))
+    # Extensions: against the application database itself (extensions are
+    # per-database, so they must be created on a connection to it).
+    async with connect(database) as app_conn:
+        for statement in extension_statements(extensions):
+            await app_conn.execute(statement)
 
 
 @dataclass(frozen=True)
@@ -199,7 +222,10 @@ async def _run(env: dict[str, str] | None = None) -> None:
     Authenticates exactly as the cloud storage binding does -- a managed-identity
     Entra token injected as the libpq password -- but as the *administrator*
     identity (``AZURE_CLIENT_ID`` selects it for ``DefaultAzureCredential``), since
-    role and untrusted-extension creation are administrator operations.
+    role and untrusted-extension creation are administrator operations. Supplies a
+    per-database connection factory so the bootstrap can target the ``postgres``
+    maintenance database for principal work and the application database for
+    extensions.
     """
     from psycopg.conninfo import make_conninfo
 
@@ -210,27 +236,33 @@ async def _run(env: dict[str, str] | None = None) -> None:
     from sage.storage.postgres.pool import PostgresConnectionParams, build_conn_kwargs
 
     cfg = _config_from_env(os.environ if env is None else env)
-    params = PostgresConnectionParams(
-        host=cfg.host,
-        database=cfg.database,
-        user=cfg.admin_user,
-        sslmode="require",
-    )
-    # Empty environ: compose no env password into the conninfo -- the token-auth
-    # connection class injects a fresh Entra token as the password per connect.
-    conninfo = make_conninfo(**build_conn_kwargs(params, {}))
     connection_class = make_token_auth_connection_class(get_postgres_credential())
-    async with await connection_class.connect(conninfo, autocommit=True) as conn:
-        await bootstrap_cloud_postgres(
-            conn,
-            database=cfg.database,
-            app_roles=cfg.app_roles,
-            extensions=cfg.extensions,
+
+    @asynccontextmanager
+    async def connect(database: str):
+        params = PostgresConnectionParams(
+            host=cfg.host,
+            database=database,
+            user=cfg.admin_user,
+            sslmode="require",
         )
+        # Empty environ: compose no env password into the conninfo -- the token-auth
+        # connection class injects a fresh Entra token as the password per connect.
+        conninfo = make_conninfo(**build_conn_kwargs(params, {}))
+        async with await connection_class.connect(conninfo, autocommit=True) as conn:
+            yield conn
+
+    await bootstrap_cloud_postgres(
+        connect,
+        database=cfg.database,
+        app_roles=cfg.app_roles,
+        extensions=cfg.extensions,
+    )
     print(
         "cloud-postgres bootstrap complete: roles "
         f"{', '.join(cfg.app_roles)} on database {cfg.database!r} "
-        f"(extensions: {', '.join(cfg.extensions)})"
+        f"(principals via the {MAINTENANCE_DATABASE!r} maintenance database; "
+        f"extensions: {', '.join(cfg.extensions)})"
     )
 
 

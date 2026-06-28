@@ -11,8 +11,11 @@ one schema per vault, the BFF its session schema). No password is stored anywher
 Two prerequisites must exist on the live server before that works, and neither is
 expressible as declarative ARM: a **database role per managed identity** (created
 with `pgaadauth_create_principal`) and the **extensions** the storage adapters
-require. This is **provisioning-as-code, not a hand-run runbook** (CAS Cloud
-Deployment Discipline, Principle 3): the executable substance is the codified
+require. The `pgaadauth_*` administration functions live only in the server's
+built-in `postgres` maintenance database, so the bootstrap creates the roles and
+grants there; the extensions are per-database and are created on the application
+database itself. This is **provisioning-as-code, not a hand-run runbook** (CAS
+Cloud Deployment Discipline, Principle 3): the executable substance is the codified
 bootstrap, and this doc records only the operator steps around it.
 
 ## What the deploy declares
