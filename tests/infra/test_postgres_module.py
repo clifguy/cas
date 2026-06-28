@@ -109,6 +109,29 @@ def _output_secret_violations(text: str) -> list[tuple[str, str]]:
     return violations
 
 
+def _resource_block(text: str, symbol: str) -> str:
+    """Return the ``resource <symbol> …`` block, from its declaration to the next
+    top-level resource/output/module declaration or end of file.
+
+    Naive span extraction (no brace matching): sufficient because resources are
+    declared sequentially and only the block's own ``dependsOn`` array is
+    inspected.
+    """
+    stripped = _strip_line_comments(text)
+    start = re.search(r"^resource\s+" + re.escape(symbol) + r"\b", stripped, re.MULTILINE)
+    if start is None:
+        return ""
+    rest = stripped[start.end() :]
+    nxt = re.search(r"^(?:resource|output|module)\s+\w+", rest, re.MULTILINE)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _depends_on_targets(block: str) -> set[str]:
+    """Return the set of symbols named in a resource block's ``dependsOn: [...]``."""
+    m = re.search(r"dependsOn\s*:\s*\[([^\]]*)\]", block)
+    return set(re.findall(r"\w+", m.group(1))) if m else set()
+
+
 # ---------------------------------------------------------------------------
 # Structural / posture gates
 # ---------------------------------------------------------------------------
@@ -214,6 +237,23 @@ def test_postgres_declares_aad_administrator() -> None:
     text = POSTGRES.read_text(encoding="utf-8")
     assert _declares_resource_type(text, _ADMIN_TYPE), (
         f"postgres.bicep must declare a {_ADMIN_TYPE} resource"
+    )
+
+
+def test_postgres_aad_admin_serialized_after_config() -> None:
+    """The Entra-administrator write is serialized after the configuration and
+    database writes so it runs against a settled server. The ``azure.extensions``
+    write is a restart-class server-parameter change; applying the administrators
+    child in parallel with it can catch the server mid-restart and fail with
+    AadAuthOperationCannotBePerformedWhenServerIsNotAccessible on re-apply.
+    """
+    text = POSTGRES.read_text(encoding="utf-8")
+    block = _resource_block(text, "aadAdmin")
+    assert block, "postgres.bicep must declare the aadAdmin resource"
+    targets = _depends_on_targets(block)
+    assert {"extensions", "database"} <= targets, (
+        "aadAdmin must declare dependsOn: [extensions, database] so the Entra-admin "
+        f"write is serialized after the config/database writes; got {targets}"
     )
 
 
@@ -333,3 +373,23 @@ def test_comment_stripper_controls() -> None:
     assert "module postgres" not in _strip_line_comments(commented)
     live = "module postgres 'modules/postgres.bicep' = {"
     assert "module postgres" in _strip_line_comments(live)
+
+
+def test_depends_on_detector_controls() -> None:
+    """``_resource_block`` + ``_depends_on_targets`` find a real dependsOn array and
+    return empty for a block lacking one — the basis for the admin-ordering gate.
+    """
+    with_dep = (
+        "resource aadAdmin "
+        "'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {\n"
+        "  parent: server\n  dependsOn: [\n    extensions\n    database\n  ]\n}\n"
+        "output x string = y\n"
+    )
+    without_dep = (
+        "resource aadAdmin "
+        "'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024-08-01' = {\n"
+        "  parent: server\n}\n"
+        "output x string = y\n"
+    )
+    assert _depends_on_targets(_resource_block(with_dep, "aadAdmin")) == {"extensions", "database"}
+    assert _depends_on_targets(_resource_block(without_dep, "aadAdmin")) == set()
