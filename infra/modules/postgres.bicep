@@ -151,6 +151,16 @@ resource aadAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024
     principalName: aadAdminPrincipalName
     tenantId: subscription().tenantId
   }
+  // Serialize the Entra-admin write after the configuration and database writes.
+  // The azure.extensions change is a restart-class server parameter; applying the
+  // administrators child in parallel with it can catch the server mid-restart and
+  // fail with AadAuthOperationCannotBePerformedWhenServerIsNotAccessible on
+  // re-apply. The explicit dependsOn waits for the configuration write to settle
+  // (the configuration resource-provider operation returns only after the restart).
+  dependsOn: [
+    extensions
+    database
+  ]
 }
 
 @description('Fully qualified domain name of the Postgres Flexible Server.')
