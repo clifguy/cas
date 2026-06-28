@@ -106,6 +106,16 @@ def test_grant_statement_is_least_privilege() -> None:
     assert "superuser" not in lowered
 
 
+def test_create_principal_statement_casts_role_to_text() -> None:
+    """The bound role parameter is cast to ``::text`` so Postgres resolves the
+    pgaadauth_create_principal(text, boolean, boolean) overload instead of failing
+    on an ``unknown``-typed parameter.
+    """
+    sql = cb.create_principal_statement()
+    assert sql == "SELECT pgaadauth_create_principal(%s::text, false, false)"
+    assert "%s::text" in sql
+
+
 def test_validate_role_name_accepts_mi_names() -> None:
     """Managed-identity role names validate; injection payloads and malformed
     names are rejected before any name reaches an interpolated GRANT.
@@ -133,6 +143,20 @@ async def test_bootstrap_creates_absent_principals() -> None:
     assert created == [_SAGE_ROLE, _BFF_ROLE], f"both roles must be created; got {created}"
     assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in conn.sql)
     assert any('CREATE EXTENSION IF NOT EXISTS "pgstattuple"' in s for s in conn.sql)
+
+
+async def test_bootstrap_create_principal_casts_param_to_text() -> None:
+    """The create-principal statement the bootstrap issues binds the role with an
+    explicit ``::text`` cast -- proving ``ensure_principal`` uses the cast builder,
+    not just that the builder is correct in isolation.
+    """
+    conn = _RecordingConn(existing_roles=())
+    await cb.bootstrap_cloud_postgres(conn, database="sage", app_roles=[_SAGE_ROLE])
+    create_sql = [s for s in conn.sql if "pgaadauth_create_principal" in s]
+    assert create_sql, "a create-principal statement must be issued"
+    assert all("%s::text" in s for s in create_sql), (
+        f"the create-principal call must cast the role param to ::text; got {create_sql}"
+    )
 
 
 async def test_bootstrap_idempotent_when_principals_exist() -> None:

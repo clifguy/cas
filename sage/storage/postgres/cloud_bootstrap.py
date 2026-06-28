@@ -104,6 +104,19 @@ def grant_statement(database: str, role: str) -> str:
     return f'GRANT CONNECT, CREATE ON DATABASE "{database}" TO "{role}"'
 
 
+def create_principal_statement() -> str:
+    """Return the SQL that enrols a managed-identity role as a database principal.
+
+    ``pgaadauth_create_principal(name, isAdmin, isMfa)`` is issued for a plain
+    login role -- no admin membership, no MFA. The role name is bound as a
+    parameter and cast to ``::text`` so Postgres resolves the
+    ``pgaadauth_create_principal(text, boolean, boolean)`` overload; without the
+    cast psycopg sends the parameter as ``unknown`` and the overload is
+    unresolvable.
+    """
+    return "SELECT pgaadauth_create_principal(%s::text, false, false)"
+
+
 async def ensure_principal(conn, role: str) -> bool:
     """Idempotently enrol ``role`` as a database principal; return whether created.
 
@@ -115,9 +128,7 @@ async def ensure_principal(conn, role: str) -> bool:
     cursor = await conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
     if await cursor.fetchone() is not None:
         return False
-    # pgaadauth_create_principal(name, isAdmin, isMfa): a plain login role, no
-    # admin membership, no MFA requirement.
-    await conn.execute("SELECT pgaadauth_create_principal(%s, false, false)", (role,))
+    await conn.execute(create_principal_statement(), (role,))
     return True
 
 
