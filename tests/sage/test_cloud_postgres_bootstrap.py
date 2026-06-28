@@ -18,9 +18,11 @@ azure (the final test proves it in a clean subprocess).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Final
 
@@ -35,13 +37,20 @@ _BFF_ROLE: Final[str] = "id-cas-bff-prod"
 
 
 # ---------------------------------------------------------------------------
-# Recording fake connection
+# Recording fake connection + factory
 #
 # Mimics the slice of the psycopg async connection the bootstrap uses:
 # ``await conn.execute(sql, params)`` returning a cursor with an async
 # ``fetchone``. The pg_roles existence probe resolves against a configurable
 # set of already-present roles, so both the create path and the converged
 # re-run path are reachable without a server.
+#
+# The bootstrap opens *two* connections via a ``connect(database)`` factory: one
+# to the ``postgres`` maintenance database for principal creation and grants, one
+# to the application database for extensions. ``_RecordingFactory`` is that
+# factory; it records every connection it opens and the database it targeted, so
+# a test can recover the connection made to a given database and assert which
+# statements ran on it.
 # ---------------------------------------------------------------------------
 
 
@@ -54,7 +63,8 @@ class _RecordingCursor:
 
 
 class _RecordingConn:
-    def __init__(self, existing_roles: tuple[str, ...] = ()) -> None:
+    def __init__(self, database: str, existing_roles: tuple[str, ...] = ()) -> None:
+        self.database = database
         self.existing = set(existing_roles)
         self.calls: list[tuple[str, tuple | None]] = []
 
@@ -68,6 +78,37 @@ class _RecordingConn:
     @property
     def sql(self) -> list[str]:
         return [s for s, _ in self.calls]
+
+
+class _RecordingFactory:
+    """A ``connect(database)`` factory recording every connection it opens.
+
+    Each call yields a fresh :class:`_RecordingConn` bound to ``database`` and
+    appends it to :attr:`opened`, so a test can recover the connection made to a
+    given database and assert the statements that ran on it.
+    """
+
+    def __init__(self, existing_roles: tuple[str, ...] = ()) -> None:
+        self._existing = existing_roles
+        self.opened: list[_RecordingConn] = []
+
+    def __call__(self, database: str) -> contextlib.AbstractAsyncContextManager[_RecordingConn]:
+        conn = _RecordingConn(database, self._existing)
+        self.opened.append(conn)
+        return self._cm(conn)
+
+    @contextlib.asynccontextmanager
+    async def _cm(self, conn: _RecordingConn) -> AsyncIterator[_RecordingConn]:
+        yield conn
+
+    def conn_for(self, database: str) -> _RecordingConn:
+        """The single connection opened against ``database`` (asserts exactly one)."""
+        matches = [c for c in self.opened if c.database == database]
+        assert len(matches) == 1, (
+            f"expected exactly one connection to {database!r}; got {len(matches)} "
+            f"(opened: {[c.database for c in self.opened]})"
+        )
+        return matches[0]
 
 
 def _create_principal_roles(conn: _RecordingConn) -> list[str]:
@@ -128,21 +169,30 @@ def test_validate_role_name_accepts_mi_names() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Orchestration against the recording fake
+# Orchestration against the recording fake factory
+#
+# The bootstrap opens two connections via the factory: principal creation and
+# the database-scoped grant run on the connection to the ``postgres``
+# maintenance database (where the ``pgaadauth_*`` functions live); extension
+# creation runs on the connection to the application database (extensions are
+# per-database). These checks assert that routing, the idempotent re-run, and
+# the least-privilege posture.
 # ---------------------------------------------------------------------------
 
 
 async def test_bootstrap_creates_absent_principals() -> None:
     """When neither role exists yet, the bootstrap enrols each managed identity as
-    a database role and grants it, after pre-creating the extensions.
+    a database role on the maintenance connection and pre-creates the extensions on
+    the application connection.
     """
-    conn = _RecordingConn(existing_roles=())
-    await cb.bootstrap_cloud_postgres(conn, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
 
-    created = _create_principal_roles(conn)
+    created = _create_principal_roles(factory.conn_for("postgres"))
     assert created == [_SAGE_ROLE, _BFF_ROLE], f"both roles must be created; got {created}"
-    assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in conn.sql)
-    assert any('CREATE EXTENSION IF NOT EXISTS "pgstattuple"' in s for s in conn.sql)
+    app_sql = factory.conn_for("sage").sql
+    assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in app_sql)
+    assert any('CREATE EXTENSION IF NOT EXISTS "pgstattuple"' in s for s in app_sql)
 
 
 async def test_bootstrap_create_principal_casts_param_to_text() -> None:
@@ -150,9 +200,9 @@ async def test_bootstrap_create_principal_casts_param_to_text() -> None:
     explicit ``::text`` cast -- proving ``ensure_principal`` uses the cast builder,
     not just that the builder is correct in isolation.
     """
-    conn = _RecordingConn(existing_roles=())
-    await cb.bootstrap_cloud_postgres(conn, database="sage", app_roles=[_SAGE_ROLE])
-    create_sql = [s for s in conn.sql if "pgaadauth_create_principal" in s]
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE])
+    create_sql = [s for s in factory.conn_for("postgres").sql if "pgaadauth_create_principal" in s]
     assert create_sql, "a create-principal statement must be issued"
     assert all("%s::text" in s for s in create_sql), (
         f"the create-principal call must cast the role param to ::text; got {create_sql}"
@@ -164,38 +214,104 @@ async def test_bootstrap_idempotent_when_principals_exist() -> None:
     issued (which would error on the live server), yet the grants and extension
     creates -- all IF-NOT-EXISTS / re-grantable -- still run, and nothing raises.
     """
-    conn = _RecordingConn(existing_roles=(_SAGE_ROLE, _BFF_ROLE))
-    await cb.bootstrap_cloud_postgres(conn, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    factory = _RecordingFactory(existing_roles=(_SAGE_ROLE, _BFF_ROLE))
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
 
-    assert _create_principal_roles(conn) == [], "no principal must be re-created on a converged run"
-    grants = [s for s in conn.sql if s.startswith("GRANT")]
+    admin = factory.conn_for("postgres")
+    assert _create_principal_roles(admin) == [], (
+        "no principal must be re-created on a converged run"
+    )
+    grants = [s for s in admin.sql if s.startswith("GRANT")]
     assert len(grants) == 2, f"both grants must still run on re-run; got {grants}"
-    assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in conn.sql)
+    assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in factory.conn_for("sage").sql)
 
 
 async def test_bootstrap_grants_create_on_database_each_role() -> None:
     """Each role receives CONNECT + CREATE on the database -- the privilege its
-    self-bootstrap needs to create and own its schema(s).
+    self-bootstrap needs to create and own its schema(s) -- on the maintenance
+    connection.
     """
-    conn = _RecordingConn(existing_roles=())
-    await cb.bootstrap_cloud_postgres(conn, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    admin_sql = factory.conn_for("postgres").sql
     for role in (_SAGE_ROLE, _BFF_ROLE):
         assert any(
-            s == f'GRANT CONNECT, CREATE ON DATABASE "sage" TO "{role}"' for s in conn.sql
+            s == f'GRANT CONNECT, CREATE ON DATABASE "sage" TO "{role}"' for s in admin_sql
         ), f"missing CONNECT, CREATE ON DATABASE grant for {role}"
 
 
 async def test_bootstrap_never_grants_admin_role() -> None:
-    """No statement the bootstrap emits grants the broad admin role or superuser --
-    the least-privilege posture holds end to end, on first run and on re-run.
+    """No statement the bootstrap emits -- on either connection, first run or
+    re-run -- grants the broad admin role or superuser.
     """
     for existing in ((), (_SAGE_ROLE, _BFF_ROLE)):
-        conn = _RecordingConn(existing_roles=existing)
-        await cb.bootstrap_cloud_postgres(conn, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
-        for sql in conn.sql:
-            lowered = sql.lower()
-            assert "azure_pg_admin" not in lowered, f"admin-role grant leaked: {sql}"
-            assert "superuser" not in lowered, f"superuser grant leaked: {sql}"
+        factory = _RecordingFactory(existing_roles=existing)
+        await cb.bootstrap_cloud_postgres(
+            factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE]
+        )
+        for conn in factory.opened:
+            for sql in conn.sql:
+                lowered = sql.lower()
+                assert "azure_pg_admin" not in lowered, f"admin-role grant leaked: {sql}"
+                assert "superuser" not in lowered, f"superuser grant leaked: {sql}"
+
+
+# ---------------------------------------------------------------------------
+# Connection routing -- the fix: principal/grant work and extension work land on
+# the right database's connection.
+# ---------------------------------------------------------------------------
+
+
+async def test_principals_and_grants_route_to_maintenance_database() -> None:
+    """Principal creation and the database-scoped grant issue against the
+    ``postgres`` maintenance database -- where the ``pgaadauth_*`` functions live --
+    and no extension statement leaks onto that connection.
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    admin = factory.conn_for(cb.MAINTENANCE_DATABASE)
+    assert _create_principal_roles(admin) == [_SAGE_ROLE, _BFF_ROLE]
+    assert [s for s in admin.sql if s.startswith("GRANT")] == [
+        f'GRANT CONNECT, CREATE ON DATABASE "sage" TO "{_SAGE_ROLE}"',
+        f'GRANT CONNECT, CREATE ON DATABASE "sage" TO "{_BFF_ROLE}"',
+    ]
+    assert not any("CREATE EXTENSION" in s for s in admin.sql), (
+        f"no extension may run on the maintenance connection; got {admin.sql}"
+    )
+
+
+async def test_extensions_route_to_application_database() -> None:
+    """Extension creation issues against the application database (extensions are
+    per-database), and no principal or grant statement leaks onto that connection.
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    app = factory.conn_for("sage")
+    assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in app.sql)
+    assert any('CREATE EXTENSION IF NOT EXISTS "pgstattuple"' in s for s in app.sql)
+    assert not any("pgaadauth_create_principal" in s for s in app.sql), (
+        f"no principal creation may run on the application connection; got {app.sql}"
+    )
+    assert not any(s.startswith("GRANT") for s in app.sql), (
+        f"no grant may run on the application connection; got {app.sql}"
+    )
+
+
+async def test_bootstrap_opens_two_connections_one_per_database() -> None:
+    """The bootstrap opens exactly two connections -- one to the maintenance
+    database and one to the application database -- never collapsing back to a
+    single connection (the defect this fix corrects).
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE])
+    assert sorted(c.database for c in factory.opened) == ["postgres", "sage"]
+
+
+def test_maintenance_database_is_builtin_postgres() -> None:
+    """The maintenance database the principal work targets is the fixed Azure
+    Flexible Server built-in ``postgres`` -- not the application database.
+    """
+    assert cb.MAINTENANCE_DATABASE == "postgres"
 
 
 # ---------------------------------------------------------------------------
