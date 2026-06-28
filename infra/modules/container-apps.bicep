@@ -103,6 +103,10 @@ param sharepointDriveId string = ''
 @description('Folder path within the SharePoint document library the vault tree is rooted at (CAS-ADR-043).')
 param vaultSourceRootPath string = 'vaults'
 
+@description('Minimum running replicas each container app holds. Defaults to 1 so the post-deploy preflight never probes a scaled-to-zero (cold-start) replica; Azure Container Apps treats an unset value as 0.')
+@minValue(0)
+param minReplicas int = 1
+
 // Built-in Azure role: AcrPull (data-plane image pull). A public, fixed
 // constant — not an identity coordinate.
 var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d' // gitleaks:allow public role id
@@ -267,6 +271,9 @@ resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
           ]
         }
       ]
+      scale: {
+        minReplicas: minReplicas
+      }
       volumes: [
         {
           name: 'config'
@@ -377,6 +384,9 @@ resource bffApp 'Microsoft.App/containerApps@2024-03-01' = {
           ]
         }
       ]
+      scale: {
+        minReplicas: minReplicas
+      }
       volumes: [
         {
           name: 'config'
