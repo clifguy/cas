@@ -4,15 +4,21 @@
 // (CAS-ADR-042): an API Management service fronting SAGE's REST and MCP
 // surfaces. The facade validates Entra-issued JWTs (one issuer, one audience,
 // uniform across every surface — the REST API, the ordinary MCP mount, and the
-// maintenance mount alike) and serves the MCP OAuth discovery handshake that
-// the bare container ingress cannot. The CAS BFF does not go through the
-// facade — it uses the container ingress directly.
+// maintenance mount alike) on the catch-all pipeline. The two unauthenticated
+// surfaces — the MCP OAuth discovery doc and the /health liveness probe — are
+// served by their own dedicated GET operations, whose operation-scoped policies
+// omit <base /> so they never reach the catch-all's validate-jwt. The CAS BFF
+// does not go through the facade — it uses the container ingress directly.
 //
 // Resource-group scoped (the Bicep default): the orchestrator deploys it with
 // scope: rg. The backend hostname and the SAGE audience arrive as parameters,
 // resolved when the SAGE container app and the Entra registration are concrete;
-// the issuing tenant is derived from the deployment context. The inbound policy
-// is authored as versioned XML under infra/policies/ and loaded at compile time.
+// the issuing tenant is derived from the deployment context. The inbound and
+// operation policies are authored as versioned XML under infra/policies/ and
+// loaded at compile time. Routing the unauthenticated surfaces by dedicated
+// operation (a literal urlTemplate), rather than by a path-string <when>
+// condition, keeps the policies free of an inline quoted string literal — the
+// encoding the loadTextContent -> ARM -> APIM round-trip double-encodes.
 
 @description('Azure region for the API Management service.')
 param location string
@@ -202,9 +208,65 @@ resource sageApiCatchAll 'Microsoft.ApiManagement/service/apis/operations@2022-0
   }
 ]
 
-// The inbound JWT / discovery / admin-deny pipeline, authored as versioned XML.
-// The policy names the backend by id (set-backend-service), so it depends on
-// the backend existing first.
+// The OAuth discovery doc and /health are served by dedicated GET operations
+// rather than a path-string <when> condition in the catch-all policy. APIM
+// routes a literal-path operation ahead of the '/{*path}' catch-all, and the
+// operation-scoped policies below omit <base /> so neither reaches validate-jwt
+// — both answer 200 unauthenticated. This is the round-trip-safe replacement for
+// the inline quoted literal the loadTextContent -> ARM -> APIM pipeline
+// double-encoded (&quot; became &amp;quot;), which broke the discovery exemption
+// and 401'd every path.
+resource sageDiscoveryOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'oauth-protected-resource'
+  properties: {
+    displayName: 'OAuth protected-resource metadata'
+    method: 'GET'
+    urlTemplate: '/.well-known/oauth-protected-resource'
+    templateParameters: []
+  }
+}
+
+resource sageHealthOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'health'
+  properties: {
+    displayName: 'Liveness probe'
+    method: 'GET'
+    urlTemplate: '/health'
+    templateParameters: []
+  }
+}
+
+// The discovery operation serves the protected-resource-metadata document
+// directly (return-response); the /health operation routes to the backend
+// unauthenticated. Both operation policies omit <base /> in <inbound>, so the
+// catch-all's validate-jwt does not run for them. The /health passthrough names
+// the backend by id, so it depends on the backend existing first.
+resource sageDiscoveryOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageDiscoveryOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-discovery-operation-policy.xml')
+  }
+}
+
+resource sageHealthOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageHealthOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-health-operation-policy.xml')
+  }
+  dependsOn: [
+    sageBackend
+  ]
+}
+
+// The catch-all inbound policy — validate-jwt then route-to-backend — authored
+// as versioned XML. It names the backend by id (set-backend-service), so it
+// depends on the backend existing first.
 resource sageApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2022-08-01' = {
   parent: sageApi
   name: 'policy'

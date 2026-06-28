@@ -1,0 +1,38 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET /.well-known/oauth-protected-resource
+            (CAS-ADR-042). Serves the MCP OAuth protected-resource-metadata
+            document directly at the edge for the unauthenticated discovery
+            handshake (RFC 9728 / the MCP authorization profile).
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so the document is reachable
+            without a token. And because routing is by operation (a literal
+            urlTemplate), no policy expression evaluates an inline path-string
+            literal — the encoding the loadTextContent -> ARM -> APIM round-trip
+            corrupts. Environment coordinates arrive as APIM named values ({{...}}).
+        -->
+        <return-response>
+            <set-status code="200" reason="OK" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>{
+  "resource": "{{sage-resource-url}}",
+  "authorization_servers": ["https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0"],
+  "scopes_supported": ["Sage.Access"],
+  "bearer_methods_supported": ["header"]
+}</set-body>
+        </return-response>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

@@ -2,51 +2,31 @@
     <inbound>
         <base />
         <!--
-            SAGE public-edge policy for the CAS cloud deployment profile
-            (CAS-ADR-042). One inbound pipeline, two branches:
-              1. Serve the MCP OAuth protected-resource-metadata document
-                 (unauthenticated discovery handshake).
-              2. Validate the Entra JWT (single issuer, single audience,
-                 uniform across every surface — the REST API, the ordinary MCP
-                 mount, and the maintenance mount alike) for everything else.
-            Authentication and authorization are the sole admin control; no
-            surface is denied at the edge.
+            SAGE public-edge default policy for the CAS cloud deployment profile
+            (CAS-ADR-042). This is the catch-all pipeline for every surface that
+            is not a dedicated operation: validate the Entra JWT (single issuer,
+            single audience, uniform across every surface — the REST API, the
+            ordinary MCP mount, and the maintenance mount alike), then route to
+            the SAGE backend. Authentication and authorization are the sole admin
+            control; no surface is denied at the edge.
+
+            The unauthenticated surfaces — the OAuth discovery doc and /health —
+            are served by their own dedicated GET operations whose operation-scoped
+            policies omit <base />, so they never reach this validate-jwt. Routing
+            by operation (a literal urlTemplate) keeps this policy free of any
+            inline path-string literal: there is no <when> condition here for the
+            loadTextContent -> ARM -> APIM round-trip to double-encode.
+
             Environment coordinates arrive as APIM named values ({{...}}): the
-            tenant id, the SAGE audience, and the public resource URL. A branch
-            condition is a C# expression whose string literals require double
-            quotes; those inner quotes are escaped as &quot; inside a
-            double-quoted attribute. That encoding is unambiguous XML and
-            survives the loadTextContent -> ARM -> APIM round-trip intact. A
-            single-quoted attribute with literal inner double quotes does not:
-            APIM normalizes the delimiters to double quotes and the unescaped
-            inner quotes corrupt the expression, so the condition matches no
-            path and every request falls through to validate-jwt.
+            tenant id and the SAGE audience.
         -->
-        <choose>
-            <when condition="@(context.Request.Url.Path.Contains(&quot;/.well-known/oauth-protected-resource&quot;))">
-                <return-response>
-                    <set-status code="200" reason="OK" />
-                    <set-header name="Content-Type" exists-action="override">
-                        <value>application/json</value>
-                    </set-header>
-                    <set-body>{
-  "resource": "{{sage-resource-url}}",
-  "authorization_servers": ["https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0"],
-  "scopes_supported": ["Sage.Access"],
-  "bearer_methods_supported": ["header"]
-}</set-body>
-                </return-response>
-            </when>
-            <otherwise>
-                <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized">
-                    <openid-config url="https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
-                    <audiences>
-                        <audience>{{sage-audience}}</audience>
-                    </audiences>
-                </validate-jwt>
-                <set-backend-service backend-id="sage-backend" />
-            </otherwise>
-        </choose>
+        <validate-jwt header-name="Authorization" failed-validation-httpcode="401" failed-validation-error-message="Unauthorized">
+            <openid-config url="https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
+            <audiences>
+                <audience>{{sage-audience}}</audience>
+            </audiences>
+        </validate-jwt>
+        <set-backend-service backend-id="sage-backend" />
     </inbound>
     <backend>
         <base />
