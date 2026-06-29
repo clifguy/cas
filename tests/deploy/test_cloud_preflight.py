@@ -60,6 +60,8 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "edge_discovery",
         "edge_mcp_unauth",
         "edge_browser_redirect",
+        "mcp_admin",
+        "mcp_roundtrip",
         "edge_authn_backend",
         "liveness",
         "vault_load",
@@ -226,6 +228,15 @@ def _write_chain_probe_stub(tmp_path: Path, output: str) -> str:
     so the chain-completeness check can be exercised offline.
     """
     return _write_stub_cmd(tmp_path, "chainprobe", f'echo "{output}"\n')
+
+
+def _write_probe_stub(tmp_path: Path, verdict: str, exit_code: int) -> str:
+    """An MCP-probe seam echoing a fixed verdict line and exiting ``exit_code`` --
+    standing in for ``mcp_preflight_probe.py`` against a live SSE transport, so the
+    bash check's control logic (discovery-200 + unauth-401) is exercised offline.
+    The probe's own protocol is proven separately in test_mcp_preflight_probe.py.
+    """
+    return _write_stub_cmd(tmp_path, "mcpprobe", f'echo "{verdict}"\nexit {exit_code}\n')
 
 
 def _base_env(stub_url: str, **overrides: str) -> dict[str, str]:
@@ -1253,3 +1264,123 @@ def test_warmup_engage_breadcrumb_to_stderr(tmp_path: Path) -> None:
         f"no warm-up breadcrumb on stderr: {proc.stderr!r}"
     )
     assert "curl 7" in proc.stderr, f"the breadcrumb must name the decoded reason: {proc.stderr!r}"
+
+
+# --------------------------------------------------------------------------- #
+# E. MCP-surface checks (mcp_admin auth enforcement + mcp_roundtrip)           #
+#                                                                              #
+# The bash check owns the anti-coincidental CONTROL logic (discovery-200 edge- #
+# live + the unauth-401 gate); the round-trip PROTOCOL is stubbed here via the #
+# PREFLIGHT_MCP_PROBE_CMD seam and proven for real in test_mcp_preflight_probe. #
+# --------------------------------------------------------------------------- #
+def _discovery_broken(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+    """``_green`` but the OAuth discovery doc 404s -- the dead-edge control trap."""
+    if path.split("?", 1)[0] == "/.well-known/oauth-protected-resource":
+        return 404, '{"error":"not_found"}', {}
+    return _green(method, path, body)
+
+
+@_NEEDS_RUNTIME
+def test_mcp_admin_passes_when_401_unauth_and_authed_probe_ok(tmp_path: Path) -> None:
+    """Healthy maintenance mount: 401 unauth + an authenticated handshake that
+    succeeds, with the discovery-200 control held -> PASS.
+    """
+    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=ok", 0)
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_admin") == "PASS", proc.stdout
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_admin_fails_when_discovery_broken_but_mcp_admin_401(tmp_path: Path) -> None:
+    """THE blanket-edge trap for the maintenance mount: /mcp_admin answers 401 and
+    the authed probe succeeds, but the discovery-200 control failed (404) -- the
+    401 must NOT be credited on a dead edge.
+    """
+    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=ok", 0)
+    with serve(_discovery_broken) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_admin") == "FAIL", (
+        f"a 401 must not be credited when the discovery-200 control failed: {proc.stdout}"
+    )
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_admin_fails_when_unauth_returns_200(tmp_path: Path) -> None:
+    """Auth not enforced on the maintenance mount: /mcp_admin answers 200 unauth.
+    Even with a passing authed probe, the missing 401 must FAIL the check.
+    """
+    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=ok", 0)
+
+    def admin_open(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/mcp_admin":
+            return 200, '{"oops":"unauthenticated reached maintenance"}', {}
+        return _green(method, path, body)
+
+    with serve(admin_open) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_admin") == "FAIL", "an open /mcp_admin must fail auth-enforcement"
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_admin_fails_when_authed_probe_fails(tmp_path: Path) -> None:
+    """401 unauth + discovery-200 both hold, but the authenticated maintenance
+    handshake fails (probe exit 1) -> FAIL. A check that asserted only the unauth
+    401 would coincidentally pass here.
+    """
+    probe = _write_probe_stub(tmp_path, "mode=handshake mount=/mcp_admin initialize=fail", 1)
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_admin", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_admin") == "FAIL", proc.stdout
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_roundtrip_passes_when_probe_ok(tmp_path: Path) -> None:
+    """Discovery-200 held + the round-trip probe reports success -> PASS."""
+    probe = _write_probe_stub(
+        tmp_path, "mode=roundtrip mount=/mcp initialize=ok tools_list=ok negctrl=error", 0
+    )
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_roundtrip", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_roundtrip") == "PASS", proc.stdout
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_roundtrip_fails_when_probe_fails(tmp_path: Path) -> None:
+    """Discovery-200 held but the probe reports failure (e.g. the negative control
+    did not discriminate) -> FAIL. A check that ignored the probe would pass.
+    """
+    probe = _write_probe_stub(tmp_path, "mode=roundtrip mount=/mcp negctrl=fail", 1)
+    with serve(_green) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_roundtrip", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_roundtrip") == "FAIL", proc.stdout
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_mcp_roundtrip_fails_when_discovery_broken(tmp_path: Path) -> None:
+    """THE dead-edge trap for the round-trip: the probe reports success but the
+    discovery-200 control failed (404) -- a round-trip result on a dead edge must
+    not be credited.
+    """
+    probe = _write_probe_stub(
+        tmp_path, "mode=roundtrip mount=/mcp initialize=ok tools_list=ok negctrl=error", 0
+    )
+    with serve(_discovery_broken) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="mcp_roundtrip", PREFLIGHT_MCP_PROBE_CMD=probe))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("mcp_roundtrip") == "FAIL", (
+        f"round-trip success must not be credited on a dead edge: {proc.stdout}"
+    )
+    assert proc.returncode != 0
