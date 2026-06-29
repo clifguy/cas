@@ -42,10 +42,14 @@ _ENTRYPOINT: Final[str] = "sage.storage.postgres.cloud_bootstrap"
 # constant — not an identity coordinate — so the GUID gate exempts it.
 _ACR_PULL_ROLE: Final[str] = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
 
-# Environment variables the job must inject for the bootstrap entrypoint.
+# Environment variables the job must inject for the bootstrap entrypoint. The
+# database name (``PG_DATABASE``) is load-bearing: the extensions are pre-created
+# in exactly that database, so it must be the same database the workload connects
+# to (see ``test_bootstrap_and_app_share_one_database_name``).
 _REQUIRED_ENV: Final[tuple[str, ...]] = (
     "AZURE_CLIENT_ID",
     "PG_FQDN",
+    "PG_DATABASE",
     "PG_ADMIN_USER",
     "SAGE_DB_ROLE",
     "BFF_DB_ROLE",
@@ -77,6 +81,20 @@ def _declares_resource_type(text: str, resource_type: str) -> bool:
 
 def _module_text() -> str:
     return MODULE.read_text(encoding="utf-8")
+
+
+def _main_module_block(module_file: str) -> str:
+    """The body of the main.bicep ``module`` declaration wiring ``module_file``.
+
+    Spans from the module's ``'modules/<file>'`` path literal to the next top-level
+    ``module`` declaration (or end of file), so an assertion can be scoped to one
+    module's parameter block rather than the whole orchestrator.
+    """
+    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    start = text.find(f"'modules/{module_file}'")
+    assert start != -1, f"main.bicep must wire modules/{module_file}"
+    nxt = text.find("\nmodule ", start)
+    return text[start : nxt if nxt != -1 else len(text)]
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +223,32 @@ def test_main_wires_bootstrap_module() -> None:
     )
     assert "postgres.outputs.postgresServerFqdn" in text, (
         "the bootstrap module must consume the Postgres server FQDN"
+    )
+
+
+def test_bootstrap_and_app_share_one_database_name() -> None:
+    """The bootstrap job and the SAGE app resolve the *same* Postgres database name,
+    so the database the admin pre-creates the extensions in is provably the database
+    the workload connects to.
+
+    The job injects ``PG_DATABASE`` from the module's ``postgresDatabaseName``
+    parameter, and the orchestrator feeds both the bootstrap module and the
+    container-apps module that name from the single
+    ``postgres.outputs.postgresDatabaseName`` source. A divergence here is the
+    per-database scoping mismatch that leaves the workload's ``CREATE EXTENSION``
+    facing an absent extension (InsufficientPrivilege at vault load). Extensions are
+    per-database in Postgres, so this agreement is load-bearing.
+    """
+    module = _strip_line_comments(_module_text())
+    assert re.search(r"name:\s*'PG_DATABASE'\s+value:\s*postgresDatabaseName", module), (
+        "the bootstrap job must inject PG_DATABASE from the postgresDatabaseName parameter"
+    )
+    wiring = "postgresDatabaseName: postgres.outputs.postgresDatabaseName"
+    assert wiring in _main_module_block("postgres-bootstrap.bicep"), (
+        "the bootstrap job's database name must come from postgres.outputs.postgresDatabaseName"
+    )
+    assert wiring in _main_module_block("container-apps.bicep"), (
+        "the SAGE app's database name must come from the same postgres.outputs.postgresDatabaseName"
     )
 
 

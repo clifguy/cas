@@ -61,11 +61,19 @@ ownership with no further grants.
 The extensions are pre-created **as the administrator** by the job:
 
 - `vector` (pgvector) backs the content store's embedding column.
-- `pgstattuple` backs bloat measurement and is an **untrusted** extension, so only an
-  administrator may create it — the unprivileged application roles cannot.
+- `pgstattuple` backs bloat measurement.
 
-Pre-creating both is what lets the apps' own idempotent `CREATE EXTENSION IF NOT
-EXISTS` calls succeed as privilege-free no-ops thereafter.
+Both are **untrusted** extensions on this server, so only a member of `azure_pg_admin`
+may create them — the unprivileged application roles cannot. Pre-creating both as the
+administrator is what lets the apps' own idempotent `CREATE EXTENSION IF NOT EXISTS`
+calls succeed as privilege-free no-ops thereafter.
+
+The job creates the extensions on the **application database itself** — the same
+database the workloads connect to — and then **verifies each is present there** before
+returning. Extensions are per-database, so a create that landed in a different database
+would leave a workload's `CREATE EXTENSION` facing an absent extension; the verification
+fails the job loud, naming the database and the missing extension, rather than letting
+that surface later as an `InsufficientPrivilege` at vault load.
 
 ## Verify
 

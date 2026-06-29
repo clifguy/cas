@@ -145,6 +145,34 @@ async def ensure_principal(conn, role: str) -> bool:
     return True
 
 
+async def verify_extensions_present(conn, database: str, extensions) -> None:
+    """Confirm each expected extension is present in the connected database.
+
+    The admin pre-creates the untrusted extensions so each workload's own
+    ``CREATE EXTENSION IF NOT EXISTS`` is a privilege-free no-op -- but that no-op
+    only holds if the extension is actually present in the database the workload
+    connects to. This check runs on the application connection itself (the same
+    database the workload will use), probing ``pg_extension`` for each expected
+    extension and raising if any is absent. A create that did not land therefore
+    fails the bootstrap loud -- naming the database and the missing extension(s) --
+    instead of surfacing later as an ``InsufficientPrivilege`` when the
+    unprivileged workload retries the create against a database where the extension
+    was never installed.
+    """
+    missing: list[str] = []
+    for ext in _ordered_extensions(extensions):
+        cursor = await conn.execute("SELECT 1 FROM pg_extension WHERE extname = %s", (ext,))
+        if await cursor.fetchone() is None:
+            missing.append(ext)
+    if missing:
+        raise RuntimeError(
+            f"extension(s) {', '.join(missing)} absent from database {database!r} after "
+            "admin pre-creation; the application's CREATE EXTENSION IF NOT EXISTS would "
+            "fail with InsufficientPrivilege. Confirm the bootstrap pre-created the "
+            "extensions in the same database the application connects to."
+        )
+
+
 async def bootstrap_cloud_postgres(
     connect,
     *,
@@ -174,6 +202,10 @@ async def bootstrap_cloud_postgres(
     async with connect(database) as app_conn:
         for statement in extension_statements(extensions):
             await app_conn.execute(statement)
+        # Verify the pre-created set actually landed in this database -- the one the
+        # workload connects to -- so a create that did not take fails here loud
+        # rather than as a later InsufficientPrivilege at vault load.
+        await verify_extensions_present(app_conn, database, extensions)
 
 
 @dataclass(frozen=True)

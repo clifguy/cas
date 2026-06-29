@@ -63,9 +63,20 @@ class _RecordingCursor:
 
 
 class _RecordingConn:
-    def __init__(self, database: str, existing_roles: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        database: str,
+        existing_roles: tuple[str, ...] = (),
+        withheld_extensions: tuple[str, ...] = (),
+    ) -> None:
         self.database = database
         self.existing = set(existing_roles)
+        # Extensions to report *absent* from ``pg_extension`` even after a
+        # ``CREATE EXTENSION`` ran for them -- the injected "the create
+        # succeeded but did not land in this database" case the bootstrap's
+        # post-create verification must catch.
+        self.withheld = set(withheld_extensions)
+        self.created_extensions: set[str] = set()
         self.calls: list[tuple[str, tuple | None]] = []
 
     async def execute(self, sql: str, params: tuple | None = None) -> _RecordingCursor:
@@ -73,6 +84,15 @@ class _RecordingConn:
         if "pg_roles" in sql:
             role = params[0] if params else None
             return _RecordingCursor((1,) if role in self.existing else None)
+        if "CREATE EXTENSION" in sql and '"' in sql:
+            # Record the extension a CREATE ran for so the presence probe can
+            # report it present -- mirroring the live no-op-once-present semantics.
+            self.created_extensions.add(sql.split('"')[1])
+            return _RecordingCursor(None)
+        if "pg_extension" in sql:
+            ext = params[0] if params else None
+            present = ext in self.created_extensions and ext not in self.withheld
+            return _RecordingCursor((1,) if present else None)
         return _RecordingCursor(None)
 
     @property
@@ -88,12 +108,17 @@ class _RecordingFactory:
     given database and assert the statements that ran on it.
     """
 
-    def __init__(self, existing_roles: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        existing_roles: tuple[str, ...] = (),
+        withheld_extensions: tuple[str, ...] = (),
+    ) -> None:
         self._existing = existing_roles
+        self._withheld = withheld_extensions
         self.opened: list[_RecordingConn] = []
 
     def __call__(self, database: str) -> contextlib.AbstractAsyncContextManager[_RecordingConn]:
-        conn = _RecordingConn(database, self._existing)
+        conn = _RecordingConn(database, self._existing, self._withheld)
         self.opened.append(conn)
         return self._cm(conn)
 
@@ -305,6 +330,58 @@ async def test_bootstrap_opens_two_connections_one_per_database() -> None:
     factory = _RecordingFactory(existing_roles=())
     await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE])
     assert sorted(c.database for c in factory.opened) == ["postgres", "sage"]
+
+
+# ---------------------------------------------------------------------------
+# Extension self-verification -- the pre-created set must actually land in the
+# application database (the one the workload connects to). A create that does not
+# land would otherwise surface only later, as an InsufficientPrivilege when the
+# unprivileged workload retries CREATE EXTENSION; this check fails the bootstrap
+# loud instead.
+# ---------------------------------------------------------------------------
+
+
+async def test_bootstrap_verifies_extensions_on_application_connection() -> None:
+    """After creating the extensions, the bootstrap probes ``pg_extension`` on the
+    *application* connection for each one -- proving they actually landed in the
+    database the workload connects to, not merely that a CREATE was issued.
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    app = factory.conn_for("sage")
+    probed = [params[0] for sql, params in app.calls if "pg_extension" in sql and params]
+    assert "vector" in probed and "pgstattuple" in probed, (
+        f"both extensions must be verified present on the app connection; probed {probed}"
+    )
+
+
+async def test_extension_verification_does_not_touch_maintenance_connection() -> None:
+    """The presence check runs only on the application connection -- the database
+    the workload connects to. It must never probe the maintenance connection, whose
+    extension state is irrelevant to the workload (and where the workload never runs).
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    assert not any("pg_extension" in s for s in factory.conn_for("postgres").sql), (
+        "the extension presence check must not run on the maintenance connection"
+    )
+
+
+async def test_bootstrap_fails_loud_when_extension_absent_in_app_database() -> None:
+    """If an extension create does not land in the application database -- the exact
+    scoping/effectiveness failure that left the workload's CREATE EXTENSION facing an
+    absent ``vector`` (InsufficientPrivilege) -- the bootstrap raises, naming the
+    database and the missing extension, instead of completing silently.
+    """
+    factory = _RecordingFactory(existing_roles=(), withheld_extensions=("vector",))
+    with pytest.raises(RuntimeError, match=r"vector") as excinfo:
+        await cb.bootstrap_cloud_postgres(
+            factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE]
+        )
+    message = str(excinfo.value)
+    assert "vector" in message and "sage" in message, (
+        f"the error must name the absent extension and the database; got {message!r}"
+    )
 
 
 def test_maintenance_database_is_builtin_postgres() -> None:

@@ -164,17 +164,28 @@ jobs:
             --name "$BOOTSTRAP_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
             --query name -o tsv)"
           echo "Started bootstrap job execution: $EXECUTION"
+          BOOTSTRAP_SUCCEEDED=false
+          STATUS=""
           for _ in $(seq 1 60); do
             STATUS="$(az containerapp job execution show \
               --name "$BOOTSTRAP_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
               --job-execution-name "$EXECUTION" --query properties.status -o tsv)"
             echo "bootstrap job status: $STATUS"
             case "$STATUS" in
-              Succeeded) break ;;
+              Succeeded) BOOTSTRAP_SUCCEEDED=true; break ;;
               Failed|Degraded|Stopped) echo "bootstrap job did not succeed: $STATUS"; exit 1 ;;
             esac
             sleep 10
           done
+          # A bounded poll that simply ends — the job still non-terminal at the last
+          # iteration — must fail the deploy, not fall through to success. Converging
+          # the app tier against an incomplete bootstrap restarts SAGE before the
+          # extensions exist, so its CREATE EXTENSION hits InsufficientPrivilege and
+          # the vault load fails. Fail loud here instead.
+          if [ "$BOOTSTRAP_SUCCEEDED" != true ]; then
+            echo "bootstrap job did not reach Succeeded within the wait budget (last status: ${STATUS:-unknown})"
+            exit 1
+          fi
 
       - name: Converge the app tier
         # Restart each app's active revision so it re-runs schema self-bootstrap now
