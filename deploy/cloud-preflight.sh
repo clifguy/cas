@@ -40,6 +40,9 @@
 #                              (default: dig +short)
 #   PREFLIGHT_TLS_PROBE_CMD    TLS cert probe invoked as `<cmd> <host>`, prints
 #                              the certificate SAN (default: openssl s_client)
+#   PREFLIGHT_TLS_CHAIN_PROBE_CMD  TLS-chain probe invoked as `<cmd> <host>`,
+#                              prints "<cert_count> <verify_code>" for the served
+#                              chain (default: openssl s_client -showcerts)
 #   PREFLIGHT_CURL_CMD         HTTP client (default: curl); seamed by the gate to
 #                              drive probes offline
 #   PREFLIGHT_SLEEP_CMD        warm-up retry delay command (default: sleep)
@@ -197,6 +200,23 @@ default_tls_probe() { # host
   local host="$1"
   openssl s_client -connect "${host}:443" -servername "$host" </dev/null 2>/dev/null \
     | openssl x509 -noout -ext subjectAltName 2>/dev/null
+}
+
+# Default TLS-chain probe: print "<cert_count> <verify_code>" for the chain the
+# host serves -- how many certificates are in the served chain, and openssl's
+# verify return code. A complete, trusted chain is >=2 certs (leaf + issuing
+# intermediate) with verify 0. Azure Container Apps serves a bound env
+# certificate's PFX bytes verbatim, so a leaf-only PFX serves a 1-cert chain that
+# strict clients reject (curl 60) even when the leaf SAN is valid -- a hole the
+# SAN-only kv_wildcard_tls check cannot see. Overridable via
+# PREFLIGHT_TLS_CHAIN_PROBE_CMD (the gate stubs it offline).
+default_tls_chain_probe() { # host
+  local host="$1" out count verify
+  out="$(echo | openssl s_client -connect "${host}:443" -servername "$host" -showcerts 2>/dev/null)"
+  count="$(printf '%s' "$out" | grep -c 'BEGIN CERTIFICATE' || true)"
+  verify="$(printf '%s' "$out" | sed -n 's/.*Verify return code: \([0-9][0-9]*\).*/\1/p' | head -1)"
+  [ -z "$verify" ] && verify=99
+  printf '%s %s' "$count" "$verify"
 }
 
 # --------------------------------------------------------------------------- #
@@ -388,6 +408,33 @@ check_bff_auth_configured() {
   return 1
 }
 
+check_bff_custom_domain_tls() {
+  local out count verify
+  out="$($PREFLIGHT_TLS_CHAIN_PROBE_CMD "$CAS_FQDN" 2>/dev/null || true)"
+  count="${out%% *}"
+  verify="${out##* }"
+  case "$count" in
+    '' | *[!0-9]*)
+      DETAIL_MSG="TLS chain probe returned no usable result for $CAS_FQDN (handshake failed?)"
+      return 1
+      ;;
+  esac
+  if [ "$count" -lt 1 ]; then
+    DETAIL_MSG="no certificate served by $CAS_FQDN (TLS handshake produced no chain)"
+    return 1
+  fi
+  if [ "$count" -lt 2 ]; then
+    DETAIL_MSG="incomplete chain: $CAS_FQDN served $count cert (leaf only; issuing intermediate missing) -- strict clients reject it (curl 60) though the leaf SAN is valid; ACA serves the env-cert PFX verbatim"
+    return 1
+  fi
+  if [ "$verify" != 0 ]; then
+    DETAIL_MSG="$CAS_FQDN served $count certs but the chain does not verify as trusted (openssl code $verify)"
+    return 1
+  fi
+  DETAIL_MSG="$CAS_FQDN serves a complete, trusted chain ($count certs; verify 0)"
+  return 0
+}
+
 check_dns_cname() { # fqdn suffix
   local fqdn="$1" suffix="$2" got control
   got="$(resolve_record CNAME "$fqdn")"
@@ -473,6 +520,9 @@ register bff_liveness check_bff_liveness \
 register bff_auth_configured check_bff_auth_configured \
   "/app/auth/login 200 with an Entra authorization_url + client_id" \
   "credited only when /app/auth/me is not 503 (auth genuinely configured)"
+register bff_custom_domain_tls check_bff_custom_domain_tls \
+  "cas custom domain serves a complete, trusted certificate chain (leaf + intermediate, verify 0)" \
+  "a leaf-only chain with a valid SAN must FAIL -- ACA serves the env-cert PFX verbatim, so a missing intermediate fails strict clients (curl 60) though the leaf is correct"
 register dns_sage_cname check_dns_sage_cname \
   "sage CNAME resolves to the expected gateway target" \
   "a bogus control name must NXDOMAIN, proving the resolver is not wildcarding"
@@ -646,6 +696,7 @@ PREFLIGHT_CHECKS="${PREFLIGHT_CHECKS:-}"
 PREFLIGHT_SKIP="${PREFLIGHT_SKIP:-}"
 PREFLIGHT_RESOLVE_CMD="${PREFLIGHT_RESOLVE_CMD:-dig +short}"
 PREFLIGHT_TLS_PROBE_CMD="${PREFLIGHT_TLS_PROBE_CMD:-default_tls_probe}"
+PREFLIGHT_TLS_CHAIN_PROBE_CMD="${PREFLIGHT_TLS_CHAIN_PROBE_CMD:-default_tls_chain_probe}"
 PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
 PREFLIGHT_SLEEP_CMD="${PREFLIGHT_SLEEP_CMD:-sleep}"
 PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-36}"

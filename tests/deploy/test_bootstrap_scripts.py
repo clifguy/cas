@@ -214,6 +214,32 @@ def test_kv_secrets_script_loads_the_three_artifacts() -> None:
     assert text.count("keyvault secret set") >= 2, "loader must set both secrets"
 
 
+def test_kv_secrets_script_rejects_leaf_only_pfx() -> None:
+    """The loader verifies the wildcard PFX carries a full chain (leaf +
+    intermediate) BEFORE importing it. Azure Container Apps serves the bound
+    environment certificate's PFX bytes verbatim, so a leaf-only bundle makes the
+    BFF custom domain fail strict TLS clients (curl error 60) while APIM masks it
+    for SAGE by rebuilding the chain -- the loader must refuse it rather than ship
+    an endpoint that silently fails verification.
+    """
+    text = _text(KEY_VAULT)
+    # Anchor on the actual guard command lines, never a prose comment: the PFX is
+    # read with `openssl pkcs12 -nokeys`, the embedded certs are counted, and a
+    # bundle with fewer than two certificates aborts the load.
+    assert "openssl pkcs12" in text and "-nokeys" in text, (
+        "loader must inspect the PFX chain with `openssl pkcs12 -nokeys`"
+    )
+    assert "BEGIN CERTIFICATE" in text, "loader must count the certificates in the PFX"
+    assert re.search(r"-lt\s+2", text), (
+        "loader must require >= 2 certificates (leaf + intermediate) before importing"
+    )
+    assert re.search(r"\bexit\s+1\b", text), "the leaf-only guard must fail the load (exit 1)"
+    # Fail closed: the chain guard must run BEFORE the certificate import.
+    assert text.index("openssl pkcs12") < text.index("keyvault certificate import"), (
+        "the full-chain guard must precede the certificate import"
+    )
+
+
 def test_vault_seed_script_grants_and_seeds() -> None:
     """The vault-seed script grants the site-scoped Microsoft Graph permission
     and seeds the committed test-vault config into the document library, with no

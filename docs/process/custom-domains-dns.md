@@ -108,6 +108,14 @@ The `asuid` TXT proves domain ownership to Azure Container Apps; the CNAME route
 traffic. The BFF container app then attaches the environment wildcard certificate
 to the `cas.<BASE_DOMAIN>` custom domain through its ingress configuration.
 
+Unlike APIM (which rebuilds the chain for the `sage` edge), Azure Container Apps
+serves the environment certificate's PFX bytes **verbatim** — so the
+`wildcard-tls` bundle in Key Vault **must carry the full chain** (leaf +
+intermediate). A leaf-only bundle makes `cas.<BASE_DOMAIN>` fail strict TLS
+clients while `sage.<BASE_DOMAIN>` keeps working. See
+[`key-vault-secrets.md`](key-vault-secrets.md) for building a full-chain PFX; the
+post-deploy preflight's `bff_custom_domain_tls` check enforces it.
+
 ## Cross-cloud ordering
 
 The one sequencing subtlety is that Azure must emit a hostname (and, for the

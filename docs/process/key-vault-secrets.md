@@ -79,15 +79,52 @@ unset BFF_CLIENT_SECRET
 
 ## Import the wildcard TLS certificate
 
-Import the owned wildcard certificate from a PFX/PKCS#12 bundle:
+The bundle **must contain the full chain** — the leaf certificate **and** its
+issuing intermediate(s). Azure Container Apps serves the bound environment
+certificate's PFX bytes verbatim, so a leaf-only bundle makes the BFF custom
+domain (`cas.<base-domain>`) fail strict TLS clients (`curl` error 60,
+"certificate not trusted"), even though the SAGE host (`sage.<base-domain>`)
+keeps working because API Management rebuilds the chain from its own store. A
+leaf-only PFX is the most common cause of a trusted-on-my-machine,
+untrusted-in-CI custom-domain endpoint.
+
+Build a full-chain PFX from the leaf, its private key, and the issuer's
+intermediate (the CA's download page, or the `CA Issuers` URL in the leaf's
+Authority Information Access extension):
+
+```bash
+openssl pkcs12 -export -inkey key.pem \
+  -in leaf.pem -certfile intermediate.pem \
+  -out wildcard-fullchain.pfx
+# confirm the bundle carries >= 2 certificates BEFORE importing:
+openssl pkcs12 -nokeys -in wildcard-fullchain.pfx -passin pass:<pfx-password> \
+  | grep -c 'BEGIN CERTIFICATE'   # -> 2 or more (leaf + intermediate)
+```
+
+Import the full-chain bundle:
 
 ```bash
 az keyvault certificate import --vault-name "$KV" --name wildcard-tls \
-  --file <path-to-cert.pfx> --password <pfx-password>
+  --file <path-to-fullchain.pfx> --password <pfx-password>
 ```
 
-Certificate renewal is the same command with the new bundle; the custom-domain
-bindings pick up the current version.
+`deploy/bootstrap/load-key-vault-secrets.sh` runs this import and **refuses a
+leaf-only bundle** (the same `>= 2 certificates` guard) so the gap cannot reach
+Key Vault unnoticed. Certificate renewal is the same command with a new
+full-chain bundle; the custom-domain bindings pick up the current version.
+
+After a deploy, confirm the served chain is complete and trusted:
+
+```bash
+echo | openssl s_client -connect cas.<base-domain>:443 \
+  -servername cas.<base-domain> -showcerts 2>/dev/null \
+  | grep -c 'BEGIN CERTIFICATE'   # -> 2 or more
+echo | openssl s_client -connect cas.<base-domain>:443 \
+  -servername cas.<base-domain> 2>/dev/null \
+  | grep 'Verify return code'     # -> 0 (ok)
+```
+
+The post-deploy preflight's `bff_custom_domain_tls` check asserts exactly this.
 
 ## Verify
 
