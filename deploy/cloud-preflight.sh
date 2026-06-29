@@ -22,7 +22,9 @@
 # Required environment:
 #   AUTH_TOKEN                 Entra bearer token for the SAGE audience (obtained
 #                              out of band, e.g. `az account get-access-token
-#                              --resource <audience>`; this script never mints it)
+#                              --scope <audience>/.default` -- the v2 endpoint, so
+#                              the issuer matches APIM and the SAGE backend; this
+#                              script never mints it)
 #   SAGE_FQDN or BASE_DOMAIN   public SAGE host; SAGE_FQDN defaults to
 #                              sage.<BASE_DOMAIN>, CAS_FQDN to cas.<BASE_DOMAIN>
 #

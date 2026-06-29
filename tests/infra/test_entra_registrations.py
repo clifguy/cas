@@ -94,6 +94,23 @@ def test_sage_resource_server_documented() -> None:
     )
 
 
+def test_runbook_records_v2_access_token_version() -> None:
+    """The runbook records that the SAGE app registration is set to access-token
+    **v2** (``requestedAccessTokenVersion: 2``), so an operator following it — or a
+    re-provision — does not regress the token version APIM and the SAGE backend
+    require. Mirrors the codified ``deploy/bootstrap/entra-app-registrations.sh``.
+    """
+    text = _runbook_text()
+    assert "requestedAccessTokenVersion" in text, (
+        "runbook must document the requestedAccessTokenVersion setting"
+    )
+    # Same JSON ``key: 2`` anchor as the bootstrap-script gate, so doc and script
+    # cannot drift to documented-but-not-codified (or the reverse).
+    assert re.search(r'requestedAccessTokenVersion\\?"\s*:\s*2', text), (
+        'runbook must show "requestedAccessTokenVersion": 2 in the SAGE api PATCH body'
+    )
+
+
 def test_bff_confidential_client_documented() -> None:
     """The CAS BFF confidential-client registration configures redirect URIs,
     grants the API permission onto the SAGE resource server, and enables the

@@ -27,8 +27,11 @@ az ad app update --id "${SAGE_APP_ID}" --identifier-uris "api://${SAGE_APP_ID}"
 az ad sp create --id "${SAGE_APP_ID}" 2>/dev/null || true
 
 # Expose the single delegated scope and app role that authorize both the REST
-# and MCP surfaces. Generate the ids once; keep them stable across runs by
-# passing ACCESS_SCOPE_ID / SAGE_READER_ROLE_ID in the environment.
+# and MCP surfaces, and pin the access-token version to v2 so a token minted for
+# this resource via the /.default scope endpoint carries the tenant's v2.0 issuer
+# -- the issuer APIM validate-jwt and the SAGE backend require. Generate the
+# scope/role ids once; keep them stable across runs by passing ACCESS_SCOPE_ID /
+# SAGE_READER_ROLE_ID in the environment.
 SAGE_OBJECT_ID="$(az ad app show --id "${SAGE_APP_ID}" --query id -o tsv)"
 ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(uuidgen)}"
 SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(uuidgen)}"
@@ -38,6 +41,7 @@ az rest --method PATCH \
   --headers 'Content-Type=application/json' \
   --body "{
     \"api\": {
+      \"requestedAccessTokenVersion\": 2,
       \"oauth2PermissionScopes\": [{
         \"id\": \"${ACCESS_SCOPE_ID}\",
         \"value\": \"Sage.Access\",

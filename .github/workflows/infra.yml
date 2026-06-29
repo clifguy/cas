@@ -199,8 +199,12 @@ jobs:
         # deploy identity; the probe never mints its own.
         run: |
           set -euo pipefail
+          # Mint via the v2 scope endpoint (/.default) so the token issuer is the
+          # tenant's v2.0 issuer -- the one APIM validate-jwt and the SAGE backend
+          # require. The v1 resource endpoint yields an sts.windows.net issuer that
+          # is rejected at the edge.
           AUTH_TOKEN="$(az account get-access-token \
-            --resource "$SAGE_AUDIENCE" --query accessToken -o tsv)" \
+            --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
             BASE_DOMAIN="$BASE_DOMAIN" \
             PREFLIGHT_EXPECTED_VAULTS="$PREFLIGHT_EXPECTED_VAULTS" \
             PREFLIGHT_VAULT_SOURCE="$PREFLIGHT_VAULT_SOURCE" \

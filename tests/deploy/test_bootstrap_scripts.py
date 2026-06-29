@@ -149,6 +149,25 @@ def test_entra_script_is_idempotent_lookup_then_create() -> None:
     assert "az ad app permission admin-consent" in text, "entra script must grant admin consent"
 
 
+def test_entra_script_sets_v2_access_token_version() -> None:
+    """The SAGE resource-server PATCH pins the app registration to access-token
+    **v2** (``requestedAccessTokenVersion: 2``).
+
+    Without it, a token minted for the SAGE audience via the v2 ``/.default``
+    endpoint — which the post-deploy preflight probe and the BFF on-behalf-of
+    exchange both use — is still issued as v1, whose ``sts.windows.net`` issuer
+    APIM and the SAGE backend reject. Codifying the setting here keeps a
+    fresh-tenant bring-up or a re-provision from regressing (CAS-ADR-042).
+    """
+    text = _text(ENTRA)
+    # Anchor on the JSON ``key: 2`` form so a prose mention ("set it to 2") cannot
+    # satisfy the gate; the optional backslash absorbs the script's escaped quote.
+    assert re.search(r'requestedAccessTokenVersion\\?"\s*:\s*2', text), (
+        'entra script must set "requestedAccessTokenVersion": 2 in the SAGE api PATCH '
+        "so the /.default (and on-behalf-of) token is issued as v2"
+    )
+
+
 def test_entra_script_emits_parameter_coordinates() -> None:
     """The Entra script emits the ``sageAudience`` and ``bffOidcClientId`` it
     produced, so the operator feeds them straight into the parameter set instead
