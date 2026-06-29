@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 import { resolveInitialVaultId } from './activeVault';
 import * as vaultsApi from './api/vaults';
+import * as authApi from './api/auth';
+import { ApiError, notifyAuthRequired } from './api/client';
 import type { VaultSummary } from './api/types';
+import type { SessionInfo, UserClaims } from './api/auth';
 
 const pending = <T,>(): Promise<T> => new Promise<T>(() => {});
 
@@ -16,7 +19,18 @@ vi.mock('./api/vaults', () => ({
   updateVaultConfig: vi.fn(() => pending()),
 }));
 
+vi.mock('./api/auth', () => ({
+  getSession: vi.fn(),
+  beginLogin: vi.fn(),
+  logout: vi.fn(),
+}));
+
 const listVaultsMock = vi.mocked(vaultsApi.listVaults);
+const getSessionMock = vi.mocked(authApi.getSession);
+const logoutMock = vi.mocked(authApi.logout);
+
+const AUTH_USER: UserClaims = { subject: 's', name: 'Test User', email: 'test@example.com' };
+const AUTHENTICATED: SessionInfo = { authenticated: true, user: AUTH_USER };
 
 function makeVault(id: string, name: string): VaultSummary {
   return {
@@ -58,6 +72,12 @@ vi.stubGlobal('localStorage', localStorageMock);
 
 beforeEach(() => {
   listVaultsMock.mockReset();
+  getSessionMock.mockReset();
+  // Default the gate to an authenticated session so the existing vault-selection
+  // tests reach the app shell. Auth-gate tests below override per case.
+  getSessionMock.mockResolvedValue(AUTHENTICATED);
+  logoutMock.mockReset();
+  logoutMock.mockResolvedValue(undefined);
   localStorageMock.clear();
 });
 
@@ -105,6 +125,93 @@ describe('App — vault selection persistence (component)', () => {
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     expect(select.value).toBe('cas');
     expect(localStorage.getItem('cas.activeVault')).toBe('cas');
+  });
+});
+
+describe('App — auth gate (component)', () => {
+  const signInButton = () => screen.queryByRole('button', { name: /sign in with microsoft/i });
+  const signOutButton = () => screen.queryByRole('button', { name: /^sign out$/i });
+
+  it('D1: an authenticated session renders the shell and fetches the vault list', async () => {
+    getSessionMock.mockResolvedValue(AUTHENTICATED);
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+
+    expect(listVaultsMock).toHaveBeenCalled();
+  });
+
+  it('D2: an unauthenticated session renders the interstitial and does NOT fetch vaults', async () => {
+    getSessionMock.mockResolvedValue({ authenticated: false, user: null });
+
+    render(<App />);
+    await waitFor(() => expect(signInButton()).toBeInTheDocument());
+
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(listVaultsMock).not.toHaveBeenCalled();
+  });
+
+  it('D3: the local profile (auth_not_configured) renders the shell, no interstitial', async () => {
+    getSessionMock.mockRejectedValue(new ApiError('auth_not_configured', 'auth not configured', { status: 503 }));
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+
+    expect(signInButton()).toBeNull();
+    expect(listVaultsMock).toHaveBeenCalled();
+  });
+
+  it('D4: an unexpected session-check failure surfaces an error, not the shell or sign-in', async () => {
+    getSessionMock.mockRejectedValue(new ApiError('internal_error', 'boom', { status: 500 }));
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText(/error: boom/i)).toBeInTheDocument());
+
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(signInButton()).toBeNull();
+    expect(listVaultsMock).not.toHaveBeenCalled();
+  });
+
+  it('D5: a mid-session auth_required signal returns the user to the interstitial', async () => {
+    getSessionMock.mockResolvedValue(AUTHENTICATED);
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+
+    act(() => {
+      notifyAuthRequired();
+    });
+
+    await waitFor(() => expect(signInButton()).toBeInTheDocument());
+    expect(screen.queryByRole('combobox')).toBeNull();
+  });
+
+  it('D6: signing out ends the session and returns to the interstitial', async () => {
+    getSessionMock.mockResolvedValue(AUTHENTICATED);
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+
+    const button = signOutButton();
+    expect(button).not.toBeNull();
+    await userEvent.click(button as HTMLElement);
+
+    expect(logoutMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(signInButton()).toBeInTheDocument());
+  });
+
+  it('D7: the local profile shows no sign-out control (no session to end)', async () => {
+    getSessionMock.mockRejectedValue(new ApiError('auth_not_configured', 'auth not configured', { status: 503 }));
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeInTheDocument());
+
+    expect(signOutButton()).toBeNull();
   });
 });
 

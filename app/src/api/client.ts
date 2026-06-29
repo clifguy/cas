@@ -13,19 +13,65 @@ export class ApiError extends Error {
   }
 }
 
+// --- Session-expiry signal ---------------------------------------------------
+// A live session can lapse mid-use (the server-side session has a fixed TTL).
+// When that happens any data call comes back with the `auth_required` code; the
+// app needs to drop the user back to the sign-in surface rather than show a dead
+// error banner. Every non-ok response flows through errorFromResponse below, so
+// that is the single place to detect the code and notify subscribers.
+
+type AuthRequiredListener = () => void;
+
+const authRequiredListeners = new Set<AuthRequiredListener>();
+
+/**
+ * Subscribe to the "a call returned auth_required" signal (an absent or expired
+ * session surfaced mid-use). Returns an unsubscribe function.
+ */
+export function onAuthRequired(listener: AuthRequiredListener): () => void {
+  authRequiredListeners.add(listener);
+  return () => {
+    authRequiredListeners.delete(listener);
+  };
+}
+
+/**
+ * Notify every subscriber that a call hit auth_required. Called internally when
+ * a response carries that code; also exported so the session state can be driven
+ * the same way the real signal drives it.
+ */
+export function notifyAuthRequired(): void {
+  for (const listener of authRequiredListeners) {
+    listener();
+  }
+}
+
+/**
+ * Build an ApiError from a non-ok response, parsing the structured error body
+ * when present. Emits the session-expiry signal when the body's code is
+ * auth_required so an expired session re-gates instead of erroring opaquely.
+ */
+async function errorFromResponse(response: Response): Promise<ApiError> {
+  let body: { code?: string; message?: string; detail?: unknown } | undefined;
+  try {
+    body = await response.json();
+  } catch {
+    // non-JSON error body
+  }
+  const error = new ApiError(
+    body?.code ?? `HTTP_${response.status}`,
+    body?.message ?? response.statusText,
+    body?.detail,
+  );
+  if (error.code === 'auth_required') {
+    notifyAuthRequired();
+  }
+  return error;
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    let body: { code?: string; message?: string; detail?: unknown } | undefined;
-    try {
-      body = await response.json();
-    } catch {
-      // non-JSON error
-    }
-    throw new ApiError(
-      body?.code ?? `HTTP_${response.status}`,
-      body?.message ?? response.statusText,
-      body?.detail,
-    );
+    throw await errorFromResponse(response);
   }
   return response.json() as Promise<T>;
 }
@@ -63,6 +109,18 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 }
 
 /**
+ * POST expecting an empty (204 No Content) success response. Unlike apiPost it
+ * does not read or parse the body on success, so a no-content response does not
+ * trip a JSON parse error. Non-ok responses surface as ApiError as elsewhere.
+ */
+export async function apiPostVoid(path: string): Promise<void> {
+  const response = await fetch(path, { method: 'POST' });
+  if (!response.ok) {
+    throw await errorFromResponse(response);
+  }
+}
+
+/**
  * POST returning a Server-Sent Events stream. The caller reads the stream
  * line-by-line and parses JSON from `data: {...}` lines.
  */
@@ -78,17 +136,7 @@ export async function apiStream(
     signal,
   });
   if (!response.ok) {
-    let errBody: { code?: string; message?: string; detail?: unknown } | undefined;
-    try {
-      errBody = await response.json();
-    } catch {
-      // non-JSON
-    }
-    throw new ApiError(
-      errBody?.code ?? `HTTP_${response.status}`,
-      errBody?.message ?? response.statusText,
-      errBody?.detail,
-    );
+    throw await errorFromResponse(response);
   }
   if (!response.body) {
     throw new ApiError('NO_BODY', 'Response has no body stream');
@@ -114,17 +162,7 @@ export async function apiUploadStream(
     signal,
   });
   if (!response.ok) {
-    let errBody: { code?: string; message?: string; detail?: unknown } | undefined;
-    try {
-      errBody = await response.json();
-    } catch {
-      // non-JSON
-    }
-    throw new ApiError(
-      errBody?.code ?? `HTTP_${response.status}`,
-      errBody?.message ?? response.statusText,
-      errBody?.detail,
-    );
+    throw await errorFromResponse(response);
   }
   if (!response.body) {
     throw new ApiError('NO_BODY', 'Response has no body stream');
