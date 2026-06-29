@@ -521,6 +521,39 @@ def test_apim_policy_validates_jwt_issuer_and_audience() -> None:
     )
 
 
+def test_apim_policy_accepts_v2_guid_audience() -> None:
+    """The JWT policy accepts the resource's bare application-id GUID audience in
+    addition to its App ID URI. A v2.0 access token (requestedAccessTokenVersion
+    2 -- coupled to the v2 issuer both validators require) carries the bare GUID
+    as its ``aud``, not ``api://<app-id>``; without the second audience the edge
+    401s every authenticated request. Asserts the dedicated ``<audience>``
+    element, not the named-value token alone (which also appears in prose).
+    """
+    policy = _policy_text()
+    assert "<audience>{{sage-audience}}</audience>" in policy, (
+        "the App ID URI audience must remain an accepted <audience>"
+    )
+    assert "<audience>{{sage-audience-guid}}</audience>" in policy, (
+        "validate-jwt must also accept the {{sage-audience-guid}} bare-GUID "
+        "audience (the form a v2.0 access token carries)"
+    )
+
+
+def test_apim_defines_guid_audience_named_value() -> None:
+    """apim.bicep declares the ``sage-audience-guid`` named value, derived from
+    the App ID URI by stripping the ``api://`` scheme -- no second parameter.
+    The JWT policy references it as ``{{sage-audience-guid}}``.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    assert "name: 'sage-audience-guid'" in text, (
+        "apim.bicep must declare a 'sage-audience-guid' named value"
+    )
+    assert "replace(sageAudience, 'api://', '')" in text, (
+        "the GUID audience must derive from sageAudience by stripping 'api://' "
+        "(no second parameter)"
+    )
+
+
 def test_apim_policy_serves_oauth_discovery() -> None:
     """The policy serves the MCP OAuth discovery handshake: the
     protected-resource-metadata document and the WWW-Authenticate challenge.

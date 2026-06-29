@@ -124,3 +124,26 @@ async def test_b9_app_role_accepted(keypair) -> None:
     # No delegated scope, but the app role satisfies the role requirement.
     principal = await _validator(pub).validate(_token(priv, scp="", roles=["Sage.Reader"]))
     assert "Sage.Reader" in principal.roles
+
+
+async def test_b10_accepts_either_audience_form(keypair) -> None:
+    # A validator configured with both the App ID URI and its bare GUID accepts
+    # a token whose aud is either -- a v2.0 access token carries the bare GUID.
+    priv, pub = keypair
+    v = _validator(pub, audience=["api://sage", "sage"])
+    for aud in ("sage", "api://sage"):
+        principal = await v.validate(_token(priv, aud=aud))
+        assert principal.anonymous is False
+        assert principal.subject == "user-1"
+
+
+async def test_b11_foreign_audience_still_rejected_with_list(keypair) -> None:
+    # Broadening to the two-element list does not weaken the audience check: a
+    # token for any other resource is still rejected.
+    priv, pub = keypair
+    v = _validator(pub, audience=["api://sage", "sage"])
+    for aud in ("api://wrong", "some-other-guid"):
+        with pytest.raises(AuthError) as ei:
+            await v.validate(_token(priv, aud=aud))
+        assert ei.value.status_code == 401
+        assert ei.value.error == "invalid_token"

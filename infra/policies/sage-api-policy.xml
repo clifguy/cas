@@ -5,10 +5,16 @@
             SAGE public-edge default policy for the CAS cloud deployment profile
             (CAS-ADR-042). This is the catch-all pipeline for every surface that
             is not a dedicated operation: validate the Entra JWT (single issuer,
-            single audience, uniform across every surface — the REST API, the
-            ordinary MCP mount, and the maintenance mount alike), then route to
-            the SAGE backend. Authentication and authorization are the sole admin
-            control; no surface is denied at the edge.
+            uniform across every surface — the REST API, the ordinary MCP mount,
+            and the maintenance mount alike), then route to the SAGE backend.
+            Authentication and authorization are the sole admin control; no
+            surface is denied at the edge.
+
+            The audience is accepted in both canonical forms for the SAGE
+            resource: its App ID URI ({{sage-audience}}, api://<app-id>) and its
+            bare application-id GUID ({{sage-audience-guid}}). A v2.0 access
+            token carries the bare GUID as its aud, so the JWT policy must admit
+            it alongside the URI; a token for any other resource is still rejected.
 
             The unauthenticated surfaces — the OAuth discovery doc and /health —
             are served by their own dedicated GET operations whose operation-scoped
@@ -24,6 +30,7 @@
             <openid-config url="https://login.microsoftonline.com/{{entra-tenant-id}}/v2.0/.well-known/openid-configuration" />
             <audiences>
                 <audience>{{sage-audience}}</audience>
+                <audience>{{sage-audience-guid}}</audience>
             </audiences>
         </validate-jwt>
         <set-backend-service backend-id="sage-backend" />

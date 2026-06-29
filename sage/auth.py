@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -133,12 +133,18 @@ class EntraTokenValidator:
     required delegated scope (``scp``) or application role (``roles``). The
     same instance enforces the policy for every surface, which is what makes
     authorization uniform across REST and MCP.
+
+    ``audience`` may be a single value or a sequence; a token is accepted when
+    its ``aud`` claim matches any of them (the underlying decoder validates
+    against the whole set). This admits a resource named in more than one
+    canonical form -- its App ID URI and its bare application-id GUID -- which
+    a v2.0 access token carries as the latter.
     """
 
     def __init__(
         self,
         *,
-        audience: str,
+        audience: str | Sequence[str],
         issuer: str,
         required_scopes: frozenset[str],
         required_roles: frozenset[str],
@@ -216,6 +222,25 @@ class EntraTokenValidator:
         return bool(scopes & self._required_scopes) or bool(roles & self._required_roles)
 
 
+def _accepted_audiences(configured: str) -> list[str]:
+    """Audience forms a token's ``aud`` claim may carry for the configured resource.
+
+    A v2.0 access token -- the shape a resource registered with
+    ``requestedAccessTokenVersion: 2`` issues -- carries the resource's bare
+    application-id GUID as its ``aud``, whereas the configured audience is the
+    App ID URI ``api://<app-id>``. Accept both so a v2 token validates against
+    the same resource it names. Only the configured URI's own GUID suffix is
+    admitted; no other resource is widened in.
+    """
+    forms = [configured]
+    prefix = "api://"
+    if configured.startswith(prefix):
+        bare = configured[len(prefix) :]
+        if bare and bare != configured:
+            forms.append(bare)
+    return forms
+
+
 def build_auth_validator(auth_config: StackAuthConfig | None) -> TokenValidator:
     """Select the token validator for the resolved deployment profile.
 
@@ -243,7 +268,7 @@ def build_auth_validator(auth_config: StackAuthConfig | None) -> TokenValidator:
         return jwks_client.get_signing_key_from_jwt(token).key
 
     return EntraTokenValidator(
-        audience=audience,
+        audience=_accepted_audiences(audience),
         issuer=issuer,
         required_scopes=frozenset(auth_config.required_scopes),
         required_roles=frozenset(auth_config.required_roles),
