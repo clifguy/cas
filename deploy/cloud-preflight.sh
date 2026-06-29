@@ -15,6 +15,13 @@
 # failure (everything 404s) once made every probe "look as predicted"; the
 # controls exist to catch exactly that.
 #
+# The interactive browser leg -- a human's OIDC sign-in and the on-behalf-of
+# token exchange that follows it -- is inherently interactive and is NOT exercised
+# here. This gate covers everything up to that login: the front-channel config
+# (the BFF advertises a well-formed Entra authorization_url), BFF liveness, and
+# the custom-domain TLS chain. The post-login user round-trip is confirmed once,
+# by a manual browser sign-in, after a tenant's first bring-up.
+#
 # Usage:
 #   deploy/cloud-preflight.sh            run the probe (reads the env below)
 #   deploy/cloud-preflight.sh --dry-run  enumerate the check registry, no network
@@ -45,6 +52,11 @@
 #                              chain (default: openssl s_client -showcerts)
 #   PREFLIGHT_CURL_CMD         HTTP client (default: curl); seamed by the gate to
 #                              drive probes offline
+#   PREFLIGHT_MCP_PROBE_CMD    MCP round-trip probe invoked as
+#                              `<cmd> --base-url <u> --mount <m> --mode <mode>`;
+#                              reads the bearer from AUTH_TOKEN in the env, prints
+#                              a one-line verdict, exits 0 on success (default:
+#                              python3 <script-dir>/mcp_preflight_probe.py)
 #   PREFLIGHT_SLEEP_CMD        warm-up retry delay command (default: sleep)
 #   PREFLIGHT_WARMUP_MAX_ATTEMPTS   shared budget of connection-level (000) probe
 #                              retries before the gate fails (default: 36)
@@ -60,6 +72,10 @@
 #
 # Governed by CAS-ADR-042 (deployment profiles).
 set -euo pipefail
+
+# Directory of this script, so it can locate sibling helpers (the MCP probe)
+# regardless of the caller's working directory.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --------------------------------------------------------------------------- #
 # Check registry (parallel indexed arrays -- bash 3.2 has no associative ones) #
@@ -89,6 +105,8 @@ HTTP_BODY=""
 HTTP_DIAG=""
 VAULT_FIRST_ID=""
 DETAIL_MSG=""
+MCP_PROBE_RC=""
+MCP_PROBE_OUT=""
 
 # A freshly-activated container revision can be briefly unroutable, surfacing as
 # a connection-level curl failure (HTTP_CODE 000) even though the app is healthy
@@ -223,6 +241,19 @@ default_tls_chain_probe() { # host
   printf '%s %s' "$count" "$verify"
 }
 
+# Run the MCP round-trip probe against a mount and capture its outcome into
+# globals: MCP_PROBE_RC (exit code) and MCP_PROBE_OUT (its one-line verdict). The
+# bearer token is read by the probe from AUTH_TOKEN in the environment, never
+# argv, so it never lands in the process table. Seamable via
+# PREFLIGHT_MCP_PROBE_CMD so the gate can stub it offline; left at its default it
+# is the sibling Python helper (stdlib-only, so it runs on a bare CI runner that
+# has no project virtualenv). Invoked only from within run_check, where errexit
+# is already disabled, so a non-zero probe is captured rather than aborting.
+mcp_probe() { # mount mode
+  MCP_PROBE_OUT="$($PREFLIGHT_MCP_PROBE_CMD --base-url "$SAGE_BASE_URL" --mount "$1" --mode "$2" 2>/dev/null)"
+  MCP_PROBE_RC=$?
+}
+
 # --------------------------------------------------------------------------- #
 # Checks -- each sets DETAIL_MSG (single line) and returns 0=PASS 1=FAIL 2=SKIP #
 # --------------------------------------------------------------------------- #
@@ -280,6 +311,45 @@ check_edge_browser_redirect() {
   fi
   DETAIL_MSG="browser 302 but machine got $machine not 401 (blanket redirect, not Accept-routing)"
   return 1
+}
+
+check_mcp_admin() {
+  http_get "$SAGE_BASE_URL/mcp_admin"
+  local unauth="$HTTP_CODE"
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); /mcp_admin $unauth is the blanket-failure trap, not auth-gating"
+    return 1
+  fi
+  # The unauth-401 gate is itself the control that credits the authed handshake:
+  # a blanket-200 surface would fail here (200 != 401), so a passing handshake
+  # below is genuinely auth-gated, not a canned 200. Per CAS-ADR-034 the
+  # maintenance mount is auth-gated, not authz-role-gated -- no admin role is
+  # asserted; the same machine token works on both mounts.
+  if [ "$unauth" != 401 ]; then
+    DETAIL_MSG="expected 401 from /mcp_admin unauth, got $unauth (maintenance mount auth not enforced?)"
+    return 1
+  fi
+  mcp_probe /mcp_admin handshake
+  if [ "$MCP_PROBE_RC" != 0 ]; then
+    DETAIL_MSG="/mcp_admin 401 unauth held but the authenticated maintenance handshake failed [${MCP_PROBE_OUT:-no verdict}]"
+    return 1
+  fi
+  DETAIL_MSG="/mcp_admin 401 unauth + authenticated handshake ok [$MCP_PROBE_OUT]; discovery-200 control held"
+  return 0
+}
+
+check_mcp_roundtrip() {
+  if ! edge_is_live; then
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); an MCP round-trip result would be the blanket-failure trap"
+    return 1
+  fi
+  mcp_probe /mcp roundtrip
+  if [ "$MCP_PROBE_RC" != 0 ]; then
+    DETAIL_MSG="/mcp round-trip failed [${MCP_PROBE_OUT:-no verdict}]"
+    return 1
+  fi
+  DETAIL_MSG="/mcp initialize + tools/list ok, unknown method -> JSON-RPC error [$MCP_PROBE_OUT]; discovery-200 control held"
+  return 0
 }
 
 check_edge_authn_backend() {
@@ -529,6 +599,12 @@ register edge_mcp_unauth check_edge_mcp_unauth \
 register edge_browser_redirect check_edge_browser_redirect \
   "a browser (Accept: text/html) is 302-redirected to the CAS app" \
   "the machine Accept must still 401 with the discovery-200 control held, proving Accept-routing not a blanket redirect"
+register mcp_admin check_mcp_admin \
+  "/mcp_admin 401 unauthenticated and an authenticated maintenance handshake succeeds" \
+  "the unauth-401 gate credits the authed handshake (auth-gated, not a canned 200); discovery-200 credits the 401"
+register mcp_roundtrip check_mcp_roundtrip \
+  "/mcp completes a JSON-RPC initialize + tools/list returning a well-formed result" \
+  "an unknown method must come back a JSON-RPC error (requests are processed, not blanket-statused); credited only with discovery-200 held"
 register edge_authn_backend check_edge_authn_backend \
   "authenticated /sage_vaults 200 with a JSON-array body" \
   "a backend-shaped array distinguishes a real backend from a canned edge 200"
@@ -731,6 +807,7 @@ PREFLIGHT_RESOLVE_CMD="${PREFLIGHT_RESOLVE_CMD:-dig +short}"
 PREFLIGHT_TLS_PROBE_CMD="${PREFLIGHT_TLS_PROBE_CMD:-default_tls_probe}"
 PREFLIGHT_TLS_CHAIN_PROBE_CMD="${PREFLIGHT_TLS_CHAIN_PROBE_CMD:-default_tls_chain_probe}"
 PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
+PREFLIGHT_MCP_PROBE_CMD="${PREFLIGHT_MCP_PROBE_CMD:-python3 $SCRIPT_DIR/mcp_preflight_probe.py}"
 PREFLIGHT_SLEEP_CMD="${PREFLIGHT_SLEEP_CMD:-sleep}"
 PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-36}"
 PREFLIGHT_WARMUP_INTERVAL_SECONDS="${PREFLIGHT_WARMUP_INTERVAL_SECONDS:-5}"
