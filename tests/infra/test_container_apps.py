@@ -147,6 +147,34 @@ def _schema_property_names(schema: dict) -> set[str]:
     return names
 
 
+def _sage_app_block(text: str) -> str:
+    """Return the text of the ``sageApp`` container-app declaration only.
+
+    Scopes a resource assertion to SAGE without matching the sibling BFF app: the
+    block runs from ``resource sageApp`` up to the next top-level resource
+    declaration (``resource bffApp ...``), or to end-of-text if SAGE is last.
+    """
+    bounded = re.search(r"resource\s+sageApp\b.*?(?=\nresource\s+\w+\s+')", text, re.DOTALL)
+    if bounded:
+        return bounded.group(0)
+    tail = re.search(r"resource\s+sageApp\b.*", text, re.DOTALL)
+    return tail.group(0) if tail else ""
+
+
+def _container_cpu_memory(block: str) -> tuple[float | None, float | None]:
+    """Parse ``(cpu_vcpu, memory_gib)`` from a container ``resources`` block.
+
+    ACA expresses cpu as ``cpu: json('2.0')`` (Bicep has no fractional number
+    literal) and memory as the quantity string ``memory: '4Gi'``. Either element
+    is ``None`` when its key is absent.
+    """
+    cpu_m = re.search(r"cpu:\s*json\('([\d.]+)'\)", block) or re.search(r"cpu:\s*([\d.]+)", block)
+    mem_m = re.search(r"memory:\s*'([\d.]+)\s*Gi'", block)
+    cpu = float(cpu_m.group(1)) if cpu_m else None
+    mem = float(mem_m.group(1)) if mem_m else None
+    return cpu, mem
+
+
 # ---------------------------------------------------------------------------
 # Structural / posture gates
 # ---------------------------------------------------------------------------
@@ -253,6 +281,29 @@ def test_apps_pin_a_warm_minimum_replica() -> None:
     assert len(re.findall(r"minReplicas:\s*minReplicas", text)) == 2, (
         "both scale blocks must bind minReplicas to the module param, not a literal"
     )
+
+
+def test_sage_container_right_sized_for_embedding_model_load() -> None:
+    """SAGE declares an explicit container ``resources`` block sized to load the
+    embedding model at startup without an OOM SIGKILL — 2.0 vCPU / 4.0 GiB, a
+    valid ACA Consumption combo. An unset resources block falls back to the ACA
+    default 0.5 vCPU / 1 GiB, at which the model load (lazy, during lifespan
+    startup) is OOM-killed (exit 137) and startup never completes (CAS-ADR-042).
+
+    Anti-coincidental-pass: assert the block exists *and* parses to the 2.0/4.0
+    floor. A module with no resources block fails on the missing block; a block
+    re-stating the 0.5/1Gi default, or sized on only one axis, would reopen the
+    OOM crash-loop and is rejected by the value assertions.
+    """
+    block = _sage_app_block(_strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8")))
+    assert block, "could not isolate the sageApp resource declaration"
+    assert "resources:" in block, (
+        "SAGE container must declare an explicit resources block; ACA defaults to "
+        "0.5 vCPU / 1 GiB, which OOM-kills the embedding-model load at startup"
+    )
+    cpu, memory = _container_cpu_memory(block)
+    assert cpu == 2.0, f"SAGE container cpu must be 2.0 vCPU; got {cpu}"
+    assert memory == 4.0, f"SAGE container memory must be 4 GiB; got {memory}"
 
 
 def test_sage_injects_its_runtime_coordinates() -> None:
@@ -596,3 +647,27 @@ def test_env_name_drift_detector_controls() -> None:
     injected = {"SAGE_KEY_VAULT_URI", "SAGE_KEYVAULT_URI"}
     runtime_contract = {"SAGE_KEY_VAULT_URI", "AZURE_CLIENT_ID"}
     assert injected - runtime_contract == {"SAGE_KEYVAULT_URI"}
+
+
+def test_sage_app_block_detector_controls() -> None:
+    """``_sage_app_block`` isolates the SAGE app and excludes the sibling BFF app."""
+    sample = (
+        "resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {\n"
+        "  cpu: json('2.0')\n"
+        "  memory: '4Gi'\n"
+        "}\n"
+        "resource bffApp 'Microsoft.App/containerApps@2024-03-01' = {\n"
+        "  cpu: json('0.5')\n"
+        "  memory: '1Gi'\n"
+        "}\n"
+    )
+    block = _sage_app_block(sample)
+    assert "sageApp" in block and "bffApp" not in block
+    assert _container_cpu_memory(block) == (2.0, 4.0)
+
+
+def test_container_resource_parse_controls() -> None:
+    """``_container_cpu_memory`` parses the ACA cpu/memory idiom; None when absent."""
+    assert _container_cpu_memory("cpu: json('2.0')\nmemory: '4Gi'") == (2.0, 4.0)
+    assert _container_cpu_memory("cpu: json('0.5')\nmemory: '1Gi'") == (0.5, 1.0)
+    assert _container_cpu_memory("name: 'sage'") == (None, None)

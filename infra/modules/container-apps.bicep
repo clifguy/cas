@@ -249,6 +249,18 @@ resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'sage'
           image: '${acrLoginServer}/sage:${imageTag}'
+          // 2.0 vCPU / 4.0 GiB — a valid ACA Consumption CPU:memory combo. The
+          // embedding model loads lazily on first vault content embedding, which
+          // happens during lifespan startup; at the ACA default (0.5 vCPU / 1 GiB)
+          // that load is OOM-killed (exit 137) and the app crash-loops before
+          // "Application startup complete". 4 GiB clears the worst-case embed-batch
+          // peak (~2.5 GiB RSS) with headroom, and 2 vCPU keeps model-load time
+          // inside the startup-probe budget (CAS-ADR-042). The BFF carries no model
+          // and stays at the ACA default.
+          resources: {
+            cpu: json('2.0')
+            memory: '4Gi'
+          }
           env: [
             {
               name: 'SAGE_CONFIG_PATH'
