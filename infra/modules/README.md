@@ -131,6 +131,14 @@ parameter, default 1) — Azure Container Apps treats an unset value as 0, which
 would idle the app at zero replicas and let the post-deploy preflight probe a
 cold-starting (briefly unavailable) replica.
 
+The SAGE container is explicitly sized at 2.0 vCPU / 4.0 GiB (a valid ACA
+Consumption CPU:memory combo) so it can load the embedding model — which
+initializes lazily during lifespan startup, on first vault content embedding —
+without being OOM-killed. The ACA default of 0.5 vCPU / 1 GiB is too small for
+the model's working set (the loaded model plus a worst-case embed batch peaks
+around 2.5 GiB) and SIGKILLs the process before startup completes. The BFF
+carries no model and stays at the ACA default.
+
 Cloud-profile configuration is a YAML file the module assembles from the hosting
 modules' outputs (profile, `storage_backend`, the abstraction provider/model, the
 `postgres` block, and the `auth` audience/tenant) and projects into each app as a
