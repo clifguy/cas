@@ -182,6 +182,42 @@ activate on the next dispatch, and the first run provisions the resource group �
 exercising the full GitHub-OIDC → Entra workload-identity → `az deployment` chain
 end to end.
 
+### 5. Grant the deploy identity read on SAGE
+
+The post-deploy preflight authenticates to SAGE *as the deploy identity*: it mints
+a v2 `.default` token for the SAGE audience and reads `/sage_vaults` to prove the
+backend is reachable. That token clears the APIM edge on issuer and audience
+alone, but the SAGE backend additionally requires the token to carry a configured
+role or scope. A service principal acquires no delegated scope, so the deploy
+identity must hold an **application role** on the SAGE resource server, or the
+preflight's authenticated read is rejected — and the `.default` mint can itself
+fail when the principal holds no permission on SAGE at all.
+
+Grant the **read-only `Sage.Reader`** application role — the minimal role the
+preflight read needs. This is **least-privilege**: `Sage.Reader` confers read
+across the SAGE surfaces and nothing more; the deploy identity is **not** made an
+owner of the SAGE registration and is granted no write or admin role. Run this
+after the [Entra app-registrations bootstrap](entra-app-registrations.md)
+([Stage 0](cloud-deploy-stages.md)) has created the SAGE resource server, whose
+service principal owns the role:
+
+```bash
+SAGE_APP_ID="$(az ad app list --display-name sage-resource-server --query '[0].appId' -o tsv)"
+SAGE_SP_ID="$(az ad sp list --filter "appId eq '${SAGE_APP_ID}'" --query '[0].id' -o tsv)"
+SAGE_READER_ROLE_ID="$(az ad sp show --id "${SAGE_SP_ID}" \
+  --query "appRoles[?value=='Sage.Reader'].id | [0]" -o tsv)"
+DEPLOY_SP_ID="$(az ad sp list --filter "appId eq '${APP_ID}'" --query '[0].id' -o tsv)"
+
+az rest --method POST \
+  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${DEPLOY_SP_ID}/appRoleAssignments" \
+  --body "{\"principalId\":\"${DEPLOY_SP_ID}\",\"resourceId\":\"${SAGE_SP_ID}\",\"appRoleId\":\"${SAGE_READER_ROLE_ID}\"}" \
+  2>/dev/null || true
+```
+
+The grant is idempotent — re-running tolerates a pre-existing assignment
+(`|| true`) — so a re-provision or a fresh-tenant bring-up reaches the same state
+without a manual hand-grant.
+
 ## Container images and the ACR push
 
 The [`CI`](../../.github/workflows/ci.yml) workflow builds the SAGE and CAS BFF
@@ -281,6 +317,8 @@ in the repository and no workflow edit.
 3. Run the bootstrap scripts ([`cloud-deploy-stages.md`](cloud-deploy-stages.md)
    Stages 0/2/4) for the manual floor — Entra registrations, secret/vault-source
    seed, and DNS publication — folding their emitted coordinates into the
-   Environment's variables.
+   Environment's variables. Once the Stage 0 Entra registrations exist, complete
+   the deploy-identity `Sage.Reader` grant (per-tenant setup step 5) so the
+   preflight's authenticated read clears the SAGE backend.
 4. Confirm the [post-deploy preflight gate](#post-deploy-preflight-gate) reports
    every layer green before treating the tenant as live.
