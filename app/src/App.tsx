@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
+import SignIn from './components/SignIn';
 import Dashboard from './views/Dashboard';
 import Ingest from './views/Ingest';
 import Review from './views/Review';
@@ -11,7 +12,9 @@ import DocumentDetail from './views/DocumentDetail';
 import GraphExplorer from './views/GraphExplorer';
 import { listVaults } from './api/vaults';
 import type { VaultSummary } from './api/types';
+import type { UserClaims } from './api/auth';
 import { VAULT_STORAGE_KEY, resolveInitialVaultId } from './activeVault';
+import { useSession } from './useSession';
 
 export interface VaultContext {
   vaultId: string;
@@ -19,7 +22,18 @@ export interface VaultContext {
   vaults: VaultSummary[];
 }
 
-export default function App() {
+interface AppShellProps {
+  // The signed-in user, or null in the local profile (no session, no sign-out).
+  user: UserClaims | null;
+  onSignOut: () => void;
+}
+
+/**
+ * The authenticated application: vault list, selection, and routed views. Mounts
+ * only once the auth gate has resolved to a session (or the local profile), so
+ * the vault list is never fetched before sign-in.
+ */
+function AppShell({ user, onSignOut }: AppShellProps) {
   const [vaultList, setVaultList] = useState<VaultSummary[]>([]);
   const [activeVault, setActiveVault] = useState('');
   const [loading, setLoading] = useState(true);
@@ -74,6 +88,8 @@ export default function App() {
             onVaultCreated={(id: string) => refreshVaults(id)}
             vaultList={vaultList}
             currentVault={currentVault}
+            user={user}
+            onSignOut={onSignOut}
           />
         }>
           <Route index element={<Navigate to="/dashboard" replace />} />
@@ -89,4 +105,26 @@ export default function App() {
       </Routes>
     </BrowserRouter>
   );
+}
+
+/**
+ * Auth gate. Resolves the session before the app loads any data: an
+ * unauthenticated cloud user gets the sign-in interstitial; the local profile
+ * and an authenticated session both render the app.
+ */
+export default function App() {
+  const { status, user, error, signOut } = useSession();
+
+  if (status === 'loading') {
+    return <div style={{ padding: 24, fontFamily: 'system-ui' }}>Checking session...</div>;
+  }
+  if (status === 'error') {
+    return <div style={{ padding: 24, fontFamily: 'system-ui', color: '#c62828' }}>Error: {error}</div>;
+  }
+  if (status === 'unauthenticated') {
+    return <SignIn />;
+  }
+
+  // authenticated | local -- the local profile has no session, hence no user.
+  return <AppShell user={status === 'authenticated' ? user : null} onSignOut={signOut} />;
 }

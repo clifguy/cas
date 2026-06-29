@@ -1199,3 +1199,100 @@ not just the original entry point.
 
 **Rationale:** Standard controls require no learning curve. vis.js provides
 these natively.
+
+---
+
+## 9. Authentication Gate
+
+The SPA runs an auth gate before loading any data. It keys on the three-way
+discriminator from `GET /app/auth/me`: `200 {authenticated:true}` renders the
+app, `200 {authenticated:false}` renders the sign-in interstitial (cloud
+profile, no session), and `503 auth_not_configured` renders the app directly
+(local profile, auth not in play). Implemented by `useSession` + `<SignIn>`,
+sequenced ahead of `refreshVaults()` in `App.tsx`.
+
+### TEST-APP-AUTH-001: Unauthenticated load shows the interstitial and skips the vault fetch
+
+**Artifact:** CAS-ADR-042 (deployment profiles); BFF auth surface
+**Category:** auth
+
+**Decision:** When `GET /app/auth/me` reports `authenticated:false`, the app
+renders the "Sign in with Microsoft" interstitial and does not call the vault
+list — the shell never mounts before there is a session.
+
+**Precondition:** Cloud profile, no live session.
+
+**Input:** Load the app.
+
+**Expected:**
+- The interstitial sign-in screen renders.
+- The vault selector (combobox) is absent.
+- `listVaults` is never called.
+
+**Rationale:** An unauthenticated user must get a sign-in affordance, not a
+JSON-parse error from an unauthorized data call.
+
+### TEST-APP-AUTH-002: Local profile renders the app with no sign-in and no sign-out
+
+**Artifact:** CAS-ADR-042 (deployment profiles)
+**Category:** auth
+
+**Decision:** A `503 auth_not_configured` from `GET /app/auth/me` is the local
+profile: render the app shell directly, with no interstitial and no sign-out
+control (there is no session to end). This must be distinguished from
+`authenticated:false`.
+
+**Precondition:** Local profile (auth not configured).
+
+**Input:** Load the app.
+
+**Expected:**
+- The app shell renders (vault selector present).
+- No interstitial is shown.
+- No "Sign out" control is shown.
+
+**Rationale:** The local profile has no identity provider; forcing a sign-in
+screen there would make the app unusable locally.
+
+### TEST-APP-AUTH-003: "Sign in with Microsoft" begins the Entra authorization flow
+
+**Artifact:** BFF auth surface
+**Category:** auth
+
+**Decision:** Clicking "Sign in with Microsoft" fetches the authorization URL
+from `GET /app/auth/login` and navigates the browser to it. A failed challenge
+fetch surfaces an error in place rather than dead-ending.
+
+**Precondition:** Interstitial rendered.
+
+**Input:** Click "Sign in with Microsoft".
+
+**Expected:**
+- The browser navigates to the returned `authorization_url`.
+- On a challenge-fetch failure, an error message is shown and no navigation
+  occurs.
+
+**Rationale:** An interstitial (rather than an auto-redirect) gives
+cancellation and callback errors a surface and avoids a redirect loop.
+
+### TEST-APP-AUTH-004: A mid-session expiry returns the user to sign-in
+
+**Artifact:** BFF session TTL
+**Category:** auth
+
+**Decision:** A `401 auth_required` from any data call mid-session re-triggers
+the gate, returning the user to the interstitial. Signing out does the same
+deliberately (ends the session, then re-gates).
+
+**Precondition:** Authenticated session; the server-side session then lapses
+(8h TTL) or the user clicks "Sign out".
+
+**Input:** A data call returns `401 auth_required`, or the user clicks
+"Sign out".
+
+**Expected:**
+- The interstitial sign-in screen is shown again.
+- The vault selector is no longer present.
+
+**Rationale:** An expired session should return the user to sign-in, not leave a
+dead error banner on screen.
