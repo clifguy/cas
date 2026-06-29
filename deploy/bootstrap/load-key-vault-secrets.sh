@@ -34,6 +34,21 @@ unset BFF_CLIENT_SECRET
 # bundle path and its password arrive through the environment.
 : "${WILDCARD_TLS_PFX_PATH:?set WILDCARD_TLS_PFX_PATH to the wildcard certificate bundle}"
 : "${WILDCARD_TLS_PFX_PASSWORD:?set WILDCARD_TLS_PFX_PASSWORD to the bundle password}"
+
+# The bundle MUST carry the full chain (leaf + issuing intermediate). Azure
+# Container Apps serves the bound environment certificate's PFX bytes verbatim,
+# so a leaf-only bundle makes the BFF custom domain fail strict TLS clients
+# (curl error 60: certificate not trusted) even though APIM masks it for the
+# SAGE host by rebuilding the chain. Refuse a leaf-only bundle here rather than
+# import an endpoint that silently fails verification. See
+# docs/process/key-vault-secrets.md for how to build a full-chain PFX.
+_tls_cert_count="$(openssl pkcs12 -nokeys -in "$WILDCARD_TLS_PFX_PATH" \
+  -passin "pass:$WILDCARD_TLS_PFX_PASSWORD" 2>/dev/null | grep -c 'BEGIN CERTIFICATE' || true)"
+if [ "${_tls_cert_count:-0}" -lt 2 ]; then
+  echo "ERROR: read ${_tls_cert_count:-0} certificate(s) from WILDCARD_TLS_PFX_PATH; a full chain (leaf + intermediate) is required so ACA serves a trusted chain. Rebuild the bundle per docs/process/key-vault-secrets.md (an older export may need 'openssl pkcs12 ... -legacy')." >&2
+  exit 1
+fi
+
 az keyvault certificate import --vault-name "${KV}" --name wildcard-tls \
   --file "$WILDCARD_TLS_PFX_PATH" --password "$WILDCARD_TLS_PFX_PASSWORD"
 unset WILDCARD_TLS_PFX_PASSWORD

@@ -66,6 +66,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "kv_anthropic",
         "bff_liveness",
         "bff_auth_configured",
+        "bff_custom_domain_tls",
         "dns_sage_cname",
         "dns_cas_cname",
         "dns_asuid_txt",
@@ -206,6 +207,14 @@ def _write_stub_cmd(tmp_path: Path, name: str, body: str) -> str:
     path.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return str(path)
+
+
+def _write_chain_probe_stub(tmp_path: Path, output: str) -> str:
+    """A TLS-chain-probe seam printing a fixed ``"<cert_count> <verify_code>"``
+    line -- standing in for ``openssl s_client -showcerts`` against a live host,
+    so the chain-completeness check can be exercised offline.
+    """
+    return _write_stub_cmd(tmp_path, "chainprobe", f'echo "{output}"\n')
 
 
 def _base_env(stub_url: str, **overrides: str) -> dict[str, str]:
@@ -620,6 +629,90 @@ def test_tls_matching_subject_passes(tmp_path: Path) -> None:
     proc = _run(env)
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("kv_wildcard_tls") == "PASS", verdicts
+
+
+# --------------------------------------------------------------------------- #
+# BFF custom-domain chain completeness (cas.<domain> must serve a full chain)  #
+# --------------------------------------------------------------------------- #
+# kv_wildcard_tls checks only the leaf SAN at the APIM edge (sage.<domain>); it
+# never looks at the BFF custom domain's served chain. ACA serves the bound
+# env-certificate's PFX bytes verbatim, so a leaf-only PFX makes cas.<domain>
+# fail strict clients (curl 60) while APIM masks it for sage.<domain> by
+# rebuilding the chain. This check probes the BFF host's served chain directly.
+
+
+@_NEEDS_RUNTIME
+def test_bff_custom_domain_tls_complete_chain_passes(tmp_path: Path) -> None:
+    """A complete chain (>=2 certs) that verifies (openssl code 0) PASSes."""
+    probe = _write_chain_probe_stub(tmp_path, "4 0")
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="bff_custom_domain_tls",
+        PREFLIGHT_TLS_CHAIN_PROBE_CMD=probe,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("bff_custom_domain_tls") == "PASS", proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_bff_custom_domain_tls_leaf_only_fails(tmp_path: Path) -> None:
+    """THE anti-coincidental trap: a leaf with the CORRECT SAN but no intermediate
+    (1 cert served) must FAIL. ACA serves the PFX verbatim, so strict clients
+    reject it (curl 60) though the leaf is valid -- exactly the case a SAN-only
+    check (kv_wildcard_tls) would wrongly wave through.
+    """
+    probe = _write_chain_probe_stub(tmp_path, "1 21")
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="bff_custom_domain_tls",
+        PREFLIGHT_TLS_CHAIN_PROBE_CMD=probe,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, f"a leaf-only chain must fail the run:\n{proc.stdout}"
+    assert verdicts.get("bff_custom_domain_tls") == "FAIL", proc.stdout
+    detail = _detail(proc.stdout, "bff_custom_domain_tls")
+    assert re.search(r"incomplete|intermediate|leaf", detail, re.I), (
+        f"the leaf-only failure must name the missing intermediate: {detail!r}"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_bff_custom_domain_tls_untrusted_chain_fails(tmp_path: Path) -> None:
+    """A chain that is present (>=2 certs) but does not verify (openssl code != 0)
+    must FAIL -- a distinct failure from the leaf-only case.
+    """
+    probe = _write_chain_probe_stub(tmp_path, "2 20")
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="bff_custom_domain_tls",
+        PREFLIGHT_TLS_CHAIN_PROBE_CMD=probe,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, proc.stdout
+    assert verdicts.get("bff_custom_domain_tls") == "FAIL", proc.stdout
+    detail = _detail(proc.stdout, "bff_custom_domain_tls")
+    assert re.search(r"verif|trust|20", detail, re.I), (
+        f"a present-but-untrusted chain must say so (not 'incomplete'): {detail!r}"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_bff_custom_domain_tls_no_cert_fails(tmp_path: Path) -> None:
+    """No certificate served (handshake produced nothing) must FAIL."""
+    probe = _write_chain_probe_stub(tmp_path, "0 99")
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="bff_custom_domain_tls",
+        PREFLIGHT_TLS_CHAIN_PROBE_CMD=probe,
+    )
+    proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, proc.stdout
+    assert verdicts.get("bff_custom_domain_tls") == "FAIL", proc.stdout
 
 
 @_NEEDS_RUNTIME
