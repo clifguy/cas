@@ -112,6 +112,50 @@ def test_deploy_orchestrates_staged_bringup_in_order() -> None:
     )
 
 
+def _bootstrap_job_wait_step_run(workflow: dict) -> str:
+    """The ``run:`` script of the deploy step that starts the in-VNet bootstrap job."""
+    for job in (workflow.get("jobs") or {}).values():
+        for step in job.get("steps") or []:
+            run = step.get("run", "") if isinstance(step, dict) else ""
+            if "az containerapp job start" in run:
+                return run
+    raise AssertionError("no step runs `az containerapp job start`")
+
+
+def test_bootstrap_job_wait_fails_on_non_terminal_timeout() -> None:
+    """The bootstrap-job wait must fail the deploy if the job never reaches a
+    terminal status within the wait budget — it must not fall through to success.
+
+    The poll loop breaks on ``Succeeded`` and exits non-zero on a terminal failure,
+    but a bounded loop that simply *ends* (the job still Running/Pending at the last
+    iteration) must not let the deploy proceed to restart the app tier against an
+    incomplete bootstrap — the path that leaves the workload's ``CREATE EXTENSION``
+    facing an as-yet-uncreated extension (InsufficientPrivilege at vault load). A
+    sentinel set only on ``Succeeded`` plus a post-loop guard that exits non-zero
+    closes that fall-through. Anchored on the control lines, not prose.
+    """
+    run = _bootstrap_job_wait_step_run(_load())
+    assert "az containerapp job execution show" in run, (
+        "the wait must poll the job execution status"
+    )
+    # A terminal-failure status fails the step from inside the loop.
+    assert re.search(r"Failed\|Degraded\|Stopped\)[^\n]*exit 1", run), (
+        "a terminal-failure status must fail the step"
+    )
+    # Success is recorded only on the Succeeded arm...
+    assert re.search(r"Succeeded\)\s+BOOTSTRAP_SUCCEEDED=true", run), (
+        "the wait must record success only on the Succeeded status"
+    )
+    # ...and after the loop a non-success sentinel fails the step, so a timed-out
+    # (still non-terminal) job cannot pass silently.
+    collapsed = re.sub(r"[ \t]+", " ", run)
+    guard = re.search(r'if \[ "\$BOOTSTRAP_SUCCEEDED" != true \]', collapsed)
+    assert guard is not None, "a post-loop guard must check the success sentinel"
+    assert "exit 1" in collapsed[guard.start() :], (
+        "the post-loop guard must exit non-zero when the job never reached Succeeded"
+    )
+
+
 def test_whatif_gate_precedes_apply() -> None:
     """A what-if / validate gate runs before the apply and so can block on a Bicep
     error before any change is made.
