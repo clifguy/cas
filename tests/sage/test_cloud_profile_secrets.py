@@ -172,6 +172,41 @@ def test_cld_005_storage_binding_uses_token_auth_and_suppresses_env_password(mon
     assert kwargs["user"] == "svc"
 
 
+def test_cld_005a_storage_binding_skips_workload_extension_creation(monkeypatch):
+    """The cloud storage binding builds the provisioner with extension creation
+    OFF: under managed identity the unprivileged workload cannot issue an
+    untrusted CREATE EXTENSION (Azure rejects it from any role outside
+    azure_pg_admin, even with IF NOT EXISTS, even when the extension is already
+    present), so the per-vault self-bootstrap relies on the admin-pre-created
+    extensions and creates only its schema and tables.
+
+    Anti-coincidental-pass: paired with STO-007 (the local binding leaves
+    creation ON), a binding that did not flip the flag under managed identity
+    would leave `_create_extensions` True and fail here.
+    """
+    monkeypatch.delenv("SAGE_TEST_STORAGE_BACKEND", raising=False)
+    # Avoid constructing a real azure credential; the connection class is never
+    # exercised in this structural test.
+    monkeypatch.setattr(
+        "sage.storage.postgres.managed_identity.get_postgres_credential", lambda: object()
+    )
+
+    from sage.storage_binding import (
+        PostgresVaultStorageProvisioner,
+        build_stack_storage_provisioner,
+    )
+
+    cfg = SageCoreConfig(
+        profile="cloud",
+        storage_backend="postgres",
+        postgres=StackPostgresConfig(host="db.example", user="svc", sslmode="require"),
+    )
+    prov = build_stack_storage_provisioner(cfg, managed_identity=True)
+
+    assert isinstance(prov, PostgresVaultStorageProvisioner)
+    assert prov._create_extensions is False
+
+
 def test_cld_006_storage_binding_honors_embedded_override(monkeypatch):
     """With the embedded storage override set, the cloud storage binding returns
     the embedded provisioner -- the test suite never needs a managed identity."""

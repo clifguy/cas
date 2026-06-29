@@ -33,6 +33,40 @@ def test_every_create_statement_is_idempotent():
         assert "IF NOT EXISTS" in stmt, f"non-idempotent statement: {stmt!r}"
 
 
+def test_schema_statements_creates_extensions_by_default():
+    """The default statement list creates the extensions the content store needs.
+
+    Anti-coincidental-pass: the extension CREATEs are a positive control -- a
+    bootstrap that omitted them by default (or whose flag inverted) would fail
+    here, which is the local/embedded contract (the connecting role creates its
+    own extensions, with no admin bootstrap ahead of it).
+    """
+    stmts = pgschema.schema_statements(schema="sage_test_x", extensions=["vector", "pgstattuple"])
+    assert any('CREATE EXTENSION IF NOT EXISTS "vector"' in s for s in stmts)
+    assert any('CREATE EXTENSION IF NOT EXISTS "pgstattuple"' in s for s in stmts)
+
+
+def test_schema_statements_omits_extensions_when_disabled():
+    """`create_extensions=False` drops every CREATE EXTENSION but keeps the rest.
+
+    The cloud managed-identity contract: the unprivileged workload role cannot
+    issue an untrusted CREATE EXTENSION (Azure enforces the privilege at the
+    command level, so IF NOT EXISTS does not bypass it even when the extension is
+    already present), so the self-bootstrap relies on the admin-pre-created
+    extensions and creates only its schema and tables.
+
+    Anti-coincidental-pass: an implementation that ignored the flag would still
+    emit a CREATE EXTENSION and fail the first assert; the positive controls
+    (schema, search_path, a table) fail if the flag over-deletes the rest of the
+    bootstrap rather than only the extension statements.
+    """
+    stmts = pgschema.schema_statements(schema="sage_test_x", create_extensions=False)
+    assert not any("CREATE EXTENSION" in s for s in stmts)
+    assert any(s.startswith('CREATE SCHEMA IF NOT EXISTS "sage_test_x"') for s in stmts)
+    assert any("SET search_path" in s for s in stmts)
+    assert any("CREATE TABLE IF NOT EXISTS documents" in s for s in stmts)
+
+
 def test_chunks_table_has_vector_fts_and_indexes():
     """The content chunks table carries the pgvector embedding column, the
     generated tsvector full-text column, and their HNSW + GIN indexes."""
