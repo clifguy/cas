@@ -179,6 +179,10 @@ http_get() { # url [bearer-token]
   fi
 }
 
+http_get_browser() { # url   (tokenless; a human-browser Accept header)
+  _probe_with_warmup -H "Accept: text/html" "$1"
+}
+
 http_post() { # url json-body [bearer-token]
   local url="$1" data="$2" auth="${3:-}"
   if [ -n "$auth" ]; then
@@ -249,6 +253,32 @@ check_edge_mcp_unauth() {
     return 0
   fi
   DETAIL_MSG="expected 401 from /mcp unauth, got $mcp (auth not enforced?)"
+  return 1
+}
+
+check_edge_browser_redirect() {
+  # A tokenless human browser (Accept: text/html) must be 302'd to the CAS app,
+  # while a tokenless machine client (default Accept) still 401s. Probing both
+  # makes the check discriminate Accept-routing from a blanket redirect; the
+  # discovery-200 control guards against crediting either look on a dead edge.
+  if ! edge_is_live; then
+    http_get_browser "$SAGE_BASE_URL/mcp"
+    DETAIL_MSG="control failed: discovery doc not 200 (edge not live); browser $HTTP_CODE is the blanket trap, not a redirect"
+    return 1
+  fi
+  http_get_browser "$SAGE_BASE_URL/mcp"
+  local browser="$HTTP_CODE"
+  http_get "$SAGE_BASE_URL/mcp"
+  local machine="$HTTP_CODE"
+  if [ "$browser" = 302 ] && [ "$machine" = 401 ]; then
+    DETAIL_MSG="browser (Accept: text/html) 302 to app; machine 401 held (Accept-routing, not blanket)"
+    return 0
+  fi
+  if [ "$browser" != 302 ]; then
+    DETAIL_MSG="expected 302 for Accept: text/html, got $browser (redirect not firing) with machine $machine"
+    return 1
+  fi
+  DETAIL_MSG="browser 302 but machine got $machine not 401 (blanket redirect, not Accept-routing)"
   return 1
 }
 
@@ -496,6 +526,9 @@ register edge_discovery check_edge_discovery \
 register edge_mcp_unauth check_edge_mcp_unauth \
   "/mcp 401 unauthenticated" \
   "credited only when the discovery doc returns 200 (edge live, not blanket-404)"
+register edge_browser_redirect check_edge_browser_redirect \
+  "a browser (Accept: text/html) is 302-redirected to the CAS app" \
+  "the machine Accept must still 401 with the discovery-200 control held, proving Accept-routing not a blanket redirect"
 register edge_authn_backend check_edge_authn_backend \
   "authenticated /sage_vaults 200 with a JSON-array body" \
   "a backend-shaped array distinguishes a real backend from a canned edge 200"

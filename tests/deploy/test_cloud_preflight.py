@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import http.server
+import inspect
 import json
 import os
 import re
@@ -58,6 +59,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
     {
         "edge_discovery",
         "edge_mcp_unauth",
+        "edge_browser_redirect",
         "edge_authn_backend",
         "liveness",
         "vault_load",
@@ -170,7 +172,16 @@ def serve(responder: Responder) -> Iterator[str]:
         def _dispatch(self, method: str) -> None:
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length) if length else b""
-            status, text, headers = responder(method, self.path, body)
+            # Responders are (method, path, body); a header-sensitive responder may
+            # opt into a 4th `accept` parameter (the request's Accept header) so the
+            # Accept-routed checks (the browser redirect) can be exercised offline.
+            # Existing 3-arg responders are called unchanged.
+            if len(inspect.signature(responder).parameters) >= 4:
+                status, text, headers = responder(
+                    method, self.path, body, self.headers.get("Accept", "")
+                )
+            else:
+                status, text, headers = responder(method, self.path, body)
             payload = text.encode("utf-8")
             self.send_response(status)
             for key, value in headers.items():
@@ -460,6 +471,77 @@ def test_mcp_open_fails_edge() -> None:
     verdicts = _verdicts(proc.stdout)
     assert verdicts.get("edge_discovery") == "PASS", verdicts
     assert verdicts.get("edge_mcp_unauth") == "FAIL", "an open /mcp must fail the auth-gating check"
+    assert proc.returncode != 0
+
+
+def _redirect_stub(
+    browser_status: int, machine_status: int, discovery_status: int = 200
+) -> Callable[[str, str, bytes, str], "tuple[int, str, dict[str, str]]"]:
+    """A 4-arg (Accept-sensitive) stub for the browser-redirect check: /mcp answers
+    ``browser_status`` for an ``Accept: text/html`` request and ``machine_status``
+    otherwise; the discovery doc answers ``discovery_status`` (200 = edge live).
+    """
+
+    def stub(_method: str, path: str, _body: bytes, accept: str) -> tuple[int, str, dict[str, str]]:
+        p = path.split("?", 1)[0]
+        if p == "/.well-known/oauth-protected-resource":
+            return discovery_status, (_DISCOVERY_BODY if discovery_status == 200 else "{}"), {}
+        if p == "/mcp":
+            if "text/html" in accept:
+                return browser_status, "", {"Location": "https://cas.test.invalid/"}
+            return machine_status, "", {"WWW-Authenticate": 'Bearer resource_metadata="x"'}
+        return 404, '{"error":"not_found"}', {}
+
+    return stub
+
+
+@_NEEDS_RUNTIME
+def test_browser_redirect_passes() -> None:
+    """Browser (Accept: text/html) -> 302 while the machine Accept still 401s, edge
+    live -> edge_browser_redirect PASS. The deploy-verified half of criterion #5.
+    """
+    with serve(_redirect_stub(browser_status=302, machine_status=401)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_browser_redirect"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_browser_redirect") == "PASS", (proc.stdout, proc.stderr)
+    assert proc.returncode == 0
+
+
+@_NEEDS_RUNTIME
+def test_browser_redirect_no_302_fails() -> None:
+    """THE criterion-#5 regression: the policy applies cleanly but the Accept-match
+    silently never fires, so a browser still gets 401. The check must FAIL -- not
+    pass on the healthy-looking 401 (the &quot; round-trip silently broke).
+    """
+    with serve(_redirect_stub(browser_status=401, machine_status=401)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_browser_redirect"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_browser_redirect") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_browser_redirect_blanket_302_fails() -> None:
+    """A blanket 302 (every Accept redirected, machine clients included) must FAIL --
+    it would break the MCP OAuth handshake. Proves the check discriminates by Accept,
+    not merely that *some* 302 appears.
+    """
+    with serve(_redirect_stub(browser_status=302, machine_status=302)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_browser_redirect"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_browser_redirect") == "FAIL", verdicts
+    assert proc.returncode != 0
+
+
+@_NEEDS_RUNTIME
+def test_browser_redirect_dead_edge_fails() -> None:
+    """Discovery doc broken (404): a browser 302 must NOT be credited -- the
+    discovery-200 control rejects it (the blanket-edge coincidental-pass trap).
+    """
+    with serve(_redirect_stub(browser_status=302, machine_status=401, discovery_status=404)) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_browser_redirect"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("edge_browser_redirect") == "FAIL", verdicts
     assert proc.returncode != 0
 
 

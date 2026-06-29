@@ -35,6 +35,9 @@ param sageBackendHostname string
 @description('SAGE resource-server audience the JWT policy validates (api://<app-id>).')
 param sageAudience string
 
+@description('Public URL of the CAS app a tokenless browser is redirected to from the SAGE edge — the cas custom-domain URL. Tenant-agnostic — the orchestrator supplies it; no hostname is baked into the module.')
+param casAppUrl string
+
 @description('Publisher email for the API Management service (administrative contact).')
 param publisherEmail string
 
@@ -157,6 +160,20 @@ resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@
   properties: {
     displayName: 'sage-resource-url'
     value: apimService.properties.gatewayUrl
+    secret: false
+  }
+}
+
+// The CAS app a tokenless human browser is redirected to from the SAGE edge. The
+// catch-all policy's <on-error> 401 branch 302s an Accept: text/html request here,
+// while machine clients keep the protected-resource challenge. Supplied by the
+// orchestrator (the cas custom-domain URL), so the policy carries no hardcoded host.
+resource casAppUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
+  parent: apimService
+  name: 'cas-app-url'
+  properties: {
+    displayName: 'cas-app-url'
+    value: casAppUrl
     secret: false
   }
 }
