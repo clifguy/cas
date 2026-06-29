@@ -135,6 +135,22 @@ resource sageAudienceNamedValue 'Microsoft.ApiManagement/service/namedValues@202
   }
 }
 
+// The same resource's bare application-id GUID. A v2.0 access token (the SAGE
+// app registration runs at requestedAccessTokenVersion 2, which the v2 issuer
+// both validators require also implies) carries the bare GUID as its 'aud',
+// not the api://<app-id> URI. The JWT policy accepts both forms, so the
+// audience is reconciled without a second parameter -- the GUID is the URI's
+// own suffix.
+resource sageAudienceGuidNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
+  parent: apimService
+  name: 'sage-audience-guid'
+  properties: {
+    displayName: 'sage-audience-guid'
+    value: replace(sageAudience, 'api://', '')
+    secret: false
+  }
+}
+
 resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'sage-resource-url'

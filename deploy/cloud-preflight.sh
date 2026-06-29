@@ -511,9 +511,43 @@ run_check() { # id fn
   return 0
 }
 
+# Decode and log the bearer token's iss/aud/ver claims (diagnostic only, never
+# the token itself). The audience form a v2.0 access token carries -- the bare
+# application-id GUID vs the api://<app-id> URI -- determines whether the APIM
+# edge and the SAGE backend accept it; surfacing the observed claim shape makes
+# an audience/issuer mismatch self-evident in the deploy log instead of inferred.
+# Best-effort: a non-JWT token or a missing python3 degrades to "unavailable",
+# never failing the preflight. The token is passed through the environment, not
+# argv, so it never lands in the process table.
+emit_token_claims() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "token-claims: unavailable (python3 not found)" >&2
+    return 0
+  fi
+  local decoded
+  decoded="$(_PF_DIAG_TOKEN="$AUTH_TOKEN" python3 -c '
+import base64, json, os
+
+token = os.environ.get("_PF_DIAG_TOKEN", "")
+parts = token.split(".")
+if len(parts) != 3:
+    raise SystemExit(1)
+segment = parts[1]
+segment += "=" * (-len(segment) % 4)
+claims = json.loads(base64.urlsafe_b64decode(segment))
+print("iss=%s aud=%s ver=%s" % (claims.get("iss"), claims.get("aud"), claims.get("ver")))
+' 2>/dev/null)" || true
+  if [ -n "$decoded" ]; then
+    echo "token-claims: $decoded" >&2
+  else
+    echo "token-claims: unavailable (not a decodable JWT)" >&2
+  fi
+}
+
 main() {
   local fail=0 i id
   echo "=== CAS cloud preflight :: sage=$SAGE_FQDN cas=$CAS_FQDN ===" >&2
+  emit_token_claims
   for i in "${!IDS[@]}"; do
     id="${IDS[$i]}"
     is_selected "$id" || continue

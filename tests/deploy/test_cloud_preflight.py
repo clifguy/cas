@@ -24,7 +24,9 @@ with no Docker and no deployed environment:
 
 from __future__ import annotations
 
+import base64
 import http.server
+import json
 import os
 import re
 import shutil
@@ -851,3 +853,66 @@ def test_warmup_budget_shared_across_checks(tmp_path: Path) -> None:
     assert verdicts.get("bff_liveness") == "FAIL", verdicts
     assert sleeplog.read_text().count("x") == 3, "the budget is shared, not per-check"
     assert counter.read_text().strip() == "5", "1 + 3 (first check) + 1 (second, spent)"
+
+
+# --------------------------------------------------------------------------- #
+# F. Token-claims diagnostic (decode iss/aud/ver of the bearer token)         #
+# --------------------------------------------------------------------------- #
+_DIAG_GUID = "11111111-2222-3333-4444-555555555555"
+
+
+def _synthetic_jwt(**claims: object) -> str:
+    """A structurally-valid (unsigned) JWT; only the payload segment is decoded."""
+
+    def _seg(obj: dict[str, object]) -> str:
+        raw = json.dumps(obj).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    return f"{_seg({'alg': 'none', 'typ': 'JWT'})}.{_seg(dict(claims))}.signature"
+
+
+def _diag_env(**overrides: str) -> dict[str, str]:
+    """Minimal env that runs main() with no checks selected -- diagnostic only."""
+    env = {
+        "SAGE_FQDN": "sage.test.invalid",
+        "BASE_DOMAIN": "test.invalid",
+        "AUTH_TOKEN": "test-token",
+        # Select a non-existent check id: main() emits the diagnostic, then the
+        # check loop matches nothing -> no network, exit 0.
+        "PREFLIGHT_CHECKS": "__none__",
+    }
+    env.update(overrides)
+    return env
+
+
+@_NEEDS_BASH
+def test_diagnostic_decodes_jwt_iss_aud_ver() -> None:
+    # A real (synthetic) JWT: the diagnostic reports the *decoded* claim values,
+    # which only appear if the payload segment was actually base64url-decoded.
+    token = _synthetic_jwt(
+        iss="https://login.microsoftonline.com/tid/v2.0", aud=_DIAG_GUID, ver="2.0"
+    )
+    proc = _run(_diag_env(AUTH_TOKEN=token))
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert f"aud={_DIAG_GUID}" in proc.stderr, proc.stderr
+    assert "iss=https://login.microsoftonline.com/tid/v2.0" in proc.stderr, proc.stderr
+    assert "ver=2.0" in proc.stderr, proc.stderr
+
+
+@_NEEDS_BASH
+def test_diagnostic_degrades_on_non_jwt_token() -> None:
+    # The default AUTH_TOKEN is not a 3-segment JWT; the decoder must degrade
+    # gracefully (not crash under `set -euo pipefail`) and the run must complete.
+    proc = _run(_diag_env())  # AUTH_TOKEN="test-token"
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert "token-claims: unavailable" in proc.stderr, proc.stderr
+    assert "=== preflight complete" in proc.stderr, "the run must reach completion"
+
+
+@_NEEDS_BASH
+def test_diagnostic_never_prints_raw_token() -> None:
+    token = _synthetic_jwt(
+        iss="https://login.microsoftonline.com/tid/v2.0", aud=_DIAG_GUID, ver="2.0"
+    )
+    proc = _run(_diag_env(AUTH_TOKEN=token))
+    assert token not in (proc.stdout + proc.stderr), "the raw bearer token must never be logged"
