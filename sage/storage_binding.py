@@ -144,10 +144,18 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
     the pool's ``search_path``. Opening a vault validates the id as a schema
     identifier, idempotently bootstraps the schema over a plain connection
     (provisioning must precede the pool: the pool's configure hook registers
-    the pgvector type, which exists only after ``CREATE EXTENSION vector``),
-    then opens the pool and constructs both stores over it. The returned
-    handle owns the pool; the database itself must already exist (see
+    the pgvector type, which requires ``vector`` to be installed in the
+    database), then opens the pool and constructs both stores over it. The
+    returned handle owns the pool; the database itself must already exist (see
     docs/process/postgres-local-runtime.md).
+
+    ``create_extensions`` controls whether the bootstrap issues the
+    ``CREATE EXTENSION`` statements. The default creates them (the local
+    runtime's connecting role can, and nothing creates them ahead of it). When
+    False, the extensions are an out-of-band administrator precondition the
+    bootstrap relies on rather than creates -- the pool's pgvector type
+    registration only needs ``vector`` *present* in the database, regardless of
+    which role installed it.
     """
 
     def __init__(
@@ -156,6 +164,7 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         *,
         connection_class=None,
         read_env_password: bool = True,
+        create_extensions: bool = True,
     ) -> None:
         self.postgres_config = postgres_config
         # The cloud (managed-identity) binding supplies a token-auth connection
@@ -165,6 +174,7 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         self._connection_class = connection_class
         self._read_env_password = read_env_password
         self._conn_environ = None if read_env_password else {}
+        self._create_extensions = create_extensions
 
     def _connection_params(self, search_path: str | None = None):
         from sage.storage.postgres.pool import PostgresConnectionParams
@@ -193,7 +203,10 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         conn_class = self._connection_class or psycopg.AsyncConnection
         async with await conn_class.connect(conninfo, autocommit=True) as conn:
             await bootstrap_schema(
-                conn, schema=vault_id, extensions=list(self.postgres_config.extensions)
+                conn,
+                schema=vault_id,
+                extensions=list(self.postgres_config.extensions),
+                create_extensions=self._create_extensions,
             )
 
     async def open_vault_storage(
@@ -265,8 +278,14 @@ def build_stack_storage_provisioner(
     ``managed_identity`` is the cloud profile's selector for the Postgres path:
     when set (and the resolved backend is Postgres), the provisioner authenticates
     with a per-connection managed-identity Entra token instead of an env password
-    -- the cloud endpoint has password auth disabled. The embedded override still
-    wins first, so the test suite never needs a managed identity.
+    -- the cloud endpoint has password auth disabled -- and it is built with
+    ``create_extensions=False``: the Entra endpoint rejects an untrusted
+    ``CREATE EXTENSION`` from any role outside ``azure_pg_admin`` (the command-level
+    privilege check is not bypassed by ``IF NOT EXISTS`` even when the extension is
+    already present), so the per-vault self-bootstrap relies on an administrator
+    having pre-created the extensions rather than creating them itself. The
+    embedded override still wins first, so the test suite never needs a managed
+    identity.
     """
     backend = os.environ.get(STORAGE_BACKEND_ENV_VAR) or stack_config.storage_backend
     if backend not in _VALID_BACKENDS:
@@ -287,5 +306,6 @@ def build_stack_storage_provisioner(
             stack_config.postgres,
             connection_class=connection_class,
             read_env_password=False,
+            create_extensions=False,
         )
     return PostgresVaultStorageProvisioner(stack_config.postgres)

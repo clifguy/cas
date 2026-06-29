@@ -190,3 +190,114 @@ async def test_sto_005_invalid_schema_vault_id_fails_loud_before_connecting(tmp_
                 need_graph=True,
                 need_content=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# create_extensions: the cloud managed-identity profile skips CREATE EXTENSION
+#
+# A recording connection class captures the DDL the provisioner's bootstrap runs
+# without a live server: it reuses the provisioner's own connection_class
+# injection seam (the same seam the cloud binding uses to inject token auth), so
+# the assertions exercise the real `_bootstrap -> bootstrap_schema ->
+# schema_statements -> execute` chain.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingBootstrapConn:
+    """Records the statements bootstrap_schema executes; no live Postgres.
+
+    Doubles as the connect() result context manager and the transaction()
+    context manager, the two `async with` blocks bootstrap_schema opens.
+    """
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    async def execute(self, statement: str) -> None:
+        self.statements.append(statement)
+
+    def transaction(self) -> "_RecordingBootstrapConn":
+        return self
+
+    async def __aenter__(self) -> "_RecordingBootstrapConn":
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+def _recording_conn_class() -> type:
+    """A psycopg-shaped connection class whose connect() yields a fresh recorder.
+
+    Mirrors `await conn_class.connect(conninfo, autocommit=True)`; the opened
+    recorders are exposed on the class so a test can read the executed DDL.
+    """
+    opened: list[_RecordingBootstrapConn] = []
+
+    class _ConnClass:
+        connections = opened
+
+        @classmethod
+        async def connect(
+            cls, conninfo: str, *, autocommit: bool = False
+        ) -> _RecordingBootstrapConn:
+            conn = _RecordingBootstrapConn()
+            opened.append(conn)
+            return conn
+
+    return _ConnClass
+
+
+@pytest.mark.parametrize("create_extensions", [True, False])
+async def test_sto_006_bootstrap_emits_create_extension_only_when_enabled(create_extensions):
+    """The provisioner emits CREATE EXTENSION exactly when `create_extensions`
+    is set, and always creates its schema and tables.
+
+    This is the keystone for the cloud managed-identity fix: with the flag off
+    (how the cloud binding constructs the provisioner), the unprivileged
+    workload's self-bootstrap issues no CREATE EXTENSION — Azure rejects an
+    untrusted CREATE EXTENSION from a non-azure_pg_admin role even with IF NOT
+    EXISTS — and relies on the admin-pre-created extensions instead.
+
+    Anti-coincidental-pass: the `create_extensions=True` case is the positive
+    control proving the recorder and the bootstrap path actually run (a CREATE
+    EXTENSION is recorded); a `_bootstrap` that hardcoded the flag rather than
+    forwarding `self._create_extensions` would fail one of the two cases. The
+    schema/table asserts prove the off case still bootstraps everything else.
+    """
+    pytest.importorskip("psycopg")
+    from sage.config import StackPostgresConfig
+
+    conn_class = _recording_conn_class()
+    provisioner = PostgresVaultStorageProvisioner(
+        StackPostgresConfig(host="db.example", user="svc"),
+        connection_class=conn_class,
+        read_env_password=False,
+        create_extensions=create_extensions,
+    )
+
+    await provisioner._bootstrap("sage_test_v")
+
+    assert len(conn_class.connections) == 1
+    executed = conn_class.connections[0].statements
+    assert any('CREATE SCHEMA IF NOT EXISTS "sage_test_v"' in s for s in executed)
+    assert any("CREATE TABLE IF NOT EXISTS documents" in s for s in executed)
+    assert any("CREATE EXTENSION" in s for s in executed) is create_extensions
+
+
+def test_sto_007_local_postgres_binding_creates_extensions(monkeypatch):
+    """The local Postgres binding (no managed identity) leaves extension
+    creation on: the connecting role can create extensions and no admin
+    bootstrap runs ahead of it.
+
+    Anti-coincidental-pass: paired with the cloud half (CLD-005a, which asserts
+    the managed-identity binding turns the flag off), a binding that set the
+    flag the same way on both paths would fail one of the two.
+    """
+    monkeypatch.delenv(STORAGE_BACKEND_ENV_VAR, raising=False)
+
+    prov = build_stack_storage_provisioner(
+        SageCoreConfig.model_validate({"storage_backend": "postgres"})
+    )
+    assert isinstance(prov, PostgresVaultStorageProvisioner)
+    assert prov._create_extensions is True

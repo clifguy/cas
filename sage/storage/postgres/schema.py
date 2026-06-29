@@ -290,6 +290,8 @@ def ddl_statements() -> list[str]:
 def schema_statements(
     schema: str = "public",
     extensions: Iterable[str] = DEFAULT_EXTENSIONS,
+    *,
+    create_extensions: bool = True,
 ) -> list[str]:
     """The full ordered statement list :func:`bootstrap_schema` executes.
 
@@ -297,13 +299,23 @@ def schema_statements(
     the database-global ``public`` schema (shared across disposable schemas);
     tables are then created in ``schema``. Exposed for inspection so the
     idempotency of every DDL statement is unit-testable without a server.
+
+    ``create_extensions`` gates the ``CREATE EXTENSION`` statements. The default
+    creates them, which the local runtime requires (the connecting role can
+    create extensions and no separate bootstrap runs ahead of it). When False,
+    the extensions are assumed to be an already-established precondition and the
+    statement list creates only the schema and tables: a managed endpoint may
+    enforce extension creation as a privileged operation the connecting role
+    lacks, so the workload must rely on an out-of-band administrator having
+    created them (CAS-ADR-042).
     """
     validate_schema_name(schema)
     statements = [f'CREATE SCHEMA IF NOT EXISTS "{schema}"']  # noqa: S608
-    statements += [
-        f'CREATE EXTENSION IF NOT EXISTS "{ext}"'  # noqa: S608
-        for ext in _ordered_extensions(extensions)
-    ]
+    if create_extensions:
+        statements += [
+            f'CREATE EXTENSION IF NOT EXISTS "{ext}"'  # noqa: S608
+            for ext in _ordered_extensions(extensions)
+        ]
     statements.append(f'SET search_path TO "{schema}", public')  # noqa: S608
     statements += ddl_statements()
     return statements
@@ -314,14 +326,19 @@ async def bootstrap_schema(
     *,
     schema: str = "public",
     extensions: Iterable[str] = DEFAULT_EXTENSIONS,
+    create_extensions: bool = True,
 ) -> None:
     """Idempotently create the SAGE schema on a Postgres connection.
 
     ``conn`` is an open async psycopg connection. The whole statement list runs
     in one transaction so a partial failure leaves nothing behind, and re-running
     is a no-op because every statement is ``IF NOT EXISTS``.
+
+    ``create_extensions`` is threaded to :func:`schema_statements`: pass False
+    when the extensions are an out-of-band precondition the connecting role may
+    not create itself (see :func:`schema_statements`).
     """
-    statements = schema_statements(schema, extensions)
+    statements = schema_statements(schema, extensions, create_extensions=create_extensions)
     async with conn.transaction():
         for stmt in statements:
             await conn.execute(stmt)

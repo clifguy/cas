@@ -64,16 +64,20 @@ The extensions are pre-created **as the administrator** by the job:
 - `pgstattuple` backs bloat measurement.
 
 Both are **untrusted** extensions on this server, so only a member of `azure_pg_admin`
-may create them — the unprivileged application roles cannot. Pre-creating both as the
-administrator is what lets the apps' own idempotent `CREATE EXTENSION IF NOT EXISTS`
-calls succeed as privilege-free no-ops thereafter.
+may create them — the unprivileged application roles cannot. The privilege is enforced at
+the `CREATE EXTENSION` command level, so an idempotent `CREATE EXTENSION IF NOT EXISTS`
+issued by an application role is rejected regardless of whether the extension already
+exists. The workloads therefore **do not issue `CREATE EXTENSION` at all** under managed
+identity: each self-bootstrap creates only its own (owned) schema and tables and relies on
+the administrator having pre-created the extensions.
 
 The job creates the extensions on the **application database itself** — the same
 database the workloads connect to — and then **verifies each is present there** before
-returning. Extensions are per-database, so a create that landed in a different database
-would leave a workload's `CREATE EXTENSION` facing an absent extension; the verification
-fails the job loud, naming the database and the missing extension, rather than letting
-that surface later as an `InsufficientPrivilege` at vault load.
+returning. Extensions are per-database, so the verification guarantees the extension the
+content store needs is installed in the database the workloads open (the connection pool's
+pgvector type registration needs `vector` present, not self-created); a create that landed
+in a different database fails the job loud, naming the database and the missing extension,
+rather than surfacing later as a vault that fails to load.
 
 ## Verify
 
