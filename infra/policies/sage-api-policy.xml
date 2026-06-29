@@ -44,15 +44,38 @@
     <on-error>
         <base />
         <!--
-            On an authentication failure, advertise where the protected-resource
-            metadata lives so an MCP client can begin the OAuth handshake
-            (RFC 9728 / the MCP authorization profile).
+            On an authentication failure, split by client. A human browser gets a
+            redirect to the CAS app so a tokenless visit reads as a sign-in surface,
+            not a raw 401; every machine client keeps the byte-identical
+            protected-resource challenge so an MCP client can begin the OAuth
+            handshake (RFC 9728 / the MCP authorization profile).
+
+            The browser is detected by an Accept: text/html test. That needs a
+            quoted string literal inside a <when condition="@(...)"> attribute — the
+            one construct the loadTextContent -> ARM -> APIM round-trip can corrupt.
+            The round-trip-safe encoding is a double-quoted attribute with the inner
+            string delimiters escaped as &quot; (never a single-quoted attribute with
+            literal inner double quotes, which the pipeline normalizes and breaks).
+            The redirect target arrives as the {{cas-app-url}} named value, so this
+            policy carries no hardcoded domain.
         -->
         <choose>
             <when condition="@(context.Response?.StatusCode == 401)">
-                <set-header name="WWW-Authenticate" exists-action="override">
-                    <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"</value>
-                </set-header>
+                <choose>
+                    <when condition="@(context.Request.Headers.GetValueOrDefault(&quot;Accept&quot;, &quot;&quot;).Contains(&quot;text/html&quot;))">
+                        <return-response>
+                            <set-status code="302" reason="Found" />
+                            <set-header name="Location" exists-action="override">
+                                <value>{{cas-app-url}}</value>
+                            </set-header>
+                        </return-response>
+                    </when>
+                    <otherwise>
+                        <set-header name="WWW-Authenticate" exists-action="override">
+                            <value>Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"</value>
+                        </set-header>
+                    </otherwise>
+                </choose>
             </when>
         </choose>
     </on-error>

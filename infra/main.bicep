@@ -107,6 +107,7 @@ module apim 'modules/apim.bicep' = {
     tags: tags
     sageBackendHostname: containerApps.outputs.sageFqdn
     sageAudience: sageAudience
+    casAppUrl: 'https://${casHostname}'
     publisherEmail: publisherEmail
     apimSku: apimSku
     sageCustomDomain: sageHostname

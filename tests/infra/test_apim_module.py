@@ -66,6 +66,20 @@ _CATCH_ALL_URL_TEMPLATE: Final[str] = "/{*path}"
 _DISCOVERY_PATH: Final[str] = "/.well-known/oauth-protected-resource"
 _HEALTH_PATH: Final[str] = "/health"
 
+# The browser-redirect contract on the catch-all <on-error> 401 branch: a
+# tokenless human browser (Accept: text/html) is 302'd to the CAS app via the
+# {{cas-app-url}} named value, while every machine client keeps the byte-identical
+# WWW-Authenticate challenge below. The Accept test is a quoted string literal in
+# a <when> condition — encoded in the round-trip-safe &quot;-escaped double-quoted
+# form (never the single-quote-inner-double form the IaC pipeline corrupts).
+_CAS_APP_URL_TOKEN: Final[str] = "{{cas-app-url}}"
+_BROWSER_ACCEPT_CONDITION_FRAGMENT: Final[str] = "Contains(&quot;text/html&quot;)"
+# The machine 401 challenge, frozen byte-for-byte: a reword/reorder/token change
+# (anything that breaks the RFC 9728 / MCP discovery handshake) must fail the gate.
+_WWW_AUTH_CHALLENGE: Final[str] = (
+    'Bearer resource_metadata="{{sage-resource-url}}/.well-known/oauth-protected-resource"'
+)
+
 # Policy XML files under infra/policies/: the API-level policy plus the two
 # operation-scoped policies the dedicated operations load.
 API_POLICY: Final[Path] = POLICIES_DIR / "sage-api-policy.xml"
@@ -272,6 +286,19 @@ def _inbound_section(xml: str) -> str:
     carries a round-trip-safe ``== 401`` ``<when>``) is excluded.
     """
     match = re.search(r"<inbound>(.*?)</inbound>", _strip_xml_comments(xml), re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def _on_error_section(xml: str) -> str:
+    """Return the *live* text inside the first ``<on-error>...</on-error>`` block.
+
+    XML comments are stripped first (so an explanatory comment naming a token does
+    not trip a gate scanning this section), and the result is scoped to
+    ``<on-error>`` so an ``<inbound>`` construct cannot satisfy an on-error
+    assertion. This is where the catch-all's 401 challenge — and the browser
+    redirect — live; the inbound stays string-literal-free.
+    """
+    match = re.search(r"<on-error>(.*?)</on-error>", _strip_xml_comments(xml), re.DOTALL)
     return match.group(1) if match else ""
 
 
@@ -679,6 +706,100 @@ def test_apim_api_policy_inbound_has_no_path_string_condition() -> None:
     )
 
 
+def test_apim_policy_redirects_browser_to_app() -> None:
+    """A tokenless human browser (Accept: text/html) is 302-redirected to the CAS app.
+
+    The redirect lives in the catch-all policy's <on-error> 401 branch: a nested
+    <when> that tests the Accept header for text/html, then a return-response with a
+    302 status and a Location header pointing at the {{cas-app-url}} named value.
+    Scoped to the <on-error> section so an inbound construct cannot satisfy it.
+    """
+    on_error = _on_error_section(API_POLICY.read_text(encoding="utf-8"))
+    assert "<when" in on_error and "Accept" in on_error, (
+        "the on-error 401 branch must test the Accept header in a <when> condition"
+    )
+    assert _BROWSER_ACCEPT_CONDITION_FRAGMENT in on_error, (
+        "the Accept test must use the round-trip-safe encoding "
+        f"{_BROWSER_ACCEPT_CONDITION_FRAGMENT!r}"
+    )
+    assert "<return-response" in on_error, (
+        "the browser branch must short-circuit with a return-response"
+    )
+    assert re.search(r'set-status\s+code="302"', on_error), (
+        "the browser redirect must set a 302 status"
+    )
+    assert re.search(r'name="Location"', on_error) and _CAS_APP_URL_TOKEN in on_error, (
+        "the redirect must set a Location header to the {{cas-app-url}} named value"
+    )
+
+
+def test_apim_policy_preserves_machine_401_challenge() -> None:
+    """A tokenless machine client (non-browser Accept) keeps the byte-identical 401
+    WWW-Authenticate challenge — the RFC 9728 / MCP OAuth discovery handshake.
+
+    The challenge must be unchanged and live in the <otherwise> (machine) branch, not
+    the browser <when>, so adding the redirect did not alter the machine contract.
+    """
+    on_error = _on_error_section(API_POLICY.read_text(encoding="utf-8"))
+    assert _WWW_AUTH_CHALLENGE in on_error, (
+        "the machine 401 WWW-Authenticate challenge must remain byte-identical"
+    )
+    assert "<otherwise>" in on_error, (
+        "the machine challenge must sit in the <otherwise> branch (browser is the <when>)"
+    )
+    assert on_error.index(_WWW_AUTH_CHALLENGE) > on_error.index("<otherwise>"), (
+        "the WWW-Authenticate challenge must be in the <otherwise> (machine) branch, "
+        "not the browser redirect <when>"
+    )
+
+
+def test_apim_browser_redirect_uses_robust_quote_encoding() -> None:
+    """The Accept-header literal uses the round-trip-safe &quot;-escaped double-quoted
+    form, never the single-quote-inner-double form the loadTextContent -> ARM -> APIM
+    pipeline corrupts. This is the encoding half of the browser-redirect acceptance
+    criterion; the surviving round-trip itself is deploy-verified by the preflight.
+    """
+    policy = _policy_text()
+    assert _BROWSER_ACCEPT_CONDITION_FRAGMENT in policy, (
+        "the browser Accept test must be present in the &quot;-escaped form"
+    )
+    assert not _fragile_single_quoted_attrs(policy), (
+        "the browser redirect condition must not use the round-trip-fragile "
+        "single-quoted-inner-double-quote encoding"
+    )
+
+
+def test_apim_defines_cas_app_url_named_value() -> None:
+    """apim.bicep declares the ``cas-app-url`` named value from a ``casAppUrl``
+    parameter (the browser-redirect target), with no hardcoded URL in the module.
+    """
+    text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
+    assert re.search(r"param\s+casAppUrl\s+string", text), (
+        "apim.bicep must take a `casAppUrl` string parameter"
+    )
+    assert "name: 'cas-app-url'" in text, "apim.bicep must declare a 'cas-app-url' named value"
+    assert re.search(r"value:\s*casAppUrl", text), (
+        "the cas-app-url named value must come from the casAppUrl parameter"
+    )
+    assert not _hardcoded_https_hosts(APIM.read_text(encoding="utf-8")), (
+        "the redirect target must be parameterized; no hardcoded https host in the module"
+    )
+
+
+def test_main_bicep_passes_cas_app_url_to_apim() -> None:
+    """main.bicep passes the CAS app URL to the apim module, interpolated from the cas
+    custom-domain hostname — tenant-agnostic, never a literal domain.
+    """
+    text = _strip_line_comments(MAIN_BICEP.read_text(encoding="utf-8"))
+    match = re.search(r"casAppUrl:\s*([^\n]+)", text)
+    assert match, "main.bicep must pass `casAppUrl:` to the apim module"
+    rhs = match.group(1)
+    assert "${casHostname}" in rhs, (
+        "casAppUrl must interpolate the cas custom-domain hostname (${casHostname})"
+    )
+    assert not _hardcoded_https_hosts(rhs), f"casAppUrl must not embed a literal https host: {rhs}"
+
+
 def test_apim_operation_policies_loaded_from_versioned_xml() -> None:
     """Both dedicated operation policies are loaded from versioned XML under
     infra/policies/ via loadTextContent — the same discipline as the API-level
@@ -975,6 +1096,26 @@ def test_inbound_section_detector_controls() -> None:
     assert "<when" not in _inbound_section(commented)
     assert "validate-jwt" not in _inbound_section(commented)
     assert "set-backend-service" in _inbound_section(commented)
+
+
+def test_on_error_section_detector_controls() -> None:
+    """``_on_error_section`` returns the on-error body, excludes ``<inbound>``, returns
+    "" when absent, and does not leak commented tokens — so an on-error gate (the
+    browser-redirect checks) cannot pass coincidentally on an empty or mis-scoped match.
+    """
+    xml = (
+        "<policies><inbound><base /><validate-jwt /></inbound>"
+        '<on-error><base /><choose><when condition="@(... == 401)">'
+        "<return-response /></when></choose></on-error></policies>"
+    )
+    section = _on_error_section(xml)
+    assert "when" in section and "return-response" in section
+    assert "validate-jwt" not in section, "the inbound block must be excluded from on-error"
+    assert _on_error_section("<policies><inbound /></policies>") == ""
+    commented = "<on-error><!-- <return-response/> redirect here --><base /></on-error>"
+    assert "return-response" not in _on_error_section(commented), (
+        "commented tokens must not leak into the live on-error section"
+    )
 
 
 def test_literal_get_operation_detector_controls() -> None:
