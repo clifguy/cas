@@ -2,10 +2,10 @@
 
 When the backend runs standalone (hosted profile) the SPA is served same-origin
 by the backend and holds no token, so it cannot reach SAGE directly. This
-router forwards every ``/sage_vaults/*`` request to SAGE through the transport
-seam, which attaches the signed-in user's delegated bearer server-side. Mounted
-in the SAGE app (co-located profile), SAGE answers ``/sage_vaults/*`` from its
-own routers and this proxy is unused.
+router forwards the bare ``/sage_vaults`` collection and every ``/sage_vaults/*``
+subpath request to SAGE through the transport seam, which attaches the signed-in
+user's delegated bearer server-side. Mounted in the SAGE app (co-located
+profile), SAGE answers these paths from its own routers and this proxy is unused.
 """
 
 from __future__ import annotations
@@ -54,18 +54,18 @@ def _get_transport(request: Request) -> SageTransport:
     return transport
 
 
-@router.api_route(
-    "/sage_vaults/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    include_in_schema=False,
-)
-async def proxy_sage(
-    path: str,
+async def _forward_to_sage(
+    upstream_path: str,
     request: Request,
-    settings: BffAuthSettings = Depends(get_auth_settings),
-    sessions: SessionService = Depends(get_session_service),
+    settings: BffAuthSettings,
+    sessions: SessionService,
 ) -> Response:
-    """Forward one ``/sage_vaults/*`` call to SAGE under the user's identity."""
+    """Forward one request to SAGE ``upstream_path`` under the user's identity.
+
+    Refuses with the structured ``auth_required`` 401 when there is no signed-in
+    session, attaches the delegated bearer through the transport, and relays the
+    upstream status, body, and content-shape-independent headers back.
+    """
     session_id = request.cookies.get(settings.session_cookie_name)
     session = await sessions.read(session_id)
     if session is None:
@@ -80,7 +80,7 @@ async def proxy_sage(
     body = await request.body()
     sage_response = await transport.request(
         request.method,
-        f"/sage_vaults/{path}",
+        upstream_path,
         session=session,
         params=dict(request.query_params),
         headers=forwarded_headers,
@@ -96,3 +96,37 @@ async def proxy_sage(
         status_code=sage_response.status_code,
         headers=relayed_headers,
     )
+
+
+@router.api_route(
+    "/sage_vaults",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
+async def proxy_sage_collection(
+    request: Request,
+    settings: BffAuthSettings = Depends(get_auth_settings),
+    sessions: SessionService = Depends(get_session_service),
+) -> Response:
+    """Forward the bare ``/sage_vaults`` collection call (list/create) to SAGE.
+
+    The subpath route below requires a trailing segment, so the bare collection
+    URL would otherwise fall through to the SPA catch-all and return HTML. This
+    forwards to the canonical upstream collection path with no trailing slash.
+    """
+    return await _forward_to_sage("/sage_vaults", request, settings, sessions)
+
+
+@router.api_route(
+    "/sage_vaults/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    include_in_schema=False,
+)
+async def proxy_sage(
+    path: str,
+    request: Request,
+    settings: BffAuthSettings = Depends(get_auth_settings),
+    sessions: SessionService = Depends(get_session_service),
+) -> Response:
+    """Forward one ``/sage_vaults/*`` subpath call to SAGE under the user's identity."""
+    return await _forward_to_sage(f"/sage_vaults/{path}", request, settings, sessions)
