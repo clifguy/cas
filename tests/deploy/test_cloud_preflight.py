@@ -125,6 +125,21 @@ def _verdicts(stdout: str) -> dict[str, str]:
     return out
 
 
+def _detail(stdout: str, check_id: str) -> str:
+    """Return the detail text the matrix printed for ``check_id`` -- the text
+    after the STATUS and id columns -- or "" if the check produced no line.
+
+    ``_verdicts`` reports only the PASS/FAIL/SKIP token; this lets a test assert
+    on the *message* a specific check emitted (e.g. the decoded curl reason a
+    connection-level 000 leaves on its FAIL line).
+    """
+    for line in stdout.splitlines():
+        m = re.match(r"^\s*(?:PASS|FAIL|SKIP)\s+(\w+)\s+(.*)$", line)
+        if m and m.group(1) == check_id:
+            return m.group(2).strip()
+    return ""
+
+
 def _dry_run_rows(stdout: str) -> dict[str, tuple[str, str]]:
     """Parse ``CHECK <id> | prediction: <p> | control: <c>`` lines."""
     out: dict[str, tuple[str, str]] = {}
@@ -650,7 +665,7 @@ def test_bff_auth_unconfigured_fails() -> None:
 # PREFLIGHT_CURL_CMD / PREFLIGHT_SLEEP_CMD seams.
 
 
-def _write_curl_stub(tmp_path: Path, counter: Path, fail_until: int) -> str:
+def _write_curl_stub(tmp_path: Path, counter: Path, fail_until: int, exit_code: int = 7) -> str:
     """A curl seam that simulates a not-yet-routable endpoint.
 
     Each invocation increments ``counter`` (so a test can assert the exact probe
@@ -658,12 +673,16 @@ def _write_curl_stub(tmp_path: Path, counter: Path, fail_until: int) -> str:
     "couldn't connect" (the script maps that to HTTP_CODE 000); thereafter it
     ``exec``s the real curl, which serves the live stub server's real response.
     Set ``fail_until`` huge to model a persistent outage.
+
+    ``exit_code`` is the curl exit status to simulate (default 7, "failed to
+    connect"). Pass a different code to model a distinct failure mode the script
+    must decode -- e.g. 35 (TLS handshake), 6 (DNS), 28 (timeout), 60 (cert).
     """
     body = (
         f'n=$(cat "{counter}" 2>/dev/null || echo 0)\n'
         "n=$((n + 1))\n"
         f'echo "$n" > "{counter}"\n'
-        f'if [ "$n" -le {fail_until} ]; then exit 7; fi\n'
+        f'if [ "$n" -le {fail_until} ]; then exit {exit_code}; fi\n'
         'exec curl "$@"\n'
     )
     return _write_stub_cmd(tmp_path, "curl-stub", body)
@@ -916,3 +935,146 @@ def test_diagnostic_never_prints_raw_token() -> None:
     )
     proc = _run(_diag_env(AUTH_TOKEN=token))
     assert token not in (proc.stdout + proc.stderr), "the raw bearer token must never be logged"
+
+
+# --------------------------------------------------------------------------- #
+# G. Connection-level 000 reason decode (turn an opaque 000 into a diagnosis)  #
+# --------------------------------------------------------------------------- #
+# A 000 is a connection-level failure that does not by itself distinguish "not
+# yet routable" from "TLS handshake refused" from "DNS". The probe captures
+# curl's exit code, decodes it to a human reason, and surfaces it on the FAIL
+# line -- so the next red deploy names its own cause instead of guessing. These
+# drive the decode offline through the PREFLIGHT_CURL_CMD seam (curl-stub exit
+# codes) and read the message back via ``_detail``.
+
+
+@_NEEDS_RUNTIME
+def test_curl_reason_surfaced_on_connection_refused(tmp_path: Path) -> None:
+    """A terminal 000 from a connection refusal (curl exit 7) decorates the FAIL
+    line with the decoded reason. Today's script collapses every non-zero curl
+    exit to a bare ``code=000``; this can only pass once the exit code is
+    captured and named.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=999, exit_code=7)
+    proc = _run(
+        _base_env(
+            "http://127.0.0.1:1",
+            PREFLIGHT_CHECKS="bff_liveness",
+            PREFLIGHT_CURL_CMD=curl,
+            PREFLIGHT_WARMUP_MAX_ATTEMPTS="2",
+            PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+        )
+    )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    detail = _detail(proc.stdout, "bff_liveness")
+    assert "curl 7" in detail, f"the decoded curl exit code must name the failure mode: {detail!r}"
+    assert re.search(r"connection|routable|refus", detail, re.I), (
+        f"the reason must carry a human phrase, not just the bare code: {detail!r}"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_curl_reason_distinguishes_tls_handshake(tmp_path: Path) -> None:
+    """THE discriminating decode: a 000 from a TLS handshake failure (curl 35)
+    is named distinctly from a not-yet-routable connection refusal (curl 7).
+    A naive fix that prints one generic "connection failure" for every non-zero
+    exit would make these indistinguishable; paired with the curl-7 test this
+    pins a code-varying mapping -- the actual diagnostic value.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=999, exit_code=35)
+    proc = _run(
+        _base_env(
+            "http://127.0.0.1:1",
+            PREFLIGHT_CHECKS="bff_liveness",
+            PREFLIGHT_CURL_CMD=curl,
+            PREFLIGHT_WARMUP_MAX_ATTEMPTS="2",
+            PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+        )
+    )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    detail = _detail(proc.stdout, "bff_liveness")
+    assert "curl 35" in detail, f"the TLS failure mode must be named: {detail!r}"
+    assert re.search(r"tls|ssl|handshake", detail, re.I), (
+        f"curl 35 must decode to a TLS/handshake phrase, distinct from a routing reason: {detail!r}"
+    )
+
+
+@_NEEDS_RUNTIME
+def test_curl_reason_absent_on_real_http_error() -> None:
+    """A genuine 5xx (curl exits 0; a real status arrived) carries NO curl
+    reason: the decode attaches only to connection-level failures and never
+    mislabels a real server fault as a connection problem. Guards against an
+    over-eager fix that always appends a reason.
+    """
+
+    def health_500(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return 500, '{"error":"unavailable"}', {}
+        return _green(method, path, body)
+
+    with serve(health_500) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="bff_liveness"))
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    detail = _detail(proc.stdout, "bff_liveness")
+    assert "curl " not in detail, (
+        f"a real HTTP failure must not be tagged with a curl reason: {detail!r}"
+    )
+    assert "code=500" in detail, f"the real status must still be reported: {detail!r}"
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize(
+    ("exit_code", "phrase"),
+    [(6, r"dns|resolve"), (28, r"time|timeout"), (60, r"cert|tls|ssl")],
+)
+def test_curl_reason_mapping_covers_failure_modes(
+    tmp_path: Path, exit_code: int, phrase: str
+) -> None:
+    """The decode table names each diagnostically-distinct curl failure mode and
+    every reason embeds the literal ``curl <code>`` for an unambiguous anchor --
+    so a future edit that drops a row is caught.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=999, exit_code=exit_code)
+    proc = _run(
+        _base_env(
+            "http://127.0.0.1:1",
+            PREFLIGHT_CHECKS="bff_liveness",
+            PREFLIGHT_CURL_CMD=curl,
+            PREFLIGHT_WARMUP_MAX_ATTEMPTS="1",
+            PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+        )
+    )
+    detail = _detail(proc.stdout, "bff_liveness")
+    assert f"curl {exit_code}" in detail, (
+        f"exit {exit_code} must be named on the FAIL line: {detail!r}"
+    )
+    assert re.search(phrase, detail, re.I), f"exit {exit_code} reason phrase missing: {detail!r}"
+
+
+@_NEEDS_RUNTIME
+def test_warmup_engage_breadcrumb_to_stderr(tmp_path: Path) -> None:
+    """When the warm-up engages, a single breadcrumb to STDERR names the decoded
+    reason, so a human watching the live CI log understands the bounded pause.
+    The stdout matrix is untouched -- the verdict parser sees nothing new.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=999, exit_code=7)
+    proc = _run(
+        _base_env(
+            "http://127.0.0.1:1",
+            PREFLIGHT_CHECKS="bff_liveness",
+            PREFLIGHT_CURL_CMD=curl,
+            PREFLIGHT_WARMUP_MAX_ATTEMPTS="2",
+            PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+        )
+    )
+    assert re.search(r"warm-up", proc.stderr, re.I), (
+        f"no warm-up breadcrumb on stderr: {proc.stderr!r}"
+    )
+    assert "curl 7" in proc.stderr, f"the breadcrumb must name the decoded reason: {proc.stderr!r}"

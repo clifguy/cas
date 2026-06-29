@@ -44,9 +44,9 @@
 #                              drive probes offline
 #   PREFLIGHT_SLEEP_CMD        warm-up retry delay command (default: sleep)
 #   PREFLIGHT_WARMUP_MAX_ATTEMPTS   shared budget of connection-level (000) probe
-#                              retries before the gate fails (default: 24)
+#                              retries before the gate fails (default: 36)
 #   PREFLIGHT_WARMUP_INTERVAL_SECONDS  seconds between warm-up retries
-#                              (default: 5; with the default budget, ~120s total)
+#                              (default: 5; with the default budget, ~180s total)
 #   EXPECTED_SAGE_CNAME_SUFFIX expected sage CNAME target suffix (azure-api.net)
 #   EXPECTED_CAS_CNAME_SUFFIX  expected cas CNAME target suffix
 #                              (azurecontainerapps.io)
@@ -83,6 +83,7 @@ get_result() { eval "printf '%s' \"\${result_$1:-}\""; }
 # --------------------------------------------------------------------------- #
 HTTP_CODE=""
 HTTP_BODY=""
+HTTP_DIAG=""
 VAULT_FIRST_ID=""
 DETAIL_MSG=""
 
@@ -93,17 +94,53 @@ DETAIL_MSG=""
 # HTTP status (incl. 4xx/5xx) returns on the first attempt, so a genuine fault
 # fails fast. The budget is shared across all probes and armed once, so a true
 # outage exhausts it on the first check and every later 000 fails fast rather
-# than multiplying the wait by the check count. See CAS-ADR-042.
+# than multiplying the wait by the check count.
+#
+# A 000 is a connection-level failure that does not by itself distinguish "not
+# yet routable" from "TLS handshake refused" from "DNS". So a terminal 000 is
+# decoded from curl's exit code (HTTP_DIAG) and surfaced on the FAIL line, and a
+# warm-up engagement leaves a one-line breadcrumb on stderr -- turning an opaque
+# 000 into a diagnosis instead of a guess. See CAS-ADR-042.
 WARMUP_BUDGET_REMAINING=""
 
-# One probe attempt: sets HTTP_CODE (status, or 000 on a connection failure) and
-# HTTP_BODY. The HTTP client is seamable (PREFLIGHT_CURL_CMD) so the gate can
-# drive it offline; left at its default it is plain curl.
+# Decode a curl exit status into a human-readable connection-level failure
+# reason. Each phrase embeds the literal `curl <code>` so the matrix line is an
+# unambiguous, greppable signal: curl 7/28 ~ not-yet-routable/timeout (a wider
+# warm-up budget can help), curl 35/51/60 ~ TLS/cert (a binding defect a budget
+# cannot fix), curl 6 ~ DNS.
+curl_exit_reason() { # curl-exit-code
+  case "$1" in
+    6) printf 'DNS resolution failed (curl 6)' ;;
+    7) printf 'connection refused / not yet routable (curl 7)' ;;
+    28) printf 'connection timed out (curl 28)' ;;
+    35) printf 'TLS/SSL handshake failed (curl 35)' ;;
+    51) printf 'TLS certificate verification failed (curl 51)' ;;
+    56) printf 'network data receive failure (curl 56)' ;;
+    60) printf 'TLS certificate not trusted (curl 60)' ;;
+    *) printf 'connection-level failure (curl %s)' "$1" ;;
+  esac
+}
+
+# One probe attempt: sets HTTP_CODE (status, or 000 on a connection failure),
+# HTTP_BODY, and HTTP_DIAG (the decoded curl-exit reason on a 000, empty on a
+# real status -- so a downstream FAIL line can name *why* a 000 occurred). curl's
+# exit code is captured, not discarded. The HTTP client is seamable
+# (PREFLIGHT_CURL_CMD) so the gate can drive it offline; left at its default it
+# is plain curl.
 _curl_once() { # curl-arg...
-  local code
-  code="$($PREFLIGHT_CURL_CMD -sS -o "$WORKDIR/body" -w '%{http_code}' "$@" 2>/dev/null)" \
-    || code=000
-  HTTP_CODE="$code"
+  local code rc
+  if code="$($PREFLIGHT_CURL_CMD -sS -o "$WORKDIR/body" -w '%{http_code}' "$@" 2>/dev/null)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    HTTP_CODE=000
+    HTTP_DIAG="$(curl_exit_reason "$rc")"
+  else
+    HTTP_CODE="$code"
+    HTTP_DIAG=""
+  fi
   HTTP_BODY="$(cat "$WORKDIR/body" 2>/dev/null || true)"
 }
 
@@ -112,7 +149,15 @@ _curl_once() { # curl-arg...
 _probe_with_warmup() { # curl-arg...
   _curl_once "$@"
   [ "$HTTP_CODE" != 000 ] && return 0
-  [ -z "$WARMUP_BUDGET_REMAINING" ] && WARMUP_BUDGET_REMAINING="$PREFLIGHT_WARMUP_MAX_ATTEMPTS"
+  if [ -z "$WARMUP_BUDGET_REMAINING" ]; then
+    WARMUP_BUDGET_REMAINING="$PREFLIGHT_WARMUP_MAX_ATTEMPTS"
+    # First 000 of the run: leave one breadcrumb naming the decoded reason and
+    # the budget, so a human watching the live CI log understands the pause.
+    if [ "$WARMUP_BUDGET_REMAINING" -gt 0 ]; then
+      printf 'preflight: warm-up engaged (%s); retrying up to %s more time(s)...\n' \
+        "$HTTP_DIAG" "$WARMUP_BUDGET_REMAINING" >&2
+    fi
+  fi
   while [ "$WARMUP_BUDGET_REMAINING" -gt 0 ]; do
     WARMUP_BUDGET_REMAINING=$((WARMUP_BUDGET_REMAINING - 1))
     $PREFLIGHT_SLEEP_CMD "$PREFLIGHT_WARMUP_INTERVAL_SECONDS"
@@ -496,6 +541,7 @@ is_selected() { # id
 run_check() { # id fn
   local id="$1" fn="$2" rc status
   DETAIL_MSG="(no detail)"
+  HTTP_DIAG=""
   set +e
   "$fn"
   rc=$?
@@ -505,6 +551,12 @@ run_check() { # id fn
     2) status=SKIP ;;
     *) status=FAIL ;;
   esac
+  # A connection-level failure (000) leaves HTTP_DIAG naming curl's decoded exit
+  # reason; surface it on the FAIL line so an opaque 000 becomes a diagnosis.
+  # Empty on a real HTTP status, so a genuine 4xx/5xx is never mislabeled.
+  if [ "$status" = FAIL ] && [ -n "$HTTP_DIAG" ]; then
+    DETAIL_MSG="$DETAIL_MSG [last probe: $HTTP_DIAG]"
+  fi
   set_result "$id" "$status"
   printf '%-4s %-22s %s\n' "$status" "$id" "$DETAIL_MSG"
   [ "$status" = FAIL ] && return 1
@@ -596,7 +648,7 @@ PREFLIGHT_RESOLVE_CMD="${PREFLIGHT_RESOLVE_CMD:-dig +short}"
 PREFLIGHT_TLS_PROBE_CMD="${PREFLIGHT_TLS_PROBE_CMD:-default_tls_probe}"
 PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
 PREFLIGHT_SLEEP_CMD="${PREFLIGHT_SLEEP_CMD:-sleep}"
-PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-24}"
+PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-36}"
 PREFLIGHT_WARMUP_INTERVAL_SECONDS="${PREFLIGHT_WARMUP_INTERVAL_SECONDS:-5}"
 EXPECTED_SAGE_CNAME_SUFFIX="${EXPECTED_SAGE_CNAME_SUFFIX:-azure-api.net}"
 EXPECTED_CAS_CNAME_SUFFIX="${EXPECTED_CAS_CNAME_SUFFIX:-azurecontainerapps.io}"
