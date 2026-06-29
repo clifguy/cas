@@ -40,6 +40,13 @@
 #                              (default: dig +short)
 #   PREFLIGHT_TLS_PROBE_CMD    TLS cert probe invoked as `<cmd> <host>`, prints
 #                              the certificate SAN (default: openssl s_client)
+#   PREFLIGHT_CURL_CMD         HTTP client (default: curl); seamed by the gate to
+#                              drive probes offline
+#   PREFLIGHT_SLEEP_CMD        warm-up retry delay command (default: sleep)
+#   PREFLIGHT_WARMUP_MAX_ATTEMPTS   shared budget of connection-level (000) probe
+#                              retries before the gate fails (default: 24)
+#   PREFLIGHT_WARMUP_INTERVAL_SECONDS  seconds between warm-up retries
+#                              (default: 5; with the default budget, ~120s total)
 #   EXPECTED_SAGE_CNAME_SUFFIX expected sage CNAME target suffix (azure-api.net)
 #   EXPECTED_CAS_CNAME_SUFFIX  expected cas CNAME target suffix
 #                              (azurecontainerapps.io)
@@ -79,30 +86,59 @@ HTTP_BODY=""
 VAULT_FIRST_ID=""
 DETAIL_MSG=""
 
-http_get() { # url [bearer-token]
-  local url="$1" auth="${2:-}" code
-  if [ -n "$auth" ]; then
-    code="$(curl -sS -o "$WORKDIR/body" -w '%{http_code}' \
-      -H "Authorization: Bearer $auth" "$url" 2>/dev/null)" || code=000
-  else
-    code="$(curl -sS -o "$WORKDIR/body" -w '%{http_code}' "$url" 2>/dev/null)" || code=000
-  fi
+# A freshly-activated container revision can be briefly unroutable, surfacing as
+# a connection-level curl failure (HTTP_CODE 000) even though the app is healthy
+# -- the ingress has not yet placed the new revision in service. The probe
+# tolerates that with a bounded warm-up retry keyed STRICTLY on 000: any real
+# HTTP status (incl. 4xx/5xx) returns on the first attempt, so a genuine fault
+# fails fast. The budget is shared across all probes and armed once, so a true
+# outage exhausts it on the first check and every later 000 fails fast rather
+# than multiplying the wait by the check count. See CAS-ADR-042.
+WARMUP_BUDGET_REMAINING=""
+
+# One probe attempt: sets HTTP_CODE (status, or 000 on a connection failure) and
+# HTTP_BODY. The HTTP client is seamable (PREFLIGHT_CURL_CMD) so the gate can
+# drive it offline; left at its default it is plain curl.
+_curl_once() { # curl-arg...
+  local code
+  code="$($PREFLIGHT_CURL_CMD -sS -o "$WORKDIR/body" -w '%{http_code}' "$@" 2>/dev/null)" \
+    || code=000
   HTTP_CODE="$code"
   HTTP_BODY="$(cat "$WORKDIR/body" 2>/dev/null || true)"
 }
 
-http_post() { # url json-body [bearer-token]
-  local url="$1" data="$2" auth="${3:-}" code
+# Probe with the warm-up retry. Returns as soon as any real status arrives;
+# retries only a connection-level 000, drawing on the shared budget.
+_probe_with_warmup() { # curl-arg...
+  _curl_once "$@"
+  [ "$HTTP_CODE" != 000 ] && return 0
+  [ -z "$WARMUP_BUDGET_REMAINING" ] && WARMUP_BUDGET_REMAINING="$PREFLIGHT_WARMUP_MAX_ATTEMPTS"
+  while [ "$WARMUP_BUDGET_REMAINING" -gt 0 ]; do
+    WARMUP_BUDGET_REMAINING=$((WARMUP_BUDGET_REMAINING - 1))
+    $PREFLIGHT_SLEEP_CMD "$PREFLIGHT_WARMUP_INTERVAL_SECONDS"
+    _curl_once "$@"
+    [ "$HTTP_CODE" != 000 ] && return 0
+  done
+  return 0
+}
+
+http_get() { # url [bearer-token]
+  local url="$1" auth="${2:-}"
   if [ -n "$auth" ]; then
-    code="$(curl -sS -o "$WORKDIR/body" -w '%{http_code}' \
-      -H "Content-Type: application/json" -H "Authorization: Bearer $auth" \
-      --data "$data" "$url" 2>/dev/null)" || code=000
+    _probe_with_warmup -H "Authorization: Bearer $auth" "$url"
   else
-    code="$(curl -sS -o "$WORKDIR/body" -w '%{http_code}' \
-      -H "Content-Type: application/json" --data "$data" "$url" 2>/dev/null)" || code=000
+    _probe_with_warmup "$url"
   fi
-  HTTP_CODE="$code"
-  HTTP_BODY="$(cat "$WORKDIR/body" 2>/dev/null || true)"
+}
+
+http_post() { # url json-body [bearer-token]
+  local url="$1" data="$2" auth="${3:-}"
+  if [ -n "$auth" ]; then
+    _probe_with_warmup -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $auth" --data "$data" "$url"
+  else
+    _probe_with_warmup -H "Content-Type: application/json" --data "$data" "$url"
+  fi
 }
 
 resolve_record() { # type name -> records, one per line
@@ -524,6 +560,10 @@ PREFLIGHT_CHECKS="${PREFLIGHT_CHECKS:-}"
 PREFLIGHT_SKIP="${PREFLIGHT_SKIP:-}"
 PREFLIGHT_RESOLVE_CMD="${PREFLIGHT_RESOLVE_CMD:-dig +short}"
 PREFLIGHT_TLS_PROBE_CMD="${PREFLIGHT_TLS_PROBE_CMD:-default_tls_probe}"
+PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
+PREFLIGHT_SLEEP_CMD="${PREFLIGHT_SLEEP_CMD:-sleep}"
+PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-24}"
+PREFLIGHT_WARMUP_INTERVAL_SECONDS="${PREFLIGHT_WARMUP_INTERVAL_SECONDS:-5}"
 EXPECTED_SAGE_CNAME_SUFFIX="${EXPECTED_SAGE_CNAME_SUFFIX:-azure-api.net}"
 EXPECTED_CAS_CNAME_SUFFIX="${EXPECTED_CAS_CNAME_SUFFIX:-azurecontainerapps.io}"
 

@@ -635,3 +635,219 @@ def test_bff_auth_unconfigured_fails() -> None:
     assert verdicts.get("bff_liveness") == "PASS", "the BFF process is still up"
     assert verdicts.get("bff_auth_configured") == "FAIL", verdicts
     assert proc.returncode != 0
+
+
+# --------------------------------------------------------------------------- #
+# E. Warm-up retry gate (connection-level 000 only)                           #
+# --------------------------------------------------------------------------- #
+# A freshly-activated container revision can be briefly unroutable: curl fails
+# to connect and the probe records HTTP_CODE 000. The preflight retries that --
+# and ONLY that -- within a bounded, shared budget, so a transient readiness
+# window does not flake the gate while a genuine outage (or any real 4xx/5xx)
+# still fails it promptly. These tests drive the behavior offline through the
+# PREFLIGHT_CURL_CMD / PREFLIGHT_SLEEP_CMD seams.
+
+
+def _write_curl_stub(tmp_path: Path, counter: Path, fail_until: int) -> str:
+    """A curl seam that simulates a not-yet-routable endpoint.
+
+    Each invocation increments ``counter`` (so a test can assert the exact probe
+    count). For the first ``fail_until`` calls it exits non-zero like curl's
+    "couldn't connect" (the script maps that to HTTP_CODE 000); thereafter it
+    ``exec``s the real curl, which serves the live stub server's real response.
+    Set ``fail_until`` huge to model a persistent outage.
+    """
+    body = (
+        f'n=$(cat "{counter}" 2>/dev/null || echo 0)\n'
+        "n=$((n + 1))\n"
+        f'echo "$n" > "{counter}"\n'
+        f'if [ "$n" -le {fail_until} ]; then exit 7; fi\n'
+        'exec curl "$@"\n'
+    )
+    return _write_stub_cmd(tmp_path, "curl-stub", body)
+
+
+def _write_sleep_tripwire(tmp_path: Path, log: Path) -> str:
+    """A sleep seam that appends a line per call (never actually sleeps), so a
+    test can assert the exact retry count -- or assert zero retries by the log's
+    absence.
+    """
+    return _write_stub_cmd(tmp_path, "sleep-stub", f'echo x >> "{log}"\nexit 0\n')
+
+
+@_NEEDS_RUNTIME
+def test_warmup_retries_connection_failure_until_ready(tmp_path: Path) -> None:
+    """A cold endpoint (000) that becomes routable inside the budget PASSes:
+    the probe fails 3x, the warm-up retries, and the 4th attempt reaches the
+    healthy stub.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=3)
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(
+                url,
+                PREFLIGHT_CHECKS="bff_liveness",
+                PREFLIGHT_CURL_CMD=curl,
+                PREFLIGHT_WARMUP_MAX_ATTEMPTS="10",
+                PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+            )
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("bff_liveness") == "PASS", verdicts
+
+
+@_NEEDS_RUNTIME
+def test_warmup_budget_too_small_still_fails(tmp_path: Path) -> None:
+    """The budget is a real cap: an endpoint that would recover only after more
+    attempts than the budget allows still FAILs, and the probe is invoked
+    exactly 1 (initial) + MAX_ATTEMPTS times.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=5)
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(
+                url,
+                PREFLIGHT_CHECKS="bff_liveness",
+                PREFLIGHT_CURL_CMD=curl,
+                PREFLIGHT_WARMUP_MAX_ATTEMPTS="2",
+                PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+            )
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    assert counter.read_text().strip() == "3", "expected 1 initial + 2 retries"
+
+
+@_NEEDS_RUNTIME
+def test_warmup_disabled_preserves_single_shot(tmp_path: Path) -> None:
+    """With the budget off (MAX_ATTEMPTS=0) the probe is single-shot, exactly as
+    before this feature: one connection failure, one attempt, FAIL.
+    """
+    counter = tmp_path / "calls"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=1)
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(
+                url,
+                PREFLIGHT_CHECKS="bff_liveness",
+                PREFLIGHT_CURL_CMD=curl,
+                PREFLIGHT_WARMUP_MAX_ATTEMPTS="0",
+                PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+            )
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    assert counter.read_text().strip() == "1", "budget off must mean a single probe"
+
+
+@_NEEDS_RUNTIME
+def test_warmup_bounded_failure_terminates(tmp_path: Path) -> None:
+    """A persistent outage (always 000) fails the gate within the bound and does
+    not loop forever: the probe runs 1 + MAX_ATTEMPTS times and the retry sleep
+    fires exactly MAX_ATTEMPTS times.
+    """
+    counter = tmp_path / "calls"
+    sleeplog = tmp_path / "sleeps"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=999)
+    sleep = _write_sleep_tripwire(tmp_path, sleeplog)
+    proc = _run(
+        _base_env(
+            "http://127.0.0.1:1",
+            PREFLIGHT_CHECKS="bff_liveness",
+            PREFLIGHT_CURL_CMD=curl,
+            PREFLIGHT_SLEEP_CMD=sleep,
+            PREFLIGHT_WARMUP_MAX_ATTEMPTS="3",
+            PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+        )
+    )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    assert counter.read_text().strip() == "4", "expected 1 initial + 3 retries"
+    assert sleeplog.read_text().count("x") == 3, "one sleep per retry"
+
+
+@_NEEDS_RUNTIME
+def test_warmup_does_not_retry_http_error(tmp_path: Path) -> None:
+    """A real 5xx (a genuine server fault, not a connection failure) fails fast:
+    the retry NEVER engages, so the sleep seam is never invoked. The code path is
+    identical for 4xx, so this covers both.
+    """
+    sleeplog = tmp_path / "sleeps"
+    sleep = _write_sleep_tripwire(tmp_path, sleeplog)
+
+    def health_500(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return 500, '{"error":"unavailable"}', {}
+        return _green(method, path, body)
+
+    with serve(health_500) as url:
+        proc = _run(
+            _base_env(
+                url,
+                PREFLIGHT_CHECKS="bff_liveness",
+                PREFLIGHT_SLEEP_CMD=sleep,
+                PREFLIGHT_WARMUP_MAX_ATTEMPTS="24",
+                PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+            )
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    assert not sleeplog.exists(), "a real 5xx must not be retried"
+
+
+@_NEEDS_RUNTIME
+def test_warmup_silent_on_healthy_tenant(tmp_path: Path) -> None:
+    """The happy path pays no warm-up cost: every probe answers immediately, so
+    the retry sleep is never invoked even though the budget is large.
+    """
+    sleeplog = tmp_path / "sleeps"
+    sleep = _write_sleep_tripwire(tmp_path, sleeplog)
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(
+                url,
+                PREFLIGHT_CHECKS=_HTTP_CHECKS,
+                PREFLIGHT_SLEEP_CMD=sleep,
+                PREFLIGHT_WARMUP_MAX_ATTEMPTS="24",
+                PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+            )
+        )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert all(v == "PASS" for v in verdicts.values()), verdicts
+    assert not sleeplog.exists(), "a healthy tenant must trigger no retries"
+
+
+@_NEEDS_RUNTIME
+def test_warmup_budget_shared_across_checks(tmp_path: Path) -> None:
+    """The budget is global, not per-probe: under a total outage the first check
+    consumes the whole budget and every later 000 fails fast. Two checks ->
+    sleep fires MAX_ATTEMPTS times total (not 2x), and the probe runs
+    1 + MAX_ATTEMPTS (first check) + 1 (second check, budget already spent).
+    """
+    counter = tmp_path / "calls"
+    sleeplog = tmp_path / "sleeps"
+    curl = _write_curl_stub(tmp_path, counter, fail_until=999)
+    sleep = _write_sleep_tripwire(tmp_path, sleeplog)
+    proc = _run(
+        _base_env(
+            "http://127.0.0.1:1",
+            PREFLIGHT_CHECKS="liveness,bff_liveness",
+            PREFLIGHT_CURL_CMD=curl,
+            PREFLIGHT_SLEEP_CMD=sleep,
+            PREFLIGHT_WARMUP_MAX_ATTEMPTS="3",
+            PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+        )
+    )
+    verdicts = _verdicts(proc.stdout)
+    assert proc.returncode != 0, f"{proc.stdout}\n{proc.stderr}"
+    assert verdicts.get("liveness") == "FAIL", verdicts
+    assert verdicts.get("bff_liveness") == "FAIL", verdicts
+    assert sleeplog.read_text().count("x") == 3, "the budget is shared, not per-check"
+    assert counter.read_text().strip() == "5", "1 + 3 (first check) + 1 (second, spent)"
