@@ -12,6 +12,7 @@ Test IDs follow APP-NNN (standalone APP).
 
 from __future__ import annotations
 
+import json
 import time
 
 import httpx
@@ -225,3 +226,109 @@ async def test_app_008_scan_ingest_is_profile_bounded():
 
     assert response.status_code == 501
     assert response.json()["code"] == "local_profile_only"
+
+
+async def test_app_009_proxy_forwards_bare_collection_get(tmp_path):
+    """A logged-in bare `GET /sage_vaults` (list vaults) is reverse-proxied to
+    SAGE's canonical collection path -- not swallowed by the SPA catch-all.
+
+    Anti-coincidental-pass: the SPA bundle is mounted here, reproducing the
+    production topology. Before the bare-collection route existed, `/sage_vaults`
+    (no trailing segment) missed the `/sage_vaults/{path:path}` route and fell
+    through to the SPA catch-all, returning `200` HTML and never touching the
+    transport -- `recorder` would stay empty and `response.json()` would raise on
+    the HTML body. Asserting the upstream path is exactly `/sage_vaults` (no
+    trailing slash) also kills a fix that forwarded `/sage_vaults/`.
+    """
+    (tmp_path / "index.html").write_text("<!doctype html><title>CAS SPA</title>")
+    app = create_bff_app(spa_dir=tmp_path, stack_config=SageCoreConfig(profile="cloud"))
+    recorder: list[httpx.Request] = []
+    oidc = _StubOidc("tok-xyz")
+    settings = _settings()
+    store = InMemorySessionStore()
+    await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient(
+            "http://sage.test", oidc, client=_mock_sage(recorder, json_body=[{"vault_id": "cas"}])
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.get("/sage_vaults")
+
+    assert response.status_code == 200
+    assert response.json() == [{"vault_id": "cas"}]
+    assert len(recorder) == 1
+    assert recorder[0].method == "GET"
+    assert recorder[0].url.path == "/sage_vaults"
+    assert recorder[0].headers["authorization"] == "Bearer tok-xyz"
+
+
+async def test_app_010_proxy_forwards_bare_collection_post(tmp_path):
+    """A logged-in bare `POST /sage_vaults` (create vault) is reverse-proxied to
+    SAGE's canonical collection path with the request body forwarded.
+
+    Anti-coincidental-pass: the bare path falling to the SPA catch-all records no
+    upstream POST (`recorder` empty); a forwarder that dropped the body would not
+    round-trip the config payload captured upstream.
+    """
+    (tmp_path / "index.html").write_text("<!doctype html><title>CAS SPA</title>")
+    app = create_bff_app(spa_dir=tmp_path, stack_config=SageCoreConfig(profile="cloud"))
+    recorder: list[httpx.Request] = []
+    oidc = _StubOidc("tok-xyz")
+    settings = _settings()
+    store = InMemorySessionStore()
+    await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient(
+            "http://sage.test", oidc, client=_mock_sage(recorder, json_body={"vault_id": "new"})
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.post("/sage_vaults", json={"config": {"vault_id": "new"}})
+
+    assert response.status_code == 200
+    assert response.json() == {"vault_id": "new"}
+    assert len(recorder) == 1
+    assert recorder[0].method == "POST"
+    assert recorder[0].url.path == "/sage_vaults"
+    assert json.loads(recorder[0].content) == {"config": {"vault_id": "new"}}
+
+
+async def test_app_011_proxy_rejects_bare_collection_without_a_session(tmp_path):
+    """An unauthenticated bare `GET /sage_vaults` is refused with the structured
+    JSON `auth_required` (401) -- never HTML -- and SAGE is never reached.
+
+    Anti-coincidental-pass: with the SPA bundle mounted, the pre-change code let
+    the unauthenticated bare call fall to the SPA catch-all and return `200` HTML,
+    not a `401`. The content-type check is the direct guard against the SPA shell
+    silently satisfying the SPA's `listVaults()` JSON parse.
+    """
+    (tmp_path / "index.html").write_text("<!doctype html><title>CAS SPA</title>")
+    app = create_bff_app(spa_dir=tmp_path, stack_config=SageCoreConfig(profile="cloud"))
+    recorder: list[httpx.Request] = []
+    oidc = _StubOidc()
+    store = InMemorySessionStore()
+    app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", oidc, client=_mock_sage(recorder))
+    )
+
+    async with _client(app) as client:
+        response = await client.get("/sage_vaults")  # no session cookie
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "auth_required"
+    assert "text/html" not in response.headers["content-type"]
+    assert recorder == []
