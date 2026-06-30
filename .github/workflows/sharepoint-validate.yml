@@ -46,7 +46,8 @@ jobs:
       SAGE_BASE_URL: https://sage.${{ vars.BASE_DOMAIN }}
       SP_VALIDATE_VAULT_ID: test
       # Shared across the two phase steps so post-restart reads the pre-restart probe.
-      SP_VALIDATE_STATE_FILE: ${{ runner.temp }}/spvalidate-state.json
+      # github.workspace (not runner.temp, which is step-only) is valid in job env.
+      SP_VALIDATE_STATE_FILE: ${{ github.workspace }}/spvalidate-state.json
     steps:
       - uses: actions/checkout@v4
 
