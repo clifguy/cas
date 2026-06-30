@@ -141,6 +141,9 @@ known-first-party = ["sage", "root_harness", "app"]
 # The cloud preflight probe opens only fixed-scheme https URLs to the known SAGE
 # edge; S310 (audit non-permitted URL schemes) is a categorical false positive.
 "deploy/mcp_preflight_probe.py" = ["S310"]
+# The vault-source validation driver likewise opens only the fixed https SAGE
+# edge; S310 is the same categorical false positive.
+"deploy/sharepoint_validate.py" = ["S310"]
 
 [tool.ruff.format]
 # Ruff's defaults: double-quote, magic-trailing-comma, LF line endings.

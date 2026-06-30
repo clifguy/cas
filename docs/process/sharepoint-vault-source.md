@@ -181,6 +181,115 @@ discovered with no local vault root involved. Confirm:
   compute's restart, read back from the document store rather than an ephemeral
   local root.
 
+## 6. Live end-to-end validation
+
+Step 5 proves the seeded vault is discovered and survives a restart. This step
+proves the full source-byte path end to end against the deployed edge: a document
+ingested through SAGE lands its bytes in the SharePoint library, reads back
+through the vault-source port, passes the source-file integrity audit, survives a
+container restart with no local copy, and — the inverse — that the site-scoped
+grant actually rejects a site the identity was never granted. It is pure
+validation: per the CAS-ADR-043 weakest-binding rule it adds no capability;
+`deploy/sharepoint_validate.py` drives only endpoints that already exist.
+
+Run it against the deployed `test` vault — never a canonical vault. The driver is
+standard-library only and phase-aware; it writes the probe document's identity to
+a state file between the two phases, so the restart happens in between.
+
+### 6.1 Prerequisites
+
+```bash
+# A bearer token for the SAGE edge (v2 issuer; same mint as the deploy preflight).
+export AUTH_TOKEN="$(az account get-access-token \
+  --scope "${SAGE_AUDIENCE}/.default" --query accessToken -o tsv)"
+export SAGE_BASE_URL="https://${SAGE_FQDN}"           # the deployed SAGE host
+export SP_VALIDATE_VAULT_ID=test                      # the seeded validation vault
+export SP_VALIDATE_STATE_FILE="$(mktemp -t spvalidate)"
+```
+
+The `test` vault must already be present (`admin_list_vaults` includes `test`,
+from step 5).
+
+### 6.2 Pre-restart — ingest, readback, audit
+
+```bash
+python3 deploy/sharepoint_validate.py --phase pre-restart
+```
+
+Expected: a final `result=pass`, with `check=ingest`, `check=readback`, and
+`check=source_audit` all `status=PASS`. `ingest` uploads a probe document (its
+bytes are retained to the library as a side effect); `readback` re-reads them
+through the port and confirms they are byte-identical; `source_audit` runs
+`verify_vault_source_files` (`POST .../admin/verify-source-files`,
+`check_hashes=true`) and confirms the probe is healthy. A `result=fail` here means
+the bytes never reached the library or came back altered — stop and investigate
+before restarting.
+
+### 6.3 Restart the SAGE container
+
+Roll a new revision so the next phase runs against a freshly-started container
+whose ephemeral root holds no source files:
+
+```bash
+az containerapp revision restart \
+  --name "$SAGE_CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+  --revision "$ACTIVE_REVISION"        # the current active revision name
+```
+
+Wait for the new revision to be ready before running the next phase — SAGE loads
+its embedding model at startup, so a cold container can take well over the
+driver's per-request timeout to answer. Poll the unauthenticated liveness probe
+until it is green:
+
+```bash
+until curl -fsS "${SAGE_BASE_URL}/health" >/dev/null; do sleep 5; done
+```
+
+Because the new revision starts with no local copy of any source, step 6.4
+succeeding is the live proof the bytes are served from the document store rather
+than a leftover local file.
+
+### 6.4 Post-restart — rediscover, readback, audit
+
+```bash
+python3 deploy/sharepoint_validate.py --phase post-restart
+```
+
+Expected: a final `result=pass`, with `check=rediscover`, `check=readback`, and
+`check=source_audit` all `status=PASS` — the vault reloaded its configuration from
+the library, and the probe's bytes are re-read and re-audited from the document
+store. To confirm the post-restart chunk-repair re-projection stages through the
+port (not a local file), tail the SAGE container log while the document is first
+re-read and look for the port-mediated staging path; running `recompute_pipeline`
+on the probe document id is an explicit way to trigger it.
+
+### 6.5 Least-privilege probe — an un-granted site is rejected
+
+The `Sites.Selected` grant (step 3) is scoped to one site. Prove the scope is
+real: point a throwaway vault config at a site the SAGE identity was never granted
+and confirm SAGE cannot reach it.
+
+```bash
+# A SharePoint site the SAGE identity holds NO per-site permission on.
+export UNGRANTED_SITE_ID=...           # resolved at run time; never committed
+```
+
+Seed a disposable `vault_config.yaml` whose `document_store.site_id` is
+`$UNGRANTED_SITE_ID` (under any throwaway vault id), roll a revision, and confirm:
+
+- The throwaway vault is **absent** from `admin_list_vaults` / `GET /sage_vaults`.
+- The SAGE container log shows a Microsoft Graph `403 Forbidden` for that site at
+  discovery.
+
+Expected: absent + `403`. A `200` (the vault loads from `$UNGRANTED_SITE_ID`)
+means the identity reaches an un-granted site — the site-scoping is broken; stop
+and revoke. Remove the throwaway vault config afterwards.
+
+### 6.6 Record the run
+
+Capture the `result=pass` verdict lines from 6.2 and 6.4, together with the
+least-privilege outcome from 6.5, as the validation evidence.
+
 ## Rotation and teardown
 
 The grant follows the managed identity: deleting the SAGE identity removes the
