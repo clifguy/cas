@@ -42,6 +42,17 @@ WORKFLOWS_DIR: Final[Path] = REPO_ROOT / ".github" / "workflows"
 # raw condition string, so ``${{ vars.X }}`` and a bare ``vars.X`` both trip.
 _VARS_RE: Final[re.Pattern[str]] = re.compile(r"\bvars\.")
 
+# Contexts that exist only at *step* scope (and below), never in a workflow-level
+# or job-level ``env:``. A ``${{ runner.* }}`` / ``${{ steps.* }}`` / ``${{ job.* }}``
+# reference in env there makes the whole workflow unparseable: GitHub rejects the
+# dispatch with HTTP 422 "Unrecognized named-value". This is invisible to a
+# source-parsing test (PyYAML keeps the expression as a literal string) and to the
+# pytest CI job (which never dispatches a workflow_dispatch workflow), so it
+# surfaces only on a real dispatch — exactly the gap this gate closes. The
+# job-level contexts that ARE valid here (github, needs, vars, inputs, secrets,
+# strategy, matrix) are deliberately not matched.
+_STEP_ONLY_CTX_RE: Final[re.Pattern[str]] = re.compile(r"\$\{\{\s*(?:runner|steps|job)\.")
+
 # Escape hatch for a future job legitimately gated on a *repository*-scoped
 # variable (visible at job-level). Empty today: nothing in the workflows gates a
 # job on a variable, and the per-tenant deploy identity is environment-scoped, so
@@ -96,6 +107,37 @@ def _all_job_if_var_offenders() -> dict[str, str]:
     for path in _iter_workflow_files():
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
         offenders.update(_job_if_var_offenders(workflow or {}, path.name))
+    return offenders
+
+
+def _env_step_only_ctx_offenders(workflow: dict, label: str) -> dict[str, str]:
+    """Return ``{"<label>:<where>": value}`` for each workflow-level or job-level
+    ``env:`` value that references a step-only context (``runner``/``steps``/``job``).
+
+    Step ``env:`` is left untouched — those contexts are valid at step scope; only
+    the workflow- and job-level ``env:`` blocks are the unparseable trap.
+    """
+    offenders: dict[str, str] = {}
+    if not isinstance(workflow, dict):
+        return offenders
+    for key, value in (workflow.get("env") or {}).items():
+        if _STEP_ONLY_CTX_RE.search(str(value)):
+            offenders[f"{label}:env.{key}"] = str(value)
+    for name, job in (workflow.get("jobs") or {}).items():
+        if not isinstance(job, dict):
+            continue
+        for key, value in (job.get("env") or {}).items():
+            if _STEP_ONLY_CTX_RE.search(str(value)):
+                offenders[f"{label}:{name}.env.{key}"] = str(value)
+    return offenders
+
+
+def _all_env_step_only_ctx_offenders() -> dict[str, str]:
+    """Aggregate :func:`_env_step_only_ctx_offenders` across every workflow file."""
+    offenders: dict[str, str] = {}
+    for path in _iter_workflow_files():
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        offenders.update(_env_step_only_ctx_offenders(workflow or {}, path.name))
     return offenders
 
 
@@ -183,3 +225,71 @@ def test_detector_ignores_step_level_vars_if() -> None:
         "        run: echo hi\n"
     )
     assert _job_if_var_offenders(workflow, "synthetic.yml") == {}
+
+
+# ---------------------------------------------------------------------------
+# The gate — step-only contexts in workflow/job env
+# ---------------------------------------------------------------------------
+
+
+def test_no_step_only_context_in_workflow_or_job_env() -> None:
+    """No workflow-level or job-level ``env:`` value references a step-only context
+    (``runner``/``steps``/``job``). Such a reference is unparseable: GitHub rejects
+    the dispatch with HTTP 422 "Unrecognized named-value", while PyYAML and the
+    pytest CI job (which never dispatches the workflow) both pass it — so it surfaces
+    only on a real dispatch. Use a job-env-valid context (``github.workspace`` for a
+    path) or move the value into a step.
+    """
+    offenders = _all_env_step_only_ctx_offenders()
+    assert not offenders, (
+        "no workflow/job-level `env:` value may reference a step-only context "
+        "(runner/steps/job) — GitHub rejects the dispatch with HTTP 422 while source "
+        f"parsing and pytest stay green. Offenders: {offenders}"
+    )
+
+
+def test_detector_fires_on_runner_context_in_job_env() -> None:
+    """A ``runner.*`` reference in a job-level ``env:`` is flagged — the exact
+    dispatch-time 422 regression this gate exists to catch.
+    """
+    workflow = yaml.safe_load(
+        "jobs:\n"
+        "  a:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    env:\n"
+        "      STATE: ${{ runner.temp }}/state.json\n"
+    )
+    offenders = _env_step_only_ctx_offenders(workflow, "synthetic.yml")
+    assert "synthetic.yml:a.env.STATE" in offenders
+
+
+def test_detector_passes_valid_job_env_contexts() -> None:
+    """The job-env-valid contexts (``github``, ``needs``, ``vars``) are not flagged —
+    only the step-only ones are the trap.
+    """
+    workflow = yaml.safe_load(
+        "jobs:\n"
+        "  a:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    env:\n"
+        "      WS: ${{ github.workspace }}/state.json\n"
+        "      TAG: ${{ needs.build.outputs.tag }}\n"
+        "      AUD: ${{ vars.SAGE_AUDIENCE }}\n"
+    )
+    assert _env_step_only_ctx_offenders(workflow, "synthetic.yml") == {}
+
+
+def test_detector_ignores_step_level_runner_context() -> None:
+    """A ``runner.*`` reference in a *step*-level ``env:`` is not flagged — step scope
+    sees the runner context; only workflow/job-level env is the unparseable trap.
+    """
+    workflow = yaml.safe_load(
+        "jobs:\n"
+        "  a:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: echo hi\n"
+        "        env:\n"
+        "          STATE: ${{ runner.temp }}/state.json\n"
+    )
+    assert _env_step_only_ctx_offenders(workflow, "synthetic.yml") == {}
