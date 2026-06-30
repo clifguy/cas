@@ -36,6 +36,7 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 # ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ContentBlock, TextContent
 from pydantic import ValidationError
 
@@ -365,6 +366,17 @@ def _removed_tool_envelope(name: str) -> Sequence[ContentBlock]:
     return [TextContent(type="text", text=_json.dumps(envelope))]
 
 
+# The MCP SDK's FastMCP auto-enables DNS-rebinding Host validation whenever the
+# bind host is a loopback value (its default); the resulting allow-list
+# (127.0.0.1 / localhost / ::1 only) rejects every non-loopback Host with HTTP
+# 421 on the SSE handshake -- i.e. every request that reaches an HTTP-mounted
+# surface through a proxy. SAGE's public edge authenticates at the JWT/identity
+# layer (CAS-ADR-034); DNS-rebinding is a browser-localhost threat model that
+# does not apply to that server-to-server path, so the SDK check is disabled
+# rather than left to 421 legitimate proxied traffic.
+_MCP_TRANSPORT_SECURITY = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+
 class _LoggingFastMCP(FastMCP):
     """FastMCP subclass that distinguishes tool outcomes in the console log.
 
@@ -405,6 +417,14 @@ class _LoggingFastMCP(FastMCP):
     dispatching. New names (the value side of ``RENAME_MAPPING``)
     bypass the rewrite and dispatch directly.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        # Disable the SDK's loopback-host DNS-rebinding allow-list on every SAGE
+        # MCP server (see _MCP_TRANSPORT_SECURITY) unless a caller pins its own
+        # transport security. Covers both HTTP-mounted partitions and the
+        # standalone full-surface mount; stdio carries no Host header.
+        kwargs.setdefault("transport_security", _MCP_TRANSPORT_SECURITY)
+        super().__init__(*args, **kwargs)
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any]

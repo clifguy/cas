@@ -214,7 +214,12 @@ def probe(base_url: str, mount: str, mode: str, timeout: float) -> int:
             urllib.request.Request(sse_url, headers=get_headers, method="GET"), timeout=timeout
         )
     except urllib.error.HTTPError as exc:
-        _emit(mode, mount, f"sse_status={exc.code}")
+        # Surface the response body, not just the status: an edge rejection
+        # (e.g. a 421 ``Invalid Host header``) names its own cause, so the
+        # verdict line is self-diagnosing. Collapse whitespace to one line and
+        # cap the length so the verdict stays a single key=value record.
+        body = " ".join(exc.read().decode("utf-8", "replace").split())[:120]
+        _emit(mode, mount, f"sse_status={exc.code} sse_body={body}")
         return 1
     except Exception as exc:  # noqa: BLE001
         _emit(mode, mount, f"sse_open_error={type(exc).__name__}")
