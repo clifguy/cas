@@ -229,7 +229,10 @@ resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
       ingress: {
         external: true
         targetPort: 8000
-        transport: 'auto'
+        // HTTP/1.1: the ACA ingress returns 421 on long-lived SSE/WebSocket
+        // streams over HTTP/2, and both apps serve SSE (SAGE the MCP transport,
+        // the BFF its /app/ingest progress stream). 'auto'/'http2' would break them.
+        transport: 'http'
       }
       registries: [
         {
@@ -326,7 +329,10 @@ resource bffApp 'Microsoft.App/containerApps@2024-03-01' = {
       ingress: {
         external: true
         targetPort: 8001
-        transport: 'auto'
+        // HTTP/1.1: the ACA ingress returns 421 on long-lived SSE/WebSocket
+        // streams over HTTP/2, and both apps serve SSE (SAGE the MCP transport,
+        // the BFF its /app/ingest progress stream). 'auto'/'http2' would break them.
+        transport: 'http'
         customDomains: [
           {
             name: casHostname
