@@ -196,6 +196,18 @@ Run it against the deployed `test` vault — never a canonical vault. The driver
 standard-library only and phase-aware; it writes the probe document's identity to
 a state file between the two phases, so the restart happens in between.
 
+**Authorized execution.** The authenticated edge is machine-to-machine
+(CAS-ADR-043): only the OIDC-federated deploy identity can mint the token §6.1
+needs, so this validation cannot run from a workstation. Its run home is the CI
+harness `.github/workflows/sharepoint-validate.yml` — a `workflow_dispatch`
+workflow scoped to a per-tenant GitHub Environment that mints the token as the
+deploy identity and runs §6.1–§6.4 in one job (pre-restart, then a revision roll
+and liveness wait, then post-restart). The steps below remain the authoritative
+description of what each phase does; run them by hand only for an out-of-band
+investigation. The least-privilege probe (§6.5) is **not** in the harness — it
+needs an un-granted site and a throwaway config staged into the library — and
+stays a manual step.
+
 ### 6.1 Prerequisites
 
 ```bash
@@ -264,6 +276,9 @@ re-read and look for the port-mediated staging path; running `recompute_pipeline
 on the probe document id is an explicit way to trigger it.
 
 ### 6.5 Least-privilege probe — an un-granted site is rejected
+
+Deferred from the CI harness (it needs an un-granted site and a throwaway config
+staged into the library); run it manually.
 
 The `Sites.Selected` grant (step 3) is scoped to one site. Prove the scope is
 real: point a throwaway vault config at a site the SAGE identity was never granted
