@@ -259,6 +259,29 @@ def test_bff_ingress_binds_custom_domain() -> None:
     assert "casHostname" in text, "BFF custom domain must bind the cas hostname"
 
 
+def test_container_app_ingress_transport_is_http() -> None:
+    """Every container-app ingress pins HTTP/1.1 transport, never 'auto'/'http2'.
+
+    Both apps serve Server-Sent Events over their public ingress: SAGE the MCP
+    two-endpoint SSE transport, the BFF its native /app/ingest progress stream.
+    The ACA (Envoy) ingress does not carry long-lived streaming connections over
+    HTTP/2, returning HTTP 421 on the SSE handshake; 'auto' negotiates HTTP/2.
+    Forcing 'http' keeps those streams on HTTP/1.1, where SSE works. Asserting
+    *every* declaration is 'http' guards both apps (and any future one) and
+    catches a partial revert of either ingress to 'auto'/'http2'.
+    """
+    text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
+    transports = re.findall(r"transport:\s*'([^']+)'", text)
+    assert len(transports) >= 2, (
+        f"expected an ingress transport on both container apps; found {transports}"
+    )
+    offenders = [t for t in transports if t != "http"]
+    assert not offenders, (
+        f"ingress transport must be 'http' (HTTP/1.1) on every streaming surface; "
+        f"found non-http transport(s): {offenders}"
+    )
+
+
 def test_apps_pin_a_warm_minimum_replica() -> None:
     """Both container apps pin a warm minimum replica via a parameterized
     ``scale.minReplicas``, so the post-deploy preflight never probes a
