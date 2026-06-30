@@ -21,6 +21,7 @@ skipped only where ``sage`` / ``uvicorn`` cannot be imported.
 
 from __future__ import annotations
 
+import http.client
 import http.server
 import json
 import os
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -208,10 +210,15 @@ def sse_stub(
     *,
     send_endpoint: bool = True,
     sse_status: int = 200,
+    sse_body: str = "",
 ) -> Iterator[str]:
     """A threaded HTTP+SSE stub: ``GET <mount>/sse`` opens a stream (optionally
     emitting the ``endpoint`` event), ``POST <mount>/messages/`` is acked 202 and
     its ``responder``-computed reply is pushed back on the open stream.
+
+    When ``sse_status`` is non-200, the GET returns that status with ``sse_body``
+    as the response body, modelling an edge that rejects the handshake with a
+    diagnostic message (e.g. a 421 ``Invalid Host header``).
     """
     port = _free_port()
     stop = threading.Event()
@@ -230,9 +237,13 @@ def sse_stub(
 
         def do_GET(self) -> None:  # noqa: N802
             if sse_status != 200:
+                body = sse_body.encode()
                 self.send_response(sse_status)
                 self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
+                if body:
+                    self.wfile.write(body)
                 return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -324,3 +335,45 @@ def test_probe_fails_on_401() -> None:
         proc = _run_probe(base, "/mcp", "roundtrip", timeout="3")
     assert proc.returncode != 0
     assert "sse_status=401" in proc.stdout, proc.stdout
+
+
+def test_probe_emits_response_body_on_http_error() -> None:
+    """On an HTTP error opening the SSE stream, the probe surfaces the response
+    *body*, not just the status code -- so an edge rejection (e.g. a 421
+    ``Invalid Host header``) is self-diagnosing from the verdict line alone.
+    """
+    with sse_stub(_good, sse_status=421, sse_body="Invalid Host header") as base:
+        proc = _run_probe(base, "/mcp", "roundtrip", timeout="3")
+    assert proc.returncode != 0
+    assert "sse_status=421" in proc.stdout, proc.stdout
+    assert "Invalid Host header" in proc.stdout, proc.stdout
+
+
+@_NEEDS_REAL
+@pytest.mark.parametrize("mount", ["/mcp", "/mcp_admin"])
+def test_sse_handshake_accepts_non_loopback_host(mount: str) -> None:
+    """A non-loopback Host (as APIM/ACA forwards to the backend) must not be
+    rejected with 421 on the SSE handshake.
+
+    The MCP SDK auto-enables DNS-rebinding Host validation for a loopback bind
+    host; its allow-list 421s every non-loopback (proxied) Host. SAGE disables
+    that check (CAS-ADR-034: the edge boundary is the JWT/identity layer), so a
+    forged non-loopback Host must complete the handshake. The faithful guard the
+    in-process and loopback-only checks could never catch -- the bug shipped
+    precisely because every prior probe carried a loopback Host. Only the
+    handshake status is read; the long-lived SSE body is left unread so the open
+    stream cannot block the test.
+    """
+    with _serve_real() as base:
+        parts = urllib.parse.urlsplit(base)
+        conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+        try:
+            conn.putrequest("GET", f"{mount}/sse", skip_host=True)
+            conn.putheader("Host", "sage.example.com")
+            conn.putheader("Accept", "text/event-stream")
+            conn.endheaders()
+            status = conn.getresponse().status
+        finally:
+            conn.close()
+    assert status != 421, f"non-loopback Host rejected with {status} on {mount}/sse"
+    assert status == 200

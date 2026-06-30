@@ -23,6 +23,7 @@ tautology against the production logic.
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from starlette.routing import Mount
 
@@ -186,3 +187,22 @@ def test_sage_admin_entry_module_builds_admin_surface():
     """The ``sage.mcp_server_admin`` entry module is wired to the maintenance partition."""
     assert mcp_server_admin.SURFACE == "sage_admin"
     assert _registered_names(mcp_server_admin.SURFACE) == EXPECTED_ADMIN
+
+
+@pytest.mark.parametrize("surface", ["sage", "sage_admin"])
+def test_partitioned_server_disables_dns_rebinding_host_validation(surface):
+    """Both HTTP-mounted MCP surfaces ship with the SDK's DNS-rebinding Host
+    allow-list disabled.
+
+    The MCP SDK auto-enables DNS-rebinding protection whenever the server's bind
+    host is a loopback value (the default); its allow-list then rejects every
+    non-loopback Host with HTTP 421 on the SSE handshake -- i.e. every request
+    that arrives through a proxy. The public-edge boundary is the JWT/identity
+    layer (CAS-ADR-034), not a browser-localhost threat model, so SAGE disables
+    the SDK check rather than letting it 421 legitimate proxied traffic. This
+    pins the disabled setting on the servers SAGE actually builds; the faithful
+    end-to-end guard lives in ``tests/deploy/test_mcp_preflight_probe.py``.
+    """
+    ts = mcp_server.build_partitioned_server(surface).settings.transport_security
+    assert ts is not None, "transport_security must be set explicitly, not left to auto-enable"
+    assert ts.enable_dns_rebinding_protection is False
