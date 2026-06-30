@@ -117,3 +117,28 @@ def test_runbook_no_hardcoded_identity() -> None:
         assert owner.lower() not in text.lower(), (
             "runbook hardcodes the repository owner; use a resolved variable"
         )
+
+
+def test_live_validation_section_documented() -> None:
+    """The runbook captures the live end-to-end validation procedure: the driver
+    that exercises ingest/readback/audit through the edge, both phases either side
+    of a container restart, the source-file integrity audit, and the
+    least-privilege probe against an un-granted site (named by a resolved variable
+    so ``test_runbook_no_hardcoded_identity`` still holds).
+    """
+    text = _runbook_text()
+    lowered = text.lower()
+    assert "live end-to-end validation" in lowered, (
+        "runbook must document the live end-to-end validation procedure"
+    )
+    assert "sharepoint_validate.py" in text, "runbook must name the validation driver"
+    assert "pre-restart" in text and "post-restart" in text, (
+        "runbook must run the validation either side of a container restart"
+    )
+    assert "restart" in lowered, "runbook must document the restart-survival step"
+    assert "$UNGRANTED_SITE_ID" in text, (
+        "runbook must probe an un-granted site (resolved variable) for the least-privilege check"
+    )
+    assert "verify_vault_source_files" in text or "verify-source-files" in text, (
+        "runbook must name the source-file integrity audit"
+    )
