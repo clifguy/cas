@@ -1,0 +1,117 @@
+# Live validation of the SharePoint vault-source store against a deployed tenant.
+#
+# The authenticated SAGE edge is machine-to-machine (CAS-ADR-043): only the
+# OIDC-federated deploy identity holds the Sage.Access grant, so the validation
+# driver (deploy/sharepoint_validate.py) cannot run from a workstation. This
+# manually-dispatched workflow gives it a home — it mints an edge token as the
+# deploy identity, runs the pre-restart phase against the deployed disposable
+# `test` vault, rolls the SAGE revision, waits for liveness, then runs the
+# post-restart phase, proving the vault sources survive a restart with no local
+# copy. The operator runbook is docs/process/sharepoint-vault-source.md §6.
+#
+# The job mutates (it ingests a probe and restarts the container), so it is
+# workflow_dispatch only — never on push or pull_request.
+
+name: SharePoint vault-source validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Tenant GitHub Environment to validate against (carries its deploy identity + parameter set).
+        type: environment
+        required: true
+
+concurrency:
+  # Serialize validations against the same tenant; never cancel one in flight
+  # (it leaves a probe document and a restart mid-stream).
+  group: ${{ github.workflow }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    env:
+      SAGE_AUDIENCE: ${{ vars.SAGE_AUDIENCE }}
+      BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+      ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}
+      RESOURCE_GROUP_NAME: ${{ vars.RESOURCE_GROUP_NAME }}
+      # The driver reads these from the environment.
+      SAGE_BASE_URL: https://sage.${{ vars.BASE_DOMAIN }}
+      SP_VALIDATE_VAULT_ID: test
+      # Shared across the two phase steps so post-restart reads the pre-restart probe.
+      SP_VALIDATE_STATE_FILE: ${{ runner.temp }}/spvalidate-state.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Pre-restart validation
+        # Mint via the v2 scope endpoint (/.default) so the issuer is the tenant's
+        # v2.0 issuer -- the one APIM validate-jwt and the SAGE backend require. The
+        # token is passed in the environment (AUTH_TOKEN), never on argv. The driver
+        # ingests a probe, reads it back, and audits the SharePoint-resident source.
+        run: |
+          set -euo pipefail
+          AUTH_TOKEN="$(az account get-access-token \
+            --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
+            python3 deploy/sharepoint_validate.py --phase pre-restart
+
+      - name: Roll the SAGE revision and wait for liveness
+        # Restart the active revision so the next phase faces a fresh container with a
+        # wiped ephemeral filesystem -- the restart-survival proof. A cold container
+        # reloads the embedding model, well over the driver's per-request timeout, so
+        # poll the unauthenticated /health probe before running post-restart.
+        run: |
+          set -euo pipefail
+          SAGE_APP="$(az deployment sub show --name "$ENVIRONMENT_NAME" \
+            --query properties.outputs.sageContainerAppName.value -o tsv)"
+          ACTIVE="$(az containerapp revision list \
+            --name "$SAGE_APP" --resource-group "$RESOURCE_GROUP_NAME" \
+            --query "[?properties.active].name | [0]" -o tsv)"
+          az containerapp revision restart \
+            --name "$SAGE_APP" --resource-group "$RESOURCE_GROUP_NAME" --revision "$ACTIVE"
+          echo "Waiting for SAGE to return to liveness..."
+          for attempt in $(seq 1 36); do
+            if curl -fsS "$SAGE_BASE_URL/health" >/dev/null; then
+              echo "SAGE is live (attempt $attempt)."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SAGE did not return to liveness within the warm-up budget" >&2
+          exit 1
+
+      - name: Post-restart validation
+        # Re-mint after the recycle wait so the token cannot have gone stale. The
+        # driver re-discovers the vault, re-reads the probe, and re-audits the source
+        # from SharePoint -- proving nothing relied on a local copy.
+        run: |
+          set -euo pipefail
+          AUTH_TOKEN="$(az account get-access-token \
+            --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
+            python3 deploy/sharepoint_validate.py --phase post-restart
+
+      - name: Least-privilege probe (deferred -- manual)
+        if: always()
+        # The least-privilege probe (an un-granted site must be rejected) is not
+        # automated: it needs an un-granted site plus a throwaway vault config staged
+        # into the library. Recorded here so the deferral is auditable, not silent.
+        run: |
+          {
+            echo "## Least-privilege probe -- deferred"
+            echo ""
+            echo "The least-privilege probe (an un-granted site must be rejected) is **not** automated here."
+            echo "It needs an un-granted SharePoint site plus a throwaway vault config staged into the library."
+            echo "Run it manually per the runbook: docs/process/sharepoint-vault-source.md §6.5."
+          } >> "$GITHUB_STEP_SUMMARY"
