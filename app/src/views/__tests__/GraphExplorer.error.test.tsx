@@ -19,9 +19,9 @@ vi.mock('vis-network', () => ({
   },
 }));
 vi.mock('vis-data', () => ({
-  DataSet: class {
-    constructor(_data: unknown) {}
-  },
+  // `new DataSet(data)` — a bare class ignores the constructor arg, which is all
+  // the stub needs (the mocked Network never reads the resulting DataSet).
+  DataSet: class {},
 }));
 vi.mock('../../api/graph', () => ({ traverse: vi.fn() }));
 vi.mock('../../api/documents', () => ({ getDocument: vi.fn() }));
