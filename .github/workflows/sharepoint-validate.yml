@@ -62,11 +62,13 @@ jobs:
         # v2.0 issuer -- the one APIM validate-jwt and the SAGE backend require. The
         # token is passed in the environment (AUTH_TOKEN), never on argv. The driver
         # ingests a probe, reads it back, and audits the SharePoint-resident source.
+        # --timeout 180: the ingest crosses to SharePoint via Graph and embeds the
+        # probe; the driver's 30s default is too tight for that cloud round-trip.
         run: |
           set -euo pipefail
           AUTH_TOKEN="$(az account get-access-token \
             --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
-            python3 deploy/sharepoint_validate.py --phase pre-restart
+            python3 deploy/sharepoint_validate.py --phase pre-restart --timeout 180
 
       - name: Roll the SAGE revision and wait for liveness
         # Restart the active revision so the next phase faces a fresh container with a
@@ -96,12 +98,14 @@ jobs:
       - name: Post-restart validation
         # Re-mint after the recycle wait so the token cannot have gone stale. The
         # driver re-discovers the vault, re-reads the probe, and re-audits the source
-        # from SharePoint -- proving nothing relied on a local copy.
+        # from SharePoint -- proving nothing relied on a local copy. --timeout 180
+        # for the same reason as pre-restart (Graph round-trip + a just-restarted,
+        # model-reloading container on the first read).
         run: |
           set -euo pipefail
           AUTH_TOKEN="$(az account get-access-token \
             --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
-            python3 deploy/sharepoint_validate.py --phase post-restart
+            python3 deploy/sharepoint_validate.py --phase post-restart --timeout 180
 
       - name: Least-privilege probe (deferred -- manual)
         if: always()
