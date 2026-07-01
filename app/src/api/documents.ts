@@ -37,3 +37,13 @@ export async function openDocument(
 ): Promise<{ opened: boolean; path: string }> {
   return apiPost(`/sage_vaults/${vaultId}/documents/${documentId}/open`, {});
 }
+
+// Cloud-profile browser delivery: SAGE mints a short-lived, pre-authenticated
+// URL from which the browser fetches the source file directly, so the bytes
+// never transit SAGE or the BFF (CAS-ADR-043).
+export async function getDocumentDownloadUrl(
+  vaultId: string,
+  documentId: string,
+): Promise<{ download_url: string }> {
+  return apiGet(`/sage_vaults/${vaultId}/documents/${documentId}/download-url`);
+}

@@ -1929,6 +1929,23 @@ class OpenDocumentResponse(BaseModel):
     path: str = Field(description="Absolute filesystem path that was dispatched to the OS opener.")
 
 
+class DocumentDownloadUrlResponse(BaseModel):
+    """A short-lived, pre-authenticated URL for fetching a document's source bytes.
+
+    Issued by the cloud vault-source document-store binding so a browser can fetch
+    the source file directly from the backing store, without proxying the bytes
+    through SAGE (CAS-ADR-043). Returned only under a binding that can mint such a
+    URL; a binding that cannot refuses the request with a structured 501.
+    """
+
+    download_url: str = Field(
+        description=(
+            "Short-lived, pre-authenticated URL from which the document's source "
+            "file can be fetched directly, bypassing SAGE. Valid for a limited time."
+        )
+    )
+
+
 class LinkRequest(BaseModel):
     """Create an edge.
 

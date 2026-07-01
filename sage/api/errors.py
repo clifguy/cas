@@ -1034,6 +1034,53 @@ class BinaryContentRefusedError(SAGEError):
         )
 
 
+class LocalOpenNotAvailableError(SAGEError):
+    """501: the host OS opener is a local-profile affordance, gated off under cloud.
+
+    ``POST /documents/{id}/open`` shells out the host OS opener
+    (``open``/``xdg-open``/``startfile``), which is meaningful only when the
+    browser and SAGE share a machine (the local profile). Under the cloud profile
+    SAGE is a headless container with no desktop, so the opener is gated off and a
+    caller delivers a document to the browser through a store-issued download URL
+    (``GET /documents/{id}/download-url``) instead. Mirrors the
+    "capability unavailable in this deployment" shape the co-located-only surfaces
+    use.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "local_open_only",
+            (
+                "The host OS opener is a local-profile affordance and is not "
+                "available under the cloud profile; request a download URL instead."
+            ),
+            501,
+        )
+
+
+class DownloadUrlNotAvailableError(SAGEError):
+    """501: the active vault-source binding cannot issue a source download URL.
+
+    A store-issued download URL is a richer-binding capability (CAS-ADR-043): the
+    document-store binding backs it with a short-lived pre-authenticated URL, while
+    the filesystem binding has no equivalent. When the active binding lacks the
+    capability the request is refused with this structured 501 rather than a bare
+    failure, so a caller learns the deployment does not offer browser delivery for
+    this document.
+    """
+
+    def __init__(self, document_id: str) -> None:
+        super().__init__(
+            "download_url_unavailable",
+            (
+                f"The active vault-source binding cannot issue a download URL for "
+                f"document {document_id}."
+            ),
+            501,
+            {"document_id": document_id},
+        )
+
+
 class DeliveryParameterConflictError(SAGEError):
     """400: an explicit ``delivery`` mode contradicts the write_to_path argument.
 

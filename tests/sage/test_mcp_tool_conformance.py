@@ -253,6 +253,15 @@ HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
     ("sage_core", "open_document"): "HTTP-only UI affordance.",
     (
         "sage_core",
+        "get_document_download_url",
+    ): (
+        "HTTP-only browser-delivery affordance: mints a short-lived "
+        "pre-authenticated URL the browser fetches directly from the backing "
+        "store. Agents read source bytes via get_document/read_projection and "
+        "have no need for a browser download URL, so there is no MCP tool."
+    ),
+    (
+        "sage_core",
         "batch_ingest_documents",
     ): (
         "Multipart upload + SSE batch-ingest endpoint for the hosted profile "

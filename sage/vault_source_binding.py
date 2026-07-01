@@ -39,6 +39,7 @@ import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
 
@@ -149,6 +150,27 @@ class VaultSourceStore(ABC):
     @abstractmethod
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         """SHA-256 of a retained source in canonical ``sha256:<hex>`` form."""
+
+
+@runtime_checkable
+class SupportsSourceDownloadUrl(Protocol):
+    """Optional binding capability: mint a short-lived source download URL.
+
+    A richer-binding capability (CAS-ADR-043): a binding whose backing store can
+    issue pre-authenticated URLs (the document-store binding) implements this so a
+    source can be delivered to a browser directly, without proxying the bytes
+    through SAGE. A binding without the capability (the filesystem binding) simply
+    does not implement it, and a caller probes with ``isinstance`` before use. It
+    is deliberately not part of the ``VaultSourceStore`` port contract, which stays
+    satisfiable by its weakest binding.
+    """
+
+    def download_url(self, vault_id: str, storage_root: Path, source_path: str) -> str | None:
+        """Return a short-lived download URL for a retained source, or ``None``.
+
+        ``None`` when the source is absent from the store. ``storage_root`` and
+        ``vault_id`` mirror the other source-byte operations' addressing.
+        """
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +556,18 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
 
     def hash_source(self, vault_id: str, storage_root: Path, source_path: str) -> str:
         return self._get_client().hash_source_bytes(vault_id, source_path)  # type: ignore[attr-defined]
+
+    def download_url(self, vault_id: str, storage_root: Path, source_path: str) -> str | None:
+        """Return a short-lived pre-authenticated download URL for a retained source.
+
+        Delegates to the Graph adapter, which reads the driveItem's
+        ``@microsoft.graph.downloadUrl`` -- a pre-authenticated, time-limited URL
+        that needs no bearer token -- so the browser fetches the bytes directly
+        from SharePoint. Returns ``None`` when the source is absent from the store.
+        ``storage_root`` is unused (the source is addressed by vault id and
+        vault-relative path), mirroring the other source operations.
+        """
+        return self._get_client().source_download_url(vault_id, source_path)  # type: ignore[attr-defined]
 
 
 def build_stack_vault_source_store(

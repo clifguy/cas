@@ -91,6 +91,11 @@ class _FakeGraphClient:
     def hash_source_bytes(self, vault_id: str, source_path: str) -> str:
         return "sha256:" + hashlib.sha256(self.sources[source_path]).hexdigest()
 
+    def source_download_url(self, vault_id: str, source_path: str) -> str | None:
+        if source_path not in self.sources:
+            return None
+        return f"https://sp.example/download/{source_path}?t=fake"
+
 
 def _binding(fake: _FakeGraphClient) -> DocumentStoreVaultSourceStore:
     return DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=fake)
@@ -296,6 +301,35 @@ def test_vsb_ds_036_hash_source_canonical_form():
     assert store.hash_source("v", Path("/unused"), "imports/h.md") == (
         "sha256:" + hashlib.sha256(payload).hexdigest()
     )
+
+
+def test_vsb_ds_050_download_url_delegates_to_client(tmp_path):
+    """``download_url`` returns the URL the Graph client mints for a retained
+    source, so the browser fetches the bytes directly from the store.
+
+    Anti-coincidental-pass: assert the exact URL the client would issue is
+    returned -- a binding that ignored the client or returned a stub would not
+    match. This is the document-store binding's half of the browser-delivery path
+    (CAS-ADR-043).
+    """
+    fake = _FakeGraphClient()
+    fake.sources["imports/x.pdf"] = b"%PDF-1.4"
+    store = _binding(fake)
+
+    assert store.download_url("v", tmp_path, "imports/x.pdf") == (
+        "https://sp.example/download/imports/x.pdf?t=fake"
+    )
+
+
+def test_vsb_ds_051_download_url_none_when_source_absent(tmp_path):
+    """``download_url`` returns ``None`` for a source not retained on the store, so
+    the service can distinguish "not retained" from a real URL.
+
+    Boundary: a document record whose bytes are missing from the store yields no
+    URL rather than a bogus one.
+    """
+    store = _binding(_FakeGraphClient())  # nothing retained
+    assert store.download_url("v", tmp_path, "imports/missing.pdf") is None
 
 
 # --------------------------------------------------------------------------
@@ -680,3 +714,37 @@ def test_vsb_ds_043_hash_source_streams_multi_chunk_body():
     digest = client.hash_source_bytes("v", "imports/big.bin")
     assert digest == "sha256:" + hashlib.sha256(body).hexdigest()
     assert streamed, "hash_source_bytes did not use the streaming GET path"
+
+
+def test_vsb_ds_052_source_download_url_reads_graph_annotation():
+    """``source_download_url`` returns the driveItem's
+    ``@microsoft.graph.downloadUrl`` -- a pre-authenticated, time-limited URL Graph
+    returns on an item metadata GET -- and ``None`` when the annotation is absent
+    or the item is missing.
+
+    Anti-coincidental-pass: assert the exact annotated URL is returned (a client
+    reading a wrong key, or the bare item URL, would yield ``None``), and that both
+    the missing-annotation and 404 paths resolve to ``None``. The metadata GET
+    carries no ``:/content`` suffix, so the bytes are never pulled through this
+    process.
+    """
+    dl = "https://contoso.sharepoint.com/_layouts/15/download.aspx?tempauth=abc123"
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200, json={"name": "x.pdf", "size": 8, "@microsoft.graph.downloadUrl": dl}
+        )
+
+    assert _client(handler).source_download_url("vault_a", "imports/x.pdf") == dl
+    # An item metadata GET, not a content download.
+    assert not str(seen[0].url).endswith(":/content")
+
+    # Item exists but Graph returned no downloadUrl -> None.
+    no_anno = _client(lambda r: httpx.Response(200, json={"name": "x.pdf", "size": 8}))
+    assert no_anno.source_download_url("v", "imports/x.pdf") is None
+
+    # Item absent (404) -> None.
+    absent = _client(lambda r: httpx.Response(404))
+    assert absent.source_download_url("v", "imports/x.pdf") is None

@@ -18,12 +18,13 @@ import copy
 import pytest
 import yaml
 
-from sage.config import SageCoreConfig, VaultConfig
+from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
 from sage.vault_source_binding import (
     VAULT_SOURCE_BACKEND_ENV_VAR,
     DiscoveredVault,
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
+    SupportsSourceDownloadUrl,
     build_stack_vault_source_store,
 )
 
@@ -84,6 +85,27 @@ def test_vsb_002_env_override_wins_over_config(monkeypatch):
     monkeypatch.setenv(VAULT_SOURCE_BACKEND_ENV_VAR, "sharepoint")
     with pytest.raises(ValueError, match="sharepoint"):
         build_stack_vault_source_store(SageCoreConfig())
+
+
+def test_vsb_070_download_url_capability_is_binding_scoped(tmp_path):
+    """The optional source-download-URL capability is present only on the
+    document-store binding, not the filesystem binding.
+
+    The service probes ``isinstance(store, SupportsSourceDownloadUrl)`` before
+    minting a browser download URL, so this pins the probe's two answers: the
+    capability stays a richer-binding feature (CAS-ADR-043 s5) and never leaks onto
+    the weakest (filesystem) binding.
+
+    Anti-coincidental-pass: assert the filesystem store is NOT an instance *and*
+    the document-store binding IS -- a probe that always answered True, or the
+    capability accidentally landing on the filesystem store, would fail the first
+    assertion.
+    """
+    fs = FilesystemVaultSourceStore(tmp_path)
+    assert not isinstance(fs, SupportsSourceDownloadUrl)
+
+    ds = DocumentStoreVaultSourceStore(StackDocumentStoreConfig(), client=object())
+    assert isinstance(ds, SupportsSourceDownloadUrl)
 
 
 def test_vsb_003_filesystem_store_discovers_and_loads(tmp_path, minimal_vault_config_dict):

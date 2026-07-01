@@ -24,6 +24,7 @@ from sage.config import StackDocumentStoreConfig
 from sage.vault_source_binding import (
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
+    SupportsSourceDownloadUrl,
     VaultSourceStore,
 )
 
@@ -83,15 +84,28 @@ def test_vss_t3_document_store_stub_is_concrete():
     DocumentStoreVaultSourceStore(StackDocumentStoreConfig())  # must not raise
 
 
+# Optional richer-binding capabilities (CAS-ADR-043 s5): capability protocols a
+# binding MAY implement on top of the port. Their methods are a legitimate part of
+# a binding's public surface but are deliberately absent from the port ABC, which
+# stays satisfiable by its weakest binding. Keyed by binding class; the allowed
+# method names are derived from the protocol so there is one source of truth.
+_OPTIONAL_CAPABILITIES: dict[type, tuple[type, ...]] = {
+    DocumentStoreVaultSourceStore: (SupportsSourceDownloadUrl,),
+}
+
+
 @pytest.mark.parametrize("binding", _BINDINGS)
 def test_vss_t4_binding_surface_matches_port(binding):
-    """T4: each binding's public surface is exactly the port's abstract set.
+    """T4: each binding's public surface is the port's abstract set, plus any
+    optional richer-binding capability protocol it implements (CAS-ADR-043 s5).
 
-    Trap: a binding-private public method (drift) would appear in the difference,
-    and a port method dropped from a binding would too. The port has no
-    binding-private public methods, so the sets must be equal."""
-    abc_methods = set(VaultSourceStore.__abstractmethods__)
-    assert _public_methods(binding) == abc_methods
+    Trap: a binding-private public method that is NOT part of a declared optional
+    capability (drift) would appear in the difference, and a port method dropped
+    from a binding would too."""
+    allowed = set(VaultSourceStore.__abstractmethods__)
+    for proto in _OPTIONAL_CAPABILITIES.get(binding, ()):
+        allowed |= _public_methods(proto)
+    assert _public_methods(binding) == allowed
 
 
 @pytest.mark.parametrize("binding", _BINDINGS)

@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Query
 
 from sage.api.dependencies import get_documents_service, get_vault_id
 from sage.models.schemas import (
+    DocumentDownloadUrlResponse,
     DocumentIdStr,
     DocumentWithContent,
     ErrorResponse,
@@ -31,6 +32,14 @@ router = APIRouter(tags=["Document Metadata"])
             "model": ErrorResponse,
             "description": "Document, vault, or backing source file not found.",
         },
+        501: {
+            "model": ErrorResponse,
+            "description": (
+                "`local_open_only`: the host OS opener is a local-profile "
+                "affordance and is gated off under the cloud profile, where "
+                "SAGE runs headless."
+            ),
+        },
     },
 )
 async def open_document(
@@ -39,6 +48,33 @@ async def open_document(
     service: DocumentsService = Depends(get_documents_service),
 ) -> OpenDocumentResponse:
     return await service.open_document_locally(document_id)
+
+
+@router.get(
+    "/documents/{document_id}/download-url",
+    response_model=DocumentDownloadUrlResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "Vault or document not found.",
+        },
+        501: {
+            "model": ErrorResponse,
+            "description": (
+                "`download_url_unavailable`: the active vault-source binding "
+                "cannot issue a download URL (the filesystem binding has no "
+                "equivalent to the document-store binding's pre-authenticated "
+                "URL)."
+            ),
+        },
+    },
+)
+async def get_document_download_url(
+    document_id: DocumentIdStr,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: DocumentsService = Depends(get_documents_service),
+) -> DocumentDownloadUrlResponse:
+    return await service.get_document_download_url(document_id)
 
 
 @router.get(
