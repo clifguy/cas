@@ -248,6 +248,21 @@ class SharePointGraphClient:
         # attempt; this line is unreachable and only satisfies the type checker.
         raise RuntimeError("vault-source Graph hash retry loop produced no response")
 
+    def source_download_url(self, vault_id: str, source_path: str) -> str | None:
+        """Return a retained source's short-lived pre-authenticated download URL.
+
+        Reads the driveItem's ``@microsoft.graph.downloadUrl`` annotation -- a
+        pre-authenticated, time-limited URL Graph returns on an item metadata GET,
+        fetchable without an ``Authorization`` header. Returns ``None`` when the
+        source is absent (no item), so a caller can distinguish "not retained" from
+        a real URL. A metadata read, not a content download: the bytes are never
+        pulled through this process.
+        """
+        item = self.source_item(vault_id, source_path)
+        if item is None:
+            return None
+        return item.get("@microsoft.graph.downloadUrl")
+
 
 def build_sharepoint_graph_client(
     config: StackDocumentStoreConfig,

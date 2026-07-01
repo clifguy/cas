@@ -21,14 +21,22 @@ from sage.api.errors import (
     ContentFileMissingError,
     ContentTooLargeError,
     DocumentNotFoundError,
+    DownloadUrlNotAvailableError,
+    LocalOpenNotAvailableError,
     WritePathExistsError,
     WritePathInvalidError,
 )
 from sage.config import VaultConfig
 from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES
-from sage.models.schemas import Document, DocumentWithContent, OpenDocumentResponse, ReadMeta
+from sage.models.schemas import (
+    Document,
+    DocumentDownloadUrlResponse,
+    DocumentWithContent,
+    OpenDocumentResponse,
+    ReadMeta,
+)
 from sage.services.read_diagnostics import build_not_found_detail
-from sage.vault_source_binding import VaultSourceStore
+from sage.vault_source_binding import SupportsSourceDownloadUrl, VaultSourceStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
 
@@ -120,10 +128,18 @@ class DocumentsService:
     async def open_document_locally(self, document_id: str) -> OpenDocumentResponse:
         """Open the document's source file using the local OS file association.
 
-        Local-only convenience: invokes the host OS opener
-        (open/xdg-open/startfile) fire-and-forget. If CAS is ever deployed
-        beyond localhost, gate this behind a loopback check or remove it.
+        A local-profile convenience: invokes the host OS opener
+        (open/xdg-open/startfile) fire-and-forget. It is meaningful only when the
+        browser and SAGE share a machine, so it is gated to the local profile --
+        under the cloud profile SAGE is a headless container and the opener is
+        refused with a structured 501; a caller delivers the document to the
+        browser through a download URL instead (CAS-ADR-043).
         """
+        from sage.mcp_init import get_stack_config
+
+        if get_stack_config().profile == "cloud":
+            raise LocalOpenNotAvailableError()
+
         doc = await self._store.get_document(document_id)
         if doc is None:
             raise DocumentNotFoundError(
@@ -202,3 +218,35 @@ class DocumentsService:
         response.body_form = "binary" if is_binary else "text"
 
         return response
+
+    async def get_document_download_url(self, document_id: str) -> DocumentDownloadUrlResponse:
+        """Mint a short-lived download URL for a cloud-resident document's source.
+
+        The browser-delivery path for the cloud profile: the active vault-source
+        binding issues a pre-authenticated URL the browser fetches directly from
+        the backing store, so the bytes never transit SAGE (CAS-ADR-043). Only a
+        binding that supports the capability can answer; the filesystem binding
+        cannot, and the request is refused with a structured 501.
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(
+                document_id, await build_not_found_detail(self._store, document_id)
+            )
+
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        store = resolve_stack_vault_source_store(get_stack_config())
+        if not isinstance(store, SupportsSourceDownloadUrl):
+            raise DownloadUrlNotAvailableError(document_id)
+
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        vault_id = self._config.vault.id
+        if not store.source_exists(vault_id, storage_root, doc.source_path):
+            raise ContentFileMissingError(doc.id, doc.source_path)
+
+        url = store.download_url(vault_id, storage_root, doc.source_path)
+        if url is None:
+            raise DownloadUrlNotAvailableError(document_id)
+
+        return DocumentDownloadUrlResponse(download_url=url)

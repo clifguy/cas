@@ -93,7 +93,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.6",
+      "version": "0.7",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, and utilities. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -181,8 +181,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.40",
+  "substrate_version": "1.41",
   "revision_history": [
+    {
+      "version": "1.41",
+      "date": "2026-06-30",
+      "summary": "Cloud-resident document open: deliver a cloud document to the browser through a store-issued download URL and gate the local OS opener to the local profile (T-0335, CAS-ADR-043/042). sage/sage_core_api.openapi.yaml bumped v0.6->v0.7: new GET /sage_vaults/{vault_id}/documents/{document_id}/download-url (operationId get_document_download_url) returns a new DocumentDownloadUrlResponse ({download_url}) -- a short-lived pre-authenticated URL the browser fetches directly from the backing store so the source bytes never transit SAGE or the BFF; and the existing open_document operation gains a 501 response (local_open_only). The download-url operation is HTTP-only (no stdio MCP counterpart: it is a browser-delivery affordance; agents read bytes via get_document/read_projection) and is allowlisted in test_mcp_tool_conformance.HTTP_ONLY_OPERATIONS. Code (not in this spec): sage/services/documents.py gates open_document_locally on the cloud profile (501 local_open_only) and adds get_document_download_url, which resolves the active vault-source binding and mints the URL through a new optional SupportsSourceDownloadUrl capability -- implemented on DocumentStoreVaultSourceStore only (delegating to a new SharePointGraphClient.source_download_url that reads the driveItem @microsoft.graph.downloadUrl annotation) and probed by isinstance, keeping the VaultSourceStore port satisfiable by its weakest binding per CAS-ADR-043 s5; the filesystem binding returns 501 download_url_unavailable. Frontend: DocumentDetail's open control branches on detectIngestProfile() -- the hosted profile fetches the download URL and window.opens it, the co-located profile keeps the OS opener. No BFF route added (the tiny {download_url} JSON rides the existing /sage_vaults/* proxy). Tests: opener cloud-gate plus download-url happy/unavailable/not-found in tests/sage/test_api_integration.py, the binding capability + Graph client in tests/sage/test_vault_source_binding.py and test_vault_source_document_store.py, and frontend branch/client tests in app/src; the verbatim-description, YAML<->Pydantic parity, router-conformance, MCP-tool-conformance, typed-alias, and deployment-profile-guardrail gates pass."
+    },
     {
       "version": "1.40",
       "date": "2026-06-25",

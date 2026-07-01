@@ -1662,10 +1662,13 @@ paths:
       operationId: open_document
       summary: Open a document's source file using the local OS file association.
       description: >-
-        Local-only convenience endpoint. Invokes the host OS opener
+        Local-profile convenience endpoint. Invokes the host OS opener
         (open on macOS, xdg-open on Linux, os.startfile on Windows)
-        fire-and-forget. If CAS is ever deployed beyond localhost,
-        this endpoint must be gated behind a loopback check or removed.
+        fire-and-forget. It is meaningful only when the browser and SAGE
+        share a machine, so it is gated to the local profile: under the
+        cloud profile SAGE runs headless and the endpoint returns 501
+        `local_open_only`. Deliver the document to a browser via
+        `GET /documents/{document_id}/download-url` instead.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1679,6 +1682,54 @@ paths:
                 $ref: "#/components/schemas/OpenDocumentResponse"
         "404":
           description: Document, vault, or backing source file not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: >-
+            `local_open_only`: the host OS opener is a local-profile
+            affordance and is gated off under the cloud profile, where
+            SAGE runs headless.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /sage_vaults/{vault_id}/documents/{document_id}/download-url:
+    get:
+      operationId: get_document_download_url
+      summary: Mint a short-lived download URL for a document's source file.
+      description: >-
+        Browser-delivery path for the cloud profile: the active
+        vault-source binding issues a short-lived, pre-authenticated URL
+        the browser fetches directly from the backing store, so the
+        source bytes never transit SAGE. Only a binding that supports the
+        capability can answer -- the document-store binding does; the
+        filesystem binding returns 501 `download_url_unavailable`.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: A short-lived download URL for the document's source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentDownloadUrlResponse"
+        "404":
+          description: Vault or document not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: >-
+            `download_url_unavailable`: the active vault-source binding
+            cannot issue a download URL (the filesystem binding has no
+            equivalent to the document-store binding's pre-authenticated
+            URL).
           content:
             application/json:
               schema:
@@ -5480,6 +5531,18 @@ components:
         path:
           type: string
           description: Absolute filesystem path that was dispatched to the OS opener.
+
+    DocumentDownloadUrlResponse:
+      type: object
+      required: [download_url]
+      description: Response body for the download-url endpoint; carries a short-lived pre-authenticated URL for direct browser delivery of a document's source.
+      properties:
+        download_url:
+          type: string
+          description: >-
+            Short-lived, pre-authenticated URL from which the document's
+            source file can be fetched directly, bypassing SAGE. Valid for
+            a limited time.
 
     # -------------------------------------------------------------------------
     # Utilities

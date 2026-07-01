@@ -16,7 +16,7 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.app import _initialize_services, create_app
-from sage.config import VaultConfig
+from sage.config import SageCoreConfig, VaultConfig
 
 
 @pytest.fixture
@@ -706,6 +706,117 @@ async def test_open_document_missing_file_404(client, tmp_vault_dir):
     )
     assert resp2.status_code == 404
     assert resp2.json()["code"] == "content_file_missing"
+
+
+async def test_open_document_gated_under_cloud_profile(client, monkeypatch):
+    """Under the cloud profile POST /documents/{id}/open refuses with 501
+    `local_open_only` and never shells out to the host OS opener.
+
+    The core acceptance criterion: SAGE is headless under the cloud profile, so the
+    opener must not attempt a host-side open. A real, openable document is ingested
+    first (under the default local profile) so the anti-coincidental break is
+    meaningful -- without the gate this document WOULD dispatch to `subprocess.Popen`.
+    """
+    calls = []
+
+    def fake_popen(args, *a, **kw):
+        calls.append(args)
+
+        class _Dummy:
+            pass
+
+        return _Dummy()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("sys.platform", "darwin")
+
+    # Ingest under the default (local) profile so retention and the openable
+    # source file both exist.
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    # Flip the stack to the cloud profile: the OS opener must now be gated off.
+    monkeypatch.setattr("sage.mcp_init.get_stack_config", lambda: SageCoreConfig(profile="cloud"))
+
+    resp2 = await client.post(f"/sage_vaults/test_vault/documents/{doc_id}/open")
+    assert resp2.status_code == 501
+    assert resp2.json()["code"] == "local_open_only"
+    # The strong assertion: no host-side open was even attempted.
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Cloud-resident document open -- browser delivery via a download URL
+# ---------------------------------------------------------------------------
+
+
+class _FakeDownloadStore:
+    """Minimal vault-source store that can mint a download URL.
+
+    Satisfies the ``SupportsSourceDownloadUrl`` capability probe (it carries a
+    ``download_url`` method) and reports the source present, standing in for the
+    document-store binding without a live SharePoint tenant.
+    """
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return True
+
+    def download_url(self, vault_id, storage_root, source_path):
+        return "https://sp.example/dl?tempauth=abc123"
+
+
+async def test_get_download_url_200_document_store_binding(client, monkeypatch):
+    """A vault-source binding that supports download URLs returns 200 with the URL.
+
+    Happy path: the cloud open loop resolves to a short-lived URL the browser
+    fetches directly from the store. Ingest happens under the real (filesystem)
+    store; the capable binding is swapped in only for the download-url call.
+    """
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    monkeypatch.setattr(
+        "sage.mcp_init.resolve_stack_vault_source_store",
+        lambda cfg: _FakeDownloadStore(),
+    )
+
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}/download-url")
+    assert resp2.status_code == 200
+    assert resp2.json()["download_url"] == "https://sp.example/dl?tempauth=abc123"
+
+
+async def test_get_download_url_501_filesystem_binding(client):
+    """The filesystem binding cannot mint a download URL: 501 `download_url_unavailable`.
+
+    Capability gate: the default (filesystem) binding lacks the
+    ``SupportsSourceDownloadUrl`` capability, so the request must fail cleanly with
+    a structured 501 rather than a 500.
+    """
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}/download-url")
+    assert resp2.status_code == 501
+    assert resp2.json()["code"] == "download_url_unavailable"
+
+
+async def test_get_download_url_404_unknown_id(client):
+    """An unknown document id returns 404 `document_not_found` before the capability
+    probe."""
+    resp = await client.get(
+        "/sage_vaults/test_vault/documents/deadbeef_nonexistent/download-url",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["code"] == "document_not_found"
 
 
 async def test_eval_retrieval_not_configured_400(client):

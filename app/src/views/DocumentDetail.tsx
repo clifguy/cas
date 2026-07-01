@@ -3,7 +3,8 @@ import { Link, useParams, useOutletContext, useNavigate } from 'react-router-dom
 import type { VaultContext } from '../App';
 import type { Document, Edge, EdgeType, LinkRequest, ResolutionPolicy } from '../api/types';
 import { DEFAULT_EDGE_POLICIES } from '../api/types';
-import { getDocument, openDocument } from '../api/documents';
+import { getDocument, openDocument, getDocumentDownloadUrl } from '../api/documents';
+import { detectIngestProfile } from '../api/ingest';
 import { traverse } from '../api/graph';
 import { createEdge } from '../api/graph';
 
@@ -71,8 +72,19 @@ export default function DocumentDetail() {
     if (!id) return;
     setOpenStatus(null);
     try {
-      await openDocument(vaultId, id);
-      setOpenStatus({ kind: 'ok', message: 'Opened' });
+      // "Open" means different things by deployment profile: co-located, the
+      // browser and SAGE share a machine, so SAGE opens the file with the host
+      // OS opener; hosted (cloud), SAGE is headless, so it mints a short-lived
+      // download URL the browser fetches directly from the backing store.
+      const profile = await detectIngestProfile(vaultId);
+      if (profile === 'hosted') {
+        const { download_url } = await getDocumentDownloadUrl(vaultId, id);
+        window.open(download_url, '_blank', 'noopener');
+        setOpenStatus({ kind: 'ok', message: 'Opened in browser' });
+      } else {
+        await openDocument(vaultId, id);
+        setOpenStatus({ kind: 'ok', message: 'Opened' });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to open';
       setOpenStatus({ kind: 'err', message: msg });

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, Outlet, useLocation } from 'react-router-dom';
 import DocumentDetail from '../DocumentDetail';
@@ -19,6 +19,7 @@ import { vi } from 'vitest';
 vi.mock('../../api/documents', () => ({
   getDocument: vi.fn(),
   openDocument: vi.fn(),
+  getDocumentDownloadUrl: vi.fn(),
 }));
 vi.mock('../../api/graph', () => ({
   traverse: vi.fn(),
@@ -27,15 +28,21 @@ vi.mock('../../api/graph', () => ({
 vi.mock('../../api/discover', () => ({
   discover: vi.fn(),
 }));
+vi.mock('../../api/ingest', () => ({
+  detectIngestProfile: vi.fn(),
+}));
 
-import { getDocument, openDocument } from '../../api/documents';
+import { getDocument, openDocument, getDocumentDownloadUrl } from '../../api/documents';
 import { traverse } from '../../api/graph';
 import { discover } from '../../api/discover';
+import { detectIngestProfile } from '../../api/ingest';
 
 const mockGetDocument = vi.mocked(getDocument);
 const mockOpenDocument = vi.mocked(openDocument);
+const mockGetDownloadUrl = vi.mocked(getDocumentDownloadUrl);
 const mockTraverse = vi.mocked(traverse);
 const mockDiscover = vi.mocked(discover);
+const mockDetectIngestProfile = vi.mocked(detectIngestProfile);
 
 // --- Fixtures ---
 const mockVault: VaultSummary = {
@@ -152,10 +159,11 @@ describe('DocumentDetail: Back to search', () => {
     expect(locationRef.current).toBe('/search?q=hello&mode=semantic');
   });
 
-  it('calls openDocument when the Open button is clicked', async () => {
+  it('opens via the OS opener under the co-located profile', async () => {
     mockGetDocument.mockResolvedValue(mockDoc);
     mockTraverse.mockResolvedValue(emptyTraverse);
     mockDiscover.mockResolvedValue(emptyDiscover);
+    mockDetectIngestProfile.mockResolvedValue('co-located');
     mockOpenDocument.mockResolvedValue({ opened: true, path: '/vault/Test.docx' });
 
     const locationRef = { current: '' };
@@ -174,8 +182,60 @@ describe('DocumentDetail: Back to search', () => {
     const openBtn = screen.getByRole('button', { name: /^open$/i });
     await user.click(openBtn);
 
+    await waitFor(() => expect(mockOpenDocument).toHaveBeenCalledWith('test_vault', 'doc-42'));
     expect(mockOpenDocument).toHaveBeenCalledTimes(1);
-    expect(mockOpenDocument).toHaveBeenCalledWith('test_vault', 'doc-42');
+    expect(mockGetDownloadUrl).not.toHaveBeenCalled();
+  });
+
+  it('delivers to the browser via a download URL under the hosted profile', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockDiscover.mockResolvedValue(emptyDiscover);
+    mockDetectIngestProfile.mockResolvedValue('hosted');
+    mockGetDownloadUrl.mockResolvedValue({ download_url: 'https://sp.example/dl?t=abc' });
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+    await screen.findByRole('heading', { name: mockDoc.title });
+
+    await user.click(screen.getByRole('button', { name: /^open$/i }));
+
+    await waitFor(() => expect(mockGetDownloadUrl).toHaveBeenCalledWith('test_vault', 'doc-42'));
+    expect(openSpy).toHaveBeenCalledWith('https://sp.example/dl?t=abc', '_blank', 'noopener');
+    expect(mockOpenDocument).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
+  it('surfaces an error and does not open a window when the download URL fails', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockDiscover.mockResolvedValue(emptyDiscover);
+    mockDetectIngestProfile.mockResolvedValue('hosted');
+    mockGetDownloadUrl.mockRejectedValue(new Error('download_url_unavailable: no URL'));
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+    await screen.findByRole('heading', { name: mockDoc.title });
+
+    await user.click(screen.getByRole('button', { name: /^open$/i }));
+
+    await waitFor(() => expect(screen.getByText(/download_url_unavailable/)).toBeInTheDocument());
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
   });
 
   it('renders the back control as a button (so it can trigger history.back), not a fixed link', async () => {
