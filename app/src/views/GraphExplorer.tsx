@@ -73,6 +73,7 @@ export default function GraphExplorer() {
   const [traversalData, setTraversalData] = useState<TraversalNode[]>([]);
   const [centerDoc, setCenterDoc] = useState<DocumentSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   // Chain-scoped resolution debug trace (CAS-ADR-017). Off by default.
   const [debugMode, setDebugMode] = useState(false);
   const [resolutionPath, setResolutionPath] = useState<ResolutionPathEntry[]>([]);
@@ -82,6 +83,7 @@ export default function GraphExplorer() {
     async function load() {
       if (!centerNodeId) return;
       setLoading(true);
+      setError('');
       try {
         const [resp, doc] = await Promise.all([
           traverse(vaultId, { start_id: centerNodeId, direction: 'both', depth, debug: debugMode }),
@@ -103,7 +105,8 @@ export default function GraphExplorer() {
           source_modified_at: doc.source_modified_at,
         });
         setLoading(false);
-      } catch {
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load graph');
         setTraversalData([]);
         setResolutionPath([]);
         setLoading(false);
@@ -230,6 +233,7 @@ export default function GraphExplorer() {
 
   if (!vault) return <div>Vault not found.</div>;
   if (loading) return <div>Loading graph...</div>;
+  if (error) return <div style={{ color: '#c62828' }}>Error: {error}</div>;
 
   return (
     <div>
