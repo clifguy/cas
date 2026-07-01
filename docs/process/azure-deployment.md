@@ -66,6 +66,7 @@ az deployment sub create \
     publisherEmail="$PUBLISHER_EMAIL" \
     imageTag="$IMAGE_TAG" \
     bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
+    mcpClientId="$MCP_CLIENT_ID" \
     baseDomain="$BASE_DOMAIN"
 ```
 

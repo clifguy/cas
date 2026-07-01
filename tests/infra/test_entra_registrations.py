@@ -127,6 +127,42 @@ def test_bff_confidential_client_documented() -> None:
     )
 
 
+def test_runbook_documents_public_client_registration() -> None:
+    """The public MCP client registration (auth-code + PKCE, no secret) is on
+    the record: the DCR-compatibility facade's role (CAS-ADR-042), its redirect
+    URI as a templated placeholder, and its grant of the same delegated
+    SAGE.Access scope the BFF holds.
+    """
+    text = _runbook_text()
+    lowered = text.lower()
+    assert "pkce" in lowered, "runbook must document the public client's auth-code + PKCE flow"
+    assert "public client" in lowered, "runbook must name the registration as a public client"
+    assert "no secret" in lowered or "no client secret" in lowered, (
+        "runbook must state the public client receives no secret"
+    )
+    assert "register" in lowered and (
+        "dcr" in lowered or "dynamic client registration" in lowered
+    ), "runbook must connect the public client to the DCR-compatibility facade"
+
+
+def test_runbook_documents_provisioning_group() -> None:
+    """The single SAGE access-provisioning group (CAS-ADR-044) is on the record,
+    with membership churn distinguished from the idempotent, one-time bootstrap.
+    """
+    text = _runbook_text()
+    lowered = text.lower()
+    assert "provisioning group" in lowered, (
+        "runbook must document the single provisioning group (CAS-ADR-044)"
+    )
+    assert "ADR-044" in text or "CAS-ADR-044" in text, (
+        "runbook must cite CAS-ADR-044 for the provisioning-group decision"
+    )
+    assert "membership" in lowered, (
+        "runbook must note that group-membership add/remove is ongoing operational "
+        "churn, distinct from the one-time idempotent bootstrap"
+    )
+
+
 def test_uniform_single_issuer_documented() -> None:
     """The runbook states the uniform-authorization model: one Entra issuer, one
     resource-server audience, the same token honored across the REST and MCP

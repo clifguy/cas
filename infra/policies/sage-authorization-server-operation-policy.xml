@@ -1,0 +1,47 @@
+<policies>
+    <inbound>
+        <!--
+            Operation-scoped policy for GET /.well-known/oauth-authorization-server
+            (CAS-ADR-042). Serves the DCR-compatibility facade's
+            authorization-server metadata: Entra's real authorization, token, and
+            JWKS endpoints verbatim, plus a registration_endpoint that points at
+            this facade's own /register -- the leg Entra itself does not offer (no
+            Dynamic Client Registration, RFC 7591). Only discovery-and-registration
+            is intercepted; authorization_endpoint and token_endpoint are the
+            issuer's real endpoints, so the browser redirect and the token
+            exchange never traverse the facade and tokens stay signed by Entra
+            exactly as today.
+
+            There is deliberately no <base /> here: omitting it skips the
+            API-level inbound policy (validate-jwt), so the document is reachable
+            without a token, matching the discovery operation.
+        -->
+        <return-response>
+            <set-status code="200" reason="OK" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>{
+  "issuer": "{{sage-resource-url}}",
+  "authorization_endpoint": "https://login.microsoftonline.com/{{entra-tenant-id}}/oauth2/v2.0/authorize",
+  "token_endpoint": "https://login.microsoftonline.com/{{entra-tenant-id}}/oauth2/v2.0/token",
+  "jwks_uri": "https://login.microsoftonline.com/{{entra-tenant-id}}/discovery/v2.0/keys",
+  "registration_endpoint": "{{sage-resource-url}}/register",
+  "response_types_supported": ["code"],
+  "grant_types_supported": ["authorization_code"],
+  "code_challenge_methods_supported": ["S256"],
+  "token_endpoint_auth_methods_supported": ["none"],
+  "scopes_supported": ["Sage.Access"]
+}</set-body>
+        </return-response>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+    </outbound>
+    <on-error>
+        <base />
+    </on-error>
+</policies>

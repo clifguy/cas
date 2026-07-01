@@ -47,8 +47,9 @@ Run once per tenant by an operator with directory-admin rights, before the first
 deployment. Produces the identity coordinates the parameter set needs.
 
 - `deploy/bootstrap/entra-app-registrations.sh` — creates the SAGE resource
-  server and the CAS BFF confidential client, grants admin consent, and **emits
-  `sageAudience` and `bffOidcClientId`** for the parameter set.
+  server, the CAS BFF confidential client, and the public MCP client, grants
+  admin consent, and **emits `sageAudience`, `bffOidcClientId`, and
+  `mcpClientId`** for the parameter set.
 - The CI deploy identity's own OIDC federation is established here too (it needs
   directory rights); see `docs/process/azure-deployment.md`.
 

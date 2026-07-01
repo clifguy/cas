@@ -35,6 +35,9 @@ param sageBackendHostname string
 @description('SAGE resource-server audience the JWT policy validates (api://<app-id>).')
 param sageAudience string
 
+@description('Application (client) id of the pre-provisioned public MCP client (auth-code + PKCE, no secret) that the DCR-compatibility facade /register operation echoes back (CAS-ADR-042).')
+param mcpClientId string
+
 @description('Public URL of the CAS app a tokenless browser is redirected to from the SAGE edge — the cas custom-domain URL. Tenant-agnostic — the orchestrator supplies it; no hostname is baked into the module.')
 param casAppUrl string
 
@@ -164,6 +167,21 @@ resource sageResourceUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@
   }
 }
 
+// The pre-provisioned public MCP client id the DCR-compatibility facade's
+// /register operation echoes back on every registration attempt (CAS-ADR-042).
+// Not a secret -- a public client (auth-code + PKCE) carries none -- but
+// supplied as a parameter rather than a literal so no identity GUID lives in
+// the module.
+resource mcpClientIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
+  parent: apimService
+  name: 'mcp-client-id'
+  properties: {
+    displayName: 'mcp-client-id'
+    value: mcpClientId
+    secret: false
+  }
+}
+
 // The CAS app a tokenless human browser is redirected to from the SAGE edge. The
 // catch-all policy's <on-error> 401 branch 302s an Accept: text/html request here,
 // while machine clients keep the protected-resource challenge. Supplied by the
@@ -271,6 +289,39 @@ resource sageHealthOperation 'Microsoft.ApiManagement/service/apis/operations@20
   }
 }
 
+// The DCR-compatibility facade (CAS-ADR-042): two more dedicated,
+// unauthenticated operations, the same round-trip-safe shape as discovery and
+// /health. Entra offers no Dynamic Client Registration (RFC 7591); a
+// standards-default MCP client's discovery-then-register leg otherwise
+// dead-ends against Entra's real (registration-less) authorization-server
+// metadata. The authorization-server metadata operation serves Entra's real
+// authorize/token/JWKS endpoints plus a registration_endpoint pointing at
+// /register; /register answers every registration attempt with the single
+// pre-provisioned public client id. Only this leg is intercepted -- the
+// authorize and token endpoints in the served metadata are Entra's own, so the
+// browser redirect and token exchange never traverse the facade.
+resource sageAuthorizationServerOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'oauth-authorization-server'
+  properties: {
+    displayName: 'OAuth authorization-server metadata'
+    method: 'GET'
+    urlTemplate: '/.well-known/oauth-authorization-server'
+    templateParameters: []
+  }
+}
+
+resource sageRegisterOperation 'Microsoft.ApiManagement/service/apis/operations@2022-08-01' = {
+  parent: sageApi
+  name: 'register'
+  properties: {
+    displayName: 'DCR-compatibility static registration'
+    method: 'POST'
+    urlTemplate: '/register'
+    templateParameters: []
+  }
+}
+
 // The discovery operation serves the protected-resource-metadata document
 // directly (return-response); the /health operation routes to the backend
 // unauthenticated. Both operation policies omit <base /> in <inbound>, so the
@@ -295,6 +346,24 @@ resource sageHealthOperationPolicy 'Microsoft.ApiManagement/service/apis/operati
   dependsOn: [
     sageBackend
   ]
+}
+
+resource sageAuthorizationServerOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageAuthorizationServerOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-authorization-server-operation-policy.xml')
+  }
+}
+
+resource sageRegisterOperationPolicy 'Microsoft.ApiManagement/service/apis/operations/policies@2022-08-01' = {
+  parent: sageRegisterOperation
+  name: 'policy'
+  properties: {
+    format: 'rawxml'
+    value: loadTextContent('../policies/sage-register-operation-policy.xml')
+  }
 }
 
 // The catch-all inbound policy — validate-jwt then route-to-backend — authored

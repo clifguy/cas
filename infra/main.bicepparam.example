@@ -14,8 +14,8 @@ using './main.bicep'
 //     AZURE_TENANT_ID deployment context), never written here.
 //   - Secrets and the wildcard TLS certificate — loaded into Key Vault by
 //     deploy/bootstrap/load-key-vault-secrets.sh, never committed.
-//   - sageAudience and bffOidcClientId — emitted by
-//     deploy/bootstrap/entra-app-registrations.sh after it creates the two
+//   - sageAudience, bffOidcClientId, and mcpClientId — emitted by
+//     deploy/bootstrap/entra-app-registrations.sh after it creates the three
 //     Entra app registrations; paste the emitted values below.
 //   - sharepointSiteId and sharepointDriveId — emitted by
 //     deploy/bootstrap/seed-vault-source.sh after it resolves the document
@@ -37,8 +37,12 @@ param resourceGroupName = 'REPLACE-WITH-RESOURCE-GROUP'
 // sageAudience is the SAGE resource-server audience (api://<app-id>),
 // emitted by the Entra bootstrap script. publisherEmail is the APIM
 // administrative contact. apimSku defaults to 'Consumption' (serverless).
+// mcpClientId is the pre-provisioned public MCP client (auth-code + PKCE, no
+// secret) the DCR-compatibility facade's /register operation echoes back
+// (CAS-ADR-042), emitted by the Entra bootstrap script.
 param sageAudience = 'api://REPLACE-WITH-SAGE-APP-ID'
 param publisherEmail = 'REPLACE-WITH-OPS-EMAIL'
+param mcpClientId = 'REPLACE-WITH-MCP-CLIENT-ID'
 
 // --- Container apps --------------------------------------------------
 // imageTag is the immutable {version}-{short-sha} the deploy pins (never

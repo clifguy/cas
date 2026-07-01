@@ -47,6 +47,7 @@ _GUID_RE: Final[re.Pattern[str]] = re.compile(
 _IDENTITY_PARAMS: Final[tuple[str, ...]] = (
     "sageAudience",
     "bffOidcClientId",
+    "mcpClientId",
     "baseDomain",
     "postgresAadAdminObjectId",
     "sharepointSiteId",

@@ -26,6 +26,11 @@ param apimSku = 'Consumption'
 param imageTag = 'REPLACE-WITH-IMAGE-TAG'
 param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
 
+// Public MCP client id (auth-code + PKCE, no secret) the DCR-compatibility
+// facade's /register operation echoes back (CAS-ADR-042). Substituted
+// at deploy time from the Entra bootstrap's emitted mcpClientId coordinate.
+param mcpClientId = 'REPLACE-WITH-MCP-CLIENT-ID'
+
 // Owned base domain the cas/sage custom hostnames derive from. The operator
 // substitutes the real zone; the wildcard certificate *.<base-domain> (loaded
 // in Key Vault as wildcard-tls) covers both hostnames. DNS is published

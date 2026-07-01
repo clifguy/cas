@@ -26,6 +26,7 @@ import yaml
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "infra.yml"
+MAIN_BICEP: Final[Path] = REPO_ROOT / "infra" / "main.bicep"
 
 # A subscription / tenant / client id is a GUID. None of these identity
 # coordinates may be hardcoded into the deploy workflow — they arrive as
@@ -192,6 +193,41 @@ def test_build_uses_reusable_workflow_and_deploy_needs_it() -> None:
     assert any(n in build_jobs for n in needs_list), (
         "the deploy job must depend on the reusable build job"
     )
+
+
+def _required_bicep_param_names() -> list[str]:
+    """Every ``main.bicep`` parameter declared with no default value.
+
+    A required parameter with no matching entry in the deploy job's
+    ``--parameters`` list fails ``az deployment sub create`` outright — the
+    live-deploy-only failure mode this gate exists to catch before a dispatch.
+    """
+    names: list[str] = []
+    for line in MAIN_BICEP.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"\s*param\s+(\w+)\b(.*)$", line)
+        if match and "=" not in match.group(2):
+            names.append(match.group(1))
+    return names
+
+
+def test_deploy_passes_every_required_bicep_parameter() -> None:
+    """Every required (no-default) ``main.bicep`` parameter is passed by name in
+    both the what-if gate and the apply step's ``--parameters`` list.
+
+    A required parameter added to the template without a matching
+    ``name="$VAR"`` entry here compiles clean, passes the workflow's own
+    structural gates, and only fails on a live ``az deployment sub create`` —
+    exactly the class of change this repo's azure-deploy-review discipline
+    flags as non-locally-verifiable.
+    """
+    required = _required_bicep_param_names()
+    assert required, "no required params parsed from main.bicep (parser drift?)"
+    runs = _job_run_text(_deploy_job(_load()))
+    for name in required:
+        assert re.search(rf"\b{re.escape(name)}=", runs), (
+            f"deploy job must pass required main.bicep parameter {name!r} "
+            "(missing from --parameters would fail az deployment sub create)"
+        )
 
 
 def test_parameters_sourced_from_variables_not_repo() -> None:

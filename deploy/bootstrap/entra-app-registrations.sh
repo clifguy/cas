@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# Create (or reconcile) the two Entra app registrations the cloud auth model
-# depends on (CAS-ADR-042): SAGE as an OAuth resource server, and the CAS BFF as
-# a confidential client that calls SAGE on-behalf-of an interactive user. This is
-# the executable substance of docs/process/entra-app-registrations.md.
+# Create (or reconcile) the three Entra app registrations the cloud auth model
+# depends on (CAS-ADR-042): SAGE as an OAuth resource server, the CAS BFF as a
+# confidential client that calls SAGE on-behalf-of an interactive user, and the
+# public MCP client (auth-code + PKCE, no secret) the DCR-compatibility facade
+# registers back at /register (CAS-ADR-042). This is the executable substance
+# of docs/process/entra-app-registrations.md.
 #
 # One-time per tenant, run by an operator with directory-admin rights. Idempotent:
 # every create is guarded by a lookup, and the scope/role ids are stable across
-# runs when passed in the environment. On success it emits the sageAudience and
-# bffOidcClientId coordinates for the deployment parameter set.
+# runs when passed in the environment. On success it emits the sageAudience,
+# bffOidcClientId, and mcpClientId coordinates for the deployment parameter set.
 set -euo pipefail
 
 # The BFF cloud hostname and OIDC callback path the redirect URI is built from.
@@ -15,6 +17,12 @@ set -euo pipefail
 # AUTH_CALLBACK_PATH is fixed by the BFF login implementation.
 : "${BFF_HOSTNAME:?set BFF_HOSTNAME to the BFF cloud hostname (e.g. the default ingress FQDN)}"
 AUTH_CALLBACK_PATH="${AUTH_CALLBACK_PATH:-auth/callback}"
+
+# The public MCP client's registered redirect URI(s) -- resolved against the
+# chosen default MCP client's current documentation (a loopback or custom-scheme
+# callback), not a CAS-controlled hostname. Comma-separated if the client needs
+# more than one.
+: "${MCP_CLIENT_REDIRECT_URI:?set MCP_CLIENT_REDIRECT_URI to the MCP client registered redirect URI (see docs/process/entra-app-registrations.md)}"
 
 # 1. SAGE resource-server registration (lookup-then-create keeps it idempotent).
 SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
@@ -61,7 +69,21 @@ az rest --method PATCH \
     }]
   }"
 
-# 2. CAS BFF confidential-client registration (lookup-then-create).
+# 2. The single SAGE access-provisioning group (CAS-ADR-044): binary membership,
+# uniform across every interactive surface (browser and agent alike). A
+# companion bootstrap step assigns this same group to the browser client's
+# default-access role; this script assigns it to the public MCP client's.
+# Lookup-then-create so either step converges regardless of which one runs
+# first on a fresh tenant.
+PROVISIONING_GROUP_NAME="${PROVISIONING_GROUP_NAME:-cas-sage-users}"
+PROVISIONING_GROUP_ID="$(az ad group list --display-name "${PROVISIONING_GROUP_NAME}" \
+  --query '[0].id' -o tsv)"
+if [ -z "${PROVISIONING_GROUP_ID}" ]; then
+  PROVISIONING_GROUP_ID="$(az ad group create --display-name "${PROVISIONING_GROUP_NAME}" \
+    --mail-nickname "${PROVISIONING_GROUP_NAME}" --query id -o tsv)"
+fi
+
+# 3. CAS BFF confidential-client registration (lookup-then-create).
 BFF_APP_ID="$(az ad app list --display-name cas-bff --query '[0].appId' -o tsv)"
 if [ -z "${BFF_APP_ID}" ]; then
   BFF_APP_ID="$(az ad app create --display-name cas-bff \
@@ -81,7 +103,54 @@ az ad app permission add --id "${BFF_APP_ID}" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
 az ad app permission admin-consent --id "${BFF_APP_ID}"
 
+# 4. Public MCP client registration (lookup-then-create): auth-code + PKCE, no
+# secret -- the DCR-compatibility facade's /register operation echoes this app
+# id back to a default MCP client, since Entra offers no real Dynamic Client
+# Registration (CAS-ADR-042). --public-client-redirect-uris registers
+# the public-client platform (never --web-redirect-uris, which implies a
+# confidential client that would need a secret).
+MCP_CLIENT_APP_ID="$(az ad app list --display-name cas-mcp-client --query '[0].appId' -o tsv)"
+if [ -z "${MCP_CLIENT_APP_ID}" ]; then
+  MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
+    --sign-in-audience AzureADMyOrg \
+    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" \
+    --query appId -o tsv)"
+else
+  az ad app update --id "${MCP_CLIENT_APP_ID}" \
+    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}"
+fi
+MCP_CLIENT_SP_ID="$(az ad sp create --id "${MCP_CLIENT_APP_ID}" --query id -o tsv 2>/dev/null || \
+  az ad sp show --id "${MCP_CLIENT_APP_ID}" --query id -o tsv)"
+
+# Grant the same delegated SAGE.Access scope the BFF holds, then admin-consent it.
+az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
+  --api "${SAGE_APP_ID}" \
+  --api-permissions "${ACCESS_SCOPE_ID}=Scope"
+az ad app permission admin-consent --id "${MCP_CLIENT_APP_ID}"
+
+# Gate the public client on the single provisioning group (CAS-ADR-044): require
+# app-role assignment on its service principal, then assign the group to its
+# default-access role. The default-access app role id is the well-known
+# all-zero Microsoft Graph sentinel used to assign a principal to an application
+# that defines no custom app roles -- built from repeated '0's rather than
+# written as a literal so this durable script carries no GUID-shaped literal.
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}" \
+  --headers 'Content-Type=application/json' \
+  --body '{"appRoleAssignmentRequired": true}'
+
+DEFAULT_ACCESS_APP_ROLE_ID="$(printf '0%.0s' {1..8})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..12})"
+az rest --method POST \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}/appRoleAssignments" \
+  --headers 'Content-Type=application/json' \
+  --body "{
+    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+    \"resourceId\": \"${MCP_CLIENT_SP_ID}\",
+    \"appRoleId\": \"${DEFAULT_ACCESS_APP_ROLE_ID}\"
+  }" || true  # tolerate an already-present assignment on re-run
+
 # Emit the coordinates for the deployment parameter set (main.bicepparam).
 echo "# Paste into the tenant parameter set:"
 echo "param sageAudience = 'api://${SAGE_APP_ID}'"
 echo "param bffOidcClientId = '${BFF_APP_ID}'"
+echo "param mcpClientId = '${MCP_CLIENT_APP_ID}'"
