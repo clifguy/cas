@@ -49,7 +49,7 @@ jobs:
       # github.workspace (not runner.temp, which is step-only) is valid in job env.
       SP_VALIDATE_STATE_FILE: ${{ github.workspace }}/spvalidate-state.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: azure/login@v3
         with:
