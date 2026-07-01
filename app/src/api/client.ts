@@ -60,7 +60,11 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
   }
   const error = new ApiError(
     body?.code ?? `HTTP_${response.status}`,
-    body?.message ?? response.statusText,
+    // Fall through on an empty message *or* an empty statusText (the HTTP/2 edge
+    // carries no reason-phrase), landing on a status-derived string so the message
+    // is never empty — an empty message reads as "no error" in the views and blanks
+    // the panel. `||` (not `??`) is required: statusText is "" here, not nullish.
+    body?.message || response.statusText || `HTTP ${response.status}`,
     body?.detail,
   );
   if (error.code === 'auth_required') {

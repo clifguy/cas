@@ -155,3 +155,55 @@ describe('onAuthRequired signal', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 });
+
+describe('errorFromResponse message fallback', () => {
+  beforeEach(() => {
+    globalThis.fetch = vi.fn();
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  // The HTTP/2 edge carries no reason-phrase, so response.statusText is the empty
+  // string; a non-JSON 5xx body leaves the parsed body undefined. Together these
+  // must still yield a non-empty, human-meaningful message (a bare empty message
+  // reads as "no error" in the views and blanks the panel).
+  it('T1: yields an HTTP-status message when statusText is empty and the body is non-JSON', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('Internal Server Error', { status: 500, statusText: '' }),
+    );
+
+    await expect(apiGet('/sage_vaults/v1/stats')).rejects.toThrow('HTTP 500');
+  });
+
+  it('T2: carries the HTTP_<status> code and a non-empty message for a non-JSON 5xx', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('boom', { status: 503, statusText: '' }),
+    );
+
+    const err = await apiGet('/x').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('HTTP_503');
+    expect((err as ApiError).message.length).toBeGreaterThan(0);
+  });
+
+  it('T3: prefers the server-provided message when the error body is JSON', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response(JSON.stringify({ code: 'x', message: 'specific detail' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(apiGet('/x')).rejects.toThrow('specific detail');
+  });
+
+  it('T4: preserves the reason-phrase when present (HTTP/1.1 local dev)', async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('boom', { status: 500, statusText: 'Internal Server Error' }),
+    );
+
+    await expect(apiGet('/x')).rejects.toThrow('Internal Server Error');
+  });
+});
