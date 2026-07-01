@@ -33,8 +33,8 @@ updates:
     open-pull-requests-limit: 5
     ignore:
       # @types/node tracks the Node *runtime* major, not the latest published
-      # major. CI and the container SPA build run Node 20 (see ci.yml's
-      # setup-node pins), so the type definitions are held to the Node 20 line:
+      # major. CI and the container SPA build run Node 24 (see ci.yml's
+      # setup-node pins), so the type definitions are held to the Node 24 line:
       # a major bump lets code reference newer-Node-only APIs that pass tsc but
       # don't exist at the runtime that builds and tests the bundle. Minor and
       # patch updates within the major still flow. Raise this in lockstep when
