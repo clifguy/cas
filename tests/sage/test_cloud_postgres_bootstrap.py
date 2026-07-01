@@ -193,6 +193,38 @@ def test_validate_role_name_accepts_mi_names() -> None:
             cb.validate_role_name(bad)
 
 
+def test_pgstattuple_grant_statement_is_execute_only_least_privilege() -> None:
+    """The grant is exactly EXECUTE on the pgstattuple bloat-measurement functions and
+    nothing more -- never a broad object grant, the admin role, or superuser. Both the
+    ``text`` and ``regclass`` overloads are named, so it covers however the unknown-typed
+    ``'chunks'`` literal in the content-store queries resolves.
+    """
+    grant = cb.pgstattuple_grant_statement(_SAGE_ROLE)
+    assert grant == (
+        'GRANT EXECUTE ON FUNCTION pgstattuple(text), pgstattuple(regclass) TO "id-sage-prod"'
+    )
+    assert "pgstattuple(text)" in grant and "pgstattuple(regclass)" in grant
+    lowered = grant.lower()
+    assert "execute" in lowered
+    assert "grant all" not in lowered
+    assert "azure_pg_admin" not in lowered
+    assert "superuser" not in lowered
+
+
+def test_pgstattuple_grant_statement_validates_role_name() -> None:
+    """The role is interpolated as a quoted identifier (it cannot be a bind parameter),
+    so a malformed or injection name is rejected before it reaches the GRANT -- the same
+    discipline ``grant_statement`` applies.
+    """
+    assert cb.pgstattuple_grant_statement(_SAGE_ROLE) == (
+        'GRANT EXECUTE ON FUNCTION pgstattuple(text), pgstattuple(regclass) TO "id-sage-prod"'
+    )
+    assert cb.pgstattuple_grant_statement(_BFF_ROLE).endswith('TO "id-cas-bff-prod"')
+    for bad in ("bad name", 'r"; DROP ROLE x; --', "", "role;", "Role-Upper", "id_sage"):
+        with pytest.raises(ValueError):
+            cb.pgstattuple_grant_statement(bad)
+
+
 # ---------------------------------------------------------------------------
 # Orchestration against the recording fake factory
 #
@@ -307,7 +339,10 @@ async def test_principals_and_grants_route_to_maintenance_database() -> None:
 
 async def test_extensions_route_to_application_database() -> None:
     """Extension creation issues against the application database (extensions are
-    per-database), and no principal or grant statement leaks onto that connection.
+    per-database), and no principal creation or database-scoped grant leaks onto that
+    connection. The only grants it carries are the per-role pgstattuple EXECUTE grants --
+    function grants are per-database, so they belong here, not on the maintenance
+    connection.
     """
     factory = _RecordingFactory(existing_roles=())
     await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
@@ -317,9 +352,67 @@ async def test_extensions_route_to_application_database() -> None:
     assert not any("pgaadauth_create_principal" in s for s in app.sql), (
         f"no principal creation may run on the application connection; got {app.sql}"
     )
-    assert not any(s.startswith("GRANT") for s in app.sql), (
-        f"no grant may run on the application connection; got {app.sql}"
+    assert not any("ON DATABASE" in s for s in app.sql), (
+        f"the database-scoped CONNECT/CREATE grant must stay on the maintenance "
+        f"connection, not the application one; got {app.sql}"
     )
+    # The grants that do run here are exactly the per-role pgstattuple EXECUTE grants.
+    app_grants = [s for s in app.sql if s.startswith("GRANT")]
+    assert app_grants and all("EXECUTE ON FUNCTION pgstattuple" in s for s in app_grants), (
+        f"the only grants on the application connection must be pgstattuple EXECUTE "
+        f"grants; got {app_grants}"
+    )
+
+
+async def test_bootstrap_grants_pgstattuple_execute_to_each_role_on_app_connection() -> None:
+    """Each workload role receives EXECUTE on the pgstattuple functions -- the privilege
+    ``vault_stats`` needs to read chunks-table bloat -- issued on the *application*
+    connection (function grants are per-database), never on the maintenance connection.
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE, _BFF_ROLE])
+    app_sql = factory.conn_for("sage").sql
+    for role in (_SAGE_ROLE, _BFF_ROLE):
+        assert any(s == cb.pgstattuple_grant_statement(role) for s in app_sql), (
+            f"missing pgstattuple EXECUTE grant for {role} on the application connection"
+        )
+    maint_sql = factory.conn_for("postgres").sql
+    assert not any("pgstattuple" in s and s.startswith("GRANT") for s in maint_sql), (
+        f"the pgstattuple grant must not run on the maintenance connection; got {maint_sql}"
+    )
+
+
+async def test_bootstrap_pgstattuple_grant_runs_after_extension_creation() -> None:
+    """The pgstattuple EXECUTE grant is issued only after the extension is created on the
+    application connection -- granting execute on a function that does not yet exist would
+    error on the live server.
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(factory, database="sage", app_roles=[_SAGE_ROLE])
+    app_sql = factory.conn_for("sage").sql
+    create_idx = next(
+        i for i, s in enumerate(app_sql) if 'CREATE EXTENSION IF NOT EXISTS "pgstattuple"' in s
+    )
+    grant_idx = next(i for i, s in enumerate(app_sql) if "EXECUTE ON FUNCTION pgstattuple" in s)
+    assert create_idx < grant_idx, (
+        f"pgstattuple must be created before it is granted; got order {app_sql}"
+    )
+
+
+async def test_bootstrap_pgstattuple_grant_skipped_when_extension_absent() -> None:
+    """When the resolved extension set omits pgstattuple (a ``PG_EXTENSIONS`` override
+    could), no pgstattuple statement is emitted on any connection -- the bootstrap never
+    grants execute on a function it did not provision.
+    """
+    factory = _RecordingFactory(existing_roles=())
+    await cb.bootstrap_cloud_postgres(
+        factory, database="sage", app_roles=[_SAGE_ROLE], extensions=["vector"]
+    )
+    for conn in factory.opened:
+        assert not any("pgstattuple" in s for s in conn.sql), (
+            f"no pgstattuple statement may run when the extension is not in the set; "
+            f"got {conn.sql} on {conn.database!r}"
+        )
 
 
 async def test_bootstrap_opens_two_connections_one_per_database() -> None:

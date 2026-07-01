@@ -117,6 +117,26 @@ def grant_statement(database: str, role: str) -> str:
     return f'GRANT CONNECT, CREATE ON DATABASE "{database}" TO "{role}"'
 
 
+def pgstattuple_grant_statement(role: str) -> str:
+    """Grant one workload role EXECUTE on the untrusted ``pgstattuple`` functions.
+
+    The database-scoped :func:`grant_statement` gives the workload CONNECT + CREATE and
+    nothing more, so it can own its schemas -- but that leaves it unable to *execute*
+    the untrusted ``pgstattuple`` extension's functions, which the content store uses to
+    measure chunks-table bloat (retained dead tuples, free-space fragments). Without this
+    grant the first bloat read raises ``InsufficientPrivilege`` and vault statistics fail.
+
+    Both the ``text`` and ``regclass`` overloads are named because the content-store
+    queries pass an unknown-typed ``'chunks'`` literal, and either overload may be the one
+    Postgres resolves it to. The grant is re-grantable, so a converged re-run is a no-op;
+    it must run on the application database (function grants are per-database), where the
+    extension's functions live. The role is validated before interpolation -- it is a
+    quoted identifier, not a bind parameter. See CAS-ADR-042.
+    """
+    validate_role_name(role)
+    return f'GRANT EXECUTE ON FUNCTION pgstattuple(text), pgstattuple(regclass) TO "{role}"'
+
+
 def create_principal_statement() -> str:
     """Return the SQL that enrols a managed-identity role as a database principal.
 
@@ -188,8 +208,10 @@ async def bootstrap_cloud_postgres(
     opens two: principal creation and the least-privilege CONNECT + CREATE grant run
     on the ``postgres`` maintenance database (where the ``pgaadauth_*`` functions
     live); the extensions are pre-created on the application database (extensions are
-    per-database objects). Idempotent throughout: safe to re-run against an
-    already-bootstrapped server.
+    per-database objects), where each workload role is also granted EXECUTE on the
+    untrusted ``pgstattuple`` functions the content store reads for bloat measurement
+    (a per-database function grant CONNECT + CREATE does not confer). Idempotent
+    throughout: safe to re-run against an already-bootstrapped server.
     """
     # Principal creation and the database-scoped grant: against the maintenance
     # database, the only place the ``pgaadauth_*`` functions exist.
@@ -197,8 +219,9 @@ async def bootstrap_cloud_postgres(
         for role in app_roles:
             await ensure_principal(admin_conn, role)
             await admin_conn.execute(grant_statement(database, role))
-    # Extensions: against the application database itself (extensions are
-    # per-database, so they must be created on a connection to it).
+    # Extensions and their EXECUTE grants: against the application database itself
+    # (both extensions and function grants are per-database, so they must run on a
+    # connection to it).
     async with connect(database) as app_conn:
         for statement in extension_statements(extensions):
             await app_conn.execute(statement)
@@ -206,6 +229,15 @@ async def bootstrap_cloud_postgres(
         # workload connects to -- so a create that did not take fails here loud
         # rather than as a later InsufficientPrivilege at vault load.
         await verify_extensions_present(app_conn, database, extensions)
+        # Grant each workload role EXECUTE on the untrusted pgstattuple functions the
+        # content store uses for bloat measurement. CONNECT + CREATE (granted on the
+        # maintenance connection) does not carry function EXECUTE, so without this the
+        # workload's first bloat read raises InsufficientPrivilege. Only when pgstattuple
+        # is actually in the resolved set -- granting execute on a function that was not
+        # provisioned would error.
+        if "pgstattuple" in _ordered_extensions(extensions):
+            for role in app_roles:
+                await app_conn.execute(pgstattuple_grant_statement(role))
 
 
 @dataclass(frozen=True)
