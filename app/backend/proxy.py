@@ -10,6 +10,7 @@ profile), SAGE answers these paths from its own routers and this proxy is unused
 
 from __future__ import annotations
 
+import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response
 
@@ -78,14 +79,35 @@ async def _forward_to_sage(
         if key.lower() not in _DROP_REQUEST_HEADERS
     }
     body = await request.body()
-    sage_response = await transport.request(
-        request.method,
-        upstream_path,
-        session=session,
-        params=dict(request.query_params),
-        headers=forwarded_headers,
-        content=body or None,
-    )
+    try:
+        sage_response = await transport.request(
+            request.method,
+            upstream_path,
+            session=session,
+            params=dict(request.query_params),
+            headers=forwarded_headers,
+            content=body or None,
+        )
+    except httpx.TimeoutException as exc:
+        # A slow-or-unresponsive upstream is a gateway timeout, not a fault in
+        # this proxy. Surfacing the raw httpx error would render as an opaque
+        # 500 with a traceback; the structured envelope tells the SPA the hop
+        # upstream stalled. TimeoutException subclasses TransportError, so this
+        # arm must precede the broader one below.
+        raise SAGEError(
+            "sage_upstream_timeout",
+            "The upstream SAGE service did not respond in time.",
+            504,
+        ) from exc
+    except httpx.TransportError as exc:
+        # Any other transport-level failure reaching SAGE (connect refused, DNS,
+        # a broken read) is a bad-gateway condition, distinct from the timeout
+        # above and from an error SAGE itself returned in a well-formed response.
+        raise SAGEError(
+            "sage_upstream_unavailable",
+            "The upstream SAGE service is unavailable.",
+            502,
+        ) from exc
     relayed_headers = {
         key: value
         for key, value in sage_response.headers.items()

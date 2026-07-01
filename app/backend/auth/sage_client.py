@@ -16,6 +16,15 @@ import httpx
 from app.backend.auth.oidc import OidcService
 from app.backend.auth.session_store import Session
 
+#: Explicit, generous request budget for the SAGE HTTP hop, replacing httpx's
+#: 5 s default read timeout. SAGE can answer a read slower than 5 s when a
+#: replica is warming from scale-to-zero, an abstract model is loading cold, or
+#: a vector query runs long; the 5 s default cut those slow-but-successful
+#: responses off and surfaced them as transport failures. The read/write budget
+#: sits above that tail; connect and pool stay tight because a stalled
+#: connection or an exhausted pool is a fast-fail condition, not a slow answer.
+_DEFAULT_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=30.0, pool=5.0)
+
 
 class ObOSageClient:
     """Reach SAGE over HTTP, attaching the session's delegated bearer token."""
@@ -29,7 +38,9 @@ class ObOSageClient:
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._oidc = oidc
-        self._client = client or httpx.AsyncClient(base_url=self._base_url)
+        self._client = client or httpx.AsyncClient(
+            base_url=self._base_url, timeout=_DEFAULT_TIMEOUT
+        )
 
     async def request(
         self, method: str, path: str, session: Session, **kwargs: Any
