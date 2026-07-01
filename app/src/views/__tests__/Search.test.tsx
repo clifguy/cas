@@ -908,3 +908,51 @@ describe('Search view: tags URL parameter (T-0130)', () => {
     expect(request.filters?.tags).toBeUndefined();
   });
 });
+
+describe('Search view: API error surfacing', () => {
+  it('surfaces a failed drill-down discover as a visible error, not an empty result', async () => {
+    mockDiscover.mockRejectedValueOnce(new Error('discover failed'));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?pipeline_status=failed']}
+      />,
+    );
+
+    // A visible error, distinct from the empty-success affordance.
+    await screen.findByText(/discover failed/i);
+    expect(screen.queryByText(/no documents match this filter/i)).toBeNull();
+  });
+
+  it('surfaces a failed browse discover as a visible error, not "No results found."', async () => {
+    mockDiscover.mockRejectedValueOnce(new Error('browse failed'));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+
+    await screen.findByText(/browse failed/i);
+    expect(screen.queryByText(/no results found/i)).toBeNull();
+  });
+
+  it('still shows the empty-success affordance (no error) on a genuinely empty result', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(0, 0));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse']}
+      />,
+    );
+
+    await screen.findByText(/no results found/i);
+    expect(screen.queryByText(/error/i)).toBeNull();
+  });
+});

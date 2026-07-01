@@ -68,6 +68,7 @@ export default function Search() {
   const [totalAvailable, setTotalAvailable] = useState(0);
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [error, setError] = useState('');
 
   // --- Selection state (bulk actions) ---
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -102,6 +103,7 @@ export default function Search() {
     let cancelled = false;
 
     async function run(req: DiscoverRequest | null) {
+      setError('');
       if (!req) {
         // No actionable URL state — clear to the empty landing view.
         setResults([]);
@@ -117,8 +119,11 @@ export default function Search() {
         setResults(resp.results);
         setTotalAvailable(resp.total_available);
         setHasSearched(true);
-      } catch {
+      } catch (err) {
         if (cancelled) return;
+        // Capture the failure so it renders as a visible error rather than an
+        // empty result set indistinguishable from a genuine no-match.
+        setError(err instanceof Error ? err.message : 'Search failed');
         setResults([]);
         setTotalAvailable(0);
         setHasSearched(true);
@@ -238,6 +243,11 @@ export default function Search() {
 
   if (!vault) return <div>Vault not found.</div>;
 
+  // Shared error affordance, rendered in both the drill-down and main branches.
+  const errorBanner = error ? (
+    <div style={{ color: '#c62828', marginTop: 32, textAlign: 'center' }}>Error: {error}</div>
+  ) : null;
+
   const currentSort: SortState | null = urlSortBy && urlSortOrder
     ? { column: urlSortBy, direction: urlSortOrder }
     : null;
@@ -253,7 +263,9 @@ export default function Search() {
         <p style={{ margin: '0 0 16px', fontSize: 13, color: '#666' }}>
           {totalAvailable} result{totalAvailable !== 1 ? 's' : ''}
         </p>
-        {results.length === 0 && !searching ? (
+        {error ? (
+          errorBanner
+        ) : results.length === 0 && !searching ? (
           <div style={{ color: '#999' }}>No documents match this filter.</div>
         ) : (
           <>
@@ -422,7 +434,9 @@ export default function Search() {
         </div>
       )}
 
-      {hasSearched && results.length === 0 && (
+      {errorBanner}
+
+      {hasSearched && results.length === 0 && !error && (
         <div style={{ color: '#999', marginTop: 32, textAlign: 'center' }}>No results found.</div>
       )}
 
