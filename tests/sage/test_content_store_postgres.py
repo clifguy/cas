@@ -119,6 +119,83 @@ async def store(pg_pool):
 
 
 # ---------------------------------------------------------------------------
+# pgstattuple EXECUTE grant (CAS-ADR-042)
+#
+# The cloud bootstrap grants each workload role EXECUTE on the untrusted
+# pgstattuple functions the content store uses for bloat measurement; CONNECT +
+# CREATE alone does not carry it. This proves the emitted grant *confers the
+# privilege* against a real server -- a role without it hits InsufficientPrivilege
+# and gains access once the grant runs -- not merely that a string was produced.
+# The cloud bootstrap module itself is Entra-only and never connects to local PG;
+# this exercises its pure statement builder.
+# ---------------------------------------------------------------------------
+
+
+async def test_pgstattuple_grant_confers_execute_to_unprivileged_role(pg_dsn):
+    """A role lacking the grant cannot execute pgstattuple; the bootstrap's grant fixes it.
+
+    Mirrors the content store's own call form (an unknown-typed name literal, so whichever
+    overload production resolves to is the one exercised). SELECT on the probe table is
+    granted first so pgstattuple's relation-level check passes and the *function* EXECUTE
+    privilege is what the assertion isolates.
+    """
+    import psycopg
+
+    from sage.storage.postgres.cloud_bootstrap import pgstattuple_grant_statement
+
+    role = "pgst-probe-unpriv"
+
+    async def _drop_role_if_present(conn) -> None:
+        # Existence check is parameterized; the drops interpolate the (hardcoded,
+        # validator-legal) role as a quoted identifier -- identifiers cannot be bound.
+        present = await (
+            await conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
+        ).fetchone()
+        if present:
+            await conn.execute(f'DROP OWNED BY "{role}"')
+            await conn.execute(f'DROP ROLE "{role}"')
+
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        row = await (
+            await conn.execute(
+                "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
+            )
+        ).fetchone()
+        if not (row and row[0]):
+            pytest.skip("SAGE_TEST_PG_DSN role cannot create roles; privilege boundary untestable")
+
+        await conn.execute('CREATE EXTENSION IF NOT EXISTS "pgstattuple"')
+        await conn.execute("DROP TABLE IF EXISTS public.pgst_probe")
+        await conn.execute("CREATE TABLE public.pgst_probe (id int)")
+        await conn.execute("INSERT INTO public.pgst_probe VALUES (1)")
+        await _drop_role_if_present(conn)
+        await conn.execute(f'CREATE ROLE "{role}" NOLOGIN')
+        await conn.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+        await conn.execute(f'GRANT SELECT ON public.pgst_probe TO "{role}"')
+        try:
+            # Before the grant: EXECUTE on pgstattuple is denied.
+            await conn.execute(f'SET ROLE "{role}"')
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                await conn.execute("SELECT dead_tuple_count FROM pgstattuple('public.pgst_probe')")
+            await conn.execute("RESET ROLE")
+
+            # Apply exactly the statement the bootstrap emits.
+            await conn.execute(pgstattuple_grant_statement(role))
+
+            # After the grant: the role can execute pgstattuple and read the stat.
+            await conn.execute(f'SET ROLE "{role}"')
+            granted = await (
+                await conn.execute("SELECT dead_tuple_count FROM pgstattuple('public.pgst_probe')")
+            ).fetchone()
+            await conn.execute("RESET ROLE")
+            assert granted is not None and granted[0] is not None
+        finally:
+            await conn.execute("RESET ROLE")
+            await _drop_role_if_present(conn)
+            await conn.execute("DROP TABLE IF EXISTS public.pgst_probe")
+
+
+# ---------------------------------------------------------------------------
 # Group A -- CRUD / read methods (port conformance)
 # ---------------------------------------------------------------------------
 
