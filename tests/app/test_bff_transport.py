@@ -242,3 +242,22 @@ def test_tx_007_registration_and_profile_resolution():
 
     assert isinstance(inproc, InProcessSageTransport)
     assert isinstance(http, HttpSageTransport)
+
+
+def test_tx_008_obo_client_builds_an_explicit_generous_timeout():
+    """An `ObOSageClient` that builds its own `httpx.AsyncClient` gives it an
+    explicit, generous timeout instead of inheriting httpx's 5 s default read
+    timeout, so a slow-but-successful SAGE response (cold abstract-model load,
+    pgvector query latency, a scale-from-zero replica warm-up) is not cut off
+    mid-flight and surfaced as a spurious upstream failure.
+
+    Anti-coincidental-pass: without the explicit timeout the client carries
+    httpx's `Timeout(5.0)` default, so `.read` would be 5.0, not 30.0.
+    """
+    client = ObOSageClient("http://sage.test", _StubOidc())
+
+    timeout = client._client.timeout
+    assert timeout.read == 30.0
+    assert timeout.write == 30.0
+    assert timeout.connect == 5.0
+    assert timeout.pool == 5.0

@@ -64,6 +64,16 @@ def _mock_sage(
     return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://sage.test")
 
 
+def _raising_sage(exc: httpx.RequestError) -> httpx.AsyncClient:
+    """A SAGE client whose every upstream call raises the given httpx transport
+    error, standing in for a SAGE that times out or is unreachable."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise exc.__class__(str(exc) or "boom", request=request)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://sage.test")
+
+
 def _client(app: FastAPI) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bff.test")
 
@@ -332,3 +342,68 @@ async def test_app_011_proxy_rejects_bare_collection_without_a_session(tmp_path)
     assert response.json()["code"] == "auth_required"
     assert "text/html" not in response.headers["content-type"]
     assert recorder == []
+
+
+async def test_app_012_proxy_maps_upstream_timeout_to_structured_504():
+    """When the upstream SAGE call times out, the proxy returns a structured
+    `504` envelope -- never an opaque `500` with a traceback.
+
+    Anti-coincidental-pass: without the transport-exception guard in
+    `_forward_to_sage`, the `httpx.ReadTimeout` propagates out of the ASGI app
+    (ASGITransport re-raises by default) instead of becoming a `504`, so the
+    request never yields the structured envelope this asserts.
+    """
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    oidc = _StubOidc("tok-xyz")
+    settings = _settings()
+    store = InMemorySessionStore()
+    await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", oidc, client=_raising_sage(httpx.ReadTimeout("slow")))
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.get("/sage_vaults/cas/stats")
+
+    assert response.status_code == 504
+    body = response.json()
+    assert body["code"] == "sage_upstream_timeout"
+    assert body["message"]
+
+
+async def test_app_013_proxy_maps_upstream_transport_error_to_structured_502():
+    """When the upstream SAGE call fails with a non-timeout transport error, the
+    proxy returns a structured `502` envelope -- distinct from the `504` a
+    timeout gets, since `httpx.TimeoutException` subclasses `TransportError` and
+    must be matched first.
+
+    Anti-coincidental-pass: without the transport-exception guard the
+    `httpx.ConnectError` propagates unhandled; a guard that caught
+    `TransportError` before `TimeoutException` would mis-map a timeout to `502`.
+    """
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    oidc = _StubOidc("tok-xyz")
+    settings = _settings()
+    store = InMemorySessionStore()
+    await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=store)
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", oidc, client=_raising_sage(httpx.ConnectError("down")))
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.get("/sage_vaults/cas/stats")
+
+    assert response.status_code == 502
+    body = response.json()
+    assert body["code"] == "sage_upstream_unavailable"
+    assert body["message"]
