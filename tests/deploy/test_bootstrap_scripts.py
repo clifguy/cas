@@ -249,8 +249,7 @@ def test_entra_script_shares_default_access_role_id() -> None:
         "the default-access app-role id must be computed exactly once and reused"
     )
     assert text.count("${DEFAULT_ACCESS_APP_ROLE_ID}") >= 2, (
-        "both the BFF and MCP-client gates must reference the shared "
-        "DEFAULT_ACCESS_APP_ROLE_ID"
+        "both the BFF and MCP-client gates must reference the shared DEFAULT_ACCESS_APP_ROLE_ID"
     )
 
 
@@ -262,8 +261,7 @@ def test_entra_script_gates_bff_on_group() -> None:
     """
     text = _text(ENTRA)
     assert text.count("appRoleAssignmentRequired") >= 2, (
-        "entra script must gate both the BFF and the public MCP client on "
-        "appRoleAssignmentRequired"
+        "entra script must gate both the BFF and the public MCP client on appRoleAssignmentRequired"
     )
     assert "appRoleAssignedTo" in text, (
         "entra script must assign the provisioning group to the BFF's "
@@ -279,9 +277,7 @@ def test_entra_script_gates_bff_on_group() -> None:
     assert "principalId" in block and "resourceId" in block and "appRoleId" in block, (
         "the BFF assignment body must carry the principalId/resourceId/appRoleId triple"
     )
-    assert "PROVISIONING_GROUP_ID" in block, (
-        "the BFF assignment must target PROVISIONING_GROUP_ID"
-    )
+    assert "PROVISIONING_GROUP_ID" in block, "the BFF assignment must target PROVISIONING_GROUP_ID"
     # Fail safe on a live tenant: assign the group BEFORE requiring assignment,
     # so a fresh tenant is never locked out by an empty allowlist.
     assert text.index("appRoleAssignedTo") < text.index("appRoleAssignmentRequired"), (
