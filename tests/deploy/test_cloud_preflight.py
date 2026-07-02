@@ -672,8 +672,8 @@ def _dcr_stub(
 @_NEEDS_RUNTIME
 def test_dcr_registration_passes() -> None:
     """A /register 201 whose body carries a non-empty redirect_uris array and a
-    resource-qualified scope, edge live -> edge_dcr_registration PASS. The source
-    of the deferred DCR sign-in leg #218/#223 left unverified.
+    resource-qualified scope, edge live -> edge_dcr_registration PASS. This is the
+    live DCR sign-in leg the earlier edge work left deploy-only-verifiable.
     """
     with serve(_dcr_stub()) as url:
         proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_dcr_registration"))
