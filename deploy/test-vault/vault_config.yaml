@@ -13,8 +13,8 @@
 # required by the vault-config schema but inert under the cloud bindings (source
 # bytes live in the document store, graph and content state in Postgres); they
 # are set to container-writable paths so the per-vault init that materializes
-# them succeeds. Abstraction is disabled so the storage-path validation does not
-# depend on the abstraction model.
+# them succeeds. Abstraction is enabled to exercise the
+# hosted-model roundtrip end to end.
 vault:
   id: test
   name: Cloud validation vault
@@ -29,6 +29,9 @@ document_types:
       description: Catch-all document type.
       source_types:
         - markdown
+    - value: misc
+      label: Miscellaneous
+      description: Default document type applied when ingest resolves no explicit type.
 lifecycle:
   base_states_required: true
   states:
@@ -73,4 +76,4 @@ edge_inference:
       inference_rules:
         - method: version_chain
 abstraction:
-  enabled: false
+  enabled: true
